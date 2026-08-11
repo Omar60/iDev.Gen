@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest something iDev.Gen should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is tedious or impossible today? Describe the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: Optional. How you would expect it to work.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Known gaps
+      description: These are already on the list; tick if yours is one of them.
+      options:
+        - label: Multi-LoRA combos in a session
+        - label: Contact sheet / exporting the selection
+        - label: A look library reusable across sessions

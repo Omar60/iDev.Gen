@@ -1,0 +1,42 @@
+name: Bug report
+description: Something does not work
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error text
+      description: >
+        The message shown on the failed shot in the gallery, or the backend
+        console output. Please remove any personal folder names first.
+      render: text
+
+  - type: input
+    id: comfy
+    attributes:
+      label: ComfyUI version
+      description: Shown in iDev.Gen's top bar.
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and Python version
+      placeholder: Windows 11, Python 3.12
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow
+      description: >
+        Which model family (SDXL, Flux, Z-Image…), and which slots the mapping
+        table detected. Do not paste API keys or absolute paths.

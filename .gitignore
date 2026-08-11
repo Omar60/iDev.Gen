@@ -1,0 +1,16 @@
+# Environment and build
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+frontend/dist/
+
+# Local config: holds absolute paths from your machine
+config.json
+
+# Local tool state
+.claude/settings.local.json
+
+# Sessions, database, generated images
+data/
