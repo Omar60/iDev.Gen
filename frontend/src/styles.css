@@ -84,7 +84,15 @@ button.icon { padding: 3px 7px; }
 .shot.rejected { opacity: .35; }
 .shot img { width: 100%; display: block; aspect-ratio: 3/4; object-fit: cover; cursor: zoom-in; background: var(--panel-2); }
 .shot .ph { aspect-ratio: 3/4; display: grid; place-items: center; color: var(--muted); font-size: 12px; background: var(--panel-2); text-align: center; padding: 8px; }
-.shot .bar { display: flex; align-items: center; gap: 4px; padding: 5px 6px; border-top: 1px solid var(--line); }
+/* Wraps rather than hides: the spacer eats the first line, so on a narrow card
+   the buttons drop to a second row instead of off the edge. */
+.shot .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 5px 6px; border-top: 1px solid var(--line); }
+/* One glyph wide. A select sizes itself to its widest option, and “Camera
+   angles…” is not what the closed menu has to be as wide as. */
+.shot .bar select.continue {
+  width: 26px; padding: 3px 0; font-size: 12px; text-align: center;
+  appearance: none; -webkit-appearance: none;
+}
 .stars { display: flex; gap: 1px; cursor: pointer; }
 .star { color: #3a3f4b; font-size: 15px; line-height: 1; }
 .star.on { color: var(--warn); }

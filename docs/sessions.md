@@ -32,6 +32,29 @@ same four things:
 A session created before kinds existed has none, and behaves exactly as it did:
 no badge, no filtering, every workflow offered.
 
+### Carrying a photo into the next job
+
+The four kinds are one workflow, not four: shoot, keep one, edit it, then walk
+the camera around what came out. The **→** menu on any finished photo does that
+move in one click, and offers each editing kind twice:
+
+- **Continue here** — the session switches kind, picks the graph tagged for the
+  new job, marks that photo as the reference and opens the *add shots* panel
+  ready for it. One session, one gallery, the graphs taken in turn.
+- **In a new session…** — the photo is *copied* into a fresh session of that
+  kind, already its reference, and you land there. Copied, not linked: the two
+  sessions own their files, so deleting either one leaves the other's gallery
+  whole.
+
+Neither needs the photo to leave the app. Downloading a keeper and importing it
+back was the old way across sessions, and it lost the model, the settings and
+the reason the photo existed.
+
+The look does not travel — an edit take carries none, which is
+[the point](#reference-takes) — and neither do the takes. Nothing is
+switchable mid-Run: the runner re-reads the session before every take, so the
+menu is disabled while the session runs.
+
 ## The look
 
 Wardrobe, hair, makeup, styling, the place. Written once, at the top of the

@@ -485,6 +485,34 @@ def test_an_imported_photo_becomes_the_reference_when_there_is_none(client, seed
     assert client.get(f"/api/sessions/{plain}").json()["anchor_shot_ids"] == []
 
 
+def test_a_photo_can_be_carried_into_another_session_by_id(client, seeded):
+    """Continuing a shoot in a fresh session — the keeper of a photoshoot walked
+    around with the angle graph — must not mean downloading the photo and
+    uploading it back. The copy is real: deleting either session leaves the
+    other's gallery intact."""
+    import main
+    def session():
+        return client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": "s", "shots": []}).json()["id"]
+
+    src, dst = session(), session()
+    keeper = client.post(f"/api/sessions/{src}/import?label=keeper", content=PNG).json()["id"]
+
+    r = client.post(f"/api/sessions/{dst}/import?from_shot={keeper}")
+    assert r.status_code == 200
+    copy = r.json()
+    # Its own file in its own folder, and the label came across.
+    assert copy["filename"].endswith("_keeper.png")
+    assert (main.SESSIONS_DIR / str(dst) / copy["filename"]).read_bytes() == PNG
+    assert client.patch(f"/api/sessions/{dst}",
+                        json={"anchor_shot_ids": [copy["id"]]}).status_code == 200
+
+    client.delete(f"/api/sessions/{src}")
+    assert client.get(f"/api/shots/{copy['id']}/image").status_code == 200
+
+    assert client.post(f"/api/sessions/{dst}/import?from_shot=999999").status_code == 404
+
+
 def test_import_refuses_what_is_not_an_image(client, seeded):
     """The extension is the uploader's claim; the magic number is the file."""
     sid = client.post("/api/sessions", json={

@@ -99,6 +99,50 @@ export default function SessionView({ id }) {
       : [...anchors, shot.id].slice(-refSlots),
   }))
 
+  // "Now edit this one" is one decision, and it used to be four clicks in three
+  // places: the kind chip, the reference workflow, 📎 and + Shots. Into another
+  // session it was worse — download the photo and upload it back, because
+  // nothing carried a shot across. Every kind that edits a photo is offered.
+  const continuations = Object.entries(KINDS).filter(([, spec]) => spec.refKind)
+
+  /** The editing graph for the kind we are switching to. An untagged graph is
+   *  offered everywhere so it stays; one tagged for the job we are leaving does
+   *  not, or a photoshoot turned camera-angles runs its takes through the edit
+   *  graph. 0 clears it, and the panels already say how to pick one. */
+  const refWfFor = (k) => {
+    // Before the list has loaded every graph looks untagged, and clearing the
+    // session's own pick over a race is the one outcome worth guarding against.
+    if (!workflows.length) return s.reference_workflow_id || 0
+    const cur = workflows.find((w) => w.id === s.reference_workflow_id)
+    if (cur && (!cur.kind || cur.kind === KINDS[k].refKind)) return cur.id
+    const tagged = workflows.filter((w) => w.kind === KINDS[k].refKind)
+    return tagged.length === 1 ? tagged[0].id : 0
+  }
+
+  const continueWith = (shot, choice) => {
+    const [where, k] = choice.split(':')
+    if (where === 'here') {
+      return call(async () => {
+        await api.patch(`/api/sessions/${id}`, {
+          settings: { kind: k }, anchor_shot_ids: [shot.id], reference_workflow_id: refWfFor(k),
+        })
+        setAdding([blankShot(k)])
+      })
+    }
+    // The new session starts with no look and no takes: the look belongs to the
+    // shoot that produced the photo, and an edit take carries none anyway.
+    call(async () => {
+      const { id: sid } = await api.post('/api/sessions', {
+        model_id: s.model_id, name: `${s.name} — ${KINDS[k].label}`,
+        workflow_id: s.workflow_id, reference_workflow_id: refWfFor(k) || null,
+        settings: { ...s.settings, kind: k },
+      })
+      const copy = await api.post(`/api/sessions/${sid}/import?from_shot=${shot.id}`)
+      await api.patch(`/api/sessions/${sid}`, { anchor_shot_ids: [copy.id] })
+      go(`/session/${sid}`)
+    })
+  }
+
   return (
     <>
       {error && <div className="error" onClick={() => setError('')}>{error}</div>}
@@ -331,12 +375,32 @@ export default function SessionView({ id }) {
               </div>
               <span className="spacer" style={{ flex: 1 }} />
               {shot.status === 'done' && (
-                <button className="icon" onClick={() => toggleAnchor(shot)}
-                        title={anchors.includes(shot.id)
-                          ? 'Stop using this photo as the reference'
-                          : 'Use as the reference — takes marked ref will edit this photo'}>
-                  {anchors.includes(shot.id) ? '📌' : '📎'}
-                </button>
+                <>
+                  <button className="icon" onClick={() => toggleAnchor(shot)}
+                          title={anchors.includes(shot.id)
+                            ? 'Stop using this photo as the reference'
+                            : 'Use as the reference — takes marked ref will edit this photo'}>
+                    {anchors.includes(shot.id) ? '📌' : '📎'}
+                  </button>
+                  {/* A native menu on purpose: a popover would need its own
+                      dismiss, focus and z-index for six items the browser
+                      already knows how to show. */}
+                  <select className="continue" value="" disabled={running}
+                          title="Continue with this photo — as the reference of this session, or of a new one"
+                          onChange={(e) => continueWith(shot, e.target.value)}>
+                    <option value="">→</option>
+                    <optgroup label="Continue here">
+                      {continuations.map(([k, spec]) => (
+                        <option key={k} value={`here:${k}`}>{spec.label}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="In a new session">
+                      {continuations.map(([k, spec]) => (
+                        <option key={k} value={`new:${k}`}>{spec.label}…</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </>
               )}
               <button className="icon" title="More like this — same prompt, new seeds"
                       onClick={() => moreLikeThis(shot)}>⟳</button>

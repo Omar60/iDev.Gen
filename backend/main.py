@@ -581,8 +581,8 @@ def _image_suffix(data: bytes) -> str:
 
 
 @app.post("/api/sessions/{sid}/import")
-async def import_photo(sid: int, request: Request, label: str = ""):
-    """Bring an outside photo into a session as a finished shot.
+async def import_photo(sid: int, request: Request, label: str = "", from_shot: int = 0):
+    """Bring a photo into a session as a finished shot.
 
     It lands as an ordinary shot, so everything already built works on it — the
     gallery, the star rating, and above all marking it as a reference. A photo
@@ -590,11 +590,27 @@ async def import_photo(sid: int, request: Request, label: str = ""):
 
     The body is the raw file. One route does not justify a multipart dependency,
     and a browser can POST a File as the body unchanged.
+
+    `from_shot` copies a photo the app already has instead of reading the body:
+    continuing a shoot in a fresh session — the keeper of a photoshoot walked
+    around with the angle graph — otherwise means downloading the photo and
+    uploading it straight back. The copy is deliberate: the two sessions own
+    their files, and deleting either one must not blank the other's gallery.
     """
     if not db.one("SELECT id FROM session WHERE id=?", sid):
         raise HTTPException(404, "session not found")
 
-    data = await request.body()
+    if from_shot:
+        src = db.one("SELECT * FROM shot WHERE id=?", from_shot)
+        if not src or not src["filename"]:
+            raise HTTPException(404, "that shot has no photo to copy")
+        path = SESSIONS_DIR / str(src["session_id"]) / src["filename"]
+        if not path.exists():
+            raise HTTPException(404, "file not found")
+        data = path.read_bytes()
+        label = label or src["shot_label"]
+    else:
+        data = await request.body()
     if not data:
         raise HTTPException(400, "empty upload")
     if len(data) > IMPORT_MAX_BYTES:

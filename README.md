@@ -35,6 +35,10 @@ screen), starts the takes with the right defaults, and prints the one rule that
 decides whether that kind works — for angles, *anchor on the widest frame you
 have*. See [sessions](docs/sessions.md#session-kinds).
 
+The four are one workflow, not four. **→** on any finished photo continues with
+it — the same session switched to that kind, or a fresh session with the photo
+copied in as its reference. The photo never leaves the app.
+
 ## Run it
 
 ```bash
