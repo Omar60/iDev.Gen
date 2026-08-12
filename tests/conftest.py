@@ -44,6 +44,24 @@ GRAPH = {
     "8": {"class_type": "SaveImage", "inputs": {"filename_prefix": "ComfyUI", "images": ["7", 0]}},
 }
 
+# A reference graph: it edits a photo instead of painting one, so there is no
+# EmptyLatentImage and the size comes from the image. Shaped as plain Flux
+# img2img, which is also what Kontext and Qwen-Image-Edit look like from here:
+# the anchor arrives through a LoadImage either way. SaveImage keeps id "8" so
+# `FakeComfy` reads the prefix from the same place in both graphs.
+EDIT_GRAPH = {
+    "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "edit.safetensors"}},
+    "2": {"class_type": "LoadImage", "inputs": {"image": "example.png", "upload": "image"}},
+    "3": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["1", 1]}},
+    "4": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["1", 1]}},
+    "5": {"class_type": "VAEEncode", "inputs": {"pixels": ["2", 0], "vae": ["1", 2]}},
+    "6": {"class_type": "KSampler", "inputs": {
+        "seed": 1, "steps": 20, "cfg": 8.0, "sampler_name": "euler", "scheduler": "normal",
+        "denoise": 1.0, "model": ["1", 0], "positive": ["3", 0], "negative": ["4", 0],
+        "latent_image": ["5", 0]}},
+    "8": {"class_type": "SaveImage", "inputs": {"filename_prefix": "ComfyUI", "images": ["7", 0]}},
+}
+
 
 class FakeComfy:
     """ComfyUI double: records the queued graphs and creates the output file at
@@ -58,7 +76,12 @@ class FakeComfy:
         self.no_images = no_images
         self.write_file = write_file
         self.graphs: list[dict] = []
+        self.uploads: list[tuple[str, str]] = []
         self.interrupted = 0
+
+    async def upload_image(self, path, name: str) -> str:
+        self.uploads.append((str(path), name))
+        return f"idevgen/{name}"
 
     async def queue_prompt(self, graph: dict, client_id: str) -> str:
         self.attempts += 1

@@ -13,6 +13,13 @@ Photo sessions for LoRA character models, on top of ComfyUI.
 Launching a session queues its shots one at a time in ComfyUI, and every
 finished image is **moved** out of ComfyUI's output into the session folder.
 
+A shot can also be a **reference take**: instead of painting from noise it edits
+a photo the session already produced, and its prompt is an instruction
+(`remove the jacket`) carrying no trigger, base prompt or look. That is the only
+way to take something *off* the look — prepending it to a take that denies it
+just keeps the jacket. Needs a second workflow (img2img, FLUX.1 Kontext,
+Qwen-Image-Edit); see [sessions](docs/sessions.md#reference-takes).
+
 ## Run it
 
 ```bash
@@ -52,7 +59,9 @@ Import your workflow in **API format** (`Workflow → Export (API)` in ComfyUI) 
 map which widget drives each slot: base model (so one workflow per family is
 enough — the checkpoint is picked per character and per session from a
 dropdown), positive/negative prompt, seed, steps, cfg,
-width/height, LoRA and its strength, and the filename prefix. The mapping is
+width/height, LoRA and its strength, the filename prefix, and — for a graph that
+edits an existing photo — up to three reference images, denoise and reference
+strength. The mapping is
 auto-detected on import (it follows conditioning links, so it works even when the
 prompt goes through `FluxGuidance` and friends) and can be fixed by hand in the
 table. **Anything left unmapped keeps the workflow's own value** — so a workflow
@@ -81,13 +90,14 @@ file move are genuinely verified.
 - `test_workflow_map.py` — mapping detection (including prompts behind
   `FluxGuidance` and samplers with non-standard names), widget types, and that a
   connected input is never patched.
-- `test_api.py` — look expansion, prompt composition, seeds, validation,
-  rating, cascading deletes.
+- `test_api.py` — look expansion, prompt composition (including a reference take
+  carrying neither base nor look), seeds, validation, rating, cascading deletes.
 - `test_setup.py` — config detection from ComfyUI's launch path, saving and
   applying it live, and refusing folders that do not exist.
-- `test_runner.py` — a full run, the real values in the queued graph, and the
-  failure paths: rejected prompt, execution error, missing file, cancellation,
-  retry, two sessions at once.
+- `test_runner.py` — a full run, the real values in the queued graph, reference
+  takes going through the second workflow with the anchor uploaded, and the
+  failure paths: rejected prompt, execution error, missing file, missing
+  reference, cancellation, retry, two sessions at once.
 
 Dev dependencies: `pip install -r backend/requirements-dev.txt`.
 CI in `.github/workflows/ci.yml` runs the suite and builds the frontend.

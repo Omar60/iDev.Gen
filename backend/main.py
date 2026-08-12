@@ -16,14 +16,14 @@ import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import db
-from comfy import SLOTS, Comfy, detect_map
-from runner import Runner
+from comfy import REFERENCE_SLOTS, SLOTS, Comfy, detect_map
+from runner import Runner, slug
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -102,6 +102,15 @@ class ShotIn(BaseModel):
     # look. Composing it again would duplicate all three, so a verbatim take is
     # queued exactly as given.
     verbatim: bool = False
+    # Edit the session's reference photo instead of painting from noise. The take's
+    # prompt is then an instruction ("remove the jacket"), so it is queued as given
+    # — see `_expand_shots`.
+    reference: bool = False
+    # None = follow the session. How hard the result is pulled towards the
+    # reference: high holds the frame still so a garment edit lands cleanly, low
+    # lets the pose move. Per take because finding that number means shooting the
+    # same prompt at four values and comparing them side by side.
+    reference_strength: float | None = None
     # 0 = follow the session's seed mode. Set it to reshoot a keeper on its own
     # seed, which is the only way to change one word and see just that change.
     seed: int = 0
@@ -113,9 +122,17 @@ class SessionIn(BaseModel):
     look: str = ""              # wardrobe, hair, styling — constant for the shoot
     shots: list[ShotIn] = Field(default_factory=list)
     workflow_id: int | None = None
+    reference_workflow_id: int | None = None
+    anchor_shot_ids: list[int] = Field(default_factory=list)
     settings: dict = Field(default_factory=dict)
     seed_mode: str = "random"   # random | fixed
     seed: int = 0
+
+
+class SessionPatch(BaseModel):
+    name: str | None = None
+    reference_workflow_id: int | None = None
+    anchor_shot_ids: list[int] | None = None
 
 
 class ShotPatch(BaseModel):
@@ -385,9 +402,10 @@ def get_session(sid: int):
     row = db.one("SELECT * FROM session WHERE id=?", sid)
     if not row:
         raise HTTPException(404, "session not found")
-    row = db.jload(row, "settings")
+    row = db.jload(row, "settings", "anchor_shot_ids")
     row["model"] = db.jload(db.one("SELECT * FROM model WHERE id=?", row["model_id"]), "settings")
-    row["shots"] = db.q("SELECT * FROM shot WHERE session_id=? ORDER BY id", sid)
+    row["shots"] = [db.jload(x, "reference_shot_ids")
+                    for x in db.q("SELECT * FROM shot WHERE session_id=? ORDER BY id", sid)]
     row["running"] = runner.busy and runner.current_session() == sid
     return row
 
@@ -406,11 +424,48 @@ def create_session(s: SessionIn):
     settings.update(s.settings)
 
     sid = db.run(
-        "INSERT INTO session (model_id, name, look, workflow_id, settings, created_at) VALUES (?,?,?,?,?,?)",
-        s.model_id, s.name, s.look, s.workflow_id, json.dumps(settings), db.now(),
+        """INSERT INTO session (model_id, name, look, workflow_id, reference_workflow_id,
+                                anchor_shot_ids, settings, created_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        s.model_id, s.name, s.look, s.workflow_id, s.reference_workflow_id,
+        json.dumps(_valid_anchors(s.anchor_shot_ids)), json.dumps(settings), db.now(),
     )
     _expand_shots(sid, model, s.look, s.shots, s.seed_mode, s.seed)
     return {"id": sid}
+
+
+@app.patch("/api/sessions/{sid}")
+def update_session(sid: int, p: SessionPatch):
+    """Rename, or point the session at its reference photo and editing workflow.
+
+    Marking an anchor is a normal part of a shoot: the first take is painted from
+    noise, and once one is worth keeping the rest of the session edits it.
+    """
+    if not db.one("SELECT id FROM session WHERE id=?", sid):
+        raise HTTPException(404, "session not found")
+    if p.name is not None:
+        db.run("UPDATE session SET name=? WHERE id=?", p.name, sid)
+    if p.reference_workflow_id is not None:
+        db.run("UPDATE session SET reference_workflow_id=? WHERE id=?",
+               p.reference_workflow_id or None, sid)
+    if p.anchor_shot_ids is not None:
+        db.run("UPDATE session SET anchor_shot_ids=? WHERE id=?",
+               json.dumps(_valid_anchors(p.anchor_shot_ids)), sid)
+    return db.jload(db.one("SELECT * FROM session WHERE id=?", sid), "settings", "anchor_shot_ids")
+
+
+def _valid_anchors(ids: list[int]) -> list[int]:
+    """Anchors must be finished shots that still have their file.
+
+    Rejected here rather than at run time: an anchor pointing at a deleted photo
+    would only surface after the queue had already started."""
+    if len(ids) > len(REFERENCE_SLOTS):
+        raise HTTPException(400, f"at most {len(REFERENCE_SLOTS)} reference photos")
+    for shot_id in ids:
+        shot = db.one("SELECT status, filename FROM shot WHERE id=?", shot_id)
+        if not shot or shot["status"] != "done" or not shot["filename"]:
+            raise HTTPException(400, f"shot {shot_id} has no finished photo to use as a reference")
+    return ids
 
 
 @app.post("/api/sessions/{sid}/shots")
@@ -438,7 +493,13 @@ def _expand_shots(sid: int, model: dict, look: str, shots: list[ShotIn],
     start = db.one("SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id=?", sid)["m"] + 1
     added = 0
     for offset, take in enumerate(shots):
-        prompt = take.prompt if take.verbatim else _compose(model, look, take.prompt)
+        # A reference take is NOT composed, and that is the whole point: the anchor
+        # photo already carries the trigger, the base prompt and the look, so the
+        # take is an instruction ("remove the jacket"). Prepending the look again
+        # would restate the very garment the instruction removes, and a positive
+        # that both describes and denies a jacket keeps the jacket.
+        raw = take.verbatim or take.reference
+        prompt = take.prompt if raw else _compose(model, look, take.prompt)
         negative = take.negative or model["base_negative"]
         for i in range(max(1, take.count)):
             # Fixed seed + i: N variations on the very same seed would be N
@@ -451,10 +512,12 @@ def _expand_shots(sid: int, model: dict, look: str, shots: list[ShotIn],
             else:
                 shot_seed = random.randint(1, 2**31 - 1)
             db.run(
-                """INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative, seed, created_at)
-                   VALUES (?,?,?,?,?,?,?)""",
+                """INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative,
+                                     use_reference, reference_strength, seed, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
                 sid, start + offset, take.label or f"shot {start + offset + 1}",
-                prompt, negative, shot_seed, db.now(),
+                prompt, negative, int(take.reference), take.reference_strength,
+                shot_seed, db.now(),
             )
             added += 1
     return added
@@ -479,6 +542,64 @@ def _compose(model: dict, look: str, prompt: str) -> str:
         parts.append(look)
     parts.append(prompt)
     return ", ".join(p.strip(" ,") for p in parts if p.strip(" ,"))
+
+
+IMPORT_MAX_BYTES = 40 * 1024 * 1024
+# Sniffed from the bytes, never from the filename: the extension is the
+# uploader's claim, the magic number is the file.
+_IMAGE_MAGIC = ((b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"))
+
+
+def _image_suffix(data: bytes) -> str:
+    for magic, suffix in _IMAGE_MAGIC:
+        if data.startswith(magic):
+            return suffix
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return ""
+
+
+@app.post("/api/sessions/{sid}/import")
+async def import_photo(sid: int, request: Request, label: str = ""):
+    """Bring an outside photo into a session as a finished shot.
+
+    It lands as an ordinary shot, so everything already built works on it — the
+    gallery, the star rating, and above all marking it as a reference. A photo
+    that arrives some other way would need its own path through all of that.
+
+    The body is the raw file. One route does not justify a multipart dependency,
+    and a browser can POST a File as the body unchanged.
+    """
+    if not db.one("SELECT id FROM session WHERE id=?", sid):
+        raise HTTPException(404, "session not found")
+
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "empty upload")
+    if len(data) > IMPORT_MAX_BYTES:
+        raise HTTPException(413, f"the image is over {IMPORT_MAX_BYTES // (1024 * 1024)} MB")
+    suffix = _image_suffix(data)
+    if not suffix:
+        raise HTTPException(400, "that file is not a PNG, JPEG or WebP image")
+
+    index = db.one("SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id=?", sid)["m"] + 1
+    shot_id = db.run(
+        """INSERT INTO shot (session_id, shot_index, shot_label, prompt, status, created_at, finished_at)
+           VALUES (?,?,?,?,'done',?,?)""",
+        sid, index, (label or "imported")[:60], "imported photo", db.now(), db.now(),
+    )
+    # The name is ours, built the same way the runner builds it. Nothing from the
+    # upload reaches the path, so there is no traversal to defend against.
+    name = f"{shot_id:05d}_{slug(label or 'imported')}{suffix}"
+    folder = SESSIONS_DIR / str(sid)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_bytes(data)
+    except OSError as exc:
+        db.run("DELETE FROM shot WHERE id=?", shot_id)
+        raise HTTPException(500, f"could not save the image: {exc}")
+    db.run("UPDATE shot SET filename=? WHERE id=?", name, shot_id)
+    return {"id": shot_id, "filename": name}
 
 
 @app.post("/api/sessions/{sid}/run")
@@ -531,6 +652,71 @@ def _require_mapped_choices(sid: int) -> None:
                 f"would be ignored and the run would use the workflow's own. Open the "
                 f"workflow, map {label}, and save — or clear the {label} choice."
             ))
+
+    _require_usable_reference(session)
+
+
+def _require_usable_reference(session: dict) -> None:
+    """Same rule, applied to the reference takes: refuse rather than ignore.
+
+    A reference take whose `reference` slot is unmapped is the worst failure this
+    app can produce — every photo comes back painted from noise, ignoring the
+    anchor, with nothing on screen saying the reference was dropped.
+
+    The reference workflow is deliberately NOT checked for the base model or the
+    LoRA. An editing graph loads its own model, and the character comes from the
+    anchor photo rather than from the LoRA, so a Kontext or Qwen-Image-Edit
+    workflow legitimately has neither slot.
+    """
+    sid = session["id"]
+    pending = db.one(
+        "SELECT COUNT(*) AS n FROM shot WHERE session_id=? AND status='pending' AND use_reference=1", sid)["n"]
+    if not pending:
+        return
+    if not session["reference_workflow_id"]:
+        raise HTTPException(400, (
+            f"{pending} take(s) edit a reference photo, but the session has no reference "
+            f"workflow. Assign one — an img2img or instruction-editing graph."))
+    # A session that shoots its anchor and then edits it is one run, not two: the
+    # first take to come out becomes the reference (see `runner._adopt_anchor`).
+    # So this only refuses the case that cannot work at all — nothing to edit, and
+    # nothing queued that would produce something to edit.
+    anchors = json.loads(session["anchor_shot_ids"] or "[]")
+    if not anchors:
+        will_shoot = db.one(
+            "SELECT COUNT(*) AS n FROM shot WHERE session_id=? AND status='pending' AND use_reference=0",
+            sid)["n"]
+        if not will_shoot:
+            raise HTTPException(400, (
+                f"{pending} take(s) edit a reference photo, but none is set and no take "
+                f"would produce one. Mark a finished photo as the reference from the "
+                f"gallery, or add a take that is not a reference edit."))
+    wf = db.jload(db.one("SELECT * FROM workflow WHERE id=?", session["reference_workflow_id"]), "node_map")
+    if not wf:
+        raise HTTPException(400, "the session's reference workflow no longer exists")
+    if REFERENCE_SLOTS[0] not in wf["node_map"]:
+        raise HTTPException(400, (
+            f"Workflow '{wf['name']}' does not map the reference image slot, so the "
+            f"reference would be ignored and every take would be generated from noise. "
+            f"Open the workflow, map the reference image to its LoadImage, and save."))
+
+    # Reference slots have to match exactly, and this is the one place the app's
+    # "unmapped keeps the workflow's own value" rule must not apply. Too few marked
+    # and a slot keeps whatever filename the graph shipped with — an unrelated
+    # photo, silently mixed into every take. Too many and the extra uploads and is
+    # ignored. Both look like the reference simply had no effect.
+    mapped = [slot for slot in REFERENCE_SLOTS if slot in wf["node_map"]]
+    if anchors and len(anchors) != len(mapped):
+        detail = (f"{len(anchors)} reference photo(s) are marked, but workflow "
+                  f"'{wf['name']}' reads {len(mapped)}.")
+        if len(anchors) > len(mapped):
+            detail += (f" The extra one would be uploaded and ignored. Unmark it, or map "
+                       f"{REFERENCE_SLOTS[len(mapped)]} to another LoadImage in the workflow.")
+        else:
+            detail += (f" The unfilled slot would keep the filename the workflow was saved "
+                       f"with and mix that photo into every take. Mark {len(mapped)} reference "
+                       f"photos, or unmap {REFERENCE_SLOTS[len(anchors)]}.")
+        raise HTTPException(400, detail)
 
 
 @app.post("/api/sessions/{sid}/retry")

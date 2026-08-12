@@ -8,6 +8,7 @@ orphan job in ComfyUI.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import re
@@ -17,7 +18,7 @@ from contextlib import suppress
 from pathlib import Path
 
 import db
-from comfy import Comfy, apply_map, output_images
+from comfy import REFERENCE_SLOTS, Comfy, apply_map, output_images
 
 log = logging.getLogger("idevgen.runner")
 
@@ -104,7 +105,10 @@ class Runner:
     async def _run_shot(self, session_id: int, shot: dict) -> None:
         session = db.jload(db.one("SELECT * FROM session WHERE id=?", session_id), "settings")
         model = db.one("SELECT * FROM model WHERE id=?", session["model_id"])
-        wf_id = session["workflow_id"] or model["workflow_id"]
+        # A reference take is edited by the session's second graph; everything else
+        # is painted from noise by the first. One session, two workflows.
+        wf_id = (session["reference_workflow_id"] if shot["use_reference"] else None) \
+            or session["workflow_id"] or model["workflow_id"]
         wf = db.jload(db.one("SELECT * FROM workflow WHERE id=?", wf_id), "graph", "node_map") if wf_id else None
         if not wf:
             raise RuntimeError("The session has no workflow assigned")
@@ -131,11 +135,24 @@ class Runner:
             "lora_name": model["lora_name"] or None,
             "lora_strength": s.get("lora_strength", model["lora_strength"]),
             "filename_prefix": prefix,
+            # Only meaningful to a reference graph; unmapped everywhere else, which
+            # is the same rule every other slot follows.
+            "denoise": s.get("denoise"),
+            # The take's own value wins, so one session can shoot the same prompt
+            # at four strengths and the gallery shows them side by side. `is not
+            # None` and not `or`: 0 is a real setting for this dial.
+            "reference_strength": (shot["reference_strength"]
+                                   if shot["reference_strength"] is not None
+                                   else s.get("reference_strength")),
         }
-        graph = apply_map(wf["graph"], wf["node_map"], values)
 
         db.run("UPDATE shot SET status='running', seed=? WHERE id=?", seed, shot["id"])
         try:
+            # Inside the try, and after the row says `running`: a missing anchor
+            # fails this shot with a readable line instead of taking the run down.
+            if shot["use_reference"]:
+                values.update(await self._reference_values(session, shot))
+            graph = apply_map(wf["graph"], wf["node_map"], values)
             prompt_id = await self.comfy.queue_prompt(graph, CLIENT_ID)
         except Exception as exc:  # noqa: BLE001 - a rejected graph fails one shot, not the run
             db.run("UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
@@ -164,6 +181,53 @@ class Runner:
             return
         db.run("UPDATE shot SET status='done', filename=?, finished_at=? WHERE id=?",
                filename, db.now(), shot["id"])
+        self._adopt_anchor(session, shot)
+
+    @staticmethod
+    def _adopt_anchor(session: dict, shot: dict) -> None:
+        """The first photo a reference session produces becomes its reference.
+
+        Shooting the anchor and editing it is one shoot, so queueing both in one
+        session has to work in a single Run: without this the edits would all fail
+        on "no reference set" and need marking plus a retry. The pick is visible in
+        the gallery and can be changed there, so it is a default, not a decision.
+        """
+        if shot["use_reference"] or json.loads(session["anchor_shot_ids"] or "[]"):
+            return
+        if not db.one("SELECT id FROM shot WHERE session_id=? AND use_reference=1", session["id"]):
+            return
+        db.run("UPDATE session SET anchor_shot_ids=? WHERE id=?",
+               json.dumps([shot["id"]]), session["id"])
+
+    async def _reference_values(self, session: dict, shot: dict) -> dict:
+        """Upload the session's anchor photos and return them as slot values.
+
+        The anchors carry the identity and the wardrobe, which is why a reference
+        take's prompt is an instruction and not a description: nothing re-states
+        the jacket, so "remove the jacket" has nothing to fight.
+        """
+        anchors = json.loads(session["anchor_shot_ids"] or "[]")
+        if not anchors:
+            raise RuntimeError("This take needs a reference photo, but the session has none set")
+
+        # ponytail: the anchor is re-uploaded for every shot. `overwrite=true`
+        # makes that idempotent and it is a local POST of a couple of MB; cache it
+        # by shot id + mtime if a long session ever feels slow because of it.
+        values = {}
+        for slot, anchor_id in zip(REFERENCE_SLOTS, anchors):
+            row = db.one("SELECT session_id, filename FROM shot WHERE id=?", anchor_id)
+            if not row or not row["filename"]:
+                raise RuntimeError(f"The reference photo (shot {anchor_id}) has no image file")
+            path = self.sessions_dir / str(row["session_id"]) / row["filename"]
+            if not path.exists():
+                raise FileNotFoundError(f"The reference photo is missing from disk: {path}")
+            values[slot] = await self.comfy.upload_image(path, f"idevgen_ref_{anchor_id}{path.suffix}")
+        # Pinned to the shot, not read back off the session: the gallery's pick can
+        # change afterwards, and a before/after that compares against a photo this
+        # take never saw is worse than no comparison at all.
+        db.run("UPDATE shot SET reference_shot_ids=? WHERE id=?",
+               json.dumps(anchors[:len(REFERENCE_SLOTS)]), shot["id"])
+        return values
 
     async def _await_history(self, prompt_id: str, session_id: int) -> dict | None:
         """Poll until the job leaves ComfyUI's queue. None = cancelled/timeout."""
@@ -196,7 +260,7 @@ class Runner:
         src = self.comfy_output_dir / (image.get("subfolder") or "") / image["filename"]
         dest_dir = self.sessions_dir / str(session_id)
         dest_dir.mkdir(parents=True, exist_ok=True)
-        name = f"{shot['id']:05d}_{_slug(shot['shot_label'])}{Path(image['filename']).suffix}"
+        name = f"{shot['id']:05d}_{slug(shot['shot_label'])}{Path(image['filename']).suffix}"
         dest = dest_dir / name
 
         for attempt in range(1, MOVE_ATTEMPTS + 1):
@@ -249,6 +313,8 @@ def _history_error(history: dict) -> str:
     return ""
 
 
-def _slug(text: str) -> str:
+def slug(text: str) -> str:
+    """Shot label to filename part. Shared with the import route, so that a photo
+    brought in from outside is named exactly like one the runner produced."""
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", (text or "shot").strip()).strip("-").lower()
     return (slug or "shot")[:40]

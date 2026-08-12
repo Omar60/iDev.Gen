@@ -59,6 +59,16 @@ behaviour, change the test on purpose, never delete it to get green.
 - **A `verbatim` take is queued exactly as given.** "More like this" hands back a
   prompt that already carries trigger, base prompt and look; composing it again
   duplicates all three.
+- **A reference take carries no trigger, no base prompt and no look.** It is an
+  instruction on a photo that already shows all three. "Helpfully" composing it
+  restates the very garment the instruction removes, and a positive that both
+  describes and denies a jacket keeps the jacket — which is the entire reason
+  reference takes exist.
+- **The reference workflow is exempt from the base model and LoRA checks, never
+  from the reference one.** An editing graph loads its own model and takes the
+  character from the photo, so demanding a LoRA slot would reject every correct
+  Kontext workflow. An unmapped *reference image* is the opposite: the whole
+  session comes back painted from noise with nothing on screen saying so.
 - **The shot row is written before the job is queued.** A crash then leaves a
   visible failed row instead of an orphan job in ComfyUI.
 - **One shot's failure is not the session's failure.** A rejected prompt, an

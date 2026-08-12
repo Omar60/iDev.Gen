@@ -12,11 +12,28 @@ async function req(method, path, body) {
   return res.status === 204 ? null : res.json()
 }
 
+// The File goes as the raw body, not as multipart: the server reads the bytes
+// and sniffs the format from them, so there is nothing a form part would add.
+async function upload(path, file) {
+  const res = await fetch(path + `?label=${encodeURIComponent(file.name.replace(/\.[^.]+$/, ''))}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: file,
+  })
+  if (!res.ok) {
+    let detail = res.statusText
+    try { detail = (await res.json()).detail ?? detail } catch { /* response was not JSON */ }
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return res.json()
+}
+
 export const api = {
   get: (p) => req('GET', p),
   post: (p, b) => req('POST', p, b),
   patch: (p, b) => req('PATCH', p, b),
   del: (p) => req('DELETE', p),
+  upload,
 }
 
 export const shotImage = (id) => `/api/shots/${id}/image`

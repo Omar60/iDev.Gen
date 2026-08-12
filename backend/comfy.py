@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+import mimetypes
 
 import httpx
 
@@ -18,12 +19,22 @@ import httpx
 SLOTS = [
     "positive", "negative", "seed", "steps", "cfg",
     "width", "height", "checkpoint", "lora_name", "lora_strength", "filename_prefix",
+    # Reference (image-to-image / instruction editing). `reference` is the anchor
+    # photo; the extra two are for graphs that take several — Kontext and
+    # Qwen-Image-Edit accept a character plus a garment or a background.
+    "reference", "reference2", "reference3", "reference_strength", "denoise",
 ]
+
+REFERENCE_SLOTS = ("reference", "reference2", "reference3")
 
 # The widget that names the base model. `ckpt_name` is the all-in-one checkpoint
 # (SDXL and friends); `unet_name` is the diffusion model loaded on its own, which
 # is how Flux, Krea and Z-Image are wired. A workflow has one or the other.
 CHECKPOINT_FIELDS = ("ckpt_name", "unet_name")
+
+# Where uploaded anchors land inside ComfyUI's input/, so they stay together and
+# are recognisable next to whatever the user drops there by hand.
+UPLOAD_SUBFOLDER = "idevgen"
 
 _SAMPLER_CLASSES = ("KSampler", "SamplerCustom", "KSamplerAdvanced")
 _LATENT_CLASSES = ("EmptyLatentImage", "EmptySD3LatentImage", "EmptyLatentImagePresets")
@@ -77,6 +88,29 @@ class Comfy:
         data = await self._get(f"/history/{prompt_id}")
         return data.get(prompt_id)
 
+    async def upload_image(self, path, name: str) -> str:
+        """Put a local file in ComfyUI's `input/` and return what a LoadImage takes.
+
+        Uploading rather than copying is what keeps this free of any one ComfyUI
+        layout: `config.json` knows `output/` and `models/loras`, never `input/`,
+        and a ComfyUI on another machine shares no filesystem at all. `overwrite`
+        is on so re-sending the same anchor replaces it instead of piling up
+        `anchor (1).png` copies; LoadImage re-reads a changed file.
+        """
+        # Declare what the file actually is: an imported reference can be a JPEG
+        # or a WebP, and calling everything a PNG is a claim that happens to work
+        # only because ComfyUI reads the bytes rather than the header.
+        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        files = {"image": (name, path.read_bytes(), mime)}
+        async with httpx.AsyncClient(timeout=120) as c:
+            r = await c.post(f"{self.url}/upload/image", files=files,
+                             data={"overwrite": "true", "subfolder": UPLOAD_SUBFOLDER})
+            if r.status_code >= 400:
+                raise ComfyError(_error_text(r))
+            out = r.json()
+        subfolder = out.get("subfolder") or ""
+        return f"{subfolder}/{out['name']}" if subfolder else out["name"]
+
     async def interrupt(self) -> None:
         async with httpx.AsyncClient(timeout=15) as c:
             await c.post(f"{self.url}/interrupt")
@@ -122,15 +156,16 @@ def detect_map(graph: dict) -> dict:
             if has(sampler, field):
                 out["seed"] = f"{sampler}.inputs.{field}"
                 break
-        for field in ("steps", "cfg"):
+        for field in ("steps", "cfg", "denoise"):
             if has(sampler, field):
                 out[field] = f"{sampler}.inputs.{field}"
         # positive/negative are links: ["<node_id>", slot]
         for slot in ("positive", "negative"):
             link = graph[sampler]["inputs"].get(slot)
-            text_node = _walk_to_text(graph, link)
-            if text_node:
-                out[slot] = f"{text_node}.inputs.text"
+            found = _walk_to_text(graph, link)
+            if found:
+                nid, field = found
+                out[slot] = f"{nid}.inputs.{field}"
 
     for nid, node in graph.items():
         ctype = node.get("class_type", "")
@@ -152,16 +187,35 @@ def detect_map(graph: dict) -> dict:
                     break
         if "filename_prefix" in ins and "filename_prefix" not in out:
             out["filename_prefix"] = f"{nid}.inputs.filename_prefix"
+        # Each LoadImage takes the next free reference slot, in graph order. A
+        # graph with one is plain img2img; Kontext and Qwen-Image-Edit take more.
+        if ctype == "LoadImage" and isinstance(ins.get("image"), str):
+            slot = next((s for s in REFERENCE_SLOTS if s not in out), None)
+            if slot:
+                out[slot] = f"{nid}.inputs.image"
+        # Only IPAdapter's own weight. A bare `weight` widget sits on half the
+        # nodes of a busy graph, and mapping the wrong one drives something else
+        # entirely every time the strength is changed.
+        if ("IPAdapter" in ctype and "reference_strength" not in out
+                and isinstance(ins.get("weight"), (int, float))):
+            out["reference_strength"] = f"{nid}.inputs.weight"
 
     return out
 
 
-def _walk_to_text(graph: dict, link, depth: int = 0):
-    """Follow a link back to the node that owns a literal `text` widget.
+# What a node calls the widget holding the prompt. `text` is CLIPTextEncode and
+# almost everything that imitates it; `prompt` is what the instruction-editing
+# encoders use, where the text is an order rather than a caption.
+TEXT_FIELDS = ("text", "prompt")
 
-    Conditioning rarely comes straight from CLIPTextEncode — it passes through
-    ConditioningCombine / FluxGuidance / ControlNet nodes. Without the walk the
-    prompt slot silently goes unmapped on most real workflows.
+
+def _walk_to_text(graph: dict, link, depth: int = 0) -> tuple[str, str] | None:
+    """Follow a link back to the node owning a literal prompt widget.
+
+    Returns (node_id, field). Conditioning rarely comes straight from
+    CLIPTextEncode — it passes through ConditioningCombine / FluxGuidance /
+    ControlNet nodes. Without the walk the prompt slot silently goes unmapped on
+    most real workflows.
     """
     if depth > 6 or not (isinstance(link, list) and link):
         return None
@@ -169,8 +223,9 @@ def _walk_to_text(graph: dict, link, depth: int = 0):
     node = graph.get(nid)
     if not node:
         return None
-    if isinstance(node.get("inputs", {}).get("text"), str):
-        return nid
+    for field in TEXT_FIELDS:
+        if isinstance(node.get("inputs", {}).get(field), str):
+            return nid, field
     for value in node.get("inputs", {}).values():
         found = _walk_to_text(graph, value, depth + 1)
         if found:

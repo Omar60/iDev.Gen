@@ -1,12 +1,23 @@
 import React from 'react'
 
-export const blankShot = () => ({ label: '', prompt: '', negative: '', count: 4, seed: 0 })
+export const blankShot = () => ({
+  label: '', prompt: '', negative: '', count: 4, seed: 0,
+  reference: false, reference_strength: null,
+})
 
 const EXAMPLES = [
   'three-quarter view, hands in pockets, looking away',
   'close-up, chin slightly down, eyes to camera',
   'full body, walking, mid-stride',
   'sitting by the window, leaning on one arm',
+]
+
+// A reference take is an instruction on the photo, not a description of it.
+const REF_EXAMPLES = [
+  'remove the jacket, same pose',
+  'let the hair down',
+  'turn to a three-quarter view',
+  'change the background to a plain grey studio wall',
 ]
 
 /** The takes of a session: pose, angle, framing — never wardrobe, which belongs
@@ -27,8 +38,26 @@ export default function ShotsEditor({ shots, onChange }) {
                        onChange={(e) => set(i, 'label', e.target.value)} />
               </td>
               <td>
-                <textarea value={shot.prompt} rows={2} placeholder={EXAMPLES[i % EXAMPLES.length]}
+                <textarea value={shot.prompt} rows={2}
+                          placeholder={(shot.reference ? REF_EXAMPLES : EXAMPLES)[i % EXAMPLES.length]}
                           onChange={(e) => set(i, 'prompt', e.target.value)} />
+              </td>
+              <td className="n">
+                <label className="chk" title="Edit the session's reference photo instead of shooting from scratch. The prompt is sent as an instruction, on its own — no trigger, no base prompt, no look.">
+                  <input type="checkbox" checked={!!shot.reference}
+                         onChange={(e) => set(i, 'reference', e.target.checked)} />
+                  ref
+                </label>
+              </td>
+              <td className="n">
+                {/* Only a reference take has anything to be pulled towards. */}
+                {shot.reference && (
+                  <input type="number" step="0.1" min="0" placeholder="str"
+                         value={shot.reference_strength ?? ''}
+                         title="Reference strength. Empty follows the session. High holds the frame still so a garment edit lands cleanly; low lets the pose move. Shoot the same prompt and seed at a few values to find yours."
+                         onChange={(e) => set(i, 'reference_strength',
+                                              e.target.value === '' ? null : parseFloat(e.target.value))} />
+                )}
               </td>
               <td className="n">
                 <input type="number" min="1" value={shot.count} title="Variations"
@@ -52,6 +81,10 @@ export default function ShotsEditor({ shots, onChange }) {
         <span className="muted">
           {total} photos · pose, angle, place — the trigger, base prompt and the session's look
           are prepended automatically. Leave the seed empty unless you are comparing a change.
+          {' '}Tick <b>ref</b> to edit the session's reference photo instead: the prompt goes out
+          on its own, as an instruction, which is the only way to take something off the look.
+          A ref take also gets a strength box — one dial, pulling between “hold the frame” and
+          “let the pose move”. Same prompt and seed at a few values is how you find it.
         </span>
       </div>
     </>

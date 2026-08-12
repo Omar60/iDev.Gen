@@ -6,7 +6,7 @@ import pytest
 
 import db
 import runner as runner_mod
-from conftest import GRAPH
+from conftest import EDIT_GRAPH, GRAPH
 
 
 @pytest.fixture(autouse=True)
@@ -222,6 +222,154 @@ def test_session_without_workflow_fails_with_a_message(client, make_runner):
 
     assert db.one("SELECT status FROM session WHERE id=?", sid)["status"] == "failed"
     assert "workflow" in db.one("SELECT error FROM shot WHERE session_id=?", sid)["error"]
+
+
+# --------------------------------------------------------------- reference takes
+
+def _reference_session(client, **session_kw):
+    """One session, two workflows: the anchor is painted by `wf`, the edit that
+    follows is run through `edit_wf` against the anchor photo."""
+    wf = client.post("/api/workflows", json={"name": "wf", "graph": GRAPH}).json()
+    edit_wf = client.post("/api/workflows", json={"name": "edit", "graph": EDIT_GRAPH}).json()
+    mid = client.post("/api/models", json={
+        "name": "ada", "lora_name": "characters/ada.safetensors", "trigger": "4da woman",
+        "base_positive": "photo, 35mm", "workflow_id": wf["id"]}).json()["id"]
+    payload = {"model_id": mid, "name": "shoot", "look": "leather jacket",
+               "reference_workflow_id": edit_wf["id"], "settings": {"denoise": 0.55},
+               "shots": [{"label": "anchor", "prompt": "standing", "count": 1},
+                         {"label": "edit", "prompt": "remove the jacket", "count": 1,
+                          "reference": True}]}
+    payload.update(session_kw)
+    return client.post("/api/sessions", json=payload).json()["id"]
+
+
+def test_a_reference_take_edits_the_anchor_through_the_other_workflow(client, make_runner):
+    sid = _reference_session(client)
+    r, fake = make_runner()
+    asyncio.run(r._run_session(sid))
+
+    shots = db.q("SELECT * FROM shot WHERE session_id=? ORDER BY id", sid)
+    assert [s["status"] for s in shots] == ["done", "done"], shots[1]["error"]
+
+    anchor_graph, edit_graph = fake.graphs
+    # The anchor is a normal text2image take: composed prompt, own workflow.
+    assert anchor_graph["3"]["inputs"]["text"] == "4da woman, photo, 35mm, leather jacket, standing"
+    assert "2" in anchor_graph and anchor_graph["2"]["class_type"] == "LoraLoader"
+
+    # The edit went through the reference workflow, with the anchor loaded and the
+    # prompt sent as a bare instruction.
+    assert edit_graph["2"]["class_type"] == "LoadImage"
+    assert edit_graph["2"]["inputs"]["image"] == f"idevgen/idevgen_ref_{shots[0]['id']}.png"
+    assert edit_graph["3"]["inputs"]["text"] == "remove the jacket"
+    assert edit_graph["6"]["inputs"]["denoise"] == 0.55
+
+    # What was uploaded is the anchor's own file, out of the session folder.
+    assert len(fake.uploads) == 1
+    assert fake.uploads[0][0].endswith(shots[0]["filename"])
+
+
+def test_a_takes_own_reference_strength_wins_over_the_session(client, make_runner):
+    """Finding this number means shooting one prompt at several values, which is
+    one session with four takes — not four sessions."""
+    sid = _reference_session(client, settings={"reference_strength": 4.0}, shots=[
+        {"label": "anchor", "prompt": "standing", "count": 1},
+        {"label": "loose", "prompt": "turn a little", "count": 1,
+         "reference": True, "reference_strength": 1.5},
+        {"label": "session", "prompt": "turn a little", "count": 1, "reference": True},
+        # 0 is a real setting for this dial, so it must not read as "unset".
+        {"label": "off", "prompt": "turn a little", "count": 1,
+         "reference": True, "reference_strength": 0},
+    ])
+    # A float slot must stay a float: an int widget would truncate 1.5 to 1.
+    db.run("UPDATE workflow SET graph=json_set(graph, '$.\"6\".inputs.denoise', 1.0), "
+           "node_map=json_set(node_map, '$.reference_strength', '6.inputs.denoise') "
+           "WHERE name='edit'")
+    r, fake = make_runner()
+    asyncio.run(r._run_session(sid))
+
+    assert [s["status"] for s in db.q("SELECT status FROM shot WHERE session_id=? ORDER BY id", sid)] \
+        == ["done"] * 4
+    _, loose, from_session, off = fake.graphs
+    assert loose["6"]["inputs"]["denoise"] == 1.5
+    assert from_session["6"]["inputs"]["denoise"] == 4.0
+    assert off["6"]["inputs"]["denoise"] == 0
+
+
+def test_the_reference_a_shot_ran_against_is_pinned_to_it(client, make_runner):
+    """The gallery's pick can change later; a before/after that compared against a
+    photo the take never saw would be worse than showing no comparison."""
+    sid = _reference_session(client)
+    r, _ = make_runner()
+    asyncio.run(r._run_session(sid))
+
+    anchor, edit = db.q("SELECT * FROM shot WHERE session_id=? ORDER BY id", sid)
+    assert edit["reference_shot_ids"] == f"[{anchor['id']}]"
+    assert anchor["reference_shot_ids"] == "[]"      # a plain take references nothing
+
+    # Re-pointing the session afterwards leaves the finished take alone.
+    db.run("UPDATE session SET anchor_shot_ids='[999]' WHERE id=?", sid)
+    assert db.one("SELECT reference_shot_ids FROM shot WHERE id=?",
+                  edit["id"])["reference_shot_ids"] == f"[{anchor['id']}]"
+
+
+def test_the_first_photo_becomes_the_reference_by_itself(client, make_runner):
+    """Otherwise queueing the anchor and its edits together could never work in
+    one Run: every edit would fail on "no reference set" and need a retry."""
+    sid = _reference_session(client)
+    r, _ = make_runner()
+    asyncio.run(r._run_session(sid))
+
+    anchor = db.q("SELECT id FROM shot WHERE session_id=? ORDER BY id", sid)[0]
+    assert db.one("SELECT anchor_shot_ids FROM session WHERE id=?", sid)["anchor_shot_ids"] \
+        == f"[{anchor['id']}]"
+
+
+def test_an_anchor_chosen_by_hand_is_not_overwritten(client, make_runner, tmp_path):
+    """The gallery's pick wins: adopting one is a default, not a decision."""
+    sid = _reference_session(client)
+    kept = db.run(
+        """INSERT INTO shot (session_id, shot_label, prompt, status, filename, created_at)
+           VALUES (?,?,?,?,?,?)""", sid, "kept", "x", "done", "keeper.png", db.now())
+    db.run("UPDATE session SET anchor_shot_ids=? WHERE id=?", f"[{kept}]", sid)
+    (tmp_path / "sessions" / str(sid)).mkdir(parents=True)
+    (tmp_path / "sessions" / str(sid) / "keeper.png").write_bytes(b"\x89PNG fake")
+
+    r, fake = make_runner()
+    asyncio.run(r._run_session(sid))
+
+    assert db.one("SELECT anchor_shot_ids FROM session WHERE id=?", sid)["anchor_shot_ids"] \
+        == f"[{kept}]"
+    assert fake.uploads[0][1] == f"idevgen_ref_{kept}.png"
+
+
+def test_a_reference_take_without_an_anchor_only_fails_itself(client, make_runner):
+    sid = _reference_session(client, shots=[
+        {"label": "edit", "prompt": "remove the jacket", "count": 1, "reference": True},
+        {"label": "anchor", "prompt": "standing", "count": 1}])
+    r, _ = make_runner()
+    asyncio.run(r._run_session(sid))
+
+    shots = db.q("SELECT * FROM shot WHERE session_id=? ORDER BY id", sid)
+    assert [s["status"] for s in shots] == ["failed", "done"]
+    assert "reference photo" in shots[0]["error"]
+    # One shot's failure is not the session's: a photo did come out.
+    assert db.one("SELECT status FROM session WHERE id=?", sid)["status"] == "done"
+
+
+def test_an_anchor_whose_file_vanished_fails_that_shot_readably(client, make_runner):
+    sid = _reference_session(client)
+    r, _ = make_runner()
+    asyncio.run(r._run_session(sid))
+    anchor = db.q("SELECT * FROM shot WHERE session_id=? ORDER BY id", sid)[0]
+    (r.sessions_dir / str(sid) / anchor["filename"]).unlink()
+
+    db.run("UPDATE shot SET status='pending' WHERE session_id=? AND use_reference=1", sid)
+    r2, _ = make_runner()
+    asyncio.run(r2._run_session(sid))
+
+    edit = db.q("SELECT * FROM shot WHERE session_id=? ORDER BY id", sid)[1]
+    assert edit["status"] == "failed"
+    assert "missing from disk" in edit["error"]
 
 
 def test_two_sessions_at_once_are_refused(client, make_runner):

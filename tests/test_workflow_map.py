@@ -1,7 +1,7 @@
 """Node-map detection and patching: what decides whether an imported workflow
 obeys the session or keeps rendering the same photo forever."""
 from comfy import apply_map, detect_map
-from conftest import GRAPH
+from conftest import EDIT_GRAPH, GRAPH
 
 
 def test_detects_every_slot():
@@ -57,6 +57,68 @@ def test_apply_keeps_widget_types_and_leaves_the_original_alone():
     assert g["5"]["inputs"]["width"] == 832
     assert g["2"]["inputs"]["lora_name"] == "characters/ada.safetensors"
     assert GRAPH["3"]["inputs"]["text"] == "hello"         # stored graph untouched
+
+
+def test_the_prompt_is_found_when_the_widget_is_called_prompt():
+    """Instruction-editing encoders take the text as `prompt`, not `text`, and
+    feed it through a vision encoder along with the photo. Looking only for
+    `text` leaves the positive slot unmapped on exactly the graphs that reference
+    sessions are for."""
+    graph = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
+        "2": {"class_type": "Krea2EditGroundedEncode", "inputs": {
+            "prompt": "take the jacket off", "grounding_px": 768, "image": ["1", 0]}},
+        "3": {"class_type": "Krea2EditGroundedEncode", "inputs": {
+            "prompt": "", "grounding_px": 768, "image": ["1", 0]}},
+        "4": {"class_type": "KSampler", "inputs": {
+            "seed": 1, "steps": 10, "cfg": 1.0, "denoise": 1.0,
+            "positive": ["2", 0], "negative": ["3", 0]}},
+    }
+    m = detect_map(graph)
+    assert m["positive"] == "2.inputs.prompt"
+    assert m["negative"] == "3.inputs.prompt"
+    assert m["reference"] == "1.inputs.image"
+
+
+def test_detects_the_reference_image_and_denoise():
+    m = detect_map(EDIT_GRAPH)
+    assert m["reference"] == "2.inputs.image"
+    assert m["denoise"] == "6.inputs.denoise"
+    # No EmptyLatentImage in an editing graph: the size comes from the photo, so
+    # the session's width and height stay unmapped and are simply not applied.
+    assert "width" not in m and "height" not in m
+
+
+def test_each_load_image_takes_the_next_reference_slot():
+    """Kontext and Qwen-Image-Edit take several photos — a character plus a
+    garment — so more than one LoadImage is normal, not a mistake."""
+    graph = dict(EDIT_GRAPH)
+    graph["10"] = {"class_type": "LoadImage", "inputs": {"image": "garment.png"}}
+    graph["11"] = {"class_type": "LoadImage", "inputs": {"image": "backdrop.png"}}
+    graph["12"] = {"class_type": "LoadImage", "inputs": {"image": "spare.png"}}
+    m = detect_map(graph)
+    assert m["reference"] == "2.inputs.image"
+    assert m["reference2"] == "10.inputs.image"
+    assert m["reference3"] == "11.inputs.image"
+    assert "reference4" not in m           # three slots, the fourth is left alone
+
+
+def test_reference_strength_only_comes_from_an_ipadapter():
+    """`weight` sits on half the nodes of a busy graph; grabbing the wrong one
+    would drive something else every time the strength is changed."""
+    graph = {
+        "1": {"class_type": "LoraLoader", "inputs": {"lora_name": "x.safetensors", "weight": 0.7}},
+        "2": {"class_type": "IPAdapterAdvanced", "inputs": {"weight": 1.0, "weight_type": "linear"}},
+    }
+    assert detect_map(graph)["reference_strength"] == "2.inputs.weight"
+
+
+def test_the_reference_slot_patches_the_load_image():
+    g = apply_map(EDIT_GRAPH, detect_map(EDIT_GRAPH),
+                  {"reference": "idevgen/anchor.png", "denoise": 0.55})
+    assert g["2"]["inputs"]["image"] == "idevgen/anchor.png"
+    assert g["6"]["inputs"]["denoise"] == 0.55
+    assert EDIT_GRAPH["2"]["inputs"]["image"] == "example.png"    # stored graph untouched
 
 
 def test_apply_never_overwrites_a_link():

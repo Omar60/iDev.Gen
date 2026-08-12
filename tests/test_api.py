@@ -2,7 +2,7 @@
 import pytest
 
 import db
-from conftest import GRAPH
+from conftest import EDIT_GRAPH, GRAPH
 
 
 def test_importing_a_workflow_autodetects_the_map(client):
@@ -80,6 +80,41 @@ def test_more_like_this_does_not_double_the_prefix(client, seeded):
     assert reshot["prompt"] == keeper["prompt"]
     assert reshot["prompt"].count("4da woman") == 1
     assert reshot["prompt"].count("red dress") == 1
+
+
+def test_a_reference_take_carries_no_base_and_no_look(client, seeded):
+    """The whole reason reference sessions exist. The anchor photo already shows
+    the trigger, the base prompt and the look, so a reference take goes out as a
+    bare instruction — otherwise the look would restate the very jacket the
+    instruction removes, and a positive that both describes and denies a jacket
+    keeps the jacket."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s", "look": "leather jacket, hair up",
+        "shots": [{"label": "anchor", "prompt": "standing", "count": 1},
+                  {"label": "edit", "prompt": "remove the jacket", "count": 1, "reference": True}],
+    }).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+
+    assert shots[0]["prompt"] == "4da woman, photo, 35mm, leather jacket, hair up, standing"
+    assert shots[0]["use_reference"] == 0
+    assert shots[1]["prompt"] == "remove the jacket"
+    assert shots[1]["use_reference"] == 1
+
+
+def test_an_anchor_must_be_a_finished_photo(client, seeded):
+    """Rejected on the way in: an anchor pointing at a shot with no file would
+    only surface once the queue had already started."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    pending = client.get(f"/api/sessions/{sid}").json()["shots"][0]["id"]
+
+    r = client.patch(f"/api/sessions/{sid}", json={"anchor_shot_ids": [pending]})
+    assert r.status_code == 400 and "reference" in r.json()["detail"]
+
+    db.run("UPDATE shot SET status='done', filename='00001_one.png' WHERE id=?", pending)
+    assert client.patch(f"/api/sessions/{sid}",
+                        json={"anchor_shot_ids": [pending]}).json()["anchor_shot_ids"] == [pending]
 
 
 def test_a_takes_own_seed_wins_over_the_session_mode(client, seeded):
@@ -199,6 +234,96 @@ def test_run_is_fine_when_nothing_was_chosen(client, seeded, runnable):
     assert client.post(f"/api/sessions/{sid}/run").status_code == 200
 
 
+def _reference_session(client, seeded, *, node_map=None, with_anchor_take=True):
+    """A session whose edits run through an imported editing workflow."""
+    wf = client.post("/api/workflows", json={"name": "edit", "graph": EDIT_GRAPH}).json()
+    if node_map is not None:
+        db.run("UPDATE workflow SET node_map=? WHERE id=?", node_map, wf["id"])
+    shots = [{"label": "edit", "prompt": "remove the jacket", "count": 1, "reference": True}]
+    if with_anchor_take:
+        shots.insert(0, {"label": "anchor", "prompt": "standing", "count": 1})
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s", "look": "leather jacket",
+        "reference_workflow_id": wf["id"], "shots": shots}).json()["id"]
+    return sid, wf["id"]
+
+
+def test_a_plain_session_can_become_a_reference_one_mid_shoot(client, seeded, runnable):
+    """Deciding to edit a keeper happens looking at the gallery, not when the
+    session was created — so the reference workflow has to be assignable later,
+    or the run is refused with no way to satisfy it."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s", "look": "leather jacket",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    keeper = client.get(f"/api/sessions/{sid}").json()["shots"][0]["id"]
+    db.run("UPDATE shot SET status='done', filename='00001_one.png' WHERE id=?", keeper)
+
+    client.patch(f"/api/sessions/{sid}", json={"anchor_shot_ids": [keeper]})
+    client.post(f"/api/sessions/{sid}/shots", json={
+        "shots": [{"prompt": "remove the jacket", "count": 1, "reference": True}]})
+    # No reference workflow yet: refused, and the message says what is missing.
+    r = client.post(f"/api/sessions/{sid}/run")
+    assert r.status_code == 400 and "no reference workflow" in r.json()["detail"]
+
+    edit_wf = client.post("/api/workflows", json={"name": "edit", "graph": EDIT_GRAPH}).json()
+    client.patch(f"/api/sessions/{sid}", json={"reference_workflow_id": edit_wf["id"]})
+    assert client.post(f"/api/sessions/{sid}/run").status_code == 200
+
+
+def test_run_refuses_when_the_reference_image_slot_is_unmapped(client, seeded, runnable):
+    """The worst outcome this app can produce: every edit comes back painted from
+    noise, ignoring the reference, with nothing on screen saying it was dropped."""
+    sid, _ = _reference_session(client, seeded, node_map='{"positive": "3.inputs.text"}')
+
+    r = client.post(f"/api/sessions/{sid}/run")
+    assert r.status_code == 400
+    assert "reference image slot" in r.json()["detail"]
+
+
+def test_run_refuses_more_reference_photos_than_the_workflow_reads(client, seeded, runnable):
+    """Marking a second reference on a one-image graph is the same silent failure
+    one step along: it uploads, nothing consumes it, and the result just looks as
+    if the extra reference did nothing."""
+    sid, _ = _reference_session(client, seeded, with_anchor_take=False)
+    keepers = []
+    for label in ("a", "b"):
+        client.post(f"/api/sessions/{sid}/shots", json={"shots": [{"prompt": label, "count": 1}]})
+        shot = client.get(f"/api/sessions/{sid}").json()["shots"][-1]["id"]
+        db.run("UPDATE shot SET status='done', filename=? WHERE id=?", f"{label}.png", shot)
+        keepers.append(shot)
+
+    client.patch(f"/api/sessions/{sid}", json={"anchor_shot_ids": keepers[:1]})
+    assert client.post(f"/api/sessions/{sid}/run").status_code == 200
+
+    client.patch(f"/api/sessions/{sid}", json={"anchor_shot_ids": keepers})
+    r = client.post(f"/api/sessions/{sid}/run")
+    assert r.status_code == 400
+    assert "would be uploaded and ignored" in r.json()["detail"]
+    assert "reference2" in r.json()["detail"]
+
+
+def test_run_refuses_reference_takes_with_nothing_to_reference(client, seeded, runnable):
+    sid, _ = _reference_session(client, seeded, with_anchor_take=False)
+    r = client.post(f"/api/sessions/{sid}/run")
+    assert r.status_code == 400
+    assert "none is set" in r.json()["detail"]
+
+
+def test_run_allows_a_session_that_shoots_its_own_reference_first(client, seeded, runnable):
+    """Shooting the anchor and editing it is one shoot, so both queued together
+    must run in one go — the first photo out becomes the reference."""
+    sid, _ = _reference_session(client, seeded)
+    assert client.post(f"/api/sessions/{sid}/run").status_code == 200
+
+
+def test_the_reference_workflow_is_not_asked_for_a_lora(client, seeded, runnable):
+    """An editing graph loads its own model and takes the character from the
+    anchor photo, so having neither a LoRA nor a checkpoint slot is correct."""
+    sid, wf_id = _reference_session(client, seeded)
+    assert "lora_name" not in client.get(f"/api/workflows/{wf_id}").json()["node_map"]
+    assert client.post(f"/api/sessions/{sid}/run").status_code == 200
+
+
 def test_run_without_output_dir_fails_with_a_clear_message(client, seeded, monkeypatch):
     import main
     monkeypatch.setattr(main, "output_dir_ok", lambda: False)
@@ -240,6 +365,64 @@ def test_a_folder_that_cannot_be_deleted_is_reported_not_swallowed(client, seede
     body = client.delete(f"/api/sessions/{sid}").json()
     assert "could not be deleted" in body["warning"]
     assert str(folder) in body["warning"]
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"fake pixels"
+
+
+def test_an_imported_photo_lands_as_a_shot_and_can_be_a_reference(client, seeded):
+    """It arrives as an ordinary shot so the gallery, the rating and above all
+    marking it as a reference work on it with no separate path."""
+    import main
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+
+    r = client.post(f"/api/sessions/{sid}/import?label=pose ref", content=PNG)
+    assert r.status_code == 200
+    imported = r.json()
+    assert imported["filename"].endswith("_pose-ref.png")
+    assert (main.SESSIONS_DIR / str(sid) / imported["filename"]).read_bytes() == PNG
+    assert client.get(f"/api/shots/{imported['id']}/image").status_code == 200
+
+    shot = [x for x in client.get(f"/api/sessions/{sid}").json()["shots"] if x["id"] == imported["id"]][0]
+    assert shot["status"] == "done"
+    assert client.patch(f"/api/sessions/{sid}",
+                        json={"anchor_shot_ids": [imported["id"]]}).status_code == 200
+
+
+def test_import_refuses_what_is_not_an_image(client, seeded):
+    """The extension is the uploader's claim; the magic number is the file."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s", "shots": []}).json()["id"]
+
+    r = client.post(f"/api/sessions/{sid}/import?label=evil", content=b"MZ\x90\x00 not an image")
+    assert r.status_code == 400 and "not a PNG" in r.json()["detail"]
+    assert client.post(f"/api/sessions/{sid}/import", content=b"").status_code == 400
+    # Nothing was written and no orphan row survives a rejected upload.
+    assert client.get(f"/api/sessions/{sid}").json()["shots"] == []
+
+
+def test_import_rejects_an_oversized_file(client, seeded):
+    import main
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s", "shots": []}).json()["id"]
+    big = PNG + b"x" * main.IMPORT_MAX_BYTES
+    assert client.post(f"/api/sessions/{sid}/import", content=big).status_code == 413
+
+
+def test_run_refuses_when_a_reference_slot_would_keep_a_stale_filename(client, seeded, runnable):
+    """A mapped slot with no photo behind it keeps whatever filename the workflow
+    was saved with, and mixes that picture into every take."""
+    sid, wf_id = _reference_session(client, seeded, with_anchor_take=False)
+    db.run("UPDATE workflow SET node_map=json_set(node_map, '$.reference2', '2.inputs.image') WHERE id=?",
+           wf_id)
+    keeper = client.post(f"/api/sessions/{sid}/import?label=anchor", content=PNG).json()["id"]
+    client.patch(f"/api/sessions/{sid}", json={"anchor_shot_ids": [keeper]})
+
+    r = client.post(f"/api/sessions/{sid}/run")
+    assert r.status_code == 400
+    assert "keep the filename the workflow was saved with" in r.json()["detail"]
 
 
 def test_missing_image_returns_404(client, seeded):

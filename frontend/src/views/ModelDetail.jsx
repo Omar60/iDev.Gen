@@ -34,6 +34,7 @@ export default function ModelDetail({ id }) {
     look: '',
     shots: [blankShot()],
     workflow_id: model.workflow_id,
+    reference_workflow_id: null,
     settings: { ...model.settings, lora_strength: model.lora_strength },
     seed_mode: 'random',
     seed: 0,
@@ -90,6 +91,16 @@ export default function ModelDetail({ id }) {
                 {workflows.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
               </select>
             </div>
+            <div>
+              <label title="An img2img or instruction-editing graph. Takes marked ref run through it, editing the session's reference photo instead of painting a new one.">
+                Reference workflow (edits)
+              </label>
+              <select value={newSession.reference_workflow_id ?? ''}
+                      onChange={(e) => setNewSession({ ...newSession, reference_workflow_id: e.target.value ? Number(e.target.value) : null })}>
+                <option value="">— none, text to image only —</option>
+                {workflows.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </select>
+            </div>
             <div style={{ gridColumn: 'span 2' }}>
               <label>Base model</label>
               <BaseModelSelect value={newSession.settings.checkpoint} models={baseModels}
@@ -118,6 +129,18 @@ export default function ModelDetail({ id }) {
               onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, cfg: parseFloat(e.target.value) } })} /></div>
             <div><label>LoRA strength</label><input type="number" step="0.05" value={newSession.settings.lora_strength ?? 1}
               onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, lora_strength: parseFloat(e.target.value) } })} /></div>
+            {/* Only worth showing once a reference workflow is picked: nothing else
+                reads them, and an unmapped slot changes nothing. */}
+            {newSession.reference_workflow_id && (
+              <>
+                <div><label title="How far an img2img edit may travel from the reference. Low keeps the face and changes little; high changes a lot and drifts.">Denoise</label>
+                  <input type="number" step="0.05" min="0" max="1" value={newSession.settings.denoise ?? ''} placeholder="workflow's own"
+                    onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, denoise: e.target.value === '' ? undefined : parseFloat(e.target.value) } })} /></div>
+                <div><label title="IPAdapter weight, for graphs that use one.">Reference strength</label>
+                  <input type="number" step="0.05" value={newSession.settings.reference_strength ?? ''} placeholder="workflow's own"
+                    onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, reference_strength: e.target.value === '' ? undefined : parseFloat(e.target.value) } })} /></div>
+              </>
+            )}
           </div>
 
           <h3 style={{ marginTop: 16 }}>Look</h3>

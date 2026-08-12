@@ -113,3 +113,23 @@ th { color: var(--muted); font-weight: 500; }
 .looks-table td { padding: 4px; border: none; vertical-align: top; }
 .looks-table td.n { width: 70px; }
 .looks-table td.lbl { width: 160px; }
+
+/* A checkbox has to opt out of the width:100% every input gets above. */
+.chk { display: flex; align-items: center; gap: 5px; padding-top: 8px; color: var(--muted); font-size: 12px; cursor: pointer; }
+.chk input { width: auto; margin: 0; }
+
+/* Before/after wipe. The edit is the base image and sets the box; the reference
+   sits on top, clipped from the right, so the split lands on the same pixel of
+   the same frame instead of asking the eye to travel between two of them. */
+.compare { position: relative; display: inline-block; line-height: 0; }
+.compare > img { display: block; max-width: 95vw; max-height: 80vh; }
+.compare .before {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
+  clip-path: inset(0 calc(100% - var(--split)) 0 0);
+}
+.compare .handle { position: absolute; top: 0; bottom: 0; left: var(--split); width: 2px; background: var(--accent); pointer-events: none; }
+.lightbox input[type="range"] { width: 100%; margin-top: 10px; }
+
+.anchor { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.anchor img { width: 44px; height: 44px; object-fit: cover; border-radius: 4px; border: 1px solid var(--accent); }
+.shot.is-anchor img { outline: 2px solid var(--accent); outline-offset: -2px; }
