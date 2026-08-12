@@ -126,6 +126,38 @@ one prompt, one seed, four strengths — and the before/after wipe shows what ea
 one moved. A take with the box empty follows the session, and `0` is a real
 setting, not "unset".
 
+### Changing the angle
+
+The dial above trades pose against identity because an editing model is
+registered to the photo it was given: it edits that frame, it does not walk
+around the subject. Moving the camera is a different job, and it needs a model
+trained for it — an instruction model plus a **camera-angle LoRA**, which is one
+more workflow to import and map, and again no change to the app.
+
+Those LoRAs are driven by a short camera line rather than by prose, and the
+vocabulary is closed — a handful of directions, a handful of heights, three shot
+sizes. Words outside it are ignored, so a take reads like
+`<trigger> right side view eye-level shot medium shot`, with the LoRA's own
+trigger token if it has one. The take is still a reference take: no session look,
+no base prompt, nothing restating the frame.
+
+**Anchor on the widest frame you have.** This is the rule that decides whether
+angle takes work at all, and it is not obvious from the app: the model can only
+turn what the photo shows it. Anchored on a close-up, a request for the subject's
+back comes back as a mere profile, and any full-length framing invents the
+clothing below the crop — a dress can return as a swimsuit. Anchored on a
+standing full-body shot, the same prompts land on the first try, wardrobe intact.
+
+Reach for the anchor before reaching for the LoRA strength. Pushing the angle
+LoRA past its default buys no extra rotation; it spends the reference's fidelity
+instead, and the background starts growing scenery that was never in the photo.
+
+One thing to check when mapping such a workflow: `Steps` and `CFG` live on the
+**session**, and the session drives both its workflows. A base model wanting 20
+steps and an editing graph on a 4-step turbo LoRA cannot share one number, so
+leave those slots unmapped in the editing workflow and let it keep its own — see
+[workflows](workflows.md#what-unmapped-means).
+
 **What this does not fix.** Whether an edit keeps the face while changing the
 clothes is the editing model's job, not this app's. A plain img2img model
 (FLUX.1 Krea and friends) has no instruction mode: the denoise high enough to
