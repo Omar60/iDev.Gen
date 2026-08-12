@@ -20,6 +20,21 @@ way to take something *off* the look — prepending it to a take that denies it
 just keeps the jacket. Needs a second workflow (img2img, FLUX.1 Kontext,
 Qwen-Image-Edit); see [sessions](docs/sessions.md#reference-takes).
 
+A session is created with a **kind**, which is what turns those two paths into
+four jobs the app can actually guide:
+
+| Kind | What it shoots |
+|---|---|
+| **Photoshoot** | New photos from the look. Text to image, no reference. |
+| **Photo edit** | Instructions on one photo: wardrobe off, a new pose, another background. |
+| **Camera angles** | The camera walked around one photo with an angle LoRA. The vocabulary is closed, so the takes are built from a picker instead of typed. |
+| **Scene + subject** | Two reference photos into one frame — a character and a garment, a character and a place. |
+
+The kind picks the right workflow (tag your graphs once on the *Workflows*
+screen), starts the takes with the right defaults, and prints the one rule that
+decides whether that kind works — for angles, *anchor on the widest frame you
+have*. See [sessions](docs/sessions.md#session-kinds).
+
 ## Run it
 
 ```bash
@@ -67,6 +82,11 @@ prompt goes through `FluxGuidance` and friends) and can be fixed by hand in the
 table. **Anything left unmapped keeps the workflow's own value** — so a workflow
 full of exotic nodes still works even if only the prompt is driven.
 
+Give each graph a **kind** while you are there (text to image, photo edit,
+camera angles, scene + subject): a session of that kind then offers it, and
+offers nothing else. Untagged graphs stay offered everywhere, so an existing
+setup keeps working untouched.
+
 ## How a run works
 
 - The queue is **serial**: one photo at a time, one active session. One GPU.
@@ -76,6 +96,13 @@ full of exotic nodes still works even if only the prompt is driven.
   collides with what you generate by hand in ComfyUI.
 - Cancel interrupts the running job and marks the rest as cancelled; *Retry*
   puts them back in the queue.
+- A run is refused rather than started when a choice would be silently ignored —
+  a base model or LoRA the workflow does not map, a reference take with no
+  reference photo. The checks apply to the graph that will actually run: a
+  session whose pending takes are all edits never loads the first workflow.
+- **⚙ Settings** on a session fixes the workflows and the base model after the
+  fact, because that is when a wrong dropdown shows up — see
+  [sessions](docs/sessions.md#fixing-a-session).
 
 ## Tests
 

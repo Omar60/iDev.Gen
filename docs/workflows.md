@@ -29,6 +29,27 @@ detection walks the graph rather than guessing by node name:
 Fix anything it got wrong in the table: every row is a dropdown of the actual
 widgets in your graph, listed as `#id ClassName · widget`.
 
+## Kinds
+
+Next to the name, a workflow has a **kind** — what the graph is *for*:
+
+| Kind | The graph |
+|---|---|
+| *Text to image* | paints from noise: the usual one |
+| *Photo edit (instruction)* | img2img or an instruction model, one reference |
+| *Camera angles* | an instruction model plus an angle LoRA |
+| *Scene + subject (2 references)* | two reference images into one frame |
+
+A session of that kind then offers that graph and no other, and picks it
+outright when there is only one — which is the whole point: five graphs in a
+dropdown all named after the checkpoint they load is a choice you get wrong once
+per session. See [sessions](sessions.md#session-kinds).
+
+The tag is a label, not a constraint. Nothing validates it, an **untagged graph
+stays offered everywhere**, and every workflow imported before kinds existed is
+untagged — so an existing setup keeps working, and tagging is worth the minute
+it takes only because it stops the re-picking.
+
 ## What "unmapped" means
 
 A slot you leave as *do not control* keeps whatever the workflow itself has.

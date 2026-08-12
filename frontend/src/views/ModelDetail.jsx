@@ -3,6 +3,8 @@ import { api, shotImage } from '../api'
 import { go } from '../App.jsx'
 import { ModelForm, BaseModelSelect } from './Models.jsx'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
+import AnglePicker from './AnglePicker.jsx'
+import { KINDS, WORKFLOW_KINDS, forKind } from '../kinds.js'
 
 export default function ModelDetail({ id }) {
   const [model, setModel] = useState(null)
@@ -32,13 +34,34 @@ export default function ModelDetail({ id }) {
     model_id: id,
     name: `Session ${model.sessions.length + 1}`,
     look: '',
-    shots: [blankShot()],
-    workflow_id: model.workflow_id,
+    shots: [blankShot('shoot')],
+    workflow_id: model.workflow_id || only('t2i'),
     reference_workflow_id: null,
-    settings: { ...model.settings, lora_strength: model.lora_strength },
+    // The kind rides in the settings blob: it is read by the screens, never by
+    // the runner, so it needs no column and no route of its own.
+    settings: { ...model.settings, lora_strength: model.lora_strength, kind: 'shoot' },
     seed_mode: 'random',
     seed: 0,
   })
+
+  // One candidate is not a choice worth making twice, so it is made here.
+  const only = (tag) => {
+    const tagged = workflows.filter((w) => w.kind === tag)
+    return tagged.length === 1 ? tagged[0].id : null
+  }
+
+  /** Switching kind re-picks the graphs and the take defaults, but never the
+   *  prompts already typed: changing your mind about the kind should not throw
+   *  away the shoot you were writing. */
+  const setKind = (kind) => setNewSession({
+    ...newSession,
+    settings: { ...newSession.settings, kind },
+    reference_workflow_id: KINDS[kind].refKind ? only(KINDS[kind].refKind) : null,
+    shots: newSession.shots.map((s) => (
+      s.prompt.trim() ? s : { ...blankShot(kind), label: s.label })),
+  })
+
+  const kind = newSession?.settings.kind || 'shoot'
 
   const createSession = async () => {
     try {
@@ -78,29 +101,53 @@ export default function ModelDetail({ id }) {
       {newSession && (
         <div className="panel" style={{ margin: '14px 0' }}>
           <h3>New session</h3>
+          <div className="row" style={{ marginBottom: 4 }}>
+            {Object.entries(KINDS).map(([k, spec]) => (
+              <button key={k} className={'chip' + (kind === k ? ' on' : '')}
+                      title={spec.blurb} onClick={() => setKind(k)}>{spec.label}</button>
+            ))}
+          </div>
+          <p className="muted" style={{ margin: '0 0 8px' }}>{KINDS[kind].blurb}</p>
+          {KINDS[kind].rule && <p className="rule">{KINDS[kind].rule}</p>}
+
           <div className="grid-form">
             <div>
               <label>Name</label>
               <input value={newSession.name} onChange={(e) => setNewSession({ ...newSession, name: e.target.value })} />
             </div>
             <div>
-              <label>Workflow</label>
+              <label title="The graph for takes with ref unticked — the ones painted from noise. An editing or camera-angle graph belongs in the next box, not this one.">
+                Workflow{KINDS[kind].refKind ? ' (new photos)' : ''}
+              </label>
               <select value={newSession.workflow_id ?? ''}
                       onChange={(e) => setNewSession({ ...newSession, workflow_id: e.target.value ? Number(e.target.value) : null })}>
                 <option value="">— the model's —</option>
-                {workflows.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                {forKind(workflows, 't2i').map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
               </select>
             </div>
-            <div>
-              <label title="An img2img or instruction-editing graph. Takes marked ref run through it, editing the session's reference photo instead of painting a new one.">
-                Reference workflow (edits)
-              </label>
-              <select value={newSession.reference_workflow_id ?? ''}
-                      onChange={(e) => setNewSession({ ...newSession, reference_workflow_id: e.target.value ? Number(e.target.value) : null })}>
-                <option value="">— none, text to image only —</option>
-                {workflows.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-              </select>
-            </div>
+            {/* Text to image only: a session with no editing graph is exactly what
+                the shoot kind is, so there is nothing to pick. */}
+            {KINDS[kind].refKind && (
+              <div>
+                <label title="The graph that edits the session's reference photo instead of painting a new one. Takes marked ref run through it.">
+                  Reference workflow (edits)
+                </label>
+                <select value={newSession.reference_workflow_id ?? ''}
+                        onChange={(e) => setNewSession({ ...newSession, reference_workflow_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">— pick the graph that edits —</option>
+                  {forKind(workflows, KINDS[kind].refKind).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select>
+                {/* With nothing tagged, both selects list all the graphs and the
+                    kind can pick nothing for you — which is how an editing graph
+                    ends up in the box above. Say so where the choice is made. */}
+                {!workflows.some((w) => w.kind === KINDS[kind].refKind) && (
+                  <span className="muted">
+                    No graph is tagged “{WORKFLOW_KINDS[KINDS[kind].refKind]}” yet. Tag one on the
+                    <a href="#/workflows"> Workflows</a> screen and it gets picked for you.
+                  </span>
+                )}
+              </div>
+            )}
             <div style={{ gridColumn: 'span 2' }}>
               <label>Base model</label>
               <BaseModelSelect value={newSession.settings.checkpoint} models={baseModels}
@@ -153,7 +200,27 @@ export default function ModelDetail({ id }) {
                     onChange={(e) => setNewSession({ ...newSession, look: e.target.value })} />
 
           <h3 style={{ marginTop: 16 }}>Shots</h3>
-          <ShotsEditor shots={newSession.shots} onChange={(shots) => setNewSession({ ...newSession, shots })} />
+          {/* Which photo the ref takes edit is the first thing asked and the last
+              thing the app used to say. It cannot be picked here — the session
+              does not exist yet — so what it can do is say how it gets picked. */}
+          {KINDS[kind].refKind && (
+            <p className="muted" style={{ margin: '0 0 8px' }}>
+              These takes edit <b>the session's reference photo</b>, and there is none yet.
+              {newSession.shots.some((x) => x.prompt.trim() && !x.reference)
+                ? ' The first take with ref unticked shoots it, and the edits follow in the same Run.'
+                : ' Every take below is an edit, so after creating the session either import a photo'
+                  + ' (it becomes the reference) or add a take with ref unticked. Run is refused until then.'}
+            </p>
+          )}
+          {kind === 'angles' && (
+            <AnglePicker onAdd={(takes) => setNewSession({
+                           // The blank first row is scaffolding, not a take.
+                           ...newSession,
+                           shots: [...newSession.shots.filter((s) => s.prompt.trim()), ...takes],
+                         })} />
+          )}
+          <ShotsEditor kind={kind} shots={newSession.shots}
+                       onChange={(shots) => setNewSession({ ...newSession, shots })} />
 
           <div className="row" style={{ marginTop: 12 }}>
             <button className="primary" onClick={createSession}

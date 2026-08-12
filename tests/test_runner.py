@@ -64,6 +64,22 @@ def test_the_queued_graph_carries_the_session_values(client, make_runner):
     assert g["8"]["inputs"]["filename_prefix"].startswith(f"idevgen/{sid}/")
 
 
+def test_the_session_kind_is_not_a_slot(client, make_runner):
+    """A session's kind lives in the same settings blob the slot values come
+    from, but it is a label for the screens: the runner reads that blob key by
+    key, so an unknown key changes nothing in the graph and nothing in the run."""
+    wf = client.post("/api/workflows", json={"name": "wf", "graph": GRAPH}).json()
+    mid = client.post("/api/models", json={"name": "ada", "workflow_id": wf["id"]}).json()["id"]
+    sid = client.post("/api/sessions", json={
+        "model_id": mid, "name": "s", "settings": {"kind": "angles"},
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+
+    r, fake = make_runner()
+    asyncio.run(r._run_session(sid))
+    assert db.one("SELECT status FROM session WHERE id=?", sid)["status"] == "done"
+    assert "angles" not in str(fake.graphs[0])
+
+
 def test_the_chosen_base_model_reaches_the_graph(client, make_runner):
     """One workflow per family is enough: the model is picked in the app."""
     wf = client.post("/api/workflows", json={"name": "wf", "graph": GRAPH}).json()

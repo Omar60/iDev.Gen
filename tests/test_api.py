@@ -12,6 +12,30 @@ def test_importing_a_workflow_autodetects_the_map(client):
     assert client.get("/api/workflows").json()[0]["name"] == "wf"
 
 
+def test_a_workflow_remembers_what_it_is_for(client):
+    """The kind is how a session kind finds its graph. Untagged is a valid state:
+    every workflow imported before kinds existed has no tag, and hiding those
+    would empty every select on the screen."""
+    plain = client.post("/api/workflows", json={"name": "plain", "graph": GRAPH}).json()["id"]
+    client.post("/api/workflows", json={"name": "turner", "graph": EDIT_GRAPH, "kind": "angles"})
+    listed = {w["name"]: w["kind"] for w in client.get("/api/workflows").json()}
+    assert listed == {"plain": "", "turner": "angles"}
+
+    client.patch(f"/api/workflows/{plain}", json={"name": "plain", "graph": GRAPH, "kind": "t2i"})
+    assert client.get(f"/api/workflows/{plain}").json()["kind"] == "t2i"
+
+
+def test_a_session_remembers_its_kind(client, seeded):
+    """It rides in the settings blob, so it needs no column of its own — and the
+    model's own settings still merge in underneath it."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "angles", "settings": {"kind": "angles"},
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    s = client.get(f"/api/sessions/{sid}").json()
+    assert s["settings"]["kind"] == "angles"
+    assert s["settings"]["width"] == 832
+
+
 def test_detect_rejects_the_editor_format(client):
     """The 'Save' JSON (nodes/links) is useless here; the error must say so."""
     r = client.post("/api/workflows/detect", json={"graph": {"nodes": [{"id": 1}], "links": []}})
@@ -210,6 +234,52 @@ def test_run_refuses_when_a_chosen_base_model_is_unmapped(client, seeded, runnab
     assert "base model" in detail and "zimage/turbo.safetensors" in detail
 
 
+def test_the_base_model_check_skips_a_workflow_no_take_will_use(client, seeded, runnable):
+    """A camera-angle session is all reference takes: the first workflow is never
+    loaded, so a base model it does not map is not being ignored — there is
+    nothing to ignore it. Refusing there sends you to fix the wrong graph."""
+    db.run("UPDATE workflow SET node_map=? WHERE id=?",
+           '{"positive": "3.inputs.text"}', seeded["workflow_id"])
+    edit = client.post("/api/workflows", json={"name": "edit", "graph": EDIT_GRAPH}).json()
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "settings": {"checkpoint": "krea/turbo.safetensors", "kind": "angles"},
+        "reference_workflow_id": edit["id"],
+        "shots": [{"prompt": "back view", "count": 1, "reference": True}]}).json()["id"]
+    imported = client.post(f"/api/sessions/{sid}/import", content=PNG).json()["id"]
+    assert client.get(f"/api/sessions/{sid}").json()["anchor_shot_ids"] == [imported]
+
+    assert client.post(f"/api/sessions/{sid}/run").status_code == 200
+
+    # One take painted from noise brings the check back: that one does load it.
+    client.post(f"/api/sessions/{sid}/shots", json={"shots": [{"prompt": "standing", "count": 1}]})
+    r = client.post(f"/api/sessions/{sid}/run")
+    assert r.status_code == 400 and "base model" in r.json()["detail"]
+
+
+def test_a_session_can_be_repointed_after_it_was_created(client, seeded):
+    """The graph in the wrong slot is discovered when Run is refused, by which
+    time the session is an imported photo and seventy takes. Delete-and-redo
+    cannot be the cure for a dropdown."""
+    other = client.post("/api/workflows", json={"name": "edit", "graph": EDIT_GRAPH}).json()["id"]
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "settings": {"checkpoint": "wrong.safetensors", "kind": "angles"},
+        "shots": [{"prompt": "back view", "count": 1, "reference": True}]}).json()["id"]
+
+    client.patch(f"/api/sessions/{sid}", json={
+        "workflow_id": other, "reference_workflow_id": other, "settings": {"checkpoint": ""}})
+    s = client.get(f"/api/sessions/{sid}").json()
+    assert s["workflow_id"] == other and s["reference_workflow_id"] == other
+    assert s["settings"]["checkpoint"] == ""
+    # A merge, not a replacement: the panel sends the one dial it changed.
+    assert s["settings"]["kind"] == "angles" and s["settings"]["width"] == 832
+
+    # 0 clears the workflow back to the model's default.
+    client.patch(f"/api/sessions/{sid}", json={"workflow_id": 0})
+    assert client.get(f"/api/sessions/{sid}").json()["workflow_id"] is None
+
+
 def test_run_refuses_when_the_models_lora_is_unmapped(client, seeded, runnable):
     """Worse than the wrong model: a full session of the wrong character."""
     db.run("UPDATE workflow SET node_map=? WHERE id=?",
@@ -389,6 +459,30 @@ def test_an_imported_photo_lands_as_a_shot_and_can_be_a_reference(client, seeded
     assert shot["status"] == "done"
     assert client.patch(f"/api/sessions/{sid}",
                         json={"anchor_shot_ids": [imported["id"]]}).status_code == 200
+
+
+def test_an_imported_photo_becomes_the_reference_when_there_is_none(client, seeded):
+    """A session whose takes are all edits — a camera-angle shoot, say — has
+    nothing that would shoot the photo they turn, so the photo is imported. It
+    was imported to be edited: marking it by hand afterwards is a step whose only
+    outcome is a refused Run for whoever skips it. A session that already has a
+    reference keeps it, and a session with no edits gets none."""
+    def session(shots):
+        return client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": "s", "reference_workflow_id": None,
+            "shots": shots}).json()["id"]
+
+    edits = session([{"prompt": "back view", "count": 1, "reference": True}])
+    first = client.post(f"/api/sessions/{edits}/import", content=PNG).json()["id"]
+    assert client.get(f"/api/sessions/{edits}").json()["anchor_shot_ids"] == [first]
+
+    # A second import does not move it: the pick is now the user's, and 📎 changes it.
+    client.post(f"/api/sessions/{edits}/import", content=PNG)
+    assert client.get(f"/api/sessions/{edits}").json()["anchor_shot_ids"] == [first]
+
+    plain = session([{"prompt": "standing", "count": 1}])
+    client.post(f"/api/sessions/{plain}/import", content=PNG)
+    assert client.get(f"/api/sessions/{plain}").json()["anchor_shot_ids"] == []
 
 
 def test_import_refuses_what_is_not_an_image(client, seeded):

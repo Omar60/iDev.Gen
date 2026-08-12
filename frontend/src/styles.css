@@ -118,6 +118,15 @@ th { color: var(--muted); font-weight: 500; }
 .chk { display: flex; align-items: center; gap: 5px; padding-top: 8px; color: var(--muted); font-size: 12px; cursor: pointer; }
 .chk input { width: auto; margin: 0; }
 
+/* Kind picker and angle vocabulary: buttons that stay pressed. */
+.chip { padding: 3px 10px; border-radius: 99px; font-size: 13px; }
+.chip.on { background: var(--accent); color: #0b1220; border-color: var(--accent); font-weight: 600; }
+
+/* The one rule that decides whether this kind of session works. Set apart from
+   the ordinary muted text because it is the sentence people skip and then pay
+   for a whole run to learn. */
+.rule { color: var(--muted); font-size: 12px; border-left: 2px solid var(--accent); padding-left: 8px; margin: 8px 0; }
+
 /* Before/after wipe. The edit is the base image and sets the box; the reference
    sits on top, clipped from the right, so the split lands on the same pixel of
    the same frame instead of asking the eye to travel between two of them. */

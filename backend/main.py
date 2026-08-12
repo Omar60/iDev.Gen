@@ -90,6 +90,10 @@ class WorkflowIn(BaseModel):
     name: str
     graph: dict
     node_map: dict = Field(default_factory=dict)
+    # t2i|edit|angles|scene, or empty. Not validated here on purpose: it is a
+    # label the session screen filters by, and a wrong one costs a re-pick, not a
+    # broken run — the reference preflight still checks what actually matters.
+    kind: str = ""
 
 
 class ShotIn(BaseModel):
@@ -131,8 +135,14 @@ class SessionIn(BaseModel):
 
 class SessionPatch(BaseModel):
     name: str | None = None
+    # 0 clears it back to the model's default, the same way the reference one
+    # clears to "text to image only".
+    workflow_id: int | None = None
     reference_workflow_id: int | None = None
     anchor_shot_ids: list[int] | None = None
+    # Merged into the session's settings, not replacing them: the panel sends the
+    # one dial it changed.
+    settings: dict | None = None
 
 
 class ShotPatch(BaseModel):
@@ -262,7 +272,7 @@ def lora_preview(name: str):
 
 @app.get("/api/workflows")
 def list_workflows():
-    rows = db.q("SELECT id, name, node_map, is_template, created_at FROM workflow ORDER BY name")
+    rows = db.q("SELECT id, name, node_map, kind, is_template, created_at FROM workflow ORDER BY name")
     return [db.jload(r, "node_map") for r in rows]
 
 
@@ -297,8 +307,8 @@ def create_workflow(w: WorkflowIn):
     _require_api_graph(w.graph)
     node_map = w.node_map or detect_map(w.graph)
     wid = db.run(
-        "INSERT INTO workflow (name, graph, node_map, created_at) VALUES (?,?,?,?)",
-        w.name, json.dumps(w.graph), json.dumps(node_map), db.now(),
+        "INSERT INTO workflow (name, graph, node_map, kind, created_at) VALUES (?,?,?,?,?)",
+        w.name, json.dumps(w.graph), json.dumps(node_map), w.kind, db.now(),
     )
     return {"id": wid, "node_map": node_map}
 
@@ -306,8 +316,8 @@ def create_workflow(w: WorkflowIn):
 @app.patch("/api/workflows/{wid}")
 def update_workflow(wid: int, w: WorkflowIn):
     _require_api_graph(w.graph)
-    db.run("UPDATE workflow SET name=?, graph=?, node_map=? WHERE id=?",
-           w.name, json.dumps(w.graph), json.dumps(w.node_map), wid)
+    db.run("UPDATE workflow SET name=?, graph=?, node_map=?, kind=? WHERE id=?",
+           w.name, json.dumps(w.graph), json.dumps(w.node_map), w.kind, wid)
     return {"ok": True}
 
 
@@ -436,15 +446,26 @@ def create_session(s: SessionIn):
 
 @app.patch("/api/sessions/{sid}")
 def update_session(sid: int, p: SessionPatch):
-    """Rename, or point the session at its reference photo and editing workflow.
+    """Rename, or fix what the session shoots with: its workflows, its reference
+    photo, the settings the run preflight checks.
 
     Marking an anchor is a normal part of a shoot: the first take is painted from
-    noise, and once one is worth keeping the rest of the session edits it.
+    noise, and once one is worth keeping the rest of the session edits it. The
+    workflows and the base model are here for the same reason, learned the hard
+    way: you find out a graph is in the wrong slot when Run is refused, and a
+    session is by then an imported photo and seventy takes. Refusing to edit it
+    makes "delete and start over" the only cure for a dropdown.
     """
-    if not db.one("SELECT id FROM session WHERE id=?", sid):
+    row = db.one("SELECT * FROM session WHERE id=?", sid)
+    if not row:
         raise HTTPException(404, "session not found")
     if p.name is not None:
         db.run("UPDATE session SET name=? WHERE id=?", p.name, sid)
+    if p.workflow_id is not None:
+        db.run("UPDATE session SET workflow_id=? WHERE id=?", p.workflow_id or None, sid)
+    if p.settings is not None:
+        db.run("UPDATE session SET settings=? WHERE id=?",
+               json.dumps({**json.loads(row["settings"] or "{}"), **p.settings}), sid)
     if p.reference_workflow_id is not None:
         db.run("UPDATE session SET reference_workflow_id=? WHERE id=?",
                p.reference_workflow_id or None, sid)
@@ -599,6 +620,16 @@ async def import_photo(sid: int, request: Request, label: str = ""):
         db.run("DELETE FROM shot WHERE id=?", shot_id)
         raise HTTPException(500, f"could not save the image: {exc}")
     db.run("UPDATE shot SET filename=? WHERE id=?", name, shot_id)
+
+    # An imported photo in a session that edits photos and has none marked is the
+    # photo you imported it to edit. Same default as `runner._adopt_anchor`, same
+    # reason: it is visible in the gallery and 📎 changes it, so it is a default
+    # and not a decision. Without it the import is followed by a refused Run whose
+    # fix is one unexplained click away.
+    session = db.one("SELECT anchor_shot_ids FROM session WHERE id=?", sid)
+    edits = db.one("SELECT id FROM shot WHERE session_id=? AND use_reference=1", sid)
+    if edits and not json.loads(session["anchor_shot_ids"] or "[]"):
+        db.run("UPDATE session SET anchor_shot_ids=? WHERE id=?", json.dumps([shot_id]), sid)
     return {"id": shot_id, "filename": name}
 
 
@@ -635,23 +666,30 @@ def _require_mapped_choices(sid: int) -> None:
     """
     session = db.jload(db.one("SELECT * FROM session WHERE id=?", sid), "settings")
     model = db.one("SELECT * FROM model WHERE id=?", session["model_id"])
-    wf_id = session["workflow_id"] or model["workflow_id"]
-    wf = db.jload(db.one("SELECT * FROM workflow WHERE id=?", wf_id), "node_map") if wf_id else None
-    if not wf:
-        raise HTTPException(400, "the session has no workflow assigned")
 
-    node_map = wf["node_map"]
-    chosen = (
-        ("checkpoint", session["settings"].get("checkpoint"), "base model"),
-        ("lora_name", model["lora_name"], "LoRA"),
-    )
-    for slot, value, label in chosen:
-        if value and slot not in node_map:
-            raise HTTPException(400, (
-                f"Workflow '{wf['name']}' does not map the {label} slot, so '{value}' "
-                f"would be ignored and the run would use the workflow's own. Open the "
-                f"workflow, map {label}, and save — or clear the {label} choice."
-            ))
+    # Only takes painted from noise load this graph, so a session whose pending
+    # takes are all reference edits never touches it — a base model it does not
+    # map is not being ignored, there is nothing to ignore it. Refusing there
+    # asks for the wrong fix (map the slot, or clear the choice) on the wrong
+    # graph. The reference check below still runs: that is the one that applies.
+    if db.one("SELECT id FROM shot WHERE session_id=? AND status='pending' AND use_reference=0", sid):
+        wf_id = session["workflow_id"] or model["workflow_id"]
+        wf = db.jload(db.one("SELECT * FROM workflow WHERE id=?", wf_id), "node_map") if wf_id else None
+        if not wf:
+            raise HTTPException(400, "the session has no workflow assigned")
+
+        node_map = wf["node_map"]
+        chosen = (
+            ("checkpoint", session["settings"].get("checkpoint"), "base model"),
+            ("lora_name", model["lora_name"], "LoRA"),
+        )
+        for slot, value, label in chosen:
+            if value and slot not in node_map:
+                raise HTTPException(400, (
+                    f"Workflow '{wf['name']}' does not map the {label} slot, so '{value}' "
+                    f"would be ignored and the run would use the workflow's own. Open the "
+                    f"workflow, map {label}, and save — or clear the {label} choice."
+                ))
 
     _require_usable_reference(session)
 

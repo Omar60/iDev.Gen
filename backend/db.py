@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS workflow (
     name          TEXT NOT NULL UNIQUE,
     graph         TEXT NOT NULL,           -- ComfyUI API-format JSON
     node_map      TEXT NOT NULL,           -- {"positive": "6.inputs.text", ...}
+    -- What this graph is for: t2i|edit|angles|scene. Empty means untagged, which
+    -- is every workflow imported before kinds existed: it stays offered everywhere.
+    kind          TEXT NOT NULL DEFAULT '',
     is_template   INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL
 );
@@ -134,6 +137,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE shot ADD COLUMN reference_shot_ids TEXT NOT NULL DEFAULT '[]'")
     if "reference_strength" not in shot_cols:
         conn.execute("ALTER TABLE shot ADD COLUMN reference_strength REAL")
+
+    # Session kinds: the tag that says which job a graph does, so picking a kind
+    # picks the graph. Untagged is a valid state, not a migration to back-fill.
+    if "kind" not in columns("workflow"):
+        conn.execute("ALTER TABLE workflow ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
 
 
 def conn() -> sqlite3.Connection:

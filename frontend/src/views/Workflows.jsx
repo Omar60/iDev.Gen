@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api'
+import { WORKFLOW_KINDS } from '../kinds.js'
 
 const SLOT_LABEL = {
   positive: 'Positive prompt', negative: 'Negative prompt', seed: 'Seed',
@@ -24,15 +25,15 @@ export default function Workflows() {
       const graph = JSON.parse(await file.text())
       if (graph.nodes && graph.links) throw new Error('That is the editor format. Export with Workflow → Export (API).')
       const det = await api.post('/api/workflows/detect', { graph })
-      setDraft({ name: file.name.replace(/\.json$/i, ''), graph, ...det, detected: det.node_map })
+      setDraft({ name: file.name.replace(/\.json$/i, ''), kind: '', graph, ...det, detected: det.node_map })
     } catch (e) { setError(e.message) }
   }
 
   const open = async (w) => {
     const full = await api.get(`/api/workflows/${w.id}`)
     const det = await api.post('/api/workflows/detect', { graph: full.graph })
-    setDraft({ id: w.id, name: full.name, graph: full.graph, node_map: full.node_map,
-               slots: det.slots, nodes: det.nodes, detected: det.node_map })
+    setDraft({ id: w.id, name: full.name, kind: full.kind || '', graph: full.graph,
+               node_map: full.node_map, slots: det.slots, nodes: det.nodes, detected: det.node_map })
   }
 
   // Slots are added to the app over time; a workflow saved before one existed has
@@ -49,7 +50,7 @@ export default function Workflows() {
 
   const save = async () => {
     try {
-      const body = { name: draft.name, graph: draft.graph, node_map: draft.node_map }
+      const body = { name: draft.name, graph: draft.graph, node_map: draft.node_map, kind: draft.kind || '' }
       if (draft.id) await api.patch(`/api/workflows/${draft.id}`, body)
       else await api.post('/api/workflows', body)
       setDraft(null); reload()
@@ -83,8 +84,36 @@ export default function Workflows() {
               <label>Name</label>
               <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
             </div>
+            <div>
+              <label title="What this graph is for. A session of that kind offers it, and offers it first. Untagged graphs stay offered everywhere.">
+                Kind
+              </label>
+              <select value={draft.kind || ''} onChange={(e) => setDraft({ ...draft, kind: e.target.value })}>
+                <option value="">— untagged —</option>
+                {Object.entries(WORKFLOW_KINDS).map(([k, label]) => (
+                  <option key={k} value={k}>{label}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <h3 style={{ marginTop: 14 }}>Node mapping</h3>
+          {/* Detection maps what it finds, and on an editing graph what it finds
+              is the wrong thing to drive: the session's checkpoint written into a
+              graph that loads its own model, or the character LoRA written over a
+              speed LoRA the graph needs. Nothing refuses it either — the base
+              model and LoRA checks skip reference workflows on purpose — so every
+              take comes back wrong with nothing on screen saying why. */}
+          {draft.node_map.reference && ['checkpoint', 'lora_name', 'lora_strength']
+            .some((slot) => draft.node_map[slot]) && (
+            <p className="rule">
+              This graph edits a photo, and it is driving{' '}
+              {['checkpoint', 'lora_name', 'lora_strength']
+                .filter((slot) => draft.node_map[slot]).map((slot) => SLOT_LABEL[slot]).join(', ')}.
+              An editing graph loads its own model and often a speed LoRA of its own, so the
+              session's picks would be written over them and every take would come back wrong.
+              Set them to <b>do not control</b> unless you know this graph wants them.
+            </p>
+          )}
           <table>
             <thead><tr><th style={{ width: 200 }}>Slot</th><th>Workflow widget</th></tr></thead>
             <tbody>
@@ -117,11 +146,12 @@ export default function Workflows() {
       )}
 
       <table>
-        <thead><tr><th>Name</th><th>Mapped slots</th><th /></tr></thead>
+        <thead><tr><th>Name</th><th>Kind</th><th>Mapped slots</th><th /></tr></thead>
         <tbody>
           {list.map((w) => (
             <tr key={w.id}>
               <td><a href="#/workflows" onClick={(e) => { e.preventDefault(); open(w) }}>{w.name}</a></td>
+              <td className="muted">{WORKFLOW_KINDS[w.kind] || '— untagged —'}</td>
               {/* No denominator: the slot list grows, a hardcoded one goes stale. */}
               <td className="muted">{Object.keys(w.node_map).length} mapped</td>
               <td style={{ textAlign: 'right' }}>

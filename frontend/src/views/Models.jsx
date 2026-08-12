@@ -81,11 +81,17 @@ export default function Models({ tab }) {
 /** The base-model dropdown, grouped by loader kind: an all-in-one checkpoint and
  *  a standalone diffusion model are different files and different nodes. Empty
  *  keeps whatever the workflow itself loads. */
-export function BaseModelSelect({ value, onChange, models }) {
+export function BaseModelSelect({ value, onChange, models, disabled }) {
   return (
-    <select value={value ?? ''} onChange={(e) => onChange(e.target.value)}
+    <select value={value ?? ''} disabled={disabled} onChange={(e) => onChange(e.target.value)}
             title="Must match the LoRA's family: a Krea LoRA on a Z-Image model fails or renders noise">
       <option value="">— the workflow's own —</option>
+      {/* A value ComfyUI does not report — offline, renamed, moved — would render
+          as "the workflow's own" and read as *no choice made*, which is the one
+          thing it is not. Show it, and say why it is not in the list. */}
+      {!!value && ![...(models.checkpoints || []), ...(models.unets || [])].includes(value) && (
+        <option value={value}>{value} — not in ComfyUI's list</option>
+      )}
       {!!models.checkpoints?.length && (
         <optgroup label="Checkpoints">
           {models.checkpoints.map((c) => <option key={c} value={c}>{c}</option>)}

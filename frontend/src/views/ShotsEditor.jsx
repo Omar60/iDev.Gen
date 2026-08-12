@@ -1,31 +1,30 @@
 import React from 'react'
+import { KINDS } from '../kinds.js'
 
-export const blankShot = () => ({
-  label: '', prompt: '', negative: '', count: 4, seed: 0,
-  reference: false, reference_strength: null,
+/** A take of the given kind: an edit kind starts its rows ticked as `ref`,
+ *  because a session whose whole point is editing a photo asking you to tick
+ *  every row is the app making you repeat yourself. */
+export const blankShot = (kind) => ({
+  label: '', prompt: '', negative: '', count: KINDS[kind]?.refDefault ? 1 : 4, seed: 0,
+  reference: !!KINDS[kind]?.refDefault, reference_strength: null,
 })
-
-const EXAMPLES = [
-  'three-quarter view, hands in pockets, looking away',
-  'close-up, chin slightly down, eyes to camera',
-  'full body, walking, mid-stride',
-  'sitting by the window, leaning on one arm',
-]
-
-// A reference take is an instruction on the photo, not a description of it.
-const REF_EXAMPLES = [
-  'remove the jacket, same pose',
-  'let the hair down',
-  'turn to a three-quarter view',
-  'change the background to a plain grey studio wall',
-]
 
 /** The takes of a session: pose, angle, framing — never wardrobe, which belongs
  *  to the session's look and stays identical in every frame. Shared by session
- *  creation and the "add shots" panel. */
-export default function ShotsEditor({ shots, onChange }) {
+ *  creation and the "add shots" panel. The kind only chooses the guidance and
+ *  the defaults: every row keeps its own `ref` box, so nothing is locked. */
+export default function ShotsEditor({ shots, onChange, kind }) {
   const set = (i, k, v) => onChange(shots.map((s, j) => (j === i ? { ...s, [k]: v } : s)))
   const total = shots.reduce((n, s) => n + (s.prompt.trim() ? Math.max(1, s.count) : 0), 0)
+  const spec = KINDS[kind] || KINDS.shoot
+
+  // A row that opted out of the kind's default is the other kind of take, and
+  // the two want opposite prompts: a description or an instruction.
+  const placeholder = (shot, i) => {
+    const list = shot.reference === !!spec.refDefault ? spec.examples
+      : (shot.reference ? KINDS.edit.examples : KINDS.shoot.examples)
+    return list[i % list.length]
+  }
 
   return (
     <>
@@ -39,7 +38,7 @@ export default function ShotsEditor({ shots, onChange }) {
               </td>
               <td>
                 <textarea value={shot.prompt} rows={2}
-                          placeholder={(shot.reference ? REF_EXAMPLES : EXAMPLES)[i % EXAMPLES.length]}
+                          placeholder={placeholder(shot, i)}
                           onChange={(e) => set(i, 'prompt', e.target.value)} />
               </td>
               <td className="n">
@@ -77,14 +76,14 @@ export default function ShotsEditor({ shots, onChange }) {
         </tbody>
       </table>
       <div className="row" style={{ marginTop: 8 }}>
-        <button onClick={() => onChange([...shots, blankShot()])}>+ Shot</button>
+        <button onClick={() => onChange([...shots, blankShot(kind)])}>+ Shot</button>
         <span className="muted">
-          {total} photos · pose, angle, place — the trigger, base prompt and the session's look
-          are prepended automatically. Leave the seed empty unless you are comparing a change.
-          {' '}Tick <b>ref</b> to edit the session's reference photo instead: the prompt goes out
-          on its own, as an instruction, which is the only way to take something off the look.
-          A ref take also gets a strength box — one dial, pulling between “hold the frame” and
-          “let the pose move”. Same prompt and seed at a few values is how you find it.
+          {total} photos · {spec.footer}
+          {!spec.refDefault && (
+            <> Tick <b>ref</b> on a take to edit the session's reference photo instead: the prompt
+            goes out on its own, as an instruction, which is the only way to take something off
+            the look.</>
+          )}
         </span>
       </div>
     </>
