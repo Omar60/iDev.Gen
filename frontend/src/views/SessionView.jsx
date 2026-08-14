@@ -5,6 +5,7 @@ import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
 import { BaseModelSelect } from './Models.jsx'
 import { KINDS, forKind, sessionKind } from '../kinds.js'
+import { composed } from '../enhance.js'
 
 export default function SessionView({ id }) {
   const [s, setS] = useState(null)
@@ -16,12 +17,15 @@ export default function SessionView({ id }) {
   const [workflows, setWorkflows] = useState([])
   const [baseModels, setBaseModels] = useState({})
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [llm, setLlm] = useState(false)
 
   const reload = () => api.get(`/api/sessions/${id}`).then(setS).catch((e) => setError(e.message))
   useEffect(() => {
     reload()
     api.get('/api/workflows').then(setWorkflows).catch(() => {})
     api.get('/api/comfy/models').then(setBaseModels).catch(() => {})
+    // Optional: with no endpoint configured the ✨ buttons simply do not appear.
+    api.get('/api/config').then((c) => setLlm(!!c.llm_ok)).catch(() => {})
   }, [id])
 
   // Only poll while it runs: the queue is serial, one photo every few seconds.
@@ -320,9 +324,14 @@ export default function SessionView({ id }) {
           </p>
           {kind && KINDS[kind].rule && <p className="rule">{KINDS[kind].rule}</p>}
           {kind === 'angles' && (
-            <AnglePicker onAdd={(takes) => setAdding([...adding.filter((x) => x.prompt.trim()), ...takes])} />
+            <AnglePicker llm={llm}
+                         onAdd={(takes) => setAdding([...adding.filter((x) => x.prompt.trim()), ...takes])} />
           )}
-          <ShotsEditor kind={kind} shots={adding} onChange={setAdding} />
+          {/* No `onLook` here: the look belongs to the session, and `add_shots`
+              re-reads it from the server anyway. A shoot whose wardrobe changed
+              halfway is two sessions. */}
+          <ShotsEditor kind={kind} shots={adding} onChange={setAdding} llm={llm}
+                       context={composed(s.model, '')} look={s.look} />
 
           {/* Deciding to edit a keeper happens mid-shoot, looking at the gallery —
               not when the session was created. So the reference workflow is picked

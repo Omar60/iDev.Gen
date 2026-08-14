@@ -31,8 +31,41 @@ discover them mid-shoot.
   that succeeded; shoot more variations instead.
 - **Cancel is not instant.** It interrupts the job ComfyUI is running and
   cancels the rest, but the current image may still finish writing.
+- **The prompt assistant writes text, and only text.** It fills a box you then
+  edit; it never queues anything and never changes a shot that exists. What it
+  writes is as good as the model behind it — a 9B writes usable takes and a
+  fairly generic look.
+- **Read the look before you Run.** The two ways a written look loses the
+  wardrobe are both visible in the box: a garment it never named — no trousers,
+  no shoes — is invented differently in every frame, and a take that mentions
+  clothing at all can contradict it (`barefoot` under a look with boots). The
+  instructions forbid both; a small model still slips, and a session is dozens
+  of photos.
+- **A reasoning model is asked not to reason.** Thinking about four short lines
+  costs ten times the tokens of writing them — minutes per click. The request
+  says `reasoning_effort: none`, and an endpoint that rejects the parameter is
+  retried without it, which is where those minutes come back.
+- **A local assistant and ComfyUI share one GPU.** Asking for takes while a
+  session runs makes both wait, and the model may be swapped in and out of VRAM
+  between the two. Write the shoot first, then Run — or point the assistant at a
+  hosted endpoint, which leaves the card to ComfyUI entirely.
+- **A photo picked from disk is scaled to 1024px before it is sent**, which is
+  what small vision models read anyway. A photo already in the app — the anchor
+  — is sent at full size. A model with no vision answers with an error on the
+  photo buttons and works normally on the text ones.
+- **Words are not a photograph.** A look written in detail holds the attributes
+  it names — colour, fabric, neckline, hem — and nothing else: button count,
+  exact drape and the seams no sentence mentions still drift between frames. For
+  a garment that is genuinely identical, work from the photo instead of from
+  words: shoot it once and edit that frame (*Photo edit*), which is what
+  reference takes are for.
+- **The first click on a local model pays for loading it.** An 8B vision model
+  took over a minute to reach VRAM on a card ComfyUI had been using, before it
+  had looked at the photo at all. The request waits five minutes before giving
+  up for that reason; the second click is seconds.
 - **No authentication.** The server binds to `127.0.0.1` and assumes a single
-  local user. Do not expose it to a network.
+  local user. Do not expose it to a network. That includes the assistant's API
+  key, which sits in `config.json` in plain text like every other setting.
 - **Changing the data folder needs a restart.** The database is already open on
   the old one.
 - **Moving, not copying.** A finished image leaves ComfyUI's output folder. If

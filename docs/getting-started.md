@@ -37,6 +37,20 @@ running instance which path it was started from and proposes that install's
 | ComfyUI output folder | **Required.** Finished images are moved out of here into the session folder. Sessions refuse to run until it exists. |
 | LoRA folder | Optional. Only used to show the `<name>.preview.jpeg` thumbnail that model managers store next to each LoRA. |
 | Data folder | Database and sessions. Point it at a drive with room; changing it needs a restart. |
+| Prompt assistant | Optional, and off until it has an endpoint. **Find an assistant** probes the ports Ollama, LM Studio and llama.cpp listen on, fills the URL in and lists the models that endpoint has — biggest first, and the vision box lists only the ones that can actually read a photo. It writes the look and the takes; see [sessions](sessions.md#writing-the-prompts). |
+
+Three buttons say where it runs — **On this machine**, **OpenAI**, **MiniMax** —
+and all three do the same thing: fill the URL in. On this machine probes the
+ports Ollama, LM Studio and llama.cpp use; the other two are the provider's base,
+and want an API key next to it. Then *List its models*. Any other
+OpenAI-compatible endpoint works too — type its base URL over the top and the
+buttons stop being lit, which is not an error.
+
+A hosted endpoint answers in a second or two and leaves the GPU to ComfyUI, which
+a local model shares with it. Of MiniMax's models only *MiniMax-M3* reads a
+photo, so that is the one for the vision box if you want *Look from a photo…*.
+An endpoint that does not list its models at all is not a problem either: the
+boxes stay typeable.
 
 Settings are written to `config.json`, which stays out of git because it holds
 paths specific to your machine.

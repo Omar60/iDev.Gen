@@ -5,6 +5,7 @@ import { ModelForm, BaseModelSelect } from './Models.jsx'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
 import { KINDS, WORKFLOW_KINDS, forKind } from '../kinds.js'
+import { composed, lookFromPhoto, photoDataUri, rewriteLook } from '../enhance.js'
 
 export default function ModelDetail({ id }) {
   const [model, setModel] = useState(null)
@@ -13,6 +14,8 @@ export default function ModelDetail({ id }) {
   const [baseModels, setBaseModels] = useState({})
   const [workflows, setWorkflows] = useState([])
   const [newSession, setNewSession] = useState(null)
+  const [llm, setLlm] = useState(false)
+  const [writing, setWriting] = useState('')
   const [error, setError] = useState('')
 
   const reload = () => api.get(`/api/models/${id}`).then(setModel).catch((e) => setError(e.message))
@@ -21,6 +24,9 @@ export default function ModelDetail({ id }) {
     api.get('/api/workflows').then(setWorkflows).catch(() => {})
     api.get('/api/comfy/loras').then((d) => setLoras(d.loras)).catch(() => {})
     api.get('/api/comfy/models').then(setBaseModels).catch(() => {})
+    // No endpoint configured is not an error: the assistant is optional, and the
+    // buttons simply do not appear.
+    api.get('/api/config').then((c) => setLlm(!!c.llm_ok)).catch(() => {})
   }, [id])
 
   if (!model) return <p className="muted">{error || 'Loading…'}</p>
@@ -62,6 +68,15 @@ export default function ModelDetail({ id }) {
   })
 
   const kind = newSession?.settings.kind || 'shoot'
+
+  const writeLook = async (what, fn) => {
+    setWriting(what); setError('')
+    try {
+      const look = await fn()
+      if (look) setNewSession((cur) => ({ ...cur, look }))
+      else setError('the assistant answered nothing usable')
+    } catch (e) { setError(e.message) } finally { setWriting('') }
+  }
 
   const createSession = async () => {
     try {
@@ -198,6 +213,30 @@ export default function ModelDetail({ id }) {
           <textarea rows={2} value={newSession.look}
                     placeholder="white summer dress, hair down, gold hoop earrings, on a beach at golden hour"
                     onChange={(e) => setNewSession({ ...newSession, look: e.target.value })} />
+          {llm && (
+            <div className="row" style={{ marginTop: 6 }}>
+              <button disabled={!newSession.look.trim() || !!writing}
+                      title="Rewrite the look with every garment described precisely — a vague garment comes back different in every photo"
+                      onClick={() => writeLook('look', () => rewriteLook(newSession.look))}>
+                {writing === 'look' ? '…' : '✨ Describe it precisely'}
+              </button>
+              {/* The native file input renders its label in the browser's locale,
+                  so it is hidden behind our own, as everywhere else. */}
+              <label className="filebtn"
+                     title="Copy the wardrobe of a photo: the clothes, the hair, the place. Never the person — the character comes from the LoRA, and another face written into the look fights it in every frame.">
+                {writing === 'photo' ? '…' : '📷 Look from a photo…'}
+                <input type="file" accept="image/png,image/jpeg,image/webp" hidden
+                       onChange={(e) => {
+                         const file = e.target.files[0]
+                         e.target.value = ''   // same file twice in a row still fires
+                         if (file) writeLook('photo', async () => lookFromPhoto(await photoDataUri(file)))
+                       }} />
+              </label>
+              <span className="muted">
+                the clothes and the place, never the person — that comes from the LoRA
+              </span>
+            </div>
+          )}
 
           <h3 style={{ marginTop: 16 }}>Shots</h3>
           {/* Which photo the ref takes edit is the first thing asked and the last
@@ -213,14 +252,19 @@ export default function ModelDetail({ id }) {
             </p>
           )}
           {kind === 'angles' && (
-            <AnglePicker onAdd={(takes) => setNewSession({
+            <AnglePicker llm={llm} onAdd={(takes) => setNewSession({
                            // The blank first row is scaffolding, not a take.
                            ...newSession,
                            shots: [...newSession.shots.filter((s) => s.prompt.trim()), ...takes],
                          })} />
           )}
-          <ShotsEditor kind={kind} shots={newSession.shots}
-                       onChange={(shots) => setNewSession({ ...newSession, shots })} />
+          {/* Both updates are functional rather than a spread of `newSession`: the
+              brief writes the look and the takes in two awaits, and a spread of the
+              session captured before the first one puts the old look back. */}
+          <ShotsEditor kind={kind} shots={newSession.shots} llm={llm}
+                       context={composed(model, '')} look={newSession.look}
+                       onLook={(look) => setNewSession((cur) => ({ ...cur, look }))}
+                       onChange={(shots) => setNewSession((cur) => ({ ...cur, shots }))} />
 
           <div className="row" style={{ marginTop: 12 }}>
             <button className="primary" onClick={createSession}

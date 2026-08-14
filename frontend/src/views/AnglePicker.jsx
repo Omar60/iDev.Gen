@@ -1,5 +1,8 @@
 import React, { useState } from 'react'
 import { ANGLE_AXES } from '../kinds.js'
+import { anglesFromText } from '../enhance.js'
+
+const VOCABULARY = ANGLE_AXES.flatMap((a) => a.chips.map((c) => c.v))
 
 const DEFAULT_SELECTION = {
   direction: ['front view'], height: ['eye-level shot'], size: ['medium shot'],
@@ -12,12 +15,33 @@ const DEFAULT_SELECTION = {
  *  fourteen near-identical lines and one typo away from a take that silently
  *  did nothing, so the vocabulary is chips and the app writes the lines.
  */
-export default function AnglePicker({ onAdd }) {
+export default function AnglePicker({ onAdd, llm = false }) {
   // Empty by default and never prefilled with the character's trigger: this is
   // the angle LoRA's own token, and a reference take carries no trigger — the
   // photo it edits already shows the character.
   const [token, setToken] = useState('')
   const [sel, setSel] = useState(DEFAULT_SELECTION)
+  const [ask, setAsk] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  /** Free text picks chips, it never becomes a take: the LoRA reads this
+   *  vocabulary and drops everything else, and prose it dropped looks exactly
+   *  like prose it read. The server clamps the answer to the list below, and
+   *  what survives is ticked here. */
+  const fromText = async () => {
+    setBusy(true); setError('')
+    try {
+      const line = await anglesFromText(ask, VOCABULARY)
+      const picked = {}
+      for (const axis of ANGLE_AXES) {
+        const hits = axis.chips.filter((c) => line.includes(c.v)).map((c) => c.v)
+        if (hits.length) picked[axis.key] = hits
+      }
+      if (!Object.keys(picked).length) throw new Error('nothing in the camera vocabulary matched that')
+      setSel({ ...sel, ...picked })
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
 
   const toggle = (key, v) => setSel({
     ...sel,
@@ -40,6 +64,17 @@ export default function AnglePicker({ onAdd }) {
 
   return (
     <div className="panel" style={{ background: 'var(--panel-2)', marginBottom: 10 }}>
+      {llm && (
+        <div className="row" style={{ marginBottom: 8 }}>
+          <input value={ask} disabled={busy} placeholder="ask for an angle: “from behind, a bit lower”"
+                 onChange={(e) => setAsk(e.target.value)} />
+          <button disabled={!ask.trim() || busy} onClick={fromText}
+                  title="Pick the chips that match — the vocabulary is closed, so this ticks boxes rather than writing a take">
+            {busy ? '…' : '✨ Pick'}
+          </button>
+        </div>
+      )}
+      {error && <div className="error" onClick={() => setError('')}>{error}</div>}
       {ANGLE_AXES.map((axis) => (
         <div className="row" key={axis.key} style={{ marginBottom: 6 }}>
           <label style={{ width: 70, margin: 0 }}>{axis.label}</label>

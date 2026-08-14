@@ -98,6 +98,130 @@ only fights the sampler for attention.
 A shot's own negative overrides the model's default negative; leave it empty to
 inherit.
 
+## Writing the prompts
+
+Everything on this page is a rule about text, and the app can now apply them
+itself. Open **Setup** and press **Find an assistant**: it looks on the ports a
+local Ollama, LM Studio or llama.cpp listens on, and lists the models that one
+has. Save, and the ✨ buttons appear. With no endpoint set nothing changes and no
+button shows.
+
+It only ever writes into a box you can edit. It queues nothing, changes no shot
+that already exists, and composes nothing: what it writes is the take's own
+line, and the trigger, base prompt and look are still prepended by the app.
+
+| Button | Where | What it writes |
+|---|---|---|
+| **✨ Write 4 takes** | above the takes | the look *and* four different takes, from one sentence |
+| **✨** | on a take | that line again, by the rules of the kind |
+| **↩** | on a rewritten take | what it said before |
+| **✨ Describe it precisely** | under the look | the same look with every garment described properly |
+| **📷 Look from a photo…** | under the look | the wardrobe of a photo you pick |
+| **✨ Pick** | in the angle picker | ticks chips, never a take |
+
+**The brief.** One sentence — *“a rooftop at sunset, streetwear, standing,
+sitting and walking”* — becomes the look and four takes. The takes are written
+knowing the look, and told not to repeat it: that is the rule from
+[the shots](#the-shots) applied by the writer instead of by you. They vary a
+different axis each, because four rewordings of one pose are one take with four
+variations, which the `count` box already does for free.
+
+In an existing session the brief writes takes only. The look belongs to the
+session and does not change halfway — that is what makes it a session.
+
+### Detail is a zoom lens
+
+The one rule that costs a whole session to learn, so it is written here instead:
+**the frame goes where the words go, and reaches as far down the body as they
+do.** Not as far as the take asks. As far as the words reach.
+
+A session that spent nineteen of its eighty-six look words on a bra, its straps,
+a brief and a necklace — with nothing above the collarbone, nothing below the
+thigh and no room to stand in — came back as a catalogue photograph of the
+underwear, cropped above the mouth. `full-body` was in the take. It changed
+nothing: ten words of take against eighty of look, and the eighty say where to
+point the camera.
+
+Fixing it is not a stronger word for *full-length*. It is moving the words:
+
+- **Below the hip has to exist.** When a garment stops at the thigh, the legs
+  below it are still in the photograph — bare skin, knees, calves, ankles, the
+  feet and what they stand on. A look whose words stop at the thigh is a
+  photograph that stops at the thigh.
+- **No section may outweigh the rest.** Underwear is the trap, because *Upper
+  body* and *Lower body* then describe the same handspan twice. Spend the same
+  care on the hair, the feet and the room.
+- **The room needs depth**, not a backdrop. A floor running away behind the
+  subject pulls the camera back; a plain wall gives it nothing to show but her,
+  so it moves closer.
+- **The take names its framing outright and first** — `Full-length, head to
+  feet`, `Three-quarter, from the knees up`, `Waist-up`, `Close-up` — with at
+  least one full-length in every batch. Blunt on purpose, and never clever:
+  `thigh-to-hair framing` is a crop at the thigh whatever it was meant to say.
+
+The assistant follows all four now. Walking that list moved one real session from
+*chin to mid-thigh, head out of frame* to *head to feet*, on the same seed, the
+same wardrobe and the same 832×1216 canvas.
+
+A session already shot that way is not lost, and it does not need starting over.
+The look cannot be edited after creation — that is what makes it a session — but
+**⟳ More like this** copies the whole composed prompt into the panel as a
+`verbatim` take, where it *can* be edited: add `bare feet on wooden floorboards`
+and `full-length, head to feet` to it and queue that.
+
+**A written take will not undress anybody**, and that is on purpose rather than
+prudishness: the look is prepended word for word to every take, so
+`…ivory silk camisole…, straps pushed off the shoulder` is a positive that
+dresses and undresses in the same breath, and what comes back is neither. It is
+[the jacket problem](#reference-takes) with a different garment. Ask a brief for
+that and the takes come back as poses with the wardrobe left alone; to actually
+take something off, shoot the photo dressed, 📎 it, and switch the kind to
+**Photo edit**.
+
+**The kind decides what a take is**, so ✨ writes a description for a photoshoot
+take and an imperative instruction for a `ref` one, with no trigger and no look
+in it. That is the same split as [reference takes](#reference-takes), and the
+reason a reference take is never given the look as context: nothing prepends it,
+so nothing must restate it.
+
+**Look from a photo** copies the clothes, the hair, the makeup, the place and
+the light — the garment at the level of detail this page asks for, `white linen
+midi dress, thin straps, square neckline` rather than `white dress`.
+
+It is read **head to toe, one line per part of the body**: hair and makeup, upper
+body, lower body, feet, accessories, then the place and the light. The sections
+are a checklist before they are an ordering — what varies between frames is
+overwhelmingly what nobody wrote down, and a single "describe the clothes" is how
+a look ends up with no trousers named in it at all. Each line has to say what
+identifies the garment: colour and pattern, fabric, cut and fit, then the
+detail — neckline, sleeves, hem, buttons, closure — and how it is worn.
+
+And it has to **count**. How many straps, buckles, rings, spikes: a number is the
+attribute that drifts hardest when nobody writes one, and the first thing the eye
+checks between two frames. `multiple silver spikes` is re-rolled into a different
+boot in every photo; `three silver conical spikes on the front of each` is the
+same boot every time. A count that is off by one still holds the session
+together, which is why the assistant is told to commit to a number rather than
+hedge.
+
+How much of that you actually get is the model's doing, not the app's. A large
+vision model fills all six with the fabric and the hardware named; a small local
+one fills them too, but leaks what it was told to leave out — a pose, a feature
+of the person, a `no shirt` that puts a shirt in the photo — and starts dropping
+a section as the request gets longer. If the wardrobe is the point of the
+session, this is the button worth pointing at the best model you have. It is told
+never to describe the person: no face, no body, no age, no expression. The
+identity is the LoRA's job, and another person's features sitting in the look
+would fight it in every frame of the session. Pose and framing are left out too;
+those are the takes. The photo is read and thrown away — it is not uploaded to
+ComfyUI and does not become a reference take.
+
+**Camera angles get chips, not prose.** The angle LoRA reads a closed
+vocabulary, so *“from behind, a bit lower”* ticks `back view` and
+`low-angle shot` and drops everything else. A word the LoRA would ignore looks
+exactly like a word it read, which is why it is dropped before it reaches a take
+rather than after.
+
 ## Seeds
 
 - **Random** — a different seed per shot. What you want for a real shoot.

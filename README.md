@@ -71,6 +71,30 @@ Editing that file by hand is still fine; restart afterwards.
 | `comfy_output_dir` | The folder ComfyUI saves images into. Required — sessions refuse to run until it points somewhere real, and the top bar says so. |
 | `lora_dir` | ComfyUI's LoRA root. Optional: it only powers the `<name>.preview.jpeg` thumbnails model managers store next to each file. |
 | `data_dir` | Where the database and the sessions live. Relative to the repo unless absolute. Put it on a drive with room: each session is hundreds of MB. Changing it needs a restart. |
+| `llm_url` | Optional. An OpenAI-compatible endpoint for the prompt assistant — a local Ollama or LM Studio, or a hosted one (`https://api.minimax.io/v1` and friends). Empty turns the assistant off. *Find an assistant* in Setup probes the usual ports and fills it in. |
+| `llm_model` | The model that writes. Setup lists what the endpoint has, biggest first. |
+| `llm_vision_model` | Optional. Used when a photo is sent; falls back to `llm_model`. Setup lists only the models that can actually read one. |
+| `llm_key` | Optional. Only a hosted endpoint needs one. |
+
+## Writing the prompts
+
+With an endpoint set, the app writes the text it has always asked you to write —
+and writes it by the rules that are otherwise only in these docs:
+
+- a **brief** — *“a rooftop at sunset, streetwear, standing, sitting and
+  walking”* — fills the look and four different takes, none of them repeating
+  the wardrobe the look already states;
+- **✨** on a take rewrites that one line, as a description for a photoshoot take
+  and as an instruction for an edit, and **↩** puts back what it said;
+- **📷 Look from a photo…** copies a photo's wardrobe, hair, place and light
+  into the look — and never the person, because the character comes from the
+  LoRA and another face written into the look fights it in every frame;
+- for **camera angles** it ticks the picker's chips instead of writing prose,
+  because the LoRA's vocabulary is closed and prose it drops looks exactly like
+  prose it read.
+
+All of it is a suggestion in an editable box. Nothing is generated, queued or
+changed by it — see [sessions](docs/sessions.md#writing-the-prompts).
 
 ## Workflows
 

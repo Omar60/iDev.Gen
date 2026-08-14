@@ -8,8 +8,10 @@ moved into the session folder.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
 import os
 import random
 import shutil
@@ -22,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import db
+import enhance
 from comfy import REFERENCE_SLOTS, SLOTS, Comfy, detect_map
 from runner import Runner, slug
 
@@ -155,6 +158,13 @@ class ConfigIn(BaseModel):
     comfy_output_dir: str = ""
     lora_dir: str = ""
     data_dir: str = "data"
+    # The optional prompt assistant. Every key belongs here even though all four
+    # are optional: `save_config` writes `model_dump()` over config.json, so a key
+    # missing from this schema is a key deleted on the next save.
+    llm_url: str = ""
+    llm_model: str = ""
+    llm_vision_model: str = ""
+    llm_key: str = ""
 
 
 # ------------------------------------------------------------------ setup
@@ -163,6 +173,7 @@ class ConfigIn(BaseModel):
 def read_config():
     return {**CONFIG, "output_dir_ok": output_dir_ok(),
             "lora_dir_ok": bool(LORA_DIR.name) and LORA_DIR.is_dir(),
+            "llm_ok": enhance.configured(CONFIG),
             "data_dir_resolved": str(DATA_DIR)}
 
 
@@ -836,6 +847,53 @@ def delete_shot(shot_id: int):
         (SESSIONS_DIR / str(shot["session_id"]) / shot["filename"]).unlink(missing_ok=True)
     db.run("DELETE FROM shot WHERE id=?", shot_id)
     return {"ok": True}
+
+
+# ------------------------------------------------------------------ prompt help
+
+@app.post("/api/llm/models")
+async def llm_models(payload: dict):
+    """What the assistant can run, and where it is.
+
+    With no `url` it probes the ports a local assistant listens on, so the
+    endpoint is a button rather than a thing to look up — the same reason
+    `/api/config/detect` exists for ComfyUI. Proposes; saving is still the
+    user's click.
+
+    POST rather than GET because a hosted endpoint lists nothing without its API
+    key, and a key does not belong in a query string.
+    """
+    return await enhance.discover(payload.get("url") or "", payload.get("key") or "")
+
+
+@app.post("/api/enhance")
+async def enhance_prompt(p: enhance.EnhanceIn):
+    """Ask the optional LLM for a take, a look or an angle line.
+
+    Suggestion only: it answers with text for a box on screen, and touches
+    neither the database nor the queue. Composition still happens in
+    `_expand_shots`, so what comes back is the take's own line — never the
+    trigger, the base prompt or the look, which is exactly what the caller tells
+    the model is already in the prompt.
+    """
+    return {"lines": await enhance.run(CONFIG, p, _shot_data_uri(p.shot_id))}
+
+
+def _shot_data_uri(shot_id: int | None) -> str:
+    """A finished photo as a data: URI, for the vision path. A photo the app owns
+    beats one sent in the body: `shot_id` is a photo we can name, the body is
+    whatever the browser read off the disk."""
+    if not shot_id:
+        return ""
+    shot = db.one("SELECT * FROM shot WHERE id=?", shot_id)
+    if not shot or not shot["filename"]:
+        raise HTTPException(400, "that shot has no photo to look at")
+    path = SESSIONS_DIR / str(shot["session_id"]) / shot["filename"]
+    if not path.exists():
+        raise HTTPException(400, "that shot's file is missing")
+    data = path.read_bytes()
+    mime = mimetypes.guess_type(path.name)[0] or "image/png"
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
 
 # ------------------------------------------------------------------ static
