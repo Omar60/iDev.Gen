@@ -331,6 +331,39 @@ const GARMENT_DETAIL =
   + 'every photo of the session. A count that is off by one is still the same count in '
   + 'every frame, which is the whole point; write the most likely number and move on.'
 
+/** The room is the framing control. This is the whole finding.
+ *
+ *  A take can ask for `full-length, head to feet` in three different phrasings
+ *  and be ignored in all of them — measured, four seeds, none full-length. Nor
+ *  does the canvas move it: the same four seeds at 9:16 came back cropped in the
+ *  same place, the taller frame spent on empty ceiling. Nor is it the character
+ *  LoRA: at strength zero, still none.
+ *
+ *  What moved it, on the first try and in four of four, was one sentence in the
+ *  ROOM. `A tall mirror against a pale wall` is a backdrop: nothing stands
+ *  between the camera and her, so nothing makes the camera step back, and it
+ *  frames at whatever distance it likes — which is a mid-shot. `The bare wooden
+ *  floor running away from the camera past the foot of the bed to a mirror at the
+ *  opposite wall` cannot be painted from close up. To show that floor the camera
+ *  has to be across the room, and from there the whole figure is in frame by
+ *  geometry rather than by instruction.
+ *
+ *  So framing is not asked for. It is made unavoidable. */
+const ROOM_DEPTH =
+  'The place is written as a space with depth, not as a backdrop, and this is the single '
+  + 'most load-bearing line of a look. Say what lies BETWEEN the camera and her and what '
+  + 'lies behind her: the floor running away underfoot, the furniture it passes, the far '
+  + 'wall it reaches. `A mirror against a pale wall` is a flat backdrop and the camera has '
+  + 'no reason to stand anywhere in particular. `The bare wooden floor running away from the '
+  + 'camera past the foot of the bed to a mirror at the far wall` puts the camera across the '
+  + 'room, because there is no other place it could be standing.\n'
+  + 'That is how a photograph gets the whole figure in it. Measured on this model: with a '
+  + 'flat wall, four seeds of a take asking in three different ways for head-to-feet gave '
+  + 'four crops at the knee; with the floor running away, the same four seeds gave four '
+  + 'photographs of the whole body. Nothing else moved it — not the wording of the take, not '
+  + 'a taller canvas, not turning the character off. A room with depth is worth more than '
+  + 'any sentence about framing.'
+
 export const LOOK_INSTRUCTION =
   'Write the look of one photo session — what is worn and where, so that it comes back the '
   + 'same in every photo of it.\n'
@@ -370,39 +403,6 @@ export const LOOK_FROM_PHOTO_INSTRUCTION =
   + 'here fight it in every frame of the session.\n'
   + 'Never write the pose, the framing or the camera angle either: this is what is worn, '
   + 'not how it was photographed.'
-
-/** The room is the framing control. This is the whole finding.
- *
- *  A take can ask for `full-length, head to feet` in three different phrasings
- *  and be ignored in all of them — measured, four seeds, none full-length. Nor
- *  does the canvas move it: the same four seeds at 9:16 came back cropped in the
- *  same place, the taller frame spent on empty ceiling. Nor is it the character
- *  LoRA: at strength zero, still none.
- *
- *  What moved it, on the first try and in four of four, was one sentence in the
- *  ROOM. `A tall mirror against a pale wall` is a backdrop: nothing stands
- *  between the camera and her, so nothing makes the camera step back, and it
- *  frames at whatever distance it likes — which is a mid-shot. `The bare wooden
- *  floor running away from the camera past the foot of the bed to a mirror at the
- *  opposite wall` cannot be painted from close up. To show that floor the camera
- *  has to be across the room, and from there the whole figure is in frame by
- *  geometry rather than by instruction.
- *
- *  So framing is not asked for. It is made unavoidable. */
-const ROOM_DEPTH =
-  'The place is written as a space with depth, not as a backdrop, and this is the single '
-  + 'most load-bearing line of a look. Say what lies BETWEEN the camera and her and what '
-  + 'lies behind her: the floor running away underfoot, the furniture it passes, the far '
-  + 'wall it reaches. `A mirror against a pale wall` is a flat backdrop and the camera has '
-  + 'no reason to stand anywhere in particular. `The bare wooden floor running away from the '
-  + 'camera past the foot of the bed to a mirror at the far wall` puts the camera across the '
-  + 'room, because there is no other place it could be standing.\n'
-  + 'That is how a photograph gets the whole figure in it. Measured on this model: with a '
-  + 'flat wall, four seeds of a take asking in three different ways for head-to-feet gave '
-  + 'four crops at the knee; with the floor running away, the same four seeds gave four '
-  + 'photographs of the whole body. Nothing else moved it — not the wording of the take, not '
-  + 'a taller canvas, not turning the character off. A room with depth is worth more than '
-  + 'any sentence about framing.'
 
 /** The look box on its own: the two sections that are the same in every frame.
  *
