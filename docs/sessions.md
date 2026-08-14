@@ -57,14 +57,38 @@ menu is disabled while the session runs.
 
 ## The look
 
-Wardrobe, hair, makeup, styling, the place. Written once, at the top of the
-session, and identical in every photo it produces. That is what makes the output
-a session instead of a pile of unrelated renders: change the dress and you are
-shooting a different session, so make a different one.
+Hair, makeup, the place, the light. Written once, at the top of the session, and
+identical in every photo it produces. That is what makes the output a session
+instead of a pile of unrelated renders: change the light and you are shooting a
+different session, so make a different one.
 
 ```text
-white summer dress, hair down, gold hoop earrings, on a beach at golden hour
+hair down with a centre part, soft natural makeup, on a beach at golden hour
 ```
+
+## The wardrobe
+
+The clothes, kept separate from the look — because they are the half of a shoot
+that moves.
+
+The session's wardrobe is a **starting point**, not a constant. It is written
+into every take rather than stated once above them, and a take that carries its
+own wardrobe wins:
+
+```text
+white linen midi dress, thin straps, square neckline, bare legs, flat tan sandals
+```
+
+That arrangement is the whole trick. Stated once, a wardrobe is prepended to the
+very take that asks for the dress off, and a positive that both describes and
+denies a dress keeps the dress. Written per take, each photograph states its own
+truth and nothing in the prompt argues with itself — and the pieces the takes do
+*not* touch stay word for word identical from frame to frame, which is what held
+the wardrobe together in the first place.
+
+So a shoot can walk: dressed, straps off one shoulder, dress at the waist, none
+of it — one take each, in one session, with the hair, the makeup and the light
+unchanged throughout.
 
 ## The shots
 
@@ -79,21 +103,25 @@ three-quarter view, hands in pockets, looking away
 sitting on the sand, leaning back on both arms
 ```
 
-Do not repeat the wardrobe here — it is already in the look, and repeating it
-only fights the sampler for attention.
+Do not write the wardrobe here — every take has its own wardrobe box, under the
+take itself, and clothes written in both boxes are two sentences about one
+garment in one prompt. A take's wardrobe box left empty wears the session's,
+which is the normal case: only the takes that *change* need anything in it.
 
 ## How the prompt is built
 
-`trigger, model base prompt, session look, shot`. If the shot text contains
-`{trigger}` the trigger goes exactly there instead of being prepended:
+`trigger, model base prompt, session look, the take's wardrobe, shot`. If the
+shot text contains `{trigger}` the trigger goes exactly there instead of being
+prepended:
 
 | Piece | Value |
 |---|---|
 | Model trigger | `4da woman` |
 | Model base prompt | `photo, 35mm` |
-| Session look | `white summer dress, on a beach` |
+| Session look | `hair down, on a beach` |
+| Wardrobe (this take's, or the session's) | `white summer dress` |
 | Shot | `full body, walking` |
-| **Sent to ComfyUI** | `4da woman, photo, 35mm, white summer dress, on a beach, full body, walking` |
+| **Sent to ComfyUI** | `4da woman, photo, 35mm, hair down, on a beach, white summer dress, full body, walking` |
 
 A shot's own negative overrides the model's default negative; leave it empty to
 inherit.
@@ -112,22 +140,130 @@ line, and the trigger, base prompt and look are still prepended by the app.
 
 | Button | Where | What it writes |
 |---|---|---|
-| **✨ Write 4 takes** | above the takes | the look *and* four different takes, from one sentence |
+| **🎲** | next to the brief | the brief itself — a shoot to run, from the look and the wardrobe |
+| **✨ N takes** | above the takes | the look, the wardrobe *and* N takes that vary the pose, from one sentence |
+| **🎬 The whole shoot** | above the takes | N takes **in order** and a wardrobe for each of them, from the same sentence |
+| **👗 Wardrobe per take** | above the takes | one wardrobe for each take you already have, walking the clothes across the shoot |
 | **✨** | on a take | that line again, by the rules of the kind |
+| **👗** | on a take | what is worn in that take, every garment described properly |
 | **↩** | on a rewritten take | what it said before |
-| **✨ Describe it precisely** | under the look | the same look with every garment described properly |
-| **📷 Look from a photo…** | under the look | the wardrobe of a photo you pick |
+| **✨ Describe it precisely** | under the look, and under the wardrobe | that box again, properly |
+| **📷 Look and wardrobe from a photo…** | under the look | a photo you pick, read into both boxes |
 | **✨ Pick** | in the angle picker | ticks chips, never a take |
 
-**The brief.** One sentence — *“a rooftop at sunset, streetwear, standing,
-sitting and walking”* — becomes the look and four takes. The takes are written
-knowing the look, and told not to repeat it: that is the rule from
-[the shots](#the-shots) applied by the writer instead of by you. They vary a
-different axis each, because four rewordings of one pose are one take with four
-variations, which the `count` box already does for free.
+**🎲 writes the brief.** With a photo read into the two boxes there is nothing
+left for you to type: the look and the wardrobe *are* that photograph in words,
+so a shoot written from them is one it could be a frame of — the room comes from
+the look, and what there is to take off comes from the wardrobe. A different one
+every time, because how far the shoot goes, how fast, and how it reads are
+picked at random here and handed to the assistant as constraints. Asked the same
+question about the same wardrobe it writes the same sentence back, however warm
+the sampler is, so the dice cannot be left to it.
 
-In an existing session the brief writes takes only. The look belongs to the
-session and does not change halfway — that is what makes it a session.
+Roll until one reads right, edit it, or ignore it and type your own.
+
+**The brief.** One sentence — *“a rooftop at sunset, streetwear, standing,
+sitting and walking”* — becomes the look, the wardrobe and N takes. The box next
+to the buttons is N: four for a set of variations, forty for a shoot that goes
+somewhere. Only the boxes still empty are filled: one you typed, or read off a
+photo, was decided. The takes are written knowing both, and told not to repeat
+them: that is the rule from [the shots](#the-shots) applied by the writer instead
+of by you.
+
+**✨ N takes** writes variations — a different axis each, because four rewordings
+of one pose are one take with four variations, which the `count` box already does
+for free. Nothing is in order and nothing changes clothes.
+
+**🎬 The whole shoot** is the other kind of session. The same brief —
+*“starts dressed and undresses step by step, keeping the stockings on”* — becomes
+**one line per photograph**: what she is wearing at that moment, what her body is
+doing, and her expression, written together in one sentence. The wardrobe box on
+those rows is left empty on purpose, because the line already states its own
+clothes and the session's must not be appended behind it.
+
+One line and not two, and this is the whole reason the button works. Written as
+two streams — a wardrobe walking from dressed to undressed, and takes writing
+poses — the two get the same brief and never speak. Measured, forty frames
+briefed to end explicit: the wardrobe reached bare by frame thirty and take forty
+was still *standing square to the mirror with her arms hanging loose*. Nothing
+was broken; the halves simply had no way to agree. In one line they cannot
+disagree, and the leak becomes impossible by construction — there is no second
+text left to name a garment this one has already put down.
+
+Each line copies word for word whatever the line before it did not change,
+changes one thing, and never names a garment that has come off: the piece is
+simply absent, and what stands in its place is the skin. Rows come in with
+`count = 1` — a step of a progression is one photograph, and four variations of a
+step is a decision to make afterwards on the steps worth it.
+
+**Every line walks the whole body** — chest and torso, hips and legs, feet — even
+where there is no garment, because an unstated part is not a bare part, it is a
+part the reader dresses for you. This is the rule that fails silently and fails
+late: on a real run the lines stopped saying `bare chest` at photograph
+twenty-four, and from there the shoot came back in a black nightgown nobody had
+written. Worse, it does not recover on its own — copying the previous line word
+for word is exactly what makes a dropped body part permanent — so each round is
+told to check the line it inherits and put back what it has lost.
+
+**Undressing is the first half, not the subject.** Read for where the brief
+*ends*, not for the first state that satisfies it: a run that treated `undressed`
+as the destination got the clothes off by photograph seven and spent the
+remaining thirty-three on variations of standing in a mirror. Everything the
+brief asks for after the last garment is the part someone actually wanted, and
+running out of wardrobe is the halfway mark, not a reason to stall.
+
+**👗 Wardrobe per take** does only the wardrobe half, on takes that already
+exist — written by hand, kept from an earlier shoot, added since. Rows marked
+`ref` or `verbatim` are skipped: they carry no wardrobe of their own.
+
+### What a forty-take shoot cost to get right
+
+Everything below was measured on one session — forty takes, a six-piece
+wardrobe — and each rule is there because the run before it came back wrong.
+
+**Asked for forty lines at once, an assistant does not answer forty.** It
+answered thirty-two takes, and they were stubs: `Close-up, hands clasped low.`
+against an instruction asking for a fifteen-to-thirty word caption. A long ask is
+answered *shorter*, and the middle of the shoot is what falls out. So both
+buttons ask in **rounds of eight** and stitch the answers, each call told where in
+the shoot it is and what the line before it said. Forty takes is ten calls and a
+few minutes; the button counts up while it works.
+
+**A wardrobe has as many states as it has pieces, not as many as the shoot has
+photographs.** Asked for forty wardrobes from six garments, it was bare by the
+fifteenth, repeated itself while it had nothing left to remove — and the repeats
+were dropped as duplicates, so the count never reached forty — and then **put her
+in a schoolgirl uniform** so there was something to take off again. The session
+came back as two shoots. Now at most twelve states are asked for, each held for a
+stretch of takes, and the writer is told to stop early rather than invent: only
+the pieces in the wardrobe box exist in that shoot.
+
+**A take written without knowing the clothes puts them back on.** With the two
+halves written in parallel, row twelve came back `both hands sliding the jersey
+hem upward` — twenty rows after the wardrobe had put the jersey down, and a
+prompt that names a jersey has a jersey in it. So the wardrobe is written first
+and the takes second, each round told what she is wearing across the stretch it
+is writing.
+
+**And it still slips, nought to four rows in twenty-five.** At the seam where a
+garment goes, the take reaches for it as the thing that changed: `both hands
+sliding the jersey hem upward`, on a row whose wardrobe has no jersey. Four
+rewrites of the instruction did not close it, and it is not the brief's doing
+either — the same wardrobe gave 0 in one run and 4 in the next, from briefs
+written the same way. It is variance, it always lands at the transition, and
+guessing at it costs a four-minute run each time.
+
+So it is caught instead of argued with: those rows are **outlined in red**. The
+check is a word in the session's wardrobe that this take's own wardrobe no longer
+has, which is precisely a garment that has come off — a colour or a bare shoulder
+appears in both and does not flag. Press ✨ on the row, or say what the body does
+— `arms lifted overhead, elbows high` — and let the wardrobe say the rest.
+
+In an existing session the brief writes takes only, and the **add shots** panel
+has the session's wardrobe in an editable box: twenty takes in, a shoot is rarely
+still wearing what it started in, and what you leave there is what the next takes
+start from. The look belongs to the session and does not change halfway — that is
+what makes it a session.
 
 ### Detail is a zoom lens
 
@@ -151,9 +287,8 @@ Fixing it is not a stronger word for *full-length*. It is moving the words:
 - **No section may outweigh the rest.** Underwear is the trap, because *Upper
   body* and *Lower body* then describe the same handspan twice. Spend the same
   care on the hair, the feet and the room.
-- **The room needs depth**, not a backdrop. A floor running away behind the
-  subject pulls the camera back; a plain wall gives it nothing to show but her,
-  so it moves closer.
+- **The room needs depth**, not a backdrop — and this one turned out to be the
+  whole game. See below.
 - **The take names its framing outright and first** — `Full-length, head to
   feet`, `Three-quarter, from the knees up`, `Waist-up`, `Close-up` — with at
   least one full-length in every batch. Blunt on purpose, and never clever:
@@ -163,20 +298,48 @@ The assistant follows all four now. Walking that list moved one real session fro
 *chin to mid-thigh, head out of frame* to *head to feet*, on the same seed, the
 same wardrobe and the same 832×1216 canvas.
 
+### The room is the framing control
+
+Framing resisted every lever aimed at it, and gave way to one aimed somewhere
+else entirely. Four seeds of the same take, changing one thing at a time:
+
+| What was changed | Full-length frames |
+|---|---|
+| The take's wording — three phrasings of *head to feet* in one line | **0 of 4** |
+| The canvas — 832×1216 → 832×1472, a 9:16 frame | **0 of 4** |
+| The character LoRA — strength 1.0 → 0.0 | **0 of 4** |
+| **The room — a wall behind her → a floor running away from the camera** | **4 of 4** |
+
+A taller canvas does not lower the crop; it adds ceiling. The figure stays the
+same size in frame and the extra pixels go to empty wall. Turning the character
+off changes nothing either, which rules out a LoRA trained on portraits.
+
+What works is geometry. `A tall mirror against a pale wall` is a backdrop:
+nothing stands between the camera and her, so nothing obliges the camera to
+stand anywhere in particular, and it frames at the distance the model likes —
+a mid-shot. `The bare wooden floor running away from the camera past the foot of
+the bed to a mirror at the opposite wall` **cannot be painted from close up**.
+To show that floor the camera has to be across the room, and from there the whole
+figure is in the picture without anyone asking for it.
+
+So the framing is not requested. It is made unavoidable, and it is done in the
+look — the one part of the prompt that never changes — rather than in the take.
+`ROOM_DEPTH` in `kinds.js` is that rule, and it is in every instruction that
+writes a place.
+
 A session already shot that way is not lost, and it does not need starting over.
 The look cannot be edited after creation — that is what makes it a session — but
 **⟳ More like this** copies the whole composed prompt into the panel as a
 `verbatim` take, where it *can* be edited: add `bare feet on wooden floorboards`
 and `full-length, head to feet` to it and queue that.
 
-**A written take will not undress anybody**, and that is on purpose rather than
-prudishness: the look is prepended word for word to every take, so
-`…ivory silk camisole…, straps pushed off the shoulder` is a positive that
-dresses and undresses in the same breath, and what comes back is neither. It is
-[the jacket problem](#reference-takes) with a different garment. Ask a brief for
-that and the takes come back as poses with the wardrobe left alone; to actually
-take something off, shoot the photo dressed, 📎 it, and switch the kind to
-**Photo edit**.
+**A take undresses through its wardrobe box, never through its own line.** The
+take says the pose and the framing; the wardrobe box under it says what is on the
+body. Written in the take instead, `straps pushed off the shoulder` lands beside
+the wardrobe the app also prepends, and two sentences about one camisole in one
+prompt is a photograph wearing neither. Write the state in the wardrobe box —
+`ivory silk camisole at the waist, bare shoulders, bare chest` — and the take
+stays a pose. That is what 👗 does for a whole shoot at once.
 
 **The kind decides what a take is**, so ✨ writes a description for a photoshoot
 take and an imperative instruction for a `ref` one, with no trigger and no look
@@ -236,20 +399,26 @@ lightbox, so a keeper can be reproduced.
 A word on what a seed does **not** do: it fixes the initial noise, not the
 wardrobe. Two takes with the same seed and different prompts share a tendency in
 composition, not the same buttons, neckline or fabric. What keeps an outfit
-consistent is describing it precisely in the look (`white linen midi dress, thin
-straps, square neckline` rather than `white dress`) and keeping the shot line
-short so it does not compete for attention. For a genuinely identical garment,
+consistent is describing it precisely in the wardrobe (`white linen midi dress,
+thin straps, square neckline` rather than `white dress`), leaving it word for
+word the same in the takes that do not change it, and keeping the shot line short
+so it does not compete for attention. For a genuinely identical garment,
 work from a photo instead of from words — see *Reference takes* below.
 
 ## Reference takes
 
-Text to image has a limit you hit fast: **you cannot take something off the
-look.** The look is prepended to every shot, so a take that says
-`without the jacket` is sent as `…leather jacket…, without the jacket`. The
-positive both describes the jacket and denies it, and the jacket usually wins.
+Text to image has a limit you hit fast: **a prompt cannot deny what it also
+says.** A take that says `without the jacket` is sent as
+`…leather jacket…, without the jacket`. The positive both describes the jacket
+and denies it, and the jacket usually wins.
 
-A reference take solves it by changing what the prompt *is*. Instead of
-describing a photo, it gives an instruction on one you already have:
+Two answers, and they are for different jobs. The
+[per-take wardrobe](#the-wardrobe) is the answer when you are shooting new
+photographs: nothing denies anything, because the take that has no jacket never
+names one. A reference take is the answer when the photograph already exists and
+has to *stay* that photograph — same face, same pose, same room, one thing
+changed. It works by changing what the prompt *is*: instead of describing a
+photo, it gives an instruction on one you already have.
 
 | | Text to image | Reference take |
 |---|---|---|
@@ -533,9 +702,11 @@ two copies).
 
 **+ Shots** starts from an empty take instead.
 
-Both append to the current session and keep its look: a shoot whose wardrobe
-changed halfway is two sessions, so the look is read from the session and not
-from whatever the panel sends. A finished session goes back to *draft* and can
+Both append to the current session and keep its look: a shoot whose hair, place
+and light changed halfway is two sessions, so the look is read from the session
+and not from whatever the panel sends. The wardrobe is read from the session too,
+as the default the new takes start from — and that one *is* editable in the
+panel, because it is the half of a shoot that was always meant to move. A finished session goes back to *draft* and can
 be run again. Reshooting a reference take stays a reference take — coming back
 as a fresh text to image would quietly be a different picture.
 

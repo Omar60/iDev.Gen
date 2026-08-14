@@ -52,7 +52,7 @@ def test_the_queued_graph_carries_the_session_values(client, make_runner):
     asyncio.run(r._run_session(sid))
 
     g = fake.graphs[0]
-    assert g["3"]["inputs"]["text"] == "4da woman, on the beach"
+    assert g["3"]["inputs"]["text"] == "4da woman. on the beach."
     assert g["4"]["inputs"]["text"] == "blurry"
     assert g["6"]["inputs"]["seed"] == 77
     assert g["6"]["inputs"]["steps"] == 8
@@ -269,7 +269,7 @@ def test_a_reference_take_edits_the_anchor_through_the_other_workflow(client, ma
 
     anchor_graph, edit_graph = fake.graphs
     # The anchor is a normal text2image take: composed prompt, own workflow.
-    assert anchor_graph["3"]["inputs"]["text"] == "4da woman, photo, 35mm, leather jacket, standing"
+    assert anchor_graph["3"]["inputs"]["text"] == "4da woman. photo, 35mm. leather jacket. standing."
     assert "2" in anchor_graph and anchor_graph["2"]["class_type"] == "LoraLoader"
 
     # The edit went through the reference workflow, with the anchor loaded and the

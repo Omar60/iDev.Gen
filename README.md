@@ -5,20 +5,28 @@ Photo sessions for LoRA character models, on top of ComfyUI.
 **Model (character) → Session → Shots**, the way a real shoot works:
 
 - the **model** is the identity — its LoRA, trigger word, strength and base prompt;
-- the **session** is one *look* — wardrobe, hair, styling, setting — held
-  identical across every frame;
+- the **session** is one *look* — hair, makeup, the place, the light — held
+  identical across every frame, plus a **wardrobe** every take starts from;
 - the **shots** are the takes that vary: pose, angle, framing, corner of the
-  place, with as many variations of each as you want.
+  place, and what is worn, with as many variations of each as you want.
 
 Launching a session queues its shots one at a time in ComfyUI, and every
 finished image is **moved** out of ComfyUI's output into the session folder.
 
+The wardrobe is written into **every take** rather than stated once above them,
+and a take that sets its own wins. That is what lets one shoot open a jacket,
+push a top up and end with none of it: stated once, the wardrobe would be
+prepended to the very take asking for the jacket off, and a positive that both
+describes and denies a jacket keeps the jacket. Written per take, each frame
+states its own truth — and the pieces the takes leave alone stay word for word
+identical, which is what holds a wardrobe together across twenty photos.
+
 A shot can also be a **reference take**: instead of painting from noise it edits
 a photo the session already produced, and its prompt is an instruction
-(`remove the jacket`) carrying no trigger, base prompt or look. That is the only
-way to take something *off* the look — prepending it to a take that denies it
-just keeps the jacket. Needs a second workflow (img2img, FLUX.1 Kontext,
-Qwen-Image-Edit); see [sessions](docs/sessions.md#reference-takes).
+(`remove the jacket`) carrying no trigger, base prompt or look. That is the way
+to change one thing while *keeping the photograph* — same face, same pose, same
+room. Needs a second workflow (img2img, FLUX.1 Kontext, Qwen-Image-Edit); see
+[sessions](docs/sessions.md#reference-takes).
 
 A session is created with a **kind**, which is what turns those two paths into
 four jobs the app can actually guide:
@@ -82,13 +90,29 @@ With an endpoint set, the app writes the text it has always asked you to write �
 and writes it by the rules that are otherwise only in these docs:
 
 - a **brief** — *“a rooftop at sunset, streetwear, standing, sitting and
-  walking”* — fills the look and four different takes, none of them repeating
-  the wardrobe the look already states;
+  walking”* — fills the look, the wardrobe and as many takes as you ask for,
+  none of them repeating what the two boxes already state;
+- **🎲** writes the brief too, from the look and the wardrobe a photo was read
+  into: a shoot that room and those clothes could plausibly be a frame of, and a
+  different one every roll — how far it goes, how fast and how it reads are
+  picked here rather than left to a sampler that answers the same question the
+  same way;
+- **🎬 The whole shoot** turns one sentence into a session that goes somewhere:
+  *“starts dressed and undresses step by step, keeping the stockings on”* becomes
+  N takes **in order** and the N wardrobes that walk beside them, each carrying
+  over word for word what the one before it did not change and never naming a
+  garment that has come off. Written in rounds of eight and stitched, because
+  asked for forty at once an assistant answers thirty-two stubs and spends the
+  whole arc by line nineteen — measured, not assumed. A take that still names a
+  garment its own wardrobe has put down is outlined in red;
+- **👗 Wardrobe per take** does the wardrobe half alone, on takes you already
+  wrote;
 - **✨** on a take rewrites that one line, as a description for a photoshoot take
   and as an instruction for an edit, and **↩** puts back what it said;
-- **📷 Look from a photo…** copies a photo's wardrobe, hair, place and light
-  into the look — and never the person, because the character comes from the
-  LoRA and another face written into the look fights it in every frame;
+- **📷 Look and wardrobe from a photo…** reads a photo into both boxes — the
+  hair, the place and the light into the look, the clothes into the wardrobe —
+  and never the person, because the character comes from the LoRA and another
+  face written here fights it in every frame;
 - for **camera angles** it ticks the picker's chips instead of writing prose,
   because the LoRA's vocabulary is closed and prose it drops looks exactly like
   prose it read.
@@ -145,8 +169,9 @@ file move are genuinely verified.
 - `test_workflow_map.py` — mapping detection (including prompts behind
   `FluxGuidance` and samplers with non-standard names), widget types, and that a
   connected input is never patched.
-- `test_api.py` — look expansion, prompt composition (including a reference take
-  carrying neither base nor look), seeds, validation, rating, cascading deletes.
+- `test_api.py` — look expansion, prompt composition (the per-take wardrobe
+  overriding the session's, and a reference take carrying neither base nor look),
+  seeds, validation, rating, cascading deletes.
 - `test_setup.py` — config detection from ComfyUI's launch path, saving and
   applying it live, and refusing folders that do not exist.
 - `test_runner.py` — a full run, the real values in the queued graph, reference

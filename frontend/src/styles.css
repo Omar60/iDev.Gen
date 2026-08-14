@@ -122,6 +122,19 @@ th { color: var(--muted); font-weight: 500; }
 .looks-table td.n { width: 70px; }
 .looks-table td.lbl { width: 160px; }
 
+/* What is worn in one take, under the take itself: the second line of the same
+   cell, quieter, because a row that says nothing there is wearing the session's
+   wardrobe and that is the normal case. */
+textarea.worn {
+  min-height: 32px; margin-top: 4px; font-size: 12px; color: var(--muted);
+  background: transparent;
+}
+textarea.worn:not(:placeholder-shown) { color: var(--text); }
+
+/* A take naming a garment its own wardrobe has taken off. Not an error — the box
+   is still yours — but the one thing you cannot see by reading the take alone. */
+textarea.contradicts { border-color: var(--bad); }
+
 /* A checkbox has to opt out of the width:100% every input gets above. */
 .chk { display: flex; align-items: center; gap: 5px; padding-top: 8px; color: var(--muted); font-size: 12px; cursor: pointer; }
 .chk input { width: auto; margin: 0; }

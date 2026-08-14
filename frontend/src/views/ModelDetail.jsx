@@ -5,7 +5,7 @@ import { ModelForm, BaseModelSelect } from './Models.jsx'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
 import { KINDS, WORKFLOW_KINDS, forKind } from '../kinds.js'
-import { composed, lookFromPhoto, photoDataUri, rewriteLook } from '../enhance.js'
+import { composed, lookFromPhoto, photoDataUri, rewriteLook, rewriteWardrobe } from '../enhance.js'
 
 export default function ModelDetail({ id }) {
   const [model, setModel] = useState(null)
@@ -40,6 +40,7 @@ export default function ModelDetail({ id }) {
     model_id: id,
     name: `Session ${model.sessions.length + 1}`,
     look: '',
+    wardrobe: '',
     shots: [blankShot('shoot')],
     workflow_id: model.workflow_id || only('t2i'),
     reference_workflow_id: null,
@@ -69,12 +70,17 @@ export default function ModelDetail({ id }) {
 
   const kind = newSession?.settings.kind || 'shoot'
 
+  /** Fills one box or both. A photo is read once and lands in both — the same six
+   *  sections, split where the session splits: what holds still, and what the
+   *  takes are free to move. */
   const writeLook = async (what, fn) => {
     setWriting(what); setError('')
     try {
-      const look = await fn()
-      if (look) setNewSession((cur) => ({ ...cur, look }))
-      else setError('the assistant answered nothing usable')
+      const written = await fn()
+      const fields = typeof written === 'string' ? { look: written } : written
+      if (Object.values(fields).some((v) => (v || '').trim())) {
+        setNewSession((cur) => ({ ...cur, ...fields }))
+      } else setError('the assistant answered nothing usable')
     } catch (e) { setError(e.message) } finally { setWriting('') }
   }
 
@@ -207,24 +213,24 @@ export default function ModelDetail({ id }) {
 
           <h3 style={{ marginTop: 16 }}>Look</h3>
           <p className="muted" style={{ margin: '0 0 6px' }}>
-            Wardrobe, hair, styling and setting — identical in every photo of the session.
+            Hair, makeup, the place and the light — identical in every photo of the session.
             Change the look and it is a different session.
           </p>
           <textarea rows={2} value={newSession.look}
-                    placeholder="white summer dress, hair down, gold hoop earrings, on a beach at golden hour"
+                    placeholder="hair down with a centre part, soft natural makeup, on a beach at golden hour"
                     onChange={(e) => setNewSession({ ...newSession, look: e.target.value })} />
           {llm && (
             <div className="row" style={{ marginTop: 6 }}>
               <button disabled={!newSession.look.trim() || !!writing}
-                      title="Rewrite the look with every garment described precisely — a vague garment comes back different in every photo"
+                      title="Rewrite the hair, the makeup, the place and the light precisely. The clothes are not written here — they belong to the wardrobe below."
                       onClick={() => writeLook('look', () => rewriteLook(newSession.look))}>
                 {writing === 'look' ? '…' : '✨ Describe it precisely'}
               </button>
               {/* The native file input renders its label in the browser's locale,
                   so it is hidden behind our own, as everywhere else. */}
               <label className="filebtn"
-                     title="Copy the wardrobe of a photo: the clothes, the hair, the place. Never the person — the character comes from the LoRA, and another face written into the look fights it in every frame.">
-                {writing === 'photo' ? '…' : '📷 Look from a photo…'}
+                     title="Read a photo into both boxes: the hair, the place and the light into the look, the clothes into the wardrobe. Never the person — the character comes from the LoRA, and another face written here fights it in every frame.">
+                {writing === 'photo' ? '…' : '📷 Look and wardrobe from a photo…'}
                 <input type="file" accept="image/png,image/jpeg,image/webp" hidden
                        onChange={(e) => {
                          const file = e.target.files[0]
@@ -234,6 +240,30 @@ export default function ModelDetail({ id }) {
               </label>
               <span className="muted">
                 the clothes and the place, never the person — that comes from the LoRA
+              </span>
+            </div>
+          )}
+
+          <h3 style={{ marginTop: 16 }}>Wardrobe</h3>
+          <p className="muted" style={{ margin: '0 0 6px' }}>
+            The clothes. This is the <b>starting point</b>, not a constant: it is written into
+            every take, and a take that sets its own wardrobe wins. That is what lets one
+            shoot open a jacket, push a top up and end with none of it, instead of every
+            frame arguing with a sentence that says the jacket is still on.
+          </p>
+          <textarea rows={2} value={newSession.wardrobe}
+                    placeholder="white linen midi dress, thin straps, square neckline, bare legs, flat tan leather sandals"
+                    onChange={(e) => setNewSession({ ...newSession, wardrobe: e.target.value })} />
+          {llm && (
+            <div className="row" style={{ marginTop: 6 }}>
+              <button disabled={!newSession.wardrobe.trim() || !!writing}
+                      title="Rewrite every garment precisely — colour, fabric, cut, and the counts. A vague garment comes back different in every photo."
+                      onClick={() => writeLook('wardrobe',
+                                               async () => ({ wardrobe: await rewriteWardrobe(newSession.wardrobe) }))}>
+                {writing === 'wardrobe' ? '…' : '✨ Describe it precisely'}
+              </button>
+              <span className="muted">
+                undressing is done take by take, in the wardrobe box on each row below
               </span>
             </div>
           )}
@@ -263,7 +293,9 @@ export default function ModelDetail({ id }) {
               session captured before the first one puts the old look back. */}
           <ShotsEditor kind={kind} shots={newSession.shots} llm={llm}
                        context={composed(model, '')} look={newSession.look}
-                       onLook={(look) => setNewSession((cur) => ({ ...cur, look }))}
+                       wardrobe={newSession.wardrobe}
+                       onLook={({ look, wardrobe }) => setNewSession((cur) => ({
+                         ...cur, look: look ?? cur.look, wardrobe: wardrobe ?? cur.wardrobe }))}
                        onChange={(shots) => setNewSession((cur) => ({ ...cur, shots }))} />
 
           <div className="row" style={{ marginTop: 12 }}>

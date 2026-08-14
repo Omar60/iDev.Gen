@@ -7,7 +7,13 @@
  *  repeat it" — which is the rule the docs give a human writing the same take.
  */
 import { api } from './api'
-import { KINDS, LOOK_INSTRUCTION, LOOK_FROM_PHOTO_INSTRUCTION, ANGLE_FROM_TEXT_INSTRUCTION } from './kinds.js'
+import {
+  KINDS, LOOK_LINES, WARDROBE_LINES, LOOK_INSTRUCTION, LOOK_ONLY_INSTRUCTION,
+  LOOK_FROM_PHOTO_INSTRUCTION, WARDROBE_INSTRUCTION, WARDROBE_PROGRESSION_INSTRUCTION,
+  ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES,
+  SHOOT_LINE_INSTRUCTION, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
+  takesChunkNote, wardrobeChunkNote, shootChunkNote,
+} from './kinds.js'
 
 export const ask = (payload) => api.post('/api/enhance', payload).then((r) => r.lines || [])
 
@@ -15,6 +21,13 @@ export const ask = (payload) => api.post('/api/enhance', payload).then((r) => r.
  *  carries none of it, so it is never given any of this. */
 export const composed = (model, look) =>
   [model?.trigger, model?.base_positive, look].map((x) => (x || '').trim()).filter(Boolean).join(', ')
+
+/** What the take box must not say again: the session's look plus the wardrobe
+ *  this particular take will carry, which is the session's unless the row set its
+ *  own. Per row, because two rows of the same session are now allowed to be
+ *  wearing different things. */
+export const alreadySaid = (...parts) =>
+  parts.map((x) => (x || '').trim()).filter(Boolean).join(', ')
 
 /** A row that opted out of its kind's default is the other kind of take, and the
  *  two want opposite prompts — the same rule the placeholders follow. */
@@ -37,20 +50,414 @@ export const takesFromBrief = (kind, reference, brief, context, n) => {
                text: brief, context: reference ? '' : context, n })
 }
 
-// A look is one line in the session, but it is written head to toe — hair, upper
-// body, lower body, feet, accessories, the place. Asking for one line gets one
-// garment and nothing else, so the sections are asked for and joined back into
-// the single line the session holds. The server drops the repeats.
-const LOOK_PIECES = 6
+// How many lines to ask for at once. Eight is what a shoot of eight came back
+// perfect at; forty in one call came back as thirty-two stubs with the arc spent
+// by line nineteen. The limit is not the context window — it is that a long list
+// is answered shorter, and the shoot loses its middle.
+export const CHUNK = 8
+
+/** `n` lines out of an assistant that reliably writes about eight.
+ *
+ *  Each call is told where in the shoot it is and what the line before it said,
+ *  so the arc keeps its pace and the wardrobe keeps carrying over. `onProgress`
+ *  gets the running total, because forty lines is five rounds and a button that
+ *  says nothing for four minutes looks broken.
+ */
+const inChunks = async (n, onProgress, askOne, stopWhenShort = false) => {
+  const out = []
+  // The cap is what stops a model answering one line at a time from being asked
+  // fifty times over.
+  for (let call = 0; out.length < n && call < Math.ceil(n / CHUNK) + 3; call += 1) {
+    const want = Math.min(CHUNK, n - out.length)
+    // The text of the line before, never the `{label, prompt}` object it arrives
+    // as: `previous` goes straight into a template string in the chunk notes, and
+    // an object there renders `[object Object]` — a carry-over note that says
+    // nothing, silently, in every chunk after the first.
+    const last = out[out.length - 1]
+    const lines = await askOne({ from: out.length + 1, want, total: n,
+                                 previous: last ? (last.prompt ?? String(last)) : '' })
+    if (!lines.length) break
+    out.push(...lines.slice(0, want))
+    if (onProgress) onProgress(out.length, n)
+    // A short chunk means different things to the two streams. Takes: a slow
+    // round, ask again. Wardrobe: the shoot has run out of clothes to change,
+    // which is the answer — asking again is what makes an assistant invent a
+    // garment rather than admit the shoot is undressed.
+    if (stopWhenShort && lines.length < want) break
+  }
+  return out
+}
+
+// A look is written head to toe — hair, upper body, lower body, feet,
+// accessories, the place. Asking for one line gets one garment and nothing else,
+// so the sections are asked for by name and joined back afterwards.
+const LOOK_PIECES = LOOK_LINES.length
+
+/** One reading of a look, into the session's two boxes.
+ *
+ *  Hair, makeup, the place and the light are the same in every frame and are
+ *  written once; the four sections in between are the clothes, and those ride on
+ *  every take so that a take can change them. The label decides where a line
+ *  goes — a model that dropped the labels falls back to position, which is the
+ *  order the instruction asked for. */
+const split = (lines) => {
+  const out = { look: [], wardrobe: [] }
+  lines.forEach((line, i) => {
+    const text = (line.prompt || '').trim()
+    if (!text || EMPTY.test(text)) return
+    const section = LOOK_LINES.find((s) => key(s.name) === key(line.label)) || LOOK_LINES[i]
+    out[section ? section.part : 'wardrobe'].push(text)
+  })
+  return { look: sentences(out.look), wardrobe: sentences(out.wardrobe) }
+}
+
+// The first word is enough and survives a model that writes "Hair & makeup" or
+// "Feet:" — the six section names differ from each other on it.
+const key = (name) => (name || '').trim().toLowerCase().split(/[^a-z]+/)[0]
 
 export const lookFromBrief = (brief) =>
-  ask({ instruction: LOOK_INSTRUCTION, text: brief, n: LOOK_PIECES }).then(joined)
+  ask({ instruction: LOOK_INSTRUCTION, text: brief, n: LOOK_PIECES }).then(split)
 
 export const lookFromPhoto = (image) =>
-  ask({ instruction: LOOK_FROM_PHOTO_INSTRUCTION, image, n: LOOK_PIECES }).then(joined)
+  ask({ instruction: LOOK_FROM_PHOTO_INSTRUCTION, image, n: LOOK_PIECES }).then(split)
 
+/** The look box alone: hair, makeup, place, light. Never the clothes — see
+ *  LOOK_ONLY_INSTRUCTION. */
 export const rewriteLook = (text) =>
-  ask({ instruction: LOOK_INSTRUCTION, text, n: LOOK_PIECES }).then(joined)
+  ask({ instruction: LOOK_ONLY_INSTRUCTION, text, n: 2 }).then(joined)
+
+/** A shoot to run, from the look and the wardrobe already in the boxes.
+ *
+ *  The dice are rolled here rather than left to the sampler: asked the same
+ *  question about the same wardrobe, an assistant writes the same sentence back
+ *  however warm it is, and "give me another one" has to actually give another
+ *  one. So how far the shoot goes, how fast, and how it reads are chosen at
+ *  random and handed over as constraints — the assistant writes the shoot around
+ *  them and keeps it in the room the look describes.
+ */
+export const briefFromLook = (look, wardrobe) => {
+  const pick = (list) => list[Math.floor(Math.random() * list.length)]
+  const rolled = Object.values(BRIEF_AXES).map(pick)
+  return ask({
+    instruction: `${BRIEF_INSTRUCTION}\n\nThis shoot in particular:\n`
+               + rolled.map((x) => `- it ${x}`).join('\n'),
+    text: [look && `The look: ${look}`, wardrobe && `The wardrobe: ${wardrobe}`]
+      .filter(Boolean).join('\n'),
+    n: 1,
+  }).then(first)
+}
+
+/** One take's wardrobe, written or rewritten. */
+export const rewriteWardrobe = (text) =>
+  ask({ instruction: WARDROBE_INSTRUCTION, text, n: WARDROBE_LINES.length }).then(joined)
+
+/** `n` wardrobes, one per take, walking from the session's wardrobe through
+ *  whatever the brief describes.
+ *
+ *  The brief joins the instruction and the wardrobe goes in `text`: the thing
+ *  being rewritten is the wardrobe, `n` times over. It is deliberately NOT sent
+ *  as `context` — that field means "already in the prompt, do not repeat it", and
+ *  repeating it word for word is the entire job here. */
+export const wardrobeProgression = (brief, wardrobe, n, onProgress) =>
+  inChunks(n, onProgress, async (at) => {
+    const lines = await ask({
+      instruction: `${WARDROBE_PROGRESSION_INSTRUCTION}\n\nThe shoot goes like this:\n${brief}`
+                 + `\n\n${wardrobeChunkNote(at)}`,
+      // The wardrobe of the photograph before this chunk, so the carry-over
+      // survives the seam between two calls — that is the whole reason a
+      // progression can be written in pieces at all.
+      text: at.previous || wardrobe,
+      n: at.want,
+    })
+    return lines.map((l) => l.prompt)
+  }, true)
+
+/** The takes of a shoot that walks somewhere: same rules as a batch, plus the
+ *  order, and written in chunks for the same reason the wardrobe is.
+ *
+ *  `worn` is the wardrobe of each photograph, when it is already known. Every
+ *  chunk is then told what she is actually wearing across the stretch it is
+ *  writing, which is the only thing that stops a take reaching for the garment
+ *  as the thing that changed. Measured without it, at forty takes: row twelve
+ *  came back `both hands sliding the jersey hem upward` — twenty rows after the
+ *  wardrobe had put the jersey down, and a prompt naming a jersey is a jersey.
+ */
+export const takesAlongArc = (brief, context, n, onProgress, worn = []) => {
+  const guide = KINDS.shoot.enhance
+  return inChunks(n, onProgress, (at) => {
+    const last = at.from + at.want - 1
+    const dressed = worn[at.from - 1] && [
+      context,
+      `In photograph ${at.from} she is wearing: ${worn[at.from - 1]}`,
+      last !== at.from && worn[last - 1] ? `and by photograph ${last}: ${worn[last - 1]}` : '',
+    ].filter(Boolean).join('\n')
+    return ask({
+      instruction: `${guide.line}\n\n${guide.arc}\n\n${takesChunkNote(at)}`,
+      text: brief, context: dressed || context, n: at.want,
+    })
+  })
+}
+
+/** One brief, a whole session: N takes along the arc and the N wardrobes that
+ *  walk beside them.
+ *
+ *  The wardrobe is written first and the takes after it, not both at once. They
+ *  describe different things on purpose — the take is the body and the camera,
+ *  the wardrobe is the clothes — but a take written blind to the clothes puts
+ *  them back on, so the second half is given the first as context and told, in
+ *  the words the assistant already gets, not to contradict it.
+ */
+export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress) => {
+  // No wardrobe to walk: there is no arc, so the old two-stream writer is still
+  // the right one — takes varying pose and framing, and nothing to desync with.
+  if (!wardrobe.trim()) {
+    const takes = await takesAlongArc(brief, look, n, (made) => onProgress?.(made, n))
+    return takes.map((take) => ({ ...take, wardrobe: null }))
+  }
+  return shootLines(brief, look, wardrobe, n, onProgress)
+}
+
+/** A whole shoot, one complete photograph per line, from one stream.
+ *
+ *  `wardrobe: ''` on every row and not `null`: the line already says what she is
+ *  wearing at that moment, so the session's wardrobe must NOT be appended behind
+ *  it. Empty string is the app's way of saying "this take names its own clothes",
+ *  which is exactly true here — the composed prompt is the look, then the line.
+ */
+export const shootLines = async (brief, look, wardrobe, n, onProgress) => {
+  // The arc, decided once and in numbers. Derived per round it was derived
+  // differently per round; see STAGE_PLAN_INSTRUCTION.
+  const stages = await stagePlan(brief, wardrobe, n)
+  onProgress?.(0, n)
+
+  const lines = await inChunks(n, (made) => onProgress?.(made, n), (at) => ask({
+    instruction: `${SHOOT_LINE_INSTRUCTION}\n\nThe shoot goes like this:\n${brief}`
+               + `\n\n${shootChunkNote({ ...at, stages: covering(stages, at) })}`,
+    // The look is context and not part of the answer: it is prepended to every
+    // frame by the app, so the writer needs to know it in order not to repeat it.
+    context: look,
+    // The starting wardrobe only starts the shoot. Handing it back on every chunk
+    // is handing back the outfit she has already taken off: measured, the jersey
+    // came off at photograph 8, and photograph 20 opened the third chunk by
+    // restating the original wardrobe word for word and putting it back on. What
+    // a later chunk continues from is the photograph before it, and nothing else.
+    text: at.from === 1 ? wardrobe : at.previous,
+    n: at.want,
+  }))
+
+  // The repair pass is counted after the writing, never restarting the tally: a
+  // progress number that goes backwards reads as a bug even when nothing is wrong.
+  const written = lines.map((l) => l.prompt)
+  const needing = written.filter((line, i) => problemsWith(line, i === 0 ? wardrobe : written[i - 1]).length).length
+  const { lines: checked, repaired, stillWrong } =
+    await repairAll(written, wardrobe, onProgress, n, n + needing)
+  if (needing) console.info(`[shoot] ${needing} lines failed the check, ${repaired} repaired`
+                          + (stillWrong.length ? `, still wrong: ${stillWrong.join(', ')}` : ''))
+  // `suspect` is the residue: a line the check refused and the repair could not
+  // fix. Measured over three runs the repair lands about three times in four, so
+  // this is never empty for long — and a row nobody can see is a row nobody
+  // fixes, which is how the first version of this shipped eighteen broken lines
+  // while reporting success.
+  return checked.map((prompt, i) => ({
+    ...lines[i], prompt, wardrobe: '', suspect: stillWrong.includes(i + 1),
+  }))
+}
+
+/** The stages, as `{from, to, what}`. The model answers `1-8 | …`, which is the
+ *  `label | text` shape `clean` already splits on. */
+export const stagePlan = (brief, wardrobe, n) =>
+  ask({
+    instruction: `${STAGE_PLAN_INSTRUCTION}`,
+    text: `The shoot:\n${brief}\n\nThe wardrobe it starts in:\n${wardrobe}\n\n`
+        + `It is ${n} photographs long.`,
+    n: 12,
+  }).then((rows) => rows.flatMap((r) => {
+    const span = /(\d+)\s*[-–—]\s*(\d+)/.exec(r.label || '')
+    // A row whose label is not a range is a row the model formatted its own way.
+    // Dropped rather than guessed at: a wrong range silently mis-paces the shoot.
+    return span && r.prompt.trim()
+      ? [{ from: +span[1], to: +span[2], what: r.prompt.trim() }]
+      : []
+  }))
+
+const covering = (stages, at) =>
+  stages.filter((s) => s.to >= at.from && s.from <= at.from + at.want - 1)
+
+/* ---- what the code can check without guessing ------------------------------
+ *
+ * Two failures survived every rewrite of the instruction, and both are decidable
+ * from the text alone — which is exactly the work that should not have been left
+ * to the writer in the first place:
+ *
+ *   1. A line stops naming part of the body. Photograph 24 of a real run dropped
+ *      `bare chest`, and the shoot came back in a black nightgown nobody wrote,
+ *      for the next twenty-six frames. An unstated torso is not a bare torso.
+ *   2. A garment comes back. Photograph 20 of another run re-dressed her in the
+ *      jersey that came off at 8, by restating the opening wardrobe.
+ *
+ * Both are checked here and handed back to the writer to fix. The code decides
+ * *that* a line is wrong; the model decides what it should say instead.
+ */
+
+// Every line names the chest, the hips-and-legs, and the feet — clothed or bare.
+const BODY = [
+  { part: 'the chest and torso', re: /\b(chest|breasts?|torso|midriff|bust|nude|topless|jersey|shirt|top|harness|bra)\b/i },
+  { part: 'the hips and legs', re: /\b(hips?|thighs?|legs?|knees?|briefs|panties|stockings?|fishnets?|skirt|shorts)\b/i },
+  { part: 'the feet', re: /\b(feet|foot|boots?|heels?|shoes?|barefoot|toes)\b/i },
+]
+
+/** What is wrong with this line, in words the writer can act on. Empty = fine. */
+export const problemsWith = (line, previous) => {
+  const found = []
+  const missing = BODY.filter((b) => !b.re.test(line)).map((b) => b.part)
+  if (missing.length) {
+    found.push(`It says nothing about ${missing.join(' or ')}. Every photograph names the `
+             + 'chest and torso, the hips and legs, and the feet — and where there is no '
+             + 'garment, it names the skin. An unstated part is not a bare part: it is a '
+             + 'part the reader dresses for you.')
+  }
+  if (previous) {
+    const before = new Set(familiesIn(previous))
+    const back = [...new Set(familiesIn(line))].filter((f) => !before.has(f))
+    if (back.length) {
+      found.push(`It puts back the ${back.join(', the ')}, which the photograph before it `
+               + 'was not wearing. Once a piece is off it stays off: it is simply not in '
+               + 'the line.')
+    }
+  }
+  return found
+}
+
+/** Garments by family, not by word.
+ *
+ *  Comparing word sets flagged two perfectly good lines out of twenty-four: one
+ *  said `fishnet` and the next said `fishnet stockings`, and `stockings` read as
+ *  a garment that had come back; another said `boots` and the next `one platform
+ *  boot`. A check that cries wolf on singular-plural is a check that gets turned
+ *  off, so the comparison is between the things themselves. */
+const GARMENT_FAMILIES = {
+  jersey: /\b(jersey|shirt|tee|t-shirt|blouse|sweater|jumper)\b/i,
+  top: /\b(top|crop top|camisole|vest)\b/i,
+  bra: /\b(bra|bralette)\b/i,
+  harness: /\b(harness|strappy|straps? across)\b/i,
+  briefs: /\b(briefs|panties|knickers|thong|underwear)\b/i,
+  stockings: /\b(stockings?|fishnets?|tights|hold-ups|hosiery)\b/i,
+  boots: /\b(boots?|heels?|shoes?|sandals?)\b/i,
+  skirt: /\b(skirt|shorts)\b/i,
+  dress: /\b(dress|gown|nightgown|robe|bodysuit|leotard)\b/i,
+  jacket: /\b(jacket|coat|cardigan|blazer)\b/i,
+  corset: /\b(corset|bustier|basque)\b/i,
+}
+
+const familiesIn = (text) =>
+  Object.entries(GARMENT_FAMILIES).filter(([, re]) => re.test(text || '')).map(([name]) => name)
+
+/** Check every line and ask the writer to fix the ones that fail.
+ *
+ *  Sequential on purpose — a repaired line becomes the previous line of the next
+ *  check, so a run of bad lines is repaired forwards rather than each one being
+ *  compared against a version that is about to change.
+ *
+ *  A repair is only accepted if it actually repairs. The first version of this
+ *  swallowed both failures silently — a repair that errored and a repair that
+ *  came back still broken looked exactly like a line that never needed one — and
+ *  eighteen lines of a twenty-four line shoot went out unfixed while the code
+ *  reported success. Whatever survives that check is still returned, and
+ *  `stillWrong` says which lines to look at.
+ */
+const repairAll = async (lines, wardrobe, onProgress, done, total) => {
+  const out = []
+  const stillWrong = []
+  let repaired = 0
+  for (const [i, line] of lines.entries()) {
+    const previous = i === 0 ? wardrobe : out[i - 1]
+    const problems = problemsWith(line, previous)
+    if (!problems.length) { out.push(line); continue }
+
+    let fixed = ''
+    try {
+      fixed = await ask({
+        instruction: REPAIR_INSTRUCTION + '\n\nThe problems:\n'
+                   + problems.map((p) => `- ${p}`).join('\n'),
+        context: `The photograph before this one:\n${previous}`,
+        text: line,
+        n: 1,
+      }).then(first)
+    } catch {
+      // Asked and refused. The line stays as it was and is reported below: a
+      // flagged line you can see beats a run that dies on its forty-first photo.
+    }
+    fixed = (fixed || '').trim()
+    // A "correction" shorter than half the line is the model answering with the
+    // fragment it changed, which would silently delete the rest of the shoot's
+    // photograph. Rejected in favour of the original.
+    const usable = fixed && fixed.split(/\s+/).length > line.split(/\s+/).length / 2
+      && !problemsWith(fixed, previous).length
+    out.push(usable ? fixed : line)
+    if (usable) repaired += 1
+    else stillWrong.push(i + 1)
+    onProgress?.(done + repaired + stillWrong.length, total)
+  }
+  return { lines: out, repaired, stillWrong }
+}
+
+/** How many times the clothes may change in one shoot.
+ *
+ *  A wardrobe has as many states as it has pieces, and a shoot has as many
+ *  photographs as you asked for; those are different numbers and conflating them
+ *  is what broke a forty-take session. Asked for forty states from six garments,
+ *  the assistant was bare by fifteen, repeated itself while it had nothing left
+ *  to remove — and the repeats were dropped as duplicates, so the count never
+ *  reached forty — and then dressed her in a schoolgirl uniform to have something
+ *  to take off again. Twelve is what a rich wardrobe supports.
+ */
+export const WARDROBE_STATES = 12
+
+/** What a take names that its own wardrobe has already taken off.
+ *
+ *  The one failure the instructions cannot close on their own: at the seam where
+ *  a garment goes, a take reaches for it as the thing that changed — measured, at
+ *  forty takes, three of them, `the jersey slipping further off one shoulder` on
+ *  a row whose wardrobe has no jersey in it. Naming a jersey puts a jersey in the
+ *  photograph, so the row is flagged rather than quietly shot.
+ *
+ *  A word in the session's wardrobe but not in this take's is precisely a garment
+ *  that has come off; a colour, a fabric or a bare shoulder is in both, so it
+ *  does not flag. Nothing is rewritten — the box is yours, this only points.
+ */
+export const namesWhatIsGone = (take, sessionWardrobe, takeWardrobe) => {
+  // A take that names its own clothes has nothing to contradict: the garments and
+  // the pose are one sentence, written in one breath, and this whole check exists
+  // because they used to be two. `''` is exactly that row — see `shootLines`.
+  if (takeWardrobe === '') return []
+  const words = (text) => new Set((text || '').toLowerCase().match(/[a-z]{4,}/g) || [])
+  const still = words(takeWardrobe)
+  const said = words(take)
+  return [...words(sessionWardrobe)]
+    .filter((w) => !still.has(w) && said.has(w) && !NOT_A_GARMENT.has(w))
+}
+
+// A wardrobe is written on a body and in space, so it is full of words that are
+// neither: `above the ribs` and `high-waisted` flagged two perfectly good takes
+// for saying `over her ribs` and `elbows lifted high`. A warning that goes off on
+// good rows is a warning nobody reads, which costs more than the two it catches.
+const NOT_A_GARMENT = new Set([
+  'shoulder', 'shoulders', 'chest', 'ribs', 'waist', 'hips', 'thigh', 'thighs', 'legs',
+  'knees', 'ankles', 'ankle', 'arms', 'wrist', 'wrists', 'back', 'neck', 'throat', 'skin',
+  'feet', 'toes', 'stomach', 'body', 'bare', 'nude', 'naked', 'topless', 'breast', 'breasts',
+  'high', 'above', 'below', 'over', 'under', 'down', 'open', 'loose', 'across', 'against',
+  'with', 'from', 'thin', 'wide', 'long', 'short', 'cut', 'worn', 'left', 'right', 'side',
+  'still', 'that', 'this', 'them', 'they', 'then', 'onto', 'into', 'past', 'held', 'hand',
+  'hands', 'mouth', 'eyes', 'lips', 'head', 'hair', 'face', 'mirror', 'floor', 'phone',
+])
+
+/** The states stretched across the photographs: state one for the first stretch,
+ *  the last state for the last. A shoot of forty passes through a dozen changes
+ *  of clothes, not forty. */
+export const spread = (states, n) => (states.length
+  ? Array.from({ length: n }, (_, i) =>
+    states[Math.min(states.length - 1, Math.floor((i * states.length) / n))])
+  : [])
 
 export const anglesFromText = (text, allowed) =>
   ask({ instruction: ANGLE_FROM_TEXT_INSTRUCTION, text, allowed, n: 1 }).then(first)
@@ -62,10 +469,23 @@ const first = (lines) => (lines[0]?.prompt || '')
 // here: `Feet | black boots` is one line of the session's look, and the word
 // "Feet" in a prompt is a foot in the photo.
 const EMPTY = /^(none|n\/a|-|—|nothing)\.?$/i
-const joined = (lines) => lines
+
+/** The sections back into one box, one full stop between them.
+ *
+ *  Not `, ` — the sections are written as prose now, and a comma between two
+ *  sentences is the splice `…a silver stud in each earlobe., The room is…`. Same
+ *  rule the server joins its pieces by, for the same reason: the reader is a
+ *  language model, and a run-on clause is where relations start bleeding between
+ *  the things they belong to. */
+const sentences = (parts) => parts
+  .map((p) => p.trim().replace(/[,\s]+$/, ''))
+  .filter(Boolean)
+  .map((p) => (/[.!?]$/.test(p) ? p : `${p}.`))
+  .join(' ')
+
+const joined = (lines) => sentences(lines
   .filter((l) => !EMPTY.test(l.prompt.trim()))
-  .map((l) => l.prompt)
-  .join(', ')
+  .map((l) => l.prompt))
 
 /** A photo the model has to *read*, so it is scaled down before it travels: a
  *  camera file is megabytes of base64 in a JSON body, and a small vision model

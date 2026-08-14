@@ -14,6 +14,9 @@ export default function SessionView({ id }) {
   const [zoom, setZoom] = useState(null)
   const [split, setSplit] = useState(50)
   const [adding, setAdding] = useState(null)
+  // The wardrobe the add-shots panel is working from. Its own state because it is
+  // editable there and only written back on Add.
+  const [worn, setWorn] = useState('')
   const [workflows, setWorkflows] = useState([])
   const [baseModels, setBaseModels] = useState({})
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -27,6 +30,10 @@ export default function SessionView({ id }) {
     // Optional: with no endpoint configured the ✨ buttons simply do not appear.
     api.get('/api/config').then((c) => setLlm(!!c.llm_ok)).catch(() => {})
   }, [id])
+
+  // However the panel was opened — "add shots", "more like this", a kind switch —
+  // it opens on what the session is currently wearing.
+  useEffect(() => { if (adding) setWorn(s?.wardrobe || '') }, [adding !== null])
 
   // Only poll while it runs: the queue is serial, one photo every few seconds.
   useEffect(() => {
@@ -158,6 +165,11 @@ export default function SessionView({ id }) {
             {' '}{s.settings.steps} steps · cfg {s.settings.cfg} · LoRA {s.settings.lora_strength}
           </p>
           {s.look && <p className="muted" style={{ marginTop: -6 }}><b>Look:</b> {s.look}</p>}
+          {s.wardrobe && (
+            <p className="muted" style={{ marginTop: -6 }}>
+              <b>Wardrobe:</b> {s.wardrobe} <i>— what a take wears unless it says otherwise</i>
+            </p>
+          )}
           {anchors.length > 0 ? (
             <div className="anchor">
               {anchors.map((a) => <img key={a} src={shotImage(a)} alt="" title={`Reference — shot ${a}`} />)}
@@ -319,19 +331,28 @@ export default function SessionView({ id }) {
         <div className="panel" style={{ marginBottom: 14 }}>
           <h3>Add shots to this session</h3>
           <p className="muted" style={{ margin: '0 0 6px' }}>
-            Same look ({s.look || 'none set'}) — only the take changes. A take marked
-            <b> ref</b> skips the look entirely and edits the reference photo instead.
+            Same look ({s.look || 'none set'}) — that part does not change. A take marked
+            <b> ref</b> skips it entirely and edits the reference photo instead.
           </p>
+          {/* The wardrobe is the half that moves, so it is editable here: twenty
+              takes in, the shoot is rarely still wearing what it started in, and
+              the takes added next should start from where it got to. Saved with
+              the shots, so Cancel changes nothing. */}
+          <label style={{ marginTop: 8 }}>
+            Wardrobe the next takes start from — each row below can still set its own
+          </label>
+          <textarea rows={2} value={worn} placeholder="none set"
+                    onChange={(e) => setWorn(e.target.value)} />
           {kind && KINDS[kind].rule && <p className="rule">{KINDS[kind].rule}</p>}
           {kind === 'angles' && (
             <AnglePicker llm={llm}
                          onAdd={(takes) => setAdding([...adding.filter((x) => x.prompt.trim()), ...takes])} />
           )}
           {/* No `onLook` here: the look belongs to the session, and `add_shots`
-              re-reads it from the server anyway. A shoot whose wardrobe changed
-              halfway is two sessions. */}
+              re-reads it from the server anyway. A shoot whose hair, place and
+              light changed halfway is two sessions. */}
           <ShotsEditor kind={kind} shots={adding} onChange={setAdding} llm={llm}
-                       context={composed(s.model, '')} look={s.look} />
+                       context={composed(s.model, '')} look={s.look} wardrobe={worn} />
 
           {/* Deciding to edit a keeper happens mid-shoot, looking at the gallery —
               not when the session was created. So the reference workflow is picked
@@ -357,6 +378,9 @@ export default function SessionView({ id }) {
           )}
           <div className="row" style={{ marginTop: 10 }}>
             <button className="primary" onClick={() => call(async () => {
+              // The session's wardrobe first: `add_shots` reads it from the row,
+              // and a take that left its own box empty is asking for this one.
+              if (worn !== s.wardrobe) await api.patch(`/api/sessions/${id}`, { wardrobe: worn })
               await api.post(`/api/sessions/${id}/shots`, { shots: adding, seed_mode: 'random' })
               setAdding(null)
             })}>Add</button>

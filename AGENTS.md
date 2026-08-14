@@ -52,10 +52,43 @@ behaviour, change the test on purpose, never delete it to get green.
 - **Moving the finished file retries on a lock.** Windows raises a sharing
   violation for a fraction of a second after ComfyUI writes the PNG; giving up
   on the first `PermissionError` throws away a real generation.
-- **The session's look is constant.** Wardrobe and styling live on the session
-  and are prepended to every shot; `add_shots` re-reads the look from the session
-  and ignores any look in the payload. A shoot whose wardrobe changed halfway is
-  two sessions.
+- **The session's look is constant; its wardrobe is a default.** Hair, makeup,
+  the place and the light live on the session and are prepended to every shot;
+  `add_shots` re-reads the look from the session and ignores any look in the
+  payload. A shoot whose light changed halfway is two sessions.
+- **The wardrobe is written into every take, never stated once.** `_compose` puts
+  it between the look and the take, and a take's own `wardrobe` wins over the
+  session's (`None` follows the session, `""` is a take that names no clothes).
+  This is the one thing a single prepended sentence could not do: it would dress
+  her in the same prompt that asks for the jacket off, and a positive that both
+  describes and denies a jacket keeps the jacket. Repeated per take, each frame
+  states its own truth — and what holds a wardrobe together across twenty photos
+  is that the takes which did not change it repeat it *word for word*, which is
+  why `WARDROBE_PROGRESSION_INSTRUCTION` spends most of its length on verbatim
+  carry and none on undressing.
+- **A whole shoot is written as one line per photograph, from one stream.**
+  Clothes, pose and expression in one sentence; `wardrobe: ''` on the row so the
+  session's is not appended behind it. Two streams that never speak end a shoot
+  with the clothes off and the body still standing to attention — measured, forty
+  frames briefed to end explicit: the wardrobe reached bare by thirty and take
+  forty was still `standing square to the mirror with her arms hanging loose`.
+  One line also makes the garment leak impossible: there is no second text to
+  contradict. Two rules ride on it, and both failed silently before they were
+  written: every line walks **chest, hips-and-legs, feet** even where there is no
+  garment (an unstated torso is not a bare torso — it came back in a nightgown
+  nobody wrote, from photograph twenty-four on, and the verbatim-carry rule then
+  made the omission permanent), and **undressing is the first half, not the
+  subject** (treated as the destination, a forty-frame shoot was bare by seven
+  and spent thirty-three on standing).
+- **A shoot is written in rounds, and the wardrobe is written first.** Both are
+  measured, on one forty-take session, and both look like caution until you skip
+  them: asked for forty lines at once the assistant answers ~thirty *stubs*;
+  asked for forty wardrobe states from six garments it runs out, repeats (and the
+  repeats are dropped as duplicates by `enhance.clean`), then invents a whole new
+  outfit. Hence `CHUNK = 8`, `WARDROBE_STATES = 12` spread across the takes,
+  `stopWhenShort` on the wardrobe stream only, and the takes written *after* the
+  wardrobe with the clothes of their stretch as `context`. Change any of these
+  and re-run a long session end to end — a short one hides all four failures.
 - **A `verbatim` take is queued exactly as given.** "More like this" hands back a
   prompt that already carries trigger, base prompt and look; composing it again
   duplicates all three.

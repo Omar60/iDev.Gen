@@ -47,7 +47,11 @@ CREATE TABLE IF NOT EXISTS session (
     -- Empty means the session is text-to-image only, which is every older session.
     reference_workflow_id INTEGER REFERENCES workflow(id) ON DELETE SET NULL,
     anchor_shot_ids TEXT NOT NULL DEFAULT '[]',   -- shot ids feeding reference/reference2/reference3
-    look          TEXT NOT NULL DEFAULT '',       -- wardrobe/styling, constant for the shoot
+    look          TEXT NOT NULL DEFAULT '',       -- hair, makeup, place, light: constant for the shoot
+    -- The garments. A *default*, not a constant: a take may carry its own, which
+    -- is what lets one shoot walk from dressed to undressed without every take
+    -- fighting a sentence that says the jacket is still on.
+    wardrobe      TEXT NOT NULL DEFAULT '',
     settings      TEXT NOT NULL DEFAULT '{}',     -- resolved gen settings for the run
     created_at    TEXT NOT NULL
 );
@@ -119,6 +123,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     if "look" not in columns("session"):
         conn.execute("ALTER TABLE session ADD COLUMN look TEXT NOT NULL DEFAULT ''")
+
+    # The garments, split off the look. Nothing is back-filled: an older session
+    # keeps its whole look in `look` and shoots exactly as it always did, which is
+    # right — its takes were written against that one sentence.
+    if "wardrobe" not in columns("session"):
+        conn.execute("ALTER TABLE session ADD COLUMN wardrobe TEXT NOT NULL DEFAULT ''")
 
     # Reference sessions: a second workflow that edits an anchor photo, the anchors
     # it edits, and the per-shot flag saying which takes go through it.

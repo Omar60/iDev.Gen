@@ -19,10 +19,22 @@ discover them mid-shoot.
 - **No contact sheet or export.** Picks live in the session folder; there is no
   "export selection" button yet. The folder is plain PNG files, so a file
   manager works.
-- **One look per session, and no look library.** That constraint is the point —
-  a session is one wardrobe — but there is no way to save a look or a set of
-  shots and reuse them in the next session. Copy the text, or use
+- **One look per session, and no look library.** The look — hair, makeup, the
+  place, the light — is fixed once and that constraint is the point. The
+  wardrobe is not: it rides on every take and a take may change it. But there is
+  no way to save either and reuse it in the next session. Copy the text, or use
   **⟳ More like this**.
+- **A long shoot is written in rounds, and it takes minutes.** Asked for forty
+  lines at once an assistant answers about thirty, shorter than asked, with the
+  middle of the shoot missing — so forty takes with their wardrobes is ten calls
+  and several minutes. The button counts up while it works. Nothing resumes: a
+  browser closed halfway has written nothing.
+- **A written shoot still needs reading, and the app says where.** Measured over
+  forty takes: three of them named a garment the wardrobe of that same take had
+  already put down, always at the seam where it comes off. Those rows are
+  outlined in red — the check is a word in the session's wardrobe that this
+  take's wardrobe no longer has, so it catches the garment and not the colour or
+  the bare shoulder. It points; it never rewrites.
 - **One session at a time, serial.** No batching, no multi-GPU, no queue of
   queued sessions.
 - **Rating is per shot and local.** No tags, no collections across sessions, no
@@ -35,12 +47,14 @@ discover them mid-shoot.
   edit; it never queues anything and never changes a shot that exists. What it
   writes is as good as the model behind it — a 9B writes usable takes and a
   fairly generic look.
-- **Read the look before you Run.** The two ways a written look loses the
-  wardrobe are both visible in the box: a garment it never named — no trousers,
-  no shoes — is invented differently in every frame, and a take that mentions
-  clothing at all can contradict it (`barefoot` under a look with boots). The
-  instructions forbid both; a small model still slips, and a session is dozens
-  of photos.
+- **Read the wardrobe before you Run.** The three ways it loses a garment are
+  all visible in the boxes: one it never named — no trousers, no shoes — is
+  invented differently in every frame; a take that mentions clothing at all can
+  contradict the wardrobe beside it (`barefoot` under a wardrobe with boots);
+  and a wardrobe line that *names* the piece it is taking off (`no top`, `jersey
+  removed`) puts it straight back in the photo. The instructions forbid all
+  three; a model still slips — measured, on the take rather than the wardrobe —
+  and a session is dozens of photos.
 - **A reasoning model is asked not to reason.** Thinking about four short lines
   costs ten times the tokens of writing them — minutes per click. The request
   says `reasoning_effort: none`, and an endpoint that rejects the parameter is

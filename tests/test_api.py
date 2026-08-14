@@ -57,36 +57,124 @@ def test_session_expands_shots_and_composes_the_prompt(client, seeded):
     assert [x["shot_index"] for x in shots] == [0, 0, 0, 1]
     # Fixed seed: it shifts inside a take, otherwise they would be copies.
     assert [x["seed"] for x in shots[:3]] == [100, 101, 102]
-    # trigger, model base prompt, the session's look, then the take — in that order.
+    # trigger, base prompt, look, then the take — the fixed block first and the
+    # pose last, which is the order the sessions that came back right were written
+    # in. One sentence each, because the encoder reads them as language.
     assert shots[0]["prompt"] == (
-        "4da woman, photo, 35mm, white summer dress, hair down, on a beach, full body, walking")
+        "4da woman. photo, 35mm. white summer dress, hair down, on a beach. full body, walking.")
     # An explicit {trigger} wins: it is not prepended a second time.
     assert shots[3]["prompt"] == (
-        "photo, 35mm, white summer dress, hair down, on a beach, close-up of 4da woman")
+        "photo, 35mm. white summer dress, hair down, on a beach. close-up of 4da woman.")
     assert shots[0]["negative"] == "blurry"          # inherited from the model
     assert s["settings"]["width"] == 832             # settings inherited too
     assert s["look"] == "white summer dress, hair down, on a beach"
 
 
 def test_the_look_is_identical_in_every_shot_of_a_session(client, seeded):
-    """The point of a session: wardrobe and styling do not drift between takes."""
+    """The point of a session: styling does not drift between takes."""
     sid = client.post("/api/sessions", json={
-        "model_id": seeded["model_id"], "name": "s", "look": "red dress, gold earrings",
+        "model_id": seeded["model_id"], "name": "s", "look": "hair down, gold earrings",
         "shots": [{"prompt": "standing", "count": 2}, {"prompt": "sitting", "count": 2}],
     }).json()["id"]
     prompts = [x["prompt"] for x in client.get(f"/api/sessions/{sid}").json()["shots"]]
-    assert all("red dress, gold earrings" in p for p in prompts)
+    assert all("hair down, gold earrings" in p for p in prompts)
     assert len({p for p in prompts}) == 2            # only the take differs
+
+
+def test_the_wardrobe_rides_on_every_take_and_a_take_may_change_it(client, seeded):
+    """What the session's one wardrobe sentence could not do.
+
+    The look is prepended to every take; a wardrobe stated the same way is a
+    sentence that dresses her in the very prompt that asks for the jacket off,
+    and a positive that both describes and denies a jacket keeps the jacket. So
+    the wardrobe is written into each take instead — the session's by default,
+    the take's own when it has one, and each frame states its own truth.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s", "look": "hair down",
+        "wardrobe": "black leather jacket, white tee",
+        "shots": [{"prompt": "standing", "count": 1},
+                  {"prompt": "sitting", "count": 1,
+                   "wardrobe": "white tee, bare shoulders"},
+                  {"prompt": "lying down", "count": 1, "wardrobe": ""}],
+    }).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+
+    # take, then the look, then the wardrobe, then the base prompt.
+    assert shots[0]["prompt"] == (
+        "4da woman. photo, 35mm. hair down. black leather jacket, white tee. standing.")
+    # The take's own wardrobe replaces it — no jacket left anywhere in the prompt.
+    assert shots[1]["prompt"] == (
+        "4da woman. photo, 35mm. hair down. white tee, bare shoulders. sitting.")
+    # An explicit empty string is a take that names no clothes at all, which is
+    # not the same as a take that did not say (`null` -> the session's).
+    assert shots[2]["prompt"] == "4da woman. photo, 35mm. hair down. lying down."
+
+
+def test_the_pieces_are_joined_as_sentences(client, seeded):
+    """Krea 2 reads its prompt with a language model, so the prompt is prose.
+
+    Measured, one outfit at six seeds: written as sentences the hem held six of
+    six and the harness repeated six of six; as comma fragments, three of six and
+    a different harness in every frame. A comma between two written-out pieces
+    reads as one run-on clause and their relations bleed into each other.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "look": "Her hair is down.",                    # already punctuated
+        "wardrobe": "She wears a white linen dress",     # not punctuated
+        "shots": [{"prompt": "She walks towards the camera", "count": 1}],
+    }).json()["id"]
+    prompt = client.get(f"/api/sessions/{sid}").json()["shots"][0]["prompt"]
+
+    assert prompt == ("4da woman. photo, 35mm. Her hair is down. She wears a white linen "
+                      "dress. She walks towards the camera.")
+    assert ".." not in prompt        # a piece that punctuates itself keeps its own
+
+
+def test_a_take_that_names_its_own_clothes_gets_no_wardrobe_appended(client, seeded):
+    """How a whole shoot is written now: one line per photograph, clothes and pose
+    together, because two streams that never speak end a session with the wardrobe
+    off and the body still standing to attention. `""` is that row — the session's
+    wardrobe must not be appended behind a line that already states its own."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s", "look": "Her hair is down.",
+        "wardrobe": "She wears a white linen dress",
+        "shots": [{"prompt": "Topless with the dress at her waist, she leans on the sill",
+                   "count": 1, "wardrobe": ""}],
+    }).json()["id"]
+    prompt = client.get(f"/api/sessions/{sid}").json()["shots"][0]["prompt"]
+
+    assert "linen dress" not in prompt
+    assert prompt.endswith("she leans on the sill.")
 
 
 def test_added_shots_keep_the_session_look_even_if_the_payload_lies(client, seeded):
     sid = client.post("/api/sessions", json={
-        "model_id": seeded["model_id"], "name": "s", "look": "red dress",
+        "model_id": seeded["model_id"], "name": "s", "look": "hair down",
+        "wardrobe": "red dress",
         "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
     client.post(f"/api/sessions/{sid}/shots",
                 json={"look": "green coat", "shots": [{"prompt": "sitting", "count": 1}]})
     prompts = [x["prompt"] for x in client.get(f"/api/sessions/{sid}").json()["shots"]]
-    assert all("red dress" in p and "green coat" not in p for p in prompts)
+    assert all("hair down" in p and "green coat" not in p for p in prompts)
+    # The wardrobe is re-read from the session too, as the default a take that
+    # says nothing gets.
+    assert all("red dress" in p for p in prompts)
+
+
+def test_the_session_wardrobe_can_move_on_and_only_the_next_takes_see_it(client, seeded):
+    """Twenty takes in, a shoot is rarely still wearing what it started in. The
+    photos already queued keep the prompt they were queued with."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s", "wardrobe": "red dress",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    client.patch(f"/api/sessions/{sid}", json={"wardrobe": "black slip"})
+    client.post(f"/api/sessions/{sid}/shots", json={"shots": [{"prompt": "sitting", "count": 1}]})
+
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    assert "red dress" in shots[0]["prompt"] and "black slip" not in shots[0]["prompt"]
+    assert "black slip" in shots[1]["prompt"] and "red dress" not in shots[1]["prompt"]
 
 
 def test_more_like_this_does_not_double_the_prefix(client, seeded):
@@ -119,7 +207,7 @@ def test_a_reference_take_carries_no_base_and_no_look(client, seeded):
     }).json()["id"]
     shots = client.get(f"/api/sessions/{sid}").json()["shots"]
 
-    assert shots[0]["prompt"] == "4da woman, photo, 35mm, leather jacket, hair up, standing"
+    assert shots[0]["prompt"] == "4da woman. photo, 35mm. leather jacket, hair up. standing."
     assert shots[0]["use_reference"] == 0
     assert shots[1]["prompt"] == "remove the jacket"
     assert shots[1]["use_reference"] == 1

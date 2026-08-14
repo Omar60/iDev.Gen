@@ -105,6 +105,15 @@ class ShotIn(BaseModel):
     prompt: str
     negative: str = ""
     count: int = 1
+    # What is worn in THIS take. None = the session's wardrobe, which is the
+    # common case and what holds a shoot together. A string wins over it, and that
+    # is the whole point: a session's wardrobe cannot be taken off by a take that
+    # asks for it, because the sentence that dressed her is prepended to the very
+    # take that undresses her and the photo comes back wearing neither. Writing
+    # the garments *per take* is what lets one shoot walk from a jacket to nothing
+    # with each frame stating its own truth. `""` is a take that names no clothes
+    # at all.
+    wardrobe: str | None = None
     # "More like this" hands back a prompt that ALREADY carries trigger, base and
     # look. Composing it again would duplicate all three, so a verbatim take is
     # queued exactly as given.
@@ -126,7 +135,8 @@ class ShotIn(BaseModel):
 class SessionIn(BaseModel):
     model_id: int
     name: str
-    look: str = ""              # wardrobe, hair, styling — constant for the shoot
+    look: str = ""              # hair, makeup, place, light — constant for the shoot
+    wardrobe: str = ""          # the garments: the default every take starts from
     shots: list[ShotIn] = Field(default_factory=list)
     workflow_id: int | None = None
     reference_workflow_id: int | None = None
@@ -138,6 +148,11 @@ class SessionIn(BaseModel):
 
 class SessionPatch(BaseModel):
     name: str | None = None
+    # The wardrobe the *next* takes start from. The look is not here on purpose:
+    # it is the one thing a session holds constant, and a shoot whose hair and
+    # place changed halfway is two sessions. The wardrobe is the half that was
+    # always meant to move.
+    wardrobe: str | None = None
     # 0 clears it back to the model's default, the same way the reference one
     # clears to "text to image only".
     workflow_id: int | None = None
@@ -445,13 +460,13 @@ def create_session(s: SessionIn):
     settings.update(s.settings)
 
     sid = db.run(
-        """INSERT INTO session (model_id, name, look, workflow_id, reference_workflow_id,
-                                anchor_shot_ids, settings, created_at)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        s.model_id, s.name, s.look, s.workflow_id, s.reference_workflow_id,
+        """INSERT INTO session (model_id, name, look, wardrobe, workflow_id,
+                                reference_workflow_id, anchor_shot_ids, settings, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        s.model_id, s.name, s.look, s.wardrobe, s.workflow_id, s.reference_workflow_id,
         json.dumps(_valid_anchors(s.anchor_shot_ids)), json.dumps(settings), db.now(),
     )
-    _expand_shots(sid, model, s.look, s.shots, s.seed_mode, s.seed)
+    _expand_shots(sid, model, s.look, s.wardrobe, s.shots, s.seed_mode, s.seed)
     return {"id": sid}
 
 
@@ -472,6 +487,10 @@ def update_session(sid: int, p: SessionPatch):
         raise HTTPException(404, "session not found")
     if p.name is not None:
         db.run("UPDATE session SET name=? WHERE id=?", p.name, sid)
+    if p.wardrobe is not None:
+        # Only the takes queued after this see it: a shot row already holds its
+        # composed prompt, and rewriting those would change photos already shot.
+        db.run("UPDATE session SET wardrobe=? WHERE id=?", p.wardrobe, sid)
     if p.workflow_id is not None:
         db.run("UPDATE session SET workflow_id=? WHERE id=?", p.workflow_id or None, sid)
     if p.settings is not None:
@@ -505,21 +524,23 @@ def add_shots(sid: int, payload: dict):
     """Add takes to an existing session (reshoot, extend the batch).
 
     The look is NOT re-read from the payload: it belongs to the session, and a
-    shoot whose wardrobe changed halfway is two sessions.
+    shoot whose hair, place and light changed halfway is two sessions. The
+    wardrobe is read from the session too — as the *default* the takes start
+    from, which each take is still free to override with its own.
     """
     session = db.one("SELECT * FROM session WHERE id=?", sid)
     if not session:
         raise HTTPException(404, "session not found")
     model = db.one("SELECT * FROM model WHERE id=?", session["model_id"])
     shots = [ShotIn(**item) for item in payload.get("shots", [])]
-    added = _expand_shots(sid, model, session["look"], shots,
+    added = _expand_shots(sid, model, session["look"], session["wardrobe"], shots,
                           payload.get("seed_mode", "random"), payload.get("seed", 0))
     if session["status"] in ("done", "cancelled", "failed"):
         db.run("UPDATE session SET status='draft' WHERE id=?", sid)
     return {"added": added}
 
 
-def _expand_shots(sid: int, model: dict, look: str, shots: list[ShotIn],
+def _expand_shots(sid: int, model: dict, look: str, wardrobe: str, shots: list[ShotIn],
                   seed_mode: str, seed: int) -> int:
     """One take x N variations = N pending shot rows."""
     start = db.one("SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id=?", sid)["m"] + 1
@@ -531,7 +552,8 @@ def _expand_shots(sid: int, model: dict, look: str, shots: list[ShotIn],
         # would restate the very garment the instruction removes, and a positive
         # that both describes and denies a jacket keeps the jacket.
         raw = take.verbatim or take.reference
-        prompt = take.prompt if raw else _compose(model, look, take.prompt)
+        worn = wardrobe if take.wardrobe is None else take.wardrobe
+        prompt = take.prompt if raw else _compose(model, look, worn, take.prompt)
         negative = take.negative or model["base_negative"]
         for i in range(max(1, take.count)):
             # Fixed seed + i: N variations on the very same seed would be N
@@ -555,25 +577,60 @@ def _expand_shots(sid: int, model: dict, look: str, shots: list[ShotIn],
     return added
 
 
-def _compose(model: dict, look: str, prompt: str) -> str:
-    """trigger + the model's base prompt + the session's look + this take.
+def _sentences(*parts: str) -> str:
+    """Join written-out pieces into one paragraph, one full stop between each.
 
-    The look sits between them because that is the whole point of a session: the
-    wardrobe and styling are identical in every frame, and only the pose, the
-    angle or the corner of the place changes. An explicit `{trigger}` in the take
-    wins over prepending it.
+    Not `", ".join` — that was right when every piece was a bag of keywords, and
+    wrong now that each one is a sentence: a comma splice between two sentences is
+    read as one long clause, and the relations inside them start leaking into each
+    other. A piece that already ends in its own punctuation keeps it.
     """
-    parts = []
+    out = []
+    for part in parts:
+        part = part.strip().strip(",").strip()
+        if not part:
+            continue
+        out.append(part if part[-1] in ".!?" else f"{part}.")
+    return " ".join(out)
+
+
+def _compose(model: dict, look: str, wardrobe: str, prompt: str) -> str:
+    """trigger + the model's base prompt + the look + the wardrobe + this take.
+
+    The take goes LAST, where it has always gone. It was briefly moved to the
+    front on the theory that a framing buried behind eighty words of wardrobe is
+    a framing already spent — six seeds gave two full-length frames that way
+    against none the other. Two frames is not evidence; the sessions that
+    actually came back right, twenty-one of them, put the pose last behind a
+    fixed block, and a forty-frame run with the take in front still came back
+    flat. Moved back, and the note left here so it does not get moved again on
+    the same hunch.
+
+    The look is the half of a session that is genuinely constant — hair, makeup,
+    the place, the light — and it sits before everything the take says, because
+    that is what makes twenty frames one shoot.
+
+    The wardrobe sits right after it and is written into every prompt rather than
+    stated once, so that a take can *change* it. Stating it once is what made
+    undressing impossible: the session's sentence dressed her in the same prompt
+    that asked for the jacket off, and a positive that both describes and denies a
+    jacket keeps the jacket. Repeated per take, each frame states its own truth,
+    and the words the takes leave untouched are identical from frame to frame,
+    which is what held the wardrobe together in the first place.
+
+    What did survive the experiment is the joining: full stops, not commas. The
+    encoder is a language model, a comma splice between two written-out pieces
+    reads as one run-on clause, and their relations start bleeding into each
+    other. Measured, one outfit at six seeds: written as sentences the hem held
+    six times of six and the harness repeated six of six; as comma fragments,
+    three of six and a different harness every frame.
+
+    An explicit `{trigger}` in the take wins over prepending it.
+    """
     if "{trigger}" in prompt:
         prompt = prompt.replace("{trigger}", model["trigger"])
-    elif model["trigger"]:
-        parts.append(model["trigger"])
-    if model["base_positive"]:
-        parts.append(model["base_positive"])
-    if look:
-        parts.append(look)
-    parts.append(prompt)
-    return ", ".join(p.strip(" ,") for p in parts if p.strip(" ,"))
+        return _sentences(model["base_positive"], look, wardrobe, prompt)
+    return _sentences(model["trigger"], model["base_positive"], look, wardrobe, prompt)
 
 
 IMPORT_MAX_BYTES = 40 * 1024 * 1024

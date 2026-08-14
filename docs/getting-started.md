@@ -62,10 +62,14 @@ paths specific to your machine.
    [Workflows](workflows.md).
 2. **Models → + New model** — name the character, pick its LoRA, set the trigger
    word, the base prompt and the default size/steps/cfg, and select the workflow.
-3. **+ New session** — write the **look** once (wardrobe, hair, styling, place:
-   "white summer dress, hair down, on a beach at golden hour"), then the
-   **shots** that vary it ("full body, walking", "close-up, eyes to camera")
-   and how many variations of each.
+3. **+ New session** — write the **look** once (hair, makeup, place, light:
+   "hair down, soft natural makeup, on a beach at golden hour") and the
+   **wardrobe** the shoot starts in ("white linen midi dress, thin straps,
+   square neckline"), then the **shots** that vary them ("full body, walking",
+   "close-up, eyes to camera") and how many variations of each. The wardrobe
+   rides on every take and each take can change its own, so a shoot that
+   undresses is one session and not several — see
+   [sessions](sessions.md#the-wardrobe).
 4. **Run**. Photos land in the gallery one at a time; rate them with the stars,
    reject the bad ones, press **⟳** on a good one to shoot more like it.
 
