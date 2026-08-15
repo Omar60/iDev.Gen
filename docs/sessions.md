@@ -237,6 +237,17 @@ Every line still walks the whole body, close-ups included: the clothes are what
 the next photograph copies word for word, and a line that drops them to match a
 crop drops them for every line after it too.
 
+**A brief that ends in an act needs the act named.** Left to itself the writer
+hedges the last stretch — *moving against her*, *straddling his lap*, a partner
+still half-dressed — and a hedge is painted as what it says: two people standing
+near each other. Measured, thirty frames briefed to end in one: none of them
+showed it. With the line required to say plainly what is happening, who is naked
+and that there are two people in frame, three of the last four frames came back
+as the photograph the brief asked for, and the one that missed was the take shot
+from floor level, which cropped the second person out. The camera position and
+the naming carry equal weight here — a frame that names everything and says
+nothing about where the camera stands is a frame where the act is out of view.
+
 **Undressing is the first half, not the subject.** Read for where the brief
 *ends*, not for the first state that satisfies it: a run that treated `undressed`
 as the destination got the clothes off by photograph seven and spent the
@@ -650,6 +661,15 @@ other half.
 
 Both photos have to exist before the takes run: shoot them, or bring them in
 with *Import photo*.
+
+**Two people is where this kind earns its keep, and where it stops.** Measured
+against the same scene written as a plain text take: the two-anchor graph is the
+only one that gives back *both* faces — each subject is recognisably the photo it
+came from — but it puts them side by side however the take describes them
+interacting, and it ignores the camera position in the take. Written as a text
+take instead, the interaction and the camera both land and the faces are whatever
+the model invents. So: the graph for who they are, a text take for what they are
+doing, and no way yet to have both at once.
 
 **What this does not fix.** Whether an edit keeps the face while changing the
 clothes is the editing model's job, not this app's. A plain img2img model
