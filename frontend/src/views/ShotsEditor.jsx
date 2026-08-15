@@ -61,6 +61,13 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
   // out of the same button before, and which of the two you get is not a thing
   // to leave to a die.
   const [reach, setReach] = useState('nude')
+  // Which setting the brief in the box was written for. The brief is the shoot —
+  // the writer of the lines reads that sentence and nothing else — so a setting
+  // moved after the roll changes nothing at all, and silently. Handing the
+  // setting to the writer as well was tried and is worse: two texts that
+  // disagree, and which one wins is a coin toss. Measured, same brief and
+  // setting twice: once undressed from line one, once dressed for all six.
+  const [rolledFor, setRolledFor] = useState('')
   // [lines written, lines to write]. Forty takes is ten calls and a few minutes;
   // a button that says nothing for that long looks broken.
   const [made, setMade] = useState([0, 0])
@@ -148,6 +155,7 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
     const written = await briefFromLook(look, wardrobe, reach)
     if (!written) throw new Error('the assistant answered nothing usable')
     setBrief(written)
+    setRolledFor(reach)
   })
 
   /** The look and the wardrobe first, so the takes can be told what not to
@@ -198,7 +206,7 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
     // The look alone as the base context: the clothes of each stretch are passed
     // in by the writer itself, photograph by photograph.
     const rows = await sessionFromBrief(brief, already(it.look), it.wardrobe, howMany,
-                                        (made, total) => setMade([made, total]))
+                                        (made, total) => setMade([made, total]), reach)
     if (!rows.length) throw new Error('the assistant answered nothing usable')
     countBack(rows.length, howMany)
     onChange([
@@ -216,7 +224,7 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
                     placeholder={onLook
                       ? 'Describe the session: “a rooftop at sunset, streetwear, standing, sitting and walking”'
                       : 'Describe what to shoot next and it writes the takes'}
-                    onChange={(e) => setBrief(e.target.value)} />
+                    onChange={(e) => { setBrief(e.target.value); setRolledFor('') }} />
           {/* The brief is the one box the assistant could not fill, and the look
               and the wardrobe are the photo it was read from — which is exactly
               what a shoot has to be coherent with. */}
@@ -273,6 +281,13 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
         </div>
       )}
       {error && <div className="error" onClick={() => setError('')}>{error}</div>}
+      {rolledFor && rolledFor !== reach && (
+        <div className="muted" style={{ marginBottom: 8 }}>
+          The brief in the box was written for <b>{REACH[rolledFor]?.label}</b>, and the shoot is
+          written from that sentence — 🎲 again for <b>{REACH[reach]?.label}</b>, or edit it by
+          hand. Changing this box alone changes nothing.
+        </div>
+      )}
       {notice && <div className="muted" onClick={() => setNotice('')}
                       style={{ marginBottom: 8, cursor: 'pointer' }}>{notice}</div>}
       <table className="looks-table">

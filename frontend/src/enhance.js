@@ -218,14 +218,14 @@ export const takesAlongArc = (brief, context, n, onProgress, worn = []) => {
  *  them back on, so the second half is given the first as context and told, in
  *  the words the assistant already gets, not to contradict it.
  */
-export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress) => {
+export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress, reach = 'nude') => {
   // No wardrobe to walk: there is no arc, so the old two-stream writer is still
   // the right one — takes varying pose and framing, and nothing to desync with.
   if (!wardrobe.trim()) {
     const takes = await takesAlongArc(brief, look, n, (made) => onProgress?.(made, n))
     return takes.map((take) => ({ ...take, wardrobe: null }))
   }
-  return shootLines(brief, look, wardrobe, n, onProgress)
+  return shootLines(brief, look, wardrobe, n, onProgress, reach)
 }
 
 /** A whole shoot, one complete photograph per line, from one stream.
@@ -235,7 +235,13 @@ export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress) => 
  *  it. Empty string is the app's way of saying "this take names its own clothes",
  *  which is exactly true here — the composed prompt is the look, then the line.
  */
-export const shootLines = async (brief, look, wardrobe, n, onProgress) => {
+export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = 'nude') => {
+  // The one thing the setting decides in here, and it is not a paragraph of
+  // prose: whether photograph 1 is dressed. Handing the writer the outfit as
+  // `what she is wearing in photograph 1` is what dressed the first seven frames
+  // of an explicit shoot whose own brief opened `already undressed with him` —
+  // the outfit is concrete and the brief is one sentence away.
+  const bare = reach === 'explicit'
   // The arc, decided once and in numbers. Derived per round it was derived
   // differently per round; see STAGE_PLAN_INSTRUCTION.
   const stages = await stagePlan(brief, wardrobe, n)
@@ -252,7 +258,7 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress) => {
     // came off at photograph 8, and photograph 20 opened the third chunk by
     // restating the original wardrobe word for word and putting it back on. What
     // a later chunk continues from is the photograph before it, and nothing else.
-    text: at.from === 1 ? wardrobe : at.previous,
+    text: at.from === 1 && !bare ? wardrobe : (at.from === 1 ? '' : at.previous),
     n: at.want,
   }))
 
@@ -457,6 +463,26 @@ const contentProblems = (line, previous) => {
              + 'is eighty words about clothes, and what the reader meets first is what frames '
              + 'the photograph.')
   }
+  // Introducing her is what comes back under pressure: told to hold a shape the
+  // brief argues with, the writer opened four lines in six with `a young woman`
+  // and `the same young woman`. The trigger at the front of the prompt already
+  // says who she is, and a description of her competes with it in every frame.
+  if (/\b(a|the same|another|one) (young |naked )?(woman|girl|model|lady|female)\b/i.test(line)) {
+    found.push('It introduces her — `a young woman`, `the same young woman`. The trigger word '
+             + 'at the front of the prompt already says who she is, and a description of her '
+             + 'competes with it. She is `her`, and nothing else. A second person is named as a '
+             + 'body — `a naked man` — and that is different.')
+  }
+  const shed = namesWhatItSheds(line)
+  if (shed.length) {
+    found.push(`It names the ${shed.join(', the ')} in the very line that takes it off. The `
+             + 'photograph the line before it took still had that piece on; this one does not, '
+             + 'and a line that says `gone`, `removed` or `discarded` has put the garment back '
+             + 'in the photograph whatever the words around it say. Write the skin instead — '
+             + '`her chest bare, her shoulders bare` — and let the piece simply not be there. '
+             + 'A piece that is only moved is different and stays named: pushed up, pulled '
+             + 'aside, unbuttoned, off one shoulder.')
+  }
   const missing = BODY.filter((b) => !b.re.test(line)).map((b) => b.part)
   if (missing.length) {
     found.push(`It says nothing about ${missing.join(' or ')}. Every photograph names the `
@@ -507,6 +533,38 @@ const GARMENT_FAMILIES = {
 
 const familiesIn = (text) =>
   Object.entries(GARMENT_FAMILIES).filter(([, re]) => re.test(text || '')).map(([name]) => name)
+
+/** The line where a piece finally comes off is the one that goes wrong, every
+ *  time — and until now nothing checked it.
+ *
+ *  `GARMENT_CARRY` has said for a while that the removing line must not contain
+ *  the name of the piece at all, and the check beside it only ever asked the
+ *  opposite question: has a garment come *back*. So `the ruched drawstrings of
+ *  the olive green ribbed crop top gone from her body` passed, and a prompt that
+ *  names a crop top has a crop top in it. Found in a user's own session, and in
+ *  four lines of a seventy-frame run and five of a twenty-four before it.
+ *
+ *  Only words that mean the piece is OFF count. A piece that is merely moved is
+ *  still worn and is still named — pushed up, pulled aside, unbuttoned, off one
+ *  shoulder, hooked under a waistband — and flagging those would flag the whole
+ *  middle of every shoot. */
+const SHED = /\b(gone|removed|discarded|cast aside|set aside|no longer (?:on|worn)|off her body|lying (?:on|in) the (?:floor|ground|tiles?|grass)|pooled (?:on|at)|crumpled (?:on|at))\b/i
+
+export const namesWhatItSheds = (line) => {
+  const text = line || ''
+  // Near each other, not merely in the same sentence: `the blouse already gone,
+  // the pleated mini skirt still at her hips` is one sentence about two pieces,
+  // and flagging the skirt there would ask the repair to take off a garment that
+  // is still on.
+  const near = (re) => {
+    for (const m of text.matchAll(new RegExp(re.source, 'gi'))) {
+      const around = text.slice(Math.max(0, m.index - 10), m.index + m[0].length + 50)
+      if (SHED.test(around)) return true
+    }
+    return false
+  }
+  return Object.entries(GARMENT_FAMILIES).filter(([, re]) => near(re)).map(([name]) => name)
+}
 
 /** Check every line and ask the writer to fix the ones that fail.
  *

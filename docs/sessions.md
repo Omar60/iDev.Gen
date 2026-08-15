@@ -187,6 +187,18 @@ conditional on the shoot undressing at all, and the explicit setting has to say
 written, the writer of the lines reads it as a shoot that starts dressed. Four
 rolls in four say it now.
 
+**The brief is the shoot, so the setting has to be chosen before the roll.** The
+writer of the lines reads that sentence and nothing else, which means moving the
+box after rolling changes nothing at all — a session set to *Explicit throughout*
+whose brief had been rolled for the arc came back with five photographs dressed
+before anything happened. Handing the setting to the writer as a second
+paragraph was tried and is worse: two texts that disagree, and which one wins is
+a coin toss — the same brief and setting run twice gave once undressed from line
+one and once dressed for all six. So the panel says the brief is out of date
+instead, and one thing is decided in code rather than in prose: on *Explicit
+throughout* the writer is not handed the wardrobe as *what she wears in
+photograph 1*, because a concrete outfit beats a sentence every time.
+
 Roll until one reads right, edit it, or ignore it and type your own.
 
 **The brief.** One sentence — *“a rooftop at sunset, streetwear, standing,
@@ -288,6 +300,21 @@ sixty flagged nine rows in twelve, a hundred and ten flagged twelve in twelve,
 and a flag every row wears is not a flag. Rows that are simply long are left
 alone, and a run of twelve at a hundred and sixty words a line came back with the
 outfit identical in all twelve.
+
+**The line that takes a piece off must not name it**, and that one is checked
+now. `GARMENT_CARRY` has said so for a while and nothing enforced it: the check
+beside it only ever asked whether a garment had come *back*, so *“the ruched
+drawstrings of the olive green crop top gone from her body”* went out unflagged,
+and a prompt that names a crop top has a crop top in it. Seven lines out of a
+hundred and ten across three real sessions said something like it. A piece that
+is merely *moved* is different and still named — pushed up, pulled aside,
+unbuttoned, off one shoulder — so only words that mean it is off count: gone,
+removed, discarded, set aside, lying on the floor.
+
+**And it must not introduce her.** Under pressure — a setting pulling one way and
+a brief the other — the writer opened four lines in six with *“a young woman”*
+and *“the same young woman”*. The trigger at the front of the prompt already
+says who she is. A second person is still named as a body: *a naked man*.
 
 **A brief that ends in an act needs the act named.** Left to itself the writer
 hedges the last stretch — *moving against her*, *straddling his lap*, a partner

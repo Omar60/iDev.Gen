@@ -916,7 +916,12 @@ export const shootChunkNote = (at) =>
       + 'legs, and the feet. It is one line of a long shoot and it may have lost one of the '
       + 'three; carry over what it says and put back what it does not, because from here on '
       + 'the omission is yours and every line after you will inherit it.'
-    : 'The wardrobe below is what she is wearing in photograph 1, and your first line dresses '
+    : at.bare
+      ? 'This shoot opens with her already undressed, so photograph 1 is where the shoot above '
+        + 'says it begins and she wears only what that sentence keeps on her. There is no '
+        + 'wardrobe to start from and nothing to take off: write the skin, and whatever the '
+        + 'shoot names as staying on.'
+      : 'The wardrobe below is what she is wearing in photograph 1, and your first line dresses '
       + 'her in it exactly as given — only the camera, the framing, the pose and the '
       + 'expression are yours to write there.\n'
       + 'Unless the shoot above says she starts undressed. Then the wardrobe below is what she '
