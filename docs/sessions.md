@@ -316,6 +316,20 @@ a brief the other — the writer opened four lines in six with *“a young woman
 and *“the same young woman”*. The trigger at the front of the prompt already
 says who she is. A second person is still named as a body: *a naked man*.
 
+**On the explicit setting the rule stands, and it travels in the system
+message.** Written as *when the shoot is explicit, the line is explicit*, it was
+half-answered: the act came back as a pose — *arched into him*, *sitting astride
+him* — in twelve lines of twelve. Three things fixed it, and none of them is
+stronger wording. The rule stands rather than triggers, so the writer never
+judges whether this photograph qualifies. It forbids the manoeuvre — softening,
+implying, answering with a pose — rather than listing euphemisms, because
+banning *moving against her* only buys you *arched into him*. And it names the
+vocabulary instead of gesturing at it. The fourth is placement: a standing rule
+about *how* to write rides on the system message, where it is read first and
+once, not in paragraph thirty of a two-thousand-word brief. Same look, same
+wardrobe, same setting: lines naming the act went from none of twelve to twelve
+of twelve, and the renders from two to about six.
+
 **A brief that ends in an act needs the act named.** Left to itself the writer
 hedges the last stretch — *moving against her*, *straddling his lap*, a partner
 still half-dressed — and a hedge is painted as what it says: two people standing
