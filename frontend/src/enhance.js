@@ -77,7 +77,16 @@ const inChunks = async (n, onProgress, askOne, stopWhenShort = false) => {
     const lines = await askOne({ from: out.length + 1, want, total: n,
                                  previous: last ? (last.prompt ?? String(last)) : '' })
     if (!lines.length) break
-    out.push(...lines.slice(0, want))
+    // A line identical to the one before it is not a photograph, it is the model
+    // marking time — and it survives `clean`, whose dedupe only sees one answer at
+    // a time, so a repeat across a chunk seam went out unnoticed. Dropped here and
+    // the round is simply short, which the loop asks again for.
+    for (const line of lines.slice(0, want)) {
+      const text = line.prompt ?? String(line)
+      const before = out[out.length - 1]
+      if (text.trim() && text.trim() === (before?.prompt ?? String(before ?? '')).trim()) continue
+      out.push(line)
+    }
     if (onProgress) onProgress(out.length, n)
     // A short chunk means different things to the two streams. Takes: a slow
     // round, ask again. Wardrobe: the shoot has run out of clothes to change,
