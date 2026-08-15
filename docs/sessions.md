@@ -160,6 +160,33 @@ picked at random here and handed to the assistant as constraints. Asked the same
 question about the same wardrobe it writes the same sentence back, however warm
 the sampler is, so the dice cannot be left to it.
 
+**How far the shoot goes is picked, not rolled.** The box beside 🎲 has four
+settings, and the dice roll *inside* the one you choose:
+
+| Setting | The shoot |
+|---|---|
+| **Clothed throughout** | begins and ends in the wardrobe it started in; what moves is the pose, the place and the expression |
+| **Dressed to undressed** | the full wardrobe to bare skin, alone — how far and how fast are still rolled |
+| **Dressed to penetration** | the whole arc, ending with a second person in frame and the act named |
+| **Explicit throughout** | no build-up: already undressed and already with him in photograph one |
+
+Rolling all of those together is what it used to do, and a shoot briefed for a
+lingerie set and one briefed to end in penetration came out of the same button.
+The ending and the pace both come from the setting because they are one question
+asked twice: a shoot that never undresses has no undressing to pace, and one
+that is explicit from the first frame does not spend its first half getting
+there.
+
+Two of the four needed the base instruction loosened before they worked. Asked
+for a clothed session, the writer still wrote one that ended in the neckerchief
+alone; asked for an explicit one it still opened *“still in the blouse and
+skirt”* and spent the session getting undressed. The rule that says
+*“`undresses a step at a time` is the whole middle of the brief”* is now
+conditional on the shoot undressing at all, and the explicit setting has to say
+*begins already undressed* in the brief's first clause — inferred rather than
+written, the writer of the lines reads it as a shoot that starts dressed. Four
+rolls in four say it now.
+
 Roll until one reads right, edit it, or ignore it and type your own.
 
 **The brief.** One sentence — *“a rooftop at sunset, streetwear, standing,

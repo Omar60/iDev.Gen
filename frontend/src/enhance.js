@@ -10,7 +10,7 @@ import { api } from './api'
 import {
   KINDS, LOOK_LINES, WARDROBE_LINES, LOOK_INSTRUCTION, LOOK_ONLY_INSTRUCTION,
   LOOK_FROM_PHOTO_INSTRUCTION, WARDROBE_INSTRUCTION, WARDROBE_PROGRESSION_INSTRUCTION,
-  ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES,
+  ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES, REACH,
   SHOOT_LINE_INSTRUCTION, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
   takesChunkNote, wardrobeChunkNote, shootChunkNote,
 } from './kinds.js'
@@ -144,12 +144,14 @@ export const rewriteLook = (text) =>
  *  random and handed over as constraints — the assistant writes the shoot around
  *  them and keeps it in the room the look describes.
  */
-export const briefFromLook = (look, wardrobe) => {
+export const briefFromLook = (look, wardrobe, reach = 'nude') => {
   const pick = (list) => list[Math.floor(Math.random() * list.length)]
-  const rolled = Object.values(BRIEF_AXES).map(pick)
+  const how = REACH[reach] || REACH.nude
+  const rolled = [pick(how.endings), pick(how.paces), ...Object.values(BRIEF_AXES).map(pick)]
   return ask({
     instruction: `${BRIEF_INSTRUCTION}\n\nThis shoot in particular:\n`
-               + rolled.map((x) => `- it ${x}`).join('\n'),
+               + rolled.map((x) => `- it ${x}`).join('\n')
+               + (how.also ? `\n\n${how.also}` : ''),
     text: [look && `The look: ${look}`, wardrobe && `The wardrobe: ${wardrobe}`]
       .filter(Boolean).join('\n'),
     n: 1,

@@ -94,9 +94,11 @@ and writes it by the rules that are otherwise only in these docs:
   none of them repeating what the two boxes already state;
 - **🎲** writes the brief too, from the look and the wardrobe a photo was read
   into: a shoot that room and those clothes could plausibly be a frame of, and a
-  different one every roll — how far it goes, how fast and how it reads are
-  picked here rather than left to a sampler that answers the same question the
-  same way;
+  different one every roll — how fast it moves and how it reads are picked here
+  rather than left to a sampler that answers the same question the same way.
+  **How far it goes is yours**, from the box beside it: clothed throughout,
+  dressed to undressed, dressed to penetration, or explicit from the first
+  photograph. The dice roll inside that choice and never across it;
 - **🎬 The whole shoot** turns one sentence into a session that goes somewhere:
   *“starts dressed and undresses step by step, keeping the stockings on”* becomes
   N takes **in order** and the N wardrobes that walk beside them, each carrying

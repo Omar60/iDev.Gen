@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { KINDS } from '../kinds.js'
+import { KINDS, REACHES, REACH } from '../kinds.js'
 import {
   guideFor, rewriteTake, takesFromBrief, lookFromBrief, rewriteWardrobe,
   wardrobeProgression, sessionFromBrief, briefFromLook, alreadySaid, spread,
@@ -56,6 +56,11 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
   // walks somewhere is thirty or fifty takes, and the writer is asked for that
   // many rather than for four, five times over.
   const [howMany, setHowMany] = useState(BRIEF_TAKES)
+  // How far the shoot goes. Rolled inside this rather than across all of it: a
+  // shoot briefed for a lingerie set and one briefed to end in penetration came
+  // out of the same button before, and which of the two you get is not a thing
+  // to leave to a die.
+  const [reach, setReach] = useState('nude')
   // [lines written, lines to write]. Forty takes is ten calls and a few minutes;
   // a button that says nothing for that long looks broken.
   const [made, setMade] = useState([0, 0])
@@ -140,7 +145,7 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
   // box and nowhere else: it is a sentence to read and edit before anything is
   // written from it.
   const roll = () => run('roll', async () => {
-    const written = await briefFromLook(look, wardrobe)
+    const written = await briefFromLook(look, wardrobe, reach)
     if (!written) throw new Error('the assistant answered nothing usable')
     setBrief(written)
   })
@@ -215,9 +220,14 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
           {/* The brief is the one box the assistant could not fill, and the look
               and the wardrobe are the photo it was read from — which is exactly
               what a shoot has to be coherent with. */}
+          <select value={reach} disabled={!!busy} style={{ width: 190 }}
+                  title={REACH[reach]?.blurb}
+                  onChange={(e) => setReach(e.target.value)}>
+            {REACHES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+          </select>
           <button className="icon" onClick={roll} disabled={!!busy || !(look.trim() || wardrobe.trim())}
                   title={look.trim() || wardrobe.trim()
-                    ? 'Write me a shoot to run: from the look and the wardrobe, going from dressed to undressed. A different one every time — how far it goes, how fast, and how it reads are rolled.'
+                    ? `Write me a shoot to run, from the look and the wardrobe: ${REACH[reach]?.blurb} A different one every time — how fast it moves and how it reads are rolled.`
                     : 'Fill the look or the wardrobe first — a shoot is written from them'}>
             {busy === 'roll' ? '…' : '🎲'}
           </button>

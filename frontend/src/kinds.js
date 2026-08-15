@@ -558,9 +558,10 @@ export const BRIEF_INSTRUCTION =
   + 'before shooting it.\n'
   + 'Say four things and nothing else: where it happens, how it begins, how it moves along, '
   + 'and where it ends.\n'
-  + 'It has to fit the look and the wardrobe below. The place and the light are already '
-  + 'decided by the look; the clothes decide what there is to move and take off, and the '
-  + 'shoot may only ever undo what is actually being worn.\n'
+  + 'It has to fit the look and the wardrobe below, and it has to fit the shoot asked for '
+  + 'underneath: how far this one goes is decided there, not here. The place and the light '
+  + 'are already decided by the look; the clothes are what there is to move, and a shoot may '
+  + 'only ever undo what is actually being worn.\n'
   + 'Twenty-five to forty-five words. One sentence, concrete, no adjectives doing the work '
   + 'of a fact: “starts sitting on the edge of the bed still in the jacket” is a brief, '
   + '“an intimate, sensual journey” is not.\n'
@@ -569,10 +570,15 @@ export const BRIEF_INSTRUCTION =
   + 'over. If you are writing what her hands, her eyes or her weight are doing, stop: that '
   + 'is a take, and takes are written separately.\n'
   + 'Never write a pose, a framing or a camera angle for the same reason.\n'
+  + 'The place is the one in the look and there is only ever one of it. A brief that starts in '
+  + 'the kitchen and ends in the bedroom is a session that cannot be shot: the look is '
+  + 'prepended to every photograph and it names one room, so the second room comes back as the '
+  + 'first one with the words fighting each other.\n'
   + 'Name a garment twice at most: one for where the shoot starts, one for where it ends. '
   + 'Never narrate the pieces coming off in between — no “as the harness, the briefs and the '
-  + 'choker come off”. `undresses a step at a time` is the whole middle of the brief, and '
-  + 'that is deliberate: this sentence is handed to the writer of the poses as well as to '
+  + 'choker come off”. When the shoot undresses at all, `undresses a step at a time` is its '
+  + 'whole middle, and that is deliberate: this sentence is handed to the writer of the '
+  + 'poses as well as to '
   + 'the writer of the clothes, and every garment named in it comes back named in a '
   + 'photograph that is no longer wearing it. Measured, on one session: a brief that listed '
   + 'the middle put the jersey, the harness and the briefs into three takes whose own '
@@ -587,21 +593,107 @@ export const BRIEF_INSTRUCTION =
  *  one shoot different from another are picked here and handed over as
  *  constraints. Every ending is somewhere along the way from dressed to not; how
  *  far and how fast is the point of rolling. */
+/** How far a session goes, and where it starts — the one thing the dice must not
+ *  decide for you.
+ *
+ *  Every ending is somewhere along the way from dressed to not, and rolling all
+ *  of them at once means a shoot briefed for a lingerie set and a shoot briefed
+ *  to end in penetration come out of the same button. So the reach is picked and
+ *  the dice roll *within* it: the ending and the pace both come from the chosen
+ *  one, because they are the same question asked twice — a shoot that never
+ *  undresses has no undressing to pace, and a shoot that is explicit from the
+ *  first photograph does not spend its first half getting there.
+ *
+ *  `also` is what the brief is told beyond the two rolls. It is only ever a
+ *  second person: the writer of the lines will name the act plainly when the
+ *  brief does, and will hedge it into a pose when the brief leaves it implied. */
+export const REACHES = [
+  {
+    key: 'sfw',
+    label: 'Clothed throughout',
+    blurb: 'The wardrobe it starts in is the wardrobe it ends in.',
+    endings: [
+      'ends in the same clothes it started in, nothing removed',
+      'ends with the outer layer open or pushed back, everything still on',
+      'ends with one accessory added or taken off and nothing else',
+    ],
+    paces: [
+      'holds the same wardrobe throughout and moves through poses instead',
+      'moves through the room rather than through the clothes',
+      'stays in one place and lets the pose and the expression carry it',
+    ],
+    also: 'NOTHING COMES OFF IN THIS SHOOT. It begins and ends in the wardrobe below, and what '
+        + 'moves is where she stands, what she is doing and how she looks doing it. A brief that '
+        + 'has her undressing a step at a time is the wrong shoot — measured, asked for a clothed '
+        + 'session the writer wrote one that ended in the neckerchief alone.',
+  },
+  {
+    key: 'nude',
+    label: 'Dressed to undressed',
+    blurb: 'Starts in the full wardrobe and undresses. No second person.',
+    endings: [
+      'ends with the outer layers off and the underwear still on',
+      'ends topless, with everything below the waist still on',
+      'ends undressed except for one piece that never comes off',
+      'ends fully undressed, keeping only the shoes and the jewellery',
+      'ends undressed and explicit, alone',
+    ],
+    paces: [
+      'stays fully dressed for the first half and undresses steadily after it',
+      'loses a layer early and then spends most of the shoot in what is left',
+      'undresses evenly, a little in every photograph',
+      'undresses in three clear stages with a stretch of photographs at each one',
+      'holds the same wardrobe for a long opening stretch, then moves quickly',
+    ],
+    also: '',
+  },
+  {
+    key: 'couple',
+    label: 'Dressed to penetration',
+    blurb: 'The whole arc: starts in the full wardrobe, ends with a man and the act.',
+    endings: [
+      'ends with a man joining her and explicit penetration, both of them in frame',
+      'ends undressed with a man behind her, penetrating her, both of them in frame',
+      'ends with her bent over and a man penetrating her from behind, both in frame',
+    ],
+    paces: [
+      'stays fully dressed for the first half, undresses steadily, and he arrives at the end',
+      'undresses evenly, a little in every photograph, and he arrives for the last stretch',
+      'undresses in three clear stages and spends the last third of it with him',
+    ],
+    also: 'The last stretch of the shoot is explicit penetration with two people in the frame. '
+        + 'Say so plainly in the brief: a shoot briefed for something implied comes back as two '
+        + 'people standing near each other.',
+  },
+  {
+    key: 'explicit',
+    label: 'Explicit throughout',
+    blurb: 'No build-up: undressed and explicit from the first photograph.',
+    endings: [
+      'ends with explicit penetration, both of them in frame, and it was explicit from the first '
+      + 'photograph',
+      'ends explicit with a man, having been undressed and explicit throughout',
+    ],
+    paces: [
+      'is undressed from the first photograph and spends the whole shoot explicit',
+      'opens already explicit with him and moves through positions rather than through clothes',
+    ],
+    also: 'THERE IS NO UNDRESSING IN THIS SHOOT and no getting ready either. She is already '
+        + 'undressed and already with him in photograph one: the wardrobe below is what she is '
+        + 'NOT wearing, save for anything you say she keeps on, and it is never taken off in the '
+        + 'brief because it was never on. `starts still in the blouse and skirt` is the failure '
+        + 'to avoid, and it is the one this shoot keeps making. What moves through the shoot is '
+        + 'what the two of them are doing.\n'
+        + 'So the brief SAYS SO IN ITS FIRST CLAUSE, in those words: `begins already naked with '
+        + 'him`, `opens undressed on the counter with him`. A brief that leaves it to be '
+        + 'inferred is read by the writer of the lines as a shoot that starts dressed, and it '
+        + 'then spends the session getting there — measured, twice.',
+  },
+]
+
+export const REACH = Object.fromEntries(REACHES.map((r) => [r.key, r]))
+
 export const BRIEF_AXES = {
-  ending: [
-    'ends with the outer layers off and the underwear still on',
-    'ends topless, with everything below the waist still on',
-    'ends undressed except for one piece that never comes off',
-    'ends fully undressed, keeping only the shoes and the jewellery',
-    'ends undressed and explicit',
-  ],
-  pace: [
-    'stays fully dressed for the first half and undresses steadily after it',
-    'loses a layer early and then spends most of the shoot in what is left',
-    'undresses evenly, a little in every photograph',
-    'undresses in three clear stages with a stretch of photographs at each one',
-    'holds the same wardrobe for a long opening stretch, then moves quickly',
-  ],
   register: [
     'begins shy and closed and grows confident',
     'reads throughout as someone photographing herself alone, unhurried',
@@ -825,8 +917,13 @@ export const shootChunkNote = (at) =>
       + 'three; carry over what it says and put back what it does not, because from here on '
       + 'the omission is yours and every line after you will inherit it.'
     : 'The wardrobe below is what she is wearing in photograph 1, and your first line dresses '
-      + 'her in it exactly as given — only the framing, the pose and the expression are yours '
-      + 'to write there.')
+      + 'her in it exactly as given — only the camera, the framing, the pose and the '
+      + 'expression are yours to write there.\n'
+      + 'Unless the shoot above says she starts undressed. Then the wardrobe below is what she '
+      + 'is NOT wearing, photograph 1 is already where the shoot says it begins, and the only '
+      + 'pieces in it are the ones that shoot names. A shoot that opens explicit and a first '
+      + 'line that dresses her in the full outfit are two different sessions, and the one that '
+      + 'wins is whichever the reader meets last.')
 
 export const wardrobeChunkNote = (at) =>
   `You are writing wardrobe states ${at.from} to ${at.from + at.want - 1} of at most `
