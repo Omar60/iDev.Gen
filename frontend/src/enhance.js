@@ -382,6 +382,29 @@ const BODY = [
   { part: 'the feet', re: /\b(feet|foot|boots?|heels?|shoes?|barefoot|toes)\b/i },
 ]
 
+/** A photograph with a second body in it, by the words that put it there.
+ *
+ *  One regex used twice, because the two rules it carries are one rule: a
+ *  two-person line is exempt from the whole-body walk AND capped shorter than the
+ *  rest of the shoot. It was written inline in both places and one of the copies
+ *  carried a literal backspace byte where a `\b` was meant, so the exemption
+ *  never once fired: measured at n=20 explicit, fifteen lines of twenty were told
+ *  they had forgotten the feet, and the repair spent a call each putting them
+ *  back. The words it adds are exactly the ones that make the second body vanish.
+ */
+const TWO_PEOPLE = /\b(two people in frame|naked man|his penis|penetrat)/i
+
+/** What a two-person line may not exceed, whatever the rest of the shoot runs to.
+ *
+ *  `lengthLimit` is measured off the shoot itself, so a shoot of long lines
+ *  licenses long lines: at n=20 explicit the median was 86 words, the limit came
+ *  out at 120 and not one line was ever flagged — while `SHOOT_LINE_INSTRUCTION`
+ *  asks for sixty to eighty and the renders came back with a disembodied penis
+ *  and no man at all in seventeen frames of twenty. A ceiling that moves with the
+ *  thing it is measuring is not a ceiling, and this is the one length that was
+ *  measured to change the photograph rather than its wording. */
+const TWO_PEOPLE_WORDS = 80
+
 /** Where a line stops being a photograph and starts being an inventory.
  *
  *  The instruction asks for sixty words and is ignored: measured at n=50, forty-
@@ -449,15 +472,30 @@ export const lengthLimit = (lines) => {
   return Math.min(MAX_WORDS, Math.round(counts[Math.floor(counts.length / 2)] * RELATIVE))
 }
 
-const tooLong = (line, limit = MAX_WORDS) => (words(line) <= limit ? [] : [
-  `It is ${words(line)} words long, half as long again as the other photographs of this `
-  + 'shoot. Cut it back to their length '
-  + 'by saying each garment once and in the fewest words that identify it — colour, cut, the '
-  + 'one detail that tells it apart — and by dropping every phrase that repeats what the line '
-  + 'has already said. Keep the framing, the camera position, the state of every garment and '
-  + 'all three of the chest, the hips and legs and the feet: what goes is the wording, never '
-  + 'a fact.',
-])
+const tooLong = (line, limit = MAX_WORDS) => {
+  const two = TWO_PEOPLE.test(line)
+  const cap = two ? Math.min(limit, TWO_PEOPLE_WORDS) : limit
+  if (words(line) <= cap) return []
+  // A two-person line is cut somewhere else entirely, and telling it to keep the
+  // chest, the hips and the feet — which is what the other complaint says — is
+  // telling it to keep the very inventory that has to go.
+  return [two
+    ? `It is ${words(line)} words long, and a photograph with two people in it has `
+      + `${TWO_PEOPLE_WORDS} at the most: a second body is the first thing a long line loses, `
+      + 'and past that it comes back with her alone in the frame. Cut it by deleting the '
+      + 'inventory of her bare parts — every clause that only says a part of her is bare, and '
+      + 'every garment on the floor or set aside. Keep the camera clause it opens with, the '
+      + 'framing, the two of them and what their bodies are doing in plain anatomical words, '
+      + 'whatever is still ON her, and her expression: what goes is her nudity spelled out '
+      + 'limb by limb, never the act.'
+    : `It is ${words(line)} words long, half as long again as the other photographs of this `
+      + 'shoot. Cut it back to their length '
+      + 'by saying each garment once and in the fewest words that identify it — colour, cut, the '
+      + 'one detail that tells it apart — and by dropping every phrase that repeats what the line '
+      + 'has already said. Keep the framing, the camera position, the state of every garment and '
+      + 'all three of the chest, the hips and legs and the feet: what goes is the wording, never '
+      + 'a fact.']
+}
 
 /** Everything wrong with a line that shortening it cannot fix.
  *
@@ -508,7 +546,7 @@ const contentProblems = (line, previous) => {
   // garments — while the words it costs are exactly what makes the second body
   // vanish. Measured: 180 words, she is alone in five renders of five; 70 words,
   // the act is there in three of three.
-  const missing = /(two people in frame|naked man|his penis|penetrat)/i.test(line)
+  const missing = TWO_PEOPLE.test(line)
     ? [] : BODY.filter((b) => !b.re.test(line)).map((b) => b.part)
   if (missing.length) {
     found.push(`It says nothing about ${missing.join(' or ')}. Every photograph names the `
@@ -621,7 +659,12 @@ const repairAll = async (lines, wardrobe, onProgress, done, total, limit = MAX_W
     // of this kind without deleting a fact, because in a prompt the words ARE the
     // garment. Content problems still get their repair; they are the ones it can
     // actually fix.
-    if (!contentProblems(line, previous).length) {
+    // …except when the second body is what the length is costing. There the words
+    // ARE NOT the garment — there is no garment left — and what a shortening
+    // deletes is her nudity spelled out limb by limb, which is the one thing the
+    // photograph can spare. `keepsTheFacts` refuses any repair that drops the act,
+    // so the failure the branch above exists to prevent cannot happen here.
+    if (!contentProblems(line, previous).length && !TWO_PEOPLE.test(line)) {
       out.push(line); stillWrong.push(i + 1)
       onProgress?.(Math.min(total, done + repaired + stillWrong.length), total)
       continue

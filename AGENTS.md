@@ -89,6 +89,17 @@ behaviour, change the test on purpose, never delete it to get green.
   `stopWhenShort` on the wardrobe stream only, and the takes written *after* the
   wardrobe with the clothes of their stretch as `context`. Change any of these
   and re-run a long session end to end — a short one hides all four failures.
+- **A line with two people in it is exempt from the whole-body walk and capped at
+  eighty words.** Both halves are `TWO_PEOPLE` in `enhance.js`, and both are the
+  same fact: past eighty words the second body is not painted, and what pushes an
+  explicit line past eighty is being asked to name the chest, the hips and the
+  feet of a woman who is already naked. The regex carried a literal backspace
+  byte where `\b` was meant, so it matched nothing between the commit that added
+  it and the run that found it — fifteen lines of twenty were told they had
+  forgotten the feet, the repair put them back, and seventeen renders of twenty
+  came back with a disembodied penis and no man in the frame. Nothing failed;
+  there was nothing to fail. `tests/test_shoot_checks.py` now runs the real
+  JavaScript, and scans every tracked file for control characters.
 - **A `verbatim` take is queued exactly as given.** "More like this" hands back a
   prompt that already carries trigger, base prompt and look; composing it again
   duplicates all three.
