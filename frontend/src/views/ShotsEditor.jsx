@@ -48,6 +48,10 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
   const [brief, setBrief] = useState('')
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
+  // Not an error: the writer answered, it just answered shorter. Asked for fifty
+  // it gave back forty-five and nothing said so — a shoot missing five
+  // photographs looks exactly like a shoot of forty-five until you count.
+  const [notice, setNotice] = useState('')
   // How many photographs the shoot is. Not a constant any more: a session that
   // walks somewhere is thirty or fifty takes, and the writer is asked for that
   // many rather than for four, five times over.
@@ -68,8 +72,22 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
   }
 
   const run = async (what, fn) => {
-    setBusy(what); setError('')
+    setBusy(what); setError(''); setNotice('')
     try { await fn() } catch (e) { setError(e.message) } finally { setBusy('') }
+  }
+
+  /** What the writer actually delivered, when it is less than what was asked.
+   *
+   *  A long ask is answered shorter — that is measured and the rounds exist
+   *  because of it — but the rounds do not always close the gap, and a silent
+   *  shortfall is a shoot whose middle is missing with nothing on screen saying
+   *  so. Say it and let the rows be added anyway: forty-five good photographs are
+   *  worth having, and asking again is one more click. */
+  const countBack = (got, asked) => {
+    if (got < asked) {
+      setNotice(`The assistant wrote ${got} of the ${asked} asked for. Add the rest with the `
+              + 'button again, or shoot these.')
+    }
   }
 
   // Trigger, base prompt, look and the wardrobe of this very row: what the server
@@ -155,6 +173,7 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
     const lines = await takesFromBrief(kind, !!spec.refDefault, brief,
                                        already(it.look, it.wardrobe), howMany)
     if (!lines.length) throw new Error('the assistant answered nothing usable')
+    countBack(lines.length, howMany)
     onChange([
       ...shots.filter((s) => s.prompt.trim()),
       ...lines.map((l) => ({ ...blankShot(kind), label: l.label, prompt: l.prompt })),
@@ -176,6 +195,7 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
     const rows = await sessionFromBrief(brief, already(it.look), it.wardrobe, howMany,
                                         (made, total) => setMade([made, total]))
     if (!rows.length) throw new Error('the assistant answered nothing usable')
+    countBack(rows.length, howMany)
     onChange([
       ...shots.filter((s) => s.prompt.trim()),
       ...rows.map((r) => ({ ...blankShot(kind), count: 1, label: r.label,
@@ -243,6 +263,8 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
         </div>
       )}
       {error && <div className="error" onClick={() => setError('')}>{error}</div>}
+      {notice && <div className="muted" onClick={() => setNotice('')}
+                      style={{ marginBottom: 8, cursor: 'pointer' }}>{notice}</div>}
       <table className="looks-table">
         <tbody>
           {shots.map((shot, i) => (
