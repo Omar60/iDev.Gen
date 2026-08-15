@@ -483,7 +483,13 @@ const contentProblems = (line, previous) => {
              + 'A piece that is only moved is different and stays named: pushed up, pulled '
              + 'aside, unbuttoned, off one shoulder.')
   }
-  const missing = BODY.filter((b) => !b.re.test(line)).map((b) => b.part)
+  // A line with two people in it is exempt from the whole-body walk: that rule
+  // exists so a garment is never left unstated, and by then there are no
+  // garments — while the words it costs are exactly what makes the second body
+  // vanish. Measured: 180 words, she is alone in five renders of five; 70 words,
+  // the act is there in three of three.
+  const missing = /(two people in frame|naked man|his penis|penetrat)/i.test(line)
+    ? [] : BODY.filter((b) => !b.re.test(line)).map((b) => b.part)
   if (missing.length) {
     found.push(`It says nothing about ${missing.join(' or ')}. Every photograph names the `
              + 'chest and torso, the hips and legs, and the feet — and where there is no '
@@ -548,7 +554,7 @@ const familiesIn = (text) =>
  *  still worn and is still named — pushed up, pulled aside, unbuttoned, off one
  *  shoulder, hooked under a waistband — and flagging those would flag the whole
  *  middle of every shoot. */
-const SHED = /\b(gone|removed|discarded|cast aside|set aside|no longer (?:on|worn)|off her body|lying (?:on|in) the (?:floor|ground|tiles?|grass)|pooled (?:on|at)|crumpled (?:on|at))\b/i
+const SHED = /\b(gone|removed|discarded|cast aside|set aside|no longer (?:on|worn)|off her body|lying (?:on|in|at|beside)|pooled (?:on|at|beside)|crumpled (?:on|at|beside))\b/i
 
 export const namesWhatItSheds = (line) => {
   const text = line || ''
@@ -558,7 +564,7 @@ export const namesWhatItSheds = (line) => {
   // is still on.
   const near = (re) => {
     for (const m of text.matchAll(new RegExp(re.source, 'gi'))) {
-      const around = text.slice(Math.max(0, m.index - 10), m.index + m[0].length + 50)
+      const around = text.slice(Math.max(0, m.index - 10), m.index + m[0].length + 80)
       if (SHED.test(around)) return true
     }
     return false
