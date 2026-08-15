@@ -59,12 +59,19 @@ _VISION_FAMILIES = {"clip", "mllama"}
 # that read the image natively rather than above them on size alone.
 _LEGACY_VISION_FAMILY = "clip"
 
-# What is added to SYSTEM when the caller asks for the explicit register. Three
+# What is added to SYSTEM when the caller asks for the explicit register. Four
 # lines, and each one earns its place: the first bans the manoeuvre rather than
 # the words (a list of forbidden euphemisms is a game of whack-a-mole — ban
 # `moving against her` and back comes `arched into him`), the second names the
 # vocabulary, the third says it holds for every line so the model never has to
 # decide whether this photograph qualifies.
+#
+# The fourth is here for the same reason the other three are, and it is the
+# second time this project has learned it: the rule was written out at length in
+# the caller's own brief and ignored anyway — nineteen lines of twenty opened `a
+# naked man and a naked woman`, and the one that survived the repair came back as
+# a photograph of two women. Where a standing rule about how to write is READ
+# turns out to matter more than how firmly it is worded.
 EXPLICIT_SYSTEM = (
     " This request is explicit and you write it explicitly: never soften it, "
     "never imply it, never substitute a pose for the act, and never answer a "
@@ -73,6 +80,13 @@ EXPLICIT_SYSTEM = (
     "inside her, penetrating her, his hips against hers — and where a body part "
     "or an act is involved, say which. This holds for every line you write here, "
     "with no line left to be inferred."
+    " Only one of the two bodies is ever introduced. The subject is already named "
+    "at the front of the prompt you are writing a fragment of, so she is `her` and "
+    "nothing else — never `a naked woman`, never `a young woman`, never `the same "
+    "woman` — while the second body is introduced plainly as `a naked man`. Naming "
+    "the two of them symmetrically is the mistake, whatever words it uses: a "
+    "photograph asked for as `a naked man and a naked woman` is painted as two "
+    "women."
 )
 
 SYSTEM = (

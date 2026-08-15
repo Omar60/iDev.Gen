@@ -316,6 +316,14 @@ a brief the other — the writer opened four lines in six with *“a young woman
 and *“the same young woman”*. The trigger at the front of the prompt already
 says who she is. A second person is still named as a body: *a naked man*.
 
+That asymmetry is the whole rule, and it took two attempts to make it stick.
+Written out in the brief, with its own measurement attached, it was ignored:
+nineteen lines of twenty opened *“a naked man and a naked woman”*, and the one
+the repair could not fix came back as a photograph of two women. It now rides on
+the system message with the rest of the explicit register, and the brief does not
+restate it — 0 of 20 on the next run, same look, same wardrobe, same brief. Where
+a standing rule is read turns out to matter more than how firmly it is worded.
+
 **On the explicit setting the rule stands, and it travels in the system
 message.** Written as *when the shoot is explicit, the line is explicit*, it was
 half-answered: the act came back as a pose — *arched into him*, *sitting astride

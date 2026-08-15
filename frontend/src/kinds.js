@@ -901,10 +901,13 @@ export const EXPLICIT_REGISTER =
   + 'the manoeuvre, not the phrase, so no list of banned phrases will catch the next one.\n'
   + 'Say what is happening in plain anatomical words: penis, vagina, inside her, penetrating '
   + 'her, his hips against hers, her mouth on him. Say which body part, and say where it is.\n'
-  + 'The other body is `a naked man` and she is `her` — never `a naked woman`, never `a young '
-  + 'woman`. Measured: told to name both bodies plainly, the writer started calling her `a '
-  + 'naked woman`, and a photograph asked for `a naked man and a naked woman` came back as two '
-  + 'women. Her name is the trigger word at the front of the prompt, and it is already there.\n'
+  // Which of the two bodies gets introduced is NOT stated here any more. It was,
+  // at length and with its measurement attached, and it was ignored anyway:
+  // nineteen lines of twenty opened `a naked man and a naked woman`, and the one
+  // the repair could not fix came back as a photograph of two women. It now rides
+  // on the system message with the rest of the register — see EXPLICIT_SYSTEM in
+  // `backend/enhance.py`. Do not restate it here: two texts saying the same thing
+  // is one text away from two texts disagreeing, and which one wins is a toss.
   + 'This does not buy length. The line stays at sixty to eighty words — a second body is the '
   + 'first thing a long line loses — so the words come out of the inventory of her, not out of '
   + 'the act.'

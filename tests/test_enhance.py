@@ -451,3 +451,12 @@ def test_the_explicit_register_rides_on_the_system_message():
     assert enhance.EXPLICIT_SYSTEM in explicit[0]["content"]
     # And it does not leak into what the caller asked for.
     assert "penetrating her" not in explicit[1]["content"]
+
+
+def test_the_register_says_which_of_the_two_bodies_is_introduced():
+    """The same lesson twice. Written out in the caller's brief, with its
+    measurement attached, it was ignored: nineteen lines of twenty opened `a naked
+    man and a naked woman`, and the one the repair could not fix came back as a
+    photograph of two women. Moved here, 0 of 20 did it."""
+    assert "a naked woman" in enhance.EXPLICIT_SYSTEM
+    assert "a naked man" in enhance.EXPLICIT_SYSTEM

@@ -81,6 +81,7 @@ PADDING = (" her bare shoulders lifted, her bare ribs turning, her bare stomach 
 
 PROBE = """
 import { problemsWith } from '%(src)s'
+import { EXPLICIT_REGISTER, SHOOT_LINE_INSTRUCTION } from '%(kinds)s'
 
 const words = (t) => t.trim().split(/\\s+/).length
 const pad = '%(padding)s'.repeat(2)
@@ -102,6 +103,10 @@ console.log(JSON.stringify({
   // complaints, so a broken exemption shows up here and nowhere else.
   bare: tag('Taken from directly behind her, a waist-up photograph, of a naked man '
             + 'behind her, his penis inside her, two people in frame, her mouth open.', 200),
+  // Which of the two bodies gets introduced is a system-message rule now, and it
+  // is only worth moving there if it is not also sitting in the brief: two texts
+  // saying the same thing is one edit away from two texts disagreeing.
+  namingInTheBrief: /naked woman|young woman/i.test(EXPLICIT_REGISTER + SHOOT_LINE_INSTRUCTION),
 }))
 """
 
@@ -158,6 +163,7 @@ def _node_json(script: str, tmp_path: Path) -> dict:
 @pytest.fixture(scope="module")
 def checks(tmp_path_factory) -> dict:
     script = PROBE % {"src": (ROOT / "frontend/src/enhance.js").as_posix(),
+                      "kinds": (ROOT / "frontend/src/kinds.js").as_posix(),
                       "short": json.dumps(TWO_PERSON_LINE),
                       "clothed": json.dumps(CLOTHED_LINE),
                       "padding": " " + PADDING.strip()}
@@ -183,6 +189,15 @@ def test_the_cap_is_the_second_body_and_not_the_length(checks):
     assert checks["clothedWords"] > 80, checks
     assert "TWO_PEOPLE_LONG" not in checks["clothed"], checks["clothed"]
     assert "SHOOT_LONG" not in checks["clothed"], checks["clothed"]
+
+
+def test_the_brief_does_not_restate_which_body_is_introduced(checks):
+    """It said it there once, at length and with its measurement attached, and the
+    writer opened nineteen lines of twenty with `a naked man and a naked woman`
+    anyway. The rule moved to the system message — see EXPLICIT_SYSTEM in
+    `backend/enhance.py` — and 0 of 20 did it on the next run. Restating it in the
+    brief is how that becomes two rules that can disagree."""
+    assert checks["namingInTheBrief"] is False
 
 
 # A photograph that needs no repair, and one that does: it opens on the subject
