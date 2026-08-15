@@ -281,22 +281,52 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress) => {
   }))
 }
 
+/** How much of a shoot one stage may cover.
+ *
+ *  A quarter, and it is the fix for the worst thing a seventy-frame run did: the
+ *  plan gave photographs 1 to 40 to "still dressed at the counter", so forty
+ *  frames were the same photograph and the whole undressing happened between 40
+ *  and 41 — top, skirt and stockings gone in a single step, with no frame in
+ *  between wearing one of them. The instruction asks for six to twelve stages and
+ *  says where the photographs go; asked for seventy it wrote five and put more
+ *  than half of them in the first. */
+const STAGE_SHARE = 0.25
+
 /** The stages, as `{from, to, what}`. The model answers `1-8 | …`, which is the
- *  `label | text` shape `clean` already splits on. */
-export const stagePlan = (brief, wardrobe, n) =>
-  ask({
-    instruction: `${STAGE_PLAN_INSTRUCTION}`,
-    text: `The shoot:\n${brief}\n\nThe wardrobe it starts in:\n${wardrobe}\n\n`
-        + `It is ${n} photographs long.`,
-    n: 12,
-  }).then((rows) => rows.flatMap((r) => {
+ *  `label | text` shape `clean` already splits on.
+ *
+ *  Asked once and checked; a plan with one stage swallowing the shoot is asked
+ *  for again, once, with the offending range quoted back. Once and not until it
+ *  is right: this is a minute of somebody's time per attempt, and a plan that is
+ *  merely lopsided still shoots. */
+export const stagePlan = async (brief, wardrobe, n) => {
+  const parse = (rows) => rows.flatMap((r) => {
     const span = /(\d+)\s*[-–—]\s*(\d+)/.exec(r.label || '')
     // A row whose label is not a range is a row the model formatted its own way.
     // Dropped rather than guessed at: a wrong range silently mis-paces the shoot.
     return span && r.prompt.trim()
       ? [{ from: +span[1], to: +span[2], what: r.prompt.trim() }]
       : []
-  }))
+  })
+  const cap = Math.max(2, Math.round(n * STAGE_SHARE))
+  const tooBig = (stages) => stages.filter((s) => s.to - s.from + 1 > cap)
+  const askFor = (extra) => ask({
+    instruction: `${STAGE_PLAN_INSTRUCTION}\n\nNo stage covers more than ${cap} photographs `
+               + `of the ${n}${extra}`,
+    text: `The shoot:\n${brief}\n\nThe wardrobe it starts in:\n${wardrobe}\n\n`
+        + `It is ${n} photographs long.`,
+    n: 12,
+  }).then(parse)
+
+  const first = await askFor('.')
+  const over = tooBig(first)
+  if (!over.length) return first
+  const again = await askFor('. Your last plan gave '
+    + over.map((s) => `${s.from}-${s.to}`).join(' and ')
+    + ' to a single stage, which is the whole shoot standing still and then changing all at '
+    + 'once. Break that stretch into the steps it is made of.')
+  return tooBig(again).length && again.length < first.length ? first : (again.length ? again : first)
+}
 
 const covering = (stages, at) =>
   stages.filter((s) => s.to >= at.from && s.from <= at.from + at.want - 1)

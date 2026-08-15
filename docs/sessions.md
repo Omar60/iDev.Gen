@@ -273,6 +273,16 @@ from floor level, which cropped the second person out. The camera position and
 the naming carry equal weight here — a frame that names everything and says
 nothing about where the camera stands is a frame where the act is out of view.
 
+**No stage may cover more than a quarter of the shoot.** The shoot is planned in
+stages before a line of it is written, and asked for seventy photographs the
+planner wrote five stages and gave *forty of them to the first one*: forty frames
+of the same photograph, then top, skirt and stockings all gone between frame
+forty and forty-one, with no frame in between wearing one of them. So the plan is
+checked, and a plan with a stage that big is asked for again once, with the
+offending range quoted back. Re-planned that way, a twenty-four frame shoot came
+back in seven stages, the longest four frames, and the undressing walked: blouse
+open, blouse off, skirt alone, stockings down, and only then the ending.
+
 **Undressing is the first half, not the subject.** Read for where the brief
 *ends*, not for the first state that satisfies it: a run that treated `undressed`
 as the destination got the clothes off by photograph seven and spent the
