@@ -257,8 +257,8 @@ but the set stops being one shot repeated.
 
 **And every line OPENS with where the camera is** — *Taken from directly in front
 of her*, *from behind her left shoulder*, *from her right side, in full profile*,
-*from directly behind her*, *from above, looking down* — with the framing right
-after it. That is a different rule from the framing, and leaving it out is why a
+*from her left side, in full profile*, *from directly behind her* — with the
+framing right after it. That is a different rule from the framing, and leaving it out is why a
 shoot can be perfectly framed and still monotonous: thirty photographs written
 with a framing in every line and no camera position in any of them came back
 thirty frontal shots.
@@ -269,7 +269,19 @@ than a front view and about ten photographs delivered one — the clause was bur
 behind eighty words of clothes, and the reader frames what it meets first. Moved
 to the front of the line, eighteen of twenty-four asked and ten or eleven
 delivered. `floor level` and `over her shoulder` come back frontal wherever they
-sit, so neither is offered.
+sit, so neither is offered — and *from above her, looking down* was on the list
+until it was measured the same way: two seeds of one line against each of the
+five clauses, then four more inside a real shoot. Front, shoulder and profile
+obeyed every time; *directly behind her* in one of two; *above her* in none of
+six, always as the ordinary straight-on view. It is off the list, and *from her
+left side* took its place.
+
+**In a two-person frame, on a bed, there is no full-length photograph.** Thirteen
+tries without one — five lines of a real shoot and eight of a controlled pair —
+and the room's depth does not buy it either, which is the lever that buys it
+everywhere else: the floor duly appears in the picture and the crop does not
+move. The two bodies fill the frame. Those lines ask for waist-up or
+three-quarter instead, and the words go nowhere else.
 
 The framing says how much of her is in frame, never how much of her to write.
 Every line still walks the whole body, close-ups included: the clothes are what
