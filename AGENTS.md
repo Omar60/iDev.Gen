@@ -89,6 +89,13 @@ behaviour, change the test on purpose, never delete it to get green.
   `stopWhenShort` on the wardrobe stream only, and the takes written *after* the
   wardrobe with the clothes of their stretch as `context`. Change any of these
   and re-run a long session end to end — a short one hides all four failures.
+- **No line of a shoot repeats a line the shoot already has.** `repeats` is asked
+  at both ends: by the writer, where a repeat is the model marking time, and by
+  the repair, where the previous photograph is in the prompt as context and gets
+  handed straight back — which scores perfectly on every other check, so it went
+  out twice in one twenty-photograph run and each pair was shot as one photograph
+  twice. A repair that repeats is refused and the row is flagged; nothing is
+  silently dropped.
 - **A line with two people in it is exempt from the whole-body walk and capped at
   eighty words.** Both halves are `TWO_PEOPLE` in `enhance.js`, and both are the
   same fact: past eighty words the second body is not painted, and what pushes an

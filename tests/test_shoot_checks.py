@@ -106,6 +106,34 @@ console.log(JSON.stringify({
 """
 
 
+# The failure this reproduces, with no model in the room: the repair is handed
+# `previous` as "the photograph before this one", and answers with it. Every
+# check the repair scores on passes — same framing, same camera, same body walk,
+# no new problem — so the shoot goes out with two rows that are one photograph.
+REPAIR_PROBE = """
+import { repairAll } from '%(src)s'
+
+const good = %(good)s
+const broken = %(broken)s
+const proper = %(proper)s
+
+// The endpoint the repair asks, answering whatever this test wants it to.
+const reply = (text) => {
+  globalThis.fetch = async () => ({
+    ok: true, status: 200, json: async () => ({ lines: [{ label: '', prompt: text }] }),
+  })
+}
+
+const run = async (answer) => {
+  reply(answer)
+  const r = await repairAll([good, broken], '', null, 0, 2, 200)
+  return { lines: r.lines, repaired: r.repaired, stillWrong: r.stillWrong }
+}
+
+console.log(JSON.stringify({ echoed: await run(good), fixed: await run(proper) }))
+"""
+
+
 def _node_json(script: str, tmp_path: Path) -> dict:
     """Bundle a probe against the real module and run it. esbuild is already a
     dependency of the frontend build; nothing here reaches the network."""
@@ -155,3 +183,47 @@ def test_the_cap_is_the_second_body_and_not_the_length(checks):
     assert checks["clothedWords"] > 80, checks
     assert "TWO_PEOPLE_LONG" not in checks["clothed"], checks["clothed"]
     assert "SHOOT_LONG" not in checks["clothed"], checks["clothed"]
+
+
+# A photograph that needs no repair, and one that does: it opens on the subject
+# instead of the camera and never says its framing, which is two content problems
+# and the repair path they send a line down.
+BROKEN_LINE = (
+    "Of a naked man lying beneath her on the white bedding, his penis inside her, "
+    "her hands flat on his chest, two people in frame, her lips parted."
+)
+PROPER_REPAIR = (
+    "Taken from above her, looking down, a waist-up photograph, of a naked man lying "
+    "beneath her on the white bedding, his penis inside her, her hands flat on his "
+    "chest, two people in frame, her lips parted."
+)
+
+
+@pytest.fixture(scope="module")
+def repairs(tmp_path_factory) -> dict:
+    script = REPAIR_PROBE % {"src": (ROOT / "frontend/src/enhance.js").as_posix(),
+                             "good": json.dumps(TWO_PERSON_LINE),
+                             "broken": json.dumps(BROKEN_LINE),
+                             "proper": json.dumps(PROPER_REPAIR)}
+    return _node_json(script, tmp_path_factory.mktemp("repairs"))
+
+
+def test_a_repair_that_answers_with_the_previous_photograph_is_refused(repairs):
+    """Two rows of one photograph is what the shoot ends up with otherwise, and
+    the pair is queued twice and shot twice."""
+    echoed = repairs["echoed"]
+    assert echoed["lines"][1] == BROKEN_LINE, echoed["lines"]
+    assert echoed["lines"][0] != echoed["lines"][1], echoed["lines"]
+    assert echoed["repaired"] == 0, echoed
+    # Refused is not fixed: the row stays broken and has to be visible.
+    assert echoed["stillWrong"] == [2], echoed
+
+
+def test_a_repair_that_is_actually_a_repair_is_still_kept(repairs):
+    """The guard above must not cost the repair its job — measured once already
+    at three in four, and a check that refuses everything reads the same as one
+    that refuses nothing."""
+    fixed = repairs["fixed"]
+    assert fixed["lines"] == [TWO_PERSON_LINE, PROPER_REPAIR], fixed["lines"]
+    assert fixed["repaired"] == 1, fixed
+    assert fixed["stillWrong"] == [], fixed

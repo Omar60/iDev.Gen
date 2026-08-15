@@ -63,6 +63,20 @@ export const CHUNK = 8
  *  gets the running total, because forty lines is five rounds and a button that
  *  says nothing for four minutes looks broken.
  */
+/** Is this line one the shoot already has?
+ *
+ *  Takes either a `{label, prompt}` row or a bare string, because it is asked
+ *  the same question at both ends of the pipeline: by the writer, where a repeat
+ *  is the model marking time, and by the repair, where it is the model handing
+ *  back the previous photograph it was shown as context. Against everything kept
+ *  so far and not only against the line before, which costs nothing and catches
+ *  the shoot that circles back to a frame from two stages ago. */
+export const repeats = (line, already) => {
+  const key = (x) => (x?.prompt ?? String(x ?? '')).trim().toLowerCase()
+  const text = key(line)
+  return !!text && already.some((other) => key(other) === text)
+}
+
 const inChunks = async (n, onProgress, askOne, stopWhenShort = false) => {
   const out = []
   // The cap is what stops a model answering one line at a time from being asked
@@ -77,14 +91,12 @@ const inChunks = async (n, onProgress, askOne, stopWhenShort = false) => {
     const lines = await askOne({ from: out.length + 1, want, total: n,
                                  previous: last ? (last.prompt ?? String(last)) : '' })
     if (!lines.length) break
-    // A line identical to the one before it is not a photograph, it is the model
-    // marking time — and it survives `clean`, whose dedupe only sees one answer at
-    // a time, so a repeat across a chunk seam went out unnoticed. Dropped here and
+    // A line the shoot already has is not a photograph, it is the model marking
+    // time — and it survives `clean`, whose dedupe only sees one answer at a
+    // time, so a repeat across a chunk seam went out unnoticed. Dropped here and
     // the round is simply short, which the loop asks again for.
     for (const line of lines.slice(0, want)) {
-      const text = line.prompt ?? String(line)
-      const before = out[out.length - 1]
-      if (text.trim() && text.trim() === (before?.prompt ?? String(before ?? '')).trim()) continue
+      if (repeats(line, out)) continue
       out.push(line)
     }
     if (onProgress) onProgress(out.length, n)
@@ -642,15 +654,27 @@ export const namesWhatItSheds = (line) => {
  *  eighteen lines of a twenty-four line shoot went out unfixed while the code
  *  reported success. Whatever survives that check is still returned, and
  *  `stillWrong` says which lines to look at.
+ *
+ *  Exported for `tests/test_shoot_checks.py`, which drives it with a stubbed
+ *  endpoint: what it accepts and what it refuses is the whole of this function,
+ *  and neither can be seen from outside a shoot.
  */
-const repairAll = async (lines, wardrobe, onProgress, done, total, limit = MAX_WORDS) => {
+export const repairAll = async (lines, wardrobe, onProgress, done, total, limit = MAX_WORDS) => {
   const out = []
   const stillWrong = []
   let repaired = 0
   for (const [i, line] of lines.entries()) {
     const previous = i === 0 ? wardrobe : out[i - 1]
     const problems = problemsWith(line, previous, limit)
-    if (!problems.length) { out.push(line); continue }
+    if (!problems.length) {
+      // Nothing wrong with the line except that the shoot already has it, which
+      // happens when an EARLIER repair was handed back the photograph it was
+      // shown as context. There is nothing to ask for here — the complaint list
+      // would be empty — so it is flagged and the row is outlined.
+      if (repeats(line, out)) stillWrong.push(i + 1)
+      out.push(line)
+      continue
+    }
     // A line whose only fault is its length is flagged and left alone. Measured
     // on eight long lines: the only rewrites that actually came back shorter were
     // the ones that had dropped something — `pleated mini skirt` in one, `erect
@@ -710,15 +734,23 @@ const repairAll = async (lines, wardrobe, onProgress, done, total, limit = MAX_W
     const after = problemsWith(fixed, previous, limit)
     const shorter = tooLong(line, limit).length && words(fixed) <= words(line) * 0.9
       && contentProblems(fixed, previous).length <= contentProblems(line, previous).length
+    // And a repair that comes back as a photograph the shoot already has is the
+    // model answering with its context instead of its text: `previous` is in the
+    // prompt as "the photograph before this one", and handing it straight back
+    // scores perfectly on every check above — same framing, same camera, same
+    // body walk, no new problem. Measured at n=20 explicit, twice: rows 17 and
+    // 18 byte-identical, rows 19 and 20 byte-identical, and each pair shot as
+    // one photograph twice. The original is kept instead, and flagged.
     const usable = fixed && words(fixed) > floor && keepsTheFacts(line, fixed)
+      && !repeats(fixed, out)
       && (after.length < problems.length || shorter)
     // Repaired and still flagged are no longer the same question: a line cut from
     // a hundred and six words to ninety is a repair worth keeping AND a row worth
     // outlining, and reporting only one of the two hides whichever it drops.
     const kept = usable ? fixed : line
-    out.push(kept)
     if (usable) repaired += 1
-    if (problemsWith(kept, previous, limit).length) stillWrong.push(i + 1)
+    if (problemsWith(kept, previous, limit).length || repeats(kept, out)) stillWrong.push(i + 1)
+    out.push(kept)
     onProgress?.(Math.min(total, done + repaired + stillWrong.length), total)
   }
   return { lines: out, repaired, stillWrong }
