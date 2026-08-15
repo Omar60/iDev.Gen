@@ -11,7 +11,7 @@ import {
   KINDS, LOOK_LINES, WARDROBE_LINES, LOOK_INSTRUCTION, LOOK_ONLY_INSTRUCTION,
   LOOK_FROM_PHOTO_INSTRUCTION, WARDROBE_INSTRUCTION, WARDROBE_PROGRESSION_INSTRUCTION,
   ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES, REACH,
-  SHOOT_LINE_INSTRUCTION, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
+  SHOOT_LINE_INSTRUCTION, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION, EXPLICIT_REGISTER,
   takesChunkNote, wardrobeChunkNote, shootChunkNote,
 } from './kinds.js'
 
@@ -248,8 +248,10 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   onProgress?.(0, n)
 
   const lines = await inChunks(n, (made) => onProgress?.(made, n), (at) => ask({
-    instruction: `${SHOOT_LINE_INSTRUCTION}\n\nThe shoot goes like this:\n${brief}`
-               + `\n\n${shootChunkNote({ ...at, stages: covering(stages, at) })}`,
+    instruction: `${SHOOT_LINE_INSTRUCTION}`
+               + (bare ? `\n\n${EXPLICIT_REGISTER}` : '')
+               + `\n\nThe shoot goes like this:\n${brief}`
+               + `\n\n${shootChunkNote({ ...at, bare, stages: covering(stages, at) })}`,
     // The look is context and not part of the answer: it is prepended to every
     // frame by the app, so the writer needs to know it in order not to repeat it.
     context: look,
@@ -267,6 +269,9 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
     // stiletto pumps, so the note that replaces the list has to forbid that in
     // the same breath.
     text: at.from === 1 && !bare ? wardrobe : (at.from === 1 ? '' : at.previous),
+    // The register rides on the SYSTEM message, where a standing rule is read
+    // first and once. See EXPLICIT_SYSTEM in backend/enhance.py.
+    register: bare ? 'explicit' : '',
     n: at.want,
   }))
 

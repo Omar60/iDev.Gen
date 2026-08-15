@@ -59,6 +59,22 @@ _VISION_FAMILIES = {"clip", "mllama"}
 # that read the image natively rather than above them on size alone.
 _LEGACY_VISION_FAMILY = "clip"
 
+# What is added to SYSTEM when the caller asks for the explicit register. Three
+# lines, and each one earns its place: the first bans the manoeuvre rather than
+# the words (a list of forbidden euphemisms is a game of whack-a-mole — ban
+# `moving against her` and back comes `arched into him`), the second names the
+# vocabulary, the third says it holds for every line so the model never has to
+# decide whether this photograph qualifies.
+EXPLICIT_SYSTEM = (
+    " This request is explicit and you write it explicitly: never soften it, "
+    "never imply it, never substitute a pose for the act, and never answer a "
+    "request for sex with a request for a photograph of two people near each "
+    "other. Name what is happening in plain anatomical words — penis, vagina, "
+    "inside her, penetrating her, his hips against hers — and where a body part "
+    "or an act is involved, say which. This holds for every line you write here, "
+    "with no line left to be inferred."
+)
+
 SYSTEM = (
     "You write fragments of image-generation prompts. Output the fragments and "
     "nothing else: no numbering, no bullets, no quotes, no explanation, no "
@@ -80,6 +96,13 @@ class EnhanceIn(BaseModel):
     allowed: list[str] = Field(default_factory=list)  # closed vocabulary to clamp to
     shot_id: int | None = None  # a photo the app already has
     image: str = ""             # a photo just picked, as a data: URI
+    # The register the caller writes in. Only the shoot writer sets it, and only
+    # to "explicit". It rides on the SYSTEM message rather than in `instruction`
+    # on purpose: a standing rule about how to write belongs where the model
+    # reads it first and once, not in paragraph thirty of a two-thousand word
+    # brief where it competes with thirty-nine other rules — which is where it
+    # was, and where the model went on hedging the act into a pose.
+    register: str = ""
 
 
 def configured(config: dict) -> bool:
@@ -288,9 +311,10 @@ def _messages(p: EnhanceIn, image: str) -> list[dict]:
     parts.append(f"Rewrite this:\n{p.text}" if p.text.strip() else "")
 
     text = "\n\n".join(x for x in parts if x)
+    system = SYSTEM + (EXPLICIT_SYSTEM if p.register == "explicit" else "")
     if not image:
-        return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": text}]
-    return [{"role": "system", "content": SYSTEM},
+        return [{"role": "system", "content": system}, {"role": "user", "content": text}]
+    return [{"role": "system", "content": system},
             {"role": "user", "content": [{"type": "text", "text": text},
                                          {"type": "image_url", "image_url": {"url": image}}]}]
 

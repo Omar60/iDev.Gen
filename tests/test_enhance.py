@@ -436,3 +436,18 @@ def test_an_answer_that_is_not_a_completion_is_refused(configured, llm):
     llm(payload={"unexpected": True})
     r = configured.post("/api/enhance", json={"instruction": "x"})
     assert r.status_code == 502
+
+
+def test_the_explicit_register_rides_on_the_system_message():
+    """A standing rule about how to write belongs in SYSTEM, not in paragraph
+    thirty of the caller's brief — which is where it was while the writer went on
+    hedging the act into a pose."""
+    plain = enhance._messages(enhance.EnhanceIn(instruction="write a line"), "")
+    assert enhance.EXPLICIT_SYSTEM not in plain[0]["content"]
+
+    explicit = enhance._messages(
+        enhance.EnhanceIn(instruction="write a line", register="explicit"), "")
+    assert explicit[0]["role"] == "system"
+    assert enhance.EXPLICIT_SYSTEM in explicit[0]["content"]
+    # And it does not leak into what the caller asked for.
+    assert "penetrating her" not in explicit[1]["content"]

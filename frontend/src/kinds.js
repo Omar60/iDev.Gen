@@ -882,6 +882,33 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'Never describe her face, her age or her body beyond what the pose and the expression '
   + 'need. Never write a camera brand, a lens or a film stock.'
 
+/** The standing version of the explicit rule, for a shoot that is explicit all
+ *  the way through.
+ *
+ *  The rule inside SHOOT_LINE_INSTRUCTION is conditional — *when* the shoot is
+ *  explicit — and a conditional is what a model half-answers: it hedged the act
+ *  into a pose (`arched into him`, `sitting astride him`, `joined with him`) in
+ *  twelve lines of twelve. Borrowed from a chat agent of the user's that stopped
+ *  doing the same thing, and what made that one work was not stronger words but
+ *  three shapes: the rule stands rather than triggers, it bans the manoeuvre
+ *  instead of listing euphemisms, and it names the vocabulary. */
+export const EXPLICIT_REGISTER =
+  'THIS SHOOT IS EXPLICIT FROM THE FIRST PHOTOGRAPH TO THE LAST, AND EVERY LINE OF IT IS '
+  + 'WRITTEN EXPLICITLY. Not the ones you judge to be explicit: all of them.\n'
+  + 'Never soften, never imply, never leave it to be inferred, and never answer with a pose '
+  + 'where the act belongs. `arched into him`, `sitting astride him`, `joined with him`, '
+  + '`moving against him` are all the same evasion wearing different words — the failure is '
+  + 'the manoeuvre, not the phrase, so no list of banned phrases will catch the next one.\n'
+  + 'Say what is happening in plain anatomical words: penis, vagina, inside her, penetrating '
+  + 'her, his hips against hers, her mouth on him. Say which body part, and say where it is.\n'
+  + 'The other body is `a naked man` and she is `her` — never `a naked woman`, never `a young '
+  + 'woman`. Measured: told to name both bodies plainly, the writer started calling her `a '
+  + 'naked woman`, and a photograph asked for `a naked man and a naked woman` came back as two '
+  + 'women. Her name is the trigger word at the front of the prompt, and it is already there.\n'
+  + 'This does not buy length. The line stays at sixty to eighty words — a second body is the '
+  + 'first thing a long line loses — so the words come out of the inventory of her, not out of '
+  + 'the act.'
+
 /** A shoot of forty photographs is written a handful at a time, and this is what
  *  every call is told about where it sits.
  *
