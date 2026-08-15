@@ -205,6 +205,38 @@ written. Worse, it does not recover on its own — copying the previous line wor
 for word is exactly what makes a dropped body part permanent — so each round is
 told to check the line it inherits and put back what it has lost.
 
+**Every line opens with its framing** — *a full-length photograph, head to
+feet*, *a three-quarter photograph from the knees up*, *a waist-up photograph*,
+*a close-up* — and changes it from line to line, with at least one in four full
+length. This was missing for a while and nothing complained: a fifty-frame shoot
+came back as forty-five lines that never said where the camera stood, and the
+gallery read as one photograph taken forty-five times, four of them full length
+by luck. With the rule in, twelve lines from the same brief and the same look
+came back with a framing in twelve of twelve and seven of the photographs whole
+figure. The framing is not precise — a `close-up` still comes back waist-up —
+but the set stops being one shot repeated.
+
+**And every line OPENS with where the camera is** — *Taken from directly in front
+of her*, *from behind her left shoulder*, *from her right side, in full profile*,
+*from directly behind her*, *from above, looking down* — with the framing right
+after it. That is a different rule from the framing, and leaving it out is why a
+shoot can be perfectly framed and still monotonous: thirty photographs written
+with a framing in every line and no camera position in any of them came back
+thirty frontal shots.
+
+Where the clause sits in the line decides whether it survives. Written *after*
+the framing, in a seventy-frame run, fifty-three lines asked for something other
+than a front view and about ten photographs delivered one — the clause was buried
+behind eighty words of clothes, and the reader frames what it meets first. Moved
+to the front of the line, eighteen of twenty-four asked and ten or eleven
+delivered. `floor level` and `over her shoulder` come back frontal wherever they
+sit, so neither is offered.
+
+The framing says how much of her is in frame, never how much of her to write.
+Every line still walks the whole body, close-ups included: the clothes are what
+the next photograph copies word for word, and a line that drops them to match a
+crop drops them for every line after it too.
+
 **Undressing is the first half, not the subject.** Read for where the brief
 *ends*, not for the first state that satisfies it: a run that treated `undressed`
 as the destination got the clothes off by photograph seven and spent the
@@ -326,6 +358,13 @@ So the framing is not requested. It is made unavoidable, and it is done in the
 look — the one part of the prompt that never changes — rather than in the take.
 `ROOM_DEPTH` in `kinds.js` is that rule, and it is in every instruction that
 writes a place.
+
+The take still names its framing, and that is not a contradiction of the table
+above. What the table rules out is asking a *flat* room for a full-length frame.
+Inside a room with depth the words do move the camera — same look, same brief,
+twelve takes: with no framing written the shoot came back all mid-shots, with one
+written per line seven of twelve were the whole figure. The room decides what is
+possible; the line picks from what the room allows.
 
 A session already shot that way is not lost, and it does not need starting over.
 The look cannot be edited after creation — that is what makes it a session — but
