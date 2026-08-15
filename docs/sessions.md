@@ -237,6 +237,31 @@ Every line still walks the whole body, close-ups included: the clothes are what
 the next photograph copies word for word, and a line that drops them to match a
 crop drops them for every line after it too.
 
+**A line runs long, and that is the price of the wardrobe.** Each photograph is
+its own prompt, so each one carries the whole outfit — which puts a line at
+ninety to a hundred and twenty words however firmly the instruction asks for
+sixty. Shortening it was tried the obvious way, describing each garment fully
+once and carrying it afterwards as *the white sailor top*: the writer obeyed, the
+lines lost eight words on the median, and the white fishnet stockings came back
+**black** for the last four frames of twelve, where the long version held them
+white in all twelve. A short name is a smaller handle for the sampler to hold,
+and what it does not hold it re-rolls.
+
+So nothing asks the writer to cut a line any more. Asked, it does shorten — and
+what it deletes is the fact: one rewrite dropped `pleated mini skirt`, another
+dropped `erect penis pressed`, against about three words of genuine filler per
+line. Every repair now has to keep the garment attributes it was given and keep
+the act, and under that rule not one shortening survived, which is the answer:
+in a prompt the words *are* the garment.
+
+What is left is a flag, and it is measured against the shoot rather than against
+a number — a line half as long again as its neighbours has started listing
+something twice, whatever the outfit. An absolute number could not do this job:
+sixty flagged nine rows in twelve, a hundred and ten flagged twelve in twelve,
+and a flag every row wears is not a flag. Rows that are simply long are left
+alone, and a run of twelve at a hundred and sixty words a line came back with the
+outfit identical in all twelve.
+
 **A brief that ends in an act needs the act named.** Left to itself the writer
 hedges the last stretch — *moving against her*, *straddling his lap*, a partner
 still half-dressed — and a hedge is painted as what it says: two people standing

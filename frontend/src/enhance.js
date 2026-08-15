@@ -257,10 +257,19 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress) => {
   // The repair pass is counted after the writing, never restarting the tally: a
   // progress number that goes backwards reads as a bug even when nothing is wrong.
   const written = lines.map((l) => l.prompt)
-  const needing = written.filter((line, i) => problemsWith(line, i === 0 ? wardrobe : written[i - 1]).length).length
+  // How long a line of this shoot is allowed: measured off this shoot, because
+  // there is no length that is right for every wardrobe.
+  const limit = lengthLimit(written)
+  const needing = written.filter((line, i) =>
+    problemsWith(line, i === 0 ? wardrobe : written[i - 1], limit).length).length
   const { lines: checked, repaired, stillWrong } =
-    await repairAll(written, wardrobe, onProgress, n, n + needing)
+    await repairAll(written, wardrobe, onProgress, n, n + needing, limit)
+  // The word counts are in the line because the writer's own length varies enough
+  // between runs to hide what the repair did: comparing two runs compares two
+  // different shoots, and only before-and-after inside one run is the repair.
   if (needing) console.info(`[shoot] ${needing} lines failed the check, ${repaired} repaired`
+                          + `, longest ${longest(written)} words before and `
+                          + `${longest(checked)} after, limit ${limit}`
                           + (stillWrong.length ? `, still wrong: ${stillWrong.join(', ')}` : ''))
   // `suspect` is the residue: a line the check refused and the repair could not
   // fix. Measured over three runs the repair lands about three times in four, so
@@ -315,9 +324,107 @@ const BODY = [
   { part: 'the feet', re: /\b(feet|foot|boots?|heels?|shoes?|barefoot|toes)\b/i },
 ]
 
-/** What is wrong with this line, in words the writer can act on. Empty = fine. */
-export const problemsWith = (line, previous) => {
+/** Where a line stops being a photograph and starts being an inventory.
+ *
+ *  The instruction asks for sixty words and is ignored: measured at n=50, forty-
+ *  five of forty-five lines were over it, median ninety-five, longest a hundred
+ *  and thirty-six. And it is not cosmetic — the same run put the pleated mini
+ *  skirt back as a long cream one and the white top back as a navy one, which is
+ *  the drift LENGTH in `kinds.js` was written about. Instructions had their turn;
+ *  this is the check that follows them.
+ *
+ *  There is no right number here, and four were tried before giving up on
+ *  finding one. A line carries the framing, the camera position, every garment
+ *  *restated word for word* — that carry is what holds a wardrobe together over
+ *  forty frames — the pose and the expression, so how long it runs depends on how
+ *  many pieces the wardrobe has and on how many rules this file has grown: the
+ *  framing and the camera clauses alone are twenty-odd words a line that were not
+ *  there a day ago. Runs of the same brief came back at medians of 99, 107, 140
+ *  and 162. Sixty flagged nine lines in twelve, a hundred and ten flagged twelve
+ *  in twelve, and a flag every row wears is not a flag.
+ *
+ *  So the line is measured against the shoot it belongs to. Forty per cent longer
+ *  than its neighbours is a line that has started listing something twice —
+ *  whatever the outfit, whatever the instructions — and that is the only claim
+ *  here worth making. The absolute wall stays only to catch a runaway in a shoot
+ *  too short to have a shape. */
+export const MAX_WORDS = 200
+const RELATIVE = 1.4
+
+const words = (text) => (text || '').trim().split(/\s+/).filter(Boolean).length
+
+const longest = (lines) => Math.max(0, ...lines.map(words))
+
+/** What a garment is recognised by, and what an explicit photograph is of.
+ *
+ *  Shortening a line deletes words, and the check that accepts the shortening
+ *  cannot tell filler from fact. Measured over seven repaired lines: about three
+ *  words of filler lost per line — `of`, `still`, `at her throat`, `resting` —
+ *  against about one word that carried meaning. But that one is the whole
+ *  question: one repair dropped `pleated mini skirt` and another dropped `erect
+ *  penis pressed`, which is a photograph of something else. */
+const IDENTIFYING = /^(white|navy|red|black|blue|cream|grey|silver|gold|green|brown|pink|pleated|cropped|fishnet|open-weave|leather|denim|linen|knotted|collar|trim|emblem|anchor|hem|sleeves?|mini|midi|micro|high-waisted|strappy|platform|eyelets?|buttons?|zip|straps?|buckles?|rings?|one|two|three|four|five|six|seven|eight)$/i
+
+const ACT = /\b(penetrat\w*|penis|inside her|entering her|cock|fucking|thrust\w*)\b/i
+
+const tokens = (text) => (text || '').toLowerCase().replace(/[^a-z\s-]/g, ' ').split(/\s+/).filter(Boolean)
+
+/** Did the rewrite keep everything that was not filler?
+ *
+ *  A garment that came OFF between the two is not a loss — that is the shoot
+ *  moving — so the attributes are only demanded back while the garment families
+ *  themselves are unchanged. The act is demanded back unconditionally: no
+ *  complaint this check can raise is answered by making a photograph less
+ *  explicit than the writer made it. */
+export const keepsTheFacts = (line, fixed) => {
+  if (ACT.test(line) && !ACT.test(fixed)) return false
+  const before = familiesIn(line).join()
+  if (before !== familiesIn(fixed).join()) return true
+  const kept = new Set(tokens(fixed))
+  return !tokens(line).some((w) => IDENTIFYING.test(w) && !kept.has(w))
+}
+
+/** The length a line of THIS shoot is allowed, from the lines of this shoot. */
+export const lengthLimit = (lines) => {
+  const counts = lines.map(words).filter(Boolean).sort((a, b) => a - b)
+  if (!counts.length) return MAX_WORDS
+  return Math.min(MAX_WORDS, Math.round(counts[Math.floor(counts.length / 2)] * RELATIVE))
+}
+
+const tooLong = (line, limit = MAX_WORDS) => (words(line) <= limit ? [] : [
+  `It is ${words(line)} words long, half as long again as the other photographs of this `
+  + 'shoot. Cut it back to their length '
+  + 'by saying each garment once and in the fewest words that identify it — colour, cut, the '
+  + 'one detail that tells it apart — and by dropping every phrase that repeats what the line '
+  + 'has already said. Keep the framing, the camera position, the state of every garment and '
+  + 'all three of the chest, the hips and legs and the feet: what goes is the wording, never '
+  + 'a fact.',
+])
+
+/** Everything wrong with a line that shortening it cannot fix.
+ *
+ *  Split from the length check because the two are judged differently when a
+ *  repair comes back: a shorter line that still runs long is progress and is
+ *  kept, a line missing the feet is not a photograph however short it is. */
+const contentProblems = (line, previous) => {
   const found = []
+  // Both of these went missing the moment a repair was asked to make a line
+  // shorter: told to cut, the model cuts the two clauses that are not about her.
+  // They are the two that were measured to matter, so they are checked.
+  if (!/\ba (full-length|three-quarter|waist-up) photograph/i.test(line)) {
+    found.push('It does not say its framing. Every line has one of `a full-length photograph, '
+             + 'head to feet`, `a three-quarter photograph from the knees up` or `a waist-up '
+             + 'photograph`, straight after the camera clause it opens with.')
+  }
+  if (!/^\s*taken from\b/i.test(line)) {
+    found.push('It does not OPEN with where the camera is. Every line begins with that clause '
+             + 'and nothing before it — `Taken from directly in front of her, …`, `Taken from '
+             + 'behind her left shoulder, her back three-quarters to the camera, …`, `Taken '
+             + 'from her right side, her body in full profile, …`, `Taken from directly behind '
+             + 'her, …`, `Taken from above her, looking down, …` — because everything after it '
+             + 'is eighty words about clothes, and what the reader meets first is what frames '
+             + 'the photograph.')
+  }
   const missing = BODY.filter((b) => !b.re.test(line)).map((b) => b.part)
   if (missing.length) {
     found.push(`It says nothing about ${missing.join(' or ')}. Every photograph names the `
@@ -336,6 +443,14 @@ export const problemsWith = (line, previous) => {
   }
   return found
 }
+
+/** What is wrong with this line, in words the writer can act on. Empty = fine.
+ *
+ *  `limit` is the shoot's own length, from `lengthLimit`. Left out — a single
+ *  line, checked on its own — only the absolute wall applies, because one line
+ *  has no neighbours to be long against. */
+export const problemsWith = (line, previous, limit = MAX_WORDS) =>
+  [...tooLong(line, limit), ...contentProblems(line, previous)]
 
 /** Garments by family, not by word.
  *
@@ -374,14 +489,27 @@ const familiesIn = (text) =>
  *  reported success. Whatever survives that check is still returned, and
  *  `stillWrong` says which lines to look at.
  */
-const repairAll = async (lines, wardrobe, onProgress, done, total) => {
+const repairAll = async (lines, wardrobe, onProgress, done, total, limit = MAX_WORDS) => {
   const out = []
   const stillWrong = []
   let repaired = 0
   for (const [i, line] of lines.entries()) {
     const previous = i === 0 ? wardrobe : out[i - 1]
-    const problems = problemsWith(line, previous)
+    const problems = problemsWith(line, previous, limit)
     if (!problems.length) { out.push(line); continue }
+    // A line whose only fault is its length is flagged and left alone. Measured
+    // on eight long lines: the only rewrites that actually came back shorter were
+    // the ones that had dropped something — `pleated mini skirt` in one, `erect
+    // penis pressed` in another — and `keepsTheFacts` rejects exactly those, so
+    // the call was being spent to be refused. This model cannot compress a line
+    // of this kind without deleting a fact, because in a prompt the words ARE the
+    // garment. Content problems still get their repair; they are the ones it can
+    // actually fix.
+    if (!contentProblems(line, previous).length) {
+      out.push(line); stillWrong.push(i + 1)
+      onProgress?.(Math.min(total, done + repaired + stillWrong.length), total)
+      continue
+    }
 
     let fixed = ''
     try {
@@ -399,13 +527,40 @@ const repairAll = async (lines, wardrobe, onProgress, done, total) => {
     fixed = (fixed || '').trim()
     // A "correction" shorter than half the line is the model answering with the
     // fragment it changed, which would silently delete the rest of the shoot's
-    // photograph. Rejected in favour of the original.
-    const usable = fixed && fixed.split(/\s+/).length > line.split(/\s+/).length / 2
-      && !problemsWith(fixed, previous).length
-    out.push(usable ? fixed : line)
+    // photograph. Rejected in favour of the original — unless the complaint was
+    // the length itself, where cutting a hundred and thirty words to sixty is the
+    // repair working, and half the original is the wrong floor to measure it by.
+    const floor = words(line) > limit ? 35 : words(line) / 2
+    // A repair is accepted when it leaves FEWER problems than it found, not when
+    // it leaves none. Demanding none was measured twice and failed twice: a
+    // hundred-and-six-word line cut to seventy-eight was thrown away for still
+    // being long, and once the framing and the camera were checked too, seven
+    // repairs in twelve were thrown away for missing one of five conditions —
+    // each time the original, worse line went out instead. Perfect is the enemy
+    // here; the residue is flagged rather than argued with.
+    // Length is the one complaint a repair can answer *partly*, and usually does:
+    // asked to cut a hundred and five words to sixty this model returns eighty.
+    // Counting problems alone that is no better than the original — one problem
+    // before, one after — and three repairs in twelve survived. A tenth shorter
+    // with nothing new broken is progress, and progress is what gets kept.
+    // …but not by trading one problem for another. Counting all the problems
+    // together, a repair that cut the line by a quarter *and* dropped the camera
+    // clause scored the same and was kept: the camera survived in seven lines of
+    // twelve, against twelve before the repair ran. So what a shortening may not
+    // do is lose any of the things shortening is not about.
+    const after = problemsWith(fixed, previous, limit)
+    const shorter = tooLong(line, limit).length && words(fixed) <= words(line) * 0.9
+      && contentProblems(fixed, previous).length <= contentProblems(line, previous).length
+    const usable = fixed && words(fixed) > floor && keepsTheFacts(line, fixed)
+      && (after.length < problems.length || shorter)
+    // Repaired and still flagged are no longer the same question: a line cut from
+    // a hundred and six words to ninety is a repair worth keeping AND a row worth
+    // outlining, and reporting only one of the two hides whichever it drops.
+    const kept = usable ? fixed : line
+    out.push(kept)
     if (usable) repaired += 1
-    else stillWrong.push(i + 1)
-    onProgress?.(done + repaired + stillWrong.length, total)
+    if (problemsWith(kept, previous, limit).length) stillWrong.push(i + 1)
+    onProgress?.(Math.min(total, done + repaired + stillWrong.length), total)
   }
   return { lines: out, repaired, stillWrong }
 }

@@ -463,6 +463,14 @@ const GARMENT_CARRY =
   + 'it is the reason to stop. Measured, on a real session: asked for more states than the '
   + 'wardrobe had left, an assistant put her in a whole new dress halfway through so that '
   + 'there was something to take off again, and the session came back as two shoots.\n'
+  // Shortening the carry was tried and measured, and it is the one thing in here
+  // that must not be done: told to describe a garment fully once and then carry it
+  // as `the white sailor top`, the writer obeyed and the lines dropped from 107
+  // words to 99 — and the white fishnet stockings came back BLACK from photograph
+  // nine on, four frames of a twelve-frame shoot, where the full-description arm
+  // held them white in all twelve. A short name is a smaller handle for the
+  // sampler to hold, and what it does not hold it re-rolls. The length is the
+  // price of the wardrobe staying the same wardrobe.
   + 'Copy every piece that has not changed word for word from the line before it. Not a '
   + 'synonym, not a shortening, not a tidier phrasing: a garment reworded is a different '
   + 'garment in the photograph, and the whole point of repeating the wardrobe in every line '
@@ -534,8 +542,9 @@ export const REPAIR_INSTRUCTION =
   + 'queued exactly as you write it. Asked for a correction, the natural thing is to answer '
   + 'with the corrected fragment — that fragment would become the whole photograph, and the '
   + 'rest of it would be lost.\n'
-  + 'Keep it to the same length as the line below, give or take a few words. A correction '
-  + 'that doubles the length has rewritten the photograph.\n'
+  + 'Keep it to the same length as the line below, give or take a few words — unless one of '
+  + 'the problems is that it is too long, and then cut it to the length that problem asks for. '
+  + 'A correction that doubles the length has rewritten the photograph.\n'
   + 'Answer with the corrected line and nothing else.'
 
 /** The brief itself, written from the look and the wardrobe.
