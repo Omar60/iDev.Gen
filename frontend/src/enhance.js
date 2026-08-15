@@ -244,7 +244,7 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   const bare = reach === 'explicit'
   // The arc, decided once and in numbers. Derived per round it was derived
   // differently per round; see STAGE_PLAN_INSTRUCTION.
-  const stages = await stagePlan(brief, wardrobe, n)
+  const stages = await stagePlan(brief, wardrobe, n, bare)
   onProgress?.(0, n)
 
   const lines = await inChunks(n, (made) => onProgress?.(made, n), (at) => ask({
@@ -258,6 +258,14 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
     // came off at photograph 8, and photograph 20 opened the third chunk by
     // restating the original wardrobe word for word and putting it back on. What
     // a later chunk continues from is the photograph before it, and nothing else.
+    // A shoot that opens undressed is handed NO wardrobe, and this is the third
+    // arrangement tried. Handed the list as `what she is wearing`, the writer
+    // dressed her in it. Handed it as `what she is NOT wearing`, it dressed her
+    // in it anyway, twelve lines of twelve — which is this project's oldest
+    // finding restated: a positive that both describes and denies a garment keeps
+    // the garment. Handed nothing at all it invented a polka-dot shirt and
+    // stiletto pumps, so the note that replaces the list has to forbid that in
+    // the same breath.
     text: at.from === 1 && !bare ? wardrobe : (at.from === 1 ? '' : at.previous),
     n: at.want,
   }))
@@ -307,7 +315,7 @@ const STAGE_SHARE = 0.25
  *  for again, once, with the offending range quoted back. Once and not until it
  *  is right: this is a minute of somebody's time per attempt, and a plan that is
  *  merely lopsided still shoots. */
-export const stagePlan = async (brief, wardrobe, n) => {
+export const stagePlan = async (brief, wardrobe, n, bare = false) => {
   const parse = (rows) => rows.flatMap((r) => {
     const span = /(\d+)\s*[-–—]\s*(\d+)/.exec(r.label || '')
     // A row whose label is not a range is a row the model formatted its own way.
@@ -321,7 +329,14 @@ export const stagePlan = async (brief, wardrobe, n) => {
   const askFor = (extra) => ask({
     instruction: `${STAGE_PLAN_INSTRUCTION}\n\nNo stage covers more than ${cap} photographs `
                + `of the ${n}${extra}`,
-    text: `The shoot:\n${brief}\n\nThe wardrobe it starts in:\n${wardrobe}\n\n`
+    // The plan is where a shoot that opens undressed goes wrong first: told `the
+    // wardrobe it starts in`, it writes an opening stage that puts it on, and the
+    // lines then follow the stage they were given.
+    text: `The shoot:\n${brief}\n\n`
+        + (bare
+          ? 'She is NOT wearing this and never puts it on. It is the wardrobe this shoot is '
+            + `without, and no stage may dress her in it:\n${wardrobe}\n\n`
+          : `The wardrobe it starts in:\n${wardrobe}\n\n`)
         + `It is ${n} photographs long.`,
     n: 12,
   }).then(parse)
