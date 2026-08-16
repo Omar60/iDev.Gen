@@ -277,6 +277,71 @@ STATE = ("a white cropped football jersey, a black pleated mini skirt, white ope
 NEXT_STATE = ("a white cropped football jersey, white open-weave fishnet stockings rolled "
               "down to her knees, black leather platform boots, a thin black choker")
 
+# Photograph 1 of a real forty-five frame run, shortened. Two words — `a woman`
+# where `her` belongs — and the next sixteen photographs of seventeen copied them.
+SEEDED_LINE = (
+    "Taken from directly in front of her, a full-length photograph, head to feet, of a woman "
+    "in a white cropped football jersey and a black pleated mini skirt, white stockings on her "
+    "legs, black leather platform boots on her feet, a thin black choker at her throat."
+)
+# The one shape the substitution leaves alone: replacing it makes worse English
+# than it found, and a line that opens on her instead of on the camera is broken
+# in a way the check already says out loud.
+OPENING_LINE = "A woman stands square to the mirror, her hands at her sides."
+
+NAMING_PROBE = """
+import { onlyHer, problemsWith } from '%(src)s'
+
+const seeded = %(seeded)s
+const opening = %(opening)s
+const twoPeople = %(two)s
+
+const introduces = (line) => problemsWith(line, '', 200).some((p) => /^It introduces her/.test(p))
+
+console.log(JSON.stringify({
+  seededWas: introduces(seeded),
+  cleaned: onlyHer(seeded),
+  cleanedIntroduces: introduces(onlyHer(seeded)),
+  openingUntouched: onlyHer(opening) === opening,
+  openingStillFlagged: introduces(opening),
+  // The second body is introduced on purpose and stays a body.
+  secondBodyKept: onlyHer(twoPeople) === twoPeople,
+}))
+"""
+
+
+@pytest.fixture(scope="module")
+def naming(tmp_path_factory) -> dict:
+    script = NAMING_PROBE % {"src": (ROOT / "frontend/src/enhance.js").as_posix(),
+                             "seeded": json.dumps(SEEDED_LINE),
+                             "opening": json.dumps(OPENING_LINE),
+                             "two": json.dumps(TWO_PERSON_LINE)}
+    return _node_json(script, tmp_path_factory.mktemp("naming"))
+
+
+def test_a_line_that_introduces_her_is_rewritten(naming):
+    """The one place the code decides what a line says instead of asking the model.
+    It earns it by spreading: the writer seeds this in well under a line in
+    seventy, and every round after copies its previous photograph word for word —
+    16 of the next 17 lines carried it, against 0 of 24 from the same line with
+    `of her` in it, and the repair cleared none of the thirteen in a real run."""
+    assert naming["seededWas"] is True, naming
+    assert "of her in a white cropped football jersey" in naming["cleaned"], naming["cleaned"]
+    assert naming["cleanedIntroduces"] is False, naming
+
+
+def test_the_second_body_is_still_introduced(naming):
+    """`a naked man` is how a second person is written and must survive: the
+    photograph needs a body there, and the rule was only ever about her."""
+    assert naming["secondBodyKept"] is True, naming
+
+
+def test_a_line_that_opens_on_her_is_left_to_the_check(naming):
+    """`Her stands square to the mirror` is not a repair."""
+    assert naming["openingUntouched"] is True, naming
+    assert naming["openingStillFlagged"] is True, naming
+
+
 REPEATS_PROBE = """
 import { repeats, SAME_PHOTOGRAPH } from '%(src)s'
 

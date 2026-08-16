@@ -317,7 +317,10 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
 
   // The repair pass is counted after the writing, never restarting the tally: a
   // progress number that goes backwards reads as a bug even when nothing is wrong.
-  const written = lines.map((l) => l.prompt)
+  // `onlyHer` first, before anything is measured or repaired: a line that
+  // introduces her is carried into the next chunk verbatim and the shoot never
+  // gets her back.
+  const written = lines.map((l) => onlyHer(l.prompt))
   // How long a line of this shoot is allowed: measured off this shoot, because
   // there is no length that is right for every wardrobe.
   const limit = lengthLimit(written)
@@ -488,6 +491,36 @@ const IDENTIFYING = /^(white|navy|red|black|blue|cream|grey|silver|gold|green|br
 
 const ACT = /\b(penetrat\w*|penis|inside her|entering her|cock|fucking|thrust\w*)\b/i
 
+/** Her, introduced as a stranger. The trigger at the front of the prompt has
+ *  already said who she is, so `of a woman in a white jersey` paints somebody
+ *  else next to the character the rest of the prompt is describing. */
+const INTRODUCES_HER = /\b(a|the same|another|one) (young |naked )?(woman|girl|model|lady|female)\b/i
+
+/** The one thing the code rewrites instead of asking the model to.
+ *
+ *  Everywhere else the rule holds: the code decides *that* a line is wrong and
+ *  the model decides what it should say instead. This is the exception, and it is
+ *  measured. The words are not a fact about the photograph — they are two words
+ *  the prompt already says at the front, with the trigger — so deleting them
+ *  cannot delete a garment, a body part or the act, which is what every other
+ *  shortening was refused for.
+ *
+ *  What earns the exception is how it spreads. The writer does not do this: 72
+ *  lines over nine rounds of a real opening chunk, none of them introduced her.
+ *  Neither does the repair: 0 of 24. But every round is told to carry the
+ *  previous photograph over word for word — which is what holds a wardrobe
+ *  together over forty-five frames — so ONE seeded line is copied by 16 of the
+ *  next 17, and the same line with `of her` in it by 0 of 24. Measured on a
+ *  forty-five frame run: thirteen rows introduced her, starting at photograph 1,
+ *  and the repair cleared none of them.
+ *
+ *  A match at the very start of a line is left alone: `Her stands by the mirror`
+ *  is worse English than what it replaced, and a line that opens on her instead
+ *  of on the camera is already broken in a way the check will say out loud. */
+export const onlyHer = (line) =>
+  (line || '').replace(new RegExp(INTRODUCES_HER.source, 'gi'),
+                       (match, ...rest) => (rest[rest.length - 2] === 0 ? match : 'her'))
+
 const tokens = (text) => (text || '').toLowerCase().replace(/[^a-z\s-]/g, ' ').split(/\s+/).filter(Boolean)
 
 /** Did the rewrite keep everything that was not filler?
@@ -565,7 +598,7 @@ const contentProblems = (line, previous) => {
   // brief argues with, the writer opened four lines in six with `a young woman`
   // and `the same young woman`. The trigger at the front of the prompt already
   // says who she is, and a description of her competes with it in every frame.
-  if (/\b(a|the same|another|one) (young |naked )?(woman|girl|model|lady|female)\b/i.test(line)) {
+  if (INTRODUCES_HER.test(line)) {
     found.push('It introduces her — `a young woman`, `the same young woman`. The trigger word '
              + 'at the front of the prompt already says who she is, and a description of her '
              + 'competes with it. She is `her`, and nothing else. A second person is named as a '
@@ -735,7 +768,10 @@ export const repairAll = async (lines, wardrobe, onProgress, done, total, limit 
       // Asked and refused. The line stays as it was and is reported below: a
       // flagged line you can see beats a run that dies on its forty-first photo.
     }
-    fixed = (fixed || '').trim()
+    // Cleaned before it is judged, for the same reason the written line is: a
+    // repair that introduces her is otherwise refused for it, and the original —
+    // which is what then goes into the next chunk — was the broken one.
+    fixed = onlyHer(fixed || '').trim()
     // A "correction" shorter than half the line is the model answering with the
     // fragment it changed, which would silently delete the rest of the shoot's
     // photograph. Rejected in favour of the original — unless the complaint was

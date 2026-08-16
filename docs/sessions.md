@@ -330,6 +330,26 @@ brief: no pair above 0.84, and forty-four of the forty-five asked for, which the
 panel says out loud rather than quietly shipping a shoot with its ending on
 repeat.
 
+**And when she is introduced, it spreads.** `of a woman in a white jersey` where
+`of her` belongs is two words, and the trigger at the front of the prompt has
+already said who she is — so the photograph gets a stranger standing where the
+character should be. The writer barely does it: seventy-two lines across nine
+rounds of one shoot's opening chunk, not one. Neither does the repair, in
+twenty-four. But every round is handed the previous photograph and told to carry
+it over word for word, which is what holds a wardrobe together over forty-five
+frames and is also how two words become permanent: seeded with one such line, the
+next chunk copied it in **sixteen lines of seventeen**, and the same line with
+`of her` in it in none of twenty-four. On the real run it appeared at photograph
+one and thirteen rows carried it, none of which the repair could clear.
+
+So this one the code rewrites rather than asking the model to — the only place it
+does. What it deletes is not a fact about the photograph: not a garment, not a
+body part, not the act, which is what every other shortening was refused for. A
+line that *opens* on her is left alone and flagged instead, because `Her stands
+square to the mirror` is not a repair. `a naked man` is untouched: the second body
+is introduced on purpose. Re-run at forty-five photographs: thirteen rows down to
+none.
+
 **The line that takes a piece off must not name it**, and that one is checked
 now. `GARMENT_CARRY` has said so for a while and nothing enforced it: the check
 beside it only ever asked whether a garment had come *back*, so *“the ruched
