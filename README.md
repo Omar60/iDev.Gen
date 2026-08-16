@@ -150,6 +150,10 @@ setup keeps working untouched.
   collides with what you generate by hand in ComfyUI.
 - Cancel interrupts the running job and marks the rest as cancelled; *Retry*
   puts them back in the queue.
+- **↺ Reshoot** on a finished photo deletes it and puts that same take back in
+  the queue with a fresh seed — the row is reused, so the gallery keeps one card
+  per take. It is refused on the session's reference photo, which the edits
+  behind it need. Nothing else deletes a photo you did not ask to delete.
 - A run is refused rather than started when a choice would be silently ignored —
   a base model or LoRA the workflow does not map, a reference take with no
   reference photo. The checks apply to the graph that will actually run: a

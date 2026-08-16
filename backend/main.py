@@ -886,6 +886,47 @@ def patch_shot(shot_id: int, p: ShotPatch):
     return db.one("SELECT * FROM shot WHERE id=?", shot_id)
 
 
+@app.post("/api/shots/{shot_id}/reshoot")
+def reshoot_shot(shot_id: int):
+    """Refuse this photo and shoot the same take again, in its place.
+
+    Not "more like this": that queues a new row and keeps the photo you refused,
+    which is right when the frame is good and you want more of it. This one is
+    for the frame that came back wrong — the row is reused, so a shoot stays one
+    card per take and the reject does not sit in the gallery being scrolled past.
+
+    The seed is cleared on purpose. Shooting the same prompt on the same noise
+    reproduces the same picture, which is the one outcome this button exists to
+    avoid; `⚖` is where a pinned seed belongs.
+    """
+    shot = db.one("SELECT * FROM shot WHERE id=?", shot_id)
+    if not shot:
+        raise HTTPException(404, "shot not found")
+    if shot["status"] == "running":
+        raise HTTPException(409, "the shot is still generating")
+    # An anchor with no file fails every reference take behind it, and
+    # `_valid_anchors` refuses to point at one — so this is refused here rather
+    # than left to surface once the queue has already started.
+    session = db.one("SELECT * FROM session WHERE id=?", shot["session_id"])
+    if shot_id in json.loads(session["anchor_shot_ids"] or "[]"):
+        raise HTTPException(409, (
+            "this photo is the session's reference — the takes that edit it would have "
+            "nothing to edit. Unpin it (📌), or pick another reference first."))
+    # ponytail: an *unpinned* photo some edit already ran against stays reachable
+    # through that edit's before/after wipe, which then has nothing to show on its
+    # left half. Refusing those too would block reshooting any photo the session
+    # ever edited; add the check if a broken wipe turns up in practice.
+    if shot["filename"]:
+        (SESSIONS_DIR / str(shot["session_id"]) / shot["filename"]).unlink(missing_ok=True)
+    db.run("""UPDATE shot SET status='pending', filename='', prompt_id='', error='',
+                              seed=0, rejected=0, finished_at='' WHERE id=?""", shot_id)
+    # Same reopening as adding takes: a finished session with something queued in
+    # it is not finished, and the status is what the Run button reads.
+    if session["status"] in ("done", "cancelled", "failed"):
+        db.run("UPDATE session SET status='draft' WHERE id=?", session["id"])
+    return db.one("SELECT * FROM shot WHERE id=?", shot_id)
+
+
 @app.get("/api/shots/{shot_id}/image")
 def shot_image(shot_id: int):
     shot = db.one("SELECT * FROM shot WHERE id=?", shot_id)

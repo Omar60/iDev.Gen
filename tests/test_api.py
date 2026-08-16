@@ -290,6 +290,46 @@ def test_rating_is_clamped_and_reject_toggles(client, seeded):
     assert client.patch(f"/api/shots/{shot_id}", json={"rejected": True}).json()["rejected"] == 1
 
 
+def test_reshooting_a_photo_queues_the_same_take_again_and_drops_the_file(client, seeded):
+    """Reject-and-reshoot reuses the row: one card per take, no keeping the frame
+    that came back wrong. The seed goes with the photo — the same noise would
+    hand back the same picture."""
+    import main
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    shot = client.post(f"/api/sessions/{sid}/import?label=bad take", content=PNG).json()
+    path = main.SESSIONS_DIR / str(sid) / shot["filename"]
+    db.run("UPDATE shot SET seed=99, rejected=1 WHERE id=?", shot["id"])
+    db.run("UPDATE session SET status='done' WHERE id=?", sid)
+
+    r = client.post(f"/api/shots/{shot['id']}/reshoot")
+    assert r.status_code == 200, r.json()
+    assert r.json()["status"] == "pending"
+    assert r.json()["filename"] == ""
+    assert r.json()["seed"] == 0            # 0 = the runner rolls a fresh one
+    assert r.json()["rejected"] == 0
+    assert not path.exists()
+    # A finished session with something queued in it is not finished any more.
+    assert client.get(f"/api/sessions/{sid}").json()["status"] == "draft"
+
+
+def test_reshooting_the_reference_photo_is_refused(client, seeded):
+    """Its file is what every reference take edits, and `_valid_anchors` will not
+    point at a shot without one — so it is refused here, not once the queue has
+    already started."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    shot = client.post(f"/api/sessions/{sid}/import?label=anchor", content=PNG).json()
+    client.patch(f"/api/sessions/{sid}", json={"anchor_shot_ids": [shot["id"]]})
+
+    r = client.post(f"/api/shots/{shot['id']}/reshoot")
+    assert r.status_code == 409
+    assert "reference" in r.json()["detail"]
+    assert db.one("SELECT status FROM shot WHERE id=?", shot["id"])["status"] == "done"
+
+
 def test_deleting_a_model_cascades_to_sessions_and_shots(client, seeded):
     client.post("/api/sessions", json={"model_id": seeded["model_id"], "name": "s",
                                        "shots": [{"prompt": "one", "count": 2}]})

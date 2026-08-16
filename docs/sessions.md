@@ -860,6 +860,13 @@ because nothing is polling that job any more. Retry picks it back up.
 - **Stars** rate a shot 1–5. Clicking the same star again clears the rating.
 - **✕** rejects a shot: it dims and disappears under the *Without rejects*
   filter. **↩** brings it back. Nothing is deleted.
+- **↺** reshoots a photo you do not want at all: it is deleted and that same
+  take goes back in the queue with a fresh seed, in the row it already had — so
+  the shoot keeps one card per take instead of collecting the frames that came
+  back wrong. It asks first, because the photo is gone. The seed is dropped on
+  purpose: the same noise would hand back the same picture, which is what ⚖ is
+  for. Refused on the session's reference photo — the takes that edit it would
+  have nothing to edit; unpin it or pick another reference first.
 - **Picks only** shows 4★ and above.
 - Clicking a photo opens it full size with its prompt, seed and filename.
 - A reference take opens with a **before/after wipe** instead: the reference on

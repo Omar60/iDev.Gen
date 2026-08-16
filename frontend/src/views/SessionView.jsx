@@ -442,6 +442,15 @@ export default function SessionView({ id }) {
                         ? 'Strength sweep — this prompt and seed at 1.0 / 1.5 / 2.0 / 3.0, so the only difference you see is the dial'
                         : 'Tweak on this same seed — edit the prompt, compare the change'}
                       onClick={() => reshootSameSeed(shot)}>⚖</button>
+              {shot.status === 'done' && (
+                <button className="icon"
+                        title="Reshoot — this photo is deleted and the take goes back in the queue with a new seed"
+                        onClick={() => {
+                          if (confirm(`Delete this photo and shoot "${shot.shot_label}" again?`)) {
+                            call(() => api.post(`/api/shots/${shot.id}/reshoot`))
+                          }
+                        }}>↺</button>
+              )}
               <button className="icon" title={shot.rejected ? 'Restore' : 'Reject'}
                       onClick={() => call(() => api.patch(`/api/shots/${shot.id}`, { rejected: !shot.rejected }))}>
                 {shot.rejected ? '↩' : '✕'}
