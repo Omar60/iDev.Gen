@@ -641,6 +641,94 @@ def test_a_photo_can_be_carried_into_another_session_by_id(client, seeded):
     assert client.post(f"/api/sessions/{dst}/import?from_shot=999999").status_code == 404
 
 
+def test_cloning_a_session_repeats_it_with_the_base_model_changed(client, seeded):
+    """The takes, the composed prompts and the seeds come across untouched: what
+    differs between the two galleries is the model, not another roll of noise.
+    An imported photo cannot be repainted — nothing generated it — so its file is
+    copied and it lands finished."""
+    import main
+    src = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "shoot", "look": "soft window light",
+        "wardrobe": "white shirt", "settings": {"checkpoint": "a.safetensors", "steps": 8},
+        "seed_mode": "fixed", "seed": 500,
+        "shots": [{"prompt": "standing", "count": 2}]}).json()["id"]
+    brought = client.post(f"/api/sessions/{src}/import?label=keeper", content=PNG).json()["id"]
+    client.patch(f"/api/sessions/{src}", json={"anchor_shot_ids": [brought]})
+    db.run("UPDATE shot SET status='done', rating=5 WHERE session_id=? AND prompt LIKE '%standing%'", src)
+
+    r = client.post(f"/api/sessions/{src}/clone",
+                    json={"name": "same shoot, other model",
+                          "settings": {"checkpoint": "b.safetensors", "steps": 30}})
+    assert r.status_code == 200, r.json()
+    copy = client.get(f"/api/sessions/{r.json()['id']}").json()
+
+    assert copy["name"] == "same shoot, other model"
+    assert copy["status"] == "draft"
+    assert (copy["look"], copy["wardrobe"]) == ("soft window light", "white shirt")
+    assert copy["settings"]["checkpoint"] == "b.safetensors"
+    assert copy["settings"]["steps"] == 30
+    assert copy["settings"]["width"] == 832        # everything unmentioned is carried over
+
+    old = client.get(f"/api/sessions/{src}").json()["shots"]
+    assert [(x["prompt"], x["seed"]) for x in copy["shots"]] == [(x["prompt"], x["seed"]) for x in old]
+    # The generated takes are queued again; the imported photo is not, it is copied.
+    assert [x["status"] for x in copy["shots"]] == ["pending", "pending", "done"]
+    carried = copy["shots"][-1]
+    assert (main.SESSIONS_DIR / str(copy["id"]) / carried["filename"]).read_bytes() == PNG
+    # The anchor follows its copy, not the id it had in the session it came from.
+    assert copy["anchor_shot_ids"] == [carried["id"]]
+
+    # Two owners, two files: deleting the original leaves the copy's gallery whole.
+    client.delete(f"/api/sessions/{src}")
+    assert client.get(f"/api/shots/{carried['id']}/image").status_code == 200
+
+    assert client.post("/api/sessions/999999/clone", json={}).status_code == 404
+
+
+def test_every_copy_of_a_shoot_points_at_the_same_original(client, seeded):
+    """`cloned_from` is what lets one gallery offer the other as a comparison,
+    and only the copies: two sessions are comparable when the takes, prompts and
+    seeds match, which nothing but a clone gives. A clone of a clone joins the
+    same family instead of starting a chain — otherwise the second copy and the
+    first would not see each other."""
+    src = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "shoot",
+        "shots": [{"prompt": "standing", "count": 2}]}).json()["id"]
+
+    a = client.post(f"/api/sessions/{src}/clone", json={"settings": {"checkpoint": "a.safetensors"}}).json()["id"]
+    b = client.post(f"/api/sessions/{a}/clone", json={"settings": {"checkpoint": "b.safetensors"}}).json()["id"]
+
+    family = {x["id"]: x["settings"].get("cloned_from") for x in client.get("/api/sessions").json()}
+    assert family == {src: None, a: src, b: src}
+
+    # Same takes on the same noise in all three: that is what makes the photos
+    # comparable frame by frame, and the pairing key the gallery uses.
+    takes = {sid: [(x["shot_index"], x["seed"]) for x in client.get(f"/api/sessions/{sid}").json()["shots"]]
+             for sid in (src, a, b)}
+    assert takes[src] == takes[a] == takes[b]
+
+
+def test_a_cloned_reference_take_edits_the_photo_the_clone_shoots(client, seeded):
+    """The anchor of a session that painted its own is `pending` in the copy: it
+    is earlier in the queue than the takes that edit it, which is the same order
+    the source shot them in, so it has a file by the time they run."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "reference_workflow_id": None,
+        "shots": [{"prompt": "standing", "count": 1},
+                  {"prompt": "remove the jacket", "count": 1, "reference": True}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    db.run("UPDATE shot SET status='done', filename='x.png', prompt_id='pid-1' WHERE id=?", shots[0]["id"])
+    client.patch(f"/api/sessions/{sid}", json={"anchor_shot_ids": [shots[0]["id"]]})
+
+    copy = client.get(f"/api/sessions/{client.post(f'/api/sessions/{sid}/clone', json={}).json()['id']}").json()
+    assert copy["name"] == "s (copy)"
+    assert [x["status"] for x in copy["shots"]] == ["pending", "pending"]
+    assert copy["shots"][0]["filename"] == ""      # it is shot again, not carried
+    assert copy["anchor_shot_ids"] == [copy["shots"][0]["id"]]
+    assert copy["shots"][1]["use_reference"] == 1
+
+
 def test_import_refuses_what_is_not_an_image(client, seeded):
     """The extension is the uploader's claim; the magic number is the file."""
     sid = client.post("/api/sessions", json={

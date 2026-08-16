@@ -161,6 +161,14 @@ setup keeps working untouched.
 - **⚙ Settings** on a session fixes the workflows and the base model after the
   fact, because that is when a wrong dropdown shows up — see
   [sessions](docs/sessions.md#fixing-a-session).
+- **⧉ Clone** shoots the whole session again with the base model and the steps
+  changed and everything else — look, wardrobe, takes, composed prompts, seeds —
+  identical, so two checkpoints are compared on a shoot instead of on one lucky
+  frame. Pick several models in the panel and each one gets its own copy, named
+  after it, with its own step count. **Compare with…** above the gallery then puts a photo and its twin on
+  one frame under a wipe, and offers only the copies of that shoot: same take,
+  same seed, which nothing else gives. See
+  [sessions](docs/sessions.md#cloning-a-session-onto-another-model).
 
 ## Tests
 

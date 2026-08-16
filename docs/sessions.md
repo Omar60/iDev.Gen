@@ -837,6 +837,69 @@ takes are **all** reference edits never loads the first workflow, so a base
 model it does not map is not being ignored — nothing is going to ignore it — and
 the run is allowed.
 
+## Cloning a session onto another model
+
+**⧉ Clone** copies the session and changes two things: the **base model** and the
+**steps**. Everything else comes across untouched — the look, the wardrobe, the
+takes in their order, the composed prompts word for word, and the seed of every
+shot. What differs between the two galleries is then the model, which is the
+only way to judge one: a single frame is luck, twenty frames are the model.
+
+The panel opens on a list holding one row: what this session already shoots with.
+Press **Create** and that is the plain copy. Pick another model from *Add a base
+model* and it becomes a second row — **as many as you want to try, each one its
+own copy, from one press**. They are named after their model (`shoot —
+moodyKrea2Mix_v70`), because three sessions called *(copy)* are three sessions
+you have to open to tell apart.
+
+Each row carries **its own steps**, prefilled from this session. Mixing a
+distilled checkpoint with a full one is the normal case, and 8 steps on the full
+one wastes the whole copy — twenty photos before it is visible. Anything else a
+copy needs is a **⚙ Settings** away on it: it is an ordinary session, and the
+workflows, denoise and LoRA strength are editable there as on any other.
+
+The copies are drafts. The queue is serial — one session at a time, one GPU — so
+you run them one after another, and each one that finishes joins the comparison
+below.
+
+- Every copy lands as a **draft** with every take **pending**. Nothing is queued;
+  Run is yours to press, and two sessions cannot run at once anyway.
+- A photo **imported** into the source is copied as a file, finished, because
+  nothing generated it and there is no prompt to repaint. Its file is a real
+  copy: deleting either session leaves the other's gallery whole.
+- A **reference photo** follows its own copy. If the source painted its anchor,
+  the clone repaints it too — it sits earlier in the queue than the takes that
+  edit it, the same order the source shot them in, so it has a photo by the time
+  they run. If the anchor was imported, the copy edits the copied file.
+- Ratings and rejects do not come across: they were judgements of photos that no
+  longer exist.
+
+The base model still has to be mapped by the workflow — a clone onto a
+checkpoint the graph does not read is refused at Run like any other session, and
+a family mismatch (a Krea LoRA on a Z-Image model) fails there too.
+
+### Comparing the copies
+
+A clone records the session it came from (`cloned_from`, in its settings), and
+the **Compare with…** box above the gallery offers *only* those copies. That
+restriction is the feature, not caution: two photos are comparable when they are
+the same take on the same noise, and nothing but a clone gives that. A clone of a
+clone joins the same family rather than starting a chain, so all the copies of
+one shoot see each other however many there are.
+
+Pick one and every photo that has a twin opens as a **before/after wipe** — the
+other session on the left of the slider, this one on the right, both on the same
+frame — with the two base models named underneath. Two checkpoints rarely differ
+by more than a face and a fabric, and that is invisible when the eye has to
+travel between two windows.
+
+The pairing is the take's **row and seed** together. Not the seed alone: a
+strength sweep (⚖) pins one seed across four rows. Not the row alone: a take
+with *count 4* is four variations under one index, told apart by their seeds. A
+photo the other session has not shot yet, or that was reshot (↺) on a fresh
+seed, has no twin — its caption says so (`—` instead of `⇄`) and it opens as a
+plain photo.
+
 ## Running
 
 The queue is **serial** — one photo at a time, one active session — because

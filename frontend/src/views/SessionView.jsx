@@ -7,6 +7,11 @@ import { BaseModelSelect } from './Models.jsx'
 import { KINDS, forKind, sessionKind } from '../kinds.js'
 import { composed } from '../enhance.js'
 
+/** A checkpoint's name for a session title: no folder, no extension. Three copies
+ *  called "shoot (copy)" are three copies you have to open to tell apart. */
+const modelStem = (checkpoint) =>
+  (checkpoint || '').split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || 'copy'
+
 export default function SessionView({ id }) {
   const [s, setS] = useState(null)
   const [error, setError] = useState('')
@@ -20,16 +25,31 @@ export default function SessionView({ id }) {
   const [workflows, setWorkflows] = useState([])
   const [baseModels, setBaseModels] = useState({})
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // The copy being set up: null when the panel is closed.
+  const [clone, setClone] = useState(null)
+  // Every session, for the copies-of-this-shoot list, and the one picked to
+  // compare against, loaded whole because the comparison needs its shots.
+  const [sessions, setSessions] = useState([])
+  const [twinId, setTwinId] = useState(0)
+  const [twin, setTwin] = useState(null)
   const [llm, setLlm] = useState(false)
 
   const reload = () => api.get(`/api/sessions/${id}`).then(setS).catch((e) => setError(e.message))
   useEffect(() => {
     reload()
     api.get('/api/workflows').then(setWorkflows).catch(() => {})
+    api.get('/api/sessions').then(setSessions).catch(() => {})
     api.get('/api/comfy/models').then(setBaseModels).catch(() => {})
     // Optional: with no endpoint configured the ✨ buttons simply do not appear.
     api.get('/api/config').then((c) => setLlm(!!c.llm_ok)).catch(() => {})
   }, [id])
+
+  // The session being compared against. Loaded whole and separately: the list
+  // route carries counts, not shots, and the pairing needs the shots.
+  useEffect(() => {
+    if (!twinId) return setTwin(null)
+    api.get(`/api/sessions/${twinId}`).then(setTwin).catch(() => setTwin(null))
+  }, [twinId])
 
   // However the panel was opened — "add shots", "more like this", a kind switch —
   // it opens on what the session is currently wearing.
@@ -83,6 +103,23 @@ export default function SessionView({ id }) {
   // The reference this shot really ran against, not whatever the session points
   // at now. A shot from before the feature existed has none, and gets no slider.
   const before = (shot) => (shot.reference_shot_ids || [])[0]
+
+  // The copies of this shoot, and only those: two sessions are comparable when
+  // the takes, the prompts and the seeds are the same, which is exactly what a
+  // clone guarantees and nothing else does. A clone of a clone carries the same
+  // root, so the family is flat and every member sees every other one.
+  const root = s.settings.cloned_from || s.id
+  const family = sessions.filter((x) => x.id !== s.id && (x.settings?.cloned_from || x.id) === root)
+
+  // What makes two photos the same take: the row it belongs to and its noise.
+  // Not the seed alone — a strength sweep (⚖) pins one seed across four rows.
+  // Not the row alone — a take with count 4 is four rows' worth of variations
+  // under one index, and their seeds are what tell them apart.
+  const takeKey = (x) => `${x.shot_index}|${x.seed}`
+  const twinShots = {}
+  for (const x of (twin?.shots || [])) if (x.status === 'done') twinShots[takeKey(x)] = x
+  const twinOf = (shot) => twinShots[takeKey(shot)]
+  const shotWith = (session) => `${session.name} · ${session.settings?.checkpoint || "the workflow's own"}`
 
   // Null for a session created before kinds existed: no badge, no filtering and
   // no guidance beats a wrong guess about what that session was for.
@@ -204,6 +241,15 @@ export default function SessionView({ id }) {
             <button onClick={() => call(() => api.post(`/api/sessions/${id}/retry`))}>Retry {failed}</button>}
           <button onClick={() => setSettingsOpen(!settingsOpen)}
                   title="The workflows and the base model this session shoots with">⚙ Settings</button>
+          <button onClick={() => setClone(clone ? null : {
+            name: s.name,
+            steps: s.settings.steps ?? '',
+            // It opens on what this session shoots with, so pressing Create
+            // straight away is the plain copy. Every other model is one more row.
+            rows: [{ checkpoint: s.settings.checkpoint || '', steps: s.settings.steps ?? '' }],
+          })} title="Shoot this whole session again on other base models — same takes, same seeds">
+            ⧉ Clone
+          </button>
           <button onClick={() => setAdding(adding ? null : [blankShot(kind)])}>+ Shots</button>
           {/* The native file input renders its label in the browser's locale, so
               it is hidden behind our own, the same way Workflows does it. */}
@@ -230,6 +276,20 @@ export default function SessionView({ id }) {
         <div className="progress"><div style={{ width: `${(done / Math.max(1, s.shots.length)) * 100}%` }} /></div>
         <span className="muted">{done}/{s.shots.length} done{failed ? ` · ${failed} failed` : ''}</span>
         <span className="spacer" style={{ flex: 1 }} />
+        {/* Only the copies of this shoot are offered: comparing two photos means
+            the same take on the same seed, and no other pair of sessions has
+            that. Picking one turns every photo that has a twin into a
+            before/after wipe in the lightbox. */}
+        {family.length > 0 && (
+          <select style={{ width: 'auto' }} value={twinId}
+                  title="Compare with a copy of this session — same takes, same seeds, other base model"
+                  onChange={(e) => setTwinId(Number(e.target.value))}>
+            <option value={0}>Compare with…</option>
+            {family.map((f) => (
+              <option key={f.id} value={f.id}>{shotWith(f)} · {f.done_count}/{f.shot_count}</option>
+            ))}
+          </select>
+        )}
         <select style={{ width: 'auto' }} value={filter} onChange={(e) => setFilter(e.target.value)}>
           <option value="all">All</option>
           <option value="keep">Without rejects</option>
@@ -324,6 +384,93 @@ export default function SessionView({ id }) {
           <p className="muted" style={{ marginBottom: 0 }}>
             Photos already shot keep the settings they were shot with. These apply to what runs next.
           </p>
+        </div>
+      )}
+
+      {/* Two base models on the same shoot is the only way to tell them apart:
+          one frame is luck, twenty is the model. So the copy carries the takes,
+          the composed prompts and the seeds unchanged, and the base model and the
+          steps — which a different model needs — are the two dials here. */}
+      {clone && (
+        <div className="panel" style={{ marginBottom: 14 }}>
+          <h3>Clone this session</h3>
+          <p className="muted" style={{ margin: '0 0 6px' }}>
+            Same look, wardrobe, takes and seeds — so what changes in the photos is what
+            you change here. Nothing is queued: the copy lands as a draft with every take
+            pending. Photos brought in from outside are copied as they are; everything else
+            is shot again.
+          </p>
+          <div className="grid-form">
+            <div style={{ gridColumn: 'span 2' }}>
+              <label>Name</label>
+              <input value={clone.name} onChange={(e) => setClone({ ...clone, name: e.target.value })} />
+            </div>
+            <div style={{ gridColumn: 'span 2' }}>
+              <label title="Only applied if the workflow maps the slot — the same rule the run preflight checks. Pick as many as you want to try: each one is a copy of its own.">
+                Add a base model
+              </label>
+              {/* The single-model select, used as an *add* control: picking one
+                  appends a row below. Three models is three copies from one
+                  press — the alternative is opening this panel three times and
+                  retyping the name each go. */}
+              <BaseModelSelect value="" models={baseModels}
+                               onChange={(v) => v && !clone.rows.some((r) => r.checkpoint === v)
+                                 && setClone({ ...clone, rows: [...clone.rows, { checkpoint: v, steps: clone.steps }] })} />
+            </div>
+          </div>
+          {/* Steps per row, not one for all: mixing a distilled model with a full
+              one is the normal case, and 8 steps on the full one wastes the whole
+              copy — twenty-odd photos before it is visible. */}
+          <table style={{ marginTop: 10 }}>
+            <thead><tr><th>Base model</th><th style={{ width: 110 }}>Steps</th><th style={{ width: 40 }} /></tr></thead>
+            <tbody>
+              {clone.rows.map((r, i) => (
+                <tr key={r.checkpoint || i}>
+                  <td>{r.checkpoint || "the workflow's own"}</td>
+                  <td>
+                    <input type="number" min="1" value={r.steps}
+                           onChange={(e) => setClone({
+                             ...clone,
+                             rows: clone.rows.map((x, j) => (j === i ? { ...x, steps: e.target.value } : x)),
+                           })} />
+                  </td>
+                  <td>
+                    <button className="icon" title="Drop this copy"
+                            onClick={() => setClone({ ...clone, rows: clone.rows.filter((_, j) => j !== i) })}>✕</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {clone.rows.length > 1 && (
+            <p className="muted" style={{ margin: '6px 0 0' }}>
+              {clone.rows.length} copies, each named after its model. They are drafts: the
+              queue is serial, so you still run them one at a time.
+            </p>
+          )}
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="primary" disabled={!clone.rows.length} onClick={() => call(async () => {
+              // One POST per copy. The route takes a name and the settings to
+              // override, which is all a second model is, so nothing on the
+              // server had to learn about batches.
+              const made = []
+              for (const r of clone.rows) {
+                made.push(await api.post(`/api/sessions/${id}/clone`, {
+                  name: `${clone.name} — ${modelStem(r.checkpoint)}`,
+                  settings: { checkpoint: r.checkpoint, steps: Number(r.steps) || s.settings.steps },
+                }))
+              }
+              setClone(null)
+              // One copy is the shoot you are about to look at. Several are a
+              // batch to launch from the list, and jumping into an arbitrary one
+              // of them hides the other two.
+              if (made.length === 1) go(`/session/${made[0].id}`)
+              else api.get('/api/sessions').then(setSessions).catch(() => {})
+            })}>
+              {clone.rows.length > 1 ? `Create ${clone.rows.length} copies` : 'Create the copy'}
+            </button>
+            <button onClick={() => setClone(null)}>Cancel</button>
+          </div>
         </div>
       )}
 
@@ -458,6 +605,12 @@ export default function SessionView({ id }) {
             </div>
             <div className="muted" style={{ padding: '0 6px 6px', fontSize: 11 }} title={shot.prompt}>
               {shot.shot_label} · seed {shot.seed}
+              {/* Which photos the picked copy actually has a twin for: one that
+                  has not been shot there yet, or was reshot on a new seed, is
+                  not comparable and says so instead of opening a plain photo. */}
+              {twin && (twinOf(shot)
+                ? <span title={`Compares with ${shotWith(twin)}`}> · ⇄</span>
+                : <span title="No twin in the session being compared — not shot yet, or reshot on another seed"> · —</span>)}
             </div>
           </div>
         ))}
@@ -467,7 +620,23 @@ export default function SessionView({ id }) {
       {zoom && (
         <div className="lightbox" onClick={() => setZoom(null)}>
           <div>
-            {before(zoom)
+            {/* The same wipe the reference comparison uses, on the same frame,
+                for the same reason: two models rarely differ by more than a face
+                and a fabric, and that difference is invisible when the eye has
+                to travel between two pictures. A picked twin wins over the
+                reference view — it is the comparison that was asked for. */}
+            {twin && twinOf(zoom)
+              ? <div onClick={(e) => e.stopPropagation()}>
+                  <div className="compare" style={{ '--split': `${split}%` }}>
+                    <img src={shotImage(zoom.id)} alt="" />
+                    <img className="before" src={shotImage(twinOf(zoom).id)} alt="" />
+                    <span className="handle" />
+                  </div>
+                  <input type="range" min="0" max="100" value={split}
+                         onChange={(e) => setSplit(Number(e.target.value))} />
+                  <div className="meta">← {shotWith(twin)} · {shotWith(s)} →</div>
+                </div>
+              : before(zoom)
               // Before/after on one image rather than two side by side: an edit
               // that only moves a collar is invisible when the eye has to travel
               // between two frames.

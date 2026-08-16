@@ -425,12 +425,15 @@ def delete_model(mid: int):
 
 @app.get("/api/sessions")
 def list_sessions():
-    return db.q("""
+    # The settings come decoded because `cloned_from` and the base model are read
+    # off this list: it is how a session finds the copies of itself it can be
+    # compared with, without a route of its own.
+    return [db.jload(r, "settings") for r in db.q("""
         SELECT s.*, m.name AS model_name,
                (SELECT COUNT(*) FROM shot WHERE session_id=s.id) AS shot_count,
                (SELECT COUNT(*) FROM shot WHERE session_id=s.id AND status='done') AS done_count
         FROM session s JOIN model m ON m.id=s.model_id ORDER BY s.id DESC
-    """)
+    """)]
 
 
 @app.get("/api/sessions/{sid}")
@@ -517,6 +520,81 @@ def _valid_anchors(ids: list[int]) -> list[int]:
         if not shot or shot["status"] != "done" or not shot["filename"]:
             raise HTTPException(400, f"shot {shot_id} has no finished photo to use as a reference")
     return ids
+
+
+class SessionClone(BaseModel):
+    name: str = ""
+    # Merged over the source's settings. This is the whole point of the route:
+    # the base model and the steps it needs. Everything else a clone might want
+    # changed — the workflows, denoise, LoRA strength — is already a PATCH away
+    # on the new session.
+    settings: dict = Field(default_factory=dict)
+
+
+@app.post("/api/sessions/{sid}/clone")
+def clone_session(sid: int, c: SessionClone):
+    """Shoot this whole session again with one thing changed — the base model.
+
+    Same look, same wardrobe, same takes, same seeds: what comes back differs
+    only by what was changed, which is the only way to compare two checkpoints
+    on a shoot rather than on one lucky frame. Comparing by hand means retyping
+    forty composed prompts and forty seeds.
+
+    The shots are copied as `pending`: their prompt is already composed, so the
+    clone repaints exactly the same text. An *imported* photo cannot be
+    repainted — nothing generated it — so its file is copied instead and it
+    lands finished, the same way `import?from_shot=` carries a photo across.
+    `prompt_id` is what tells the two apart: a shot that never went through
+    ComfyUI has none.
+    """
+    src = db.one("SELECT * FROM session WHERE id=?", sid)
+    if not src:
+        raise HTTPException(404, "session not found")
+    settings = {**json.loads(src["settings"] or "{}"), **c.settings}
+    # Which shoot this is a copy of, so the gallery can put the two side by side.
+    # Always the *root*: a clone of a clone joins the same family rather than
+    # starting a chain nothing walks, and comparing is then one flat query.
+    # In `settings` and not in a column of its own — same reason `kind` lives
+    # there: it is read whole with the session and needs no migration.
+    settings["cloned_from"] = settings.get("cloned_from") or sid
+
+    new_id = db.run(
+        """INSERT INTO session (model_id, name, look, wardrobe, workflow_id,
+                                reference_workflow_id, anchor_shot_ids, settings, created_at)
+           VALUES (?,?,?,?,?,?,'[]',?,?)""",
+        src["model_id"], c.name or f"{src['name']} (copy)", src["look"], src["wardrobe"],
+        src["workflow_id"], src["reference_workflow_id"], json.dumps(settings), db.now(),
+    )
+
+    ids: dict[int, int] = {}
+    for shot in db.q("SELECT * FROM shot WHERE session_id=? ORDER BY id", sid):
+        imported = shot["status"] == "done" and not shot["prompt_id"] and shot["filename"]
+        new_shot = db.run(
+            """INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative,
+                                 use_reference, reference_strength, seed, status,
+                                 created_at, finished_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            new_id, shot["shot_index"], shot["shot_label"], shot["prompt"], shot["negative"],
+            shot["use_reference"], shot["reference_strength"], shot["seed"],
+            "done" if imported else "pending", db.now(), db.now() if imported else "",
+        )
+        ids[shot["id"]] = new_shot
+        if imported:
+            name = f"{new_shot:05d}_{slug(shot['shot_label'])}{Path(shot['filename']).suffix}"
+            folder = SESSIONS_DIR / str(new_id)
+            folder.mkdir(parents=True, exist_ok=True)
+            # The copy is deliberate, as in `import?from_shot=`: the two sessions
+            # own their files, and deleting either must not blank the other.
+            shutil.copyfile(SESSIONS_DIR / str(sid) / shot["filename"], folder / name)
+            db.run("UPDATE shot SET filename=? WHERE id=?", name, new_shot)
+
+    # Anchors follow the copies. One that was generated here is `pending` in the
+    # clone and has no file yet — it is earlier in the queue than the takes that
+    # edit it, so it has one by the time they run, which is the same order the
+    # source session shot them in.
+    anchors = [ids[a] for a in json.loads(src["anchor_shot_ids"] or "[]") if a in ids]
+    db.run("UPDATE session SET anchor_shot_ids=? WHERE id=?", json.dumps(anchors), new_id)
+    return {"id": new_id, "shots": len(ids)}
 
 
 @app.post("/api/sessions/{sid}/shots")
