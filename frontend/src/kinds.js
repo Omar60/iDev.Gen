@@ -1006,6 +1006,37 @@ export const wardrobeChunkNote = (at) =>
       + 'over from it word for word.'
     : 'The wardrobe below is state 1, and your first line is it, unchanged.')
 
+/** The expressions, written once and clicked instead of typed.
+ *
+ *  An expression cannot be composed from text in a take: measured across nine
+ *  Krea-2-family checkpoints at one seed, an open mouth kills a wink and pursed
+ *  lips kill the joy, and no checkpoint escapes it. The same face *edited* from a
+ *  finished photograph gets both in one pass, because the edit moves the mouth
+ *  and leaves the eyes, the hands, the crop and the wardrobe alone. So this is an
+ *  edit and not a take, and the wording below is the whole feature: it was
+ *  measured on krea2edit, and `reference_strength` is not the dial — 4, 3 and 2
+ *  came back indistinguishable. The four rows ARE the gradation.
+ *
+ *  `laughing` closes both eyes, wink included. That is what it does; it is on the
+ *  chip rather than fixed, because a laugh with one eye open is not a laugh. */
+export const EXPRESSIONS = [
+  { s: 'soft smile',
+    v: 'give her a soft closed-lip smile with the corners of her mouth turned up' },
+  { s: 'warm smile',
+    v: 'turn the corners of her mouth up into a warm smile with her lips just parted' },
+  { s: 'happy',
+    v: 'open her mouth into a wide happy smile showing her upper teeth' },
+  { s: 'laughing',
+    v: 'make her laugh out loud with her mouth wide open and her upper teeth showing',
+    note: 'closes both eyes — a wink does not survive this one' },
+]
+
+/** The tail every preset carries. Without it the edit is free to move what the
+ *  photograph already got right, and it is inert when it names something the
+ *  photo does not have — tested on an anchor with no hands in frame. */
+export const EXPRESSION_KEEP =
+  ', and keep her eyes, her hands, her pose and her clothes exactly as they are'
+
 export const ANGLE_FROM_TEXT_INSTRUCTION =
   'Translate the request into the camera vocabulary below. Pick exactly one direction, '
   + 'one height and one framing, and write nothing else.'

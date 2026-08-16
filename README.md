@@ -34,7 +34,7 @@ four jobs the app can actually guide:
 | Kind | What it shoots |
 |---|---|
 | **Photoshoot** | New photos from the look. Text to image, no reference. |
-| **Photo edit** | Instructions on one photo: wardrobe off, a new pose, another background. |
+| **Photo edit** | Instructions on one photo: wardrobe off, a new pose, another background. Four expressions come as chips, in the words they were measured in. |
 | **Camera angles** | The camera walked around one photo with an angle LoRA. The vocabulary is closed, so the takes are built from a picker instead of typed. |
 | **Scene + subject** | Two reference photos into one frame — a character and a garment, a character and a place. |
 

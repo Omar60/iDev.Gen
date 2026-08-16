@@ -151,6 +151,9 @@ line, and the trigger, base prompt and look are still prepended by the app.
 | **📷 Look and wardrobe from a photo…** | under the look | a photo you pick, read into both boxes |
 | **✨ Pick** | in the angle picker | ticks chips, never a take |
 
+The expression picker writes nothing at all — its four lines are already written,
+see [expressions](#expressions).
+
 **🎲 writes the brief.** With a photo read into the two boxes there is nothing
 left for you to type: the look and the wardrobe *are* that photograph in words,
 so a shoot written from them is one it could be a frame of — the room comes from
@@ -651,6 +654,47 @@ gallery. **⚖ on a reference photo** fills the panel with exactly that sweep �
 one prompt, one seed, four strengths — and the before/after wipe shows what each
 one moved. A take with the box empty follows the session, and `0` is a real
 setting, not "unset".
+
+### Expressions
+
+An expression is the one thing a take cannot ask for. Measured across nine
+Krea-2-family checkpoints at a single seed: written into the prompt, every one of
+them trades a feature for another — the mouth opens and the wink goes, the lips
+purse and the joy goes — and no checkpoint on the list escapes it. The same words
+as an **edit** on a finished photograph get all of it in one pass, because the
+edit moves the mouth and leaves the eyes, the hands, the crop and the wardrobe
+where they already are.
+
+So an edit session shows a row of chips above the takes, and clicking one adds an
+ordinary `ref` take with the instruction already in it:
+
+| Chip | What it does |
+|---|---|
+| **soft smile** | closed lips, corners up |
+| **warm smile** | corners up, lips just parted |
+| **happy** | mouth open, upper teeth showing |
+| **laughing** | mouth wide open — and both eyes shut, so a wink does not survive it |
+
+Two things worth knowing before you reach for a dial:
+
+- **The wording is the intensity, not `Reference strength`.** The same instruction
+  at 4, 3 and 2 came back indistinguishable. The four rows above are the
+  gradation; there is no slider between them, which is why they are four chips
+  and not one with a number beside it.
+- **Every preset ends with a keep-clause** — *keep her eyes, her hands, her pose
+  and her clothes exactly as they are* — because without it the edit moves what
+  the photograph already got right. It is inert when it names something the photo
+  does not have, so the same tail is safe on every anchor.
+
+The same instruction lands differently depending on the face it starts from: on
+pursed lips *lips just parted* barely opens them, on a neutral closed mouth it
+opens them a lot. Add the two you are choosing between, run both, and read them
+in the before/after wipe against the anchor rather than expecting one of them to
+be right.
+
+The picker is in **+ Shots** on a session whose kind is *Photo edit*, and not on
+the new-session panel: an expression edits a photograph, and a session being
+created has none yet. 📎 the frame you want first.
 
 ## Camera angles
 

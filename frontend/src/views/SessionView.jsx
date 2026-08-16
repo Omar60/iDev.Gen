@@ -3,6 +3,7 @@ import { api, shotImage } from '../api'
 import { go } from '../App.jsx'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
+import ExpressionPicker from './ExpressionPicker.jsx'
 import { BaseModelSelect } from './Models.jsx'
 import { KINDS, forKind, sessionKind } from '../kinds.js'
 import { composed } from '../enhance.js'
@@ -505,6 +506,12 @@ export default function SessionView({ id }) {
           {kind === 'angles' && (
             <AnglePicker llm={llm}
                          onAdd={(takes) => setAdding([...adding.filter((x) => x.prompt.trim()), ...takes])} />
+          )}
+          {/* Here and not on the new-session panel: an expression is an edit of a
+              photograph that exists, and a session being created has none. */}
+          {kind === 'edit' && (
+            <ExpressionPicker
+              onAdd={(takes) => setAdding([...adding.filter((x) => x.prompt.trim()), ...takes])} />
           )}
           {/* No `onLook` here: the look belongs to the session, and `add_shots`
               re-reads it from the server anyway. A shoot whose hair, place and
