@@ -145,6 +145,15 @@ class Runner:
                                    if shot["reference_strength"] is not None
                                    else s.get("reference_strength")),
         }
+        # The base model and the LoRA belong to the text2image graph. An editing
+        # graph loads its own model and its own edit LoRA, and the character comes
+        # from the anchor photo — the same reason `_require_usable_reference` does
+        # not check these slots. Sending them replaces the edit LoRA with the
+        # character one and nothing on screen says it was dropped, so they follow
+        # the app's rule one level up: unmapped keeps the workflow's own value.
+        if shot["use_reference"]:
+            for slot in ("checkpoint", "lora_name", "lora_strength"):
+                values.pop(slot)
 
         db.run("UPDATE shot SET status='running', seed=? WHERE id=?", seed, shot["id"])
         try:

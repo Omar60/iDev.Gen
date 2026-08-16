@@ -1,6 +1,7 @@
 """The runner against a fake ComfyUI: queueing, real graph patching, moving the
 file into the session, and what happens when something goes wrong."""
 import asyncio
+import json
 
 import pytest
 
@@ -282,6 +283,40 @@ def test_a_reference_take_edits_the_anchor_through_the_other_workflow(client, ma
     # What was uploaded is the anchor's own file, out of the session folder.
     assert len(fake.uploads) == 1
     assert fake.uploads[0][0].endswith(shots[0]["filename"])
+
+
+def test_a_reference_take_keeps_its_own_model_and_lora(client, make_runner):
+    """An editing graph loads its own base model and its own edit LoRA, and the
+    character comes from the anchor photo. Sending the session's checkpoint and the
+    model's character LoRA would replace both, with nothing on screen saying the
+    edit LoRA was dropped."""
+    sid = _reference_session(client, settings={"checkpoint": "chosen.safetensors",
+                                               "lora_strength": 0.9, "denoise": 0.55})
+    db.run("""UPDATE workflow
+                 SET graph=json_set(graph, '$."9"', json(?)),
+                     node_map=json_set(node_map, '$.lora_name', '9.inputs.lora_name',
+                                       '$.lora_strength', '9.inputs.strength_model')
+               WHERE name='edit'""",
+           json.dumps({"class_type": "LoraLoader",
+                       "inputs": {"lora_name": "krea2_identity_edit.safetensors",
+                                  "strength_model": 1.0, "model": ["1", 0]}}))
+
+    r, fake = make_runner()
+    asyncio.run(r._run_session(sid))
+    assert [s["status"] for s in db.q("SELECT status FROM shot WHERE session_id=? ORDER BY id", sid)] \
+        == ["done", "done"]
+
+    anchor_graph, edit_graph = fake.graphs
+    # The text2image take is unchanged: it is where those two belong.
+    assert anchor_graph["1"]["inputs"]["ckpt_name"] == "chosen.safetensors"
+    assert anchor_graph["2"]["inputs"]["lora_name"] == "characters/ada.safetensors"
+    assert anchor_graph["2"]["inputs"]["strength_model"] == 0.9
+    # The edit graph keeps everything it shipped with — mapped slots and all.
+    assert edit_graph["1"]["inputs"]["ckpt_name"] == "edit.safetensors"
+    assert edit_graph["9"]["inputs"]["lora_name"] == "krea2_identity_edit.safetensors"
+    assert edit_graph["9"]["inputs"]["strength_model"] == 1.0
+    # The slots that are the reference take's own still arrive.
+    assert edit_graph["6"]["inputs"]["denoise"] == 0.55
 
 
 def test_a_takes_own_reference_strength_wins_over_the_session(client, make_runner):
