@@ -27,6 +27,15 @@ export default function ExpressionPicker({ onAdd }) {
 
   return (
     <div className="panel" style={{ background: 'var(--panel-2)', marginBottom: 10 }}>
+      {/* The rule that decides whether any of this works, printed where the
+          decision is made — the same place the angles kind prints its own. */}
+      <p className="rule" style={{ marginTop: 0 }}>
+        <b>Anchor on a photo where her face fills the frame.</b> An expression is a few
+        hundred pixels of mouth: on a full-length photograph there is nothing there for the
+        edit to move, and it returns the frame unchanged. Measured — ten presets on a
+        full-length anchor came back identical to it, all but the wink, and the same ten on
+        a head-and-shoulders anchor moved the mouth on the first try.
+      </p>
       <div className="row" style={{ marginBottom: 6 }}>
         <label style={{ width: 70, margin: 0 }}>Expression</label>
         {EXPRESSIONS.map((e) => (

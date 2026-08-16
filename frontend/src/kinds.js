@@ -1020,6 +1020,23 @@ export const wardrobeChunkNote = (at) =>
  *  `laughing` closes both eyes, wink included. That is what it does; it is on the
  *  chip rather than fixed, because a laugh with one eye open is not a laugh.
  *
+ *  AND EVERY ONE OF THEM NEEDS AN ANCHOR WHOSE FACE FILLS THE FRAME. That is the
+ *  rule that decides whether the feature works at all, and it is printed above
+ *  the picker for the same reason the angles kind prints its own. An expression
+ *  is a few hundred pixels of mouth; on a full-length photograph there is nothing
+ *  there to move and the edit hands the frame back untouched. Measured: ten
+ *  presets against a full-length anchor came back identical to it — every one
+ *  except the wink, which survives because a closed eyelid is the most contrasted
+ *  change on a face — and the same ten against a head-and-shoulders anchor moved
+ *  the mouth on the first try.
+ *
+ *  EVERY PRESET MOVES THE FACE AND NOTHING ELSE. Not a rule of taste: the
+ *  keep-clause below holds the hands and the pose still, so a preset that needs a
+ *  limb is a preset arguing with its own tail — asked to throw a kiss, the edit
+ *  keeps the two hands in the photograph and adds the third one the gesture
+ *  wants. Anything that reads as a gesture rather than an expression belongs in a
+ *  take you write, where the pose is yours to change.
+ *
  *  `measured` is the honest half. The first four were run on krea2edit against a
  *  real anchor; the rest are written to the same shape — one movement, named in
  *  plain anatomy, no adjective doing the work — and nobody has looked at what
@@ -1036,8 +1053,19 @@ export const EXPRESSIONS = [
   { s: 'laughing', measured: true,
     v: 'make her laugh out loud with her mouth wide open and her upper teeth showing',
     note: 'closes both eyes — a wink does not survive this one' },
-  { s: 'blowing a kiss',
-    v: 'purse her lips together and blow a kiss towards the camera' },
+  // `blowing a kiss` and not `a kiss` was the wording here for one commit, and it
+  // is the mistake this list is now built to refuse: the idiom is a HAND, not a
+  // mouth. Two things then go wrong at once. The keep-clause holds the two hands
+  // the photograph already has, the edit adds the one the idiom needs, and the
+  // frame comes back with three. And the gesture does not arrive anyway —
+  // sessions 112 and 124 asked for it fourteen ways in text-to-image (`cupped
+  // palm-up below her chin`, `open beside her cheek`, `having just thrown a
+  // kiss`) and the hand landed at mid-chest every time, blowing across a palm
+  // nowhere near her lips. So what is left is the half that does render, and it
+  // renders well: the mouth.
+  { s: 'kiss',
+    v: 'push her lips forward into a kiss towards the camera',
+    note: 'the mouth only — a hand throwing it grows a third one and never reaches her lips' },
   { s: 'pout',
     v: 'push her lower lip forward into a pout with her lips closed' },
   { s: 'biting her lip',

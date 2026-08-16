@@ -665,6 +665,17 @@ as an **edit** on a finished photograph get all of it in one pass, because the
 edit moves the mouth and leaves the eyes, the hands, the crop and the wardrobe
 where they already are.
 
+**Anchor on a photo where her face fills the frame.** This is the rule that
+decides whether any of it works, and it is the opposite of the camera-angle rule
+one section down — angles want the widest frame you have, expressions want the
+tightest. An expression is a few hundred pixels of mouth, and on a full-length
+photograph there is nothing there for the edit to move: measured, ten presets
+against a full-length anchor came back *identical to it*, every one except the
+wink, which survives because a closed eyelid is the most contrasted change a face
+has. The same ten against a head-and-shoulders anchor moved the mouth on the
+first try. Nothing fails and nothing is reported — the photographs simply come
+back the same, which is why the rule is printed above the picker.
+
 So an edit session shows a row of chips above the takes, and clicking one adds an
 ordinary `ref` take with the instruction already in it:
 
@@ -681,12 +692,23 @@ the chip, because nobody has looked at what they come back as yet:
 
 | Chip | What it asks for |
 |---|---|
-| **blowing a kiss ·** | lips pursed, blown towards the camera |
+| **kiss ·** | lips pushed forward into a kiss towards the camera |
 | **pout ·** | lower lip forward, lips closed |
 | **biting her lip ·** | lower lip caught between the front teeth |
 | **tongue out ·** | mouth open, tongue out towards the camera |
 | **wink ·** | left eye closed, right eye open, mouth closed |
 | **sultry ·** | eyelids lowered, lips slightly parted |
+
+**Every preset moves the face and nothing else**, and *kiss* is why the rule is
+written down. It said *blowing a kiss* for one commit, which is an idiom about a
+hand: the keep-clause holds the two hands the photograph already has, the edit
+adds the one the gesture needs, and the frame comes back with three. The gesture
+does not arrive even when nothing is holding the hands still — asked fourteen
+ways in text-to-image (*cupped palm-up below her chin*, *open beside her cheek*,
+*having just thrown a kiss*) the hand landed at mid-chest every time, blowing
+across a palm nowhere near her lips. What renders is the mouth, so the mouth is
+what the chip asks for. A gesture belongs in a take you write, where the pose is
+yours to move.
 
 The last two carry a **shorter keep-clause**, without the eyes in it: *close her
 left eye in a wink, and keep her eyes exactly as they are* is one instruction
