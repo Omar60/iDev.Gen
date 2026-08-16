@@ -675,6 +675,25 @@ ordinary `ref` take with the instruction already in it:
 | **happy** | mouth open, upper teeth showing |
 | **laughing** | mouth wide open — and both eyes shut, so a wink does not survive it |
 
+Those four were run on the editing graph against a real photo. The rest are
+written to the same shape — one movement, in plain anatomy — and marked **·** on
+the chip, because nobody has looked at what they come back as yet:
+
+| Chip | What it asks for |
+|---|---|
+| **blowing a kiss ·** | lips pursed, blown towards the camera |
+| **pout ·** | lower lip forward, lips closed |
+| **biting her lip ·** | lower lip caught between the front teeth |
+| **tongue out ·** | mouth open, tongue out towards the camera |
+| **wink ·** | left eye closed, right eye open, mouth closed |
+| **sultry ·** | eyelids lowered, lips slightly parted |
+
+The last two carry a **shorter keep-clause**, without the eyes in it: *close her
+left eye in a wink, and keep her eyes exactly as they are* is one instruction
+arguing with itself, and a prompt that both asks for a thing and denies it comes
+back denying it — the oldest finding in this project, and the reason a reference
+take carries no look.
+
 Two things worth knowing before you reach for a dial:
 
 - **The wording is the intensity, not `Reference strength`.** The same instruction

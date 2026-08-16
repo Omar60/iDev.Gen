@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { EXPRESSIONS, EXPRESSION_KEEP } from '../kinds.js'
+import { EXPRESSIONS, expressionTake } from '../kinds.js'
 
 /** The expressions of an edit session, clicked rather than written.
  *
@@ -20,7 +20,7 @@ export default function ExpressionPicker({ onAdd }) {
     picked.includes(s) ? picked.filter((x) => x !== s) : [...picked, s])
 
   const add = () => onAdd(EXPRESSIONS.filter((e) => picked.includes(e.s)).map((e) => ({
-    label: e.s, prompt: e.v + EXPRESSION_KEEP,
+    label: e.s, prompt: expressionTake(e),
     negative: '', count: 1, seed: 0,
     reference: true, reference_strength: null,
   })))
@@ -31,8 +31,10 @@ export default function ExpressionPicker({ onAdd }) {
         <label style={{ width: 70, margin: 0 }}>Expression</label>
         {EXPRESSIONS.map((e) => (
           <button key={e.s} className={'chip' + (picked.includes(e.s) ? ' on' : '')}
-                  title={e.v + (e.note ? ` — ${e.note}` : '')}
-                  onClick={() => toggle(e.s)}>{e.s}</button>
+                  title={expressionTake(e) + (e.note ? ` — ${e.note}` : '')
+                         + (e.measured ? '' : ' — written to the same shape as the four that '
+                                              + 'were measured, but not measured itself')}
+                  onClick={() => toggle(e.s)}>{e.s}{e.measured ? '' : ' ·'}</button>
         ))}
       </div>
       <div className="row">
@@ -41,7 +43,8 @@ export default function ExpressionPicker({ onAdd }) {
         </button>
         <span className="muted">
           one edit of the reference photo each — the strength box is not the dial between
-          them, the wording is, so shoot the ones you are choosing between side by side
+          them, the wording is, so shoot the ones you are choosing between side by side.
+          A chip marked <b>·</b> has not been measured on this model yet.
         </span>
       </div>
     </div>

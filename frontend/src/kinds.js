@@ -1018,17 +1018,37 @@ export const wardrobeChunkNote = (at) =>
  *  came back indistinguishable. The four rows ARE the gradation.
  *
  *  `laughing` closes both eyes, wink included. That is what it does; it is on the
- *  chip rather than fixed, because a laugh with one eye open is not a laugh. */
+ *  chip rather than fixed, because a laugh with one eye open is not a laugh.
+ *
+ *  `measured` is the honest half. The first four were run on krea2edit against a
+ *  real anchor; the rest are written to the same shape — one movement, named in
+ *  plain anatomy, no adjective doing the work — and nobody has looked at what
+ *  they return yet. Marked rather than mixed in, because "measured" is the whole
+ *  claim this list makes and a preset that quietly joins the measured ones takes
+ *  the claim with it. Run one, and if it holds, flip its flag. */
 export const EXPRESSIONS = [
-  { s: 'soft smile',
+  { s: 'soft smile', measured: true,
     v: 'give her a soft closed-lip smile with the corners of her mouth turned up' },
-  { s: 'warm smile',
+  { s: 'warm smile', measured: true,
     v: 'turn the corners of her mouth up into a warm smile with her lips just parted' },
-  { s: 'happy',
+  { s: 'happy', measured: true,
     v: 'open her mouth into a wide happy smile showing her upper teeth' },
-  { s: 'laughing',
+  { s: 'laughing', measured: true,
     v: 'make her laugh out loud with her mouth wide open and her upper teeth showing',
     note: 'closes both eyes — a wink does not survive this one' },
+  { s: 'blowing a kiss',
+    v: 'purse her lips together and blow a kiss towards the camera' },
+  { s: 'pout',
+    v: 'push her lower lip forward into a pout with her lips closed' },
+  { s: 'biting her lip',
+    v: 'catch her lower lip between her front teeth' },
+  { s: 'tongue out',
+    v: 'open her mouth and stick her tongue out towards the camera' },
+  // The two that move the eyes, and the reason `keeps` exists at all.
+  { s: 'wink', eyes: true,
+    v: 'close her left eye in a wink and leave her right eye open, her mouth closed' },
+  { s: 'sultry', eyes: true,
+    v: 'lower her eyelids into a half-lidded look with her lips slightly parted' },
 ]
 
 /** The tail every preset carries. Without it the edit is free to move what the
@@ -1036,6 +1056,16 @@ export const EXPRESSIONS = [
  *  photo does not have — tested on an anchor with no hands in frame. */
 export const EXPRESSION_KEEP =
   ', and keep her eyes, her hands, her pose and her clothes exactly as they are'
+
+/** The same tail with the eyes left out, for the presets whose whole job is the
+ *  eyes. `close her left eye in a wink, and keep her eyes exactly as they are` is
+ *  one instruction arguing with itself, and this project has measured what a
+ *  prompt that both asks for a thing and denies it comes back as: the denial
+ *  wins. */
+export const EXPRESSION_KEEP_NO_EYES =
+  ', and keep her hands, her pose and her clothes exactly as they are'
+
+export const expressionTake = (e) => e.v + (e.eyes ? EXPRESSION_KEEP_NO_EYES : EXPRESSION_KEEP)
 
 export const ANGLE_FROM_TEXT_INSTRUCTION =
   'Translate the request into the camera vocabulary below. Pick exactly one direction, '
