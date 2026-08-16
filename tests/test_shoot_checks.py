@@ -242,3 +242,96 @@ def test_a_repair_that_is_actually_a_repair_is_still_kept(repairs):
     assert fixed["lines"] == [TWO_PERSON_LINE, PROPER_REPAIR], fixed["lines"]
     assert fixed["repaired"] == 1, fixed
     assert fixed["stillWrong"] == [], fixed
+
+
+# ---------------------------------------------------------------------------
+# The tail of a long shoot, which is where one photograph gets written five times.
+
+# Photograph 44 of a real forty-five frame run, and photograph 45 after it: the
+# same camera, the same act, the same pose, differing by a `bare` and a framing.
+# Byte-for-byte they are two lines, so the old check let both through and both
+# were queued and rendered.
+TAIL_LINE = (
+    "Taken from behind her left shoulder, her back three-quarters to the camera, a "
+    "three-quarter photograph from the knees up, of him thrusting into her with his penis "
+    "sliding fully inside her as he holds her by her bare hips and she wraps her bare legs "
+    "around his bare hips with her ankles still crossed behind his lower back, her head "
+    "tipping back into the mattress, the thin black choker still at her throat."
+)
+TAIL_REWORDED = (
+    "Taken from behind her left shoulder, her back three-quarters to the camera, a waist-up "
+    "photograph, of him thrusting into her with his penis sliding fully inside her as he "
+    "holds her by her hips and she wraps her legs around his hips with her ankles still "
+    "crossed behind his lower back, her head tipping back into the mattress, the thin black "
+    "choker still at her throat."
+)
+
+# Two wardrobe states, one garment apart. The progression stream is BUILT on
+# carrying every unchanged piece over word for word, so these two are meant to
+# look alike — which is why the fuzzy threshold is a parameter and not the
+# default. Measured on four one-step changes of this wardrobe: the hem lifted
+# 0.81, the skirt unzipped 0.81, the skirt off 0.82, the stockings rolled down
+# 0.74. All under 0.85, and the widest of them by three hundredths.
+STATE = ("a white cropped football jersey, a black pleated mini skirt, white open-weave "
+         "fishnet stockings, black leather platform boots, a thin black choker")
+NEXT_STATE = ("a white cropped football jersey, white open-weave fishnet stockings rolled "
+              "down to her knees, black leather platform boots, a thin black choker")
+
+REPEATS_PROBE = """
+import { repeats, SAME_PHOTOGRAPH } from '%(src)s'
+
+const tail = %(tail)s
+const reworded = %(reworded)s
+const other = %(other)s
+const state = %(state)s
+const next = %(next)s
+
+console.log(JSON.stringify({
+  rewordedIsExact: repeats(reworded, [tail]),
+  rewordedIsSamePhotograph: repeats(reworded, [tail], SAME_PHOTOGRAPH),
+  otherIsSamePhotograph: repeats(other, [tail], SAME_PHOTOGRAPH),
+  // What the wardrobe stream would lose if this threshold were the default.
+  stateIsExact: repeats(next, [state]),
+  stateIsSamePhotograph: repeats(next, [state], SAME_PHOTOGRAPH),
+}))
+"""
+
+
+@pytest.fixture(scope="module")
+def rewordings(tmp_path_factory) -> dict:
+    script = REPEATS_PROBE % {"src": (ROOT / "frontend/src/enhance.js").as_posix(),
+                              "tail": json.dumps(TAIL_LINE),
+                              "reworded": json.dumps(TAIL_REWORDED),
+                              "other": json.dumps(CLOTHED_LINE),
+                              "state": json.dumps(STATE),
+                              "next": json.dumps(NEXT_STATE)}
+    return _node_json(script, tmp_path_factory.mktemp("rewordings"))
+
+
+def test_a_photograph_written_twice_is_caught_even_reworded(rewordings):
+    """Measured on a forty-five frame shoot briefed to end explicit: it reached its
+    ending, and then wrote that ending five times. Photographs 41 to 45 scored
+    1.00, 0.92, 0.98 and 0.95 against the line before them while every other pair
+    in the shoot topped out at 0.79 — five rows, one photograph, five renders."""
+    assert rewordings["rewordedIsExact"] is False, "the old check saw two lines here"
+    assert rewordings["rewordedIsSamePhotograph"] is True, rewordings
+
+
+def test_the_next_photograph_is_not_a_repeat(rewordings):
+    """A threshold that refuses everything is the same as one that refuses
+    nothing."""
+    assert rewordings["otherIsSamePhotograph"] is False, rewordings
+
+
+def test_a_wardrobe_state_one_garment_on_is_not_a_repeat(rewordings):
+    """`repeats` is asked by three streams and only the shoot wants the fuzzy
+    answer. A wardrobe state that carries five of six pieces over word for word is
+    the progression working, and dropping it is how a shoot runs out of clothes and
+    invents a schoolgirl uniform to keep undressing. It clears the threshold, but
+    by three hundredths — which is the margin this test exists to watch, and the
+    reason the shoot's threshold is passed in rather than made the default."""
+    assert rewordings["stateIsExact"] is False, rewordings
+    assert rewordings["stateIsSamePhotograph"] is False, (
+        "a one-step wardrobe change now scores as a repeat: either the threshold "
+        "moved or the states got longer, and the progression stream is about to "
+        "start dropping its own lines")

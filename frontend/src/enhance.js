@@ -71,13 +71,41 @@ export const CHUNK = 8
  *  back the previous photograph it was shown as context. Against everything kept
  *  so far and not only against the line before, which costs nothing and catches
  *  the shoot that circles back to a frame from two stages ago. */
-export const repeats = (line, already) => {
+/** How much of its vocabulary a line may share with one the shoot already has.
+ *
+ *  Byte-for-byte was the whole of this check, and the tail of a forty-five
+ *  photograph shoot walked straight through it: measured, photographs 41 to 45
+ *  came back at 1.00, 0.92, 0.98 and 0.95 similarity to the one before — the same
+ *  camera clause, the same act, the same pose, differing by a `bare` here and a
+ *  framing word there. Five rows, one photograph, five renders. Everything else in
+ *  that shoot topped out at 0.79 and ran at 0.61, so the gap is wide and 0.85 sits
+ *  in the middle of it.
+ *
+ *  NOT the default, because the wardrobe stream is built on the opposite rule:
+ *  a state carries every unchanged garment over word for word, so two consecutive
+ *  states of a six-piece wardrobe are meant to be nearly identical. Only the shoot
+ *  writer and its repair ask for this. */
+export const SAME_PHOTOGRAPH = 0.85
+
+export const repeats = (line, already, same = 1) => {
   const key = (x) => (x?.prompt ?? String(x ?? '')).trim().toLowerCase()
   const text = key(line)
-  return !!text && already.some((other) => key(other) === text)
+  if (!text) return false
+  if (same >= 1) return already.some((other) => key(other) === text)
+  const mine = new Set(tokens(text))
+  return already.some((other) => {
+    const theirs = new Set(tokens(key(other)))
+    if (!theirs.size) return false
+    let hit = 0
+    for (const word of mine) if (theirs.has(word)) hit += 1
+    // Against the larger of the two, so a line that is merely a shortened version
+    // of a long one — which is what every accepted repair is — does not score as a
+    // copy of it.
+    return hit / Math.max(mine.size, theirs.size) >= same
+  })
 }
 
-const inChunks = async (n, onProgress, askOne, stopWhenShort = false) => {
+const inChunks = async (n, onProgress, askOne, stopWhenShort = false, same = 1) => {
   const out = []
   // The cap is what stops a model answering one line at a time from being asked
   // fifty times over.
@@ -96,7 +124,7 @@ const inChunks = async (n, onProgress, askOne, stopWhenShort = false) => {
     // time, so a repeat across a chunk seam went out unnoticed. Dropped here and
     // the round is simply short, which the loop asks again for.
     for (const line of lines.slice(0, want)) {
-      if (repeats(line, out)) continue
+      if (repeats(line, out, same)) continue
       out.push(line)
     }
     if (onProgress) onProgress(out.length, n)
@@ -285,7 +313,7 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
     // first and once. See EXPLICIT_SYSTEM in backend/enhance.py.
     register: bare ? 'explicit' : '',
     n: at.want,
-  }))
+  }), false, SAME_PHOTOGRAPH)
 
   // The repair pass is counted after the writing, never restarting the tally: a
   // progress number that goes backwards reads as a bug even when nothing is wrong.
@@ -671,7 +699,7 @@ export const repairAll = async (lines, wardrobe, onProgress, done, total, limit 
       // happens when an EARLIER repair was handed back the photograph it was
       // shown as context. There is nothing to ask for here — the complaint list
       // would be empty — so it is flagged and the row is outlined.
-      if (repeats(line, out)) stillWrong.push(i + 1)
+      if (repeats(line, out, SAME_PHOTOGRAPH)) stillWrong.push(i + 1)
       out.push(line)
       continue
     }
@@ -742,14 +770,15 @@ export const repairAll = async (lines, wardrobe, onProgress, done, total, limit 
     // 18 byte-identical, rows 19 and 20 byte-identical, and each pair shot as
     // one photograph twice. The original is kept instead, and flagged.
     const usable = fixed && words(fixed) > floor && keepsTheFacts(line, fixed)
-      && !repeats(fixed, out)
+      && !repeats(fixed, out, SAME_PHOTOGRAPH)
       && (after.length < problems.length || shorter)
     // Repaired and still flagged are no longer the same question: a line cut from
     // a hundred and six words to ninety is a repair worth keeping AND a row worth
     // outlining, and reporting only one of the two hides whichever it drops.
     const kept = usable ? fixed : line
     if (usable) repaired += 1
-    if (problemsWith(kept, previous, limit).length || repeats(kept, out)) stillWrong.push(i + 1)
+    if (problemsWith(kept, previous, limit).length
+        || repeats(kept, out, SAME_PHOTOGRAPH)) stillWrong.push(i + 1)
     out.push(kept)
     onProgress?.(Math.min(total, done + repaired + stillWrong.length), total)
   }

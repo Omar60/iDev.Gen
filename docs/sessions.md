@@ -316,6 +316,20 @@ and a flag every row wears is not a flag. Rows that are simply long are left
 alone, and a run of twelve at a hundred and sixty words a line came back with the
 outfit identical in all twelve.
 
+**The end of a long shoot is written more than once.** Forty-five photographs
+briefed to end in penetration: it reached its ending — the act from photograph
+thirty-two, all of the last three explicit — and then wrote that ending five
+times. Photographs forty-one to forty-five shared 1.00, 0.92, 0.98 and 0.95 of
+their vocabulary with the line before them, the same camera clause and the same
+pose, differing by a *bare* here and a framing word there. Five rows, one
+photograph, five renders, and the duplicate check saw nothing because it compared
+byte for byte. It now compares vocabularies, and a line sharing 85 per cent of
+its words with one the shoot already has is dropped and asked for again — the
+rest of that shoot topped out at 0.79, so the gap is wide. Re-run on the same
+brief: no pair above 0.84, and forty-four of the forty-five asked for, which the
+panel says out loud rather than quietly shipping a shoot with its ending on
+repeat.
+
 **The line that takes a piece off must not name it**, and that one is checked
 now. `GARMENT_CARRY` has said so for a while and nothing enforced it: the check
 beside it only ever asked whether a garment had come *back*, so *“the ruched
