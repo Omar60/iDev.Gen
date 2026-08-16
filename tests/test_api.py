@@ -708,6 +708,33 @@ def test_every_copy_of_a_shoot_points_at_the_same_original(client, seeded):
     assert takes[src] == takes[a] == takes[b]
 
 
+def test_a_copy_stays_paired_with_its_original_after_a_reshoot(client, seeded):
+    """The pair is the take's id, not its seed. ↺ rolls a new seed by design —
+    that is what the button is for — so a comparison keyed on the seed would lose
+    the twin at the exact moment you reshot the photo you wanted to compare.
+    A clone of a clone points at the original take, not at the row it was copied
+    from, so every copy of one take carries the same id."""
+    src = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "shoot",
+        "shots": [{"prompt": "standing", "count": 2}]}).json()["id"]
+    original = client.get(f"/api/sessions/{src}").json()["shots"]
+    assert [x["origin_shot_id"] for x in original] == [None, None]   # it is the original
+
+    a = client.post(f"/api/sessions/{src}/clone", json={}).json()["id"]
+    b = client.post(f"/api/sessions/{a}/clone", json={}).json()["id"]
+    for sid in (a, b):
+        copies = client.get(f"/api/sessions/{sid}").json()["shots"]
+        assert [x["origin_shot_id"] for x in copies] == [x["id"] for x in original]
+
+    # Reshoot one side: new noise, same take. The photo it is compared against
+    # does not move.
+    twin = client.get(f"/api/sessions/{a}").json()["shots"][0]
+    db.run("UPDATE shot SET status='done', filename='x.png', prompt_id='pid-1' WHERE id=?", twin["id"])
+    reshot = client.post(f"/api/shots/{twin['id']}/reshoot").json()
+    assert reshot["seed"] == 0 and reshot["seed"] != twin["seed"]
+    assert reshot["origin_shot_id"] == original[0]["id"]
+
+
 def test_a_cloned_reference_take_edits_the_photo_the_clone_shoots(client, seeded):
     """The anchor of a session that painted its own is `pending` in the copy: it
     is earlier in the queue than the takes that edit it, which is the same order

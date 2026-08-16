@@ -893,12 +893,23 @@ frame — with the two base models named underneath. Two checkpoints rarely diff
 by more than a face and a fabric, and that is invisible when the eye has to
 travel between two windows.
 
-The pairing is the take's **row and seed** together. Not the seed alone: a
-strength sweep (⚖) pins one seed across four rows. Not the row alone: a take
-with *count 4* is four variations under one index, told apart by their seeds. A
-photo the other session has not shot yet, or that was reshot (↺) on a fresh
-seed, has no twin — its caption says so (`—` instead of `⇄`) and it opens as a
-plain photo.
+The pairing is the **take's id** — the shot in the session that was cloned,
+carried by every copy of that take (`origin_shot_id`). Deliberately *not* the
+seed: **↺ Reshoot** rolls a new seed by design, and a pair keyed on the seed
+would come apart at the exact moment you reshot the photo you wanted to compare.
+The id survives a reshoot, a rename, a rating and a change of steps, on either
+side.
+
+When the two sides no longer share a seed the wipe says so underneath
+(`seed A vs B — one side was reshot`). The comparison is still worth having —
+same take, same prompt — but it is no longer the model alone, and a wipe that
+kept quiet would read as if it were. Reshooting *both* sides is how you get back
+to comparing only the model.
+
+A photo the other session has not shot yet has no twin: its caption says so
+(`—` instead of `⇄`) and it opens as a plain photo. Copies made before take ids
+existed fall back to the old pairing — the take's row and its seed — so the
+comparisons that already worked keep working.
 
 ## Running
 

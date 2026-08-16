@@ -572,11 +572,15 @@ def clone_session(sid: int, c: SessionClone):
         new_shot = db.run(
             """INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative,
                                  use_reference, reference_strength, seed, status,
-                                 created_at, finished_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                 origin_shot_id, created_at, finished_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             new_id, shot["shot_index"], shot["shot_label"], shot["prompt"], shot["negative"],
             shot["use_reference"], shot["reference_strength"], shot["seed"],
-            "done" if imported else "pending", db.now(), db.now() if imported else "",
+            "done" if imported else "pending",
+            # The original take, never the row copied from: a clone of a clone
+            # pairs with the whole family, and the pair then survives a reshoot
+            # (↺) on either side, which rolls a new seed by design.
+            shot["origin_shot_id"] or shot["id"], db.now(), db.now() if imported else "",
         )
         ids[shot["id"]] = new_shot
         if imported:

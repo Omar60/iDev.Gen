@@ -70,6 +70,12 @@ CREATE TABLE IF NOT EXISTS shot (
     -- NULL = follow the session. Not 0: zero is a real value for this dial, so it
     -- cannot double as "unset" the way an empty seed does.
     reference_strength REAL,
+    -- The take this row is a copy of, across cloned sessions: the id of the shot
+    -- in the ORIGINAL session, so every copy of one take carries the same value
+    -- and NULL means "this is the original". It is what pairs two photos for the
+    -- comparison. The seed cannot do that job — reshooting (↺) rolls a new one on
+    -- purpose, and the pair has to survive exactly that.
+    origin_shot_id INTEGER,
     seed          INTEGER NOT NULL DEFAULT 0,
     status        TEXT NOT NULL DEFAULT 'pending', -- pending|running|done|failed|cancelled
     prompt_id     TEXT NOT NULL DEFAULT '',
@@ -147,6 +153,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE shot ADD COLUMN reference_shot_ids TEXT NOT NULL DEFAULT '[]'")
     if "reference_strength" not in shot_cols:
         conn.execute("ALTER TABLE shot ADD COLUMN reference_strength REAL")
+    # Nothing is back-filled: the copies made before this column existed are
+    # paired by their seed instead, which is what they were paired by all along.
+    if "origin_shot_id" not in shot_cols:
+        conn.execute("ALTER TABLE shot ADD COLUMN origin_shot_id INTEGER")
 
     # Session kinds: the tag that says which job a graph does, so picking a kind
     # picks the graph. Untagged is a valid state, not a migration to back-fill.

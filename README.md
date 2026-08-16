@@ -165,9 +165,11 @@ setup keeps working untouched.
   changed and everything else — look, wardrobe, takes, composed prompts, seeds —
   identical, so two checkpoints are compared on a shoot instead of on one lucky
   frame. Pick several models in the panel and each one gets its own copy, named
-  after it, with its own step count. **Compare with…** above the gallery then puts a photo and its twin on
-  one frame under a wipe, and offers only the copies of that shoot: same take,
-  same seed, which nothing else gives. See
+  after it, with its own step count. **Compare with…** above the gallery then
+  puts a photo and its twin on one frame under a wipe, and offers only the
+  copies of that shoot — nothing else holds the same takes. The pair is the
+  take's id, not its seed, so it survives reshooting either side; the wipe says
+  when the two seeds have parted. See
   [sessions](docs/sessions.md#cloning-a-session-onto-another-model).
 
 ## Tests

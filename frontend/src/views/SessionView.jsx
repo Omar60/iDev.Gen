@@ -111,14 +111,25 @@ export default function SessionView({ id }) {
   const root = s.settings.cloned_from || s.id
   const family = sessions.filter((x) => x.id !== s.id && (x.settings?.cloned_from || x.id) === root)
 
-  // What makes two photos the same take: the row it belongs to and its noise.
-  // Not the seed alone — a strength sweep (⚖) pins one seed across four rows.
-  // Not the row alone — a take with count 4 is four rows' worth of variations
-  // under one index, and their seeds are what tell them apart.
-  const takeKey = (x) => `${x.shot_index}|${x.seed}`
+  // What makes two photos the same take: the id of the take they were both
+  // copied from. A shot of the session that was cloned is its own original, and
+  // a clone of a clone carries the same id, so the whole family pairs up.
+  //
+  // NOT the seed. Reshooting (↺) rolls a new one on purpose — that is the button
+  // for a frame that came back wrong — and pairing on the seed loses the twin at
+  // exactly the moment you reshot the photo you wanted to compare.
+  const takeKey = (x) => `take ${x.origin_shot_id || x.id}`
+  // Copies made before the take id existed carry neither, so they keep pairing
+  // the way they always did: the row it belongs to and its noise. Not the seed
+  // alone — a strength sweep (⚖) pins one seed across four rows; not the row
+  // alone — a take with count 4 is four variations under one index.
+  const seedKey = (x) => `seed ${x.shot_index}|${x.seed}`
   const twinShots = {}
-  for (const x of (twin?.shots || [])) if (x.status === 'done') twinShots[takeKey(x)] = x
-  const twinOf = (shot) => twinShots[takeKey(shot)]
+  for (const x of (twin?.shots || [])) if (x.status === 'done') {
+    twinShots[takeKey(x)] = x
+    twinShots[seedKey(x)] ??= x
+  }
+  const twinOf = (shot) => twinShots[takeKey(shot)] || twinShots[seedKey(shot)]
   const shotWith = (session) => `${session.name} · ${session.settings?.checkpoint || "the workflow's own"}`
 
   // Null for a session created before kinds existed: no badge, no filtering and
@@ -634,7 +645,17 @@ export default function SessionView({ id }) {
                   </div>
                   <input type="range" min="0" max="100" value={split}
                          onChange={(e) => setSplit(Number(e.target.value))} />
-                  <div className="meta">← {shotWith(twin)} · {shotWith(s)} →</div>
+                  <div className="meta">
+                    ← {shotWith(twin)} · {shotWith(s)} →
+                    {/* One of the two was reshot, so the noise differs as well
+                        as the model. Still worth comparing — same take, same
+                        prompt — but it is no longer the model alone, and a wipe
+                        that does not say so reads as if it were. */}
+                    {twinOf(zoom).seed !== zoom.seed && (
+                      <><br />seed {twinOf(zoom).seed} vs {zoom.seed} — one side was reshot,
+                        so the noise differs too, not only the model</>
+                    )}
+                  </div>
                 </div>
               : before(zoom)
               // Before/after on one image rather than two side by side: an edit
