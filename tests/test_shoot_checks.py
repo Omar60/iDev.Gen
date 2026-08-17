@@ -472,16 +472,13 @@ console.log(JSON.stringify({
   shedMoved: namesWhatItSheds(
     "the choker still at her throat, the thin green bands pushed down her thighs, the "
     + "bodysuit pulled aside at the hip, her chest bare."),
-  orderFlagged: problemsWith(
+  // A garments-first two-person line raises no ordering complaint any more: that
+  // check was removed for want of evidence (2 of 6 either way when rendered), and
+  // this asserts it stays removed rather than coming back on the same hunch.
+  noOrderComplaint: !problemsWith(
     "Taken from her right side, her body in full profile, a waist-up photograph, of her on "
     + "all fours on the bed, a slim green choker at the base of her throat, thin green bands "
     + "on both thighs, a man kneeling behind her, his penis inside her, her mouth open.",
-    "", 200).some((p) => p.includes("before the act")),
-  orderClean: !problemsWith(
-    "Taken from her right side, her body in full profile, a waist-up photograph, of a naked "
-    + "man kneeling behind her and entering her from behind, his penis inside her, his hands "
-    + "on her hips, a slim green choker at the base of her throat, thin green bands on both "
-    + "thighs, her mouth open.",
     "", 200).some((p) => p.includes("before the act")),
 }))
 """
@@ -539,14 +536,16 @@ def test_the_dedupe_leaves_alone_what_it_must(trimmed):
     assert trimmed["dedupOnePersonUntouched"], trimmed
 
 
-def test_the_act_must_come_before_the_clothes(trimmed):
-    """Rendered at four seeds a side: a 91-word two-person line with its garments
-    ahead of the man came back as her alone or grafted 4 of 4; the same content
-    with the act straight after the camera clause rendered 4 of 4. Order is a
-    checked fact, not style — and a line already in the right order is not
-    flagged for it."""
-    assert trimmed["orderFlagged"], trimmed
-    assert trimmed["orderClean"], trimmed
+def test_clause_order_is_not_checked(trimmed):
+    """The ordering complaint this file used to assert is gone, and stays gone.
+    It was read off one sweep frame at 3/8 against another at 8/8, but that frame
+    also said `his penis against her` — the defect the next test covers — and the
+    two causes were confounded. Measured directly: three real garments-first lines
+    against the same lines with the garments spliced behind the act, two seeds
+    each, judged three times, **2 of 6 either way**. What does measure is the
+    garments being in the sentence rather than in a block ahead of it, which is a
+    fact about the composer and invisible to a per-line check."""
+    assert trimmed["noOrderComplaint"], trimmed
 
 
 def test_the_act_must_be_penetration_and_not_contact(trimmed):

@@ -886,7 +886,19 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'length: the four words head-to-feet would have taken are not spent anywhere else, and '
   + 'the line still ends at eighty. The camera position is still named — '
   + 'a two-person frame needs it more than any other, because it is what decides whether the '
-  + 'act is in view at all — and her whole body is still walked.\n'
+  + 'act is in view at all.\n'
+  // Asking the writer here for a freely invented position — with plausibility
+  // stated as where each body's weight rests — was tried and reverted on
+  // 2026-08-17. Measured over three runs it did NOT buy variety (position-word
+  // overlap stayed at 0.67-0.92, seven lines of eight still `on her hands and
+  // knees`), the weight rule stuck in only 4 of 9 lines, and the two-person count
+  // fell to the bottom of its historical range (1, 5, 3 against 3-14) — the same
+  // signature as the reverted edit 2. The reason it fails HERE while the same
+  // instruction produced ten distinct positions when asked on its own: this line
+  // still carries the full wardrobe, ~38 words of it, and there is no budget left
+  // to invent with. Variety needs the carry OUT of the line, which needs somewhere
+  // else for it to come from. See idevgen-two-people-limit.
+
   + '\n'
   + GARMENT_CARRY + '\n'
   + '\n'

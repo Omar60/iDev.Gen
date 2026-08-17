@@ -460,9 +460,10 @@ const TWO_PEOPLE = /\b(two people in frame|naked man|his penis|penetrat)/i
  *  A hundred and ten, not eighty: rendered at four seeds a side, a 111-word line
  *  with the act straight after the camera clause came back with both bodies and
  *  the act four of four, while a 145-word one made it once of four — so the wall
- *  sits past the length that works and short of the one that fails. The other
- *  half of that measurement is ORDER, which `contentProblems` checks: the same
- *  test killed a 91-word line that put its garments before the man. */
+ *  sits past the length that works and short of the one that fails. The third arm
+ *  of that test, a 91-word line, scored 3/8 and was first read as an ordering
+ *  failure; its real defect was `his penis against her`, and ordering measured as
+ *  nothing on its own. See the note in `contentProblems`. */
 const TWO_PEOPLE_WORDS = 110
 
 /** Where a line stops being a photograph and starts being an inventory.
@@ -722,12 +723,6 @@ const contentProblems = (line, previous) => {
              + 'A piece that is only moved is different and stays named: pushed up, pulled '
              + 'aside, unbuttoned, off one shoulder.')
   }
-  // In a two-person line the act comes before the clothes, and this is order,
-  // not style: rendered at four seeds a side, a 91-word line with thirty words
-  // of garments ahead of the man came back as her alone or with his anatomy
-  // grafted onto her, four of four, while a 111-word line with the act straight
-  // after the camera clause came back with both bodies and the act, four of
-  // four. What the encoder meets first is what the photograph is of.
   // The act written as contact instead of penetration, which renders as contact:
   // `his penis against her` came back with the penis against her on five of eight
   // checkpoints, the pose and both bodies correct. Only asked of a line that
@@ -741,18 +736,18 @@ const contentProblems = (line, previous) => {
              + 'out of her` — which is the wording that rendered the act on every checkpoint '
              + 'it was tried on.')
   }
-  if (TWO_PEOPLE.test(line)) {
-    const manOrAct = Math.min(...[line.search(ACT), line.search(/\ba (naked )?man\b/i)]
-      .filter((at) => at >= 0))
-    const garment = line.search(new RegExp(GARMENT_NOUN.source, 'i'))
-    if (Number.isFinite(manOrAct) && garment >= 0 && garment < manOrAct) {
-      found.push('Its clothes come before the act: the first garment appears ahead of the man '
-               + 'and of what the two bodies are doing, and a photograph asked for in that '
-               + 'order comes back as her alone. Directly after the camera clause and the '
-               + 'framing, name him and the act in plain anatomical words; whatever is still '
-               + 'on her follows, never leads.')
-    }
-  }
+  // There was a check here demanding the act come before the garments WITHIN the
+  // line, and it was removed on 2026-08-17 for want of evidence. It was read off
+  // one sweep frame that scored 3/8 against another at 8/8 — but that frame's real
+  // defect was `his penis against her`, which the complaint above now catches, and
+  // the two causes were confounded. Tested directly afterwards, three real
+  // garments-first lines rendered against the same lines with the garments moved
+  // behind the act, two seeds each: **2 of 6 either way**. What DOES measure, and
+  // by a wide margin, is the garments being in the sentence at all rather than in
+  // a block ahead of it — the shot's own `wardrobe` field, which the composer
+  // prepends, scored 1/4 where the same words inside the line scored 4/4. That is
+  // a fact about `_compose`, not about clause order, and no check here can see it.
+  //
   // A line with two people in it is exempt from the whole-body walk: that rule
   // exists so a garment is never left unstated, and by then there are no
   // garments — while the words it costs are exactly what makes the second body
