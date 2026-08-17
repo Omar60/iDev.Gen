@@ -508,6 +508,24 @@ const IDENTIFYING = /^(white|navy|red|black|blue|cream|grey|silver|gold|green|br
 
 const ACT = /\b(penetrat\w*|penis|inside her|entering her|cock|fucking|thrust\w*)\b/i
 
+/** The act as something happening, rather than two bodies touching.
+ *
+ *  `ACT` above answers a different question — has this line got anatomy in it that
+ *  a repair must not delete — and it is deliberately loose for that. This one is
+ *  the photograph: measured on an eight-checkpoint sweep of the same eight
+ *  two-person lines, the frame reading `penetrating her from behind, his penis
+ *  inside her` rendered the act on **all eight** checkpoints, while the frame
+ *  reading `his penis against her` rendered it on three — and eye-checked, that
+ *  render is exactly right: the pose is correct, both bodies are there, and the
+ *  penis is against her rather than in her. The model obeyed; the line asked for
+ *  the wrong photograph.
+ *
+ *  So this is the old euphemism failure wearing plain anatomy. The register rule
+ *  in `EXPLICIT_SYSTEM` bans softening and names the vocabulary, and `against
+ *  her` slips through both because it is neither vague nor a pose. */
+const PENETRATION =
+  /\b(penetrat\w*|inside her|entering her|sliding (?:in|into)|thrust\w*|fucking|fucked)\b/i
+
 /** Her, introduced as a stranger. The trigger at the front of the prompt has
  *  already said who she is, so `of a woman in a white jersey` paints somebody
  *  else next to the character the rest of the prompt is describing. */
@@ -710,6 +728,19 @@ const contentProblems = (line, previous) => {
   // grafted onto her, four of four, while a 111-word line with the act straight
   // after the camera clause came back with both bodies and the act, four of
   // four. What the encoder meets first is what the photograph is of.
+  // The act written as contact instead of penetration, which renders as contact:
+  // `his penis against her` came back with the penis against her on five of eight
+  // checkpoints, the pose and both bodies correct. Only asked of a line that
+  // already names the anatomy — a line with no act in it at all is a different
+  // complaint, and the stage plan decides which frames have one.
+  if (TWO_PEOPLE.test(line) && ACT.test(line) && !PENETRATION.test(line)) {
+    found.push('It says the two bodies are touching, not joined: the anatomy is named but '
+             + 'nothing in the line says the act is happening, and `his penis against her` '
+             + 'comes back as a photograph of a penis against her. Say it as movement — '
+             + '`penetrating her from behind, his penis inside her`, `his cock sliding in and '
+             + 'out of her` — which is the wording that rendered the act on every checkpoint '
+             + 'it was tried on.')
+  }
   if (TWO_PEOPLE.test(line)) {
     const manOrAct = Math.min(...[line.search(ACT), line.search(/\ba (naked )?man\b/i)]
       .filter((at) => at >= 0))
@@ -774,6 +805,16 @@ const GARMENT_FAMILIES = {
   dress: /\b(dress|gown|nightgown|robe|bodysuit|leotard)\b/i,
   jacket: /\b(jacket|coat|cardigan|blazer)\b/i,
   corset: /\b(corset|bustier|basque)\b/i,
+  // The two pieces a whole shoot was built on, and neither was a family until the
+  // renders said so: every line of a 29-frame sweep "removed" them as `the thin
+  // green bands no longer encircling her thighs` and `the choker neck band no
+  // longer resting below her throat`, and both came back on in the photographs.
+  // With no family for them, `namesWhatItSheds` had nothing to find a garment
+  // near and the put-back check could never see them return. `neck band` belongs
+  // to the choker, so the band family steps around it rather than reporting one
+  // piece twice.
+  choker: /\b(choker|neck band|collar band)\b/i,
+  bands: /\b(?<!neck )bands?\b|\bgarters?\b/i,
 }
 
 const familiesIn = (text) =>
@@ -792,8 +833,19 @@ const familiesIn = (text) =>
  *  Only words that mean the piece is OFF count. A piece that is merely moved is
  *  still worn and is still named — pushed up, pulled aside, unbuttoned, off one
  *  shoulder, hooked under a waistband — and flagging those would flag the whole
- *  middle of every shoot. */
-const SHED = /\b(gone|removed|discarded|cast aside|set aside|no longer (?:on|worn)|off her body|lying (?:on|in|at|beside)|pooled (?:on|at|beside)|crumpled (?:on|at|beside))\b/i
+ *  middle of every shoot.
+ *
+ *  `no longer` is matched on its own and not as `no longer on|worn`, which is what
+ *  it used to be: the writer says `the thin green bands no longer encircling her
+ *  thighs` and `the choker neck band no longer resting below her throat`, neither
+ *  matched, `namesWhatItSheds` returned nothing, and the renders came back with
+ *  the band and the choker both on — eye-checked across two frames of an
+ *  eight-checkpoint sweep. Over 116 written lines every one of the thirty `no
+ *  longer` phrases meant the piece was off (`resting below her throat`,
+ *  `encircling her thighs`, `present`, `on her body`), and none of them was a
+ *  garment merely moved, which the writer words as `pushed up` or `pulled aside`
+ *  instead. */
+const SHED = /\b(gone|removed|discarded|cast aside|set aside|no longer|off her body|lying (?:on|in|at|beside)|pooled (?:on|at|beside)|crumpled (?:on|at|beside))\b/i
 
 export const namesWhatItSheds = (line) => {
   const text = line || ''

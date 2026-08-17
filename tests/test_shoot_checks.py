@@ -421,7 +421,7 @@ LONG_TWO_PERSON = (
 )
 
 TRIM_PROBE = r"""
-import { trimBareClauses, dropListedGarments, problemsWith } from "%(src)s"
+import { trimBareClauses, dropListedGarments, problemsWith, namesWhatItSheds } from "%(src)s"
 const w = (s) => s.split(/\s+/).filter(Boolean).length
 const long = %(long)s
 const short = "Taken from her right side, a waist-up photograph of a naked man behind her, "
@@ -446,6 +446,32 @@ console.log(JSON.stringify({
   dedupKeptCamera: /^Taken from her right side/.test(deduped),
   dedupShortUntouched: dropListedGarments(short) === short,
   dedupOnePersonUntouched: dropListedGarments(oneP) === oneP,
+  // `his penis against her` renders as a penis against her: the pose right, both
+  // bodies there, no act. Three of eight checkpoints against eight of eight for
+  // the same photograph written as penetration.
+  contactFlagged: problemsWith(
+    "Taken from her right side, her body in full profile, a waist-up photograph, she kneels "
+    + "on the bed with her palms flat in front of her, a man behind her with his hands on her "
+    + "hips and his penis against her, two people in frame, her mouth open.",
+    "", 200).some((p) => p.includes("touching, not joined")),
+  contactClean: !problemsWith(
+    "Taken from her right side, her body in full profile, a waist-up photograph, of a naked "
+    + "man behind her penetrating her from behind, his penis inside her, his hands on her "
+    + "hips, two people in frame, her mouth open.",
+    "", 200).some((p) => p.includes("touching, not joined")),
+  // Two garments an entire shoot was built on, invisible to the check until the
+  // renders showed both of them still on.
+  shedNoLonger: namesWhatItSheds(
+    "she stands beside the bed with the slim green choker no longer present, her chest bare, "
+    + "her hips bare, her feet bare on the rug."),
+  shedBands: namesWhatItSheds(
+    "the thin green bands no longer encircling her thighs, the choker neck band no longer "
+    + "resting below her throat, her chest bare, her hips bare, her feet bare."),
+  // A garment merely moved is still worn and still named: flagging those would
+  // flag the middle of every shoot.
+  shedMoved: namesWhatItSheds(
+    "the choker still at her throat, the thin green bands pushed down her thighs, the "
+    + "bodysuit pulled aside at the hip, her chest bare."),
   orderFlagged: problemsWith(
     "Taken from her right side, her body in full profile, a waist-up photograph, of her on "
     + "all fours on the bed, a slim green choker at the base of her throat, thin green bands "
@@ -521,3 +547,29 @@ def test_the_act_must_come_before_the_clothes(trimmed):
     flagged for it."""
     assert trimmed["orderFlagged"], trimmed
     assert trimmed["orderClean"], trimmed
+
+
+def test_the_act_must_be_penetration_and_not_contact(trimmed):
+    """`his penis against her` came back as a penis against her — the pose right,
+    both bodies present, no act — on five of eight checkpoints, while the same
+    photograph written as penetration rendered on eight of eight. Plain anatomy is
+    not the same as the act happening, and `ACT` (which exists to protect anatomy
+    from a repair) cannot tell them apart."""
+    assert trimmed["contactFlagged"], trimmed
+    assert trimmed["contactClean"], trimmed
+
+
+def test_a_garment_removed_as_no_longer_anything_is_still_named(trimmed):
+    """`the slim green choker no longer present` renders with the choker on, eye-
+    checked. SHED only knew `no longer on|worn`, and neither the choker nor the
+    thigh bands was a garment family at all, so the two pieces this shoot is built
+    on were invisible to both this check and the put-back check."""
+    assert "choker" in trimmed["shedNoLonger"], trimmed
+    assert set(trimmed["shedBands"]) >= {"choker", "bands"}, trimmed
+
+
+def test_a_garment_merely_moved_is_not_flagged(trimmed):
+    """The other half of the rule, and the reason SHED is a closed list: a piece
+    pushed down or pulled aside is still worn, still named, and flagging it would
+    flag the middle of every shoot."""
+    assert trimmed["shedMoved"] == [], trimmed
