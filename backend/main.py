@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 import db
 import enhance
-from comfy import REFERENCE_SLOTS, SLOTS, Comfy, detect_map
+from comfy import REFERENCE_SLOTS, SLOTS, Comfy, detect_map, graph_checkpoint
 from runner import Runner, slug
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -298,8 +298,21 @@ def lora_preview(name: str):
 
 @app.get("/api/workflows")
 def list_workflows():
-    rows = db.q("SELECT id, name, node_map, kind, is_template, created_at FROM workflow ORDER BY name")
-    return [db.jload(r, "node_map") for r in rows]
+    """The list carries `base_model`: the checkpoint each graph loads by itself.
+
+    Read off the graph rather than stored, because it is not a second fact — a
+    graph tuned for one model already names it in its loader. It is what lets
+    picking a base model pick the workflow written for it. The graph itself is
+    not returned: it is megabytes, and only the detail route needs it.
+    """
+    rows = db.q("SELECT id, name, graph, node_map, kind, is_template, created_at "
+                "FROM workflow ORDER BY name")
+    out = []
+    for r in rows:
+        r = db.jload(r, "graph", "node_map")
+        r["base_model"] = graph_checkpoint(r.pop("graph") or {}, r["node_map"])
+        out.append(r)
+    return out
 
 
 @app.get("/api/workflows/{wid}")
@@ -526,14 +539,20 @@ class SessionClone(BaseModel):
     name: str = ""
     # Merged over the source's settings. This is the whole point of the route:
     # the base model and the steps it needs. Everything else a clone might want
-    # changed — the workflows, denoise, LoRA strength — is already a PATCH away
-    # on the new session.
+    # changed — denoise, LoRA strength — is already a PATCH away on the new
+    # session.
     settings: dict = Field(default_factory=dict)
+    # The graph to shoot the copy with, when the model wants its own. Zero and
+    # None both mean "the source's", so a plain copy stays a plain copy: a
+    # per-model graph carries its own sampler and steps, which is precisely
+    # what a sweep across checkpoints could not express before.
+    workflow_id: int | None = None
 
 
 @app.post("/api/sessions/{sid}/clone")
 def clone_session(sid: int, c: SessionClone):
-    """Shoot this whole session again with one thing changed — the base model.
+    """Shoot this whole session again with one thing changed — the base model,
+    and the graph written for it if there is one.
 
     Same look, same wardrobe, same takes, same seeds: what comes back differs
     only by what was changed, which is the only way to compare two checkpoints
@@ -563,7 +582,8 @@ def clone_session(sid: int, c: SessionClone):
                                 reference_workflow_id, anchor_shot_ids, settings, created_at)
            VALUES (?,?,?,?,?,?,'[]',?,?)""",
         src["model_id"], c.name or f"{src['name']} (copy)", src["look"], src["wardrobe"],
-        src["workflow_id"], src["reference_workflow_id"], json.dumps(settings), db.now(),
+        c.workflow_id or src["workflow_id"], src["reference_workflow_id"],
+        json.dumps(settings), db.now(),
     )
 
     ids: dict[int, int] = {}

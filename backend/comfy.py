@@ -233,6 +233,30 @@ def _walk_to_text(graph: dict, link, depth: int = 0) -> tuple[str, str] | None:
     return None
 
 
+def graph_checkpoint(graph: dict, node_map: dict | None = None) -> str:
+    """The base model this graph loads on its own.
+
+    A graph tuned for one checkpoint — its sampler, its steps, its cfg — names
+    that checkpoint in its own loader, so the graph already knows which model it
+    is for and nothing has to be typed twice. That is what lets picking a base
+    model pick the workflow written for it.
+    """
+    path = (node_map or {}).get("checkpoint")
+    if path:
+        nid, _, field = path.split(".", 2)
+        value = (graph.get(nid) or {}).get("inputs", {}).get(field.replace("inputs.", "", 1))
+        if isinstance(value, str):
+            return value
+    # An unmapped loader still names a model, and leaving the slot unmapped is
+    # exactly what a per-model graph does — so the fallback is the common case.
+    for node in (graph or {}).values():
+        for field in CHECKPOINT_FIELDS:
+            value = (node.get("inputs") or {}).get(field)
+            if isinstance(value, str):
+                return value
+    return ""
+
+
 def apply_map(graph: dict, node_map: dict, values: dict) -> dict:
     """Return a copy of `graph` with each mapped slot patched to `values[slot]`."""
     g = copy.deepcopy(graph)

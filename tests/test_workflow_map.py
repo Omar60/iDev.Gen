@@ -1,6 +1,6 @@
 """Node-map detection and patching: what decides whether an imported workflow
 obeys the session or keeps rendering the same photo forever."""
-from comfy import apply_map, detect_map
+from comfy import apply_map, detect_map, graph_checkpoint
 from conftest import EDIT_GRAPH, GRAPH
 
 
@@ -29,6 +29,16 @@ def test_detects_the_base_model_from_either_loader():
         "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "hello"}},
     }
     assert detect_map(unet_graph)["checkpoint"] == "1.inputs.unet_name"
+
+
+def test_reads_the_base_model_a_graph_loads_by_itself():
+    """What lets picking a base model pick the graph written for it. The loader
+    is read even when the slot is unmapped — which is exactly what a graph tuned
+    for one checkpoint does, so the fallback is the case that matters."""
+    assert graph_checkpoint(GRAPH, detect_map(GRAPH)) == "base.safetensors"
+    assert graph_checkpoint(GRAPH, {}) == "base.safetensors"
+    assert graph_checkpoint(GRAPH, {"checkpoint": "99.inputs.ckpt_name"}) == "base.safetensors"
+    assert graph_checkpoint({}, {}) == ""
 
 
 def test_detects_sampler_not_named_ksampler():

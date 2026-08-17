@@ -936,7 +936,10 @@ it:
 - **Reference workflow (edits)** — the graph for takes marked `ref`.
 - **Base model** — only applied to the workflow above, and only if that workflow
   maps the slot. A checkpoint ComfyUI no longer reports is shown as such rather
-  than silently reading as *no choice made*.
+  than silently reading as *no choice made*. If some graph is *written for* the
+  model you pick — its own loader names that checkpoint — the panel says so and
+  offers it in one click. Offered, never applied: swapping the graph because a
+  dropdown moved is the silent change the rest of this panel warns about.
 - **Denoise** and **LoRA strength** — the two dials an identity pass is made of.
   They used to be settable only while creating the session, which is before you
   have the photo whose face drifted.
@@ -945,6 +948,15 @@ Photos already shot keep what they were shot with; these apply to what runs
 next. The reason this exists: you learn a graph is in the wrong slot when Run is
 refused, and by then the session is an imported photo and seventy takes.
 Delete-and-start-over should not be the cure for a dropdown.
+
+**What the session actually drives.** A slot a workflow does not map is never
+patched — the graph's own widget value stands — so the panel lists those slots by
+name, and the line under the session title strikes the numbers that do not reach
+this graph. That is not a fault to fix: a graph tuned for one checkpoint carries
+its own steps, cfg and sampler, and leaving them unmapped is how you keep them.
+The strike is only there so a session shooting at 12 steps and printing 30 stops
+being a mystery. Map the slot in **Workflows** if you do want the session to
+drive it.
 
 While the session is **running** they are locked, and the panel says why: the
 runner re-reads the session before every take, so a graph swapped mid-queue
@@ -976,6 +988,18 @@ distilled checkpoint with a full one is the normal case, and 8 steps on the full
 one wastes the whole copy — twenty photos before it is visible. Anything else a
 copy needs is a **⚙ Settings** away on it: it is an ordinary session, and the
 workflows, denoise and LoRA strength are editable there as on any other.
+
+**And its own workflow, picked for you.** A checkpoint wants its own sampler and
+scheduler, and those live inside the graph rather than in a slot the session can
+drive — so the honest way to shoot a second model is the graph written for it.
+Every workflow already names the model it loads, so choosing the base model
+chooses that graph, and the row says *written for this model*. There is nothing
+to keep in step: it is read from the graph, not stored beside it. No graph names
+that checkpoint, and the row shoots on this session's, as it always did — and
+the dropdown is still yours to override, because putting one model through
+another's graph on purpose is a comparison too. A row whose graph does not map
+**steps** greys the box: that graph's own value is what runs, and typing a
+number there would be describing a copy that is not the one being shot.
 
 The copies are drafts. The queue is serial — one session at a time, one GPU — so
 you run them one after another, and each one that finishes joins the comparison

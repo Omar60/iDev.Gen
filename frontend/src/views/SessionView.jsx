@@ -152,6 +152,32 @@ export default function SessionView({ id }) {
   const refSlots = refWf
     ? Math.max(1, ['reference', 'reference2', 'reference3'].filter((r) => refWf.node_map?.[r]).length)
     : 3
+  // Which of the session's numbers actually reach ComfyUI. An unmapped slot is
+  // not patched at all — the graph's own widget value stands — so printing the
+  // session's number next to it is a lie, and the lie is the whole reason
+  // "one workflow per model" looks mysterious instead of deliberate. Until the
+  // workflows have loaded, assume mapped: the honest state is the quiet one.
+  const shootWf = workflows.find((w) => w.id === (s.workflow_id || s.model.workflow_id))
+  const maps = (slots) => !shootWf || slots.split(' ').every((x) => !!shootWf.node_map?.[x])
+  // Struck through and explained rather than hidden: the number is still what a
+  // clone of this session would carry, it just is not what this graph shoots.
+  const Sent = ({ slot, children }) => (maps(slot) ? <>{children}</> : (
+    <span style={{ textDecoration: 'line-through' }}
+          title={`This workflow does not map ${slot.split(' ').join(' or ')} — its own value is what runs`}>
+      {children}
+    </span>
+  ))
+  // The graph written for a checkpoint is the one whose own loader names it, so
+  // picking a base model can pick its workflow and nothing is typed twice. Only
+  // the shooting graphs: an editing graph loads its own model by design.
+  const wfFor = (checkpoint) => checkpoint
+    && workflows.find((w) => w.kind === 't2i' && w.base_model === checkpoint)
+  const tunedWf = wfFor(s.settings.checkpoint)
+  // Everything the Settings panel offers that this session's graphs ignore.
+  // Denoise is the reference graph's dial, not the shooting one's.
+  const unmapped = ['steps', 'cfg', 'width', 'height', 'checkpoint', 'lora_strength']
+    .filter((x) => !maps(x))
+    .concat(refWf && !refWf.node_map?.denoise ? ['denoise (the editing graph)'] : [])
   // Clicking one already picked drops it.
   const toggleAnchor = (shot) => call(() => api.patch(`/api/sessions/${id}`, {
     anchor_shot_ids: anchors.includes(shot.id)
@@ -210,8 +236,11 @@ export default function SessionView({ id }) {
         <div>
           <h1>{s.name}</h1>
           <p className="muted">
-            <a href={`#/model/${s.model.id}`}>{s.model.name}</a> · {s.settings.width}×{s.settings.height} ·
-            {' '}{s.settings.steps} steps · cfg {s.settings.cfg} · LoRA {s.settings.lora_strength}
+            <a href={`#/model/${s.model.id}`}>{s.model.name}</a> ·{' '}
+            <Sent slot="width height">{s.settings.width}×{s.settings.height}</Sent> ·{' '}
+            <Sent slot="steps">{s.settings.steps} steps</Sent> ·{' '}
+            <Sent slot="cfg">cfg {s.settings.cfg}</Sent> ·{' '}
+            <Sent slot="lora_strength">LoRA {s.settings.lora_strength}</Sent>
           </p>
           {s.look && <p className="muted" style={{ marginTop: -6 }}><b>Look:</b> {s.look}</p>}
           {s.wardrobe && (
@@ -393,6 +422,30 @@ export default function SessionView({ id }) {
                        { settings: { lora_strength: e.target.value === '' ? null : parseFloat(e.target.value) } }))} />
             </div>
           </div>
+          {/* Offered, not applied: swapping the graph out from under a session
+              because a dropdown moved is exactly the silent change the panel
+              above warns about. One click, and it says what it will do. */}
+          {tunedWf && tunedWf.id !== shootWf?.id && (
+            <p className="rule">
+              <b>{tunedWf.name}</b> is written for this base model — it loads it itself, with
+              the sampler, steps and cfg that model wants.{' '}
+              <button disabled={running}
+                      onClick={() => call(() => api.patch(`/api/sessions/${id}`,
+                        { workflow_id: tunedWf.id }))}>Shoot with it</button>
+            </p>
+          )}
+          {/* A graph tuned for one checkpoint carries its own sampler, steps and
+              cfg, and the sane way to use one is to leave those unmapped. Then
+              this panel and the header are quietly describing a session that is
+              not the one being shot — unless they say so. */}
+          {unmapped.length > 0 && (
+            <p className="rule">
+              Not mapped by the graphs above: <b>{unmapped.join(', ')}</b> — whatever the session
+              says, the workflow's own value is what runs. That is how a graph tuned for one base
+              model is meant to work; map the slot in <a href="#/workflows">Workflows</a> if you
+              want the session to drive it instead.
+            </p>
+          )}
           <p className="muted" style={{ marginBottom: 0 }}>
             Photos already shot keep the settings they were shot with. These apply to what runs next.
           </p>
@@ -427,31 +480,66 @@ export default function SessionView({ id }) {
                   retyping the name each go. */}
               <BaseModelSelect value="" models={baseModels}
                                onChange={(v) => v && !clone.rows.some((r) => r.checkpoint === v)
-                                 && setClone({ ...clone, rows: [...clone.rows, { checkpoint: v, steps: clone.steps }] })} />
+                                 && setClone({
+                                   ...clone,
+                                   rows: [...clone.rows, {
+                                     checkpoint: v, steps: clone.steps,
+                                     // Its own graph if one exists, the source's otherwise.
+                                     workflow_id: wfFor(v)?.id || '',
+                                   }],
+                                 })} />
             </div>
           </div>
           {/* Steps per row, not one for all: mixing a distilled model with a full
               one is the normal case, and 8 steps on the full one wastes the whole
               copy — twenty-odd photos before it is visible. */}
           <table style={{ marginTop: 10 }}>
-            <thead><tr><th>Base model</th><th style={{ width: 110 }}>Steps</th><th style={{ width: 40 }} /></tr></thead>
+            <thead>
+              <tr>
+                <th>Base model</th><th>Workflow</th>
+                <th style={{ width: 110 }}>Steps</th><th style={{ width: 40 }} />
+              </tr>
+            </thead>
             <tbody>
-              {clone.rows.map((r, i) => (
+              {clone.rows.map((r, i) => {
+                // A row's graph decides whether its steps box is anything but
+                // decoration — the same rule the header line strikes through.
+                const rowWf = workflows.find((w) => w.id === Number(r.workflow_id)) || shootWf
+                const rowSteps = !rowWf || !!rowWf.node_map?.steps
+                const edit = (patch) => setClone({
+                  ...clone,
+                  rows: clone.rows.map((x, j) => (j === i ? { ...x, ...patch } : x)),
+                })
+                return (
                 <tr key={r.checkpoint || i}>
                   <td>{r.checkpoint || "the workflow's own"}</td>
                   <td>
-                    <input type="number" min="1" value={r.steps}
-                           onChange={(e) => setClone({
-                             ...clone,
-                             rows: clone.rows.map((x, j) => (j === i ? { ...x, steps: e.target.value } : x)),
-                           })} />
+                    {/* Prefilled with the graph that names this checkpoint, and
+                        still a dropdown: the whole point of a sweep is shooting
+                        one model through another's graph on purpose. */}
+                    <select value={r.workflow_id || ''} style={{ width: '100%' }}
+                            onChange={(e) => edit({ workflow_id: e.target.value })}>
+                      <option value="">— this session's —</option>
+                      {forKind(workflows, 't2i').map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}{w.base_model === r.checkpoint ? ' — written for this model' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>
+                    <input type="number" min="1" value={rowSteps ? r.steps : ''}
+                           disabled={!rowSteps} placeholder="the graph's own"
+                           title={rowSteps ? '' : "This graph does not map steps — its own value is what runs"}
+                           onChange={(e) => edit({ steps: e.target.value })} />
                   </td>
                   <td>
                     <button className="icon" title="Drop this copy"
                             onClick={() => setClone({ ...clone, rows: clone.rows.filter((_, j) => j !== i) })}>✕</button>
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
           {clone.rows.length > 1 && (
@@ -470,6 +558,7 @@ export default function SessionView({ id }) {
                 made.push(await api.post(`/api/sessions/${id}/clone`, {
                   name: `${clone.name} — ${modelStem(r.checkpoint)}`,
                   settings: { checkpoint: r.checkpoint, steps: Number(r.steps) || s.settings.steps },
+                  workflow_id: Number(r.workflow_id) || null,
                 }))
               }
               setClone(null)

@@ -685,6 +685,26 @@ def test_cloning_a_session_repeats_it_with_the_base_model_changed(client, seeded
     assert client.post("/api/sessions/999999/clone", json={}).status_code == 404
 
 
+def test_a_copy_can_be_shot_on_the_graph_written_for_its_model(client, seeded):
+    """Each checkpoint wants its own sampler, steps and cfg, which live inside a
+    graph and not in a slot — so a sweep that could only change the checkpoint
+    shot every model through the first one's settings. The list route names the
+    model each graph loads, which is what lets the copy pick its own."""
+    other = client.post("/api/workflows", json={"name": "tuned", "graph": EDIT_GRAPH}).json()["id"]
+    assert {w["id"]: w["base_model"] for w in client.get("/api/workflows").json()} == {
+        seeded["workflow_id"]: "base.safetensors", other: "edit.safetensors"}
+
+    src = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "shoot",
+        "workflow_id": seeded["workflow_id"],
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+
+    copy = client.post(f"/api/sessions/{src}/clone", json={"workflow_id": other}).json()["id"]
+    plain = client.post(f"/api/sessions/{src}/clone", json={}).json()["id"]
+    assert client.get(f"/api/sessions/{copy}").json()["workflow_id"] == other
+    assert client.get(f"/api/sessions/{plain}").json()["workflow_id"] == seeded["workflow_id"]
+
+
 def test_every_copy_of_a_shoot_points_at_the_same_original(client, seeded):
     """`cloned_from` is what lets one gallery offer the other as a comparison,
     and only the copies: two sessions are comparable when the takes, prompts and
