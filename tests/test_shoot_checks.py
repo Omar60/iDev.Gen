@@ -400,3 +400,101 @@ def test_a_wardrobe_state_one_garment_on_is_not_a_repeat(rewordings):
         "a one-step wardrobe change now scores as a repeat: either the threshold "
         "moved or the states got longer, and the progression stream is about to "
         "start dropping its own lines")
+
+
+# The real line from run 1 of the 2026-08-16 cap runs, 141 words, that the repair
+# handed back unchanged. Its bare-part inventory is the fifteen words the code
+# now cuts; everything else in it is a fact the photograph needs.
+LONG_TWO_PERSON = (
+    "Taken from her right side, her body in full profile, a waist-up photograph, of her on "
+    "hands and knees on the rug with a naked man behind her, two people in frame, wearing "
+    "nothing but the choker and the thigh bands, her bare shoulders, her bare chest, her bare "
+    "back, her bare arms, her hips and thighs bare, a slim green choker with a small gold heart "
+    "pendant sitting at the base of her throat, two thin green bands encircling each thigh "
+    "joined at the sides by small gold rings pressing into the skin above them, his hands "
+    "gripping her hips, his cock clearly visible sliding into her from behind, detailed "
+    "penetration, her spine curved downward, her head low, both palms pressed into the rug "
+    "beneath her shoulders, her face turned toward the camera: lips parted, eyes half closed, "
+    "flushed skin."
+)
+
+TRIM_PROBE = r"""
+import { trimBareClauses, dropListedGarments } from "%(src)s"
+const w = (s) => s.split(/\s+/).filter(Boolean).length
+const long = %(long)s
+const short = "Taken from her right side, a waist-up photograph of a naked man behind her, "
+  + "two people in frame, his cock sliding into her, her bare chest."
+const oneP = "Taken from directly in front of her, a full-length photograph, head to feet, of "
+  + "her standing on the rug, her bare shoulders, her chest bare, her bare feet on the rug."
+const out = trimBareClauses(long)
+const deduped = dropListedGarments(out)
+console.log(JSON.stringify({
+  before: w(long), after: w(out), text: out,
+  keptAct: /sliding into her/.test(out),
+  keptCamera: /^Taken from her right side/.test(out),
+  keptGarments: /slim green choker/.test(out) && /thin green bands/.test(out),
+  droppedInventory: !/her bare shoulders/.test(out) && !/her bare arms/.test(out),
+  shortUntouched: trimBareClauses(short) === short,
+  onePersonUntouched: trimBareClauses(oneP) === oneP,
+  afterDedup: w(deduped),
+  droppedListing: !/wearing nothing but/.test(deduped),
+  dedupKeptDescriptions: /slim green choker with a small gold heart/.test(deduped)
+    && /two thin green bands encircling/.test(deduped),
+  dedupKeptAct: /sliding into her/.test(deduped) && /his hands gripping her hips/.test(deduped),
+  dedupKeptCamera: /^Taken from her right side/.test(deduped),
+  dedupShortUntouched: dropListedGarments(short) === short,
+  dedupOnePersonUntouched: dropListedGarments(oneP) === oneP,
+}))
+"""
+
+
+@pytest.fixture(scope="module")
+def trimmed(tmp_path_factory) -> dict:
+    script = TRIM_PROBE % {"src": (ROOT / "frontend/src/enhance.js").as_posix(),
+                           "long": json.dumps(LONG_TWO_PERSON)}
+    return _node_json(script, tmp_path_factory.mktemp("trim"))
+
+
+def test_the_code_cuts_what_the_repair_would_not(trimmed):
+    """Five runs of the writer, and the repair handed the worst lines back byte
+    for byte — 178 words before and 178 after. The re-ask was already here; what
+    was missing was a fallback for when the model simply declines."""
+    assert trimmed["before"] > 80, trimmed   # the cap in enhance.js
+    assert trimmed["after"] < trimmed["before"], trimmed
+    assert trimmed["droppedInventory"], trimmed
+
+
+def test_the_cut_keeps_the_act_the_camera_and_the_garments(trimmed):
+    """The three things a two-person line exists for. A shortening that takes any
+    of them is worse than the long line, so the function hands the original back
+    instead."""
+    assert trimmed["keptAct"], trimmed
+    assert trimmed["keptCamera"], trimmed
+    assert trimmed["keptGarments"], trimmed
+
+
+def test_it_leaves_alone_what_it_must(trimmed):
+    """A two-person line already inside the cap is not touched, and a ONE-person
+    line is never touched at all: there an unstated torso is a torso the model
+    dresses for you, which is the whole reason the body walk exists."""
+    assert trimmed["shortUntouched"], trimmed
+    assert trimmed["onePersonUntouched"], trimmed
+
+
+def test_the_garment_named_twice_loses_its_listing(trimmed):
+    """The measured line says each garment twice: `wearing nothing but the choker
+    and the thigh bands` beside the two clauses that describe them — forty-seven
+    words for two garments. The listing goes, the descriptions stay, and the act,
+    the hands and the camera survive the cut."""
+    assert trimmed["droppedListing"], trimmed
+    assert trimmed["dedupKeptDescriptions"], trimmed
+    assert trimmed["dedupKeptAct"], trimmed
+    assert trimmed["dedupKeptCamera"], trimmed
+    assert trimmed["afterDedup"] < trimmed["after"], trimmed
+
+
+def test_the_dedupe_leaves_alone_what_it_must(trimmed):
+    """Same exemptions as the bare-clause cut: inside the cap untouched, and a
+    one-person line never touched at all."""
+    assert trimmed["dedupShortUntouched"], trimmed
+    assert trimmed["dedupOnePersonUntouched"], trimmed

@@ -81,10 +81,13 @@ export const CHUNK = 8
  *  that shoot topped out at 0.79 and ran at 0.61, so the gap is wide and 0.85 sits
  *  in the middle of it.
  *
- *  NOT the default, because the wardrobe stream is built on the opposite rule:
- *  a state carries every unchanged garment over word for word, so two consecutive
- *  states of a six-piece wardrobe are meant to be nearly identical. Only the shoot
- *  writer and its repair ask for this. */
+ *  The default for every stream of takes, because "passed in rather than
+ *  defaulted" is how a writer path shipped six consecutive lines opening with the
+ *  same words: `shootLines` passed it and `takesAlongArc` did not. The one stream
+ *  that must NOT use it is the wardrobe, built on the opposite rule — a state
+ *  carries every unchanged garment over word for word, so two consecutive states
+ *  of a six-piece wardrobe are meant to be nearly identical (measured 0.74-0.82)
+ *  — and it opts out explicitly where it calls `inChunks`. */
 export const SAME_PHOTOGRAPH = 0.85
 
 export const repeats = (line, already, same = 1) => {
@@ -105,7 +108,7 @@ export const repeats = (line, already, same = 1) => {
   })
 }
 
-const inChunks = async (n, onProgress, askOne, stopWhenShort = false, same = 1) => {
+const inChunks = async (n, onProgress, askOne, stopWhenShort = false, same = SAME_PHOTOGRAPH) => {
   const out = []
   // The cap is what stops a model answering one line at a time from being asked
   // fifty times over.
@@ -210,6 +213,9 @@ export const rewriteWardrobe = (text) =>
  *  as `context` — that field means "already in the prompt, do not repeat it", and
  *  repeating it word for word is the entire job here. */
 export const wardrobeProgression = (brief, wardrobe, n, onProgress) =>
+  // `same: 1` — byte-identical only. See SAME_PHOTOGRAPH: a one-step change of a
+  // six-piece wardrobe shares 0.74-0.82 of its words with the state before, and
+  // the vocabulary check would drop the progression's own lines.
   inChunks(n, onProgress, async (at) => {
     const lines = await ask({
       instruction: `${WARDROBE_PROGRESSION_INSTRUCTION}\n\nThe shoot goes like this:\n${brief}`
@@ -221,7 +227,7 @@ export const wardrobeProgression = (brief, wardrobe, n, onProgress) =>
       n: at.want,
     })
     return lines.map((l) => l.prompt)
-  }, true)
+  }, true, 1)
 
 /** The takes of a shoot that walks somewhere: same rules as a batch, plus the
  *  order, and written in chunks for the same reason the wardrobe is.
@@ -326,8 +332,12 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   const limit = lengthLimit(written)
   const needing = written.filter((line, i) =>
     problemsWith(line, i === 0 ? wardrobe : written[i - 1], limit).length).length
-  const { lines: checked, repaired, stillWrong } =
+  const { lines: repairedLines, repaired, stillWrong } =
     await repairAll(written, wardrobe, onProgress, n, n + needing, limit)
+  // After the model has had its turn and refused: cut the bare-part inventory,
+  // then the garment named twice, out of any two-person line still over its cap.
+  // Only there, and only that.
+  const checked = repairedLines.map((l) => dropListedGarments(trimBareClauses(l)))
   // The word counts are in the line because the writer's own length varies enough
   // between runs to hide what the repair did: comparing two runs compares two
   // different shoots, and only before-and-after inside one run is the repair.
@@ -520,6 +530,79 @@ const INTRODUCES_HER = /\b(a|the same|another|one) (young |naked )?(woman|girl|m
 export const onlyHer = (line) =>
   (line || '').replace(new RegExp(INTRODUCES_HER.source, 'gi'),
                        (match, ...rest) => (rest[rest.length - 2] === 0 ? match : 'her'))
+
+/** A comma-clause that only says a part of her is bare, and nothing else.
+ *
+ *  `her bare shoulders`, `her chest bare`, `her hips and thighs bare`. Not
+ *  `naked but for the stockings` (a garment), not `his cock sliding into her`
+ *  (the act) — those carry facts the photograph needs. */
+const BARE_ONLY = /^(?:with |and )?(?:her |the )?(?:bare |naked )?[a-z ,and-]{0,40}?\b(?:bare|naked)\b[a-z ,and-]{0,40}$/i
+const GARMENT_OR_ACT = /\b(choker|band|stocking|boot|heel|brief|panty|panties|thong|harness|dress|skirt|top|jersey|blouse|shoe|jewel|pendant|cock|penis|penetrat|thrust|sliding|inside her|hands?|camera|photograph)\b/i
+
+/** The deterministic last resort for a two-person line the repair would not cut.
+ *
+ *  The check and the re-ask were already here and they are not enough: measured
+ *  over five runs, the repair returns the worst offenders byte-identical — 178
+ *  words before and 178 after, 208 and 208, 186 and 186 — and twice it came back
+ *  LONGER. `stagePlan` survives the same refusal because it falls back to a
+ *  choice the code makes; this had no fallback, so the long line shipped.
+ *
+ *  So the code cuts the one thing the instruction already says must go from these
+ *  lines: clauses that only spell out which part of her is bare. That is the same
+ *  exception `onlyHer` earns one level up — the code decides what a line says
+ *  only where the words are not a fact the photograph needs. Here that holds
+ *  ONLY because a two-person line is exempt from the whole-body walk: the
+ *  measured 90-word hand-written version carries no bare-part clause and renders
+ *  with no phantom clothing. Never do this to a one-person line, where an
+ *  unstated torso is a torso the model dresses for you. */
+export const trimBareClauses = (line) => {
+  if (!TWO_PEOPLE.test(line || '') || words(line) <= TWO_PEOPLE_WORDS) return line
+  const kept = line.split(/,\s*/).filter((clause, i) =>
+    i === 0 || !BARE_ONLY.test(clause.trim()) || GARMENT_OR_ACT.test(clause))
+  const out = kept.join(', ')
+  // Never hand back something that lost the act or the camera: if the cut took
+  // either, the long line is the better of two bad lines.
+  return TWO_PEOPLE.test(out) && /^\s*(taken|seen) from\b/i.test(out) ? out : line
+}
+
+/** Garment nouns, so the same piece can be recognised named twice in one line.
+ *  Plurals fold into the singular so `the thigh bands` matches `two thin green
+ *  bands encircling each thigh`. */
+const GARMENT_NOUN = /\b(choker|band|stocking|boot|heel|brief|panty|panties|thong|harness|dress|skirt|top|jersey|blouse|shoe|pendant|bra|corset|garter|glove)s?\b/gi
+const garmentNouns = (clause) => new Set(
+  [...(clause || '').toLowerCase().matchAll(GARMENT_NOUN)]
+    .map((m) => (m[1] === 'panties' ? 'panty' : m[1])))
+
+/** The second deterministic lever, after `trimBareClauses`: the same garment
+ *  said twice in one line.
+ *
+ *  Measured on the 141-word line the repair refused: `wearing nothing but the
+ *  choker and the thigh bands` (9 words) beside the 17- and 21-word clauses that
+ *  actually describe the two pieces — forty-seven words for two garments, the
+ *  listing half pure repetition. The instruction already says to name each piece
+ *  once and that saying it twice is where a hundred and sixty words go, so this
+ *  enforces a rule without deciding any content: when every garment a clause
+ *  names is described at more length in another clause of the same line, the
+ *  short listing goes and the description stays. A clause that also carries the
+ *  act, a hand or the camera is never touched — those are facts the photograph
+ *  needs, whatever else the clause repeats. Same guards as `trimBareClauses`:
+ *  two-person lines over the cap only, and the original comes back whole if the
+ *  cut would lose the act or the opening camera clause. */
+export const dropListedGarments = (line) => {
+  if (!TWO_PEOPLE.test(line || '') || words(line) <= TWO_PEOPLE_WORDS) return line
+  const clauses = line.split(/,\s*/)
+  const kept = clauses.filter((clause, i) => {
+    if (i === 0 || ACT.test(clause) || /\b(hands?|camera|photograph)\b/i.test(clause)) return true
+    const mine = garmentNouns(clause)
+    if (!mine.size) return true
+    // Strictly longer, so two clauses naming the same piece at the same length
+    // cannot each point at the other and both go.
+    return ![...mine].every((noun) => clauses.some((other, j) =>
+      j !== i && other.length > clause.length && garmentNouns(other).has(noun)))
+  })
+  const out = kept.join(', ')
+  return TWO_PEOPLE.test(out) && /^\s*(taken|seen) from\b/i.test(out) ? out : line
+}
 
 const tokens = (text) => (text || '').toLowerCase().replace(/[^a-z\s-]/g, ' ').split(/\s+/).filter(Boolean)
 
