@@ -84,7 +84,7 @@ import { problemsWith } from '%(src)s'
 import { EXPLICIT_REGISTER, SHOOT_LINE_INSTRUCTION } from '%(kinds)s'
 
 const words = (t) => t.trim().split(/\\s+/).length
-const pad = '%(padding)s'.repeat(2)
+const pad = '%(padding)s'.repeat(4)
 const short = %(short)s
 const long = short.replace('two people in frame', pad + ' two people in frame')
 const clothed = %(clothed)s.replace('her lips parted.', pad + ' her lips parted.')
@@ -177,8 +177,10 @@ def test_a_two_person_line_is_exempt_from_the_whole_body_walk(checks):
     assert "BODY_WALK" not in checks["bare"], checks["bare"]
 
 
-def test_a_two_person_line_is_capped_at_eighty_words(checks):
-    assert checks["shortWords"] <= 80 < checks["longWords"], checks
+def test_a_two_person_line_is_capped_at_a_hundred_and_ten_words(checks):
+    """110 and not the original 80: a 111-word line with the act at the front
+    rendered 4 of 4, a 145-word one 1 of 4, so the wall sits between them."""
+    assert checks["shortWords"] <= 110 < checks["longWords"], checks
     assert checks["short"] == [], checks["short"]
     assert checks["long"] == ["TWO_PEOPLE_LONG"], checks["long"]
 
@@ -186,7 +188,7 @@ def test_a_two_person_line_is_capped_at_eighty_words(checks):
 def test_the_cap_is_the_second_body_and_not_the_length(checks):
     """The same words with nobody else in them are held to the shoot's own limit,
     which is what `lengthLimit` measures and what every clothed line lives by."""
-    assert checks["clothedWords"] > 80, checks
+    assert checks["clothedWords"] > 110, checks
     assert "TWO_PEOPLE_LONG" not in checks["clothed"], checks["clothed"]
     assert "SHOOT_LONG" not in checks["clothed"], checks["clothed"]
 
@@ -419,7 +421,7 @@ LONG_TWO_PERSON = (
 )
 
 TRIM_PROBE = r"""
-import { trimBareClauses, dropListedGarments } from "%(src)s"
+import { trimBareClauses, dropListedGarments, problemsWith } from "%(src)s"
 const w = (s) => s.split(/\s+/).filter(Boolean).length
 const long = %(long)s
 const short = "Taken from her right side, a waist-up photograph of a naked man behind her, "
@@ -444,6 +446,17 @@ console.log(JSON.stringify({
   dedupKeptCamera: /^Taken from her right side/.test(deduped),
   dedupShortUntouched: dropListedGarments(short) === short,
   dedupOnePersonUntouched: dropListedGarments(oneP) === oneP,
+  orderFlagged: problemsWith(
+    "Taken from her right side, her body in full profile, a waist-up photograph, of her on "
+    + "all fours on the bed, a slim green choker at the base of her throat, thin green bands "
+    + "on both thighs, a man kneeling behind her, his penis inside her, her mouth open.",
+    "", 200).some((p) => p.includes("before the act")),
+  orderClean: !problemsWith(
+    "Taken from her right side, her body in full profile, a waist-up photograph, of a naked "
+    + "man kneeling behind her and entering her from behind, his penis inside her, his hands "
+    + "on her hips, a slim green choker at the base of her throat, thin green bands on both "
+    + "thighs, her mouth open.",
+    "", 200).some((p) => p.includes("before the act")),
 }))
 """
 
@@ -459,7 +472,7 @@ def test_the_code_cuts_what_the_repair_would_not(trimmed):
     """Five runs of the writer, and the repair handed the worst lines back byte
     for byte — 178 words before and 178 after. The re-ask was already here; what
     was missing was a fallback for when the model simply declines."""
-    assert trimmed["before"] > 80, trimmed   # the cap in enhance.js
+    assert trimmed["before"] > 110, trimmed   # the two-person cap in enhance.js
     assert trimmed["after"] < trimmed["before"], trimmed
     assert trimmed["droppedInventory"], trimmed
 
@@ -498,3 +511,13 @@ def test_the_dedupe_leaves_alone_what_it_must(trimmed):
     one-person line never touched at all."""
     assert trimmed["dedupShortUntouched"], trimmed
     assert trimmed["dedupOnePersonUntouched"], trimmed
+
+
+def test_the_act_must_come_before_the_clothes(trimmed):
+    """Rendered at four seeds a side: a 91-word two-person line with its garments
+    ahead of the man came back as her alone or grafted 4 of 4; the same content
+    with the act straight after the camera clause rendered 4 of 4. Order is a
+    checked fact, not style — and a line already in the right order is not
+    flagged for it."""
+    assert trimmed["orderFlagged"], trimmed
+    assert trimmed["orderClean"], trimmed

@@ -455,8 +455,15 @@ const TWO_PEOPLE = /\b(two people in frame|naked man|his penis|penetrat)/i
  *  asks for sixty to eighty and the renders came back with a disembodied penis
  *  and no man at all in seventeen frames of twenty. A ceiling that moves with the
  *  thing it is measuring is not a ceiling, and this is the one length that was
- *  measured to change the photograph rather than its wording. */
-const TWO_PEOPLE_WORDS = 80
+ *  measured to change the photograph rather than its wording.
+ *
+ *  A hundred and ten, not eighty: rendered at four seeds a side, a 111-word line
+ *  with the act straight after the camera clause came back with both bodies and
+ *  the act four of four, while a 145-word one made it once of four — so the wall
+ *  sits past the length that works and short of the one that fails. The other
+ *  half of that measurement is ORDER, which `contentProblems` checks: the same
+ *  test killed a 91-word line that put its garments before the man. */
+const TWO_PEOPLE_WORDS = 110
 
 /** Where a line stops being a photograph and starts being an inventory.
  *
@@ -696,6 +703,24 @@ const contentProblems = (line, previous) => {
              + '`her chest bare, her shoulders bare` — and let the piece simply not be there. '
              + 'A piece that is only moved is different and stays named: pushed up, pulled '
              + 'aside, unbuttoned, off one shoulder.')
+  }
+  // In a two-person line the act comes before the clothes, and this is order,
+  // not style: rendered at four seeds a side, a 91-word line with thirty words
+  // of garments ahead of the man came back as her alone or with his anatomy
+  // grafted onto her, four of four, while a 111-word line with the act straight
+  // after the camera clause came back with both bodies and the act, four of
+  // four. What the encoder meets first is what the photograph is of.
+  if (TWO_PEOPLE.test(line)) {
+    const manOrAct = Math.min(...[line.search(ACT), line.search(/\ba (naked )?man\b/i)]
+      .filter((at) => at >= 0))
+    const garment = line.search(new RegExp(GARMENT_NOUN.source, 'i'))
+    if (Number.isFinite(manOrAct) && garment >= 0 && garment < manOrAct) {
+      found.push('Its clothes come before the act: the first garment appears ahead of the man '
+               + 'and of what the two bodies are doing, and a photograph asked for in that '
+               + 'order comes back as her alone. Directly after the camera clause and the '
+               + 'framing, name him and the act in plain anatomical words; whatever is still '
+               + 'on her follows, never leads.')
+    }
   }
   // A line with two people in it is exempt from the whole-body walk: that rule
   // exists so a garment is never left unstated, and by then there are no
