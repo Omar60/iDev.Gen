@@ -4,8 +4,8 @@ import { go } from '../App.jsx'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
-import { BaseModelSelect } from './Models.jsx'
-import { KINDS, forKind, sessionKind } from '../kinds.js'
+import { BaseModelSelect, SamplerSelect } from './Models.jsx'
+import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary } from '../kinds.js'
 import { composed } from '../enhance.js'
 
 /** A checkpoint's name for a session title: no folder, no extension. Three copies
@@ -33,7 +33,10 @@ export default function SessionView({ id }) {
   const [sessions, setSessions] = useState([])
   const [twinId, setTwinId] = useState(0)
   const [twin, setTwin] = useState(null)
-  const [llm, setLlm] = useState(false)
+  // The whole config, not just `llm_ok`: it also carries the per-checkpoint
+  // profiles that picking a base model fills in from.
+  const [config, setConfig] = useState({})
+  const llm = !!config.llm_ok
 
   const reload = () => api.get(`/api/sessions/${id}`).then(setS).catch((e) => setError(e.message))
   useEffect(() => {
@@ -42,7 +45,7 @@ export default function SessionView({ id }) {
     api.get('/api/sessions').then(setSessions).catch(() => {})
     api.get('/api/comfy/models').then(setBaseModels).catch(() => {})
     // Optional: with no endpoint configured the ✨ buttons simply do not appear.
-    api.get('/api/config').then((c) => setLlm(!!c.llm_ok)).catch(() => {})
+    api.get('/api/config').then(setConfig).catch(() => {})
   }, [id])
 
   // The session being compared against. Loaded whole and separately: the list
@@ -167,15 +170,25 @@ export default function SessionView({ id }) {
       {children}
     </span>
   ))
+  // Same question one row of the Clone panel at a time: a copy shoots through
+  // its own graph, so whether its boxes drive anything is that graph's answer,
+  // not this session's.
+  const rowWfOf = (r) => workflows.find((w) => w.id === Number(r.workflow_id)) || shootWf
+  const rowMaps = (r, slot) => { const w = rowWfOf(r); return !w || !!w.node_map?.[slot] }
   // The graph written for a checkpoint is the one whose own loader names it, so
   // picking a base model can pick its workflow and nothing is typed twice. Only
   // the shooting graphs: an editing graph loads its own model by design.
   const wfFor = (checkpoint) => checkpoint
     && workflows.find((w) => w.kind === 't2i' && w.base_model === checkpoint)
   const tunedWf = wfFor(s.settings.checkpoint)
+  const profile = checkpointProfile(config, s.settings.checkpoint)
   // Everything the Settings panel offers that this session's graphs ignore.
   // Denoise is the reference graph's dial, not the shooting one's.
+  // Sampler and scheduler are opt-in, so they are only worth reporting when the
+  // session actually picks one — listed unconditionally, every graph that leaves
+  // the pair alone would report two problems it does not have.
   const unmapped = ['steps', 'cfg', 'width', 'height', 'checkpoint', 'lora_strength']
+    .concat(['sampler', 'scheduler'].filter((x) => s.settings[x]))
     .filter((x) => !maps(x))
     .concat(refWf && !refWf.node_map?.denoise ? ['denoise (the editing graph)'] : [])
   // Clicking one already picked drops it.
@@ -241,6 +254,8 @@ export default function SessionView({ id }) {
             <Sent slot="steps">{s.settings.steps} steps</Sent> ·{' '}
             <Sent slot="cfg">cfg {s.settings.cfg}</Sent> ·{' '}
             <Sent slot="lora_strength">LoRA {s.settings.lora_strength}</Sent>
+            {s.settings.sampler && <> · <Sent slot="sampler">{s.settings.sampler}</Sent></>}
+            {s.settings.scheduler && <> · <Sent slot="scheduler">{s.settings.scheduler}</Sent></>}
           </p>
           {s.look && <p className="muted" style={{ marginTop: -6 }}><b>Look:</b> {s.look}</p>}
           {s.wardrobe && (
@@ -287,7 +302,9 @@ export default function SessionView({ id }) {
             steps: s.settings.steps ?? '',
             // It opens on what this session shoots with, so pressing Create
             // straight away is the plain copy. Every other model is one more row.
-            rows: [{ checkpoint: s.settings.checkpoint || '', steps: s.settings.steps ?? '' }],
+            rows: [{ checkpoint: s.settings.checkpoint || '', steps: s.settings.steps ?? '',
+                     cfg: s.settings.cfg ?? '', sampler: s.settings.sampler ?? '',
+                     scheduler: s.settings.scheduler ?? '' }],
           })} title="Shoot this whole session again on other base models — same takes, same seeds">
             ⧉ Clone
           </button>
@@ -397,9 +414,20 @@ export default function SessionView({ id }) {
               <label title="Only applied to the workflow above, and only if it maps the slot. An editing graph loads its own model.">
                 Base model
               </label>
+              {/* The profile rides along with the choice. Overwriting rather than
+                  filling blanks is deliberate: steps and cfg always hold a value,
+                  so a fill-the-blanks rule would never fire and picking a model
+                  would keep shooting it at the last model's settings. What makes
+                  it safe is that it is not silent — the line below says what
+                  arrived, and every value stays editable. */}
               <BaseModelSelect value={s.settings.checkpoint} models={baseModels} disabled={running}
                                onChange={(v) => call(() => api.patch(`/api/sessions/${id}`,
-                                 { settings: { checkpoint: v } }))} />
+                                 { settings: { checkpoint: v, ...(checkpointProfile(config, v) || {}) } }))} />
+              {profile && (
+                <p className="muted" style={{ margin: '4px 0 0' }}>
+                  This model's profile: <b>{profileSummary(profile)}</b> — filled in when you pick it.
+                </p>
+              )}
             </div>
             {/* The two dials an identity pass is made of: how far the edit may
                 travel from the photo, and how hard the character LoRA pulls. They
@@ -454,8 +482,9 @@ export default function SessionView({ id }) {
 
       {/* Two base models on the same shoot is the only way to tell them apart:
           one frame is luck, twenty is the model. So the copy carries the takes,
-          the composed prompts and the seeds unchanged, and the base model and the
-          steps — which a different model needs — are the two dials here. */}
+          the composed prompts and the seeds unchanged, and the dials here are the
+          four things a different checkpoint asks for: the model, its graph, its
+          steps and its sampler pair. */}
       {clone && (
         <div className="panel" style={{ marginBottom: 14 }}>
           <h3>Clone this session</h3>
@@ -483,7 +512,15 @@ export default function SessionView({ id }) {
                                  && setClone({
                                    ...clone,
                                    rows: [...clone.rows, {
-                                     checkpoint: v, steps: clone.steps,
+                                     checkpoint: v, steps: clone.steps, cfg: s.settings.cfg ?? '',
+                                     // Inherited from the source, then overwritten
+                                     // by whatever this checkpoint's profile names.
+                                     // A sweep is worth running at each model's own
+                                     // settings; holding one sampler across four
+                                     // checkpoints compares the sampler, not them.
+                                     sampler: s.settings.sampler ?? '',
+                                     scheduler: s.settings.scheduler ?? '',
+                                     ...(checkpointProfile(config, v) || {}),
                                      // Its own graph if one exists, the source's otherwise.
                                      workflow_id: wfFor(v)?.id || '',
                                    }],
@@ -497,15 +534,18 @@ export default function SessionView({ id }) {
             <thead>
               <tr>
                 <th>Base model</th><th>Workflow</th>
-                <th style={{ width: 110 }}>Steps</th><th style={{ width: 40 }} />
+                <th style={{ width: 80 }}>Steps</th>
+                <th style={{ width: 70 }}>CFG</th>
+                <th style={{ width: 150 }}>Sampler</th>
+                <th style={{ width: 140 }}>Scheduler</th>
+                <th style={{ width: 40 }} />
               </tr>
             </thead>
             <tbody>
               {clone.rows.map((r, i) => {
-                // A row's graph decides whether its steps box is anything but
+                // A row's graph decides whether its boxes are anything but
                 // decoration — the same rule the header line strikes through.
-                const rowWf = workflows.find((w) => w.id === Number(r.workflow_id)) || shootWf
-                const rowSteps = !rowWf || !!rowWf.node_map?.steps
+                const rowSteps = rowMaps(r, 'steps')
                 const edit = (patch) => setClone({
                   ...clone,
                   rows: clone.rows.map((x, j) => (j === i ? { ...x, ...patch } : x)),
@@ -534,6 +574,33 @@ export default function SessionView({ id }) {
                            onChange={(e) => edit({ steps: e.target.value })} />
                   </td>
                   <td>
+                    {/* Carried because a profile can set it — muse wants 2 where
+                        every other Krea 2 finetune wants 1 — and shown because a
+                        value that arrives on its own has to be visible. */}
+                    {rowMaps(r, 'cfg') ? (
+                      <input type="number" step="0.1" min="0" value={r.cfg ?? ''}
+                             placeholder="the graph's own"
+                             onChange={(e) => edit({ cfg: e.target.value })} />
+                    ) : (
+                      <span className="muted" title="This graph does not map cfg — its own value is what runs">—</span>
+                    )}
+                  </td>
+                  {/* The two dials this whole table was missing: across seven Krea 2
+                      finetunes no two ask for the same pair, so sweeping checkpoints
+                      while holding one sampler compares the sampler, not the models. */}
+                  {[['sampler', baseModels.samplers], ['scheduler', baseModels.schedulers]].map(([slot, options]) => (
+                    <td key={slot}>
+                      {rowMaps(r, slot) ? (
+                        <SamplerSelect value={r[slot]} options={options}
+                                       onChange={(v) => edit({ [slot]: v })} />
+                      ) : (
+                        <span className="muted" title={`This graph does not map ${slot} — its own value is what runs`}>
+                          the graph's own
+                        </span>
+                      )}
+                    </td>
+                  ))}
+                  <td>
                     <button className="icon" title="Drop this copy"
                             onClick={() => setClone({ ...clone, rows: clone.rows.filter((_, j) => j !== i) })}>✕</button>
                   </td>
@@ -557,7 +624,13 @@ export default function SessionView({ id }) {
               for (const r of clone.rows) {
                 made.push(await api.post(`/api/sessions/${id}/clone`, {
                   name: `${clone.name} — ${modelStem(r.checkpoint)}`,
-                  settings: { checkpoint: r.checkpoint, steps: Number(r.steps) || s.settings.steps },
+                  // A row whose graph does not map the pair carries none: the run
+                  // preflight refuses a chosen sampler the graph would ignore, and
+                  // that refusal would land on a copy nobody chose one for.
+                  settings: { checkpoint: r.checkpoint, steps: Number(r.steps) || s.settings.steps,
+                              cfg: r.cfg === '' || r.cfg == null ? s.settings.cfg : Number(r.cfg),
+                              sampler: rowMaps(r, 'sampler') ? (r.sampler || '') : '',
+                              scheduler: rowMaps(r, 'scheduler') ? (r.scheduler || '') : '' },
                   workflow_id: Number(r.workflow_id) || null,
                 }))
               }

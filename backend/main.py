@@ -180,6 +180,13 @@ class ConfigIn(BaseModel):
     llm_model: str = ""
     llm_vision_model: str = ""
     llm_key: str = ""
+    # {"<checkpoint filename>": {steps, cfg, sampler, scheduler}} — what a base
+    # model asks for, so picking it fills them in instead of being retyped from a
+    # web page. Here and not in the repo: it is the user's local model library,
+    # not app behaviour, and the filenames are this machine's. Free-form on
+    # purpose — an unknown key inside a profile is ignored, not rejected, so the
+    # file can be edited by hand ahead of the app.
+    checkpoints: dict[str, dict] = Field(default_factory=dict)
 
 
 # ------------------------------------------------------------------ setup
@@ -269,7 +276,7 @@ async def comfy_loras():
 
 @app.get("/api/comfy/models")
 async def comfy_models():
-    """Base models available for the checkpoint slot."""
+    """Base models for the checkpoint slot, and the sampler/scheduler options."""
     try:
         return await comfy.base_models()
     except Exception as exc:  # noqa: BLE001
@@ -538,9 +545,10 @@ def _valid_anchors(ids: list[int]) -> list[int]:
 class SessionClone(BaseModel):
     name: str = ""
     # Merged over the source's settings. This is the whole point of the route:
-    # the base model and the steps it needs. Everything else a clone might want
-    # changed — denoise, LoRA strength — is already a PATCH away on the new
-    # session.
+    # the base model and what it asks for — steps, and the sampler/scheduler pair,
+    # which no two finetunes of the same family agree on. Everything else a clone
+    # might want changed — denoise, LoRA strength — is already a PATCH away on the
+    # new session, and needs no key here because the dict is free-form.
     settings: dict = Field(default_factory=dict)
     # The graph to shoot the copy with, when the model wants its own. Zero and
     # None both mean "the source's", so a plain copy stays a plain copy: a
@@ -865,9 +873,15 @@ def _require_mapped_choices(sid: int) -> None:
             raise HTTPException(400, "the session has no workflow assigned")
 
         node_map = wf["node_map"]
+        # Every one of these is opt-in: left empty the workflow's own value runs
+        # and there is nothing to ignore. Set and unmapped is the silent-drop the
+        # docstring above is about, so it refuses rather than shoots the session
+        # with a sampler nobody picked.
         chosen = (
             ("checkpoint", session["settings"].get("checkpoint"), "base model"),
             ("lora_name", model["lora_name"], "LoRA"),
+            ("sampler", session["settings"].get("sampler"), "sampler"),
+            ("scheduler", session["settings"].get("scheduler"), "scheduler"),
         )
         for slot, value, label in chosen:
             if value and slot not in node_map:

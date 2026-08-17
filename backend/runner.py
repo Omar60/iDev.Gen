@@ -127,6 +127,11 @@ class Runner:
             "seed": seed,
             "steps": s.get("steps"),
             "cfg": s.get("cfg"),
+            # Empty means "whatever the workflow already samples with" — the same
+            # rule as the base model, and the right default, since a graph tuned
+            # for one checkpoint already names the pair that checkpoint wants.
+            "sampler": s.get("sampler") or None,
+            "scheduler": s.get("scheduler") or None,
             "width": s.get("width"),
             "height": s.get("height"),
             # Empty means "whatever the workflow already loads" — same rule as

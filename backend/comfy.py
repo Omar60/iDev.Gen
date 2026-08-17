@@ -18,6 +18,11 @@ import httpx
 # not patched — the workflow's own widget value stands.
 SLOTS = [
     "positive", "negative", "seed", "steps", "cfg",
+    # Measured across seven Krea 2 finetunes on 2026-08-16: each one names its own
+    # sampler and scheduler (euler / euler_ancestral / er_sde / res_2s, over
+    # simple / beta / bong_tangent). Mapping the pair is what lets one graph serve
+    # every checkpoint instead of one graph per checkpoint differing by two words.
+    "sampler", "scheduler",
     "width", "height", "checkpoint", "lora_name", "lora_strength", "filename_prefix",
     # Reference (image-to-image / instruction editing). `reference` is the anchor
     # photo; the extra two are for graphs that take several — Kontext and
@@ -62,9 +67,11 @@ class Comfy:
         return info["LoraLoader"]["input"]["required"]["lora_name"][0]
 
     async def base_models(self) -> dict[str, list[str]]:
-        """What can go in the checkpoint slot, by loader kind.
+        """What can go in the checkpoint slot, by loader kind, plus what the
+        sampler and scheduler slots accept — one call, because every screen that
+        offers a base model offers the sampler pair beside it.
 
-        Both lists are optional: a ComfyUI without `UNETLoader` (or with no
+        Every list is optional: a ComfyUI without `UNETLoader` (or with no
         diffusion models on disk) still answers for checkpoints, and a missing
         node type must not break the dropdown."""
         async def widget(node: str, field: str) -> list[str]:
@@ -75,7 +82,12 @@ class Comfy:
                 return []
 
         return {"checkpoints": await widget("CheckpointLoaderSimple", "ckpt_name"),
-                "unets": await widget("UNETLoader", "unet_name")}
+                "unets": await widget("UNETLoader", "unet_name"),
+                # Free-typing these is how `bong_tangent` becomes `bong_tangeant`
+                # and a run dies at the queue. KSampler is the one node every
+                # graph here has, and it carries the full list.
+                "samplers": await widget("KSampler", "sampler_name"),
+                "schedulers": await widget("KSampler", "scheduler")}
 
     async def queue_prompt(self, graph: dict, client_id: str) -> str:
         async with httpx.AsyncClient(timeout=60) as c:
@@ -159,6 +171,10 @@ def detect_map(graph: dict) -> dict:
         for field in ("steps", "cfg", "denoise"):
             if has(sampler, field):
                 out[field] = f"{sampler}.inputs.{field}"
+        # The slot is `sampler`; the widget ComfyUI puts it in is `sampler_name`.
+        for slot, field in (("sampler", "sampler_name"), ("scheduler", "scheduler")):
+            if has(sampler, field):
+                out[slot] = f"{sampler}.inputs.{field}"
         # positive/negative are links: ["<node_id>", slot]
         for slot in ("positive", "negative"):
             link = graph[sampler]["inputs"].get(slot)

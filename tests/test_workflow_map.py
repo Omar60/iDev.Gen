@@ -18,6 +18,23 @@ def test_detects_every_slot():
     assert m["filename_prefix"] == "8.inputs.filename_prefix"
 
 
+def test_detects_and_patches_the_sampler_pair():
+    """Seven Krea 2 finetunes, seven different sampler/scheduler pairs — mapping
+    them is what lets one graph serve every checkpoint. The slot is `sampler`;
+    the widget ComfyUI puts it in is `sampler_name`, so the two names differ."""
+    m = detect_map(GRAPH)
+    assert m["sampler"] == "6.inputs.sampler_name"
+    assert m["scheduler"] == "6.inputs.scheduler"
+    g = apply_map(GRAPH, m, {"sampler": "res_2s", "scheduler": "beta"})
+    assert g["6"]["inputs"]["sampler_name"] == "res_2s"
+    assert g["6"]["inputs"]["scheduler"] == "beta"
+    # Empty is how a session says "keep the graph's own", and the runner sends it
+    # as None. Patching it to "" would queue a graph ComfyUI rejects.
+    g = apply_map(GRAPH, m, {"sampler": None, "scheduler": None})
+    assert g["6"]["inputs"]["sampler_name"] == "euler"
+    assert g["6"]["inputs"]["scheduler"] == "normal"
+
+
 def test_detects_the_base_model_from_either_loader():
     """SDXL loads an all-in-one checkpoint; Flux, Krea and Z-Image load the
     diffusion model on its own. Both must fill the same slot."""

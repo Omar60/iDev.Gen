@@ -6,5 +6,6 @@
   "llm_url": "",
   "llm_model": "",
   "llm_vision_model": "",
-  "llm_key": ""
+  "llm_key": "",
+  "checkpoints": {}
 }

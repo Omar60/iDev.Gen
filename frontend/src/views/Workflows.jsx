@@ -4,7 +4,8 @@ import { WORKFLOW_KINDS } from '../kinds.js'
 
 const SLOT_LABEL = {
   positive: 'Positive prompt', negative: 'Negative prompt', seed: 'Seed',
-  steps: 'Steps', cfg: 'CFG', width: 'Width', height: 'Height',
+  steps: 'Steps', cfg: 'CFG', sampler: 'Sampler', scheduler: 'Scheduler',
+  width: 'Width', height: 'Height',
   checkpoint: 'Base model',
   lora_name: 'LoRA (file)', lora_strength: 'LoRA strength', filename_prefix: 'Filename prefix',
   reference: 'Reference image', reference2: 'Reference image 2', reference3: 'Reference image 3',

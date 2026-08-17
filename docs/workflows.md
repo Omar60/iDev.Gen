@@ -57,12 +57,20 @@ That is the point: a graph with an unusual sampler, a refiner pass or three LoRA
 loaders still works when only the prompt and the seed are driven. You lose the
 ability to change that value per session, nothing else.
 
-Three rows deserve attention:
+Four rows deserve attention:
 
 - **Base model** — map it and you can pick the checkpoint (or the standalone
   diffusion model) per character and per session, from the dropdown, without
   keeping one near-identical workflow per model. Leave it unmapped, or leave the
   dropdown on *the workflow's own*, and the graph's value stands.
+
+- **Sampler and Scheduler** — map them and the base model above stops being half
+  a choice. Finetunes of the same family rarely agree here: across seven Krea 2
+  checkpoints the recommended pairs run `euler`, `euler_ancestral`, `er_sde` and
+  `res_2s`, over `simple`, `beta` and `bong_tangent`. Unmapped, switching the
+  base model leaves the previous model's sampler in place; mapped, one graph
+  serves every checkpoint. Both are left empty by default, which keeps the
+  graph's own — the right setting for a graph written for a single model.
 
 - **Filename prefix** — leave it mapped. iDev.Gen overwrites it with
   `idevgen/<session>/<shot>_<random>` so results never mix with the images you
@@ -80,6 +88,7 @@ Three rows deserve attention:
 | Positive / negative prompt | `CLIPTextEncode.text` |
 | Seed | `KSampler.seed` or `.noise_seed` |
 | Steps, CFG | `KSampler.steps`, `.cfg` |
+| Sampler, Scheduler | `KSampler.sampler_name`, `.scheduler` |
 | Width, height | `EmptyLatentImage.width` / `.height` |
 | LoRA file, LoRA strength | `LoraLoader.lora_name`, `.strength_model` |
 | Filename prefix | `SaveImage.filename_prefix` |

@@ -151,6 +151,9 @@ export default function Setup() {
         lora_dir: cfg.lora_dir, data_dir: cfg.data_dir,
         llm_url: cfg.llm_url ?? '', llm_model: cfg.llm_model ?? '',
         llm_vision_model: cfg.llm_vision_model ?? '', llm_key: cfg.llm_key ?? '',
+        // Nothing on this screen edits the per-checkpoint profiles; carried
+        // through untouched so saving a path does not wipe them.
+        checkpoints: cfg.checkpoints ?? {},
       })
       setMsg(r.restart_required ? 'Saved. Restart the app for the new data folder.' : 'Saved.')
       api.get('/api/config').then(setCfg)

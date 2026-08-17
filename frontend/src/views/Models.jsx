@@ -106,6 +106,24 @@ export function BaseModelSelect({ value, onChange, models, disabled }) {
   )
 }
 
+/** Sampler or scheduler, from the list ComfyUI reports for KSampler. Empty keeps
+ *  the workflow's own, which is the right default: a graph tuned for one
+ *  checkpoint already names the pair that checkpoint wants. Every Krea 2 finetune
+ *  asks for a different one, which is why this is a slot and not a fixed graph. */
+export function SamplerSelect({ value, onChange, options = [], disabled }) {
+  return (
+    <select value={value ?? ''} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+      <option value="">— the workflow's own —</option>
+      {/* Same reason as the base model: a value ComfyUI does not report would
+          render as "the workflow's own" and read as no choice made. */}
+      {!!value && !options.includes(value) && (
+        <option value={value}>{value} — not in ComfyUI's list</option>
+      )}
+      {options.map((o) => <option key={o} value={o}>{o}</option>)}
+    </select>
+  )
+}
+
 export function ModelForm({ form, setForm, loras, workflows, models = {} }) {
   const set = (k, v) => setForm({ ...form, [k]: v })
   const setS = (k, v) => setForm({ ...form, settings: { ...form.settings, [k]: v } })
@@ -152,6 +170,14 @@ export function ModelForm({ form, setForm, loras, workflows, models = {} }) {
         <div><label>Height</label><input type="number" step="8" value={s.height ?? 1216} onChange={(e) => setS('height', Number(e.target.value))} /></div>
         <div><label>Steps</label><input type="number" value={s.steps ?? 8} onChange={(e) => setS('steps', Number(e.target.value))} /></div>
         <div><label>CFG</label><input type="number" step="0.1" value={s.cfg ?? 1} onChange={(e) => setS('cfg', parseFloat(e.target.value))} /></div>
+        <div>
+          <label title="Each Krea 2 finetune asks for its own — euler, euler_ancestral, er_sde or res_2s. Only applied if the workflow maps the slot.">Sampler</label>
+          <SamplerSelect value={s.sampler} options={models.samplers} onChange={(v) => setS('sampler', v)} />
+        </div>
+        <div>
+          <label title="simple, beta or bong_tangent, depending on the checkpoint. Only applied if the workflow maps the slot.">Scheduler</label>
+          <SamplerSelect value={s.scheduler} options={models.schedulers} onChange={(v) => setS('scheduler', v)} />
+        </div>
       </div>
       <div className="grid-form" style={{ marginTop: 10 }}>
         <div>

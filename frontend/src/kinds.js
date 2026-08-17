@@ -1109,6 +1109,32 @@ export const forKind = (workflows, kind) =>
  *  gets no badge, no filtering and no guidance rather than a wrong guess. */
 export const sessionKind = (session) => KINDS[session?.settings?.kind] ? session.settings.kind : null
 
+// Steps, cfg, sampler and scheduler, per base model. Nothing here is app
+// behaviour: the values come from `checkpoints` in the user's own config.json,
+// keyed by the filename ComfyUI reports, because they are a fact about the
+// files on this machine and not about iDev.Gen.
+export const PROFILE_FIELDS = ['steps', 'cfg', 'sampler', 'scheduler']
+
+/** What a checkpoint asks for, or null when nothing is recorded for it.
+ *
+ *  Blank fields are dropped rather than written: a profile that names only a
+ *  sampler must not silently reset the steps to nothing. Unknown keys are
+ *  dropped too — the file is meant to be edited by hand, and a typo there should
+ *  do nothing instead of driving an unrelated slot. */
+export const checkpointProfile = (config, checkpoint) => {
+  const p = checkpoint && (config?.checkpoints || {})[checkpoint]
+  if (!p) return null
+  const out = Object.fromEntries(
+    PROFILE_FIELDS.filter((k) => p[k] !== undefined && p[k] !== null && p[k] !== '').map((k) => [k, p[k]]))
+  return Object.keys(out).length ? out : null
+}
+
+/** The one-line summary shown next to the base model, so a value that arrived on
+ *  its own is visible rather than mysterious. */
+export const profileSummary = (p) => [
+  p.steps != null && `${p.steps} steps`, p.cfg != null && `cfg ${p.cfg}`, p.sampler, p.scheduler,
+].filter(Boolean).join(' · ')
+
 // The angle LoRA answers to a closed vocabulary and ignores everything else, so
 // these are chips and not a text box. `s` is the short label on the chip.
 export const ANGLE_AXES = [

@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import { api, shotImage } from '../api'
 import { go } from '../App.jsx'
-import { ModelForm, BaseModelSelect } from './Models.jsx'
+import { ModelForm, BaseModelSelect, SamplerSelect } from './Models.jsx'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
-import { KINDS, WORKFLOW_KINDS, forKind } from '../kinds.js'
+import { KINDS, WORKFLOW_KINDS, forKind, checkpointProfile, profileSummary } from '../kinds.js'
 import { composed, lookFromPhoto, photoDataUri, rewriteLook, rewriteWardrobe } from '../enhance.js'
 
 export default function ModelDetail({ id }) {
@@ -14,7 +14,9 @@ export default function ModelDetail({ id }) {
   const [baseModels, setBaseModels] = useState({})
   const [workflows, setWorkflows] = useState([])
   const [newSession, setNewSession] = useState(null)
-  const [llm, setLlm] = useState(false)
+  // The whole config: it also carries the per-checkpoint profiles.
+  const [config, setConfig] = useState({})
+  const llm = !!config.llm_ok
   const [writing, setWriting] = useState('')
   const [error, setError] = useState('')
 
@@ -26,7 +28,7 @@ export default function ModelDetail({ id }) {
     api.get('/api/comfy/models').then(setBaseModels).catch(() => {})
     // No endpoint configured is not an error: the assistant is optional, and the
     // buttons simply do not appear.
-    api.get('/api/config').then((c) => setLlm(!!c.llm_ok)).catch(() => {})
+    api.get('/api/config').then(setConfig).catch(() => {})
   }, [id])
 
   if (!model) return <p className="muted">{error || 'Loading…'}</p>
@@ -171,8 +173,19 @@ export default function ModelDetail({ id }) {
             )}
             <div style={{ gridColumn: 'span 2' }}>
               <label>Base model</label>
+              {/* Its recommended settings come with it — the boxes below fill in,
+                  and stay editable. Overwriting and not filling blanks: steps and
+                  cfg always hold a value, so a fill-the-blanks rule would never
+                  fire and the shoot would run at the last model's numbers. */}
               <BaseModelSelect value={newSession.settings.checkpoint} models={baseModels}
-                               onChange={(v) => setNewSession({ ...newSession, settings: { ...newSession.settings, checkpoint: v } })} />
+                               onChange={(v) => setNewSession({ ...newSession,
+                                 settings: { ...newSession.settings, checkpoint: v,
+                                             ...(checkpointProfile(config, v) || {}) } })} />
+              {checkpointProfile(config, newSession.settings.checkpoint) && (
+                <p className="muted" style={{ margin: '4px 0 0' }}>
+                  This model's profile: <b>{profileSummary(checkpointProfile(config, newSession.settings.checkpoint))}</b>
+                </p>
+              )}
             </div>
             <div>
               <label>Seeds</label>
@@ -195,6 +208,12 @@ export default function ModelDetail({ id }) {
               onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, steps: Number(e.target.value) } })} /></div>
             <div><label>CFG</label><input type="number" step="0.1" value={newSession.settings.cfg ?? 1}
               onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, cfg: parseFloat(e.target.value) } })} /></div>
+            <div><label title="Each Krea 2 finetune asks for its own. Only applied if the workflow maps the slot.">Sampler</label>
+              <SamplerSelect value={newSession.settings.sampler} options={baseModels.samplers}
+                onChange={(v) => setNewSession({ ...newSession, settings: { ...newSession.settings, sampler: v } })} /></div>
+            <div><label title="simple, beta or bong_tangent, depending on the checkpoint. Only applied if the workflow maps the slot.">Scheduler</label>
+              <SamplerSelect value={newSession.settings.scheduler} options={baseModels.schedulers}
+                onChange={(v) => setNewSession({ ...newSession, settings: { ...newSession.settings, scheduler: v } })} /></div>
             <div><label>LoRA strength</label><input type="number" step="0.05" value={newSession.settings.lora_strength ?? 1}
               onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, lora_strength: parseFloat(e.target.value) } })} /></div>
             {/* Only worth showing once a reference workflow is picked: nothing else
