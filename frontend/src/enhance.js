@@ -232,27 +232,21 @@ export const wardrobeProgression = (brief, wardrobe, n, onProgress) =>
 /** The takes of a shoot that walks somewhere: same rules as a batch, plus the
  *  order, and written in chunks for the same reason the wardrobe is.
  *
- *  `worn` is the wardrobe of each photograph, when it is already known. Every
- *  chunk is then told what she is actually wearing across the stretch it is
- *  writing, which is the only thing that stops a take reaching for the garment
- *  as the thing that changed. Measured without it, at forty takes: row twelve
- *  came back `both hands sliding the jersey hem upward` — twenty rows after the
- *  wardrobe had put the jersey down, and a prompt naming a jersey is a jersey.
+ *  It used to take a `worn` array — the wardrobe of each photograph — and hand
+ *  each chunk the clothes of its stretch. Nobody ever passed it and nobody could:
+ *  `sessionFromBrief` reaches this path precisely when the session has NO wardrobe
+ *  to walk, so the array is empty by construction. Removed 2026-08-17 rather than
+ *  left as a parameter that reads like a wiring job waiting to be done. The job it
+ *  described is real, but it belongs to `shootLines`, which is the path that has a
+ *  wardrobe — and a wardrobe stream was built there the same day and reverted for
+ *  want of any measurable effect. See idevgen-two-people-limit.
  */
-export const takesAlongArc = (brief, context, n, onProgress, worn = []) => {
+export const takesAlongArc = (brief, context, n, onProgress) => {
   const guide = KINDS.shoot.enhance
-  return inChunks(n, onProgress, (at) => {
-    const last = at.from + at.want - 1
-    const dressed = worn[at.from - 1] && [
-      context,
-      `In photograph ${at.from} she is wearing: ${worn[at.from - 1]}`,
-      last !== at.from && worn[last - 1] ? `and by photograph ${last}: ${worn[last - 1]}` : '',
-    ].filter(Boolean).join('\n')
-    return ask({
-      instruction: `${guide.line}\n\n${guide.arc}\n\n${takesChunkNote(at)}`,
-      text: brief, context: dressed || context, n: at.want,
-    })
-  })
+  return inChunks(n, onProgress, (at) => ask({
+    instruction: `${guide.line}\n\n${guide.arc}\n\n${takesChunkNote(at)}`,
+    text: brief, context, n: at.want,
+  }))
 }
 
 /** One brief, a whole session: N takes along the arc and the N wardrobes that
