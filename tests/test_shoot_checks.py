@@ -475,6 +475,25 @@ console.log(JSON.stringify({
   // A garments-first two-person line raises no ordering complaint any more: that
   // check was removed for want of evidence (2 of 6 either way when rendered), and
   // this asserts it stays removed rather than coming back on the same hunch.
+  // The camera may be written as a camera and not only as `Taken from ...`:
+  // measured 2026-08-17, `Overhead camera directly above the bed` came back
+  // overhead and `Side-angle camera at mattress level` came back at mattress
+  // level, where the same angles written as `from above her, looking down` are
+  // ignored in six of six. The check looks for the noun, so both forms pass and
+  // a line with no camera in it at all still does not.
+  openerNamedCamera: !problemsWith(
+    "Overhead camera directly above the bed, a three-quarter photograph from the knees up, "
+    + "a naked man beneath her penetrating her, his penis sliding in and out of her, two "
+    + "people in frame, his chest and his knee in frame, her mouth open.",
+    "", 200).some((p) => p.includes("OPEN with where the camera")),
+  openerTakenFrom: !problemsWith(
+    "Taken from her right side, her body in full profile, a waist-up photograph, a naked man "
+    + "behind her penetrating her, his penis inside her, two people in frame, her mouth open.",
+    "", 200).some((p) => p.includes("OPEN with where the camera")),
+  openerMissing: problemsWith(
+    "She kneels on the bed with her palms flat in front of her, a naked man behind her "
+    + "penetrating her, his penis inside her, two people in frame, her mouth open.",
+    "", 200).some((p) => p.includes("OPEN with where the camera")),
   noOrderComplaint: !problemsWith(
     "Taken from her right side, her body in full profile, a waist-up photograph, of her on "
     + "all fours on the bed, a slim green choker at the base of her throat, thin green bands "
@@ -489,6 +508,17 @@ def trimmed(tmp_path_factory) -> dict:
     script = TRIM_PROBE % {"src": (ROOT / "frontend/src/enhance.js").as_posix(),
                            "long": json.dumps(LONG_TWO_PERSON)}
     return _node_json(script, tmp_path_factory.mktemp("trim"))
+
+
+def test_the_camera_may_be_named_as_a_camera(trimmed):
+    """`from above her, looking down` is ignored by this model and comes back
+    frontal; `Overhead camera directly above the bed` is obeyed. Same angle, and
+    the difference is whether it is a camera or an adverb - so the opener check
+    looks for the noun rather than for one fixed phrase. Both forms pass; a line
+    with no camera in it still fails."""
+    assert trimmed["openerNamedCamera"], "a named camera should open a line"
+    assert trimmed["openerTakenFrom"], "the five `Taken from` clauses still open a line"
+    assert trimmed["openerMissing"], "a line with no camera at all must still be flagged"
 
 
 def test_the_code_cuts_what_the_repair_would_not(trimmed):

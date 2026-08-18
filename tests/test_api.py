@@ -70,6 +70,39 @@ def test_session_expands_shots_and_composes_the_prompt(client, seeded):
     assert s["look"] == "white summer dress, hair down, on a beach"
 
 
+def test_use_look_false_leaves_the_look_out_of_every_prompt(client, seeded):
+    """The look is a switch, not a deletion.
+
+    Off, no prompt of the session carries it - including takes added later, which
+    is the half that is easy to miss because `add_shots` reads the session row
+    rather than the payload. The column keeps its text either way, so the switch
+    can be switched back.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "no look",
+        "look": "hair down, on a beach", "settings": {"use_look": False},
+        "shots": [{"prompt": "sitting", "count": 1}],
+    }).json()["id"]
+    client.post(f"/api/sessions/{sid}/shots", json={"shots": [{"prompt": "standing", "count": 1}]})
+
+    s = client.get(f"/api/sessions/{sid}").json()
+    assert s["look"] == "hair down, on a beach"          # kept, just not composed
+    assert [x["prompt"] for x in s["shots"]] == [
+        "4da woman. photo, 35mm. sitting.",
+        "4da woman. photo, 35mm. standing.",
+    ]
+
+
+def test_a_session_without_the_setting_still_composes_the_look(client, seeded):
+    """Absent means on: every session that already exists keeps its prompts."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "default",
+        "look": "hair down", "shots": [{"prompt": "sitting", "count": 1}],
+    }).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    assert shots[0]["prompt"] == "4da woman. photo, 35mm. hair down. sitting."
+
+
 def test_the_look_is_identical_in_every_shot_of_a_session(client, seeded):
     """The point of a session: styling does not drift between takes."""
     sid = client.post("/api/sessions", json={

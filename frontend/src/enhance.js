@@ -688,12 +688,19 @@ const contentProblems = (line, previous) => {
              + 'head to feet`, `a three-quarter photograph from the knees up` or `a waist-up '
              + 'photograph`, straight after the camera clause it opens with.')
   }
-  if (!/^\s*taken from\b/i.test(line)) {
+  // `Taken from ...` or the angle named as a camera - `Overhead camera above the bed`,
+  // `Low-angle shot from the foot of the bed`. Both forms are measured to be obeyed; the
+  // adverbial form of those same angles is not, so the check looks for the noun rather
+  // than for one fixed opening.
+  if (!/^[^,:]{0,70}\b(taken from|camera|shot|angle|view)\b/i.test(line)) {
     found.push('It does not OPEN with where the camera is. Every line begins with that clause '
              + 'and nothing before it — `Taken from directly in front of her, …`, `Taken from '
              + 'behind her left shoulder, her back three-quarters to the camera, …`, `Taken '
              + 'from her right side, her body in full profile, …`, `Taken from directly behind '
-             + 'her, …`, `Taken from above her, looking down, …` — because everything after it '
+             + 'her, …` - or the angle named as a camera, the only form '
+             + 'the ones above and below her are obeyed in: `Overhead camera directly above the '
+             + 'bed, ...`, `Low-angle shot from the foot of the bed looking up, ...`. Everything '
+             + 'after it '
              + 'is eighty words about clothes, and what the reader meets first is what frames '
              + 'the photograph.')
   }

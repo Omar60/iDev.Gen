@@ -230,7 +230,16 @@ export default function ModelDetail({ id }) {
             )}
           </div>
 
-          <h3 style={{ marginTop: 16 }}>Look</h3>
+          <h3 style={{ marginTop: 16 }}>
+            <label style={{ fontSize: 'inherit', fontWeight: 'inherit', cursor: 'pointer' }}
+                   title="Off: the look is not written into any prompt of this session. The text stays where it is, so it can be switched back on. Measured: past ~85 composed words this sampler stops rendering the position and framing a take asks for, and the look is the largest block before the take.">
+              <input type="checkbox"
+                     checked={newSession.settings.use_look !== false}
+                     onChange={(e) => setNewSession({ ...newSession,
+                       settings: { ...newSession.settings, use_look: e.target.checked } })} />
+              {' '}Look
+            </label>
+          </h3>
           <p className="muted" style={{ margin: '0 0 6px' }}>
             Hair, makeup, the place and the light — identical in every photo of the session.
             Change the look and it is a different session.
@@ -248,13 +257,16 @@ export default function ModelDetail({ id }) {
               {/* The native file input renders its label in the browser's locale,
                   so it is hidden behind our own, as everywhere else. */}
               <label className="filebtn"
-                     title="Read a photo into both boxes: the hair, the place and the light into the look, the clothes into the wardrobe. Never the person — the character comes from the LoRA, and another face written here fights it in every frame.">
-                {writing === 'photo' ? '…' : '📷 Look and wardrobe from a photo…'}
+                     title="Read the clothes out of a photo into the wardrobe box. The look is not filled from the photo. Never the person — the character comes from the LoRA, and another face written here fights it in every frame.">
+                {writing === 'photo' ? '…' : '📷 Wardrobe from a photo…'}
                 <input type="file" accept="image/png,image/jpeg,image/webp" hidden
                        onChange={(e) => {
                          const file = e.target.files[0]
                          e.target.value = ''   // same file twice in a row still fires
-                         if (file) writeLook('photo', async () => lookFromPhoto(await photoDataUri(file)))
+                         // The clothes only. The look half of the read is dropped on the
+                         // way in rather than at the source, so turning it back on is one line.
+                         if (file) writeLook('photo', async () =>
+                           ({ wardrobe: (await lookFromPhoto(await photoDataUri(file))).wardrobe }))
                        }} />
               </label>
               <span className="muted">

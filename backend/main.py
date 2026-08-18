@@ -489,7 +489,7 @@ def create_session(s: SessionIn):
         s.model_id, s.name, s.look, s.wardrobe, s.workflow_id, s.reference_workflow_id,
         json.dumps(_valid_anchors(s.anchor_shot_ids)), json.dumps(settings), db.now(),
     )
-    _expand_shots(sid, model, s.look, s.wardrobe, s.shots, s.seed_mode, s.seed)
+    _expand_shots(sid, model, _look_for(settings, s.look), s.wardrobe, s.shots, s.seed_mode, s.seed)
     return {"id": sid}
 
 
@@ -643,7 +643,9 @@ def add_shots(sid: int, payload: dict):
         raise HTTPException(404, "session not found")
     model = db.one("SELECT * FROM model WHERE id=?", session["model_id"])
     shots = [ShotIn(**item) for item in payload.get("shots", [])]
-    added = _expand_shots(sid, model, session["look"], session["wardrobe"], shots,
+    added = _expand_shots(sid, model,
+                          _look_for(json.loads(session["settings"] or "{}"), session["look"]),
+                          session["wardrobe"], shots,
                           payload.get("seed_mode", "random"), payload.get("seed", 0))
     if session["status"] in ("done", "cancelled", "failed"):
         db.run("UPDATE session SET status='draft' WHERE id=?", sid)
@@ -702,6 +704,24 @@ def _sentences(*parts: str) -> str:
             continue
         out.append(part if part[-1] in ".!?" else f"{part}.")
     return " ".join(out)
+
+
+def _look_for(settings: dict, look: str) -> str:
+    """The look, unless this session has it switched off.
+
+    `use_look` lives in `settings` and not in a column for the same reason `kind`
+    does: it is read whole with the session and needs no migration. Absent means
+    on, so every session that already exists keeps composing the way it did.
+
+    Off does NOT clear the column - the text stays, and the toggle is a toggle.
+    Measured 2026-08-17 on a six-rung ladder (sessions 174-179): the same eight
+    takes rendered the position they describe at 50 and 63 composed words and
+    stopped at 87, and the 24 words that crossed that line were the look's room
+    sentence, which describes nobody. Above ~85 composed words this sampler keeps
+    the coarse facts and picks its own composition, so a session that cares more
+    about the pose than about a constant place is better off without one.
+    """
+    return look if settings.get("use_look", True) else ""
 
 
 def _compose(model: dict, look: str, wardrobe: str, prompt: str) -> str:

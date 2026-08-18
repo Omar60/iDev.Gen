@@ -205,13 +205,6 @@ const SECTION_MEANING =
   + 'of a dress, with tights or socks; accessories are jewellery, belt, bag, glasses, '
   + 'watch. A garment covering both — a dress, a jumpsuit — goes on Upper body, and how it '
   + 'falls on Lower body.\n'
-  + 'Lower body and Feet are almost never `none`, and this is where a look most often '
-  + 'goes wrong. When a garment stops at the hip, the legs below it are still in the '
-  + 'photograph: write them — bare legs, the skin, tights or stockings and where they end, '
-  + 'down through the knees and the ankles. When there are no shoes, write the feet '
-  + 'themselves and what they stand on. A look whose words stop at the thigh is a '
-  + 'photograph that stops at the thigh, however the take is framed: the frame reaches as '
-  + 'far down the body as the words do, and no further.\n'
   + 'The names are not decoration: they are what stops a section being skipped without '
   + 'anyone noticing, which is how a look ends up with no trousers in it. Do not enumerate '
   + 'what catches the eye — walk every one of them.'
@@ -290,7 +283,27 @@ const sections = (lines) =>
   + `${COUNTS[lines.length]} lines every time. The names are a checklist, not a style: what `
   + 'follows the bar is one or more complete sentences.'
 
-const LOOK_SECTIONS = `${sections(LOOK_LINES)}\n${SECTION_MEANING}\n${NEVER_ABSENT}`
+
+/** How far down the body the words go, and why it is not decoration.
+ *
+ *  A sampler frames what the prompt describes: a look whose words stop at the
+ *  thigh is a photograph that stops at the thigh, however the take is framed.
+ *  Measured - with one line of depth four seeds of a full-length take came back
+ *  full length, and without it the same four cropped at the knee.
+ *
+ *  It belongs to the LOOK only. The wardrobe carried it too until 2026-08-17,
+ *  when the wardrobe became a description of the garments and nothing else (see
+ *  WARDROBE_INSTRUCTION). If full-length takes start cropping at the thigh, this
+ *  paragraph is the first thing to put back - in the look, not the wardrobe. */
+const BODY_WALK =
+  'Lower body and Feet are almost never `none`, and this is where a look most often '
+  + 'goes wrong. When a garment stops at the hip, the legs below it are still in the '
+  + 'photograph: write them, the skin, tights or stockings and where they end, down '
+  + 'through the knees and the ankles. When there are no shoes, write the feet themselves '
+  + 'and what they stand on. A look whose words stop at the thigh is a photograph that '
+  + 'stops at the thigh, however the take is framed.'
+
+const LOOK_SECTIONS = `${sections(LOOK_LINES)}\n${SECTION_MEANING}\n${BODY_WALK}\n${NEVER_ABSENT}`
 const WARDROBE_SECTIONS = `${sections(WARDROBE_LINES)}\n${SECTION_MEANING}\n${NEVER_ABSENT}`
 
 /** Detail is a zoom lens, and this is the rule that keeps it from being one.
@@ -440,7 +453,11 @@ export const WARDROBE_INSTRUCTION =
   + '“she lifts her jersey” is a sentence about one. A piece that is off is not mentioned at '
   + 'all — what you write instead is the skin, and how what remains sits on it.\n'
   + 'Never write pose, framing or camera angle, never the place or the light, never the '
-  + 'hair, the makeup or the person: all of those are already in the prompt, above this.'
+  + 'hair, the makeup or the person: all of those are already in the prompt, above this.\n'
+  + 'THE GARMENTS AND NOTHING ELSE. Not the body under them, not bare legs or bare '
+  + 'skin, not the feet as feet, not the floor or the rug they stand on. A section '
+  + 'with no garment in it is `none`. What the body looks like is not the wardrobe to '
+  + 'say - the take says it, and the look says how far down the picture goes.'
 
 /** The one that makes a shoot walk from dressed to undressed.
  *
@@ -775,29 +792,33 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'photograph from the knees up`, `a waist-up photograph`. Those three and no others. The '
   + 'plainest words there are, never implied and never '
   + 'clever — `thigh-to-hair framing` is a crop at the thigh whatever it was meant to say. '
-  + 'A close-up is not on the list on purpose: asked for one, this model returns a waist-up '
-  + 'photograph anyway, and a framing that is asked for and not obtained is a line that spent '
-  + 'its words on nothing.\n'
+  + 'A close-up is not on the list, and not merely because it comes back as a waist-up shot '
+  + 'anyway: a framing written as a close-up ON HER FACE renders a different act. Measured '
+  + 'on all nine checkpoints, thirty-two seeds of thirty-two - oral sex, with nothing else '
+  + 'the line asked for in the picture. A close framing on the face is already a scene to '
+  + 'this sampler and it arrives first.\n'
   + 'Change it from line to line and spread the four across the shoot, with at least one line '
   + 'in four full-length, head to feet. Measured on this project: forty-five lines written '
   + 'with no framing in any of them came back as forty-five mid-shots, four of which happened '
   + 'to be full length — a shoot read in order was then one photograph taken forty-five '
   + 'times, whatever its clothes were doing.\n'
-  + 'THE CAMERA CLAUSE IS ONE OF THESE FIVE: `Taken from directly in front of her`, `Taken '
-  + 'from behind her left shoulder, her back three-quarters to the camera`, `Taken from her '
-  + 'right side, her body in full profile`, `Taken from her left side, her body in full '
-  + 'profile`, `Taken from directly behind her`. Those five, and not `from floor level`, '
-  + '`from over her shoulder` or `from above her, looking down`: all three are ignored by '
-  + 'this model and come back frontal. The last one was on this list until it was measured — '
-  + 'two seeds of one line against each of the five clauses, and then four more inside a real '
-  + 'shoot: front, shoulder and profile obeyed every time, `directly behind her` in one of '
-  + 'two, and `above her, looking down` in none of six. It comes back as the ordinary '
-  + 'straight-on view, so the words were spent on nothing. Move it '
-  + 'around the shoot rather than settling on one, because a distance alone leaves the camera '
-  + 'where the model likes it: measured, thirty photographs written with a framing in every '
-  + 'line and no camera position in any of them came back thirty frontal shots, and the same '
-  + 'prompt with the position named moved the camera in six of eight — including all the way '
-  + 'behind her.\n'
+  + 'WHERE THE CAMERA IS, WRITTEN AS A CAMERA. These five are the reliable ones and need no '
+  + 'thought: `Taken from directly in front of her`, `Taken from behind her left shoulder, '
+  + 'her back three-quarters to the camera`, `Taken from her right side, her body in full '
+  + 'profile`, `Taken from her left side, her body in full profile`, `Taken from directly '
+  + 'behind her`.'
+  + ' Above, below and along the floor are available too, but ONLY named as a camera or a '
+  + 'shot, never as an adverb hung off the sentence: `Overhead camera directly above the bed`, '
+  + '`Low-angle shot from the foot of the bed looking up`, `Side-angle camera at mattress '
+  + 'level`, `Rear low camera behind him at bed height`. Written that way they are obeyed - '
+  + 'measured 2026-08-17, the overhead came back overhead and the mattress-level camera came '
+  + 'back at mattress level. Written as `from above her, looking down` or `from floor level` '
+  + 'the same angles are ignored and come back frontal, in six of six. It is the same angle '
+  + 'either way; what changes is whether it is a camera or a tag.\n'
+  + 'Move it around the shoot rather than settling on one: measured, thirty photographs '
+  + 'written with a framing in every line and no camera position in any of them came back '
+  + 'thirty frontal shots, and the same prompt with the position named moved the camera in '
+  + 'six of eight.\n'
   + 'The framing says how much of her is in frame. It never says how much of her to write: every '
   + 'line still walks the whole body, close-ups included, because the state of the clothes is '
   + 'what the next photograph copies and a line that drops it to match a crop drops it for '
@@ -876,6 +897,12 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'what his body is doing and where it is against hers. Never his face, his age or who he '
   + 'is: the photograph needs a body, and a described stranger competes with the character the '
   + 'rest of the prompt is painting.\n'
+  + 'AND HE NEEDS ENOUGH WORDS TO EXIST: name two parts of his body the camera can see from '
+  + 'where it stands - his chest, his shoulder, his thigh, his knee - chosen for that '
+  + 'position, not the same two every line. The body a line DESCRIBES is the body that '
+  + 'renders and the one left in pronouns is the one that vanishes: measured both ways, '
+  + 'all-her lines gave her alone with his anatomy grafted on in 14 of 16, all-him lines '
+  + 'gave a man alone in 7 of 8. Everything above this take already describes her.\n'
   + 'Nothing above is suspended for these lines but one thing, and it is the full-length '
   + 'quota. In a two-person frame on a bed `a full-length photograph, head to feet` does not '
   + 'come back: measured thirteen times without a single one — five lines of a real shoot and '
