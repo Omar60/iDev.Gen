@@ -86,18 +86,23 @@ import { EXPLICIT_REGISTER, SHOOT_LINE_INSTRUCTION } from '%(kinds)s'
 const words = (t) => t.trim().split(/\\s+/).length
 const pad = '%(padding)s'.repeat(4)
 const short = %(short)s
-const long = short.replace('two people in frame', pad + ' two people in frame')
+// Past the runaway guard, which is 260 since his body got a field of its own -
+// see TWO_PEOPLE_WORDS. The old cap was 110 and a line of this length was the
+// failure; it is now an ordinary explicit line.
+const long = short.replace('two people in frame', '%(padding)s'.repeat(12) + ' two people in frame')
 const clothed = %(clothed)s.replace('her lips parted.', pad + ' her lips parted.')
 
 const tag = (line, limit) => problemsWith(line, '', limit).map((p) =>
-  /^It is \\d+ words long, and a photograph with two people/.test(p) ? 'TWO_PEOPLE_LONG'
+  /^It is \\d+ words long, and \\d+ is the runaway guard/.test(p) ? 'TWO_PEOPLE_LONG'
   : /^It is \\d+ words long, half as long again/.test(p) ? 'SHOOT_LONG'
   : /says nothing about/.test(p) ? 'BODY_WALK'
   : p.slice(0, 40))
 
 console.log(JSON.stringify({
   shortWords: words(short), longWords: words(long), clothedWords: words(clothed),
-  short: tag(short, 200), long: tag(long, 200), clothed: tag(clothed, 200),
+  // 400 so what is under test is the two-person guard itself and not the
+  // shoot's own relative limit, which would flag any long line either way.
+  short: tag(short, 400), long: tag(long, 400), clothed: tag(clothed, 200),
   // The whole-body walk, on a two-person line that names no chest, no legs and
   // no feet: the exemption is the only thing standing between it and three
   // complaints, so a broken exemption shows up here and nowhere else.
@@ -177,10 +182,13 @@ def test_a_two_person_line_is_exempt_from_the_whole_body_walk(checks):
     assert "BODY_WALK" not in checks["bare"], checks["bare"]
 
 
-def test_a_two_person_line_is_capped_at_a_hundred_and_ten_words(checks):
-    """110 and not the original 80: a 111-word line with the act at the front
-    rendered 4 of 4, a 145-word one 1 of 4, so the wall sits between them."""
-    assert checks["shortWords"] <= 110 < checks["longWords"], checks
+def test_a_two_person_line_is_held_to_the_runaway_guard(checks):
+    """The wall was 110 while both bodies shared one budget. It is 260 since the
+    writer answers in fields and his body has one of its own: measured
+    2026-08-20, a twelve-photograph shoot written that way averaged 212 words a
+    line and rendered two bodies in twelve frames of twelve. What is left here
+    catches a line repeating itself, which is the one length worth cutting."""
+    assert checks["shortWords"] <= 260 < checks["longWords"], checks
     assert checks["short"] == [], checks["short"]
     assert checks["long"] == ["TWO_PEOPLE_LONG"], checks["long"]
 
@@ -420,6 +428,17 @@ LONG_TWO_PERSON = (
     "flushed skin."
 )
 
+HIS_BODY = (
+    " his bare chest lowered along the length of her back, his bare shoulders above hers, his "
+    "bare arms reaching forward past her ribs, his bare stomach against her lower back, his "
+    "bare hips flush against her hips, his bare thighs outside hers, his bare knees dug into "
+    "the rug behind her knees, his weight carried on his knees and on the flat of his left "
+    "hand, his right forearm braced across her hip, his shoulders squared to the line of her "
+    "spine, his chest rising above the curve of her back, his hips level with the backs of her "
+    "thighs, his knees set wider than her knees on the rug beneath them, the long muscles of "
+    "his back holding him over her, his elbow bent and his wrist turned in against the rug,"
+)
+
 TRIM_PROBE = r"""
 import { trimBareClauses, dropListedGarments, problemsWith, namesWhatItSheds } from "%(src)s"
 const w = (s) => s.split(/\s+/).filter(Boolean).length
@@ -429,7 +448,11 @@ const short = "Taken from her right side, a waist-up photograph of a naked man b
 const oneP = "Taken from directly in front of her, a full-length photograph, head to feet, of "
   + "her standing on the rug, her bare shoulders, her chest bare, her bare feet on the rug."
 const out = trimBareClauses(long)
-const deduped = dropListedGarments(out)
+// On the line itself, not on the trimmed one: both levers are gated at the same
+// runaway guard, and the first now shortens the line enough that chaining them
+// leaves the second nothing to fire on. They are two independent cuts and the
+// app applies both to whatever the writer handed it.
+const deduped = dropListedGarments(long)
 console.log(JSON.stringify({
   before: w(long), after: w(out), text: out,
   keptAct: /sliding into her/.test(out),
@@ -506,7 +529,9 @@ console.log(JSON.stringify({
 @pytest.fixture(scope="module")
 def trimmed(tmp_path_factory) -> dict:
     script = TRIM_PROBE % {"src": (ROOT / "frontend/src/enhance.js").as_posix(),
-                           "long": json.dumps(LONG_TWO_PERSON)}
+                           "long": json.dumps(
+                               LONG_TWO_PERSON.replace("her spine curved downward,",
+                                                       HIS_BODY.strip() + " her spine curved downward,"))}
     return _node_json(script, tmp_path_factory.mktemp("trim"))
 
 
@@ -525,7 +550,7 @@ def test_the_code_cuts_what_the_repair_would_not(trimmed):
     """Five runs of the writer, and the repair handed the worst lines back byte
     for byte — 178 words before and 178 after. The re-ask was already here; what
     was missing was a fallback for when the model simply declines."""
-    assert trimmed["before"] > 110, trimmed   # the two-person cap in enhance.js
+    assert trimmed["before"] > 260, trimmed   # the runaway guard in enhance.js
     assert trimmed["after"] < trimmed["before"], trimmed
     assert trimmed["droppedInventory"], trimmed
 
@@ -556,7 +581,7 @@ def test_the_garment_named_twice_loses_its_listing(trimmed):
     assert trimmed["dedupKeptDescriptions"], trimmed
     assert trimmed["dedupKeptAct"], trimmed
     assert trimmed["dedupKeptCamera"], trimmed
-    assert trimmed["afterDedup"] < trimmed["after"], trimmed
+    assert trimmed["afterDedup"] < trimmed["before"], trimmed
 
 
 def test_the_dedupe_leaves_alone_what_it_must(trimmed):
@@ -602,3 +627,176 @@ def test_a_garment_merely_moved_is_not_flagged(trimmed):
     pushed down or pulled aside is still worn, still named, and flagging it would
     flag the middle of every shoot."""
     assert trimmed["shedMoved"] == [], trimmed
+
+
+# The whole writer path with no network: every fetch is answered by a double, so
+# what this exercises is the code around the calls - the register gate, the chunk
+# notes, the repair - on the shapes the server really returns.
+#
+# It exists because `reachesTheAct` was used in `shootLines` and never imported.
+# The suite was green: esbuild bundles an undefined name without a word, and
+# nothing here ran the function that used it. The app threw on the first shoot.
+SHOOT_PROBE = """
+import { shootLines } from '%(src)s'
+
+const asked = []
+// Eight different photographs: the writer drops a line that scores as a repeat of
+// one the shoot already has, so eight copies of one line come back as one row.
+const CAMERAS = ['Taken from her left side, her body in full profile',
+                 'Taken from directly behind her', 'Taken from directly in front of her',
+                 'Taken from behind her left shoulder, her back three-quarters to the camera',
+                 'Overhead camera directly above the bed', 'Low-angle shot from the foot of the bed',
+                 'Taken from her right side, her body in full profile',
+                 'Side-angle camera at mattress level']
+const ACTS = ['kneels behind her', 'lies under her', 'stands at the edge of the bed',
+              'kneels between her knees', 'sits back on his heels', 'leans over her shoulder',
+              'kneels astride her thigh', 'crouches at her hip']
+const LINE = (i) => `${CAMERAS[i %% 8]}, a waist-up photograph. A naked man `
+  + `${ACTS[(i * 3) %% 8]}, his penis inside her vagina, two people in frame. `
+  + `${PARTS[(i * 5) %% 8]}. His bare chest and his bare thighs. Nude but for the stockings.`
+
+const PARTS = ['Her chest bare, her hips and legs bare, her feet bare',
+               'Her bare shoulders forward, her thighs apart, her toes curled',
+               'Her breasts hanging, her waist dipped, her heels lifted',
+               'Her torso upright, her knees wide, her soles flat',
+               'Her ribs stretched, her hips rolled, her ankles crossed',
+               'Her collarbones sharp, her stomach taut, her feet braced',
+               'Her back arched, her legs folded under her, her toes pointed',
+               'Her chest against the sheets, her hips raised, her feet apart']
+
+let made = 0
+globalThis.fetch = async (url, opts) => {
+  const body = JSON.parse(opts.body)
+  asked.push(body)
+  const lines = /Lay out the stages/.test(body.instruction)
+    ? [{ label: '1-4', prompt: 'dressed, standing by the bed' },
+       { label: '5-8', prompt: 'he is behind her, penetrating her from behind' }]
+    : Array.from({ length: body.n }, () => ({ label: '', prompt: LINE(made++) }))
+  return { ok: true, status: 200, json: async () => ({ lines }) }
+}
+
+// The module reports progress on stdout; the payload is the last line and nothing
+// else, so the probe keeps its own writer and silences the rest.
+const say = (x) => process.stdout.write(JSON.stringify(x))
+console.log = () => {}
+console.info = () => {}
+console.warn = () => {}
+
+const rows = await shootLines('a shoot that ends in penetration', 'a room', 'a dress', 8,
+                              null, 'couple')
+const writes = asked.filter((b) => /Write one photograph per object/.test(b.instruction))
+const actRound = writes.filter((b) => /EXPLICIT STRETCH OF THE SHOOT/.test(b.instruction))
+say({
+  rows: rows.length,
+  wardrobeBlank: rows.every((r) => r.wardrobe === ''),
+  fieldsAsked: writes.every((b) => Array.isArray(b.fields) && b.fields.includes('him')),
+  rounds: writes.length,
+  // The register rides on the round whose stages reach the act, and on no other.
+  actRounds: actRound.length,
+  registerOnActRound: actRound.every((b) => b.register === 'explicit'),
+  registerOffClothedRound: writes.filter((b) => !/EXPLICIT STRETCH/.test(b.instruction))
+    .every((b) => b.register === ''),
+})
+"""
+
+
+@pytest.fixture(scope="module")
+def shot(tmp_path_factory) -> dict:
+    script = SHOOT_PROBE % {"src": (ROOT / "frontend/src/enhance.js").as_posix()}
+    return _node_json(script, tmp_path_factory.mktemp("shoot"))
+
+
+def test_the_writer_runs_end_to_end(shot):
+    """A ReferenceError anywhere on this path fails here, which is the only thing
+    that would have caught `reachesTheAct` being used and never imported."""
+    assert shot["rows"] == 8, shot
+    assert shot["wardrobeBlank"], shot
+
+
+def test_the_writer_asks_for_fields(shot):
+    """His body is a field of its own: 83 per cent of lines describe him this way
+    against 18 as prose."""
+    assert shot["fieldsAsked"], shot
+
+
+def test_a_shoot_that_becomes_explicit_gets_the_register_when_it_does(shot):
+    """Session 196: reach `couple` never received the register in any round,
+    because the only gate was `bare`, which is true for reach `explicit` alone.
+    Its last three photographs came back as a pose with no act named."""
+    assert shot["actRounds"] >= 1, shot
+    assert shot["registerOnActRound"], shot
+    assert shot["registerOffClothedRound"], shot
+
+
+# ---------------------------------------------------------------------------
+# Two photographs that are one photograph.
+#
+# Sessions 200 and 201, read by the user as "the last poses are all the same".
+# The two lines below are the real 17 and 18 of both, cut to their opening: the
+# camera has not moved, both bodies are where they were, and every word that
+# changed is a word about tempo — which a still photograph does not have.
+
+SAME_TWICE_A = (
+    "Taken from across the room at shelf height, a three-quarter photograph from the knees "
+    "up. she is bent forward at the waist with her weight braced on both hands flat on the "
+    "sofa cushion, his pelvis pressed flush against her bottom, his penis inside her, two "
+    "people in frame, his hips rocking forward into hers in a steady rhythm, her lips parted."
+)
+
+SAME_TWICE_B = SAME_TWICE_A.replace("rocking forward into hers in a steady rhythm",
+                                    "snapping forward into hers in short thrusts")
+
+# The same arrangement genuinely re-shot: the camera has moved and so has she.
+MOVED_ON = (
+    "Overhead camera directly above the sofa, a waist-up photograph. she is kneeling on the "
+    "seat with her weight dropped onto both forearms, her knees spread wide, his penis inside "
+    "her, two people in frame, one of his hands splayed across her lower back, her mouth open."
+)
+
+REPEAT_PROBE = """
+import { problemsWith } from '%(src)s'
+
+const a = %(a)s
+const b = %(b)s
+const moved = %(moved)s
+
+const tag = (line, previous) => problemsWith(line, previous, 400).map((p) =>
+  /^It is the photograph before it, shot again/.test(p) ? 'SAME_PHOTOGRAPH'
+  : /^Its camera has not moved/.test(p) ? 'SAME_CAMERA'
+  : p.slice(0, 40))
+
+console.log(JSON.stringify({
+  tempoOnly: tag(b, a),
+  movedOn: tag(moved, a),
+  alone: tag(b, ''),
+}))
+"""
+
+
+@pytest.fixture(scope="module")
+def repeated(tmp_path_factory) -> dict:
+    script = REPEAT_PROBE % {"src": (ROOT / "frontend/src/enhance.js").as_posix(),
+                             "a": json.dumps(SAME_TWICE_A),
+                             "b": json.dumps(SAME_TWICE_B),
+                             "moved": json.dumps(MOVED_ON)}
+    return _node_json(script, tmp_path_factory.mktemp("repeat"))
+
+
+def test_a_line_that_differs_only_in_tempo_is_the_line_before_it(repeated):
+    """The complaint that would have caught sessions 200 and 201 before they were
+    shot: ten photographs, two arrangements, and the words between them were
+    `rocking`, `snapping`, `steady` and `faster`."""
+    assert "SAME_PHOTOGRAPH" in repeated["tempoOnly"], repeated
+    assert "SAME_CAMERA" in repeated["tempoOnly"], repeated
+
+
+def test_a_photograph_that_moved_on_is_not_flagged(repeated):
+    """The check has to stay quiet on the shoot it is meant to allow: same two
+    bodies, same act, but the camera and the weight have both moved."""
+    assert repeated["movedOn"] == [], repeated
+
+
+def test_the_first_line_of_a_shoot_has_nothing_to_repeat(repeated):
+    """`previous` is empty for photograph one, and an empty previous is not a
+    photograph every line is a copy of."""
+    assert repeated["alone"] == [], repeated

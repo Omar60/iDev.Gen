@@ -9,6 +9,7 @@ import base64
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 import enhance
 
@@ -460,3 +461,55 @@ def test_the_register_says_which_of_the_two_bodies_is_introduced():
     photograph of two women. Moved here, 0 of 20 did it."""
     assert "a naked woman" in enhance.EXPLICIT_SYSTEM
     assert "a naked man" in enhance.EXPLICIT_SYSTEM
+
+
+def test_fields_come_back_as_headed_blocks():
+    """The writer answers in fields; the join is where they become a prompt.
+
+    Headed blocks and not one paragraph, because the paragraph is what made the
+    photographs look like a paid shoot: measured 2026-08-21, three photographs
+    shot on one seed each came back as a lit set written as ~300 words of prose
+    and as a phone snapshot written as blocks, which is also the shape the
+    workflow's own default prompt is written in. An empty field brings no
+    heading with it.
+    """
+    answer = ('```json\n{"photographs": [{"camera": "Taken from her left side, a waist-up '
+              'photograph", "act": "a naked man behind her, his penis inside her.", '
+              '"him": "his bare chest above her back", "face": ""}]}\n```')
+    assert enhance.clean_fields(answer, ["camera", "act", "him", "face"], 4) == [
+        {"label": "", "prompt": "Angle & Framing:\nTaken from her left side, a waist-up "
+                                "photograph.\n\nPose:\na naked man behind her, his penis "
+                                "inside her.\n\nSecond Subject:\nhis bare chest above her "
+                                "back."}]
+
+
+def test_a_field_set_that_is_not_the_shoot_still_joins_flat():
+    """The headings belong to the six fields of a photograph. Anything else — a
+    caller asking for two fields of its own — keeps the join it always had rather
+    than growing headings nobody wrote."""
+    answer = '{"photographs": [{"a": "one", "b": "two"}]}'
+    assert enhance.clean_fields(answer, ["a", "b"], 1) == [
+        {"label": "", "prompt": "one. two."}]
+
+
+def test_an_answer_that_is_not_json_says_so():
+    """`response_format` is a request, not a guarantee: every endpoint here is
+    OpenAI-*compatible*, and a 502 that names the problem beats a line of prose
+    queued as a prompt."""
+    with pytest.raises(HTTPException) as exc:
+        enhance.clean_fields("Here are your photographs:", ["camera"], 4)
+    assert exc.value.status_code == 502
+
+
+def test_a_truncated_answer_keeps_the_photographs_that_closed():
+    """Measured, one answer in eighteen: the model runs out of room in the middle
+    of the fourth photograph and the outer object never closes. Throwing all four
+    away for the sake of the fourth turns a short round — which the caller simply
+    asks again for — into a dead shoot."""
+    answer = ('{"photographs": [{"camera": "Taken from her left side", "act": "she stands"}, '
+              '{"camera": "Taken from behind her", "act": "she kneels"}, '
+              '{"camera": "Taken from directly in front of her", "act": "she lea')
+    out = enhance.clean_fields(answer, ["camera", "act"], 4)
+    assert [r["prompt"] for r in out] == [
+        "Angle & Framing:\nTaken from her left side.\n\nPose:\nshe stands.",
+        "Angle & Framing:\nTaken from behind her.\n\nPose:\nshe kneels."]

@@ -15,3 +15,8 @@ config.json
 
 # Sessions, database, generated images
 data/
+
+# Written for pasting into an outside assistant, not part of the app
+writer-prompts.md
+session-200-prompts.md
+rewrite-counterargument.md

@@ -703,7 +703,9 @@ def _sentences(*parts: str) -> str:
         if not part:
             continue
         out.append(part if part[-1] in ".!?" else f"{part}.")
-    return " ".join(out)
+    # A piece written in headed blocks keeps its shape: run together by single
+    # spaces the headings stop reading as headings at all.
+    return ("\n\n" if any("\n" in p for p in out) else " ").join(out)
 
 
 def _look_for(settings: dict, look: str) -> str:

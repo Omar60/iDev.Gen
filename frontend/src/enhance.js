@@ -10,8 +10,9 @@ import { api } from './api'
 import {
   KINDS, LOOK_LINES, WARDROBE_LINES, LOOK_INSTRUCTION, LOOK_ONLY_INSTRUCTION,
   LOOK_FROM_PHOTO_INSTRUCTION, WARDROBE_INSTRUCTION, WARDROBE_PROGRESSION_INSTRUCTION,
-  ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES, REACH,
-  SHOOT_LINE_INSTRUCTION, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION, EXPLICIT_REGISTER,
+  ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES, REACH, MANNER,
+  SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
+  EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
   takesChunkNote, wardrobeChunkNote, shootChunkNote,
 } from './kinds.js'
 
@@ -44,9 +45,12 @@ export const rewriteTake = (kind, reference, text, context) =>
   ask({ instruction: guideFor(kind, reference).line, text,
         context: reference ? '' : context, n: 1 }).then(first)
 
-export const takesFromBrief = (kind, reference, brief, context, n) => {
+export const takesFromBrief = (kind, reference, brief, context, n, manner = 'directed') => {
   const guide = guideFor(kind, reference)
-  return ask({ instruction: `${guide.line}\n\n${guide.batch}`,
+  // Only the shoot kinds have a camera to move; an edit take is an instruction
+  // and `MANNER[manner].line` would be telling it where to stand.
+  const its = takeKind(kind, reference) === 'shoot' ? MANNER[manner]?.line : ''
+  return ask({ instruction: `${guide.line}\n\n${guide.batch}` + (its ? `\n\n${its}` : ''),
                text: brief, context: reference ? '' : context, n })
 }
 
@@ -167,16 +171,39 @@ const split = (lines) => {
 // "Feet:" — the six section names differ from each other on it.
 const key = (name) => (name || '').trim().toLowerCase().split(/[^a-z]+/)[0]
 
-export const lookFromBrief = (brief) =>
-  ask({ instruction: LOOK_INSTRUCTION, text: brief, n: LOOK_PIECES }).then(split)
+/** The look a manner needs, appended to the one the session already has.
+ *
+ *  Idempotent on purpose: it is called every time a shoot is written, and a look
+ *  carrying its capture clause twice is a look that spends forty words saying it
+ *  twice. */
+export const withManner = (look, manner = 'directed') => {
+  const clause = MANNER[manner]?.look
+  if (!clause) return look
+  if (tokens(look).join(' ').includes(tokens(clause).join(' '))) return look
+  // In FRONT of the look, not behind it. Everything else in this file that has to
+  // be obeyed is put first — the camera clause opens a line for exactly this
+  // reason — and the capture clause sat last, after sixty words of room, in the
+  // two sessions whose light still came back modelled and whose skin still came
+  // back polished.
+  return sentences([clause, look])
+}
+
+export const lookFromBrief = (brief, manner = 'directed') =>
+  ask({ instruction: LOOK_INSTRUCTION + (MANNER[manner]?.lookNote
+                                         ? `\n\n${MANNER[manner].lookNote}` : ''),
+        text: brief, n: LOOK_PIECES }).then(split)
 
 export const lookFromPhoto = (image) =>
   ask({ instruction: LOOK_FROM_PHOTO_INSTRUCTION, image, n: LOOK_PIECES }).then(split)
 
 /** The look box alone: hair, makeup, place, light. Never the clothes — see
  *  LOOK_ONLY_INSTRUCTION. */
-export const rewriteLook = (text) =>
-  ask({ instruction: LOOK_ONLY_INSTRUCTION, text, n: 2 }).then(joined)
+export const rewriteLook = (text, manner = 'directed') =>
+  ask({ instruction: LOOK_ONLY_INSTRUCTION + (MANNER[manner]?.lookNote
+                                              ? `
+
+${MANNER[manner].lookNote}` : ''),
+        text, n: 2 }).then(joined)
 
 /** A shoot to run, from the look and the wardrobe already in the boxes.
  *
@@ -187,14 +214,19 @@ export const rewriteLook = (text) =>
  *  random and handed over as constraints — the assistant writes the shoot around
  *  them and keeps it in the room the look describes.
  */
-export const briefFromLook = (look, wardrobe, reach = 'nude') => {
+export const briefFromLook = (look, wardrobe, reach = 'nude', manner = 'directed') => {
   const pick = (list) => list[Math.floor(Math.random() * list.length)]
   const how = REACH[reach] || REACH.nude
   const rolled = [pick(how.endings), pick(how.paces), ...Object.values(BRIEF_AXES).map(pick)]
+  // The manner block last, after the rolls: a candid shoot has to forbid the
+  // vocabulary of a directed one, and a rule read after the thing it forbids is
+  // the one that holds.
+  const its = MANNER[manner]?.brief
   return ask({
     instruction: `${BRIEF_INSTRUCTION}\n\nThis shoot in particular:\n`
                + rolled.map((x) => `- it ${x}`).join('\n')
-               + (how.also ? `\n\n${how.also}` : ''),
+               + (how.also ? `\n\n${how.also}` : '')
+               + (its ? `\n\n${its}` : ''),
     text: [look && `The look: ${look}`, wardrobe && `The wardrobe: ${wardrobe}`]
       .filter(Boolean).join('\n'),
     n: 1,
@@ -241,10 +273,13 @@ export const wardrobeProgression = (brief, wardrobe, n, onProgress) =>
  *  wardrobe — and a wardrobe stream was built there the same day and reverted for
  *  want of any measurable effect. See idevgen-two-people-limit.
  */
-export const takesAlongArc = (brief, context, n, onProgress) => {
+export const takesAlongArc = (brief, context, n, onProgress, manner = 'directed') => {
   const guide = KINDS.shoot.enhance
+  const its = MANNER[manner]?.line
   return inChunks(n, onProgress, (at) => ask({
-    instruction: `${guide.line}\n\n${guide.arc}\n\n${takesChunkNote(at)}`,
+    instruction: `${guide.line}\n\n${guide.arc}`
+               + (its ? `\n\n${its}` : '')
+               + `\n\n${takesChunkNote(at)}`,
     text: brief, context, n: at.want,
   }))
 }
@@ -258,14 +293,15 @@ export const takesAlongArc = (brief, context, n, onProgress) => {
  *  them back on, so the second half is given the first as context and told, in
  *  the words the assistant already gets, not to contradict it.
  */
-export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress, reach = 'nude') => {
+export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress, reach = 'nude',
+                                       manner = 'directed') => {
   // No wardrobe to walk: there is no arc, so the old two-stream writer is still
   // the right one — takes varying pose and framing, and nothing to desync with.
   if (!wardrobe.trim()) {
-    const takes = await takesAlongArc(brief, look, n, (made) => onProgress?.(made, n))
+    const takes = await takesAlongArc(brief, look, n, (made) => onProgress?.(made, n), manner)
     return takes.map((take) => ({ ...take, wardrobe: null }))
   }
-  return shootLines(brief, look, wardrobe, n, onProgress, reach)
+  return shootLines(brief, look, wardrobe, n, onProgress, reach, manner)
 }
 
 /** A whole shoot, one complete photograph per line, from one stream.
@@ -275,7 +311,8 @@ export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress, rea
  *  it. Empty string is the app's way of saying "this take names its own clothes",
  *  which is exactly true here — the composed prompt is the look, then the line.
  */
-export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = 'nude') => {
+export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = 'nude',
+                                manner = 'directed') => {
   // The one thing the setting decides in here, and it is not a paragraph of
   // prose: whether photograph 1 is dressed. Handing the writer the outfit as
   // `what she is wearing in photograph 1` is what dressed the first seven frames
@@ -287,11 +324,23 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   const stages = await stagePlan(brief, wardrobe, n, bare)
   onProgress?.(0, n)
 
-  const lines = await inChunks(n, (made) => onProgress?.(made, n), (at) => ask({
+  const lines = await inChunks(n, (made) => onProgress?.(made, n), (at) => {
+    // The register rides on the CHUNK, not on the session. A shoot that is explicit
+    // throughout gets the standing version in every round; one that *becomes*
+    // explicit - dressed at photograph 1, penetration at the last - gets the stretch
+    // version in the rounds whose stages reach the act, and nothing before them.
+    // Session 196 is what the old gate cost: `bare` is only true for reach
+    // `explicit`, so a dressed-to-penetration shoot never got the register in any
+    // round of it, and its last three photographs came back as a pose - `his bare
+    // hips pressed flush against her bare hips`, no act named anywhere.
+    const covered = covering(stages, at)
+    const act = !bare && reachesTheAct(covered)
+    return ask({
     instruction: `${SHOOT_LINE_INSTRUCTION}`
-               + (bare ? `\n\n${EXPLICIT_REGISTER}` : '')
+               + (bare ? `\n\n${EXPLICIT_REGISTER}` : act ? `\n\n${EXPLICIT_STRETCH}` : '')
+               + (MANNER[manner]?.line ? `\n\n${MANNER[manner].line}` : '')
                + `\n\nThe shoot goes like this:\n${brief}`
-               + `\n\n${shootChunkNote({ ...at, bare, stages: covering(stages, at) })}`,
+               + `\n\n${shootChunkNote({ ...at, bare, stages: covered })}`,
     // The look is context and not part of the answer: it is prepended to every
     // frame by the app, so the writer needs to know it in order not to repeat it.
     context: look,
@@ -311,9 +360,15 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
     text: at.from === 1 && !bare ? wardrobe : (at.from === 1 ? '' : at.previous),
     // The register rides on the SYSTEM message, where a standing rule is read
     // first and once. See EXPLICIT_SYSTEM in backend/enhance.py.
-    register: bare ? 'explicit' : '',
+    register: bare || act ? 'explicit' : '',
+    // Six fields, joined by the server into the one line the app has always had.
+    // The transport is the only thing that changed - measured, his body is
+    // described in 83 per cent of lines this way against 18 as prose, and a JSON
+    // container around the same single prose line scored 4. See SHOOT_FIELDS.
+    fields: SHOOT_FIELDS,
     n: at.want,
-  }), false, SAME_PHOTOGRAPH)
+    })
+  }, false, SAME_PHOTOGRAPH)
 
   // The repair pass is counted after the writing, never restarting the tally: a
   // progress number that goes backwards reads as a bug even when nothing is wrong.
@@ -458,7 +513,15 @@ const TWO_PEOPLE = /\b(two people in frame|naked man|his penis|penetrat)/i
  *  of that test, a 91-word line, scored 3/8 and was first read as an ordering
  *  failure; its real defect was `his penis against her`, and ordering measured as
  *  nothing on its own. See the note in `contentProblems`. */
-const TWO_PEOPLE_WORDS = 110
+const TWO_PEOPLE_WORDS = 260
+// 2026-08-20: a hundred and ten was measured when both bodies shared one budget,
+// and it stopped being the wall the day his body got a field of its own. A
+// twelve-photograph shoot written with `him` as a field and no cap at all
+// averaged 212 words a line, ran to 305, and came back with two bodies in twelve
+// renders of twelve, the act in nine and the white stockings still white in all
+// twelve. What stays here is a runaway guard, not a rule about photographs: a
+// line past this length is repeating itself, which is the one length that was
+// ever worth cutting.
 
 /** Where a line stops being a photograph and starts being an inventory.
  *
@@ -484,7 +547,7 @@ const TWO_PEOPLE_WORDS = 110
  *  whatever the outfit, whatever the instructions — and that is the only claim
  *  here worth making. The absolute wall stays only to catch a runaway in a shoot
  *  too short to have a shape. */
-export const MAX_WORDS = 200
+export const MAX_WORDS = 380
 const RELATIVE = 1.4
 
 const words = (text) => (text || '').trim().split(/\s+/).filter(Boolean).length
@@ -642,28 +705,46 @@ export const keepsTheFacts = (line, fixed) => {
 }
 
 /** The length a line of THIS shoot is allowed, from the lines of this shoot. */
+const median = (counts) => (counts.length
+  ? counts.slice().sort((a, b) => a - b)[Math.floor(counts.length / 2)]
+  : 0)
+
+/** The shoot's own length, measured separately for the lines that have two
+ *  bodies in them and the lines that do not.
+ *
+ *  One median over both was the same rule as "a line with two people in it is
+ *  not short" pulling the other way: an explicit line runs 200 words and a
+ *  clothed one 120, so in a shoot that walks from dressed to penetration the
+ *  median is set by the clothed half and every explicit line is 40 per cent over
+ *  it by construction. Measured 2026-08-21 on a 25-photograph run: five lines
+ *  flagged long, all five explicit, none of them actually repeating anything.
+ *
+ *  Returned as a pair rather than a number, and every caller that passes a plain
+ *  number still works — a single line checked on its own has no shoot to be long
+ *  against. */
 export const lengthLimit = (lines) => {
-  const counts = lines.map(words).filter(Boolean).sort((a, b) => a - b)
-  if (!counts.length) return MAX_WORDS
-  return Math.min(MAX_WORDS, Math.round(counts[Math.floor(counts.length / 2)] * RELATIVE))
+  const solo = lines.filter((l) => !TWO_PEOPLE.test(l)).map(words).filter(Boolean)
+  const pair = lines.filter((l) => TWO_PEOPLE.test(l)).map(words).filter(Boolean)
+  const cap = (counts, fallback) => (counts.length
+    ? Math.min(MAX_WORDS, Math.round(median(counts) * RELATIVE)) : fallback)
+  return { solo: cap(solo, MAX_WORDS), pair: cap(pair, MAX_WORDS) }
 }
 
 const tooLong = (line, limit = MAX_WORDS) => {
   const two = TWO_PEOPLE.test(line)
-  const cap = two ? Math.min(limit, TWO_PEOPLE_WORDS) : limit
+  const its = typeof limit === 'object' && limit ? (two ? limit.pair : limit.solo) : limit
+  const cap = two ? Math.min(its, TWO_PEOPLE_WORDS) : its
   if (words(line) <= cap) return []
   // A two-person line is cut somewhere else entirely, and telling it to keep the
   // chest, the hips and the feet — which is what the other complaint says — is
   // telling it to keep the very inventory that has to go.
   return [two
-    ? `It is ${words(line)} words long, and a photograph with two people in it has `
-      + `${TWO_PEOPLE_WORDS} at the most: a second body is the first thing a long line loses, `
-      + 'and past that it comes back with her alone in the frame. Cut it by deleting the '
-      + 'inventory of her bare parts — every clause that only says a part of her is bare, and '
-      + 'every garment on the floor or set aside. Keep the camera clause it opens with, the '
-      + 'framing, the two of them and what their bodies are doing in plain anatomical words, '
-      + 'whatever is still ON her, and her expression: what goes is her nudity spelled out '
-      + 'limb by limb, never the act.'
+    ? `It is ${words(line)} words long, and ${TWO_PEOPLE_WORDS} is the runaway guard: past `
+      + 'that, a line is saying the same thing twice. This is not a rule about how much of the '
+      + 'photograph to write — his body, her body, the act and the camera all stay, however '
+      + 'long they run. What goes is the repetition: a garment named in two fields, a part of a '
+      + 'body listed in `act` and again in `her`, a clause that restates what the field before '
+      + 'it already said.'
     : `It is ${words(line)} words long, half as long again as the other photographs of this `
       + 'shoot. Cut it back to their length '
       + 'by saying each garment once and in the fewest words that identify it — colour, cut, the '
@@ -673,12 +754,82 @@ const tooLong = (line, limit = MAX_WORDS) => {
       + 'a fact.']
 }
 
+/** Words a still photograph cannot show.
+ *
+ *  A photograph has no tempo. `his hips rocking forward in a steady rhythm` and
+ *  `his hips snapping forward in short thrusts` are the same picture, and so are
+ *  the ten lines that end a shoot when the only thing moving between them is the
+ *  adverb. Measured on sessions 200 and 201, both of which the user read as "the
+ *  last poses are all the same": consecutive lines 16-19 and 20-23 differ in
+ *  almost nothing else — 0.81 to 0.85 of their words are shared once these are
+ *  taken out, against 0.73 at worst anywhere in the clothed half of the same
+ *  shoot. Two arrangements, ten photographs.
+ *
+ *  Expression words are NOT here on purpose: a face is something a still frame
+ *  shows, so a changed mouth is a changed photograph. */
+const MOTION =
+  /^(rhythm|rhythms|thrust|thrusts|thrusting|rock|rocks|rocking|roll|rolls|rolling|grind|grinds|grinding|snap|snaps|snapping|driving|drives|working|works|moving|moves|move|movement|pace|steady|uneven|slow|slower|slowly|faster|fast|shallow|deliberate|short|still|now|beginning|begins|continues|again)$/
+
+const stillWords = (text) => new Set(tokens(text).filter((word) => !MOTION.test(word)))
+
+/** Above this, two consecutive lines are one photograph shot twice.
+ *
+ *  0.80 is where the measurement puts it, not taste: on both real sessions every
+ *  pair in the clothed half scored 0.73 or below and every pair in the sequence
+ *  the user complained about scored 0.81 or above. There is no pair in between. */
+export const SAME_ARRANGEMENT = 0.80
+
+const shares = (line, previous) => {
+  const mine = stillWords(line)
+  const theirs = stillWords(previous)
+  if (!mine.size || !theirs.size) return 0
+  let hit = 0
+  for (const word of mine) if (theirs.has(word)) hit += 1
+  return hit / Math.max(mine.size, theirs.size)
+}
+
+/** The last words of a line, which is where the face is: the fields are joined
+ *  in a fixed order and `face` is the last of them. */
+const faceClause = (line) => (line || '').trim().split(/\s+/).slice(-14).join(' ')
+
+/** Above this, two photographs wear the same face.
+ *
+ *  Measured over three real 25-photograph runs: the ordinary shoot sits at 0.3
+ *  to 0.5 here, and the run that failed sat at 0.67 to 0.85 for eight
+ *  consecutive lines — every one of them ending `a damp sheen at her temples
+ *  from the warm lamp`. The two exact duplicates in the other two runs score
+ *  1.0. */
+const SAME_FACE = 0.65
+
+/** A face that says it cannot be read is the one thing a face may never say.
+ *  The writer reaches for it when the head is turned away, and a photograph
+ *  whose only expression is `no readable expression` has thrown away the field
+ *  that carries the whole difference between a snapshot and a mannequin. */
+const UNREADABLE = /\b(no readable expression|expression unreadable|face unreadable|expression is soft|natural expression|neutral expression)\b/i
+
+/** Everything before the framing: the camera and where it stands. */
+const cameraClause = (line) =>
+  (line || '').split(/\ba (?:full-length|three-quarter|waist-up) photograph/i)[0].trim().toLowerCase()
+
 /** Everything wrong with a line that shortening it cannot fix.
  *
  *  Split from the length check because the two are judged differently when a
  *  repair comes back: a shorter line that still runs long is progress and is
  *  kept, a line missing the feet is not a photograph however short it is. */
-const contentProblems = (line, previous) => {
+/** A line with its block headings taken off.
+ *
+ *  Every check below asks about the photograph — does it open with the camera,
+ *  does it name a framing, what does its last clause say — and a `Pose:` in
+ *  front of the pose is not part of the photograph. Written as blocks the line
+ *  opens with `Angle & Framing:` and the camera check, which reads the first
+ *  clause, called all twenty-five of them cameraless. */
+const HEADING = /^[A-Z][A-Za-z& ]{2,24}:[ \t]*$/gm
+
+const body = (line) => (line || '').replace(HEADING, '').replace(/\s*\n\s*/g, ' ').trim()
+
+const contentProblems = (rawLine, rawPrevious) => {
+  const line = body(rawLine)
+  const previous = body(rawPrevious)
   const found = []
   // Both of these went missing the moment a repair was asked to make a line
   // shorter: told to cut, the model cuts the two clauses that are not about her.
@@ -692,7 +843,7 @@ const contentProblems = (line, previous) => {
   // `Low-angle shot from the foot of the bed`. Both forms are measured to be obeyed; the
   // adverbial form of those same angles is not, so the check looks for the noun rather
   // than for one fixed opening.
-  if (!/^[^,:]{0,70}\b(taken from|camera|shot|angle|view)\b/i.test(line)) {
+  if (!/^[^,:]{0,70}\b(taken from|camera|shot|snapshot|angle|view)\b/i.test(line)) {
     found.push('It does not OPEN with where the camera is. Every line begins with that clause '
              + 'and nothing before it — `Taken from directly in front of her, …`, `Taken from '
              + 'behind her left shoulder, her back three-quarters to the camera, …`, `Taken '
@@ -713,6 +864,15 @@ const contentProblems = (line, previous) => {
              + 'at the front of the prompt already says who she is, and a description of her '
              + 'competes with it. She is `her`, and nothing else. A second person is named as a '
              + 'body — `a naked man` — and that is different.')
+  }
+  if (UNREADABLE.test(line)) {
+    found.push('It says her face cannot be read — `no readable expression`, `natural '
+             + 'expression`. That is the one thing a face may never say: it is the field that '
+             + 'carries the whole difference between a photograph of a person and a photograph '
+             + 'of a mannequin, and a sampler handed it paints the model face this manner '
+             + 'exists to avoid. When her head is turned away, write what the visible part is '
+             + 'doing instead — her jaw working, the corner of her mouth pulled, her breath '
+             + 'moving her shoulders.')
   }
   const shed = namesWhatItSheds(line)
   if (shed.length) {
@@ -763,6 +923,32 @@ const contentProblems = (line, previous) => {
              + 'part the reader dresses for you.')
   }
   if (previous) {
+    if (shares(line, previous) >= SAME_ARRANGEMENT) {
+      found.push('It is the photograph before it, shot again. Take out the words a still frame '
+               + 'cannot show — the rhythm, the tempo, whether he is rocking or snapping or '
+               + 'grinding — and what is left is the same picture: the same camera, the same '
+               + 'two bodies facing the same way, the same weight on the same hands. A '
+               + 'photograph has no motion in it, so a line that differs from the one before it '
+               + 'only in HOW something is moving differs from it in nothing. Change what the '
+               + 'frame can actually show: where the camera stands, which way each body faces, '
+               + 'what carries the weight, where each hand is, what is in contact with what.')
+    }
+    if (shares(faceClause(line), faceClause(previous)) >= SAME_FACE) {
+      found.push('It wears the face of the photograph before it. The last clause of a line is '
+               + 'the only thing in it that says what she is FEELING, and repeating it word for '
+               + 'word is how a shoot of twenty-five ends up with one expression: measured, '
+               + 'eight consecutive lines of one run all ended `a damp sheen at her temples '
+               + 'from the warm lamp`. Write what her face is doing in THIS photograph, caught '
+               + 'half-way — mid-word, mid-blink, a laugh cut off, eyes squeezed shut, her '
+               + 'mouth open on a breath — and make it match what her body is doing here.')
+    }
+    if (cameraClause(line) && cameraClause(line) === cameraClause(previous)) {
+      found.push('Its camera has not moved: the clause it opens with is word for word the one '
+               + 'the photograph before it opened with. Two photographs from one position are '
+               + 'one photograph, whatever the bodies are doing — measured, thirty lines with '
+               + 'no camera position moved came back thirty frontal shots. Put the camera '
+               + 'somewhere else for this one.')
+    }
     const before = new Set(familiesIn(previous))
     const back = [...new Set(familiesIn(line))].filter((f) => !before.has(f))
     if (back.length) {

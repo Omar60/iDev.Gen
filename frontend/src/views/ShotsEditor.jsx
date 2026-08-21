@@ -1,9 +1,9 @@
 import React, { useState } from 'react'
-import { KINDS, REACHES, REACH } from '../kinds.js'
+import { KINDS, REACHES, REACH, MANNERS, MANNER } from '../kinds.js'
 import {
   guideFor, rewriteTake, takesFromBrief, lookFromBrief, rewriteWardrobe,
   wardrobeProgression, sessionFromBrief, briefFromLook, alreadySaid, spread,
-  namesWhatIsGone, CHUNK, WARDROBE_STATES,
+  namesWhatIsGone, CHUNK, WARDROBE_STATES, withManner,
 } from '../enhance.js'
 
 /** A take of the given kind: an edit kind starts its rows ticked as `ref`,
@@ -61,6 +61,10 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
   // out of the same button before, and which of the two you get is not a thing
   // to leave to a die.
   const [reach, setReach] = useState('nude')
+  // Whether anyone is photographing this. Beside the reach and not folded into
+  // it: the two are orthogonal, and a candid shoot that ends in penetration is
+  // as ordinary a thing to ask for as a directed one that keeps its clothes on.
+  const [manner, setManner] = useState('directed')
   // Which setting the brief in the box was written for. The brief is the shoot —
   // the writer of the lines reads that sentence and nothing else — so a setting
   // moved after the roll changes nothing at all, and silently. Handing the
@@ -152,10 +156,10 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
   // box and nowhere else: it is a sentence to read and edit before anything is
   // written from it.
   const roll = () => run('roll', async () => {
-    const written = await briefFromLook(look, wardrobe, reach)
+    const written = await briefFromLook(look, wardrobe, reach, manner)
     if (!written) throw new Error('the assistant answered nothing usable')
     setBrief(written)
-    setRolledFor(reach)
+    setRolledFor(`${reach}|${manner}`)
   })
 
   /** The look and the wardrobe first, so the takes can be told what not to
@@ -168,7 +172,7 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
     let itsLook = look
     let itsWardrobe = wardrobe
     if (onLook && (!look.trim() || !wardrobe.trim())) {
-      const written = await lookFromBrief(brief)
+      const written = await lookFromBrief(brief, manner)
       // `undefined` is what tells the session to keep the box it already had.
       const fill = { look: look.trim() ? undefined : written.look,
                      wardrobe: wardrobe.trim() ? undefined : written.wardrobe }
@@ -178,13 +182,21 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
         itsWardrobe = fill.wardrobe || wardrobe
       }
     }
+    // The manner's own clause on the look, before a line is written from it: the
+    // capture quality is constant for the whole shoot, so it rides on the block
+    // the app prepends rather than on forty lines that each have to remember it.
+    const withIt = withManner(itsLook, manner)
+    if (onLook && withIt !== itsLook) {
+      onLook({ look: withIt })
+      itsLook = withIt
+    }
     return { look: itsLook, wardrobe: itsWardrobe }
   }
 
   const fromBrief = () => run('brief', async () => {
     const it = await dressTheSession()
     const lines = await takesFromBrief(kind, !!spec.refDefault, brief,
-                                       already(it.look, it.wardrobe), howMany)
+                                       already(it.look, it.wardrobe), howMany, manner)
     if (!lines.length) throw new Error('the assistant answered nothing usable')
     countBack(lines.length, howMany)
     onChange([
@@ -206,7 +218,7 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
     // The look alone as the base context: the clothes of each stretch are passed
     // in by the writer itself, photograph by photograph.
     const rows = await sessionFromBrief(brief, already(it.look), it.wardrobe, howMany,
-                                        (made, total) => setMade([made, total]), reach)
+                                        (made, total) => setMade([made, total]), reach, manner)
     if (!rows.length) throw new Error('the assistant answered nothing usable')
     countBack(rows.length, howMany)
     onChange([
@@ -232,6 +244,14 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
                   title={REACH[reach]?.blurb}
                   onChange={(e) => setReach(e.target.value)}>
             {REACHES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+          </select>
+          {/* Who is holding the camera. Unlike the reach, this one is handed to the
+              writer of the photographs as well as to the brief: the camera clause
+              of every line is written from it. */}
+          <select value={manner} disabled={!!busy} style={{ width: 170 }}
+                  title={MANNER[manner]?.blurb}
+                  onChange={(e) => setManner(e.target.value)}>
+            {MANNERS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
           </select>
           <button className="icon" onClick={roll} disabled={!!busy || !(look.trim() || wardrobe.trim())}
                   title={look.trim() || wardrobe.trim()
@@ -281,11 +301,12 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
         </div>
       )}
       {error && <div className="error" onClick={() => setError('')}>{error}</div>}
-      {rolledFor && rolledFor !== reach && (
+      {rolledFor && rolledFor !== `${reach}|${manner}` && (
         <div className="muted" style={{ marginBottom: 8 }}>
-          The brief in the box was written for <b>{REACH[rolledFor]?.label}</b>, and the shoot is
-          written from that sentence — 🎲 again for <b>{REACH[reach]?.label}</b>, or edit it by
-          hand. Changing this box alone changes nothing.
+          The brief in the box was written for <b>{REACH[rolledFor.split('|')[0]]?.label}</b>,{' '}
+          <b>{MANNER[rolledFor.split('|')[1]]?.label}</b>, and the shoot is written from that
+          sentence — 🎲 again for <b>{REACH[reach]?.label}</b>, <b>{MANNER[manner]?.label}</b>, or
+          edit it by hand. Changing these boxes alone changes nothing.
         </div>
       )}
       {notice && <div className="muted" onClick={() => setNotice('')}

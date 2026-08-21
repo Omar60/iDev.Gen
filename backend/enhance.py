@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import re
 
 import httpx
@@ -100,6 +101,17 @@ SYSTEM = (
     "translate what it asks for, and never copy words from it verbatim."
 )
 
+# The same standing rules, for a caller that asks for fields instead of lines.
+# Only the output clause differs, and it has to: "no quotes, one per line" is the
+# opposite of a JSON body, and a system message that bans quotes while the user
+# message asks for JSON is two texts disagreeing about the answer.
+JSON_SYSTEM = SYSTEM.replace(
+    "Output the fragments and nothing else: no numbering, no bullets, no quotes, "
+    "no explanation, no preamble, one per line. ",
+    "Answer with one JSON object and nothing else: no prose around it, no markdown "
+    "fence. ",
+)
+
 
 class EnhanceIn(BaseModel):
     """What to write. `instruction` carries the caller's own guidance."""
@@ -117,6 +129,18 @@ class EnhanceIn(BaseModel):
     # brief where it competes with thirty-nine other rules — which is where it
     # was, and where the model went on hedging the act into a pose.
     register: str = ""
+    # The fields a line arrives in, when the caller wants one JSON object per
+    # line instead of one line of prose. Empty is the old behaviour and the
+    # default; anything else asks the endpoint for `json_object` and joins the
+    # fields back into the one line the caller gets either way.
+    #
+    # Measured 2026-08-20, 12 runs an arm on one explicit brief: asked as prose,
+    # the second body was described in 18 per cent of lines; given a field of its
+    # own it is described in 83, and both of the two rules that decide whether a
+    # two-person photograph renders hold at once for the first time. The gain is
+    # the field, not the JSON - a JSON container around the same single prose
+    # line scored 4 per cent, worse than prose.
+    fields: list[str] = Field(default_factory=list)
 
 
 def configured(config: dict) -> bool:
@@ -139,6 +163,7 @@ async def run(config: dict, p: EnhanceIn, image: str = "") -> list[dict]:
 
     body = {"model": model, "messages": _messages(p, image), "temperature": 0.8,
             "stream": False,
+            **({"response_format": {"type": "json_object"}} if p.fields else {}),
             # A reasoning model spends ten times the tokens thinking about four
             # short lines than it does writing them — minutes instead of seconds,
             # for a task with nothing to reason about. An endpoint that does not
@@ -167,6 +192,8 @@ async def run(config: dict, p: EnhanceIn, image: str = "") -> list[dict]:
     except (KeyError, IndexError, TypeError, ValueError):
         raise HTTPException(502, f"The prompt assistant at {url} answered something "
                                  f"that is not an OpenAI-compatible completion.")
+    if p.fields:
+        return clean_fields(answer, p.fields, p.n)
     return clean(answer, p.n, p.allowed)
 
 
@@ -325,7 +352,8 @@ def _messages(p: EnhanceIn, image: str) -> list[dict]:
     parts.append(f"Rewrite this:\n{p.text}" if p.text.strip() else "")
 
     text = "\n\n".join(x for x in parts if x)
-    system = SYSTEM + (EXPLICIT_SYSTEM if p.register == "explicit" else "")
+    system = (JSON_SYSTEM if p.fields else SYSTEM) + (
+        EXPLICIT_SYSTEM if p.register == "explicit" else "")
     if not image:
         return [{"role": "system", "content": system}, {"role": "user", "content": text}]
     return [{"role": "system", "content": system},
@@ -367,6 +395,116 @@ def clean(answer: str, n: int, allowed: list[str] | None = None) -> list[dict]:
         if prompt and prompt.lower() not in seen:
             seen.add(prompt.lower())
             out.append({"label": _unquote(label)[:60], "prompt": prompt})
+        if len(out) >= max(1, n):
+            break
+    return out
+
+
+def _objects(text: str, fields: list[str]) -> list[dict]:
+    """Every `{...}` in the text that parses on its own and carries one of the
+    fields asked for, in order.
+
+    Depth-counted rather than regex, and every closing brace is tried rather than
+    only the outermost: the answer that needs salvaging is the one whose OUTER
+    object never closes, because the model ran out of room in the middle of the
+    fourth photograph. The three that did close are still whole photographs.
+    """
+    wanted, out, stack, in_string, escaped = set(fields), [], [], False, False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            stack.append(i)
+        elif ch == "}" and stack:
+            try:
+                row = json.loads(text[stack.pop():i + 1])
+            except ValueError:
+                continue
+            if isinstance(row, dict) and wanted & set(row):
+                out.append(row)
+    return out
+
+
+# What each field of a photograph is called in the joined prompt.
+#
+# The workflow's own default prompt is written this way — `Style & Medium:`,
+# `Angle & Framing:`, `Pose:` — and so are the prompts this checkpoint was
+# demonstrably happy with. Measured 2026-08-21 on three photographs shot on one
+# seed each: the same content as one 300-word paragraph came back as a lit set
+# three times of three, and as headed blocks it came back looking like a phone
+# snapshot, the same as the 87-word compression did. The fields were already
+# there; only the glue between them changed.
+BLOCK_HEADINGS = {
+    "camera": "Angle & Framing",
+    "act": "Pose",
+    "her": "Subject",
+    "him": "Second Subject",
+    "worn": "Outfit & Texture",
+    "technique": "Technique",
+    "face": "Expression",
+}
+
+
+def clean_fields(answer: str, fields: list[str], n: int) -> list[dict]:
+    """One JSON object per photograph, joined back into the one line the caller
+    always gets.
+
+    The transport is the only thing that changed: a field still holds prose, and
+    what comes back here is the same `{label, prompt}` row `clean` returns. What
+    the fields buy is that a body cannot be skipped by a model running out of
+    room — measured, the second body goes from 18 per cent of lines to 83.
+
+    Joined with `. ` and not `, `: each field is a sentence of its own, and a
+    comma between two sentences reads as one run-on clause in a prompt that is
+    parsed as a bag of phrases anyway.
+    """
+    answer = _THINK.sub("", answer, count=1).strip()
+    # A model told "no markdown fence" writes one anyway often enough to be worth
+    # three characters of slicing, and `response_format` is a request, not a
+    # guarantee: every endpoint here is OpenAI-*compatible*, not OpenAI.
+    start, end = answer.find("{"), answer.rfind("}")
+    if start < 0 or end < start:
+        raise HTTPException(502, "The prompt assistant was asked for JSON and answered "
+                                 "something else.")
+    try:
+        parsed = json.loads(answer[start:end + 1])
+        rows = parsed.get("photographs") if isinstance(parsed, dict) else parsed
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list):
+        # One malformed answer in eighteen runs, measured: the object is fine and
+        # something after it is not — a stray array, a trailing field. Whole-body
+        # parsing throws all four photographs away for the sake of the fourth, and
+        # the caller asks again for a SHORT round but dies on an error. So the
+        # objects are salvaged one at a time, and only an answer with nothing
+        # parsable in it is a failure.
+        rows = _objects(answer[start:], fields)
+    if not rows:
+        raise HTTPException(502, "The prompt assistant was asked for JSON and answered "
+                                 "nothing that parses as photographs.")
+
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # Trailing punctuation of its own as well as the full stop: a field that
+        # ends `head to feet,` joined to the next one reads `head to feet,. She`.
+        said = [(f, str(row.get(f) or "").strip().rstrip(" .,;:")) for f in fields]
+        said = [(f, text) for f, text in said if text]
+        if all(f in BLOCK_HEADINGS for f, _ in said):
+            line = "\n\n".join(f"{BLOCK_HEADINGS[f]}:\n{text}." for f, text in said)
+        else:
+            line = ". ".join(text for _, text in said) + "."
+        if line:
+            out.append({"label": "", "prompt": line})
         if len(out) >= max(1, n):
             break
     return out

@@ -209,6 +209,28 @@ const SECTION_MEANING =
   + 'anyone noticing, which is how a look ends up with no trousers in it. Do not enumerate '
   + 'what catches the eye — walk every one of them.'
 
+/** The look is not allowed to repaint the character.
+ *
+ *  The LoRA at the front of every prompt IS the person: her hair, her face, her
+ *  colouring. A look that names a hair colour does not decorate her, it
+ *  overrules her — measured twice on this project. Session 150's look opened
+ *  `Long dark hair falls loose past her shoulders` and every composed frame of
+ *  that session came back dark-haired though the character is blonde; dropping
+ *  that sentence (session 178) brought her back. Sessions 200-206 carried `Her
+ *  dark hair falls loosely around her shoulders` and rendered a dark-haired
+ *  woman for seven sessions, while the same photographs written without it came
+ *  back blonde and correct.
+ *
+ *  So the look writes how the hair is WORN and never what colour it is. */
+const NOT_THE_CHARACTER =
+  'NEVER NAME A HAIR COLOUR, and never describe her face, her skin or her build. The '
+  + 'character comes from the trigger word at the very front of the prompt, which is a '
+  + 'trained likeness of one specific person, and a colour written here does not decorate '
+  + 'her — it repaints her. Measured twice: a look opening `long dark hair` rendered a '
+  + 'dark-haired woman in every frame of a session whose character is blonde, and the same '
+  + 'photographs with the colour left out came back as herself. Write only how the hair is '
+  + 'WORN — loose, pinned up, pushed back, damp, slept-in — and let the colour be hers.'
+
 /** The rule a negation breaks. Applies to a garment, a bag and an empty room
  *  alike: the prompt is read as a description, so naming a thing puts it there. */
 const NEVER_ABSENT =
@@ -383,6 +405,7 @@ export const LOOK_INSTRUCTION =
   + LOOK_SECTIONS + '\n'
   + GARMENT_DETAIL + '\n'
   + SECTION_BALANCE + '\n'
+  + NOT_THE_CHARACTER + '\n'
   + PROSE + '\n'
   + LENGTH + '\n'
   + ROOM_DEPTH + '\n'
@@ -399,6 +422,7 @@ export const LOOK_FROM_PHOTO_INSTRUCTION =
   + LOOK_SECTIONS + '\n'
   + GARMENT_DETAIL + '\n'
   + SECTION_BALANCE + '\n'
+  + NOT_THE_CHARACTER + '\n'
   + PROSE + '\n'
   + LENGTH + '\n'
   + 'Write the place as the space it is, not as the wall behind her: where the floor goes, '
@@ -427,6 +451,7 @@ export const LOOK_ONLY_INSTRUCTION =
   + 'is identical in every photo of it.\n'
   + sections(LOOK_LINES.filter((l) => l.part === 'look')) + '\n'
   + NEVER_ABSENT + '\n'
+  + NOT_THE_CHARACTER + '\n'
   + PROSE + '\n'
   + ROOM_DEPTH + '\n'
   + 'One to three sentences a line. No filler: “visible in frame”, “clearly seen”, '
@@ -710,6 +735,165 @@ export const REACHES = [
 
 export const REACH = Object.fromEntries(REACHES.map((r) => [r.key, r]))
 
+/** Who is holding the camera, and whether anyone is posing for it.
+ *
+ *  Orthogonal to the reach on purpose: how far a shoot goes and whether it looks
+ *  shot by a photographer are two different questions, and every combination of
+ *  the two is a shoot somebody wants. The default is the one this whole
+ *  instruction was written for — a directed session, where she poses and someone
+ *  shoots her — so `directed` adds nothing at all, and the other one is a block
+ *  laid on top of it.
+ *
+ *  `brief` joins the brief instruction and `line` the writer of the photographs.
+ *  Both, and not one: the brief decides what the shoot IS, the lines decide what
+ *  the camera is doing, and a candid brief written into the studio camera
+ *  vocabulary comes back as a studio shoot of a woman in a lived-in room. */
+export const MANNERS = [
+  {
+    key: 'directed',
+    label: 'Directed shoot',
+    blurb: 'Someone is photographing her and she is posing for it.',
+    brief: '',
+    line: '',
+  },
+  {
+    key: 'candid',
+    // The capture quality belongs to the LOOK and not to the line, for the same
+    // reason the look exists at all: it is the half of a session that never
+    // changes, and a writer retyping it forty times is a drift waiting to happen
+    // while a block the app prepends cannot drift. Read off session 201, whose
+    // fixed block carried exactly this and whose images were the first that read
+    // as amateur at all. Appended to the look, never replacing it: the room in
+    // the box is the room the shoot is in.
+    // Measured 2026-08-21, sessions 214 and 215, same brief and same look but for this clause:
+    // naming a wall and a doorway here as the example of flat focus put a device word in the
+    // `technique` field of 20 lines of 25 and focus talk in 15, and saying it abstractly put
+    // both at 0 of 24 - while the renders kept the sharp background either way. The example
+    // was doing nothing the rule was not, and it was teaching two habits nobody asked for.
+    look: 'phone camera snapshot, small sensor, everything at every distance equally in '
+        + 'focus and nothing softened, sensor noise in the shadows, washed-out colour, '
+        + 'slight motion blur, off-center and slightly tilted framing, no studio lighting '
+        + 'and no colour grading',
+    // For a look being WRITTEN for a candid shoot, where the light is still open.
+    // An existing look is left alone — appending a bare bulb to a look that says
+    // `a low warm lamp pooling amber light` is a contradiction, and this sampler
+    // renders a contradiction as neither.
+    lookNote: 'THIS SESSION IS SHOT ON A PHONE BY THE PEOPLE IN IT, so the light is whatever '
+            + 'the room already has and never anything placed for a photograph: a bare ceiling '
+            + 'bulb, weak daylight through a half-curtained window, a bedside lamp, the '
+            + 'television. Never a lamp described for what it does to her — `pooling amber '
+            + 'light from the side` is a lighting setup and it renders as one. The room is '
+            + 'lived in and a little untidy.',
+    label: 'Candid, on a phone',
+    blurb: 'No photographer: a phone, a mirror, an ordinary evening. Nobody poses.',
+    brief: 'NOBODY IS SHOOTING THIS PROFESSIONALLY. There is no photographer, no studio and no '
+         + 'session: the pictures are taken on a phone — held out at full arm stretch, propped on '
+         + 'something, pointed at a mirror — in the middle of an ordinary evening, by the people '
+         + 'who are in them. So the brief is what she is DOING and how that goes on, never a list '
+         + 'of setups: `bored on the sofa on a weeknight, getting comfortable and filming herself '
+         + 'through the evening` is this shoot, `an intimate boudoir session` is not.\n'
+         + 'Do NOT say where the phone is or what it is propped on. The brief is read by the '
+         + 'writer of every photograph, so a phone named once here is a phone named in forty '
+         + 'lines and painted into forty photographs - measured, `the phone propped on the '
+         + 'armrest` in one brief put a phone in 24 lines of 25.\n'
+         + 'Never write `shoot`, `session`, `poses`, `photographer`, `professional`, `studio` or '
+        + '`shot` in it. Every one of '
+         + 'those words is read by the writer of the photographs as a person standing behind a '
+         + 'camera, and it then writes forty posed frames whatever the rest of this sentence '
+         + 'said.',
+    line: 'NOBODY IS PHOTOGRAPHING THIS. Every photograph was taken on a phone by one of the '
+        + 'people in it, and it has to look like it: a shoot that comes back looking shot is the '
+        + 'whole failure of this one.\n'
+        + 'THE `technique` FIELD IS HOW THE PHOTOGRAPH WAS TAKEN, AND IT IS THE ONE PLACE THAT '
+        + 'GOES IN. Not in the camera field, which is where the camera stands and how much of '
+        + 'her is in frame, and nowhere else either: a rule with no field of its own is a rule '
+        + 'that does not arrive - measured, the whole-room focus asked of the line reached 0 '
+        + 'lines of 25 until it was moved somewhere that owns it.\n'
+        + 'What goes in it, three or four of these, chosen for THIS photograph and changed from '
+        + 'line to line: `grainy`, `the shadows gone to noise`, `flat and overexposed`, '
+        + '`colour washed out`, `slightly blurred where a hand moved`, `the near side a stop too '
+        + 'bright`, `tilted a few degrees`, `off-centre with empty space down one side`. It '
+        + 'NAMES NOTHING IN THE ROOM - no wall, no window, no bed, no furniture: the room is in '
+        + 'the prompt already and a technique clause that names a corner of one invents a different room. Measured, `empty room down one side` as the example came back as '
+        + '`empty bedspread down one side` and a headboard, in a shoot whose look is a living '
+        + 'room. It NEVER '
+        + 'NAMES A DEVICE - no phone, no camera, no lens - and it NEVER INVENTS A LIGHT THE ROOM '
+        + 'HAS NOT GOT: a flash belongs there only when the look says the room is dark. Measured '
+        + '2026-08-21, three of the four examples in this paragraph named a flash and nine lines '
+        + 'of twenty-five fired one in a room whose look said flat white daylight; the examples '
+        + 'were changed and it went to zero of twenty-five. The writer copies the examples, not '
+        + 'the rule.\n'
+        + '`Snapshot on a phone camera` is the WRONG form of that clause and it is the one this '
+        + 'writer reaches for: measured 2026-08-21 on a real run of this instruction, the phone '
+        + 'was named in 24 lines of 25 and every one of them named it there. The camera is not '
+        + 'in the photograph. What the photograph has is its grain, its flash and its bad '
+        + 'framing.\n'
+        + 'NEVER WRITE THE WORDS THAT MAKE A PICTURE GLOSSY: `professional`, `studio`, '
+        + '`softbox`, `editorial`, `cinematic`, `photoshoot`, `posed`, `high resolution`, `8K`, '
+        + '`hyper-realistic`, `photorealistic`, `sharp focus`, `shallow depth of field`, '
+        + '`bokeh`, `DSLR`, `85mm`. Every one of them is read as a paid photographer with '
+        + 'equipment, and it comes back as the studio shoot this manner exists to avoid.\n'
+        + 'THE POSITION IS STILL WRITTEN AS A CAMERA, in the same words as every camera above - '
+        + '`taken from behind her left shoulder`, `overhead camera directly above the bed`, '
+        + '`side-angle camera at mattress level`. That grammar is what makes an angle obeyed and '
+        + 'this manner does not change it. What changes is where it stands: an arm’s length '
+        + 'from her face, or wherever a phone was actually put down - on the shelf across the '
+        + 'room, on the floor, propped against the lamp, in his hand above her. The three '
+        + 'framings are unchanged and there is still one of them in every line.\n'
+        + 'THE PHONE ITSELF IS ALMOST NEVER IN THE PICTURE, and this is the rule this shoot '
+        + 'keeps breaking. Name a phone ONLY when it is genuinely in the frame: her own hand '
+        + 'holding it out towards the lens, or the phone up in her hand in a mirror - `Mirror '
+        + 'selfie, the phone up in her right hand and visible in the mirror`. That is one line '
+        + 'in five or six at the most - UNLESS the brief itself is a shoot she is filming of '
+        + 'herself, and then the phone is in her hand in every photograph it is really in, and '
+        + 'saying so is not the failure this paragraph is about. In every other line NO DEVICE '
+        + 'IS NAMED AT ALL, because a '
+        + 'phone or a camera named in a line is painted as an object sitting in the photograph, '
+        + 'and forty pictures with a gadget floating in them are as broken as forty studio ones. '
+        + 'Amateur is how the picture LOOKS, never a prop it contains.\n'
+        + 'THE FRAMING IS CARELESS, THOUGH THE CROP IS NOT. One of the three framings, always - '
+        + 'what is sloppy is where she falls inside it: off to one side instead of centred, the '
+        + 'horizon tilted a few degrees, an elbow or a knee running out of the edge, a stretch '
+        + 'of empty room above her head. Say which one, in the line.\n'
+        + 'NOTHING IS BLURRED BEHIND HER, and the look already says so: the whole room is in '
+        + 'one plane of focus, because the sensor is the size of a fingernail. Never write a '
+        + 'line that argues with it - no blurred background, no softened room, nothing `falling '
+        + 'away` behind her. Measured 2026-08-21: asked for in the line instead, it arrived in 0 '
+        + 'lines of 25 - the writer answered in six fields and none of them owned the depth of '
+        + 'field, so it belongs to the look and to nothing else.\n'
+        + 'HER EYES ARE NOT ON THE LENS. Not once, unless that line has her holding the phone '
+        + 'and looking at its screen. She is looking at him, at her own hands, at the '
+        + 'television, past the camera at nothing, down, away, or her eyes are shut. There is '
+        + 'nobody behind the camera to look at, and eye contact with a camera nobody is holding '
+        + 'is the posed photograph this whole manner exists to avoid - it survives every other '
+        + 'rule in this block, because the body can be mid-step and half turned away and the '
+        + 'photograph still reads as posed the moment she is looking at the lens.\n'
+        + 'SHE IS NOT POSING, because there is nobody to pose for. Her body is doing something '
+        + 'ordinary and half-finished: mid-step, half turned away, her weight dumped on one hip, '
+        + 'sitting badly, one arm out of frame, one hand still holding the phone on the few '
+        + 'lines where the phone is in frame at all — and say so '
+        + 'when it is. `standing square to the camera, one hand raised near her face` is the '
+        + 'posed failure to avoid, and it is the one this writer makes by default.\n'
+        + 'THE FACE IS CAUGHT, NEVER HELD: talking, laughing, mid-blink, her mouth open on a '
+        + 'word, her eyes down on the phone screen instead of on the lens, or not on the camera '
+        + 'at all. An expression held towards the lens is a posed photograph however unposed the '
+        + 'body underneath it is.\n'
+        + 'THE LIGHT IS THE LIGHT THE ROOM ALREADY HAS, and the room says which: read it off '
+        + 'the look above and do not invent another. A room lit by a window in the daytime is '
+        + 'NEVER lit by a flash and never by a lamp - measured 2026-08-21, seventeen lines of '
+        + 'twenty-five fired a flash in a room whose look said flat white daylight and no lamps '
+        + 'on. What a phone does to daylight is where the amateur look comes from: the window '
+        + 'side a stop too bright, hard shadow on the far side of her, colour washed out and a '
+        + 'little cold, noise in every shadow. At night it is the other set - a bare overhead '
+        + 'bulb, the flash blowing out the nearest skin, the television. Never a light described '
+        + 'by what it does to her: `pooling amber light from the side` is a lighting setup and '
+        + 'it renders as one. The room is never lit for the photograph; the photograph is '
+        + 'whatever the room already was.',
+  },
+]
+
+export const MANNER = Object.fromEntries(MANNERS.map((m) => [m.key, m]))
+
 export const BRIEF_AXES = {
   register: [
     'begins shy and closed and grows confident',
@@ -753,6 +937,23 @@ export const STAGE_PLAN_INSTRUCTION =
   + 'Only the wardrobe given below exists. Stages may have fewer of those pieces, or the '
   + 'same ones worn differently, and nothing else: running out of clothes is a reason for '
   + 'the stages to move on to what she is doing, never a reason to invent a garment.\n'
+  + '\n'
+  + 'WHEN THE SHOOT IS EXPLICIT, A STAGE IS AN ARRANGEMENT OF TWO BODIES, AND NO TWO STAGES '
+  + 'SHARE ONE. With no clothes left to move, the arrangement is the only thing left that can '
+  + 'change, so it is what the stages are made of: where each body is, which way each one '
+  + 'faces, and what carries the weight of each. A stage that says only what is happening — '
+  + '`he penetrates her` — is the name of the whole stretch and not a stage of it.\n'
+  + 'Give that stretch MANY short stages rather than one long one: three or four photographs '
+  + 'each, never eight. Eight photographs of one arrangement is one photograph shot eight '
+  + 'times, and that is what a session reads as when it reads as monotonous. Measured on a '
+  + 'twenty-four photograph brief: without this paragraph the plan spent the first twelve '
+  + 'photographs on her alone and gave him three arrangements, one of them five photographs '
+  + 'long.\n'
+  + 'Do not choose from a list, and do not reach only for the arrangements a caption would '
+  + 'name. Build each one: where the two of them are — on the bed, across it, at its edge, off '
+  + 'it entirely — then where each body rests its weight, then how they face each other. Two '
+  + 'bodies and a room make far more arrangements than the handful that have names, and a '
+  + 'shoot that spends itself on the handful is the monotonous one.\n'
   + 'Write nothing but the lines.'
 
 /** One photograph, written whole: what is worn, what the body is doing, and how
@@ -775,19 +976,38 @@ export const STAGE_PLAN_INSTRUCTION =
  *  every frame. Retyping it per line is how it was done by hand and it held for
  *  twenty-one frames, but a model copying sixty words forty times across chunk
  *  seams is a drift waiting to happen, and prepending it cannot drift at all. */
+/** The fields a shoot line arrives in, in the order the app joins them.
+ *
+ *  Order matters and it is the measured one: the camera first, because a reader
+ *  frames what it meets first, and the act right behind it, because a second body
+ *  named late is a second body that does not render. `worn` sits after both
+ *  bodies for the same reason - the garments are what a long line spends itself
+ *  on, and everything that decides whether the photograph is the right photograph
+ *  is already said by then. */
+export const SHOOT_FIELDS =
+  ['camera', 'act', 'her', 'him', 'worn', 'technique', 'face']
+
 export const SHOOT_LINE_INSTRUCTION =
-  'Write one line per photograph of a photo session. Each line is a whole photograph: how it '
-  + 'is framed, what she is wearing at that moment, what her body is doing, and her '
-  + 'expression — in that order, as prose, one line each, in the order they are shot.\n'
+  'Write one photograph per object of a photo session, in the order they are shot. Each '
+  + 'object is a whole photograph, and it arrives in seven fields rather than in one line: '
+  + 'the app joins them back into the single line the photograph is painted from. '
+  + 'Everything below describes how a photograph is written; the fields say where each '
+  + 'part of it goes.\n'
+  + 'THE SEVEN KEYS ARE `camera`, `act`, `her`, `him`, `worn`, `technique`, `face`, and '
+  + 'EVERY OBJECT CARRIES ALL SEVEN. None is optional and none is left empty, with one '
+  + 'exception: `him` is empty in a photograph with nobody else in it. A key you have '
+  + 'nothing new to say about is still written - measured, a field added to this list '
+  + 'without this paragraph arrived in 9 photographs of 25 and the other 16 simply left '
+  + 'it out.\n'
   + PROSE + '\n'
   + '\n'
-  + 'EVERY LINE OPENS WITH WHERE THE CAMERA IS, AND THEN ITS FRAMING: `Taken from directly '
-  + 'behind her, a full-length photograph, head to feet, of her …`, `Taken from her right '
-  + 'side, her body in full profile, a waist-up photograph of her …`. The camera first, '
-  + 'because everything after it is eighty words about clothes and the reader frames what it '
-  + 'meets first: measured on a seventy-photograph run with the camera named after the '
-  + 'framing, fifty-three lines asked for something other than a front view and about ten '
-  + 'photographs came back as one.\n'
+  + 'THE `camera` FIELD IS WHERE THE CAMERA IS, AND THEN ITS FRAMING, IN THAT ORDER: '
+  + '`Taken from directly behind her, a full-length photograph, head to feet`, `Taken from '
+  + 'her right side, her body in full profile, a waist-up photograph`. It is the first '
+  + 'field and it is joined ahead of every other one, so it is what the reader meets '
+  + 'first, and the camera comes before the framing inside it: measured on a seventy-'
+  + 'photograph run with the camera named after the framing, fifty-three lines asked for '
+  + 'something other than a front view and about ten photographs came back as one.\n'
   + 'The framing is one of three: `a full-length photograph, head to feet`, `a three-quarter '
   + 'photograph from the knees up`, `a waist-up photograph`. Those three and no others. The '
   + 'plainest words there are, never implied and never '
@@ -823,13 +1043,11 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'line still walks the whole body, close-ups included, because the state of the clothes is '
   + 'what the next photograph copies and a line that drops it to match a crop drops it for '
   + 'every line after it as well.\n'
-  + 'About a hundred words a line — long enough for the framing, the camera, every garment '
-  + 'carried word for word, the pose and the face, and no longer. Do not buy the room by '
-  + 'shortening a garment: the words are what make it the same garment in the next '
-  + 'photograph, and a line that trades `white open-weave fishnet stockings` for `the '
-  + 'stockings` is a line whose stockings come back black. Buy it by saying each piece ONCE. '
-  + 'Naming a garment twice in one line, or re-listing what the line has already said, is '
-  + 'where a hundred and sixty words go.\n'
+  + 'Say each piece ONCE. Naming a garment twice, or re-listing what a field has already '
+  + 'said, is where a hundred and sixty words go, and repetition is the only length worth '
+  + 'cutting. Never buy room by shortening a garment: the words are what make it the same '
+  + 'garment in the next photograph, and a line that trades `white open-weave fishnet '
+  + 'stockings` for `the stockings` is a line whose stockings come back black.\n'
   + 'A line is the photograph and nothing else. Never number it, never label it, never open '
   + 'with `Photograph 12.` or `Frame 12:` — the line is queued exactly as written, so a '
   + 'number at the front of it is a number in the prompt.\n'
@@ -861,7 +1079,15 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'WITHIN A STAGE, NOTHING REPEATS. Consecutive photographs at the same stage differ by '
   + 'the camera height and angle, by the pose, by what the hands are doing, and by the '
   + 'expression. Four photographs of one stage are four photographs, not one with three '
-  + 'copies — and the wardrobe is what holds still between them, word for word.\n'
+  + 'copies — and the wardrobe is what holds still between them, word for word.'
+  + 'A PHOTOGRAPH HAS NO MOTION IN IT, so how something moves is never what tells two '
+  + 'photographs apart. `his hips rocking forward in a steady rhythm` and `his hips '
+  + 'snapping forward in short thrusts` are the same picture, and so are `slowly`, '
+  + '`faster`, `still`, `now` and `beginning to`. Measured on two real sessions: the last '
+  + 'ten photographs of both were two arrangements shot ten times, and the only words '
+  + 'that changed between consecutive lines were those. What tells two frames apart is '
+  + 'what the frame can show — where the camera stands, which way each body faces, what '
+  + 'carries the weight, where each hand is, what touches what, and the face.\n'
   + '\n'
   + 'WHEN THE SHOOT IS EXPLICIT, THE LINE IS EXPLICIT. A brief that ends in sex ends in a '
   + 'photograph of sex, and the line says so in plain anatomical words: what is inside her, '
@@ -882,13 +1108,31 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'of denim-clad thighs under her in the photograph the brief said ends in penetration is a '
   + 'photograph of something else, and it is what the writing reaches for when it is trying '
   + 'not to say the thing.\n'
-  + 'AND A LINE WITH TWO PEOPLE IN IT IS SHORT. Sixty to eighty words, against the hundred a '
-  + 'clothed line runs to. This is the one place the wardrobe carry gives way, and it is '
-  + 'measured: the same photograph written at a hundred and eighty words — the act named at '
-  + 'the end, behind the skirt, the glasses and every part of her body — came back with her '
-  + 'alone in five renders of five, and cut to seventy words with the act at the front it came '
-  + 'back with his hands, his hips and the act itself in three of three. A second body is the '
-  + 'first thing a long line loses.\n'
+  + 'AN UNDRESSED LINE IS SHORT, AND THIS IS THE RULE THAT CHANGED BACK. It said there was '
+  + 'no word limit, on the strength of a twelve-photograph shoot that averaged 212 words and '
+  + 'rendered two bodies in twelve frames of twelve. Both halves of that are still true, and '
+  + 'they were the wrong question: the long lines render the right BODIES and they render '
+  + 'them as a paid photograph. Measured 2026-08-21, three photographs shot twice on the same '
+  + 'seed - the line as written at 276 to 342 words, and the same photograph at 87 to 89 - '
+  + 'the short one came back looking like a phone snapshot in three of three, and the long '
+  + 'one like a lit set in three of three. Nothing else differed.\n'
+  + 'So an undressed line carries the photograph AND NOTHING ELSE, in this order: how the '
+  + 'photograph was taken, where the camera is and its framing, then in one plain sentence '
+  + 'who is doing what to whom - `a naked man kneeling between her thighs with his penis '
+  + 'inside her, two people in frame, both nude` - and then her face. That is the whole '
+  + 'photograph. It comes out short, and the shortness is a consequence and never a '
+  + 'target: no number in this file has ever been obeyed, and the one that matters is not '
+  + 'a count of words but whether any of them is there twice.\n'
+  + 'What goes, and it is most of the length: the walk of the whole body when there are no '
+  + 'clothes on it, the second inventory of his chest and shoulders and thighs, the room '
+  + '(it is already in the prompt, above your line), and every clause that says again what '
+  + 'the sentence before it said. Where clothes are still on, they stay word for word - a '
+  + 'dressed line is longer than ninety words and that is correct, because the garments are '
+  + 'what the next photograph copies.\n'
+  + 'The photograph must still be physically possible: two bodies of ordinary proportions, '
+  + 'each with its weight resting on something, every limb where that position actually puts '
+  + 'it, and every part the camera is told to see genuinely in its view from where it '
+  + 'stands.\n'
   + 'So in these lines: the camera, then the two of them and what they are doing, then only '
   + 'what is still ON her — and nothing else. No inventory of her bare parts, no garment lying '
   + 'on the floor, no accessory set aside. She is nude by then and `nude but for the '
@@ -932,7 +1176,43 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'Never write the hair, the makeup, the room or the light: they are prepended to every '
   + 'line of this shoot already, and writing them again either repeats or contradicts them. '
   + 'Never describe her face, her age or her body beyond what the pose and the expression '
-  + 'need. Never write a camera brand, a lens or a film stock.'
+  + 'need. Never write a camera brand, a lens or a film stock.\n'
+  + '\n'
+  + 'THE SIX FIELDS. Answer as JSON: `{"photographs": [{"camera": "…", "act": "…", '
+  + '"her": "…", "him": "…", "worn": "…", "face": "…"}, …]}`, one object per photograph, '
+  + 'in order. Every field is filled on every object, as prose, with no field name repeated '
+  + 'inside a field. The app joins them in this order into the one line that is painted:\n'
+  + '- `camera`: where the camera is, then the framing, in the words above.\n'
+  + '- `act`: what the two of them are doing, in plain anatomical words, and where each body '
+  + 'is against the other. With one person in frame, what her body is doing.\n'
+  + '  The arrangement is BUILT, not chosen. Decide in this order and write the answer, never '
+  + 'the reasoning: where each body is in the room and on the furniture; then WHERE EACH '
+  + 'BODY CARRIES ITS WEIGHT — on her knees, on her shoulders, on one hip, on both feet, on '
+  + 'his thighs, braced on an arm, held off the bed by his hands; then which way each faces '
+  + 'and how they meet. Then what is happening, in plain anatomical words.\n'
+  + '  The weight is the half that gets left out and it is the half that decides the '
+  + 'photograph: a body whose weight rests nowhere comes back as two people standing and '
+  + 'holding each other, because that is the one arrangement that needs no support at all. '
+  + 'Measured, it was written into 1 line of 24 unasked and 24 of 24 asked for like this.\n'
+  + '  Do not pick from the arrangements that have names. There are far more arrangements than '
+  + 'there are names for them, and the named handful is what makes a session monotonous.\n'
+  + '- `her`: her chest and torso, her hips and legs, her feet. All three, every time.\n'
+  + '- `him`: HIS body, as fully as hers — his chest, his shoulders, his arms, his stomach, '
+  + 'his hips, his thighs, his knees, whichever of them this camera can see from where it '
+  + 'stands, chosen for that position rather than the same two every line. He is a body and '
+  + 'never a person: no face, no age, no who he is. Empty when she is alone in the frame, and '
+  + 'never empty when she is not.\n'
+  + '- `worn`: what is still on her, word for word from the photograph before. Every garment '
+  + 'lives here. Nude is written here too: `nude but for the white fishnet stockings`.\n'
+  + '- `face`: her expression — but FIRST decide whether this camera can see her face at all. '
+  + 'If `camera` puts the lens behind her — `directly behind her`, `behind her left shoulder`, '
+  + '`behind her right shoulder`, a rear camera of any kind — then her face is NOT in this '
+  + 'photograph and `face` is the back of her head, unless `act` has already turned her head '
+  + 'back over her shoulder. Measured: the abstract form of this rule (`nothing the camera '
+  + 'cannot see`) was ignored in seven behind-the-camera lines of thirteen, and the version '
+  + 'above missed once in sixteen. A photograph that asks for a face its own camera cannot '
+  + 'see is resolved against the position: the camera moves rather than the face, and the '
+  + 'photograph comes back as a different position entirely.'
 
 /** The standing version of the explicit rule, for a shoot that is explicit all
  *  the way through.
@@ -944,6 +1224,42 @@ export const SHOOT_LINE_INSTRUCTION =
  *  doing the same thing, and what made that one work was not stronger words but
  *  three shapes: the rule stands rather than triggers, it bans the manoeuvre
  *  instead of listing euphemisms, and it names the vocabulary. */
+/** Does this stretch of the shoot reach the act?
+ *
+ *  A `couple` shoot — dressed at photograph 1, penetration at the last — is
+ *  explicit for its final third and clothed before it, so the register cannot
+ *  ride on the session the way it does for a shoot that is explicit throughout.
+ *  It has to ride on the CHUNK, and what says so is the stage plan covering that
+ *  chunk.
+ *
+ *  Found 2026-08-20 in session 196, written by the shipped writer: `bare` was the
+ *  only gate, `bare` is only true for reach `explicit`, so a dressed-to-
+ *  penetration session got neither the register nor the explicit system message
+ *  in any round of it. Its last three photographs came back `his bare hips
+ *  pressed flush against her bare hips` — no penis, no penetration, no two people
+ *  in frame — which is the pose-instead-of-the-act failure with nothing in place
+ *  to stop it, and it is what a session of this kind looks like when the explicit
+ *  frames read as two people sitting near each other. */
+export const reachesTheAct = (stages) =>
+  (stages || []).some((s) => /penetrat|penis|inside her|fuck|explicit|his cock|entering her/i
+    .test(s?.what || ''))
+
+/** The register for the stretch of a shoot that becomes explicit, where the
+ *  standing version would be a lie: this shoot did NOT open explicit, and a rule
+ *  that says it did contradicts the stages the same writer was just given. */
+export const EXPLICIT_STRETCH =
+  'THE PHOTOGRAPHS OF THIS ROUND ARE THE EXPLICIT STRETCH OF THE SHOOT, AND EVERY LINE THAT '
+  + 'REACHES IT IS WRITTEN EXPLICITLY. The stages above say where it starts; from there on, '
+  + 'nothing is softened, implied or left to be inferred.\n'
+  + 'Never answer with a pose where the act belongs. `arched into him`, `her hips tilted up to '
+  + 'meet his`, `his hips pressed flush against hers`, `moving against her` are all the same '
+  + 'evasion wearing different words, and each of them is painted as two people sitting near '
+  + 'each other, which is exactly what they say.\n'
+  + 'Say what is happening in plain anatomical words: penis, vagina, inside her, penetrating '
+  + 'her, his hips against hers. Say which body part, and say where it is.\n'
+  + 'And he is bare by then unless the shoot says otherwise. A pair of denim-clad thighs in '
+  + 'the photograph the brief said ends in penetration is a photograph of something else.'
+
 export const EXPLICIT_REGISTER =
   'THIS SHOOT IS EXPLICIT FROM THE FIRST PHOTOGRAPH TO THE LAST, AND EVERY LINE OF IT IS '
   + 'WRITTEN EXPLICITLY. Not the ones you judge to be explicit: all of them.\n'
@@ -960,9 +1276,8 @@ export const EXPLICIT_REGISTER =
   // on the system message with the rest of the register — see EXPLICIT_SYSTEM in
   // `backend/enhance.py`. Do not restate it here: two texts saying the same thing
   // is one text away from two texts disagreeing, and which one wins is a toss.
-  + 'This does not buy length. The line stays at sixty to eighty words — a second body is the '
-  + 'first thing a long line loses — so the words come out of the inventory of her, not out of '
-  + 'the act.'
+  + 'His body is written as fully as hers, in a field of its own, and it is never left in '
+  + 'pronouns: the body a line describes is the body that renders.'
 
 /** A shoot of forty photographs is written a handful at a time, and this is what
  *  every call is told about where it sits.
