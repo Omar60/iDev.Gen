@@ -13,7 +13,7 @@ import {
   ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES, REACH, MANNER,
   SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
-  takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan,
+  takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, CAMERA_FORMS,
 } from './kinds.js'
 
 export const ask = (payload) => api.post('/api/enhance', payload).then((r) => r.lines || [])
@@ -344,6 +344,10 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
     const act = !bare && reachesTheAct(covered)
     return ask({
     instruction: `${SHOOT_LINE_INSTRUCTION}`
+               // Only where the camera is still the writer's to choose. With a
+               // plan in hand the list is a competing voice naming positions
+               // that are already decided.
+               + (cameras ? '' : `\n\n${CAMERA_FORMS}`)
                + (bare ? `\n\n${EXPLICIT_REGISTER}` : act ? `\n\n${EXPLICIT_STRETCH}` : '')
                + (MANNER[manner]?.line ? `\n\n${MANNER[manner].line}` : '')
                + `\n\nThe shoot goes like this:\n${brief}`

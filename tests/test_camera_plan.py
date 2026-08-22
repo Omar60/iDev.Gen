@@ -79,3 +79,41 @@ def test_the_plan_holds_its_three_properties(tmp_path_factory):
 
     # A one-photograph shoot and a zero-photograph one are both real calls.
     assert plan["short"] == 1 and plan["none"] == 0, plan
+
+
+FORMS_PROBE = """
+import { CAMERA_FORMS, CAMERA_POSITIONS, SHOOT_LINE_INSTRUCTION } from '%(kinds)s'
+
+console.log(JSON.stringify({
+  inInstruction: SHOOT_LINE_INSTRUCTION.includes('WHERE THE CAMERA IS, WRITTEN AS A CAMERA'),
+  missing: CAMERA_POSITIONS.filter((p) => !CAMERA_FORMS.includes(p.line)).map((p) => p.line),
+}))
+"""
+
+
+def test_the_example_positions_are_only_for_a_writer_without_a_plan(tmp_path_factory):
+    """The list of camera forms and `cameraPlan` are two voices naming the same
+    thing, and a shoot must hear exactly one of them.
+
+    Measured 2026-08-22, five runs a side of n=25 `directed`: taking the list out
+    of the instruction changed nothing the analyzer counts — 6.0 position
+    families both sides, 9.6 against 9.4 obeyed off-eye forms, 25 of 25 lines
+    writing the camera before the framing either way — for 270 words less prompt
+    per chunk. So `directed` no longer sees it. `candid` has no plan and still
+    free-writes its camera, so it still does, and it has to keep every form the
+    plan draws from.
+    """
+    forms = _node_json(FORMS_PROBE % {"kinds": (ROOT / "frontend/src/kinds.js").as_posix()},
+                       tmp_path_factory.mktemp("cameraforms"))
+
+    # Re-inlined into the instruction, it reaches a planned shoot again as a
+    # second voice offering positions that are already decided.
+    assert forms["inInstruction"] is False, forms
+
+    # And a form the plan can draw is a form the free-writing manner must have
+    # seen, or candid invents `at her hip height` and gets eye level back.
+    assert forms["missing"] == [], forms
+
+    # The gate itself: appended only when there is no plan.
+    enhance = (ROOT / "frontend/src/enhance.js").read_text(encoding="utf-8")
+    assert r"cameras ? '' : `\n\n${CAMERA_FORMS}`" in enhance

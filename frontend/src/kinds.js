@@ -987,6 +987,38 @@ export const STAGE_PLAN_INSTRUCTION =
 export const SHOOT_FIELDS =
   ['camera', 'act', 'her', 'him', 'worn', 'technique', 'face']
 
+/** Where the camera may stand, handed to a writer that has no camera plan.
+ *
+ *  It lived inside SHOOT_LINE_INSTRUCTION until `cameraPlan` started handing
+ *  `directed` a position per photograph, at which point it was a second voice
+ *  naming positions the plan had already decided - and shootChunkNote had to be
+ *  placed last just to outrank it. `candid` still free-writes its camera, so the
+ *  list is still the thing that keeps a height written as a camera and not as an
+ *  adverb; it moves here rather than being deleted.
+ *  ponytail: appended by shootLines when there is no plan, no manner table entry.
+ */
+export const CAMERA_FORMS =
+  'WHERE THE CAMERA IS, WRITTEN AS A CAMERA. These five are the reliable ones and need no '
+  + 'thought: `Taken from directly in front of her`, `Taken from behind her left shoulder, '
+  + 'her back three-quarters to the camera`, `Taken from her right side, her body in full '
+  + 'profile`, `Taken from her left side, her body in full profile`, `Taken from directly '
+  + 'behind her`.'
+  + ' Above, below and along the floor are available too, but ONLY named as a camera or a '
+  + 'shot, never as an adverb hung off the sentence. Most of these name no furniture, so they '
+  + 'are available in any room and not only on a bed: `Overhead camera directly above her`, '
+  + '`High camera looking steeply down at her`, `Low-angle shot from the floor '
+  + 'at her feet`, `Overhead camera directly above the bed`, '
+  + '`Low-angle shot from the foot of the bed looking up`, `Side-angle camera at mattress '
+  + 'level`, `Rear low camera behind him at bed height`. Written that way they are obeyed - '
+  + 'measured 2026-08-17, the overhead came back overhead and the mattress-level camera came '
+  + 'back at mattress level. Written as `from above her, looking down` or `from floor level` '
+  + 'the same angles are ignored and come back frontal, in six of six. It is the same angle '
+  + 'either way; what changes is whether it is a camera or a tag.\n'
+  + 'Move it around the shoot rather than settling on one: measured, thirty photographs '
+  + 'written with a framing in every line and no camera position in any of them came back '
+  + 'thirty frontal shots, and the same prompt with the position named moved the camera in '
+  + 'six of eight.\n'
+
 export const SHOOT_LINE_INSTRUCTION =
   'Write one photograph per object of a photo session, in the order they are shot. Each '
   + 'object is a whole photograph, and it arrives in seven fields rather than in one line: '
@@ -1022,26 +1054,6 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'with no framing in any of them came back as forty-five mid-shots, four of which happened '
   + 'to be full length — a shoot read in order was then one photograph taken forty-five '
   + 'times, whatever its clothes were doing.\n'
-  + 'WHERE THE CAMERA IS, WRITTEN AS A CAMERA. These five are the reliable ones and need no '
-  + 'thought: `Taken from directly in front of her`, `Taken from behind her left shoulder, '
-  + 'her back three-quarters to the camera`, `Taken from her right side, her body in full '
-  + 'profile`, `Taken from her left side, her body in full profile`, `Taken from directly '
-  + 'behind her`.'
-  + ' Above, below and along the floor are available too, but ONLY named as a camera or a '
-  + 'shot, never as an adverb hung off the sentence. Most of these name no furniture, so they '
-  + 'are available in any room and not only on a bed: `Overhead camera directly above her`, '
-  + '`High camera looking steeply down at her`, `Low-angle shot from the floor '
-  + 'at her feet`, `Overhead camera directly above the bed`, '
-  + '`Low-angle shot from the foot of the bed looking up`, `Side-angle camera at mattress '
-  + 'level`, `Rear low camera behind him at bed height`. Written that way they are obeyed - '
-  + 'measured 2026-08-17, the overhead came back overhead and the mattress-level camera came '
-  + 'back at mattress level. Written as `from above her, looking down` or `from floor level` '
-  + 'the same angles are ignored and come back frontal, in six of six. It is the same angle '
-  + 'either way; what changes is whether it is a camera or a tag.\n'
-  + 'Move it around the shoot rather than settling on one: measured, thirty photographs '
-  + 'written with a framing in every line and no camera position in any of them came back '
-  + 'thirty frontal shots, and the same prompt with the position named moved the camera in '
-  + 'six of eight.\n'
   + 'The framing says how much of her is in frame. It never says how much of her to write: every '
   + 'line still walks the whole body, close-ups included, because the state of the clothes is '
   + 'what the next photograph copies and a line that drops it to match a crop drops it for '
@@ -1379,8 +1391,10 @@ export const shootChunkNote = (at) =>
     ? 'The stages covering the photographs you are writing:\n'
       + at.stages.map((s) => `${s.from}-${s.to} | ${s.what}`).join('\n') + '\n'
     : '')
-  // Last, so it is what the reader meets last: the camera paragraph above still
-  // lists its examples, and whichever the reader meets last is the one that wins.
+  // Last, so it is what the reader meets last. It was placed here to outrank the
+  // example list SHOOT_LINE_INSTRUCTION used to carry; that list is CAMERA_FORMS
+  // now and a planned shoot never sees it, but last is still where the one thing
+  // the writer may not touch belongs.
   + (at.cameras?.length
     ? 'WHERE THE CAMERA STANDS IS ALREADY DECIDED for each of these photographs, and it is '
       + 'the one thing in the line that is not yours:\n'
