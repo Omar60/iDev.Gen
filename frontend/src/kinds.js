@@ -1309,11 +1309,83 @@ export const takesChunkNote = (at) =>
  *  by fifteen, repeated the same line while it had nothing left to remove — and
  *  then invented a whole new outfit to keep undressing, a schoolgirl uniform
  *  halfway through a session that began in a football jersey. */
+/** The camera positions this sampler was measured to obey, and nothing else.
+ *
+ *  The five at her eye level are the ones SHOOT_LINE_INSTRUCTION has always
+ *  called reliable. The three off eye level are the survivors of sessions 227
+ *  and 228, where the `camera` field was swapped by hand on one fixed line: only
+ *  *above* and *from the floor* are concepts this sampler has, the height has to
+ *  be the head of the phrase, and a place in the phrase eats the height —
+ *  `High camera looking down from the corner of the room` came back level.
+ *
+ *  The bed-anchored forms that also render (`Overhead camera directly above the
+ *  bed`, `Side-angle camera at mattress level`, …) are deliberately not here:
+ *  they name furniture, so they are wrong in any shoot that is not on a bed.
+ *  ponytail: no room detection, the furniture-free eight work everywhere.
+ */
+export const CAMERA_POSITIONS = [
+  { family: 'front', line: 'Taken from directly in front of her' },
+  { family: 'shoulder', line: 'Taken from behind her left shoulder, her back three-quarters to the camera' },
+  { family: 'side', line: 'Taken from her right side, her body in full profile' },
+  { family: 'side', line: 'Taken from her left side, her body in full profile' },
+  { family: 'behind', line: 'Taken from directly behind her' },
+  { family: 'overhead', line: 'Overhead camera directly above her' },
+  { family: 'overhead', line: 'High camera looking steeply down at her' },
+  { family: 'floor', line: 'Low-angle shot from the floor at her feet' },
+]
+
+/** Where the camera stands in each of `n` photographs, decided here and not by
+ *  the writer, the way `stagePlan` decides the arc.
+ *
+ *  Measured 2026-08-22, three arms of n=25 x 5 runs: the writer takes 19-20 of
+ *  25 camera fields verbatim from the five examples, and no wording of the
+ *  instruction moves that. Deleting the examples does move it — verbatim reuse
+ *  falls to about 1 — but the shoot does not change: classified by which side of
+ *  her the camera stands on, the free-writing arms had the same 5.8 position
+ *  families and the same biggest family as the control. What it did lose was the
+ *  field order and every verified form, inventing `at her hip height` and
+ *  `at mattress level`, which come back at eye level. So the choice is made here,
+ *  from the eight forms above, and the writer only has to word the framing.
+ *
+ *  Each step takes the least-used position whose family is not the one just
+ *  used, ties broken at random. That spreads the eight evenly without any quota
+ *  arithmetic and no two photographs running share a family.
+ */
+export const cameraPlan = (n, rand = Math.random) => {
+  const used = CAMERA_POSITIONS.map(() => 0)
+  const plan = []
+  let last = null
+  for (let i = 0; i < n; i += 1) {
+    // A single family cannot fill the ban, so there is always something left.
+    const open = CAMERA_POSITIONS
+      .map((p, at) => ({ p, at }))
+      .filter(({ p }) => p.family !== last)
+    const fewest = Math.min(...open.map(({ at }) => used[at]))
+    const pick = open.filter(({ at }) => used[at] === fewest)
+    const { p, at } = pick[Math.floor(rand() * pick.length) % pick.length]
+    used[at] += 1
+    last = p.family
+    plan.push(p.line)
+  }
+  return plan
+}
+
 export const shootChunkNote = (at) =>
   `${paced('photographs', at)}\n`
   + (at.stages?.length
     ? 'The stages covering the photographs you are writing:\n'
       + at.stages.map((s) => `${s.from}-${s.to} | ${s.what}`).join('\n') + '\n'
+    : '')
+  // Last, so it is what the reader meets last: the camera paragraph above still
+  // lists its examples, and whichever the reader meets last is the one that wins.
+  + (at.cameras?.length
+    ? 'WHERE THE CAMERA STANDS IS ALREADY DECIDED for each of these photographs, and it is '
+      + 'the one thing in the line that is not yours:\n'
+      + at.cameras.map((c, i) => `${at.from + i} | ${c}`).join('\n') + '\n'
+      + 'Open each line with the position given for its photograph, word for word, and then '
+      + 'your framing after it. Invent no other position and reword none of these: these are '
+      + 'the forms this camera was measured to obey, and a reworded one comes back as a '
+      + 'front view. The framing, the pose, the act and the expression are still yours.\n'
     : '')
   + (at.previous
     ? `Photograph ${at.from - 1} was:\n${at.previous}\n`

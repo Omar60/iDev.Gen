@@ -13,7 +13,7 @@ import {
   ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES, REACH, MANNER,
   SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
-  takesChunkNote, wardrobeChunkNote, shootChunkNote,
+  takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan,
 } from './kinds.js'
 
 export const ask = (payload) => api.post('/api/enhance', payload).then((r) => r.lines || [])
@@ -322,6 +322,13 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // The arc, decided once and in numbers. Derived per round it was derived
   // differently per round; see STAGE_PLAN_INSTRUCTION.
   const stages = await stagePlan(brief, wardrobe, n, bare)
+  // The camera, decided once and in numbers, for the same reason the arc is.
+  // `directed` only: MANNER.candid.line has its own paragraph putting the camera
+  // where a phone was set down, and that paragraph was working — measured, a
+  // stronger competing list upstream overrode it and flattened candid.
+  // ponytail: a candid plan would need its own eight positions, add when candid
+  // is measured to need one.
+  const cameras = manner === 'directed' ? cameraPlan(n) : null
   onProgress?.(0, n)
 
   const lines = await inChunks(n, (made) => onProgress?.(made, n), (at) => {
@@ -340,7 +347,8 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
                + (bare ? `\n\n${EXPLICIT_REGISTER}` : act ? `\n\n${EXPLICIT_STRETCH}` : '')
                + (MANNER[manner]?.line ? `\n\n${MANNER[manner].line}` : '')
                + `\n\nThe shoot goes like this:\n${brief}`
-               + `\n\n${shootChunkNote({ ...at, bare, stages: covered })}`,
+               + `\n\n${shootChunkNote({ ...at, bare, stages: covered,
+                                         cameras: cameras?.slice(at.from - 1, at.from - 1 + at.want) })}`,
     // The look is context and not part of the answer: it is prepended to every
     // frame by the app, so the writer needs to know it in order not to repeat it.
     context: look,
