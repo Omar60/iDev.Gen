@@ -513,3 +513,20 @@ def test_a_truncated_answer_keeps_the_photographs_that_closed():
     assert [r["prompt"] for r in out] == [
         "Angle & Framing:\nTaken from her left side.\n\nPose:\nshe stands.",
         "Angle & Framing:\nTaken from behind her.\n\nPose:\nshe kneels."]
+
+
+def test_the_headings_name_the_fields_the_writer_is_asked_for():
+    """`SHOOT_FIELDS` lives in the frontend and `BLOCK_HEADINGS` in the backend,
+    and nothing joins them: a field added to one and not the other loses its
+    heading and lands in the flat fallback, which is the format measured to come
+    back as a lit set instead of a phone snapshot. `technique` was added to both
+    by hand once already."""
+    import pathlib
+    import re
+
+    src = (pathlib.Path(__file__).resolve().parents[1]
+           / "frontend/src/kinds.js").read_text(encoding="utf-8")
+    listed = re.search(r"SHOOT_FIELDS\s*=\s*\[(.*?)\]", src, re.S)
+    assert listed, "SHOOT_FIELDS is no longer a literal array in kinds.js"
+    fields = re.findall(r"'([^']+)'", listed.group(1))
+    assert fields == list(enhance.BLOCK_HEADINGS), (fields, enhance.BLOCK_HEADINGS)
