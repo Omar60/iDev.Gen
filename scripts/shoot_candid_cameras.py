@@ -142,6 +142,24 @@ REST_NEUTRAL = REST.replace(
 
 SUBJECTS = {"front": REST, "neutral": REST_NEUTRAL}
 
+# Session 253 shot a whole 24-photograph candid shoot, written by the real writer
+# with the plan in hand, and it obeyed 13 of 24 where the hand-fixed arms were
+# 3/3 a form. Two differences between an arm and a real line are testable, and
+# one of them is a tail on the framing:
+#
+#   * the careless-framing clause, shipped in `9c06cdd`, which the writer now
+#     puts in 15.8 lines of 25. Two of the three frontal misses carried one and
+#     both came back `overhead`. `a stretch of empty room above her head` may be
+#     tipping the camera up, which a text measurement can never see.
+#   * the crop. The writer paired `Phone propped on a high shelf across the room`
+#     with `a full-length photograph` all three times and it was 0/3, where the
+#     same clause waist-up was 3/3 in session 245. `--framing full --only N1`
+#     asks that one and needs no tail.
+TAILS = {
+    "none": "",
+    "careless": ", she is off to the left of the frame and a stretch of empty room above her head",
+}
+
 # label, the camera clause, and what the clause is for. The three controls come
 # first so a run read in order fails loudly at the top if the rig is wrong.
 ARMS = [
@@ -208,8 +226,9 @@ ARMS = [
 ]
 
 
-def prompt_for(camera: str, framing: str = FRAMING, look: str = LOOK, rest: str = REST) -> str:
-    return f"zchar_jir.\n\n{look}\n\nAngle & Framing:\n{camera}, {framing}.\n{rest}"
+def prompt_for(camera: str, framing: str = FRAMING, look: str = LOOK, rest: str = REST,
+               tail: str = "") -> str:
+    return f"zchar_jir.\n\n{look}\n\nAngle & Framing:\n{camera}, {framing}{tail}.\n{rest}"
 
 
 def main() -> int:
@@ -217,6 +236,8 @@ def main() -> int:
     ap.add_argument("--base", default="http://127.0.0.1:8777")
     ap.add_argument("--dry-run", action="store_true", help="print the arms and write nothing")
     ap.add_argument("--framing", choices=tuple(FRAMINGS), default="waist")
+    ap.add_argument("--tail", choices=tuple(TAILS), default="none",
+                    help="`careless` hangs the shipped careless-framing clause on the framing")
     ap.add_argument("--subject", choices=tuple(SUBJECTS), default="front",
                     help="`neutral` stops the Subject block naming which side of her the "
                          "garments are seen from")
@@ -229,14 +250,18 @@ def main() -> int:
     framing = FRAMINGS[args.framing]
     look = LOOKS[args.look]
     rest = SUBJECTS[args.subject]
+    tail = TAILS[args.tail]
     wanted = tuple(w.strip() for w in args.only.split(",") if w.strip())
-    arms = [a for a in ARMS if not wanted or a[0].startswith(wanted)]
+    # By the CODE before the first dash, not by prefix: `--only N1` matched N1,
+    # N10 through N15 and built a 21-photograph session out of a 3-photograph
+    # question (session 255, left unrun).
+    arms = [a for a in ARMS if not wanted or a[0].split("-")[0] in wanted]
     if not arms:
         print(f"no arm matches --only {args.only}")
         return 1
 
     shots = [
-        {"label": f"{label}-s{i + 1}", "prompt": prompt_for(camera, framing, look, rest), "verbatim": True,
+        {"label": f"{label}-s{i + 1}", "prompt": prompt_for(camera, framing, look, rest, tail), "verbatim": True,
          "seed": seed, "count": 1}
         for label, camera, _ in arms
         for i, seed in enumerate(SEEDS)
@@ -245,18 +270,18 @@ def main() -> int:
     for label, camera, why in arms:
         print(f"{label:<22} {camera}\n{'':<22} ({why})")
     print(f"\n{len(arms)} arms x {len(SEEDS)} seeds = {len(shots)} photographs, "
-          f"{args.framing} crop, {args.look} look, {args.subject} subject")
+          f"{args.framing} crop, {args.look} look, {args.subject} subject, {args.tail} tail")
 
     if args.dry_run:
         print("\n--- the prompt of the first arm ---")
-        print(prompt_for(arms[0][1], framing, look, rest))
+        print(prompt_for(arms[0][1], framing, look, rest, tail))
         return 0
 
     out = create_session(
         args.base,
         "CANDID CAMERAS - 6 formas de telefono contra 3 controles, 3 seeds"
-        + (f" [{args.framing}/{args.look}/{args.subject}, {args.only}]"
-           if wanted or args.framing != "waist" or args.look != "candid" or args.subject != "front" else ""),
+        + (f" [{args.framing}/{args.look}/{args.subject}/{args.tail}, {args.only}]"
+           if wanted or args.framing != "waist" or args.look != "candid" or args.subject != "front" or args.tail != "none" else ""),
         shots, SETTINGS)
     print(f"\nsession {out['id']} created as a draft, {len(shots)} pending")
     print(f"run it with: curl -X POST {args.base}/api/sessions/{out['id']}/run")
