@@ -42,13 +42,22 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("run", help="a JSON run from measure_writer.mjs")
     ap.add_argument("--base", default="http://127.0.0.1:8777")
-    ap.add_argument("--manner", choices=("candid", "directed"), default="candid")
+    ap.add_argument("--manner", choices=("candid", "directed", "selfie"), default="candid")
     ap.add_argument("--name", default="")
+    # The camera work was all shot on the Krea 2 mix, which is the right base for a
+    # question about where a camera stands and the wrong one for a shoot that has
+    # to render an act: session 161, the shoot the `selfie` manner came from, was
+    # finepornV4 at 12 steps. One flag rather than three, since the two presets
+    # are the two that have ever been used here.
+    ap.add_argument("--explicit-model", action="store_true",
+                    help="finepornV4 at 12 steps / er_sde, as sessions 155 and 161 were shot")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     lines = lines_from(args.run)
-    look = ROOM + (CANDID_CAPTURE if args.manner == "candid" else "")
+    # `selfie` is `candid` in the look as much as in the manner: same phone, same
+    # room, same capture quality. It inherits the clause word for word.
+    look = ROOM + (CANDID_CAPTURE if args.manner in ("candid", "selfie") else "")
     # NOT verbatim, and this is the whole point of the script. `verbatim` means
     # "queue exactly as given" - no trigger, no base prompt, no look - which is
     # right for a hand-fixed arm that writes all three into its own prompt and
@@ -68,7 +77,10 @@ def main() -> int:
     # `use_look` on, and the look in the session's own column: the app prepends it
     # to every take, which is what makes twenty photographs one shoot.
     settings = {**SETTINGS, "use_look": True}
-    out = create_session(args.base, args.name or f"SHOOT ESCRITO - {args.manner}, plan de camara",
+    if args.explicit_model:
+        settings |= {"checkpoint": "finepornV4INT8NVFP4BF16_v4Nvfp4.safetensors",
+                     "steps": 12, "sampler": "er_sde", "scheduler": "beta"}
+    out = create_session(args.base, args.name or f"WRITTEN SHOOT - {args.manner}, camera plan",
                          shots, settings, look)
     print(f"\nsession {out['id']} created as a draft, {len(shots)} pending")
     print(f"run it with: curl -X POST {args.base}/api/sessions/{out['id']}/run")

@@ -200,10 +200,41 @@ KISS_ASKED = [
     ("open", "both eyes open and looking straight at the lens"),
 ]
 
+# The sixth question, and the one an explicit shoot is actually shot for. Every
+# other question here is about where the camera stood; this one asks whether the
+# photograph contains the thing the line asked for at all. It exists because the
+# `selfie` manner claims two bodies and an act in nearly every frame, and a shoot
+# that comes back as a woman alone making a face has failed in a way no camera
+# question can see.
+ACT = """Look at this photograph and answer with ONE word and nothing else.
+
+How many people are in it, and what are they doing?
+
+alone - only one person is in the photograph
+together - two or more people, close or touching, but not having sex
+sex - two or more people having sex, their bodies joined
+
+Answer with exactly one of: alone, together, sex."""
+
+ACT_WORDS = ("alone", "together", "sex")
+
+# What the LINE asked for, read off the line. Deliberately crude: any of these
+# words in a line means the line asked for the act, and the judge is what decides
+# whether the photograph has it. `two people in frame` is here because that is
+# the phrase every explicit line in this project carries.
+ACT_ASKED = (
+    "penetrat", "inside her", "his penis in", "fucking", "joined",
+    "riding him", "thrusting",
+)
+
 DEVICE_YES = (
     "phone held out at arm's length in front of her face",
     "mirror selfie, the phone up in her right hand",
     "mirror selfie with her back to the mirror, looking over her shoulder",
+    # The `selfie` manner's own two, where the phone is in her own hand and
+    # pointed at her: the same shape as the arm's-length form above.
+    "phone held low in her own hand at her chest",
+    "phone held above her face in her own outstretched hand",
 )
 
 
@@ -269,7 +300,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("session", type=int)
     ap.add_argument("--base", default="http://127.0.0.1:8777")
-    ap.add_argument("--question", choices=("position", "turn", "side", "device", "kiss"),
+    ap.add_argument("--question",
+                    choices=("position", "turn", "side", "device", "kiss", "act"),
                     default="position",
                     help="position = which side of her the camera stands on, heights winning "
                          "over horizontals; turn = how far her body is turned, which is the only "
@@ -277,7 +309,9 @@ def main() -> int:
                          "horizontal alone, ignoring height, which is the only way to see "
                          "whether the tail of an off-eye form landed; device = whether a phone "
                          "was painted into the photograph, which every candid form has to be "
-                         "scored on as well as on its position")
+                         "scored on as well as on its position; act = whether the photograph "
+                         "has two bodies and the act in it at all, which is the question an "
+                         "explicit shoot is shot for")
     ap.add_argument("--repeat", type=int, default=1,
                     help="judge each photograph this many times; the judge has its own "
                          "variance and one pass cannot see it")
@@ -294,6 +328,7 @@ def main() -> int:
         "side": (SIDE, SIDE_WORDS),
         "device": (DEVICE, DEVICE_WORDS),
         "kiss": (KISS, KISS_WORDS),
+        "act": (ACT, ACT_WORDS),
     }.get(args.question, (QUESTION, WORDS))
 
     hits, rows, skipped = 0, [], 0
@@ -307,6 +342,9 @@ def main() -> int:
         elif args.question == "device":
             low = " ".join(shot["prompt"].split()).lower()
             want = "yes" if any(c in low for c in DEVICE_YES) else "no"
+        elif args.question == "act":
+            low = " ".join(shot["prompt"].split()).lower()
+            want = "sex" if any(w in low for w in ACT_ASKED) else "together"
         elif args.question == "side":
             want = asked_of(shot["prompt"], SIDE_ASKED)
         else:
