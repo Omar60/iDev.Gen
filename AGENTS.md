@@ -106,7 +106,12 @@ behaviour, change the test on purpose, never delete it to get green.
   forgotten the feet, the repair put them back, and seventeen renders of twenty
   came back with a disembodied penis and no man in the frame. Nothing failed;
   there was nothing to fail. `tests/test_shoot_checks.py` now runs the real
-  JavaScript, and scans every tracked file for control characters.
+  JavaScript, and scans every tracked file for control characters — and,
+  for the same reason, for trailing whitespace. Both are edits no reviewer
+  can see. Saying so here was not enough on its own: asked twice to strip
+  trailing spaces, an assistant answered twice that the check was clean
+  without running it. A rule an agent can claim to have followed is not a
+  rule; it has to be a test.
 - **A `verbatim` take is queued exactly as given.** "More like this" hands back a
   prompt that already carries trigger, base prompt and look; composing it again
   duplicates all three.

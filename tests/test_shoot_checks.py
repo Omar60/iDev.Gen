@@ -50,6 +50,47 @@ def test_no_control_characters_in_tracked_files():
                            + "\n".join(offenders))
 
 
+def test_no_trailing_whitespace_in_tracked_files():
+    """The same family as the control characters above: a change nobody can see.
+
+    Trailing spaces survive review because there is nothing to look at — the
+    editor shows the line as it would be either way, and the diff shows a `+`
+    with nothing after it. They arrive by the handful when a file is edited by
+    something that indents a blank line, and they make every later diff of that
+    file noisier than the change it carries.
+
+    A rule for this already existed in prose and was worth nothing: asked twice
+    to strip them, an assistant answered twice that the check came back clean,
+    having never run it. A rule an agent can claim to have followed is not a
+    rule. This one is a test, and no summary talks it out of failing.
+
+    No exemption for Markdown two-space hard break: the tree has never used one,
+    and a line break worth having is worth an empty line.
+    """
+    offenders = []
+    for rel in tracked_files():
+        if Path(rel).suffix.lower() in SKIP_SUFFIXES:
+            continue
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for n, line in enumerate(text.split("\n"), 1):
+            if line != line.rstrip():
+                offenders.append(f"{rel}:{n}: {len(line) - len(line.rstrip())} trailing")
+
+    assert not offenders, ("trailing whitespace in tracked files:\n"
+                           + "\n".join(offenders))
+
+
+def test_the_trailing_whitespace_scan_actually_bites():
+    """A guard that cannot fail is decoration."""
+    assert "x  " != "x  ".rstrip()
+    assert "x\t" != "x\t".rstrip()
+    assert "   " != "   ".rstrip()          # an indented blank line is the common one
+    assert "x" == "x".rstrip()
+
+
 # ---------------------------------------------------------------------------
 # The behaviour, run for real.
 
