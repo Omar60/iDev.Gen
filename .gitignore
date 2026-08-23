@@ -10,8 +10,12 @@ frontend/dist/
 config.json
 
 # Local tool state: agent settings, and the launch config that names ports and
-# commands for this machine
+# commands for this machine. `.agent/` is the same thing for a second agent —
+# generated skills and workflows, rewritten by `openspec update`, one copy per
+# tool. The plan under `openspec/` is tracked on purpose; the instructions that
+# teach one editor to read it are not.
 .claude/
+.agent/
 
 # Sessions, database, generated images
 data/
