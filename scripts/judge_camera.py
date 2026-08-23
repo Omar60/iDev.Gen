@@ -227,6 +227,36 @@ ACT_ASKED = (
     "riding him", "thrusting",
 )
 
+# The seventh question, and the one the `selfie` manner is actually for. The
+# device question asks whether a phone was painted, and session 264 showed that
+# is the wrong proxy: rated by hand, the photographs that read as HERS are the
+# ones the device judge called deviceless, while the one frame with the phone
+# plainly in her hand reads as someone else holding the camera - outside a
+# mirror, a visible device means a visible photographer. So this asks the only
+# thing that matters, and says nothing about phones or arms.
+HOLDER = """Look at this photograph and answer with ONE word and nothing else.
+
+Who was holding the camera?
+
+herself - she took it of herself: her own arm reaches toward the lens, or it is
+  her reflection in a mirror
+someone - another person is holding the camera, or it is resting on something
+
+Answer with exactly one of: herself, someone."""
+
+HOLDER_WORDS = ("herself", "someone")
+
+# The forms that ask to be read as hers. Everything else in either catalogue is
+# a camera somebody or something else is holding, including the propped phone -
+# a phone on a shelf is a tripod as far as the photograph is concerned.
+HOLDER_SELF = (
+    "phone held out at arm's length in front of her face",
+    "mirror selfie, the phone up in her right hand",
+    "mirror selfie with her back to the mirror, looking over her shoulder",
+    "phone held low in her own hand at her chest",
+    "phone held above her face in her own outstretched hand",
+)
+
 DEVICE_YES = (
     "phone held out at arm's length in front of her face",
     "mirror selfie, the phone up in her right hand",
@@ -301,7 +331,7 @@ def main() -> int:
     ap.add_argument("session", type=int)
     ap.add_argument("--base", default="http://127.0.0.1:8777")
     ap.add_argument("--question",
-                    choices=("position", "turn", "side", "device", "kiss", "act"),
+                    choices=("position", "turn", "side", "device", "kiss", "act", "holder"),
                     default="position",
                     help="position = which side of her the camera stands on, heights winning "
                          "over horizontals; turn = how far her body is turned, which is the only "
@@ -311,7 +341,10 @@ def main() -> int:
                          "was painted into the photograph, which every candid form has to be "
                          "scored on as well as on its position; act = whether the photograph "
                          "has two bodies and the act in it at all, which is the question an "
-                         "explicit shoot is shot for")
+                         "explicit shoot is shot for; holder = whether the photograph reads "
+                         "as one she took of herself, which is the question the `selfie` "
+                         "manner exists for and the one the device question was standing in "
+                         "for badly")
     ap.add_argument("--repeat", type=int, default=1,
                     help="judge each photograph this many times; the judge has its own "
                          "variance and one pass cannot see it")
@@ -329,6 +362,7 @@ def main() -> int:
         "device": (DEVICE, DEVICE_WORDS),
         "kiss": (KISS, KISS_WORDS),
         "act": (ACT, ACT_WORDS),
+        "holder": (HOLDER, HOLDER_WORDS),
     }.get(args.question, (QUESTION, WORDS))
 
     hits, rows, skipped = 0, [], 0
@@ -342,6 +376,9 @@ def main() -> int:
         elif args.question == "device":
             low = " ".join(shot["prompt"].split()).lower()
             want = "yes" if any(c in low for c in DEVICE_YES) else "no"
+        elif args.question == "holder":
+            low = " ".join(shot["prompt"].split()).lower()
+            want = "herself" if any(c in low for c in HOLDER_SELF) else "someone"
         elif args.question == "act":
             low = " ".join(shot["prompt"].split()).lower()
             want = "sex" if any(w in low for w in ACT_ASKED) else "together"
