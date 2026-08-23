@@ -255,6 +255,11 @@ HOLDER_SELF = (
     "mirror selfie with her back to the mirror, looking over her shoulder",
     "phone held low in her own hand at her chest",
     "phone held above her face in her own outstretched hand",
+    # The device word taken out, which is a form the catalogue does not carry and
+    # `shoot_selfie_cameras.py` shoots as S5. Without this line its arm was scored
+    # against `someone` and passed for the wrong reason: it asks to be read as hers
+    # exactly as much as the form it is paired with.
+    "taken from an arm's length in front of her face",
 )
 
 DEVICE_YES = (
