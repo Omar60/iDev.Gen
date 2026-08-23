@@ -49,7 +49,14 @@ def main() -> int:
 
     lines = lines_from(args.run)
     look = ROOM + (CANDID_CAPTURE if args.manner == "candid" else "")
-    shots = [{"label": f"{i + 1:02d}", "prompt": line, "verbatim": True, "count": 1}
+    # NOT verbatim, and this is the whole point of the script. `verbatim` means
+    # "queue exactly as given" - no trigger, no base prompt, no look - which is
+    # right for a hand-fixed arm that writes all three into its own prompt and
+    # catastrophic here: session 253 was shot that way and rendered a different
+    # woman in a different room with no candid capture at all, then read as the
+    # plan obeying 13 of 24. A written line is the take, and the app composes
+    # trigger + base + look + wardrobe + take around it, exactly as a real shoot.
+    shots = [{"label": f"{i + 1:02d}", "prompt": line, "count": 1}
              for i, line in enumerate(lines)]
 
     print(f"{len(shots)} photographs, {args.manner}, look {len(look.split())} words")
@@ -58,11 +65,11 @@ def main() -> int:
         print(lines[0])
         return 0
 
-    # `use_look` on, unlike the hand-fixed arm batches: there the look was written
-    # into every prompt, here it is the session's, which is how a shoot works.
+    # `use_look` on, and the look in the session's own column: the app prepends it
+    # to every take, which is what makes twenty photographs one shoot.
     settings = {**SETTINGS, "use_look": True}
     out = create_session(args.base, args.name or f"SHOOT ESCRITO - {args.manner}, plan de camara",
-                         shots, settings)
+                         shots, settings, look)
     print(f"\nsession {out['id']} created as a draft, {len(shots)} pending")
     print(f"run it with: curl -X POST {args.base}/api/sessions/{out['id']}/run")
     return 0

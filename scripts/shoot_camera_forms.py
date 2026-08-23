@@ -113,7 +113,7 @@ def prompt_for(camera: str) -> str:
     return f"zchar_jir.\n\n{LOOK}\n\nAngle & Framing:\n{camera}, {FRAMING}.\n{REST}"
 
 
-def create_session(base: str, name: str, shots: list, settings: dict) -> dict:
+def create_session(base: str, name: str, shots: list, settings: dict, look: str = "") -> dict:
     """The draft, posted once. Shared with `shoot_candid_cameras.py`.
 
     No retry, deliberately: a reset can arrive after the server has already
@@ -121,7 +121,7 @@ def create_session(base: str, name: str, shots: list, settings: dict) -> dict:
     233 as duplicate drafts.
     """
     body = {"model_id": 1, "workflow_id": 8, "name": name,
-            "look": "", "wardrobe": "", "settings": settings, "shots": shots}
+            "look": look, "wardrobe": "", "settings": settings, "shots": shots}
     req = urllib.request.Request(base + "/api/sessions",
                                  json.dumps(body).encode(), {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=120) as r:
