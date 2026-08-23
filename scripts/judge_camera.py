@@ -29,13 +29,44 @@ import urllib.request
 # already been written: what matters is what the line says, not what the plan
 # meant. See CAMERA_POSITIONS in frontend/src/kinds.js.
 ASKED = [
+    # Longest first: `overhead camera directly above her and behind her head`
+    # must not be eaten by the bare form it extends.
+    ("overhead", "overhead camera directly above her and behind her head"),
     ("overhead", "overhead camera directly above her"),
+    ("overhead", "high camera looking steeply down at her from her right side"),
     ("overhead", "high camera looking steeply down at her"),
     ("floor", "low-angle shot from the floor at her feet"),
+    ("floor", "low-angle shot from the floor behind her"),
+    ("floor", "low-angle shot from the floor in front of her"),
     ("shoulder", "taken from behind her left shoulder"),
+    ("shoulder", "taken from behind her right shoulder"),
     ("behind", "taken from directly behind her"),
     ("side", "taken from her right side"),
     ("side", "taken from her left side"),
+    ("front", "taken from her right front"),
+    ("front", "taken from directly in front of her"),
+]
+
+# What the same clauses ask of the HORIZONTAL alone, for `--question side`. A
+# form whose height is verified carries no horizontal at all - `Overhead camera
+# directly above her` is answered `overhead` by the position question whether the
+# camera ended up over her face or over her heels, so the one thing a tail form
+# is testing is the one thing that question cannot see. `None` means the clause
+# asks nothing horizontal and the arm is scored on the position question only.
+SIDE_ASKED = [
+    ("behind", "overhead camera directly above her and behind her head"),
+    (None, "overhead camera directly above her"),
+    ("side", "high camera looking steeply down at her from her right side"),
+    (None, "high camera looking steeply down at her"),
+    ("front", "low-angle shot from the floor at her feet"),
+    ("behind", "low-angle shot from the floor behind her"),
+    ("front", "low-angle shot from the floor in front of her"),
+    ("behind", "taken from behind her left shoulder"),
+    ("behind", "taken from behind her right shoulder"),
+    ("behind", "taken from directly behind her"),
+    ("side", "taken from her right side"),
+    ("side", "taken from her left side"),
+    ("front", "taken from her right front"),
     ("front", "taken from directly in front of her"),
 ]
 
@@ -82,11 +113,37 @@ Answer with exactly one of: facing, threequarter, profile, back."""
 
 TURN_WORDS = ("threequarter", "three-quarter", "profile", "facing", "back")
 
+# The third question, and the one a tail form is shot for. The position question
+# is told to answer with the HEIGHT whenever a photograph is both high and to one
+# side, which is right when the catalogue's off-eye forms carry no horizontal -
+# and blind to the only thing that changes when one is hung on the end. So this
+# asks the horizontal alone and says nothing about height. Left and right are one
+# word on purpose: a judge that has to tell her left from her right is answering a
+# harder question than the one being asked.
+SIDE = """Look at this photograph and answer with ONE word and nothing else.
 
-def asked_of(prompt: str) -> str:
-    """The family the LINE asked for, read off the line itself."""
+Ignore how high or low the camera is. Going around her, which way was it facing
+her from?
+
+front - you see the front of her body, her chest and the front of her legs
+side - you see her from her left or her right, neither her front nor her back
+  squarely toward the lens
+behind - you see her back, the camera is behind her
+
+Answer with exactly one of: front, side, behind."""
+
+SIDE_WORDS = ("front", "side", "behind")
+
+
+def asked_of(prompt: str, table: list | None = None) -> str | None:
+    """The answer the LINE asked for, read off the line itself.
+
+    `None` back from the side table is not a failure to match: it is a clause
+    that asks nothing horizontal, and the caller skips the photograph rather than
+    scoring it against an expectation nobody wrote.
+    """
     low = " ".join(prompt.split()).lower()
-    for family, opening in ASKED:
+    for family, opening in (table or ASKED):
         if opening in low:
             return family
     return "?"
@@ -140,10 +197,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("session", type=int)
     ap.add_argument("--base", default="http://127.0.0.1:8777")
-    ap.add_argument("--question", choices=("position", "turn"), default="position",
-                    help="position = which side of her the camera stands on; turn = how far her "
-                         "body is turned, which is the only way to see a three-quarter rendered "
-                         "for a profile")
+    ap.add_argument("--question", choices=("position", "turn", "side"), default="position",
+                    help="position = which side of her the camera stands on, heights winning "
+                         "over horizontals; turn = how far her body is turned, which is the only "
+                         "way to see a three-quarter rendered for a profile; side = the "
+                         "horizontal alone, ignoring height, which is the only way to see "
+                         "whether the tail of an off-eye form landed")
     ap.add_argument("--repeat", type=int, default=1,
                     help="judge each photograph this many times; the judge has its own "
                          "variance and one pass cannot see it")
@@ -155,13 +214,25 @@ def main() -> int:
         return 1
 
     turn = args.question == "turn"
-    question, words = (TURN, TURN_WORDS) if turn else (QUESTION, WORDS)
+    question, words = {
+        "turn": (TURN, TURN_WORDS),
+        "side": (SIDE, SIDE_WORDS),
+    }.get(args.question, (QUESTION, WORDS))
 
-    hits, rows = 0, []
+    hits, rows, skipped = 0, [], 0
     for shot in shots:
         # On the turn question every arm asks for the same thing and the label
         # carries which wording asked for it, so the line is not what is compared.
-        want = "profile" if turn else asked_of(shot["prompt"])
+        if turn:
+            want = "profile"
+        elif args.question == "side":
+            want = asked_of(shot["prompt"], SIDE_ASKED)
+        else:
+            want = asked_of(shot["prompt"])
+        # A clause with no horizontal in it is not scored on the horizontal.
+        if want is None:
+            skipped += 1
+            continue
         saw = [judge(args.base, shot["id"], question, words) for _ in range(args.repeat)]
         # A photograph counts as obeyed when the majority of passes agree with the
         # line. At --repeat 1 that is simply the one answer.
@@ -171,7 +242,8 @@ def main() -> int:
         rows.append((shot.get("shot_label") or shot["shot_index"] + 1, want, saw, ok))
         print(f'{str(rows[-1][0]):>4} | asked {want:<9} | saw {", ".join(saw):<28} | {"OK" if ok else "--"}')
 
-    print(f"\nobeyed {hits}/{len(shots)}")
+    print(f"\nobeyed {hits}/{len(rows)}"
+          + (f" ({skipped} skipped: the clause asks nothing horizontal)" if skipped else ""))
     by_family: dict[str, list[int]] = {}
     for _, want, _, ok in rows:
         by_family.setdefault(want, []).append(ok)

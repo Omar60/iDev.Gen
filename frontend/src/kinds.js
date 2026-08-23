@@ -998,9 +998,10 @@ export const SHOOT_FIELDS =
  *  ponytail: appended by shootLines when there is no plan, no manner table entry.
  */
 export const CAMERA_FORMS =
-  'WHERE THE CAMERA IS, WRITTEN AS A CAMERA. These five are the reliable ones and need no '
+  'WHERE THE CAMERA IS, WRITTEN AS A CAMERA. These six are the reliable ones and need no '
   + 'thought: `Taken from directly in front of her`, `Taken from behind her left shoulder, '
-  + 'her back three-quarters to the camera`, `Taken from her right side, her body in full '
+  + 'her back three-quarters to the camera`, `Taken from behind her right shoulder, her '
+  + 'back three-quarters to the camera`, `Taken from her right side, her body in full '
   + 'profile`, `Taken from her left side, her body in full profile`, `Taken from directly '
   + 'behind her`.'
   + ' Above, below and along the floor are available too, but ONLY named as a camera or a '
@@ -1333,14 +1334,42 @@ export const takesChunkNote = (at) =>
  *  be the head of the phrase, and a place in the phrase eats the height —
  *  `High camera looking down from the corner of the room` came back level.
  *
+ *  The right shoulder is session 244's one adoption, on the same protocol: nine
+ *  passes of the blind judge over three seeds, unanimous on where the camera
+ *  stood AND on which way it faced her. A left/right mirror is a different
+ *  photograph rather than a different wording, and it is the cheapest kind of
+ *  entry there is — the sampler already had the concept, nobody had asked.
+ *
+ *  WHY THERE IS NO NINTH FAMILY, and session 244 is where five candidates died:
+ *
+ *  A horizontal hung off a verified height is ignored, 0 of 9 photographs, and
+ *  on the floor it destroys the height it was hung on. `Low-angle shot from the
+ *  floor at her feet` alone is obeyed 3/3; the same head word with ANY tail —
+ *  `behind her`, `in front of her` — falls to 1/3 and comes back at eye level.
+ *  Overhead survives the weight (3/3) but disobeys the tail just the same. So
+ *  228's law goes one further: the vertical must be the head of the phrase and
+ *  it carries no passengers. A height is a whole position, not a prefix.
+ *
+ *  And a front three-quarter was not added because the catalogue already has
+ *  one. `Taken from her right front, her body turned three-quarters toward the
+ *  camera` moved the torso off square by a little and the judge read it `facing`
+ *  in 7 passes of 9, against 9 of 9 for the frontal control — a two-vote
+ *  difference is not a measurement. Meanwhile the two `side` entries below
+ *  render a three-quarter turn on Krea 2 every time, because a ninety-degree
+ *  profile is a concept that base does not have (see
+ *  [[idevgen-profile-is-a-base-model-limit]]). The family exists; it is spelled
+ *  `side` and labelled for what it ASKS, not for what it renders. A third way of
+ *  asking for the same photograph is not a ninth position.
+ *
  *  The bed-anchored forms that also render (`Overhead camera directly above the
  *  bed`, `Side-angle camera at mattress level`, …) are deliberately not here:
  *  they name furniture, so they are wrong in any shoot that is not on a bed.
- *  ponytail: no room detection, the furniture-free eight work everywhere.
+ *  ponytail: no room detection, the furniture-free nine work everywhere.
  */
 export const CAMERA_POSITIONS = [
   { family: 'front', line: 'Taken from directly in front of her' },
   { family: 'shoulder', line: 'Taken from behind her left shoulder, her back three-quarters to the camera' },
+  { family: 'shoulder', line: 'Taken from behind her right shoulder, her back three-quarters to the camera' },
   { family: 'side', line: 'Taken from her right side, her body in full profile' },
   { family: 'side', line: 'Taken from her left side, her body in full profile' },
   { family: 'behind', line: 'Taken from directly behind her' },
