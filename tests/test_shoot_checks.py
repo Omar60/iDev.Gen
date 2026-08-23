@@ -558,6 +558,35 @@ console.log(JSON.stringify({
     "She kneels on the bed with her palms flat in front of her, a naked man behind her "
     + "penetrating her, his penis inside her, two people in frame, her mouth open.",
     "", 200).some((p) => p.includes("OPEN with where the camera")),
+  // Half the candid catalogue opens with a phone, and the check did not know it:
+  // a shoot that obeyed its camera plan word for word had 13 lines of 20 called
+  // cameraless, and the repair rewrote lines that were right. Both phone forms
+  // are measured renders (sessions 245-251), so both pass the check.
+  openerPhone: !problemsWith(
+    "Phone propped on a high shelf across the room, looking down at her, a full-length "
+    + "photograph, head to feet, a naked man beneath her penetrating her, two people in "
+    + "frame, her mouth open.",
+    "", 200).some((p) => p.includes("OPEN with where the camera")),
+  openerMirror: !problemsWith(
+    "Mirror selfie, the phone up in her right hand and visible in the mirror, a waist-up "
+    + "photograph, a naked man behind her penetrating her, two people in frame, her mouth open.",
+    "", 200).some((p) => p.includes("OPEN with where the camera")),
+  // `the tops of her thighs` is not a garment. It was read as one, and an
+  // explicit shoot with no clothes in it at all had a quarter of its lines
+  // flagged for putting a top back on.
+  topsOfThighs: !problemsWith(
+    "Taken from directly in front of her, a waist-up photograph, the tops of her thighs bare, "
+    + "her chest bare, her feet bare, a naked man behind her penetrating her, two people in "
+    + "frame, her mouth open.",
+    "Taken from her right side, her body in full profile, a waist-up photograph, her chest "
+    + "bare, her hips bare, her feet bare, a naked man behind her penetrating her, two people "
+    + "in frame, her eyes shut.", 200).some((p) => p.includes("puts back")),
+  // And a top that is really a top still comes back flagged.
+  topPutBack: problemsWith(
+    "Taken from directly in front of her, a waist-up photograph, the green crop top back on "
+    + "over her chest, her hips bare, her feet bare, her mouth open.",
+    "Taken from her right side, her body in full profile, a waist-up photograph, her chest "
+    + "bare, her hips bare, her feet bare, her eyes shut.", 200).some((p) => p.includes("puts back")),
   noOrderComplaint: !problemsWith(
     "Taken from her right side, her body in full profile, a waist-up photograph, of her on "
     + "all fours on the bed, a slim green choker at the base of her throat, thin green bands "
@@ -585,6 +614,19 @@ def test_the_camera_may_be_named_as_a_camera(trimmed):
     assert trimmed["openerNamedCamera"], "a named camera should open a line"
     assert trimmed["openerTakenFrom"], "the five `Taken from` clauses still open a line"
     assert trimmed["openerMissing"], "a line with no camera at all must still be flagged"
+    # The phone forms are cameras too. `CANDID_POSITIONS` shipped without this and
+    # the check flagged them for two sessions.
+    assert trimmed["openerPhone"], "a propped phone is where the camera is"
+    assert trimmed["openerMirror"], "a mirror selfie is where the camera is"
+
+
+def test_a_bare_thigh_is_not_a_garment_coming_back(trimmed):
+    """`the tops of her thighs bare` is the body, not a crop top. The put-back
+    check read it as one and flagged five lines of twenty in a shoot where
+    nobody was wearing anything - and a check that cries wolf is a check that
+    gets turned off. A real top coming back is still caught."""
+    assert trimmed["topsOfThighs"], "a bare thigh is not a garment"
+    assert trimmed["topPutBack"], "a top put back on must still be flagged"
 
 
 def test_the_code_cuts_what_the_repair_would_not(trimmed):

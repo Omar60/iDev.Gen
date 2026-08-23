@@ -861,7 +861,13 @@ const contentProblems = (rawLine, rawPrevious) => {
   // `Low-angle shot from the foot of the bed`. Both forms are measured to be obeyed; the
   // adverbial form of those same angles is not, so the check looks for the noun rather
   // than for one fixed opening.
-  if (!/^[^,:]{0,70}\b(taken from|camera|shot|snapshot|angle|view)\b/i.test(line)) {
+  // `phone` and `mirror selfie` are in the alternation because half the candid
+  // catalogue opens with them - `Phone propped on a high shelf across the room`,
+  // `Mirror selfie, the phone up in her right hand`. Without them the check
+  // called 13 lines of 20 cameraless in a shoot that had obeyed its camera plan
+  // word for word, and the repair then spent a call each rewriting lines that
+  // were right. The check predates the phone forms; the forms are measured.
+  if (!/^[^,:]{0,70}\b(taken from|camera|shot|snapshot|angle|view|phone|mirror selfie)\b/i.test(line)) {
     found.push('It does not OPEN with where the camera is. Every line begins with that clause '
              + 'and nothing before it — `Taken from directly in front of her, …`, `Taken from '
              + 'behind her left shoulder, her back three-quarters to the camera, …`, `Taken '
@@ -995,7 +1001,11 @@ export const problemsWith = (line, previous, limit = MAX_WORDS) =>
  *  off, so the comparison is between the things themselves. */
 const GARMENT_FAMILIES = {
   jersey: /\b(jersey|shirt|tee|t-shirt|blouse|sweater|jumper)\b/i,
-  top: /\b(top|crop top|camisole|vest)\b/i,
+  // `top` is the one garment word that is also a preposition's noun: `the tops
+  // of her thighs bare` is a bare body, and it was read as a garment coming
+  // back on in five lines of twenty in an explicit shoot where nobody wore
+  // anything at all. A garment top is never followed by `of`.
+  top: /\b(crop top|camisole|vest|tops?(?! of\b))\b/i,
   bra: /\b(bra|bralette)\b/i,
   harness: /\b(harness|strappy|straps? across)\b/i,
   briefs: /\b(briefs|panties|knickers|thong|underwear)\b/i,
