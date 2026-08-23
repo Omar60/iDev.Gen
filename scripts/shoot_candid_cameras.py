@@ -194,6 +194,17 @@ ARMS = [
     ("N13-shoulder-right", "Taken from behind her right shoulder, her back three-quarters to the "
                            "camera",
      "the mirror of the only shoulder candid has - a seventh form if it renders"),
+    # Session 252. The phone wording of the shoulder died on the LEFT, twice -
+    # `Phone in his hand just behind her left shoulder` 0/3 in 249 and `Phone
+    # propped on a shelf behind her left shoulder` 0/3 in 250 - which is where
+    # the rule that a mount reaches a height and never a horizontal comes from.
+    # Session 244 found that the two shoulders are a different photograph and not
+    # a different wording, so the right is not assumed to inherit the left's
+    # failure any more than it inherited its success.
+    ("N14-shelf-shoulder-right", "Phone propped on a shelf behind her right shoulder",
+     "the mount form of the shoulder, on the side that has never been asked"),
+    ("N15-hand-shoulder-right", "Phone in his hand just behind her right shoulder, pointed past it",
+     "the hand form, same side - the pair N9/N12 mirrored"),
 ]
 
 

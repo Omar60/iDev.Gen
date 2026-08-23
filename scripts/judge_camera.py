@@ -62,6 +62,8 @@ ASKED = [
     ("shoulder", "phone in his hand just behind her left shoulder, pointed past it"),
     ("shoulder", "mirror selfie with her back to the mirror, looking over her shoulder"),
     ("shoulder", "phone propped on a shelf behind her left shoulder"),
+    ("shoulder", "phone propped on a shelf behind her right shoulder"),
+    ("shoulder", "phone in his hand just behind her right shoulder, pointed past it"),
 ]
 
 # What the same clauses ask of the HORIZONTAL alone, for `--question side`. A
