@@ -71,6 +71,18 @@ LOOK = (
 # and an arm that asks for one is testing the contradiction, not the position.
 FRAMING = "a waist-up photograph, from the top of her head to her waist"
 
+# Session 245 came back floor 0/6 - and the control fell with it, the same
+# `Low-angle shot from the floor at her feet` that was 3/3 in session 244. Two
+# things had changed at once: the candid look, and the crop, because 244 shot
+# every arm full-length and this one is waist-up. Framing owns the scene in this
+# project, so the crop is at least as likely a killer as the look, and the floor
+# arms are unreadable until they are separated. `--framing full --only C3,N3`
+# reshoots exactly those two against the same seeds.
+FRAMINGS = {
+    "waist": FRAMING,
+    "full": "a full-length photograph, head to feet",
+}
+
 # Everything below the camera clause, fixed. No word in it names a direction, a
 # height or a device, so the camera clause is the only thing in the photograph
 # that says where the phone was.
@@ -119,34 +131,47 @@ ARMS = [
 ]
 
 
-def prompt_for(camera: str) -> str:
-    return f"zchar_jir.\n\n{LOOK}\n\nAngle & Framing:\n{camera}, {FRAMING}.\n{REST}"
+def prompt_for(camera: str, framing: str = FRAMING) -> str:
+    return f"zchar_jir.\n\n{LOOK}\n\nAngle & Framing:\n{camera}, {framing}.\n{REST}"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8777")
     ap.add_argument("--dry-run", action="store_true", help="print the arms and write nothing")
+    ap.add_argument("--framing", choices=tuple(FRAMINGS), default="waist")
+    ap.add_argument("--only", default="", help="comma-separated arm labels, by their prefix "
+                                               "(`C3,N3` for the two floor arms)")
     args = ap.parse_args()
 
+    framing = FRAMINGS[args.framing]
+    wanted = tuple(w.strip() for w in args.only.split(",") if w.strip())
+    arms = [a for a in ARMS if not wanted or a[0].startswith(wanted)]
+    if not arms:
+        print(f"no arm matches --only {args.only}")
+        return 1
+
     shots = [
-        {"label": f"{label}-s{i + 1}", "prompt": prompt_for(camera), "verbatim": True,
+        {"label": f"{label}-s{i + 1}", "prompt": prompt_for(camera, framing), "verbatim": True,
          "seed": seed, "count": 1}
-        for label, camera, _ in ARMS
+        for label, camera, _ in arms
         for i, seed in enumerate(SEEDS)
     ]
 
-    for label, camera, why in ARMS:
+    for label, camera, why in arms:
         print(f"{label:<22} {camera}\n{'':<22} ({why})")
-    print(f"\n{len(ARMS)} arms x {len(SEEDS)} seeds = {len(shots)} photographs")
+    print(f"\n{len(arms)} arms x {len(SEEDS)} seeds = {len(shots)} photographs, "
+          f"{args.framing}-length")
 
     if args.dry_run:
         print("\n--- the prompt of the first arm ---")
-        print(prompt_for(ARMS[0][1]))
+        print(prompt_for(arms[0][1], framing))
         return 0
 
     out = create_session(
-        args.base, "CANDID CAMERAS - 6 formas de telefono contra 3 controles, 3 seeds",
+        args.base,
+        "CANDID CAMERAS - 6 formas de telefono contra 3 controles, 3 seeds"
+        + (f" [{args.framing}, {args.only}]" if wanted or args.framing != "waist" else ""),
         shots, SETTINGS)
     print(f"\nsession {out['id']} created as a draft, {len(shots)} pending")
     print(f"run it with: curl -X POST {args.base}/api/sessions/{out['id']}/run")
