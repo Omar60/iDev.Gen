@@ -158,6 +158,16 @@ SUBJECTS = {"front": REST, "neutral": REST_NEUTRAL}
 TAILS = {
     "none": "",
     "careless": ", she is off to the left of the frame and a stretch of empty room above her head",
+    # Session 259, the plan in a real shoot: 19 of 24, and three of the five
+    # misses were FRONTAL lines whose tail named vertical space - all three came
+    # back `overhead`. The `careless` wording above was 3/3 in session 254, so
+    # what is being asked here is which words inside the clause cost the camera.
+    # Taken verbatim from the misses (03 and 20) plus the horizontal-only wording
+    # that would replace them if they are guilty.
+    "above": ", a stretch of empty room above her head",
+    "carpet": ", she is off to the left of the frame and a stretch of empty carpet runs down "
+              "one side",
+    "edge": ", she is off to the left of the frame and her elbow runs out of the edge",
 }
 
 # label, the camera clause, and what the clause is for. The three controls come
