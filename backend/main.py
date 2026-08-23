@@ -23,6 +23,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
 
 import db
@@ -1109,6 +1110,106 @@ def export_session(sid: int, min_rating: int = 1):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
+
+
+def _fit_label(text: str, font, max_w: int) -> str:
+    """Trim a filename from the front until it fits inside its cell.
+
+    A ComfyUI filename is comfortably wider than a 300px cell, and Pillow does
+    not wrap or clip: the text simply runs over the neighbouring photograph. The
+    tail is the half worth keeping — the counter at the end is what tells two
+    variations of one take apart.
+    """
+    def width(s: str) -> int:
+        box = font.getbbox(s)
+        return box[2] - box[0]
+
+    if width(text) <= max_w:
+        return text
+    while text and width("..." + text) > max_w:
+        text = text[1:]
+    return "..." + text
+
+
+@app.get("/api/sessions/{sid}/contact-sheet")
+def contact_sheet(sid: int, min_rating: int = 1):
+    if not db.one("SELECT id FROM session WHERE id=?", sid):
+        raise HTTPException(404, "session not found")
+
+    all_shots = db.q(
+        """SELECT id, rating, filename, status, rejected, shot_index FROM shot
+           WHERE session_id=? ORDER BY shot_index, id""", sid)
+
+    selected = []
+    for shot in all_shots:
+        if shot["status"] != "done" or shot["rating"] < min_rating or shot["rejected"]:
+            continue
+        if not shot["filename"]:
+            continue
+        path = SESSIONS_DIR / str(sid) / shot["filename"]
+        if not path.exists():
+            continue
+        selected.append((shot, path))
+
+    if not selected:
+        raise HTTPException(400, f"no shots meet the threshold of {min_rating}")
+
+    cols = min(4, len(selected))
+    rows = (len(selected) + cols - 1) // cols
+
+    thumb_w, thumb_h = 300, 300
+    label_h = 28
+    cell_padding = 10
+    cell_w = thumb_w + cell_padding * 2
+    cell_h = thumb_h + label_h + cell_padding * 2
+
+    margin = 20
+    gap = 16
+
+    sheet_w = margin * 2 + cols * cell_w + (cols - 1) * gap
+    sheet_h = margin * 2 + rows * cell_h + (rows - 1) * gap
+
+    sheet = Image.new("RGB", (sheet_w, sheet_h), color=(15, 17, 21))
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default()
+
+    for idx, (shot, path) in enumerate(selected):
+        c = idx % cols
+        r = idx // cols
+        cell_x = margin + c * (cell_w + gap)
+        cell_y = margin + r * (cell_h + gap)
+
+        draw.rectangle(
+            [cell_x, cell_y, cell_x + cell_w - 1, cell_y + cell_h - 1],
+            fill=(23, 26, 33),
+            outline=(42, 47, 58),
+        )
+
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            img.thumbnail((thumb_w, thumb_h), Image.Resampling.LANCZOS)
+            img_x = cell_x + cell_padding + (thumb_w - img.width) // 2
+            img_y = cell_y + cell_padding + (thumb_h - img.height) // 2
+            sheet.paste(img, (img_x, img_y))
+
+        label = _fit_label(shot["filename"], font, cell_w - 2 * cell_padding)
+        bbox = font.getbbox(label)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        text_x = cell_x + max(0, (cell_w - text_w) // 2)
+        text_y = cell_y + cell_padding + thumb_h + (label_h - text_h) // 2
+        draw.text((text_x, text_y), label, fill=(230, 232, 238), font=font)
+
+    buf = io.BytesIO()
+    sheet.save(buf, format="PNG")
+    buf.seek(0)
+    filename = f"session_{sid}_contact_sheet.png"
+    return StreamingResponse(
+        buf,
+        media_type="image/png",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
 
 
 @app.delete("/api/sessions/{sid}")

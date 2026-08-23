@@ -2,6 +2,7 @@
 import io
 import zipfile
 
+from PIL import Image, ImageFont
 import pytest
 
 import db
@@ -1380,3 +1381,170 @@ def test_each_listed_session_carries_its_cover_shot_id(client, seeded):
     listed = client.get("/api/sessions").json()
     cover = next(s["cover_shot_id"] for s in listed if s["id"] == sid)
     assert cover == expected
+def make_png(color="blue", size=(64, 64)) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", size, color=color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_contact_sheet_default_threshold(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 3}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    db.run("UPDATE shot SET status='done', filename='a1.png', rating=0 WHERE id=?", shots[0]["id"])
+    db.run("UPDATE shot SET status='done', filename='b1.png', rating=2 WHERE id=?", shots[1]["id"])
+    db.run("UPDATE shot SET status='done', filename='c1.png', rating=5 WHERE id=?", shots[2]["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    for f in ["a1.png", "b1.png", "c1.png"]:
+        (folder / f).write_bytes(make_png("red"))
+
+    files_before = {p.name: p.read_bytes() for p in folder.iterdir()}
+
+    r = client.get(f"/api/sessions/{sid}/contact-sheet")
+    assert r.status_code == 200
+    assert f"session_{sid}" in r.headers["Content-Disposition"]
+    assert r.headers["Content-Type"] == "image/png"
+
+    img = Image.open(io.BytesIO(r.content))
+    assert img.format == "PNG"
+    assert img.size[0] > 0 and img.size[1] > 0
+
+    files_after = {p.name: p.read_bytes() for p in folder.iterdir()}
+    assert files_before == files_after
+
+
+def test_contact_sheet_raises_threshold(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 3}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    db.run("UPDATE shot SET status='done', filename='a2.png', rating=0 WHERE id=?", shots[0]["id"])
+    db.run("UPDATE shot SET status='done', filename='b2.png', rating=2 WHERE id=?", shots[1]["id"])
+    db.run("UPDATE shot SET status='done', filename='c2.png', rating=5 WHERE id=?", shots[2]["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    for f in ["a2.png", "b2.png", "c2.png"]:
+        (folder / f).write_bytes(make_png("green"))
+
+    r = client.get(f"/api/sessions/{sid}/contact-sheet?min_rating=3")
+    assert r.status_code == 200
+    img = Image.open(io.BytesIO(r.content))
+    assert img.format == "PNG"
+
+
+def test_contact_sheet_skips_rejected(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 2}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    db.run("UPDATE shot SET status='done', filename='a5.png', rating=5 WHERE id=?", shots[0]["id"])
+    db.run("UPDATE shot SET status='done', filename='b5.png', rating=5, rejected=1 WHERE id=?", shots[1]["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    for f in ["a5.png", "b5.png"]:
+        (folder / f).write_bytes(make_png("blue"))
+
+    r = client.get(f"/api/sessions/{sid}/contact-sheet")
+    assert r.status_code == 200
+    img = Image.open(io.BytesIO(r.content))
+    assert img.format == "PNG"
+
+
+def test_contact_sheet_skips_unfinished(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 4}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    db.run("UPDATE shot SET status='pending', filename='', rating=5 WHERE id=?", shots[0]["id"])
+    db.run("UPDATE shot SET status='failed', filename='', rating=5 WHERE id=?", shots[1]["id"])
+    db.run("UPDATE shot SET status='cancelled', filename='', rating=5 WHERE id=?", shots[2]["id"])
+    db.run("UPDATE shot SET status='done', filename='done.png', rating=5 WHERE id=?", shots[3]["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "done.png").write_bytes(make_png("yellow"))
+
+    r = client.get(f"/api/sessions/{sid}/contact-sheet")
+    assert r.status_code == 200
+    img = Image.open(io.BytesIO(r.content))
+    assert img.format == "PNG"
+
+
+def test_contact_sheet_empty_selection(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    shot = client.get(f"/api/sessions/{sid}").json()["shots"][0]
+    db.run("UPDATE shot SET status='done', filename='a3.png', rating=0 WHERE id=?", shot["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "a3.png").write_bytes(make_png("red"))
+
+    r = client.get(f"/api/sessions/{sid}/contact-sheet")
+    assert r.status_code == 400
+    assert "no shots meet the threshold of 1" in r.json()["detail"]
+
+
+def test_contact_sheet_skips_missing_files(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 2}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    db.run("UPDATE shot SET status='done', filename='a4.png', rating=5 WHERE id=?", shots[0]["id"])
+    db.run("UPDATE shot SET status='done', filename='b4.png', rating=5 WHERE id=?", shots[1]["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "a4.png").write_bytes(make_png("purple"))
+
+    r = client.get(f"/api/sessions/{sid}/contact-sheet")
+    assert r.status_code == 200
+    img = Image.open(io.BytesIO(r.content))
+    assert img.format == "PNG"
+
+
+def test_contact_sheet_unknown_session(client):
+    r = client.get("/api/sessions/999/contact-sheet")
+    assert r.status_code == 404
+
+
+def test_contact_sheet_labels_three_variations_and_download_name(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 3}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    for i, shot in enumerate(shots, 1):
+        fname = f"00001_variation_{i}.png"
+        db.run("UPDATE shot SET status='done', filename=?, rating=5 WHERE id=?", fname, shot["id"])
+        (folder / fname).write_bytes(make_png("orange"))
+
+    r = client.get(f"/api/sessions/{sid}/contact-sheet")
+    assert r.status_code == 200
+    assert f'filename="session_{sid}_contact_sheet.png"' in r.headers["Content-Disposition"]
+
+    img = Image.open(io.BytesIO(r.content))
+    assert img.format == "PNG"
+    assert img.width > 0 and img.height > 0
+
+
+def test_contact_sheet_label_is_trimmed_to_its_cell():
+    """A ComfyUI filename is wider than a cell and Pillow neither wraps nor
+    clips, so an untrimmed label runs over the neighbouring photograph. The tail
+    survives the trim: the counter at the end is what tells two variations of
+    one take apart."""
+    font = ImageFont.load_default()
+
+    def width(s):
+        box = font.getbbox(s)
+        return box[2] - box[0]
+
+    long_name = "iDevGen_a_very_long_prefix_indeed_00042_.png"
+    fitted = main._fit_label(long_name, font, 120)
+    assert width(fitted) <= 120
+    assert fitted.startswith("...")
+    assert fitted.endswith("00042_.png")
+
+    short = "a.png"
+    assert main._fit_label(short, font, 120) == short

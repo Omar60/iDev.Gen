@@ -168,6 +168,9 @@ setup keeps working untouched.
   reopens to `draft`. The threshold follows the rating filter (4★ with
   *Picks only*, 1★ otherwise); the button names the count and asks first
   because the photos are deleted.
+- **Download picks** and **Contact sheet** beside the rating filter export the
+  session's selection — as a ZIP numbered in shooting order, or as a single
+  grid image with every frame labelled by its file name.
 - A run is refused rather than started when a choice would be silently ignored —
   a base model or LoRA the workflow does not map, a reference take with no
   reference photo. The checks apply to the graph that will actually run: a
@@ -245,6 +248,6 @@ for humans and AI agents alike: [AGENTS.md](AGENTS.md).
 
 ## Status
 
-MVP. Out of scope for now: multi-LoRA combos, contact sheets,
-and a look library reusable across sessions — see
-[known limitations](docs/known-limitations.md).
+MVP. Out of scope for now: multi-LoRA combos and a look library reusable across
+sessions — see [known limitations](docs/known-limitations.md).
+

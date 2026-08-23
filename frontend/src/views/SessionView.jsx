@@ -415,6 +415,17 @@ export default function SessionView({ id }) {
           )
         })()}
         {(() => {
+          const minRating = filter === 'picks' ? 4 : 1
+          const count = s.shots.filter((x) => x.status === 'done' && !x.rejected && x.rating >= minRating).length
+          const url = `/api/sessions/${id}/contact-sheet?min_rating=${minRating}`
+          return (
+            <a href={count > 0 ? url : undefined} download
+               className={count > 0 ? 'button' : 'button disabled'}>
+              Contact sheet ({count})
+            </a>
+          )
+        })()}
+        {(() => {
           // Same threshold the export uses, read the other way: "below X" is the
           // complement of "X and up". Picks filter -> reshoot everything that
           // isn't a pick; otherwise just the unrated. The anchor stays put for

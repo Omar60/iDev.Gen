@@ -1151,6 +1151,13 @@ above the threshold that are not rejected — that rule, and not whatever the
 gallery filter is showing. Inside, the files are numbered in the order they were
 shot, so the shoot's progression survives outside the app.
 
+**Contact sheet** beside it compiles those same selected shots into a single
+image grid in shooting order, with every cell labelled by its file name so any
+frame can be found again among the session files without opening the app. A name
+too long for its cell is trimmed from the front — the counter at the end is the
+part that tells two variations of one take apart. Like the export, it reads the
+session's photos and writes nothing into the session folder.
+
 ## Where the files are
 
 `<data folder>/sessions/<session id>/<shot id>_<shot label>.png`. They are moved out
