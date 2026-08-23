@@ -33,6 +33,12 @@ everything here is visible, so keep it free of personal data.
 4. Conventional commit subject (`feat:`, `fix:`, `docs:`, `test:`, `chore:`),
    imperative, no trailing period. No co-author trailers.
 
+Every one of these is re-run by whoever reviews the change, from the output and
+not from the summary. A check reported as passing without being run is worse
+than one that fails: a failure is information, and a false pass costs a review
+pass to find. If you could not run something, say which and why — that is a
+usable answer and nobody minds it.
+
 ## Invariants that break silently
 
 These have all bitten already. Each one has a test — if you change the
