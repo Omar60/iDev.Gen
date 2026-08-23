@@ -748,7 +748,7 @@ export const REACH = Object.fromEntries(REACHES.map((r) => [r.key, r]))
  *  Both, and not one: the brief decides what the shoot IS, the lines decide what
  *  the camera is doing, and a candid brief written into the studio camera
  *  vocabulary comes back as a studio shoot of a woman in a lived-in room. */
-export const MANNERS = [
+const BASE_MANNERS = [
   {
     key: 'directed',
     label: 'Directed shoot',
@@ -895,6 +895,103 @@ export const MANNERS = [
         + 'whatever the room already was.',
   },
 ]
+
+/** The one they filmed themselves, mid-act, on her phone.
+ *
+ *  `candid` with two of its rules turned around, and nothing else: it is the
+ *  same phone, the same room and the same look, so it inherits all of them and
+ *  only overrides what it has to. What it has to override is exactly what makes
+ *  this shoot the thing it is - `candid` says the phone is almost never in the
+ *  frame and her eyes are never on the lens, and here the phone is in her hand
+ *  in every photograph and she is looking into it.
+ *
+ *  Where the wording came from: sessions 155 and 161, twenty-five and twenty
+ *  photographs written by hand outside the app and shot straight. What 161 has
+ *  that 155 has not, and it is the whole difference between the two batches, is
+ *  the named subject (`young woman`, per [[idevgen-doggy-token-banned]]), the
+ *  face written out in full, and the act said to be visible in the lower part of
+ *  the frame. Those are the three things the delta below asks for, each pointed
+ *  at the field that owns it.
+ *
+ *  SHOT ONCE, SESSION 264: twenty photographs, finepornV4 at 12 steps, the app's
+ *  own room, judged blind three passes a photograph. What it says, and none of it
+ *  is an arm - one shoot at n=20 with two to four photographs per camera form:
+ *
+ *  * THE SHOOT IS THE SHOOT. Nineteen of twenty photographs came back with two
+ *    bodies and the act in them, against sixteen lines that asked for it: the
+ *    four opening lines that asked only for the two of them near each other
+ *    rendered the act anyway. Whatever else is wrong here, the genre lands.
+ *  * THE CAMERA PLAN IS OBEYED WORD FOR WORD in all twenty lines, which is the
+ *    same thing `candid` measures.
+ *  * THE PHONE IS NOT CONTROLLABLE FROM THE CAMERA CLAUSE, and this is the one
+ *    the manner asks for and does not get. Of ten lines whose camera puts the
+ *    phone in her hand, four painted a phone; of ten that ask for no device,
+ *    four painted one anyway. The judge was unanimous on fourteen of twenty
+ *    photographs, so the spread is in the RENDER and not in the reading.
+ *    Broken out: the mirror form painted it 2 of 2 and both `pov` forms once
+ *    each, while `Phone held out at arm's length in front of her face` - the
+ *    form this manner leans on hardest - painted NO phone in four of four, with
+ *    the arm asked for in `act` every time. That is `candid`'s own finding
+ *    ([[idevgen-candid-camera-renders]]: the word `phone` paints no phone, the
+ *    mirror is the exception) arriving again in the one manner that wanted the
+ *    opposite.
+ *  * The two `pov` forms render the GENRE and not their geometry: `Phone held
+ *    above her face ... as she lies on her back` came back as a POV from under
+ *    him with her upright on top. A good photograph of this kind, and not the
+ *    one the clause describes.
+ *
+ *  So: do not quote a number off this, and do not reword the phone rule on it
+ *  either. One shoot cannot separate the form from the framing it happened to
+ *  draw - `Phone held low in her own hand` painted the phone at full-length and
+ *  nothing at waist-up, on one photograph each. The arm that would settle it is
+ *  the `candid` protocol: one line fixed by hand, three seeds, the camera clause
+ *  the only thing that moves.
+ */
+const SELFIE = {
+  ...BASE_MANNERS[1],
+  key: 'selfie',
+  label: 'Filmed by them, on her phone',
+  blurb: 'She holds the phone through it: selfies and mirror shots of the two of them.',
+  brief: BASE_MANNERS[1].brief
+       + '\nTHE PHONE IS HERS AND IT STAYS IN HER HAND for the whole of it, so the brief is an '
+       + 'evening the two of them filmed on it rather than one she happens to be photographed '
+       + 'in. That does NOT license naming the phone here - the paragraph above still holds, '
+       + 'and where it is is decided per photograph.',
+  line: BASE_MANNERS[1].line
+      + '\n\nTWO RULES ABOVE ARE TURNED AROUND FOR THIS SHOOT, and they are the two that make '
+      + 'it the shoot it is. Everything else in this block stands: the technique field, the '
+      + 'flat focus, the room light, the careless framing, the words that make a picture '
+      + 'glossy.\n'
+      + 'FIRST: SHE IS HOLDING THE PHONE AND HER OWN ARM IS IN THE FRAME. Not one line in six - '
+      + 'every line whose camera clause is one of the held forms, which is most of them. Write '
+      + 'the ARM and never the device: `her arm stretched out towards the lens`, `her near hand '
+      + 'far bigger than the rest of her`, `her forearm running out of the bottom of the frame`. '
+      + 'It goes in `act`, beside what she is doing with the other hand. The camera clause you '
+      + 'are handed has already decided where the phone is; a line that names it again paints a '
+      + 'phone sitting in the room. The mirror form is the one exception, and there the phone is '
+      + 'genuinely up in her hand in the reflection and is written as such.\n'
+      + 'SECOND: HER EYES ARE ON THE LENS. She is looking into the screen she is holding, so the '
+      + 'paragraph above about eye contact does not apply to this shoot at all - what it was '
+      + 'protecting against was a look held for a photographer who is not there, and here the '
+      + 'person she is looking at is herself.\n'
+      + 'THE FACE IS WHY THE PHOTOGRAPH WAS TAKEN, and `face` is the field that carries it: '
+      + 'written out in full, changed line to line, and never held still. Her mouth open on a '
+      + 'sound, her eyes half-shut, her eyes squeezed shut, her head back, her jaw slack, her '
+      + 'face turned into the pillow, flushed, wet, sweat in her hair. Read off the two batches '
+      + 'this shoot came from: the one with the face written out came back as these photographs '
+      + 'and the one with `slight smile` in it did not.\n'
+      + 'HE IS IN THE FRAME AND SO IS WHAT THEY ARE DOING. `him` carries his body where it '
+      + 'touches hers - behind her, over her, his hands where they are - and `act` says plainly '
+      + 'what is happening, in the low words this register already uses. Where a held phone '
+      + 'points at her face, say that the act is in the lower part of the frame, under her: '
+      + '`the two of them joined in the bottom of the frame`. A line that leaves it out is a '
+      + 'photograph of a woman making a face.\n'
+      + 'THE FRAMING STILL COMES FROM THE THREE. A held phone is close to her by its nature and '
+      + 'that is what `a waist-up photograph` is for; do NOT write a close-up on her face, which '
+      + 'renders a different act on every checkpoint (see the framing paragraph above).',
+}
+
+export const MANNERS = [...BASE_MANNERS, SELFIE]
 
 export const MANNER = Object.fromEntries(MANNERS.map((m) => [m.key, m]))
 
@@ -1404,7 +1501,31 @@ export const CANDID_POSITIONS = [
  *  `tests/test_camera_plan.py` fails until it has one; git has the old list if
  *  free-writing ever comes back.
  */
-export const POSITIONS = { directed: CAMERA_POSITIONS, candid: CANDID_POSITIONS }
+/** Where the phone was when she was holding it through the act.
+ *
+ *  `candid`'s seven, unchanged - they are the measured ones and a shoot she is
+ *  filming is still a shoot in a room - plus the two forms sessions 155 and 161
+ *  are full of and the candid catalogue has no way to ask for: the phone pointed
+ *  back down her own body, and the phone held above her face while she is on her
+ *  back. Both are held in her own hand, which is the shape `candid` measured as
+ *  paintless (the word `phone` in the clause put a phone in 0 of 21) and as
+ *  reaching a height without a verified height word.
+ *
+ *  Their own family, `pov`, so the spread cannot run two of them together and
+ *  cannot fill a shoot with them either: they are the strongest lines in the
+ *  catalogue and a shoot of nothing else is one photograph taken forty times.
+ *
+ *  ponytail: no `him` gate. These render alone as a woman photographing herself,
+ *  which is a shoot somebody wants; what puts him in the picture is the reach.
+ */
+export const SELFIE_POSITIONS = [
+  ...CANDID_POSITIONS,
+  { family: 'pov', line: 'Phone held low in her own hand at her chest, angled down along her own body' },
+  { family: 'pov', line: 'Phone held above her face in her own outstretched hand as she lies on her back, looking down at her' },
+]
+
+export const POSITIONS = { directed: CAMERA_POSITIONS, candid: CANDID_POSITIONS,
+                           selfie: SELFIE_POSITIONS }
 
 /** Where the camera stands in each of `n` photographs, decided here and not by
  *  the writer, the way `stagePlan` decides the arc.
@@ -1520,6 +1641,7 @@ export const kissPlan = (n, rand = Math.random) => {
  */
 export const KISS_CAMERA = {
   candid: "Phone held out at arm's length in front of her face",
+  selfie: "Phone held out at arm's length in front of her face",
   directed: 'Taken from directly in front of her',
 }
 

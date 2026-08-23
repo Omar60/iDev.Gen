@@ -145,3 +145,58 @@ def test_the_candid_catalogue_is_what_was_measured(tmp_path_factory):
     assert out["consecutive"] == 0, out
     assert out["unknown"] == 0, out
     assert out["biggest"] <= 1 / 3, out
+
+
+SELFIE_PROBE = """
+import { cameraPlan, CANDID_POSITIONS, SELFIE_POSITIONS, MANNER } from '%(kinds)s'
+
+const family = (line) => SELFIE_POSITIONS.find((p) => p.line === line)?.family ?? 'UNKNOWN'
+const runs = Array.from({ length: 200 }, () => cameraPlan(45, Math.random, SELFIE_POSITIONS))
+
+console.log(JSON.stringify({
+  // The measured seven are carried over untouched, and what is added is added.
+  keepsCandid: CANDID_POSITIONS.every((p) => SELFIE_POSITIONS.includes(p)),
+  added: SELFIE_POSITIONS.filter((p) => !CANDID_POSITIONS.includes(p)).map((p) => p.family),
+  // Inherited: same room, same phone, same capture quality as `candid`.
+  sameLook: MANNER.selfie.look === MANNER.candid.look,
+  // Overridden: the two rules this manner exists to turn around.
+  arm: MANNER.selfie.line.includes('HER OWN ARM IS IN THE FRAME'),
+  eyes: MANNER.selfie.line.includes('HER EYES ARE ON THE LENS'),
+  // And they are read AFTER the candid rules they contradict, never before.
+  afterCandid: MANNER.selfie.line.indexOf('HER EYES ARE ON THE LENS')
+               > MANNER.selfie.line.indexOf('HER EYES ARE NOT ON THE LENS'),
+  consecutive: runs.filter((plan) =>
+    plan.some((line, i) => i > 0 && family(line) === family(plan[i - 1]))).length,
+  unknown: runs.flat().filter((line) => family(line) === 'UNKNOWN').length,
+  biggest: Math.max(...runs.map((plan) => {
+    const tally = {}
+    for (const line of plan) tally[line] = (tally[line] || 0) + 1
+    return Math.max(...Object.values(tally)) / plan.length
+  })),
+}))
+"""
+
+
+def test_the_selfie_manner_is_candid_with_two_rules_turned_around(tmp_path_factory):
+    """`selfie` is the shoot of sessions 155 and 161: she holds the phone through
+    the act and looks into it. That is `candid` with its two strictest rules
+    reversed — the phone almost never in frame, her eyes never on the lens — so
+    it inherits the manner whole and appends the reversal, which is the only
+    order that works: a contradiction read before the rule it contradicts loses.
+
+    Nothing in this manner has been through the judge. What the test pins is that
+    the seven measured candid forms survive intact underneath it.
+    """
+    out = _node_json(SELFIE_PROBE % {"kinds": (ROOT / "frontend/src/kinds.js").as_posix()},
+                     tmp_path_factory.mktemp("selfieplan"))
+
+    assert out["keepsCandid"] is True, out
+    assert out["added"] == ["pov", "pov"], out
+    assert out["sameLook"] is True, out
+    assert out["arm"] is True and out["eyes"] is True, out
+    assert out["afterCandid"] is True, out
+
+    # The same three properties every catalogue holds.
+    assert out["consecutive"] == 0, out
+    assert out["unknown"] == 0, out
+    assert out["biggest"] <= 1 / 3, out
