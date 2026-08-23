@@ -1740,15 +1740,16 @@ export const kissPlan = (n, rand = Math.random) => spreadOver(n, KISS_FRAMES, 8,
  *  empties a manner's positions would leave the photograph with no camera at
  *  all, and `tests/test_arrangements.py` fails if one ever does.
  *
- *  WHAT IS VERIFIED, and it is one of the six. `astride` is the arrangement
+ *  WHAT IS VERIFIED, and it is one of the five. `astride` is the arrangement
  *  sessions 265 and 266 shot on a fixed line: 12 photographs of 12 with the arm
  *  written, the act in 11 of them. The other five are read off what 155 and 161
  *  RENDERED rather than what their prompts asked for - and those two are not the
  *  same thing, which is the whole reason this catalogue is worded from the
- *  photographs. `behind` is the one to distrust: both shoots asked for it
- *  repeatedly and neither ever painted it, and `Taken from directly behind her`
- *  is 0/6 under the candid look. It is in the pool because a shoot that wants it
- *  should be able to ask, not because it works.
+ *  photographs. Of the other four, sessions 267 and 268 rendered `reverse` and
+ *  `wall` as asked with the camera fitted, and `back` and `side` not yet - one
+ *  planted photograph each, which is not a measurement of anything.
+ *
+ *  A sixth was written and then taken out: see below the list.
  */
 export const ARRANGEMENTS = [
   { key: 'astride',
@@ -1776,12 +1777,41 @@ export const ARRANGEMENTS = [
     cameras: ['shoulder', 'side', 'behind', 'mirror'],
     act: 'She is standing with her front to the wall and one leg raised, he is behind her, the '
        + 'two of them joined, two people in frame.' },
-  { key: 'behind',
-    label: 'On all fours, he is behind her',
-    cameras: ['front', 'shoulder', 'side', 'overhead', 'mirror'],
-    act: 'She is on all fours on the bed and he is kneeling behind her, the two of them joined, '
-       + 'two people in frame.' },
 ]
+
+/** WHY THERE ARE FIVE AND NOT SIX, and it is the arrangement everyone asks for.
+ *
+ *  `behind` - on all fours, him kneeling behind her - failed in every context
+ *  there is, on four separate occasions:
+ *
+ *  * sessions 155 and 161 asked for it in eight of their forty-five hand-written
+ *    prompts and NEITHER shoot ever painted it. Both came back as her on top or
+ *    on her back;
+ *  * planted in session 267, the writer dropped it from the line entirely;
+ *  * planted again in 268 with a camera fitted to it and the wording arriving
+ *    word for word, the photograph came back as the two of them kneeling face to
+ *    face;
+ *  * and the camera side of the same shape is just as dead - `Taken from
+ *    directly behind her` is 0/6 under the candid look, both wordings
+ *    ([[idevgen-candid-camera-renders]]).
+ *
+ *  An option that reliably delivers a different photograph is worse than no
+ *  option: it spends a planted frame and it lies about what the shoot will be.
+ *  The wording is kept here rather than in git alone because the next person to
+ *  want it will write exactly this entry again.
+ *
+ *  What is NOT established is why. It may be the base model, and finepornV4 is
+ *  the only one it has been asked of - `judge_camera.py --question arrangement`
+ *  on a fixed line across the nine checkpoints is the arm that would say.
+ *
+ *  The entry, so the next person to want it recognises what was already tried
+ *  rather than writing it again:
+ *
+ *      { key: 'behind', label: 'On all fours, he is behind her',
+ *        cameras: ['front', 'shoulder', 'side', 'overhead', 'mirror'],
+ *        act: 'She is on all fours on the bed and he is kneeling behind her, the two of
+ *              them joined, two people in frame.' }
+ */
 
 export const ARRANGEMENT = Object.fromEntries(ARRANGEMENTS.map((a) => [a.key, a]))
 
@@ -1821,7 +1851,17 @@ export const shootChunkNote = (at) =>
   + (at.cameras?.length
     ? 'WHERE THE CAMERA STANDS IS ALREADY DECIDED for each of these photographs, and it is '
       + 'the one thing in the line that is not yours:\n'
-      + at.cameras.map((c, i) => `${at.from + i} | ${c}`).join('\n') + '\n'
+      // The arrangement rides on the camera's own row rather than in a list of
+      // its own. Measured 2026-08-23: handed as a second numbered list, it
+      // landed on the photograph BEFORE the one it was given to in five rows of
+      // twelve - the camera rows are copied in order and never miscounted, and
+      // a number the writer has to match against them is a number it gets
+      // wrong. One row per photograph, everything that photograph was given on
+      // it.
+      + at.cameras.map((c, i) => {
+        const pose = at.poses?.find((p) => p.at === at.from + i)
+        return `${at.from + i} | ${c}${pose ? `\n${at.from + i} | act: ${pose.arrangement.act}` : ''}`
+      }).join('\n') + '\n'
       + 'Open each line with the position given for its photograph, word for word, and then '
       + 'your framing after it. Invent no other position and reword none of these: these are '
       + 'the forms this camera was measured to obey, and a reworded one comes back as a '
@@ -1831,9 +1871,9 @@ export const shootChunkNote = (at) =>
   // two of them are doing and a kiss frame replaces the camera as well, so the
   // one that changes more of the line is read last.
   + (at.poses?.length
-    ? 'WHAT THE TWO OF THEM ARE DOING IS ALREADY DECIDED for these photographs, and like the '
-      + 'camera it is not yours:\n'
-      + at.poses.map(({ at: k, arrangement }) => `${k} | ${arrangement.act}`).join('\n') + '\n'
+    ? 'SOME OF THE ROWS ABOVE CARRY AN `act:` LINE. That is what the two of them are doing in '
+      + 'that photograph, it is decided, and like the camera on the row above it, it is not '
+      + 'yours.\n'
       + 'The `act` field of that photograph OPENS with those words exactly as they are written '
       + 'above, and nothing of yours goes in front of them. Do not reword it, do not shorten it '
       + 'and do not write the same arrangement in your own words - measured, a softer version of '
@@ -1844,6 +1884,14 @@ export const shootChunkNote = (at) =>
       + 'the framing, his body in `him`, her body in `her`, the face. The photographs with no '
       + 'arrangement named are the shoot as usual - an arrangement is a frame the shoot passes '
       + 'through, never the whole stretch.\n'
+      + 'AND IT BELONGS TO THAT PHOTOGRAPH AND NO OTHER. Do not carry its words, or the same '
+      + 'arrangement said differently, into the photograph after it: that one moves the shoot '
+      + 'on, the way every other photograph does. Measured in session 268 - the writer repeated '
+      + 'a planted arrangement into the next one and the one after, and those photographs were '
+      + 'dealt their own cameras, so `on her back with him over her` came back as her riding him '
+      + 'the other way round. The arrangement is fitted to the camera of ITS photograph and to '
+      + 'no other, so a copy of it anywhere else is a photograph shot from a position that '
+      + 'cannot see it.\n'
     : '')
   // After the camera, because it overrides one of the positions above for its own
   // photograph and a reader meets the exception after the rule.

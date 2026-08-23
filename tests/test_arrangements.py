@@ -22,7 +22,7 @@ PROBE = """
 import { arrangementPlan, ARRANGEMENTS, kissPlan, shootChunkNote } from '%(kinds)s'
 
 const lengths = [1, 4, 8, 12, 16, 24, 32, 45]
-const picked = ['astride', 'back', 'behind']
+const picked = ['astride', 'back', 'reverse']
 const runs = lengths.flatMap((n) =>
   Array.from({ length: 50 }, () => ({ n, plan: arrangementPlan(n, picked) })))
 
@@ -51,7 +51,9 @@ const share = Math.max(...runs.filter(({ n }) => n >= 24)
   .map(({ n, plan }) => Object.keys(plan).length / n))
 
 const note = shootChunkNote({
-  from: 1, want: 4, total: 8, cameras: ['Taken from directly behind her'],
+  from: 1, want: 4, total: 8,
+  cameras: ['Taken from directly behind her', 'Overhead camera directly above her',
+            'Taken from her right side, her body in full profile'],
   poses: [{ at: 3, arrangement: ARRANGEMENTS[0] }],
 })
 const quiet = shootChunkNote({ from: 5, want: 4, total: 8, cameras: [], poses: [] })
@@ -66,10 +68,22 @@ console.log(JSON.stringify({
   // somewhere else and handed to the same line.
   noCamera: ARRANGEMENTS.every((a) =>
     !/\\b(camera|photograph|taken from|framing|close-up|overhead)\\b/i.test(a.act)),
-  noteNames: note.includes('3 | ') && note.includes('ALREADY DECIDED'),
+  // The arrangement rides on its photograph's own camera row: two lists to line
+  // up put it on the photograph before the one it was given to, five rows of
+  // twelve.
+  noteNames: note.includes(`3 | act: ${ARRANGEMENTS[0].act}`) && note.includes('ALREADY DECIDED'),
+  noteRowIsRight: note.indexOf('3 | act:') > note.indexOf('3 | Taken from her right side')
+                  && note.indexOf('3 | act:') < note.indexOf('Open each line'),
   // Handed over in the camera note's words, which is what took arrival from 3
   // photographs of 6 to 12 of 12: it is not yours, and the field opens with it.
   noteIsFirm: note.includes('it is not yours') && note.includes('OPENS with those words'),
+  // The carry-over is what session 268's remaining misses were made of: the
+  // writer repeated a planted arrangement into the photographs after it, and
+  // those were dealt cameras that cannot see it.
+  noteOwnsOnePhotograph: note.includes('THAT PHOTOGRAPH AND NO OTHER'),
+  // The arrangement that never rendered is not on offer. It is kept in the file
+  // as prose, so `behind` may appear in a comment but never as a key.
+  noBehind: !ARRANGEMENTS.some((a) => a.key === 'behind'),
   quietIsQuiet: !quiet.includes('ALREADY DECIDED'),
   // The kiss frame still plans exactly as it did: it runs on the same spread now.
   kissStillPlans: Object.keys(kissPlan(24)).length >= 1,
@@ -105,7 +119,10 @@ def test_an_arrangement_says_the_bodies_and_nothing_else(tmp_path_factory):
     assert out["twoPeople"], out
     assert out["noCamera"], out
     assert out["noteNames"], out
+    assert out["noteRowIsRight"], out
     assert out["noteIsFirm"], out
+    assert out["noteOwnsOnePhotograph"], out
+    assert out["noBehind"], out
     assert out["quietIsQuiet"], out
 
 
