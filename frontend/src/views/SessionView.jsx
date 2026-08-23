@@ -364,6 +364,29 @@ export default function SessionView({ id }) {
             </a>
           )
         })()}
+        {(() => {
+          // Same threshold the export uses, read the other way: "below X" is the
+          // complement of "X and up". Picks filter -> reshoot everything that
+          // isn't a pick; otherwise just the unrated. The anchor stays put for
+          // the same reason the per-shot ↺ refuses it.
+          const minRating = filter === 'picks' ? 4 : 1
+          const reshootCount = s.shots.filter((x) =>
+            x.status === 'done' && x.rating < minRating && !anchors.includes(x.id)
+          ).length
+          return (
+            <button disabled={reshootCount === 0}
+                    title={reshootCount > 0
+                      ? `Delete ${reshootCount} photo${reshootCount === 1 ? '' : 's'} and put ${reshootCount === 1 ? 'it' : 'them'} back in the queue on a new seed`
+                      : 'No finished shots are below the current threshold'}
+                    onClick={() => {
+                      if (confirm(`Reshoot ${reshootCount} shot${reshootCount === 1 ? '' : 's'} below ${minRating}★? Their photos will be deleted and the takes go back in the queue.`)) {
+                        call(() => api.post(`/api/sessions/${id}/reshoot-below?min_rating=${minRating}`))
+                      }
+                    }}>
+              Reshoot below {minRating}★ ({reshootCount})
+            </button>
+          )
+        })()}
       </div>
 
       {/* The three choices every refused Run is about. Each saves on change, like

@@ -154,6 +154,11 @@ setup keeps working untouched.
   the queue with a fresh seed — the row is reused, so the gallery keeps one card
   per take. It is refused on the session's reference photo, which the edits
   behind it need. Nothing else deletes a photo you did not ask to delete.
+- **Reshoot below N★** runs ↺ for every finished shot under the threshold in
+  one click — same rules, same row, same fresh seed, and a `done` session
+  reopens to `draft`. The threshold follows the rating filter (4★ with
+  *Picks only*, 1★ otherwise); the button names the count and asks first
+  because the photos are deleted.
 - A run is refused rather than started when a choice would be silently ignored —
   a base model or LoRA the workflow does not map, a reference take with no
   reference photo. The checks apply to the graph that will actually run: a

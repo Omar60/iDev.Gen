@@ -40,8 +40,8 @@ discover them mid-shoot.
 - **Rating is per shot and local.** No tags, no collections across sessions, no
   search.
 - **Retry only re-queues failed and cancelled shots.** A photo that came out is
-  re-rolled one at a time with **↺ Reshoot**, which deletes it; there is no
-  "reshoot everything below three stars".
+  re-rolled with **↺ Reshoot** (one at a time) or **Reshoot below N★** (every
+  finished shot under the threshold, in one click).
 - **Cancel is not instant.** It interrupts the job ComfyUI is running and
   cancels the rest, but the current image may still finish writing.
 - **The prompt assistant writes text, and only text.** It fills a box you then

@@ -367,6 +367,178 @@ def test_reshooting_the_reference_photo_is_refused(client, seeded):
     assert db.one("SELECT status FROM shot WHERE id=?", shot["id"])["status"] == "done"
 
 
+# -- bulk reshoot: one route, one set of refusals reused from the per-shot one
+
+def _finished_shot(client, sid, label, *, rating=0, rejected=False, seed=0):
+    """An imported PNG: a real file on disk, a row the bulk route can refuse."""
+    shot = client.post(f"/api/sessions/{sid}/import?label={label}", content=PNG).json()
+    db.run("UPDATE shot SET rating=?, rejected=?, seed=? WHERE id=?",
+           rating, int(rejected), seed, shot["id"])
+    return shot
+
+
+def test_bulk_reshoot_re_queues_finished_shots_under_the_threshold(client, seeded):
+    """The weak frames go back in the queue. The shot at 5 stays put, the ones
+    at 1 and 3 land back as pending with their image gone and a zero seed."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s"}).json()["id"]
+    keep = _finished_shot(client, sid, "keep", rating=5)
+    weak = _finished_shot(client, sid, "weak", rating=3)
+    weaker = _finished_shot(client, sid, "weaker", rating=1)
+
+    r = client.post(f"/api/sessions/{sid}/reshoot-below", params={"min_rating": 4})
+    assert r.status_code == 200, r.json()
+    assert r.json() == {"re_queued": 2, "skipped": 0}
+
+    reloaded = {x["id"]: x for x in client.get(f"/api/sessions/{sid}").json()["shots"]}
+    assert reloaded[keep["id"]]["status"] == "done" and reloaded[keep["id"]]["filename"]
+    for shot in (weak, weaker):
+        assert reloaded[shot["id"]]["status"] == "pending"
+        assert reloaded[shot["id"]]["filename"] == ""
+        assert reloaded[shot["id"]]["seed"] == 0
+        assert not (main.SESSIONS_DIR / str(sid) / shot["filename"]).exists()
+
+
+def test_bulk_reshoot_picks_up_unrated_shots_below_one(client, seeded):
+    """An unrated shot is below every threshold — refusing a frame and
+    reshooting it are the same judgement."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s"}).json()["id"]
+    unrated = _finished_shot(client, sid, "blank")          # rating defaults to 0
+
+    r = client.post(f"/api/sessions/{sid}/reshoot-below", params={"min_rating": 1})
+    assert r.status_code == 200 and r.json() == {"re_queued": 1, "skipped": 0}
+    shot = client.get(f"/api/sessions/{sid}").json()["shots"][0]
+    assert shot["status"] == "pending" and shot["rating"] == 0
+
+
+def test_bulk_reshoot_does_not_spare_a_rejected_frame(client, seeded):
+    """The reject and the reshoot are the same judgement — leaving rejects
+    behind would make the action miss exactly the frames the user already
+    refused, and its `rejected` flag is cleared on the way back in."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s"}).json()["id"]
+    shot = _finished_shot(client, sid, "weak", rating=2, rejected=True)
+
+    r = client.post(f"/api/sessions/{sid}/reshoot-below", params={"min_rating": 4})
+    assert r.status_code == 200 and r.json() == {"re_queued": 1, "skipped": 0}
+    row = db.one("SELECT * FROM shot WHERE id=?", shot["id"])
+    assert row["status"] == "pending" and row["rejected"] == 0
+
+
+def test_bulk_reshoot_only_re_queues_finished_shots(client, seeded):
+    """A shot that never finished has no photo to refuse; the others keep the
+    status they had and the response counts them as skipped."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s"}).json()["id"]
+    failed = _finished_shot(client, sid, "failed", rating=1)
+    db.run("UPDATE shot SET status='failed' WHERE id=?", failed["id"])
+    done = _finished_shot(client, sid, "done", rating=1)
+
+    r = client.post(f"/api/sessions/{sid}/reshoot-below", params={"min_rating": 4})
+    assert r.status_code == 200 and r.json() == {"re_queued": 1, "skipped": 1}
+
+    after = {x["id"]: x for x in client.get(f"/api/sessions/{sid}").json()["shots"]}
+    assert after[done["id"]]["status"] == "pending"
+    assert after[failed["id"]]["status"] == "failed"
+
+
+def test_bulk_reshoot_clears_the_seed(client, seeded):
+    """The seed is the noise the picture was painted from — re-rolling it is the
+    whole point of reshooting, and the same prompt on the same noise returns the
+    same photograph."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s"}).json()["id"]
+    shot = _finished_shot(client, sid, "keeper", rating=2, seed=12345)
+
+    client.post(f"/api/sessions/{sid}/reshoot-below", params={"min_rating": 4})
+    row = db.one("SELECT * FROM shot WHERE id=?", shot["id"])
+    assert row["status"] == "pending" and row["seed"] == 0
+
+
+def test_bulk_reshoot_steps_over_a_running_shot(client, seeded):
+    """A running shot is generating — its image does not exist yet, and the
+    action must not abort the queue. The two finished ones go back in, the
+    running one is reported as skipped."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s"}).json()["id"]
+    a = _finished_shot(client, sid, "a", rating=1)
+    b = _finished_shot(client, sid, "b", rating=2)
+    running = _finished_shot(client, sid, "r", rating=3)
+    db.run("UPDATE shot SET status='running' WHERE id=?", running["id"])
+
+    r = client.post(f"/api/sessions/{sid}/reshoot-below", params={"min_rating": 4})
+    assert r.status_code == 200 and r.json() == {"re_queued": 2, "skipped": 1}
+    assert db.one("SELECT status FROM shot WHERE id=?", running["id"])["status"] == "running"
+    # The running shot's file is still on disk: the route did not touch it.
+    assert (main.SESSIONS_DIR / str(sid) / running["filename"]).exists()
+
+
+def test_bulk_reshoot_protects_a_session_anchor(client, seeded):
+    """The anchor is what every reference take edits; an empty anchor fails
+    every edit behind it, and `_valid_anchors` refuses to point at a shot
+    without one — so it is skipped here, not once the queue has started."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s"}).json()["id"]
+    keeper = _finished_shot(client, sid, "keeper", rating=3)
+    client.patch(f"/api/sessions/{sid}", json={"anchor_shot_ids": [keeper["id"]]})
+    neighbour = _finished_shot(client, sid, "neighbour", rating=1)
+
+    r = client.post(f"/api/sessions/{sid}/reshoot-below", params={"min_rating": 4})
+    assert r.status_code == 200 and r.json() == {"re_queued": 1, "skipped": 1}
+    # The anchor is untouched, its image is still on disk.
+    assert db.one("SELECT status FROM shot WHERE id=?", keeper["id"])["status"] == "done"
+    assert (main.SESSIONS_DIR / str(sid) / keeper["filename"]).exists()
+    assert db.one("SELECT status FROM shot WHERE id=?", neighbour["id"])["status"] == "pending"
+
+
+def test_bulk_reshoot_400s_when_nothing_qualifies(client, seeded):
+    """No image is deleted and no row changed — a click that would do nothing
+    must not silently return an empty count."""
+    import main
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s"}).json()["id"]
+    keeper = _finished_shot(client, sid, "keeper", rating=5)
+    path = main.SESSIONS_DIR / str(sid) / keeper["filename"]
+    before = db.one("SELECT * FROM shot WHERE id=?", keeper["id"])
+
+    r = client.post(f"/api/sessions/{sid}/reshoot-below", params={"min_rating": 4})
+    assert r.status_code == 400
+    after = db.one("SELECT * FROM shot WHERE id=?", keeper["id"])
+    assert dict(after) == dict(before) and path.exists()
+
+
+def test_bulk_reshoot_404s_when_the_session_is_unknown(client):
+    """The session is the route's scope; an unknown id is a not-found, not a
+    client error about an empty threshold."""
+    r = client.post("/api/sessions/9999/reshoot-below", params={"min_rating": 4})
+    assert r.status_code == 404
+
+
+def test_bulk_reshoot_reopens_a_done_session_to_draft(client, seeded):
+    """A finished session with something queued in it is not finished, and the
+    status is the one the Run button reads."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s"}).json()["id"]
+    _finished_shot(client, sid, "weak", rating=2)
+    db.run("UPDATE session SET status='done' WHERE id=?", sid)
+
+    client.post(f"/api/sessions/{sid}/reshoot-below", params={"min_rating": 4})
+    assert client.get(f"/api/sessions/{sid}").json()["status"] == "draft"
+
+
+def test_bulk_reshoot_does_not_rewrite_a_running_sessions_status(client, seeded):
+    """A session that is already running, draft or whatever-it-was stays that
+    way — the route only reopens a session that was finished."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s"}).json()["id"]
+    db.run("UPDATE session SET status='running' WHERE id=?", sid)
+    _finished_shot(client, sid, "weak", rating=2)
+
+    client.post(f"/api/sessions/{sid}/reshoot-below", params={"min_rating": 4})
+    assert client.get(f"/api/sessions/{sid}").json()["status"] == "running"
+
+
 def test_deleting_a_model_cascades_to_sessions_and_shots(client, seeded):
     client.post("/api/sessions", json={"model_id": seeded["model_id"], "name": "s",
                                        "shots": [{"prompt": "one", "count": 2}]})

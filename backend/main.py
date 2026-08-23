@@ -1115,6 +1115,65 @@ def reshoot_shot(shot_id: int):
     return db.one("SELECT * FROM shot WHERE id=?", shot_id)
 
 
+@app.post("/api/sessions/{sid}/reshoot-below")
+def reshoot_below(sid: int, min_rating: int):
+    """Refuse every weak frame in one click, on the same terms as the per-shot
+    reshoot above.
+
+    `min_rating` is required, unlike the export's, and that asymmetry is the
+    point: the export only reads, so a missing threshold can default to 1, but
+    this route deletes photographs. Left to default, a call that names no
+    threshold would delete every unrated photo in the session.
+
+    A long shoot does not need a long argument: the user has already rated (or
+    rejected, or not) the photos, and the action takes the threshold they would
+    type if they were patient. The single-shot button's rules are re-used rather
+    than restated — refuse only what is finished, never an anchor, with its file
+    gone and its seed cleared — and the skipped shots come back as a count so
+    the screen can say what it did without the user counting cards.
+
+    A session left with something queued in it is not finished; the status is
+    the one the Run button reads, so a `done` (or `cancelled`, or `failed`)
+    session whose frames are re-queued reopens to `draft`, exactly like the
+    per-shot version. A bulk reshoot that touches nothing refuses with a 400
+    rather than silently return an empty count, so a click that "did nothing"
+    never goes through.
+    """
+    session = db.one("SELECT * FROM session WHERE id=?", sid)
+    if not session:
+        raise HTTPException(404, "session not found")
+    anchors = set(json.loads(session["anchor_shot_ids"] or "[]"))
+    # `rating < min_rating` catches rating 0 (unrated) and every numeric value
+    # below the threshold — both are candidates by the spec, because refusing
+    # a frame and reshooting it are the same judgement.
+    below = db.q("""SELECT id, status, filename FROM shot
+                    WHERE session_id=? AND rating<? ORDER BY id""",
+                 sid, min_rating)
+    re_queued = 0
+    skipped = 0
+    for shot in below:
+        # Reuse the per-shot refusals: a running shot is generating (its image
+        # does not exist yet, and aborting the queue is not the action), an
+        # anchor's file is what every reference take behind it edits, and
+        # pending / failed / cancelled shots just have no photo to refuse.
+        if shot["status"] != "done" or shot["id"] in anchors:
+            skipped += 1
+            continue
+        if shot["filename"]:
+            (SESSIONS_DIR / str(sid) / shot["filename"]).unlink(missing_ok=True)
+        db.run("""UPDATE shot SET status='pending', filename='', prompt_id='', error='',
+                                  seed=0, rejected=0, finished_at='' WHERE id=?""",
+               shot["id"])
+        re_queued += 1
+    if re_queued == 0:
+        # No work was done in the loop above (every row took the `continue`),
+        # so no file is deleted and no row changed — the 400 is a true no-op.
+        raise HTTPException(400, f"no shots in this session are below {min_rating}")
+    if session["status"] in ("done", "cancelled", "failed"):
+        db.run("UPDATE session SET status='draft' WHERE id=?", sid)
+    return {"re_queued": re_queued, "skipped": skipped}
+
+
 @app.get("/api/shots/{shot_id}/image")
 def shot_image(shot_id: int):
     shot = db.one("SELECT * FROM shot WHERE id=?", shot_id)

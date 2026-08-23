@@ -1084,6 +1084,13 @@ because nothing is polling that job any more. Retry picks it back up.
   purpose: the same noise would hand back the same picture, which is what ⚖ is
   for. Refused on the session's reference photo — the takes that edit it would
   have nothing to edit; unpin it or pick another reference first.
+- **Reshoot below N★** does ↺ for every finished shot under the threshold in
+  one click — every photo deleted, every take back in the queue on a new seed,
+  a `done` session reopened to `draft`. The count is on the button; the
+  threshold follows the filter (4★ with *Picks only*, 1★ otherwise). A running
+  shot and the session's reference are left alone, the response counts what was
+  re-queued and what was skipped, and the screen can say what happened. It asks
+  first, naming the count, because the photos are gone.
 - **Picks only** shows 4★ and above.
 - Clicking a photo opens it full size with its prompt, seed and filename.
 - A reference take opens with a **before/after wipe** instead: the reference on
