@@ -104,7 +104,7 @@ console.log(JSON.stringify({
 }))
 """
 
-# Word for word what sessions 245-250 judged. A form nobody shot is a form that
+# Word for word what sessions 245-251 judged. A form nobody shot is a form that
 # comes back frontal, and the two that are deliberately absent cost four batches
 # to establish: `behind` was 0/6 and the floor 0/3 under the candid look, both
 # wordings, with the subject block already fixed.
@@ -114,6 +114,7 @@ CANDID_LINES = [
     "Overhead camera directly above her",
     "Phone propped on a high shelf across the room, looking down at her",
     "Taken from behind her left shoulder, her back three-quarters to the camera",
+    "Taken from behind her right shoulder, her back three-quarters to the camera",
     "Mirror selfie, the phone up in her right hand and visible in the mirror",
 ]
 

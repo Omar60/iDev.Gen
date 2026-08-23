@@ -187,6 +187,13 @@ ARMS = [
      "the reversed selfie, asking for behind with no surface and no second person"),
     ("N12-shelf-shoulder", "Phone propped on a shelf behind her left shoulder",
      "a mount with a horizontal and no verb - the shortest form that could work"),
+    # Session 251. The shoulder is the one family candid keeps in the
+    # photographer's wording, and CANDID_POSITIONS has only its left side: the
+    # right is verified for `directed` (session 244) and has never been shot under
+    # this look. Shot with `--subject neutral`, which is what the left needed.
+    ("N13-shoulder-right", "Taken from behind her right shoulder, her back three-quarters to the "
+                           "camera",
+     "the mirror of the only shoulder candid has - a seventh form if it renders"),
 ]
 
 

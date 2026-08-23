@@ -36,6 +36,7 @@ EXPECTED = {
     "N10-mirror-behind": ("shoulder", "yes"),
     "N11-armslength-behind": ("behind", "no"),
     "N12-shelf-shoulder": ("shoulder", "no"),
+    "N13-shoulder-right": ("shoulder", "no"),
 }
 
 

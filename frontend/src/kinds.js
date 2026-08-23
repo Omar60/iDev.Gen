@@ -1381,10 +1381,14 @@ export const CANDID_POSITIONS = [
   { family: 'front', line: "Phone held out at arm's length in front of her face" },
   { family: 'overhead', line: 'Overhead camera directly above her' },
   { family: 'overhead', line: 'Phone propped on a high shelf across the room, looking down at her' },
-  // Left only. The right shoulder is verified for `directed` (session 244) and
-  // has never been shot under the candid look; one measured side beats two when
-  // one of them is a guess.
+  // Both sides, session 251: 3/3 each, shot together so the left is its own
+  // control and it reproduced. What the judge verifies is a shoulder
+  // three-quarter view and not WHICH shoulder - left and right are one answer to
+  // it on purpose, because telling her left from her right is a harder question
+  // than the one being asked. The directed catalogue carries both on the same
+  // evidence.
   { family: 'shoulder', line: 'Taken from behind her left shoulder, her back three-quarters to the camera' },
+  { family: 'shoulder', line: 'Taken from behind her right shoulder, her back three-quarters to the camera' },
   { family: 'mirror', line: 'Mirror selfie, the phone up in her right hand and visible in the mirror' },
 ]
 
