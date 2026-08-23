@@ -1,7 +1,11 @@
 """HTTP routes: creating models and sessions, prompt composition, rating."""
+import io
+import zipfile
+
 import pytest
 
 import db
+import main
 from conftest import EDIT_GRAPH, GRAPH
 
 
@@ -849,3 +853,173 @@ def test_missing_image_returns_404(client, seeded):
         "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
     shot_id = client.get(f"/api/sessions/{sid}").json()["shots"][0]["id"]
     assert client.get(f"/api/shots/{shot_id}/image").status_code == 404
+
+
+def test_session_export_default_threshold(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 3}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    db.run("UPDATE shot SET status='done', filename='a1.png', rating=0 WHERE id=?", shots[0]["id"])
+    db.run("UPDATE shot SET status='done', filename='b1.png', rating=2 WHERE id=?", shots[1]["id"])
+    db.run("UPDATE shot SET status='done', filename='c1.png', rating=5 WHERE id=?", shots[2]["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    for f in ["a1.png", "b1.png", "c1.png"]:
+        (folder / f).write_bytes(PNG)
+
+    r = client.get(f"/api/sessions/{sid}/export")
+    assert r.status_code == 200
+    assert f"session_{sid}.zip" in r.headers["Content-Disposition"]
+
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        names = zf.namelist()
+        assert names == ["00000_02_rating2.png", "00000_03_rating5.png"]
+
+
+def test_session_export_raises_threshold(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 3}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    db.run("UPDATE shot SET status='done', filename='a2.png', rating=0 WHERE id=?", shots[0]["id"])
+    db.run("UPDATE shot SET status='done', filename='b2.png', rating=2 WHERE id=?", shots[1]["id"])
+    db.run("UPDATE shot SET status='done', filename='c2.png', rating=5 WHERE id=?", shots[2]["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    for f in ["a2.png", "b2.png", "c2.png"]:
+        (folder / f).write_bytes(PNG)
+
+    r = client.get(f"/api/sessions/{sid}/export?min_rating=3")
+    assert r.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        assert zf.namelist() == ["00000_03_rating5.png"]
+
+
+def test_session_export_empty_selection(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    shot = client.get(f"/api/sessions/{sid}").json()["shots"][0]
+    db.run("UPDATE shot SET status='done', filename='a3.png', rating=0 WHERE id=?", shot["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "a3.png").write_bytes(PNG)
+
+    r = client.get(f"/api/sessions/{sid}/export")
+    assert r.status_code == 400
+    assert "no shots meet the threshold" in r.json()["detail"]
+
+
+def test_session_export_skips_missing_files(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 2}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    db.run("UPDATE shot SET status='done', filename='a4.png', rating=5 WHERE id=?", shots[0]["id"])
+    db.run("UPDATE shot SET status='done', filename='b4.png', rating=5 WHERE id=?", shots[1]["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "a4.png").write_bytes(PNG)
+    # b4.png is missing
+
+    r = client.get(f"/api/sessions/{sid}/export")
+    assert r.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        assert zf.namelist() == ["00000_01_rating5.png"]
+
+
+def test_session_export_unknown_session(client):
+    r = client.get("/api/sessions/999/export")
+    assert r.status_code == 404
+
+
+def test_session_export_entry_ordering_twelve_shots(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 12}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    for shot in shots:
+        fname = f"{shot['id']}_ordering.png"
+        db.run("UPDATE shot SET status='done', filename=?, rating=1 WHERE id=?", fname, shot["id"])
+        (folder / fname).write_bytes(PNG)
+
+    r = client.get(f"/api/sessions/{sid}/export")
+    assert r.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        names = zf.namelist()
+        assert len(names) == 12
+        # Verify plain lexicographic sort puts them in shooting order
+        assert sorted(names) == names
+        # Specifically check 2 precedes 12
+        assert names.index("00000_02_rating1.png") < names.index("00000_12_rating1.png")
+
+
+def test_session_export_skips_rejected(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 2}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    db.run("UPDATE shot SET status='done', filename='a5.png', rating=5 WHERE id=?", shots[0]["id"])
+    db.run("UPDATE shot SET status='done', filename='b5.png', rating=5, rejected=1 WHERE id=?", shots[1]["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    for f in ["a5.png", "b5.png"]:
+        (folder / f).write_bytes(PNG)
+
+    r = client.get(f"/api/sessions/{sid}/export")
+    assert r.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        assert zf.namelist() == ["00000_01_rating5.png"]
+
+
+def test_session_export_entry_numbering_follows_shot_index(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 1},
+                  {"prompt": "two", "count": 1},
+                  {"prompt": "three", "count": 1}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    db.run("UPDATE shot SET status='done', filename='a6.png', rating=5 WHERE id=?", shots[0]["id"])
+    db.run("UPDATE shot SET status='done', filename='b6.png', rating=5 WHERE id=?", shots[1]["id"])
+    db.run("UPDATE shot SET status='done', filename='c6.png', rating=5 WHERE id=?", shots[2]["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    for f in ["a6.png", "b6.png", "c6.png"]:
+        (folder / f).write_bytes(PNG)
+
+    client.delete(f"/api/shots/{shots[1]['id']}")
+
+    r = client.get(f"/api/sessions/{sid}/export")
+    assert r.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        names = zf.namelist()
+        assert names == ["00000_01_rating5.png", "00002_01_rating5.png"]
+
+
+def test_session_export_entry_names_do_not_move_with_the_threshold(client, seeded):
+    """One take is three rows sharing a shot_index. Numbering the variations by
+    what the export happens to carry renamed a photograph when the threshold
+    rose: the same file came out 01 at one star and 01 again at four."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 3}]}).json()["id"]
+    shots = client.get(f"/api/sessions/{sid}").json()["shots"]
+    for shot, (name, rating) in zip(shots, [("a7.png", 1), ("b7.png", 2), ("c7.png", 5)]):
+        db.run("UPDATE shot SET status='done', filename=?, rating=? WHERE id=?",
+               name, rating, shot["id"])
+    folder = main.SESSIONS_DIR / str(sid)
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in ["a7.png", "b7.png", "c7.png"]:
+        (folder / name).write_bytes(PNG)
+
+    with zipfile.ZipFile(io.BytesIO(client.get(f"/api/sessions/{sid}/export").content)) as zf:
+        wide = zf.namelist()
+    with zipfile.ZipFile(io.BytesIO(
+            client.get(f"/api/sessions/{sid}/export?min_rating=5").content)) as zf:
+        narrow = zf.namelist()
+
+    assert wide == ["00000_01_rating1.png", "00000_02_rating2.png", "00000_03_rating5.png"]
+    assert narrow == ["00000_03_rating5.png"]

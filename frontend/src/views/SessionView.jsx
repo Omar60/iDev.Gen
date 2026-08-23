@@ -353,6 +353,17 @@ export default function SessionView({ id }) {
           <option value="keep">Without rejects</option>
           <option value="picks">Picks only (4★+)</option>
         </select>
+        {(() => {
+          const minRating = filter === 'picks' ? 4 : 1
+          const exportCount = s.shots.filter((x) => x.status === 'done' && !x.rejected && x.rating >= minRating).length
+          const url = `/api/sessions/${id}/export?min_rating=${minRating}`
+          return (
+            <a href={exportCount > 0 ? url : undefined} download
+               className={exportCount > 0 ? 'button' : 'button disabled'}>
+              Download picks ({exportCount})
+            </a>
+          )
+        })()}
       </div>
 
       {/* The three choices every refused Run is about. Each saves on change, like

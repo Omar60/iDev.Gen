@@ -231,6 +231,6 @@ for humans and AI agents alike: [AGENTS.md](AGENTS.md).
 
 ## Status
 
-MVP. Out of scope for now: multi-LoRA combos, contact sheet / selection export,
+MVP. Out of scope for now: multi-LoRA combos, contact sheets,
 and a look library reusable across sessions — see
 [known limitations](docs/known-limitations.md).

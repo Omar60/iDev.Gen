@@ -48,19 +48,22 @@ h3 { font-size: 14px; margin: 0 0 8px; }
 .grid-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
 
 label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
-input, select, textarea, button {
+input, select, textarea, button, .button {
   font: inherit; color: var(--text); background: var(--panel-2);
   border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; width: 100%;
 }
 textarea { resize: vertical; min-height: 56px; }
 input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); }
 
-button { width: auto; cursor: pointer; }
-button:hover { border-color: var(--accent); }
-button.primary { background: var(--accent); color: #0b1220; border-color: var(--accent); font-weight: 600; }
-button.danger { color: var(--bad); }
-button:disabled { opacity: .45; cursor: not-allowed; }
-button.icon { padding: 3px 7px; }
+button, .button { width: auto; cursor: pointer; }
+/* A link styled as a button: it has to be given what the element already brings. */
+.button { text-decoration: none; display: inline-block; text-align: center; line-height: normal; }
+button:hover, .button:hover { border-color: var(--accent); }
+button.primary, .button.primary { background: var(--accent); color: #0b1220; border-color: var(--accent); font-weight: 600; }
+button.danger, .button.danger { color: var(--bad); }
+button:disabled, .button.disabled { opacity: .45; cursor: not-allowed; }
+.button.disabled { pointer-events: none; }
+button.icon, .button.icon { padding: 3px 7px; }
 
 .filebtn {
   display: inline-block; margin: 0; cursor: pointer;

@@ -9,17 +9,19 @@ moved into the session folder.
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import mimetypes
 import os
 import random
 import shutil
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -990,6 +992,54 @@ def retry_failed(sid: int):
 def cancel_session(sid: int):
     runner.cancel(sid)
     return {"ok": True}
+
+
+@app.get("/api/sessions/{sid}/export")
+def export_session(sid: int, min_rating: int = 1):
+    if not db.one("SELECT id FROM session WHERE id=?", sid):
+        raise HTTPException(404, "session not found")
+
+    all_shots = db.q(
+        """SELECT id, rating, filename, status, rejected, shot_index FROM shot
+           WHERE session_id=? ORDER BY shot_index, id""", sid)
+
+    # One take is N rows sharing a shot_index, so the index alone does not name a
+    # file. The variation number is counted over every row of the take, not over
+    # the ones being written: counted while writing, a photo would change name
+    # between an export at one star and the same export at four.
+    variation = {}
+    counts: dict[int, int] = {}
+    for shot in all_shots:
+        counts[shot["shot_index"]] = counts.get(shot["shot_index"], 0) + 1
+        variation[shot["id"]] = counts[shot["shot_index"]]
+
+    buf = io.BytesIO()
+    added = 0
+    with zipfile.ZipFile(buf, "w") as zf:
+        for shot in all_shots:
+            if shot["status"] != "done" or shot["rating"] < min_rating or shot["rejected"]:
+                continue
+            if not shot["filename"]:
+                continue
+            path = SESSIONS_DIR / str(sid) / shot["filename"]
+            if not path.exists():
+                continue
+            ext = Path(shot["filename"]).suffix
+            entry_name = (f"{shot['shot_index']:05d}_{variation[shot['id']]:02d}"
+                          f"_rating{shot['rating']}{ext}")
+            zf.write(path, arcname=entry_name)
+            added += 1
+
+    if not added:
+        raise HTTPException(400, f"no shots meet the threshold of {min_rating}")
+
+    buf.seek(0)
+    filename = f"session_{sid}.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 
 @app.delete("/api/sessions/{sid}")

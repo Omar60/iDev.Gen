@@ -16,8 +16,8 @@ discover them mid-shoot.
 - **One LoRA per model.** A session drives a single LoRA loader. Character +
   style combos need a workflow that already stacks them, and the extra loaders
   keep their own fixed values.
-- **No contact sheet or export.** Picks live in the session folder; there is no
-  "export selection" button yet. The folder is plain PNG files, so a file
+- **No contact sheet.** Picks can be exported as a ZIP, but there is no
+  "contact sheet" feature yet. The folder is plain PNG files, so a file
   manager works.
 - **One look per session, and no look library.** The look — hair, makeup, the
   place, the light — is fixed once and that constraint is the point. The

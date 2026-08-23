@@ -1116,6 +1116,14 @@ panel, because it is the half of a shoot that was always meant to move. A finish
 be run again. Reshooting a reference take stays a reference take — coming back
 as a fresh text to image would quietly be a different picture.
 
+## Exporting
+
+**Download picks** next to the rating filter packages the session's finished
+shots into a single ZIP named `session_<id>.zip`. It takes the shots rated at or
+above the threshold that are not rejected — that rule, and not whatever the
+gallery filter is showing. Inside, the files are numbered in the order they were
+shot, so the shoot's progression survives outside the app.
+
 ## Where the files are
 
 `<data folder>/sessions/<session id>/<shot id>_<shot label>.png`. They are moved out

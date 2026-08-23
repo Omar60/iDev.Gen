@@ -1,0 +1,55 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
+
+context: |
+  iDev.Gen: local ComfyUI photo-shoot app. Python/FastAPI backend
+  (backend/main.py routes, runner.py, db.py, comfy.py, enhance.py), React 19 +
+  Vite frontend (frontend/src/views/*.jsx). SQLite, single local user, no auth,
+  binds 127.0.0.1.
+
+  AGENTS.md at the repo root is the single source of working rules and is
+  binding on every change. Read it before proposing anything. It carries the
+  invariants that break silently — apply_map never patches a connected input,
+  filename_prefix is unique per attempt, deleting a session deletes its folder
+  loudly, one session at a time. Do not restate them here; read the file.
+
+  Gates: `python -m pytest` green and, when frontend/ is touched,
+  `npm --prefix frontend run build` succeeds. A bug fix lands with the test
+  that would have caught it. No test may need a GPU, a running ComfyUI or the
+  network.
+
+  English only in code, comments, UI strings, docs and commits. No personal
+  data, no machine paths. Conventional commit subjects, imperative, no period.
+
+  A new setting, route or screen updates README.md and the matching page under
+  docs/.
