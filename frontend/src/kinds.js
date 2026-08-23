@@ -940,12 +940,34 @@ const BASE_MANNERS = [
  *    him with her upright on top. A good photograph of this kind, and not the
  *    one the clause describes.
  *
- *  So: do not quote a number off this, and do not reword the phone rule on it
- *  either. One shoot cannot separate the form from the framing it happened to
- *  draw - `Phone held low in her own hand` painted the phone at full-length and
- *  nothing at waist-up, on one photograph each. The arm that would settle it is
- *  the `candid` protocol: one line fixed by hand, three seeds, the camera clause
- *  the only thing that moves.
+ *  THE ARM IS THE SWITCH, AND THE CAMERA CLAUSE BUYS ALMOST NOTHING. Sessions
+ *  265 and 266, the 227/228/244 protocol: one line fixed by hand, three seeds,
+ *  five held camera forms, and the judge asked only who was holding the camera
+ *  (`judge_camera.py --question holder`, calibrated 11/11 against the user's own
+ *  ratings of 264). With the pose saying nothing about her arms, the four
+ *  non-mirror forms read as HERS in 4 photographs of 12. With one clause added
+ *  to the pose - her free arm stretched toward the camera, the near hand and
+ *  forearm large at the frame edge - the same forms on the same seeds read as
+ *  hers 12 of 12, and 11 of the 12 still render the act.
+ *
+ *  What follows from that, and it is why the first rule of the delta below is
+ *  written the way it is:
+ *
+ *  * A held camera clause WITHOUT the arm is not a selfie, whatever it says. In
+ *    264 only 5 photographs of 20 read as hers, and the arm is what those five
+ *    lines had.
+ *  * The mirror is the exception and stands alone: 3/3 with no arm at all,
+ *    because there the phone is really in the reflection.
+ *  * The word `phone` inside the camera clause is inert. `Phone held out at
+ *    arm's length in front of her face` and `Taken from an arm's length in front
+ *    of her face` scored the same in both conditions.
+ *  * Which held form is chosen barely matters, so the two `pov` entries stay:
+ *    with the arm written they are 3/3 like the rest.
+ *
+ *  Still open: the shipped wording of the `pov` form that ends `as she lies on
+ *  her back` is a POSE inside a camera clause and it contradicts every pose but
+ *  one. 266 shot it with that tail cut and it was 3/3; the tail itself has never
+ *  been shot against anything.
  */
 const SELFIE = {
   ...BASE_MANNERS[1],
@@ -962,7 +984,11 @@ const SELFIE = {
       + 'it the shoot it is. Everything else in this block stands: the technique field, the '
       + 'flat focus, the room light, the careless framing, the words that make a picture '
       + 'glossy.\n'
-      + 'FIRST: SHE IS HOLDING THE PHONE AND HER OWN ARM IS IN THE FRAME. Not one line in six - '
+      + 'FIRST: SHE IS HOLDING THE PHONE AND HER OWN ARM IS IN THE FRAME. THIS IS THE ONE '
+      + 'THING IN THE LINE THAT DECIDES WHETHER THE PHOTOGRAPH READS AS HERS - measured at '
+      + '4 of 12 without it and 12 of 12 with it, same seeds, same camera clauses. The camera '
+      + 'clause does NOT do it for you: a held form with no arm written into the pose comes '
+      + 'back as a photograph somebody else took. Not one line in six - '
       + 'every line whose camera clause is one of the held forms, which is most of them. Write '
       + 'the ARM and never the device: `her arm stretched out towards the lens`, `her near hand '
       + 'far bigger than the rest of her`, `her forearm running out of the bottom of the frame`. '
