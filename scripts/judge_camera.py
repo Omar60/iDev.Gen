@@ -177,6 +177,29 @@ DEVICE_WORDS = ("yes", "no")
 # phone is doing the photographing from a shelf, the carpet or his hand - asks
 # for no device in the frame at all, so `no` is the default and this list is the
 # exception.
+# The fifth question, for the kiss frame. The eyes are the whole reason that
+# frame is planned in code rather than asked for in prose - a kiss blown at the
+# camera renders easily and the eyes come back open - so this asks the eyes alone
+# and says nothing about lips, hands or where the camera is.
+KISS = """Look at this photograph and answer with ONE word and nothing else.
+
+What are the woman's eyes doing?
+
+closed - both of her eyes are shut
+wink - one eye is shut and the other is open
+open - both of her eyes are open
+
+Answer with exactly one of: closed, wink, open."""
+
+KISS_WORDS = ("closed", "wink", "open")
+
+# What the line asked of the eyes, read off the wording KISS_FRAMES hands over.
+KISS_ASKED = [
+    ("closed", "her eyes are completely closed"),
+    ("wink", "she is winking"),
+    ("open", "both eyes open and looking straight at the lens"),
+]
+
 DEVICE_YES = (
     "phone held out at arm's length in front of her face",
     "mirror selfie, the phone up in her right hand",
@@ -246,7 +269,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("session", type=int)
     ap.add_argument("--base", default="http://127.0.0.1:8777")
-    ap.add_argument("--question", choices=("position", "turn", "side", "device"),
+    ap.add_argument("--question", choices=("position", "turn", "side", "device", "kiss"),
                     default="position",
                     help="position = which side of her the camera stands on, heights winning "
                          "over horizontals; turn = how far her body is turned, which is the only "
@@ -270,6 +293,7 @@ def main() -> int:
         "turn": (TURN, TURN_WORDS),
         "side": (SIDE, SIDE_WORDS),
         "device": (DEVICE, DEVICE_WORDS),
+        "kiss": (KISS, KISS_WORDS),
     }.get(args.question, (QUESTION, WORDS))
 
     hits, rows, skipped = 0, [], 0
@@ -278,6 +302,8 @@ def main() -> int:
         # carries which wording asked for it, so the line is not what is compared.
         if turn:
             want = "profile"
+        elif args.question == "kiss":
+            want = asked_of(shot["prompt"], KISS_ASKED)
         elif args.question == "device":
             low = " ".join(shot["prompt"].split()).lower()
             want = "yes" if any(c in low for c in DEVICE_YES) else "no"

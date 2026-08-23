@@ -864,7 +864,9 @@ export const MANNERS = [
         + 'lines of 25 - the writer answered in six fields and none of them owned the depth of '
         + 'field, so it belongs to the look and to nothing else.\n'
         + 'HER EYES ARE NOT ON THE LENS. Not once, unless that line has her holding the phone '
-        + 'and looking at its screen. She is looking at him, at her own hands, at the '
+        + 'and looking at its screen, or the photograph is named below as a kiss frame - that '
+        + 'one is written out for you in full and it overrides this paragraph for its line '
+        + 'only. She is looking at him, at her own hands, at the '
         + 'television, past the camera at nothing, down, away, or her eyes are shut. There is '
         + 'nobody behind the camera to look at, and eye contact with a camera nobody is holding '
         + 'is the posed photograph this whole manner exists to avoid - it survives every other '
@@ -1440,6 +1442,87 @@ export const cameraPlan = (n, rand = Math.random, positions = CAMERA_POSITIONS) 
   return plan
 }
 
+/** The kiss frame, in four flavours, and the position it is taken from.
+ *
+ *  Every shoot gets at least one. It came from a photograph the user chased for
+ *  several sessions and never got out of a shoot - a kiss blown at the camera
+ *  with the eyes shut - and finally got from a prompt written by hand. What that
+ *  prompt was doing that a shoot line does not: it named the kiss and the eyes as
+ *  ONE gesture in the same clause, with the eyes stated flatly and in capitals,
+ *  and it put the camera at arm's length in her own hand. A shoot line spreads
+ *  those across `camera` and `face` and softens both, and the eyes come back
+ *  open.
+ *
+ *  So it is a plan and not a suggestion, like the camera: the wording below is
+ *  handed over word for word and the writer only places it.
+ *
+ *  `hand` is what the `act` field must carry when the flavour needs a hand in
+ *  frame; it is empty for the three that do not.
+ */
+export const KISS_FRAMES = [
+  { key: 'closed',
+    face: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+        + 'to one side, and HER EYES ARE COMPLETELY CLOSED - both eyelids shut, no iris and no '
+        + 'white showing, a peaceful dreamy expression.',
+    hand: '' },
+  { key: 'wink',
+    face: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+        + 'to one side, and SHE IS WINKING - one eye squeezed fully shut, the other open and '
+        + 'looking straight at the lens.',
+    hand: '' },
+  { key: 'open',
+    face: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+        + 'to one side, both eyes open and looking straight at the lens.',
+    hand: '' },
+  { key: 'finger',
+    face: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+        + 'to one side, and SHE IS WINKING - one eye squeezed fully shut, the other open and '
+        + 'looking straight at the lens.',
+    hand: 'Her free hand is raised beside her face with the middle finger up and the other '
+        + 'fingers curled down, held toward the camera.' },
+]
+
+/** Which photographs are kiss frames, and which flavour each one is.
+ *
+ *  One per eight photographs, capped at the four flavours and never fewer than
+ *  one, so a short shoot still gets its kiss and a long one gets variety rather
+ *  than the same face four times. Spread by dividing the shoot into as many
+ *  bands as there are frames and placing one inside each, which keeps two of
+ *  them from landing side by side without any interval arithmetic.
+ *  ponytail: no per-manner count, one knob (the 8) if a shoot wants more.
+ */
+export const kissPlan = (n, rand = Math.random) => {
+  if (n < 1) return {}
+  const many = Math.max(1, Math.min(KISS_FRAMES.length, Math.floor(n / 8)))
+  const band = n / many
+  const plan = {}
+  let last = 0
+  for (let i = 0; i < many; i += 1) {
+    // 1-based photograph numbers, and photograph 1 is left alone when there is
+    // room: it is the frame the whole shoot is measured against.
+    const from = Math.floor(i * band)
+    const drawn = Math.max(many > 1 || n === 1 ? 1 : 2,
+                           from + 1 + Math.floor(rand() * Math.max(1, band - 1)))
+    // A band's draw can land at its end and the next one's at its start, which
+    // is two kiss frames running - the one thing the spread exists to prevent.
+    const at = Math.min(n, Math.max(drawn, last + 2))
+    plan[at] = KISS_FRAMES[i % KISS_FRAMES.length]
+    last = at
+  }
+  return plan
+}
+
+/** Where the kiss frame is taken from, by manner: her own arm in a candid shoot,
+ *  the photographer's frontal position in a directed one. Both are measured
+ *  forms - the first is `CANDID_POSITIONS`' arm's-length selfie, 3/3 in session
+ *  245, the second is the frontal control that is 3/3 in every session it has
+ *  ever been in.
+ */
+export const KISS_CAMERA = {
+  candid: "Phone held out at arm's length in front of her face",
+  directed: 'Taken from directly in front of her',
+}
+
 export const shootChunkNote = (at) =>
   `${paced('photographs', at)}\n`
   + (at.stages?.length
@@ -1458,6 +1541,20 @@ export const shootChunkNote = (at) =>
       + 'your framing after it. Invent no other position and reword none of these: these are '
       + 'the forms this camera was measured to obey, and a reworded one comes back as a '
       + 'front view. The framing, the pose, the act and the expression are still yours.\n'
+    : '')
+  // After the camera, because it overrides one of the positions above for its own
+  // photograph and a reader meets the exception after the rule.
+  + (at.kisses?.length
+    ? at.kisses.map(({ at: k, frame, camera }) =>
+      `PHOTOGRAPH ${k} IS A KISS FRAME and it is written differently from every other line.\n`
+      + `Its camera is \`${camera}\`, which replaces the position given for it above, and its `
+      + 'framing is `a waist-up photograph` so the face fills the frame.\n'
+      + `Its \`face\` field is this, word for word: ${frame.face}\n`
+      + (frame.hand ? `Its \`act\` field carries this: ${frame.hand}\n` : '')
+      + 'Do not soften it, do not reword the eyes and do not describe her looking away: the '
+      + 'kiss and the eyes are one gesture and this photograph exists for it. Everything else '
+      + 'in the line - the pose, the wardrobe, the technique - is the shoot as usual, and it '
+      + 'is the next step of the shoot like any other photograph.\n').join('')
     : '')
   + (at.previous
     ? `Photograph ${at.from - 1} was:\n${at.previous}\n`

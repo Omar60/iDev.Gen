@@ -14,6 +14,7 @@ import {
   SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
   takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, POSITIONS,
+  kissPlan, KISS_CAMERA,
 } from './kinds.js'
 
 export const ask = (payload) => api.post('/api/enhance', payload).then((r) => r.lines || [])
@@ -328,6 +329,11 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // that survived being shot and judged blind, sessions 245-250. A manner with
   // no catalogue gets no camera guidance, and a test keeps that from happening.
   const cameras = POSITIONS[manner] ? cameraPlan(n, Math.random, POSITIONS[manner]) : null
+  // The kiss frames, decided here too, and they take their photograph's camera
+  // with them: the gesture only reads from in front of her, close.
+  const kisses = kissPlan(n)
+  const kissCamera = KISS_CAMERA[manner] || KISS_CAMERA.directed
+  for (const at of Object.keys(kisses)) if (cameras) cameras[Number(at) - 1] = kissCamera
   onProgress?.(0, n)
 
   const lines = await inChunks(n, (made) => onProgress?.(made, n), (at) => {
@@ -347,7 +353,12 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
                + (MANNER[manner]?.line ? `\n\n${MANNER[manner].line}` : '')
                + `\n\nThe shoot goes like this:\n${brief}`
                + `\n\n${shootChunkNote({ ...at, bare, stages: covered,
-                                         cameras: cameras?.slice(at.from - 1, at.from - 1 + at.want) })}`,
+                                         cameras: cameras?.slice(at.from - 1, at.from - 1 + at.want),
+                                         kisses: Object.entries(kisses)
+                                           .filter(([k]) => Number(k) >= at.from
+                                                            && Number(k) < at.from + at.want)
+                                           .map(([k, frame]) => ({ at: Number(k), frame,
+                                                                   camera: kissCamera })) })}`,
     // The look is context and not part of the answer: it is prepended to every
     // frame by the app, so the writer needs to know it in order not to repeat it.
     context: look,
