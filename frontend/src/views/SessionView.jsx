@@ -36,6 +36,13 @@ export default function SessionView({ id }) {
   // The whole config, not just `llm_ok`: it also carries the per-checkpoint
   // profiles that picking a base model fills in from.
   const [config, setConfig] = useState({})
+  // The tag editor's draft input. A PATCH fires on submit so the network
+  // round-trip is one per tag, not one per keystroke, and on remove so each
+  // click is its own action with its own undo.
+  const [tagDraft, setTagDraft] = useState('')
+  // Open when the user starts typing; close on blur once the field is empty
+  // again, so a session with no tags does not eat a row of vertical space.
+  const [tagsOpen, setTagsOpen] = useState(false)
   const llm = !!config.llm_ok
 
   const reload = () => api.get(`/api/sessions/${id}`).then(setS).catch((e) => setError(e.message))
@@ -242,13 +249,6 @@ export default function SessionView({ id }) {
     })
   }
 
-  // The tag editor's draft input. A PATCH fires on submit so the network
-  // round-trip is one per tag, not one per keystroke, and on remove so each
-  // click is its own action with its own undo.
-  const [tagDraft, setTagDraft] = useState('')
-  // Open when the user starts typing; close on blur once the field is empty
-  // again, so a session with no tags does not eat a row of vertical space.
-  const [tagsOpen, setTagsOpen] = useState(false)
   const tags = s.tags || []
   const addTag = (raw) => {
     const v = (raw || '').trim()

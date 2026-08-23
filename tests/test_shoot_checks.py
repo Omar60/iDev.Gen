@@ -16,6 +16,7 @@ penis and no man in them. Nothing failed; there was nothing to fail.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -25,6 +26,15 @@ import pytest
 from test_no_personal_data import SKIP_SUFFIXES, tracked_files
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# A React hook call, a component's first top-level early return, and the start
+# of the next component. Two spaces of indent is the component body in this
+# tree; anything deeper is a callback, and the guard has to reset per component
+# because one file holds several.
+_HOOK = re.compile(r"\buse[A-Z]\w*\s*\(")
+_GUARD = re.compile(r"^  if \s*\(.*\)\s*return\b")
+_COMPONENT = re.compile(r"^(export default )?function [A-Z]")
+
 
 # Tab, newline and carriage return are the only ones a source file has any use
 # for. Everything else below 0x20 is invisible in every editor, invisible in a
@@ -81,6 +91,48 @@ def test_no_trailing_whitespace_in_tracked_files():
 
     assert not offenders, ("trailing whitespace in tracked files:\n"
                            + "\n".join(offenders))
+
+
+def test_no_react_hook_is_called_after_an_early_return():
+    """A hook below a component's early return renders a different number of
+    hooks on the second pass, and React throws #310 at runtime.
+
+    Nothing catches it before the browser does: `npm run build` compiles the
+    file happily, and the component only breaks once its data arrives — the
+    first render takes the early return and never reaches the hook. It shipped
+    that way, in the tag editor added to `SessionView`: two `useState` calls sat
+    180 lines below `if (!s) return`, so opening a session blew the view up the
+    moment it finished loading.
+
+    The scan is deliberately crude — a hook call after the first top-level
+    `if (...) return` of the component it is in. Hooks belong at the top of a
+    component and the tree has never had a reason to put one anywhere else, so
+    a false positive here is a file worth looking at anyway.
+    """
+    offenders = []
+    for path in sorted((ROOT / "frontend" / "src").rglob("*.jsx")):
+        rel = path.relative_to(ROOT).as_posix()
+        guarded = False
+        for n, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
+            if _COMPONENT.match(line):
+                guarded = False
+            elif _GUARD.match(line):
+                guarded = True
+            elif guarded and _HOOK.search(line):
+                offenders.append(f"{rel}:{n}: {line.strip()}")
+
+    assert not offenders, ("React hooks called after an early return:\n"
+                           + "\n".join(offenders))
+
+
+def test_the_hook_order_scan_actually_bites():
+    """A guard that cannot fail is decoration."""
+    assert _GUARD.match("  if (!s) return <p>loading</p>")
+    assert _HOOK.search("  const [a, setA] = useState('')")
+    assert not _HOOK.search("  const tags = s.tags || []")
+    # The reset is the half that keeps a second component in one file quiet.
+    assert _COMPONENT.match("export default function Setup() {")
+    assert _COMPONENT.match("function ModelSelect({ value }) {")
 
 
 def test_the_trailing_whitespace_scan_actually_bites():
