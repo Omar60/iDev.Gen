@@ -56,16 +56,31 @@ from shoot_camera_forms import SEEDS, SETTINGS, create_session
 # which is this project's framing control - plus MANNER.candid.look word for
 # word. The capture quality belongs to the look in the app and it belongs to the
 # look here, so these photographs are lit and shot the way a candid session is.
-LOOK = (
+ROOM = (
     "She wears her hair loose and straightened down past her shoulders, with a light "
     "coating of natural-looking makeup and a soft pink tint on her lips. She is in a small "
     "lived-in room with a worn beige sofa, the carpeted floor running toward a "
     "half-curtained window that lets in weak grey daylight, a bed against the far wall and "
-    "a bedside lamp. phone camera snapshot, small sensor, everything at every distance "
+    "a bedside lamp."
+)
+
+CANDID_CAPTURE = (
+    " phone camera snapshot, small sensor, everything at every distance "
     "equally in focus and nothing softened, sensor noise in the shadows, washed-out colour, "
     "slight motion blur, off-center and slightly tilted framing, no studio lighting and no "
     "colour grading"
 )
+
+# Session 247 came back 0/24 with BOTH directed controls falling - `Taken from
+# directly behind her` and `Taken from behind her left shoulder` read `front` in
+# every pass, and they are catalogue forms. Session 245 had already lost the
+# floor the same way. Either the candid capture clause is eating every position
+# that is not front or overhead, or this fixed line is - its Subject block names
+# what is visible on her front, and objects outrank the camera in this project.
+# `--look directed` drops the capture clause and changes nothing else, which is
+# the only way to tell those two apart.
+LOOKS = {"candid": ROOM + CANDID_CAPTURE, "directed": ROOM}
+LOOK = LOOKS["candid"]
 
 # Waist-up in every arm. A full-length photograph at arm's length cannot exist,
 # and an arm that asks for one is testing the contradiction, not the position.
@@ -107,6 +122,26 @@ Expression:
 Her mouth is a little open and her eyes are half-lidded, caught mid-word rather than \
 held."""
 
+# Session 248, six photographs: with the candid capture clause dropped and NOTHING
+# else changed, `Taken from directly behind her` is still 0/3 and the shoulder is
+# 1/3. So the capture clause is not what flattened session 247 - the line is. The
+# Subject block above names her chest, her bust and the bra at her neckline, which
+# is a description of her FRONT, and in this project an object outranks the camera
+# ([[idevgen-position-collapse-is-contradiction]]). A camera behind her and a
+# subject written from in front of her is the same contradiction as a face the
+# body hides.
+#
+# This one names the same garments without saying which side of her they are seen
+# from. It is the arm that says whether the catalogue work can proceed at all.
+REST_NEUTRAL = REST.replace(
+    "The black knit sweater covers her chest and torso with the black satin bra visible at "
+    "the bust where the neck of it has slipped, her bare shoulder uncovered on one side. Her "
+    "waist is in the high-waisted charcoal denim.",
+    "She is in the black knit sweater with one shoulder bare where it has slipped, the black "
+    "satin bra beneath it, and the high-waisted charcoal denim at her waist.")
+
+SUBJECTS = {"front": REST, "neutral": REST_NEUTRAL}
+
 # label, the camera clause, and what the clause is for. The three controls come
 # first so a run read in order fails loudly at the top if the rig is wrong.
 ARMS = [
@@ -128,11 +163,35 @@ ARMS = [
      "the one form the manner already writes out in full"),
     ("N6-armslength-bare", "Taken from an arm's length in front of her face",
      "N4's position with the device word taken out - the pair is the point"),
+    # The second batch, session 247: the two families 245 never asked for. It has
+    # its own two controls because 245 is exactly why - the floor control fell
+    # under the candid look, so a directed form is not verified here until it has
+    # been shot here. Every new arm hangs a horizontal on a mount, which is the
+    # shape [[idevgen-height-carries-no-passengers]] found dead when the head was
+    # a verified HEIGHT: a mount is not a height, and 245 showed a mount can lead
+    # a phrase, so nobody knows what a mount does with a horizontal.
+    ("C4-behind", "Taken from directly behind her",
+     "control, the directed behind - under the candid look here"),
+    ("C5-shoulder", "Taken from behind her left shoulder, her back three-quarters to the camera",
+     "control, the directed shoulder - under the candid look here"),
+    ("N7-shelf-behind", "Phone propped on the shelf behind her, facing her back",
+     "a mount with a horizontal, asking for behind"),
+    ("N8-hand-behind", "Phone in his hand behind her, pointed at her back",
+     "his hand rather than a surface, asking for behind"),
+    ("N9-hand-shoulder", "Phone in his hand just behind her left shoulder, pointed past it",
+     "his hand, asking for the shoulder three-quarter"),
+    ("N10-mirror-behind", "Mirror selfie with her back to the mirror, looking over her shoulder "
+                          "at the phone",
+     "the mirror form turned around - the only one of these a phone really does"),
+    ("N11-armslength-behind", "Phone held out behind her at arm's length, pointed back at her",
+     "the reversed selfie, asking for behind with no surface and no second person"),
+    ("N12-shelf-shoulder", "Phone propped on a shelf behind her left shoulder",
+     "a mount with a horizontal and no verb - the shortest form that could work"),
 ]
 
 
-def prompt_for(camera: str, framing: str = FRAMING) -> str:
-    return f"zchar_jir.\n\n{LOOK}\n\nAngle & Framing:\n{camera}, {framing}.\n{REST}"
+def prompt_for(camera: str, framing: str = FRAMING, look: str = LOOK, rest: str = REST) -> str:
+    return f"zchar_jir.\n\n{look}\n\nAngle & Framing:\n{camera}, {framing}.\n{rest}"
 
 
 def main() -> int:
@@ -140,11 +199,18 @@ def main() -> int:
     ap.add_argument("--base", default="http://127.0.0.1:8777")
     ap.add_argument("--dry-run", action="store_true", help="print the arms and write nothing")
     ap.add_argument("--framing", choices=tuple(FRAMINGS), default="waist")
+    ap.add_argument("--subject", choices=tuple(SUBJECTS), default="front",
+                    help="`neutral` stops the Subject block naming which side of her the "
+                         "garments are seen from")
+    ap.add_argument("--look", choices=tuple(LOOKS), default="candid",
+                    help="`directed` drops the candid capture clause and changes nothing else")
     ap.add_argument("--only", default="", help="comma-separated arm labels, by their prefix "
                                                "(`C3,N3` for the two floor arms)")
     args = ap.parse_args()
 
     framing = FRAMINGS[args.framing]
+    look = LOOKS[args.look]
+    rest = SUBJECTS[args.subject]
     wanted = tuple(w.strip() for w in args.only.split(",") if w.strip())
     arms = [a for a in ARMS if not wanted or a[0].startswith(wanted)]
     if not arms:
@@ -152,7 +218,7 @@ def main() -> int:
         return 1
 
     shots = [
-        {"label": f"{label}-s{i + 1}", "prompt": prompt_for(camera, framing), "verbatim": True,
+        {"label": f"{label}-s{i + 1}", "prompt": prompt_for(camera, framing, look, rest), "verbatim": True,
          "seed": seed, "count": 1}
         for label, camera, _ in arms
         for i, seed in enumerate(SEEDS)
@@ -161,17 +227,18 @@ def main() -> int:
     for label, camera, why in arms:
         print(f"{label:<22} {camera}\n{'':<22} ({why})")
     print(f"\n{len(arms)} arms x {len(SEEDS)} seeds = {len(shots)} photographs, "
-          f"{args.framing}-length")
+          f"{args.framing} crop, {args.look} look, {args.subject} subject")
 
     if args.dry_run:
         print("\n--- the prompt of the first arm ---")
-        print(prompt_for(arms[0][1], framing))
+        print(prompt_for(arms[0][1], framing, look, rest))
         return 0
 
     out = create_session(
         args.base,
         "CANDID CAMERAS - 6 formas de telefono contra 3 controles, 3 seeds"
-        + (f" [{args.framing}, {args.only}]" if wanted or args.framing != "waist" else ""),
+        + (f" [{args.framing}/{args.look}/{args.subject}, {args.only}]"
+           if wanted or args.framing != "waist" or args.look != "candid" or args.subject != "front" else ""),
         shots, SETTINGS)
     print(f"\nsession {out['id']} created as a draft, {len(shots)} pending")
     print(f"run it with: curl -X POST {args.base}/api/sessions/{out['id']}/run")

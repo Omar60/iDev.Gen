@@ -28,6 +28,14 @@ EXPECTED = {
     "N4-armslength-phone": ("front", "yes"),
     "N5-mirror": ("front", "yes"),
     "N6-armslength-bare": ("front", "no"),
+    "C4-behind": ("behind", "no"),
+    "C5-shoulder": ("shoulder", "no"),
+    "N7-shelf-behind": ("behind", "no"),
+    "N8-hand-behind": ("behind", "no"),
+    "N9-hand-shoulder": ("shoulder", "no"),
+    "N10-mirror-behind": ("shoulder", "yes"),
+    "N11-armslength-behind": ("behind", "no"),
+    "N12-shelf-shoulder": ("shoulder", "no"),
 }
 
 

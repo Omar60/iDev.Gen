@@ -55,6 +55,13 @@ ASKED = [
     ("front", "phone held out at arm's length in front of her face"),
     ("front", "mirror selfie, the phone up in her right hand"),
     ("front", "taken from an arm's length in front of her face"),
+    # Session 247, the behind and shoulder families in the phone vocabulary.
+    ("behind", "phone propped on the shelf behind her, facing her back"),
+    ("behind", "phone in his hand behind her, pointed at her back"),
+    ("behind", "phone held out behind her at arm's length, pointed back at her"),
+    ("shoulder", "phone in his hand just behind her left shoulder, pointed past it"),
+    ("shoulder", "mirror selfie with her back to the mirror, looking over her shoulder"),
+    ("shoulder", "phone propped on a shelf behind her left shoulder"),
 ]
 
 # What the same clauses ask of the HORIZONTAL alone, for `--question side`. A
@@ -171,6 +178,7 @@ DEVICE_WORDS = ("yes", "no")
 DEVICE_YES = (
     "phone held out at arm's length in front of her face",
     "mirror selfie, the phone up in her right hand",
+    "mirror selfie with her back to the mirror, looking over her shoulder",
 )
 
 
