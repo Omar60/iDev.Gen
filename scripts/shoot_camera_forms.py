@@ -113,6 +113,21 @@ def prompt_for(camera: str) -> str:
     return f"zchar_jir.\n\n{LOOK}\n\nAngle & Framing:\n{camera}, {FRAMING}.\n{REST}"
 
 
+def create_session(base: str, name: str, shots: list, settings: dict) -> dict:
+    """The draft, posted once. Shared with `shoot_candid_cameras.py`.
+
+    No retry, deliberately: a reset can arrive after the server has already
+    inserted the session, and retrying this call is what made sessions 232 and
+    233 as duplicate drafts.
+    """
+    body = {"model_id": 1, "workflow_id": 8, "name": name,
+            "look": "", "wardrobe": "", "settings": settings, "shots": shots}
+    req = urllib.request.Request(base + "/api/sessions",
+                                 json.dumps(body).encode(), {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.loads(r.read().decode())
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8777")
@@ -135,18 +150,8 @@ def main() -> int:
         print(prompt_for(ARMS[0][1]))
         return 0
 
-    body = {
-        "model_id": 1, "workflow_id": 8,
-        "name": "CAMERA FORMS - 6 formas nuevas contra 3 controles, 3 seeds",
-        "look": "", "wardrobe": "", "settings": SETTINGS, "shots": shots,
-    }
-    req = urllib.request.Request(args.base + "/api/sessions",
-                                 json.dumps(body).encode(), {"Content-Type": "application/json"})
-    # No retry, deliberately: a reset can arrive after the server has already
-    # inserted the session, and retrying this call is what made sessions 232 and
-    # 233 as duplicate drafts.
-    with urllib.request.urlopen(req, timeout=120) as r:
-        out = json.loads(r.read().decode())
+    out = create_session(args.base, "CAMERA FORMS - 6 formas nuevas contra 3 controles, 3 seeds",
+                         shots, SETTINGS)
     print(f"\nsession {out['id']} created as a draft, {len(shots)} pending")
     print(f"run it with: curl -X POST {args.base}/api/sessions/{out['id']}/run")
     return 0

@@ -45,6 +45,16 @@ ASKED = [
     ("side", "taken from her left side"),
     ("front", "taken from her right front"),
     ("front", "taken from directly in front of her"),
+    # The candid forms, from `shoot_candid_cameras.py`. They name where the PHONE
+    # is rather than where a camera stands, which is the whole question, so the
+    # family here is what the mount asks for and not what any verified head word
+    # promises.
+    ("overhead", "phone propped on a high shelf across the room, looking down at her"),
+    ("overhead", "phone held above her in his hand, looking straight down at her"),
+    ("floor", "phone set down on the carpet at her feet, tipped up toward her"),
+    ("front", "phone held out at arm's length in front of her face"),
+    ("front", "mirror selfie, the phone up in her right hand"),
+    ("front", "taken from an arm's length in front of her face"),
 ]
 
 # What the same clauses ask of the HORIZONTAL alone, for `--question side`. A
@@ -134,6 +144,35 @@ Answer with exactly one of: front, side, behind."""
 
 SIDE_WORDS = ("front", "side", "behind")
 
+# The fourth question, and it exists for `candid` alone. That manner's line says
+# the phone is almost never in the picture - `a gadget floating in them is as
+# broken as forty studio ones` - and its camera clauses are the one place the
+# word `phone` is unavoidable, because the position IS the phone. So every
+# candid form has to be scored twice: did it reach the position, and did it
+# paint the device. Nothing here says what was asked for, the same way the other
+# three say nothing.
+DEVICE = """Look at this photograph and answer with ONE word and nothing else.
+
+Is a phone, a camera or any other handheld device visible anywhere in the image,
+including in a mirror or in her hand?
+
+yes - a phone or camera is visible somewhere in the image
+no - no phone or camera is visible
+
+Answer with exactly one of: yes, no."""
+
+DEVICE_WORDS = ("yes", "no")
+
+# The two candid clauses that put the phone in her hand facing her, where the
+# manner allows it to be seen. Every other clause - including the ones where the
+# phone is doing the photographing from a shelf, the carpet or his hand - asks
+# for no device in the frame at all, so `no` is the default and this list is the
+# exception.
+DEVICE_YES = (
+    "phone held out at arm's length in front of her face",
+    "mirror selfie, the phone up in her right hand",
+)
+
 
 def asked_of(prompt: str, table: list | None = None) -> str | None:
     """The answer the LINE asked for, read off the line itself.
@@ -197,12 +236,15 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("session", type=int)
     ap.add_argument("--base", default="http://127.0.0.1:8777")
-    ap.add_argument("--question", choices=("position", "turn", "side"), default="position",
+    ap.add_argument("--question", choices=("position", "turn", "side", "device"),
+                    default="position",
                     help="position = which side of her the camera stands on, heights winning "
                          "over horizontals; turn = how far her body is turned, which is the only "
                          "way to see a three-quarter rendered for a profile; side = the "
                          "horizontal alone, ignoring height, which is the only way to see "
-                         "whether the tail of an off-eye form landed")
+                         "whether the tail of an off-eye form landed; device = whether a phone "
+                         "was painted into the photograph, which every candid form has to be "
+                         "scored on as well as on its position")
     ap.add_argument("--repeat", type=int, default=1,
                     help="judge each photograph this many times; the judge has its own "
                          "variance and one pass cannot see it")
@@ -217,6 +259,7 @@ def main() -> int:
     question, words = {
         "turn": (TURN, TURN_WORDS),
         "side": (SIDE, SIDE_WORDS),
+        "device": (DEVICE, DEVICE_WORDS),
     }.get(args.question, (QUESTION, WORDS))
 
     hits, rows, skipped = 0, [], 0
@@ -225,6 +268,9 @@ def main() -> int:
         # carries which wording asked for it, so the line is not what is compared.
         if turn:
             want = "profile"
+        elif args.question == "device":
+            low = " ".join(shot["prompt"].split()).lower()
+            want = "yes" if any(c in low for c in DEVICE_YES) else "no"
         elif args.question == "side":
             want = asked_of(shot["prompt"], SIDE_ASKED)
         else:
