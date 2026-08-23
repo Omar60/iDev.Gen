@@ -1638,9 +1638,16 @@ export const KISS_FRAMES = [
  *  them from landing side by side without any interval arithmetic.
  *  ponytail: no per-manner count, one knob (the 8) if a shoot wants more.
  */
-export const kissPlan = (n, rand = Math.random) => {
-  if (n < 1) return {}
-  const many = Math.max(1, Math.min(KISS_FRAMES.length, Math.floor(n / 8)))
+export const spreadOver = (n, items, per, rand = Math.random, cap = items?.length ?? 0) => {
+  if (n < 1 || !items?.length) return {}
+  // `cap` is what stops a long shoot planting more than there is to plant. The
+  // kiss frame has four flavours and a fifth kiss would be a repeated face, so
+  // it caps at its own length; the arrangements cycle instead, because the same
+  // arrangement at photograph 3 and photograph 30 is two different photographs
+  // of a shoot that moved. Without the distinction a 45-photograph shoot with
+  // three arrangements picked planted three of them - one in fifteen, which is
+  // not a pool, it is a garnish.
+  const many = Math.max(1, Math.min(cap, Math.floor(n / per)))
   const band = n / many
   const plan = {}
   let last = 0
@@ -1651,13 +1658,87 @@ export const kissPlan = (n, rand = Math.random) => {
     const drawn = Math.max(many > 1 || n === 1 ? 1 : 2,
                            from + 1 + Math.floor(rand() * Math.max(1, band - 1)))
     // A band's draw can land at its end and the next one's at its start, which
-    // is two kiss frames running - the one thing the spread exists to prevent.
+    // is two planted frames running - the one thing the spread exists to prevent.
     const at = Math.min(n, Math.max(drawn, last + 2))
-    plan[at] = KISS_FRAMES[i % KISS_FRAMES.length]
+    plan[at] = items[i % items.length]
     last = at
   }
   return plan
 }
+
+export const kissPlan = (n, rand = Math.random) => spreadOver(n, KISS_FRAMES, 8, rand)
+
+/** The arrangements of two bodies that sessions 155 and 161 are made of.
+ *
+ *  Those two shoots are where the `selfie` manner came from, and copying the
+ *  camera out of them left the other half behind: what the two of them are
+ *  DOING. The stage plan invents its own arrangements, which is right for a
+ *  shoot nobody has a picture of in their head and wrong when there is a
+ *  particular photograph being chased.
+ *
+ *  So they are a pool and not a rule, and NOT one per photograph: nothing is
+ *  planted unless a session picks it, and a picked one lands about once in five
+ *  photographs, spread by `spreadOver` the way the kiss frame is. Everything
+ *  between them is the shoot the stage plan wrote, which is the half that keeps
+ *  a session from being one photograph shot forty times.
+ *
+ *  WHAT THE WORDING IS AND IS NOT. Each `act` below is handed to the writer word
+ *  for word, and it names two people plainly because that is the only form this
+ *  project has ever measured as rendering the act
+ *  ([[idevgen-two-people-limit]]). It says where the two bodies are and nothing
+ *  else: no camera, no framing, no expression, no clothes. Those are the line's
+ *  own, and the camera in particular is planned separately and must not be
+ *  fought.
+ *
+ *  WHAT IS VERIFIED, and it is one of the six. `astride` is the arrangement
+ *  sessions 265 and 266 shot on a fixed line: 12 photographs of 12 with the arm
+ *  written, the act in 11 of them. The other five are read off what 155 and 161
+ *  RENDERED rather than what their prompts asked for - and those two are not the
+ *  same thing, which is the whole reason this catalogue is worded from the
+ *  photographs. `behind` is the one to distrust: both shoots asked for it
+ *  repeatedly and neither ever painted it, and `Taken from directly behind her`
+ *  is 0/6 under the candid look. It is in the pool because a shoot that wants it
+ *  should be able to ask, not because it works.
+ */
+export const ARRANGEMENTS = [
+  { key: 'astride',
+    label: 'She is on top, facing him',
+    act: 'She is astride him with her knees on either side of his hips and her weight down on '
+       + 'him, the two of them joined, two people in frame.' },
+  { key: 'back',
+    label: 'She is on her back, he is over her',
+    act: 'She is on her back with her legs open and he is over her between them, the two of them '
+       + 'joined, two people in frame.' },
+  { key: 'reverse',
+    label: 'She is on top, facing away',
+    act: 'She is astride him facing away from him with her weight on her feet, the two of them '
+       + 'joined, two people in frame.' },
+  { key: 'side',
+    label: 'Both on their sides',
+    act: 'They are both on their sides with him behind her and her upper leg lifted, the two of '
+       + 'them joined, two people in frame.' },
+  { key: 'wall',
+    label: 'Standing against the wall',
+    act: 'She is standing with her front to the wall and one leg raised, he is behind her, the '
+       + 'two of them joined, two people in frame.' },
+  { key: 'behind',
+    label: 'On all fours, he is behind her',
+    act: 'She is on all fours on the bed and he is kneeling behind her, the two of them joined, '
+       + 'two people in frame.' },
+]
+
+export const ARRANGEMENT = Object.fromEntries(ARRANGEMENTS.map((a) => [a.key, a]))
+
+/** Which photographs carry a picked arrangement. Empty when none is picked, and
+ *  that is the default: a session says which of them it wants.
+ *
+ *  One in five rather than the kiss frame's one in eight, because an arrangement
+ *  is what the shoot is about where a kiss is a single frame - but still a
+ *  minority of the photographs, which is the point of a pool.
+ *  ponytail: no per-manner count, the 5 is the one knob.
+ */
+export const arrangementPlan = (n, picked, rand = Math.random) =>
+  spreadOver(n, ARRANGEMENTS.filter((a) => picked?.includes(a.key)), 5, rand, Infinity)
 
 /** Where the kiss frame is taken from, by manner: her own arm in a candid shoot,
  *  the photographer's frontal position in a directed one. Both are measured
@@ -1689,6 +1770,19 @@ export const shootChunkNote = (at) =>
       + 'your framing after it. Invent no other position and reword none of these: these are '
       + 'the forms this camera was measured to obey, and a reworded one comes back as a '
       + 'front view. The framing, the pose, the act and the expression are still yours.\n'
+    : '')
+  // Before the kiss, which is the harder override: an arrangement says what the
+  // two of them are doing and a kiss frame replaces the camera as well, so the
+  // one that changes more of the line is read last.
+  + (at.poses?.length
+    ? 'THE ARRANGEMENT IS ALREADY DECIDED for these photographs, and it is what the two of them '
+      + 'are doing in that frame:\n'
+      + at.poses.map(({ at: k, arrangement }) => `${k} | ${arrangement.act}`).join('\n') + '\n'
+      + 'Put it in the `act` field of that photograph word for word. Everything else in the '
+      + 'line is yours and is written around it: the camera it was given, the framing, his body '
+      + 'in `him`, her body in `her`, the face. The photographs with no arrangement named are '
+      + 'the shoot as usual - the arrangement is a frame the shoot passes through, never the '
+      + 'whole stretch.\n'
     : '')
   // After the camera, because it overrides one of the positions above for its own
   // photograph and a reader meets the exception after the rule.

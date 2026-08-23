@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { KINDS, REACHES, REACH, MANNERS, MANNER } from '../kinds.js'
+import { KINDS, REACHES, REACH, MANNERS, MANNER, ARRANGEMENTS } from '../kinds.js'
 import {
   guideFor, rewriteTake, takesFromBrief, lookFromBrief, rewriteWardrobe,
   wardrobeProgression, sessionFromBrief, briefFromLook, alreadySaid, spread,
@@ -65,6 +65,13 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
   // it: the two are orthogonal, and a candid shoot that ends in penetration is
   // as ordinary a thing to ask for as a directed one that keeps its clothes on.
   const [manner, setManner] = useState('directed')
+  // Which arrangements of two bodies the shoot may pass through, picked rather
+  // than planned: sessions 155 and 161 are made of a handful of them, and a
+  // shoot chasing a particular photograph should be able to ask for it. None by
+  // default, and a picked one lands in about one photograph in five - the rest
+  // of the shoot is the stage plan's own, which is what keeps a session from
+  // being one arrangement forty times.
+  const [poses, setPoses] = useState([])
   // Which setting the brief in the box was written for. The brief is the shoot —
   // the writer of the lines reads that sentence and nothing else — so a setting
   // moved after the roll changes nothing at all, and silently. Handing the
@@ -218,7 +225,8 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
     // The look alone as the base context: the clothes of each stretch are passed
     // in by the writer itself, photograph by photograph.
     const rows = await sessionFromBrief(brief, already(it.look), it.wardrobe, howMany,
-                                        (made, total) => setMade([made, total]), reach, manner)
+                                        (made, total) => setMade([made, total]), reach, manner,
+                                        poses)
     if (!rows.length) throw new Error('the assistant answered nothing usable')
     countBack(rows.length, howMany)
     onChange([
@@ -253,6 +261,16 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
                   onChange={(e) => setManner(e.target.value)}>
             {MANNERS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
           </select>
+          {/* The arrangements, only where they mean anything: a shoot that keeps
+              its clothes on has no two bodies to arrange. Multiple on purpose -
+              picking several is picking a pool, and the plan spreads them. */}
+          {reach !== 'nude' && (
+            <select multiple value={poses} disabled={!!busy} size={3} style={{ width: 210 }}
+                    title="Arrangements the shoot may pass through, from sessions 155 and 161. Pick none and the shoot writes its own; pick several and one lands in about every fifth photograph."
+                    onChange={(e) => setPoses([...e.target.selectedOptions].map((o) => o.value))}>
+              {ARRANGEMENTS.map((a) => <option key={a.key} value={a.key}>{a.label}</option>)}
+            </select>
+          )}
           <button className="icon" onClick={roll} disabled={!!busy || !(look.trim() || wardrobe.trim())}
                   title={look.trim() || wardrobe.trim()
                     ? `Write me a shoot to run, from the look and the wardrobe: ${REACH[reach]?.blurb} A different one every time — how fast it moves and how it reads are rolled.`

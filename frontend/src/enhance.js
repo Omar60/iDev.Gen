@@ -13,7 +13,7 @@ import {
   ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES, REACH, MANNER,
   SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
-  takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, POSITIONS,
+  takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, POSITIONS, arrangementPlan,
   kissPlan, KISS_CAMERA,
 } from './kinds.js'
 
@@ -295,14 +295,14 @@ export const takesAlongArc = (brief, context, n, onProgress, manner = 'directed'
  *  the words the assistant already gets, not to contradict it.
  */
 export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress, reach = 'nude',
-                                       manner = 'directed') => {
+                                       manner = 'directed', arrangements = []) => {
   // No wardrobe to walk: there is no arc, so the old two-stream writer is still
   // the right one — takes varying pose and framing, and nothing to desync with.
   if (!wardrobe.trim()) {
     const takes = await takesAlongArc(brief, look, n, (made) => onProgress?.(made, n), manner)
     return takes.map((take) => ({ ...take, wardrobe: null }))
   }
-  return shootLines(brief, look, wardrobe, n, onProgress, reach, manner)
+  return shootLines(brief, look, wardrobe, n, onProgress, reach, manner, arrangements)
 }
 
 /** A whole shoot, one complete photograph per line, from one stream.
@@ -313,7 +313,7 @@ export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress, rea
  *  which is exactly true here — the composed prompt is the look, then the line.
  */
 export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = 'nude',
-                                manner = 'directed') => {
+                                manner = 'directed', arrangements = []) => {
   // The one thing the setting decides in here, and it is not a paragraph of
   // prose: whether photograph 1 is dressed. Handing the writer the outfit as
   // `what she is wearing in photograph 1` is what dressed the first seven frames
@@ -332,6 +332,16 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // The kiss frames, decided here too, and they take their photograph's camera
   // with them: the gesture only reads from in front of her, close.
   const kisses = kissPlan(n)
+  // The arrangements a session picked, planted in a minority of the photographs.
+  // Empty by default: a shoot that picks none is written the way it always was.
+  const poses = arrangementPlan(n, arrangements)
+  // Which photographs got one, said out loud: a plan nobody can see is a plan
+  // nobody can check, and the only way to know an arrangement ARRIVED is to
+  // compare the line against the photograph it was planted in.
+  if (Object.keys(poses).length) {
+    console.info('[shoot] arrangements planted at '
+                 + Object.entries(poses).map(([at, a]) => `${at}:${a.key}`).join(', '))
+  }
   const kissCamera = KISS_CAMERA[manner] || KISS_CAMERA.directed
   for (const at of Object.keys(kisses)) if (cameras) cameras[Number(at) - 1] = kissCamera
   onProgress?.(0, n)
@@ -354,6 +364,11 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
                + `\n\nThe shoot goes like this:\n${brief}`
                + `\n\n${shootChunkNote({ ...at, bare, stages: covered,
                                          cameras: cameras?.slice(at.from - 1, at.from - 1 + at.want),
+                                         poses: Object.entries(poses)
+                                           .filter(([k]) => Number(k) >= at.from
+                                                            && Number(k) < at.from + at.want)
+                                           .map(([k, arrangement]) => ({ at: Number(k),
+                                                                         arrangement })),
                                          kisses: Object.entries(kisses)
                                            .filter(([k]) => Number(k) >= at.from
                                                             && Number(k) < at.from + at.want)
@@ -410,7 +425,7 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // different shoots, and only before-and-after inside one run is the repair.
   if (needing) console.info(`[shoot] ${needing} lines failed the check, ${repaired} repaired`
                           + `, longest ${longest(written)} words before and `
-                          + `${longest(checked)} after, limit ${limit}`
+                          + `${longest(checked)} after, limit ${limit.solo}/${limit.pair}`
                           + (stillWrong.length ? `, still wrong: ${stillWrong.join(', ')}` : ''))
   // `suspect` is the residue: a line the check refused and the repair could not
   // fix. Measured over three runs the repair lands about three times in four, so

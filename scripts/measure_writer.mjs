@@ -23,11 +23,12 @@
  *      --outfile=/tmp/arm_a.mjs        # patch kinds.js, rebuild, restore
  *    node /tmp/arm_a.mjs 25 directed > /tmp/a_1.json
  *
- *  Usage: node <bundle> [n] [manner] [reach] [backend]
+ *  Usage: node <bundle> [n] [manner] [reach] [poses] [backend]
+ *  `poses` is a comma-separated list of `ARRANGEMENTS` keys, or `-` for none.
  */
 import { shootLines } from '../frontend/src/enhance.js'
 
-const [, , nArg, mannerArg, reachArg, baseArg] = process.argv
+const [, , nArg, mannerArg, reachArg, posesArg, baseArg] = process.argv
 const n = Number(nArg || 25)
 const manner = mannerArg || 'directed'
 // The reach is an argument because the manner is not the only axis a shoot has:
@@ -35,6 +36,9 @@ const manner = mannerArg || 'directed'
 // act. Default `nude`, so every measurement taken before this line still means
 // what it meant.
 const reach = reachArg || 'nude'
+// The arrangements a session picked. Empty is the default and the shoot is then
+// written exactly as it was before they existed.
+const poses = (posesArg && posesArg !== '-') ? posesArg.split(',').map((p) => p.trim()) : []
 const BASE = baseArg || 'http://127.0.0.1:8777'
 
 // `api` posts to a relative path, which has no meaning outside a browser.
@@ -70,7 +74,7 @@ const EXPLICIT_BRIEF =
   + 'through any clothes. She begins direct and stays direct.'
 
 const lines = await shootLines(reach === 'explicit' ? EXPLICIT_BRIEF : BRIEF,
-                               LOOK, WARDROBE, n, null, reach, manner)
+                               LOOK, WARDROBE, n, null, reach, manner, poses)
 // `shootLines` logs its check tally to stdout first, so a reader has to skip to
 // the first line that opens an array.
 console.log(JSON.stringify(lines.map((l) => l.prompt), null, 1))
