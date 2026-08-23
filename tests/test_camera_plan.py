@@ -81,39 +81,66 @@ def test_the_plan_holds_its_three_properties(tmp_path_factory):
     assert plan["short"] == 1 and plan["none"] == 0, plan
 
 
-FORMS_PROBE = """
-import { CAMERA_FORMS, CAMERA_POSITIONS, SHOOT_LINE_INSTRUCTION } from '%(kinds)s'
+CATALOGUE_PROBE = """
+import { cameraPlan, CANDID_POSITIONS, POSITIONS, MANNERS } from '%(kinds)s'
+
+const family = (line) => CANDID_POSITIONS.find((p) => p.line === line)?.family ?? 'UNKNOWN'
+const runs = Array.from({ length: 200 }, () => cameraPlan(45, Math.random, CANDID_POSITIONS))
 
 console.log(JSON.stringify({
-  inInstruction: SHOOT_LINE_INSTRUCTION.includes('WHERE THE CAMERA IS, WRITTEN AS A CAMERA'),
-  missing: CAMERA_POSITIONS.filter((p) => !CAMERA_FORMS.includes(p.line)).map((p) => p.line),
+  // Every manner plans, which is why there is no list of example forms left in
+  // the instruction for one to free-write from.
+  unplanned: MANNERS.map((m) => m.key).filter((k) => !POSITIONS[k]),
+  lines: CANDID_POSITIONS.map((p) => p.line),
+  families: [...new Set(CANDID_POSITIONS.map((p) => p.family))].sort(),
+  consecutive: runs.filter((plan) =>
+    plan.some((line, i) => i > 0 && family(line) === family(plan[i - 1]))).length,
+  unknown: runs.flat().filter((line) => family(line) === 'UNKNOWN').length,
+  biggest: Math.max(...runs.map((plan) => {
+    const tally = {}
+    for (const line of plan) tally[line] = (tally[line] || 0) + 1
+    return Math.max(...Object.values(tally)) / plan.length
+  })),
 }))
 """
 
+# Word for word what sessions 245-250 judged. A form nobody shot is a form that
+# comes back frontal, and the two that are deliberately absent cost four batches
+# to establish: `behind` was 0/6 and the floor 0/3 under the candid look, both
+# wordings, with the subject block already fixed.
+CANDID_LINES = [
+    "Taken from directly in front of her",
+    "Phone held out at arm's length in front of her face",
+    "Overhead camera directly above her",
+    "Phone propped on a high shelf across the room, looking down at her",
+    "Taken from behind her left shoulder, her back three-quarters to the camera",
+    "Mirror selfie, the phone up in her right hand and visible in the mirror",
+]
 
-def test_the_example_positions_are_only_for_a_writer_without_a_plan(tmp_path_factory):
-    """The list of camera forms and `cameraPlan` are two voices naming the same
-    thing, and a shoot must hear exactly one of them.
 
-    Measured 2026-08-22, five runs a side of n=25 `directed`: taking the list out
-    of the instruction changed nothing the analyzer counts — 6.0 position
-    families both sides, 9.6 against 9.4 obeyed off-eye forms, 25 of 25 lines
-    writing the camera before the framing either way — for 270 words less prompt
-    per chunk. So `directed` no longer sees it. `candid` has no plan and still
-    free-writes its camera, so it still does, and it has to keep every form the
-    plan draws from.
+def test_the_candid_catalogue_is_what_was_measured(tmp_path_factory):
+    """`candid` plans from where a phone was put down, not from where a
+    photographer stands, and every line in its catalogue was rendered three times
+    on three seeds and read back by a blind judge.
+
+    The properties differ from the directed plan in one way that is deliberate:
+    four families, not six. `behind` and `floor` do not render under this manner
+    at all, so a plan that reached six families would be reaching two that come
+    back frontal.
     """
-    forms = _node_json(FORMS_PROBE % {"kinds": (ROOT / "frontend/src/kinds.js").as_posix()},
-                       tmp_path_factory.mktemp("cameraforms"))
+    out = _node_json(CATALOGUE_PROBE % {"kinds": (ROOT / "frontend/src/kinds.js").as_posix()},
+                     tmp_path_factory.mktemp("candidplan"))
 
-    # Re-inlined into the instruction, it reaches a planned shoot again as a
-    # second voice offering positions that are already decided.
-    assert forms["inInstruction"] is False, forms
+    # A manner with no catalogue gets no camera guidance at all now that the
+    # example forms are gone: shoot one, or put the list back.
+    assert out["unplanned"] == [], out
 
-    # And a form the plan can draw is a form the free-writing manner must have
-    # seen, or candid invents `at her hip height` and gets eye level back.
-    assert forms["missing"] == [], forms
+    # Drift here is silent - a reworded form is a form nobody shot, and it comes
+    # back as a front view.
+    assert out["lines"] == CANDID_LINES, out
+    assert out["families"] == ["front", "mirror", "overhead", "shoulder"], out
 
-    # The gate itself: appended only when there is no plan.
-    enhance = (ROOT / "frontend/src/enhance.js").read_text(encoding="utf-8")
-    assert r"cameras ? '' : `\n\n${CAMERA_FORMS}`" in enhance
+    # The same three properties the directed plan holds.
+    assert out["consecutive"] == 0, out
+    assert out["unknown"] == 0, out
+    assert out["biggest"] <= 1 / 3, out

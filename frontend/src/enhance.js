@@ -13,7 +13,7 @@ import {
   ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES, REACH, MANNER,
   SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
-  takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, CAMERA_FORMS,
+  takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, POSITIONS,
 } from './kinds.js'
 
 export const ask = (payload) => api.post('/api/enhance', payload).then((r) => r.lines || [])
@@ -323,12 +323,11 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // differently per round; see STAGE_PLAN_INSTRUCTION.
   const stages = await stagePlan(brief, wardrobe, n, bare)
   // The camera, decided once and in numbers, for the same reason the arc is.
-  // `directed` only: MANNER.candid.line has its own paragraph putting the camera
-  // where a phone was set down, and that paragraph was working — measured, a
-  // stronger competing list upstream overrode it and flattened candid.
-  // ponytail: a candid plan would need its own eight positions, add when candid
-  // is measured to need one.
-  const cameras = manner === 'directed' ? cameraPlan(n) : null
+  // Each manner plans from its own catalogue: `directed` from where a
+  // photographer stands, `candid` from where a phone was put down — six forms
+  // that survived being shot and judged blind, sessions 245-250. A manner with
+  // no catalogue gets no camera guidance, and a test keeps that from happening.
+  const cameras = POSITIONS[manner] ? cameraPlan(n, Math.random, POSITIONS[manner]) : null
   onProgress?.(0, n)
 
   const lines = await inChunks(n, (made) => onProgress?.(made, n), (at) => {
@@ -344,10 +343,6 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
     const act = !bare && reachesTheAct(covered)
     return ask({
     instruction: `${SHOOT_LINE_INSTRUCTION}`
-               // Only where the camera is still the writer's to choose. With a
-               // plan in hand the list is a competing voice naming positions
-               // that are already decided.
-               + (cameras ? '' : `\n\n${CAMERA_FORMS}`)
                + (bare ? `\n\n${EXPLICIT_REGISTER}` : act ? `\n\n${EXPLICIT_STRETCH}` : '')
                + (MANNER[manner]?.line ? `\n\n${MANNER[manner].line}` : '')
                + `\n\nThe shoot goes like this:\n${brief}`

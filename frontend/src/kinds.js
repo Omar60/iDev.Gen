@@ -833,13 +833,10 @@ export const MANNERS = [
         + '`hyper-realistic`, `photorealistic`, `sharp focus`, `shallow depth of field`, '
         + '`bokeh`, `DSLR`, `85mm`. Every one of them is read as a paid photographer with '
         + 'equipment, and it comes back as the studio shoot this manner exists to avoid.\n'
-        + 'THE POSITION IS STILL WRITTEN AS A CAMERA, in the same words as every camera above - '
-        + '`taken from behind her left shoulder`, `overhead camera directly above the bed`, '
-        + '`side-angle camera at mattress level`. That grammar is what makes an angle obeyed and '
-        + 'this manner does not change it. What changes is where it stands: an arm’s length '
-        + 'from her face, or wherever a phone was actually put down - on the shelf across the '
-        + 'room, on the floor, propped against the lamp, in his hand above her. The three '
-        + 'framings are unchanged and there is still one of them in every line.\n'
+        + 'WHERE THE CAMERA IS IS ALREADY DECIDED and handed to you with each photograph, in the '
+        + 'words this shoot was measured to obey - a phone was put down somewhere, and that '
+        + 'place is not yours to move. Open the line with it word for word. The three framings '
+        + 'are unchanged and there is still one of them in every line, after the position.\n'
         + 'THE PHONE ITSELF IS ALMOST NEVER IN THE PICTURE, and this is the rule this shoot '
         + 'keeps breaking. Name a phone ONLY when it is genuinely in the frame: her own hand '
         + 'holding it out towards the lens, or the phone up in her hand in a mirror - `Mirror '
@@ -991,39 +988,6 @@ export const STAGE_PLAN_INSTRUCTION =
  *  is already said by then. */
 export const SHOOT_FIELDS =
   ['camera', 'act', 'her', 'him', 'worn', 'technique', 'face']
-
-/** Where the camera may stand, handed to a writer that has no camera plan.
- *
- *  It lived inside SHOOT_LINE_INSTRUCTION until `cameraPlan` started handing
- *  `directed` a position per photograph, at which point it was a second voice
- *  naming positions the plan had already decided - and shootChunkNote had to be
- *  placed last just to outrank it. `candid` still free-writes its camera, so the
- *  list is still the thing that keeps a height written as a camera and not as an
- *  adverb; it moves here rather than being deleted.
- *  ponytail: appended by shootLines when there is no plan, no manner table entry.
- */
-export const CAMERA_FORMS =
-  'WHERE THE CAMERA IS, WRITTEN AS A CAMERA. These six are the reliable ones and need no '
-  + 'thought: `Taken from directly in front of her`, `Taken from behind her left shoulder, '
-  + 'her back three-quarters to the camera`, `Taken from behind her right shoulder, her '
-  + 'back three-quarters to the camera`, `Taken from her right side, her body in full '
-  + 'profile`, `Taken from her left side, her body in full profile`, `Taken from directly '
-  + 'behind her`.'
-  + ' Above, below and along the floor are available too, but ONLY named as a camera or a '
-  + 'shot, never as an adverb hung off the sentence. Most of these name no furniture, so they '
-  + 'are available in any room and not only on a bed: `Overhead camera directly above her`, '
-  + '`High camera looking steeply down at her`, `Low-angle shot from the floor '
-  + 'at her feet`, `Overhead camera directly above the bed`, '
-  + '`Low-angle shot from the foot of the bed looking up`, `Side-angle camera at mattress '
-  + 'level`, `Rear low camera behind him at bed height`. Written that way they are obeyed - '
-  + 'measured 2026-08-17, the overhead came back overhead and the mattress-level camera came '
-  + 'back at mattress level. Written as `from above her, looking down` or `from floor level` '
-  + 'the same angles are ignored and come back frontal, in six of six. It is the same angle '
-  + 'either way; what changes is whether it is a camera or a tag.\n'
-  + 'Move it around the shoot rather than settling on one: measured, thirty photographs '
-  + 'written with a framing in every line and no camera position in any of them came back '
-  + 'thirty frontal shots, and the same prompt with the position named moved the camera in '
-  + 'six of eight.\n'
 
 export const SHOOT_LINE_INSTRUCTION =
   'Write one photograph per object of a photo session, in the order they are shot. Each '
@@ -1383,6 +1347,59 @@ export const CAMERA_POSITIONS = [
   { family: 'floor', line: 'Low-angle shot from the floor at her feet' },
 ]
 
+/** Where the PHONE was, for a shoot nobody is photographing.
+ *
+ *  `candid` cannot use the list above. Those are the positions of someone
+ *  standing behind a camera; these are the places a phone ends up. Measured in
+ *  renders 2026-08-23, sessions 245-250: nine arms and then five more, one line
+ *  fixed by hand with only the camera clause swapped, three shared seeds, judged
+ *  blind three passes a photograph. Only what survived that is here.
+ *
+ *  What it costs to be on this list, and what it cost to find out:
+ *
+ *  * `behind` is NOT here. `Taken from directly behind her` and both phone
+ *    wordings of it came back frontal 0/6 under the candid look, with the
+ *    subject block already fixed. `floor` is not here either - 0/3 every way it
+ *    was asked, including the form that is 3/3 for `directed`.
+ *  * a MOUNT reaches a height and never a horizontal. `Phone propped on a high
+ *    shelf ... looking down at her` is 3/3 overhead with no verified height word
+ *    in it at all, which the directed catalogue's grammar says should not work;
+ *    hang a horizontal on the same shape - `... behind her left shoulder` - and
+ *    it is 0/3. So the shoulder is asked for in the photographer's words, which
+ *    is the one place candid borrows them, and it renders 3/3.
+ *  * the word `phone` in the clause paints NO phone: 21/21 of the arms that
+ *    should show no device showed none, the three that open with `Phone`
+ *    included. The mirror is the exception and the only intended one - it is the
+ *    single form that renders the device, 3/3, because there it is really in
+ *    frame.
+ *  * `Phone held above her in his hand` is 3/3 overhead and is deliberately NOT
+ *    here: it puts a second person in a shoot that may not have one.
+ *    ponytail: no `him` check, the shelf reaches the same overhead alone.
+ */
+export const CANDID_POSITIONS = [
+  { family: 'front', line: 'Taken from directly in front of her' },
+  { family: 'front', line: "Phone held out at arm's length in front of her face" },
+  { family: 'overhead', line: 'Overhead camera directly above her' },
+  { family: 'overhead', line: 'Phone propped on a high shelf across the room, looking down at her' },
+  // Left only. The right shoulder is verified for `directed` (session 244) and
+  // has never been shot under the candid look; one measured side beats two when
+  // one of them is a guess.
+  { family: 'shoulder', line: 'Taken from behind her left shoulder, her back three-quarters to the camera' },
+  { family: 'mirror', line: 'Mirror selfie, the phone up in her right hand and visible in the mirror' },
+]
+
+/** The catalogue a manner plans from.
+ *
+ *  Down here because it names both lists and they are defined above it. Every
+ *  manner is in it, which is why the list of example forms `SHOOT_LINE_INSTRUCTION`
+ *  used to carry - `CAMERA_FORMS`, forty lines of measured wording - is gone: it
+ *  existed for a writer choosing its own position, and no writer does now. A
+ *  manner added without a catalogue gets no camera guidance at all, so
+ *  `tests/test_camera_plan.py` fails until it has one; git has the old list if
+ *  free-writing ever comes back.
+ */
+export const POSITIONS = { directed: CAMERA_POSITIONS, candid: CANDID_POSITIONS }
+
 /** Where the camera stands in each of `n` photographs, decided here and not by
  *  the writer, the way `stagePlan` decides the arc.
  *
@@ -1400,13 +1417,13 @@ export const CAMERA_POSITIONS = [
  *  used, ties broken at random. That spreads the eight evenly without any quota
  *  arithmetic and no two photographs running share a family.
  */
-export const cameraPlan = (n, rand = Math.random) => {
-  const used = CAMERA_POSITIONS.map(() => 0)
+export const cameraPlan = (n, rand = Math.random, positions = CAMERA_POSITIONS) => {
+  const used = positions.map(() => 0)
   const plan = []
   let last = null
   for (let i = 0; i < n; i += 1) {
     // A single family cannot fill the ban, so there is always something left.
-    const open = CAMERA_POSITIONS
+    const open = positions
       .map((p, at) => ({ p, at }))
       .filter(({ p }) => p.family !== last)
     const fewest = Math.min(...open.map(({ at }) => used[at]))
@@ -1426,9 +1443,9 @@ export const shootChunkNote = (at) =>
       + at.stages.map((s) => `${s.from}-${s.to} | ${s.what}`).join('\n') + '\n'
     : '')
   // Last, so it is what the reader meets last. It was placed here to outrank the
-  // example list SHOOT_LINE_INSTRUCTION used to carry; that list is CAMERA_FORMS
-  // now and a planned shoot never sees it, but last is still where the one thing
-  // the writer may not touch belongs.
+  // example list SHOOT_LINE_INSTRUCTION used to carry; that list is gone now that
+  // every manner plans, but last is still where the one thing the writer may not
+  // touch belongs.
   + (at.cameras?.length
     ? 'WHERE THE CAMERA STANDS IS ALREADY DECIDED for each of these photographs, and it is '
       + 'the one thing in the line that is not yours:\n'

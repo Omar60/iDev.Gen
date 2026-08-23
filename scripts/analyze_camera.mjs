@@ -36,7 +36,10 @@ const FIVE = [
 // Ordered, first match wins: vertical before horizontal, because a camera on the
 // floor is a floor shot whichever side of her it stands on.
 const FAMILY = [
-  ['overhead', /overhead|from above|above her|high camera|looking (steeply )?down/],
+  // `mirror` first: a mirror selfie is a mirror photograph whatever else the
+  // clause says about where the phone is pointing.
+  ['mirror', /mirror selfie|in the mirror/],
+  ['overhead', /overhead|from above|above her|high camera|looking (steeply )?down|propped on a high shelf|held above her/],
   ['floor', /floor level|from the floor|low-angle|low camera|looking up|below her/],
   ['behind', /directly behind her|from behind her(?!.{0,20}shoulder)|full back/],
   ['shoulder', /shoulder/],
@@ -44,8 +47,8 @@ const FAMILY = [
   ['front', /in front of her|facing her|front of her/],
 ]
 
-const OFF_EYE = /overhead|from above|above her|high camera|looking (steeply )?down|floor level|from the floor|low-angle|low camera|looking up|below her|mattress level|bed height|knee (height|level)|hip (height|level)|waist height|carpet|foot of the bed/
-const OBEYED = /overhead camera|high camera looking (steeply )?down|low-angle shot from the floor|from the floor at her feet|directly above (her|the bed)|low-angle shot from the foot of the bed looking up|side-angle camera at mattress level|rear low camera behind him at bed height/
+const OFF_EYE = /overhead|from above|above her|high camera|looking (steeply )?down|propped on a high shelf|held above her|floor level|from the floor|low-angle|low camera|looking up|below her|mattress level|bed height|knee (height|level)|hip (height|level)|waist height|carpet|foot of the bed/
+const OBEYED = /overhead camera|high camera looking (steeply )?down|phone propped on a high shelf|phone held above her|low-angle shot from the floor|from the floor at her feet|directly above (her|the bed)|low-angle shot from the foot of the bed looking up|side-angle camera at mattress level|rear low camera behind him at bed height/
 
 const stats = (file) => {
   // `shootLines` logs its check tally to stdout ahead of the array.
@@ -66,7 +69,11 @@ const stats = (file) => {
     biggest: Math.max(...Object.values(tally)),
     order: lines.filter((l) => {
       const f = body(l).search(FRAMING)
-      const c = body(l).toLowerCase().search(/taken from|\bcamera\b|\bshot\b|\bangle\b/)
+      // `phone` and `mirror selfie` are in here because candid's catalogue
+      // writes the position without ever saying `camera` - `Phone propped on a
+      // high shelf`, `Mirror selfie`. Without them this column reported 13.6 of
+      // 25 for a shoot whose every line opened with its planned position.
+      const c = body(l).toLowerCase().search(/taken from|\bcamera\b|\bshot\b|\bangle\b|\bphone\b|mirror selfie/)
       return c >= 0 && (f < 0 || c < f)
     }).length,
     off: off.length,
