@@ -262,6 +262,40 @@ HOLDER_SELF = (
     "taken from an arm's length in front of her face",
 )
 
+# The eighth question. `act` asks whether there are two bodies and whether they
+# are joined; this asks WHICH arrangement of the two, which is the only way to
+# find out whether a planted one rendered. Its vocabulary is the six in
+# `ARRANGEMENTS`, worded for someone looking at a photograph rather than for
+# someone writing one - `ontop` and not `astride`, because the judge is told
+# nothing about what was asked.
+ARRANGEMENT = """Look at this photograph and answer with ONE word and nothing else.
+
+Two people are having sex in it. How are their bodies arranged?
+
+ontop - she is on top of him, facing him
+away - she is on top of him, facing away from him
+under - she is on her back or her side underneath him, he is over her, facing her
+allfours - she is on her hands and knees, he is behind her
+spooning - both of them are lying on their sides, he is behind her
+standing - at least one of them is standing up
+
+Answer with exactly one of: ontop, away, under, allfours, spooning, standing."""
+
+ARRANGEMENT_WORDS = ("ontop", "away", "under", "allfours", "spooning", "standing")
+
+# What the LINE asked for, by the wording `ARRANGEMENTS` hands over verbatim, and
+# the word the judge would use for it. A line carrying none of these is not
+# scored: it is a photograph the plan left to the writer, and there is no
+# expectation to compare it against.
+ARRANGEMENT_ASKED = [
+    ("ontop", "astride him with her knees"),
+    ("away", "astride him facing away"),
+    ("under", "on her back with her legs open and he is over her"),
+    ("spooning", "both on their sides with him behind her"),
+    ("standing", "front to the wall and one leg raised"),
+    ("allfours", "on all fours on the bed and he is kneeling behind"),
+]
+
 DEVICE_YES = (
     "phone held out at arm's length in front of her face",
     "mirror selfie, the phone up in her right hand",
@@ -336,7 +370,8 @@ def main() -> int:
     ap.add_argument("session", type=int)
     ap.add_argument("--base", default="http://127.0.0.1:8777")
     ap.add_argument("--question",
-                    choices=("position", "turn", "side", "device", "kiss", "act", "holder"),
+                    choices=("position", "turn", "side", "device", "kiss", "act", "holder",
+                             "arrangement"),
                     default="position",
                     help="position = which side of her the camera stands on, heights winning "
                          "over horizontals; turn = how far her body is turned, which is the only "
@@ -349,7 +384,9 @@ def main() -> int:
                          "explicit shoot is shot for; holder = whether the photograph reads "
                          "as one she took of herself, which is the question the `selfie` "
                          "manner exists for and the one the device question was standing in "
-                         "for badly")
+                         "for badly; arrangement = which arrangement of the two bodies is in "
+                         "the photograph, scored only on the lines a planted one was written "
+                         "into")
     ap.add_argument("--repeat", type=int, default=1,
                     help="judge each photograph this many times; the judge has its own "
                          "variance and one pass cannot see it")
@@ -368,6 +405,7 @@ def main() -> int:
         "kiss": (KISS, KISS_WORDS),
         "act": (ACT, ACT_WORDS),
         "holder": (HOLDER, HOLDER_WORDS),
+        "arrangement": (ARRANGEMENT, ARRANGEMENT_WORDS),
     }.get(args.question, (QUESTION, WORDS))
 
     hits, rows, skipped = 0, [], 0
@@ -381,6 +419,12 @@ def main() -> int:
         elif args.question == "device":
             low = " ".join(shot["prompt"].split()).lower()
             want = "yes" if any(c in low for c in DEVICE_YES) else "no"
+        elif args.question == "arrangement":
+            want = asked_of(shot["prompt"], ARRANGEMENT_ASKED)
+            # `?` back means the line carries no planted arrangement at all, which
+            # is most of a shoot: skipped rather than scored against nothing.
+            if want == "?":
+                want = None
         elif args.question == "holder":
             low = " ".join(shot["prompt"].split()).lower()
             want = "herself" if any(c in low for c in HOLDER_SELF) else "someone"
@@ -405,7 +449,8 @@ def main() -> int:
         print(f'{str(rows[-1][0]):>4} | asked {want:<9} | saw {", ".join(saw):<28} | {"OK" if ok else "--"}')
 
     print(f"\nobeyed {hits}/{len(rows)}"
-          + (f" ({skipped} skipped: the clause asks nothing horizontal)" if skipped else ""))
+          + (f" ({skipped} skipped: the line asks nothing this question can score)"
+             if skipped else ""))
     by_family: dict[str, list[int]] = {}
     for _, want, _, ok in rows:
         by_family.setdefault(want, []).append(ok)

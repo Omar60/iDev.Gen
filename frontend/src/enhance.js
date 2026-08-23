@@ -14,6 +14,7 @@ import {
   SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
   takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, POSITIONS, arrangementPlan,
+  fitCameras,
   kissPlan, KISS_CAMERA,
 } from './kinds.js'
 
@@ -312,6 +313,27 @@ export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress, rea
  *  it. Empty string is the app's way of saying "this take names its own clothes",
  *  which is exactly true here — the composed prompt is the look, then the line.
  */
+/** The arrangement plan with nothing left sitting on a kiss frame.
+ *
+ *  A clash is moved one photograph either way when that photograph is free -
+ *  free meaning no kiss, no other arrangement, and not next to one, which are
+ *  the same three things `spreadOver` guarantees on its own. It is dropped when
+ *  neither side is free, because a shoot of thirty has more arrangements coming
+ *  and a photograph carrying two plans is worse than a photograph carrying one.
+ */
+export const withoutClashing = (poses, kisses, n) => {
+  const taken = (at) => kisses[at] || out[at]
+  const near = (at) => out[at - 1] || out[at + 1]
+  const out = {}
+  for (const [key, arrangement] of Object.entries(poses)) {
+    const at = Number(key)
+    if (!kisses[at]) { out[at] = arrangement; continue }
+    const moved = [at + 1, at - 1].find((to) => to >= 1 && to <= n && !taken(to) && !near(to))
+    if (moved) out[moved] = arrangement
+  }
+  return out
+}
+
 export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = 'nude',
                                 manner = 'directed', arrangements = []) => {
   // The one thing the setting decides in here, and it is not a paragraph of
@@ -328,13 +350,24 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // photographer stands, `candid` from where a phone was put down — six forms
   // that survived being shot and judged blind, sessions 245-250. A manner with
   // no catalogue gets no camera guidance, and a test keeps that from happening.
-  const cameras = POSITIONS[manner] ? cameraPlan(n, Math.random, POSITIONS[manner]) : null
+  let cameras = POSITIONS[manner] ? cameraPlan(n, Math.random, POSITIONS[manner]) : null
   // The kiss frames, decided here too, and they take their photograph's camera
   // with them: the gesture only reads from in front of her, close.
   const kisses = kissPlan(n)
   // The arrangements a session picked, planted in a minority of the photographs.
   // Empty by default: a shoot that picks none is written the way it always was.
-  const poses = arrangementPlan(n, arrangements)
+  // Planted AROUND the kiss frames, never on one. Session 267 landed both on
+  // photograph 22 and the photograph came back as neither: the kiss frame
+  // replaces the camera and dictates the face, the arrangement says the two of
+  // them are standing against a wall, and the render was a kiss blown at the
+  // lens in bed. Two plans that do not know about each other is one photograph
+  // carrying two instructions.
+  const poses = withoutClashing(arrangementPlan(n, arrangements), kisses, n)
+  // A planted arrangement takes its camera from the families that can see it.
+  // Session 267: three of five were handed a camera behind her shoulder and all
+  // three rendered as a different arrangement, because the camera outranks the
+  // bodies. Only the planted photographs move.
+  cameras = fitCameras(cameras, poses, POSITIONS[manner])
   // Which photographs got one, said out loud: a plan nobody can see is a plan
   // nobody can check, and the only way to know an arrangement ARRIVED is to
   // compare the line against the photograph it was planted in.

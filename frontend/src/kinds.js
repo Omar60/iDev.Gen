@@ -1589,6 +1589,38 @@ export const cameraPlan = (n, rand = Math.random, positions = CAMERA_POSITIONS) 
   return plan
 }
 
+/** The camera plan with the planted photographs given a camera their arrangement
+ *  can be seen from.
+ *
+ *  Only those photographs move. Everything else keeps the spread `cameraPlan`
+ *  drew, which is what stops this from quietly becoming a second camera plan:
+ *  measured in session 267, an arrangement handed an incompatible camera loses,
+ *  every time, and the shoot gets a photograph nobody asked for.
+ *
+ *  The replacement is drawn from the positions whose family the arrangement
+ *  allows, preferring one whose family is not already on the photograph before
+ *  or after - the same rule the plan itself holds. When the catalogue has none
+ *  it can use, the camera is left alone: a manner with no compatible position is
+ *  a manner that cannot take that photograph, and a wrong camera is still better
+ *  than an empty one.
+ */
+export const fitCameras = (cameras, poses, positions, rand = Math.random) => {
+  if (!cameras || !positions) return cameras
+  const familyOf = (line) => positions.find((p) => p.line === line)?.family
+  const out = [...cameras]
+  for (const [key, arrangement] of Object.entries(poses || {})) {
+    const at = Number(key) - 1
+    if (!arrangement.cameras || arrangement.cameras.includes(familyOf(out[at]))) continue
+    const open = positions.filter((p) => arrangement.cameras.includes(p.family))
+    if (!open.length) continue
+    const neighbours = [familyOf(out[at - 1]), familyOf(out[at + 1])]
+    const apart = open.filter((p) => !neighbours.includes(p.family))
+    const from = apart.length ? apart : open
+    out[at] = from[Math.floor(rand() * from.length) % from.length].line
+  }
+  return out
+}
+
 /** The kiss frame, in four flavours, and the position it is taken from.
  *
  *  Every shoot gets at least one. It came from a photograph the user chased for
@@ -1690,6 +1722,24 @@ export const kissPlan = (n, rand = Math.random) => spreadOver(n, KISS_FRAMES, 8,
  *  own, and the camera in particular is planned separately and must not be
  *  fought.
  *
+ *  `cameras` IS WHICH FAMILIES CAN SEE IT, and it exists because session 267
+ *  measured the two plans fighting. Three of its five planted arrangements were
+ *  handed a camera behind her shoulder, and all three came back as a DIFFERENT
+ *  arrangement: asked for her on top facing him with her back to the lens, the
+ *  sampler turned her around on him rather than move the camera. The one that
+ *  survived was the one whose camera already agreed with it. The camera outranks
+ *  the bodies, which is this project's oldest hierarchy
+ *  ([[idevgen-position-collapse-is-contradiction]]) arriving in a new place.
+ *
+ *  So a planted arrangement takes its camera from these families and the plan
+ *  fills the rest of the shoot as before. Read them as what the camera can SEE:
+ *  a woman with her front to a wall cannot be photographed from in front, and a
+ *  phone propped above a bed cannot see two people standing at one.
+ *
+ *  Every list keeps at least one family in every catalogue - a restriction that
+ *  empties a manner's positions would leave the photograph with no camera at
+ *  all, and `tests/test_arrangements.py` fails if one ever does.
+ *
  *  WHAT IS VERIFIED, and it is one of the six. `astride` is the arrangement
  *  sessions 265 and 266 shot on a fixed line: 12 photographs of 12 with the arm
  *  written, the act in 11 of them. The other five are read off what 155 and 161
@@ -1703,26 +1753,32 @@ export const kissPlan = (n, rand = Math.random) => spreadOver(n, KISS_FRAMES, 8,
 export const ARRANGEMENTS = [
   { key: 'astride',
     label: 'She is on top, facing him',
+    cameras: ['front', 'overhead', 'mirror', 'pov'],
     act: 'She is astride him with her knees on either side of his hips and her weight down on '
        + 'him, the two of them joined, two people in frame.' },
   { key: 'back',
     label: 'She is on her back, he is over her',
+    cameras: ['front', 'overhead', 'mirror', 'pov'],
     act: 'She is on her back with her legs open and he is over her between them, the two of them '
        + 'joined, two people in frame.' },
   { key: 'reverse',
     label: 'She is on top, facing away',
+    cameras: ['shoulder', 'behind', 'overhead', 'mirror'],
     act: 'She is astride him facing away from him with her weight on her feet, the two of them '
        + 'joined, two people in frame.' },
   { key: 'side',
     label: 'Both on their sides',
+    cameras: ['side', 'front', 'overhead', 'mirror'],
     act: 'They are both on their sides with him behind her and her upper leg lifted, the two of '
        + 'them joined, two people in frame.' },
   { key: 'wall',
     label: 'Standing against the wall',
+    cameras: ['shoulder', 'side', 'behind', 'mirror'],
     act: 'She is standing with her front to the wall and one leg raised, he is behind her, the '
        + 'two of them joined, two people in frame.' },
   { key: 'behind',
     label: 'On all fours, he is behind her',
+    cameras: ['front', 'shoulder', 'side', 'overhead', 'mirror'],
     act: 'She is on all fours on the bed and he is kneeling behind her, the two of them joined, '
        + 'two people in frame.' },
 ]
@@ -1775,14 +1831,19 @@ export const shootChunkNote = (at) =>
   // two of them are doing and a kiss frame replaces the camera as well, so the
   // one that changes more of the line is read last.
   + (at.poses?.length
-    ? 'THE ARRANGEMENT IS ALREADY DECIDED for these photographs, and it is what the two of them '
-      + 'are doing in that frame:\n'
+    ? 'WHAT THE TWO OF THEM ARE DOING IS ALREADY DECIDED for these photographs, and like the '
+      + 'camera it is not yours:\n'
       + at.poses.map(({ at: k, arrangement }) => `${k} | ${arrangement.act}`).join('\n') + '\n'
-      + 'Put it in the `act` field of that photograph word for word. Everything else in the '
-      + 'line is yours and is written around it: the camera it was given, the framing, his body '
-      + 'in `him`, her body in `her`, the face. The photographs with no arrangement named are '
-      + 'the shoot as usual - the arrangement is a frame the shoot passes through, never the '
-      + 'whole stretch.\n'
+      + 'The `act` field of that photograph OPENS with those words exactly as they are written '
+      + 'above, and nothing of yours goes in front of them. Do not reword it, do not shorten it '
+      + 'and do not write the same arrangement in your own words - measured, a softer version of '
+      + 'this paragraph was obeyed in three photographs of six and the other three came back as '
+      + 'a different arrangement altogether, which is a photograph nobody asked for. Anything '
+      + 'you want to add about their hands or their weight goes AFTER it, in the same field.\n'
+      + 'Everything else in the line is yours and is written around it: the camera it was given, '
+      + 'the framing, his body in `him`, her body in `her`, the face. The photographs with no '
+      + 'arrangement named are the shoot as usual - an arrangement is a frame the shoot passes '
+      + 'through, never the whole stretch.\n'
     : '')
   // After the camera, because it overrides one of the positions above for its own
   // photograph and a reader meets the exception after the rule.
