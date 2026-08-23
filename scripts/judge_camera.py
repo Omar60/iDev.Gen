@@ -321,7 +321,7 @@ def asked_of(prompt: str, table: list | None = None) -> str | None:
     return "?"
 
 
-def post(base: str, path: str, body: dict | None = None, tries: int = 6) -> dict:
+def post(base: str, path: str, body: dict | None = None, tries: int = 8) -> dict:
     """Retried with a growing wait, because a judging pass is seventy calls to a
     hosted model and the connection resets constantly — one run died on the first
     photograph, a second died on the ninth after three resets in a row, and every
@@ -355,8 +355,18 @@ def get(base: str, path: str) -> dict:
 
 
 def judge(base: str, shot_id: int, question: str = QUESTION, words: tuple = WORDS) -> str:
-    lines = post(base, "/api/enhance",
-                 {"instruction": question, "shot_id": shot_id, "n": 1})["lines"]
+    """One pass. A transport failure that outlives the backoff is recorded as a
+    pass nobody could read, never raised.
+
+    A judging run is seventy calls to a hosted model, and the hosted model has
+    bad half-hours: one of them killed a thirty-three photograph run at the
+    fifth photograph and threw away everything already read. A dead pass costs
+    one pass; a dead run costs the batch."""
+    try:
+        lines = post(base, "/api/enhance",
+                     {"instruction": question, "shot_id": shot_id, "n": 1})["lines"]
+    except Exception as exc:  # noqa: BLE001 - any transport failure is one lost pass
+        return f"unreadable:{type(exc).__name__}"
     said = (lines[0].get("prompt") if lines else "") or ""
     # The model answers with the word, sometimes inside a sentence. First hit wins,
     # and an answer with none of the six is kept as itself so it shows up as a miss
@@ -448,6 +458,11 @@ def main() -> int:
         rows.append((shot.get("shot_label") or shot["shot_index"] + 1, want, saw, ok))
         print(f'{str(rows[-1][0]):>4} | asked {want:<9} | saw {", ".join(saw):<28} | {"OK" if ok else "--"}')
 
+    passes = [p for _, _, saw, _ in rows for p in saw]
+    lost = [p for p in passes if p.startswith("unreadable:")]
+    if lost:
+        print(f"\n{len(lost)} of {len(passes)} passes were unreadable - refusals and transport "
+              f"failures both land here, and a run with many of them is not a measurement")
     print(f"\nobeyed {hits}/{len(rows)}"
           + (f" ({skipped} skipped: the line asks nothing this question can score)"
              if skipped else ""))
