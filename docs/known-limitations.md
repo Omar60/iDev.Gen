@@ -37,8 +37,8 @@ discover them mid-shoot.
   the bare shoulder. It points; it never rewrites.
 - **One session at a time, serial.** No batching, no multi-GPU, no queue of
   queued sessions.
-- **Rating is per shot and local.** No tags, no collections across sessions, no
-  search.
+- **Rating is per shot and local.** Tags and the search are whole-session
+  (see [sessions](sessions.md#tags-and-the-library)); ratings are not.
 - **Retry only re-queues failed and cancelled shots.** A photo that came out is
   re-rolled with **↺ Reshoot** (one at a time) or **Reshoot below N★** (every
   finished shot under the threshold, in one click).

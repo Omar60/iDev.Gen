@@ -53,6 +53,12 @@ CREATE TABLE IF NOT EXISTS session (
     -- fighting a sentence that says the jacket is still on.
     wardrobe      TEXT NOT NULL DEFAULT '',
     settings      TEXT NOT NULL DEFAULT '{}',     -- resolved gen settings for the run
+    -- Free-text tags the user puts on a session: trimmed, compared
+    -- case-insensitively, never empty. Stored as JSON so the list route can read
+    -- it whole and no second query is needed. No new table on purpose: four
+    -- tables is what this app is shaped to, and a `session_tag` join is a column
+    -- the whole point of NOT having.
+    tags          TEXT NOT NULL DEFAULT '[]',
     created_at    TEXT NOT NULL
 );
 
@@ -162,6 +168,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # picks the graph. Untagged is a valid state, not a migration to back-fill.
     if "kind" not in columns("workflow"):
         conn.execute("ALTER TABLE workflow ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
+
+    # Free-text tags on a session: a list the user builds, a column that didn't
+    # exist before, default '[]' so a session with no tags reads as an empty list
+    # and not a NULL the route has to remember to handle.
+    if "tags" not in columns("session"):
+        conn.execute("ALTER TABLE session ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
 
 
 def conn() -> sqlite3.Connection:

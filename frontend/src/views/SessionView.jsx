@@ -242,6 +242,29 @@ export default function SessionView({ id }) {
     })
   }
 
+  // The tag editor's draft input. A PATCH fires on submit so the network
+  // round-trip is one per tag, not one per keystroke, and on remove so each
+  // click is its own action with its own undo.
+  const [tagDraft, setTagDraft] = useState('')
+  // Open when the user starts typing; close on blur once the field is empty
+  // again, so a session with no tags does not eat a row of vertical space.
+  const [tagsOpen, setTagsOpen] = useState(false)
+  const tags = s.tags || []
+  const addTag = (raw) => {
+    const v = (raw || '').trim()
+    if (!v) return
+    if (tags.some((t) => t.toLowerCase() === v.toLowerCase())) {
+      // Backend would dedupe it anyway; skipping the round-trip keeps the
+      // response identical and the list from re-rendering for nothing.
+      setTagDraft('')
+      return
+    }
+    call(() => api.patch(`/api/sessions/${id}`, { tags: [...tags, v] })).then(() => setTagDraft(''))
+  }
+  const removeTag = (t) => call(() => api.patch(`/api/sessions/${id}`, {
+    tags: tags.filter((x) => x !== t),
+  }))
+
   return (
     <>
       {error && <div className="error" onClick={() => setError('')}>{error}</div>}
@@ -263,6 +286,33 @@ export default function SessionView({ id }) {
               <b>Wardrobe:</b> {s.wardrobe} <i>— what a take wears unless it says otherwise</i>
             </p>
           )}
+          {/* Tag editor. Existing tags as removable badges, plus an input that
+              opens on focus and stays open for as long as it has text. The
+              Library screen reads the same column, so a tag added here shows
+              up in the chip row on the next visit. */}
+          <div className="row" style={{ marginTop: -4, marginBottom: 4, gap: 6 }}>
+            {tags.map((t) => (
+              <span key={t} className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                {t}
+                <button className="icon" style={{ padding: '0 2px', border: 'none', background: 'transparent',
+                                                  color: 'var(--muted)', cursor: 'pointer' }}
+                        onClick={() => removeTag(t)} title={`Remove tag "${t}"`}>×</button>
+              </span>
+            ))}
+            {(tagsOpen || tags.length > 0) && (
+              <form onSubmit={(e) => { e.preventDefault(); addTag(tagDraft) }}
+                    style={{ display: 'flex', gap: 4, flex: '0 1 200px' }}>
+                <input value={tagDraft} onChange={(e) => setTagDraft(e.target.value)}
+                       onBlur={() => { if (!tagDraft) setTagsOpen(false) }}
+                       onFocus={() => setTagsOpen(true)}
+                       placeholder="Add a tag" style={{ width: '100%' }} />
+                <button type="submit" disabled={!tagDraft.trim()}>Add</button>
+              </form>
+            )}
+            {!tagsOpen && tags.length === 0 && (
+              <button onClick={() => setTagsOpen(true)} title="Mark this session with a tag, then find it from Library">+ Tag</button>
+            )}
+          </div>
           {anchors.length > 0 ? (
             <div className="anchor">
               {anchors.map((a) => <img key={a} src={shotImage(a)} alt="" title={`Reference — shot ${a}`} />)}

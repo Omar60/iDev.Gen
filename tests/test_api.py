@@ -1195,3 +1195,188 @@ def test_session_export_entry_names_do_not_move_with_the_threshold(client, seede
 
     assert wide == ["00000_01_rating1.png", "00000_02_rating2.png", "00000_03_rating5.png"]
     assert narrow == ["00000_03_rating5.png"]
+
+
+# -- session library: tags, the list route, the cover photograph
+
+def _second_model(client, seeded) -> int:
+    """A second model with its own workflow. The library tests need two models
+    because the route's whole point is listing across them."""
+    wf = client.post("/api/workflows", json={"name": "wf-2", "graph": GRAPH}).json()
+    return client.post("/api/models", json={
+        "name": "bea", "lora_name": "characters/bea.safetensors", "trigger": "bea woman",
+        "base_positive": "photo, 35mm", "base_negative": "blurry", "workflow_id": wf["id"],
+    }).json()["id"]
+
+
+def test_tagging_a_shot_session_keeps_the_shots_unchanged(client, seeded):
+    """Tags live on the session, not on the shots — the whole point is a label
+    the gallery can read after the shoot. Adding two tags must not touch a
+    single row of the session's shots."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "summer",
+        "shots": [{"prompt": "standing", "count": 2}],
+    }).json()["id"]
+    shot_ids = [x["id"] for x in client.get(f"/api/sessions/{sid}").json()["shots"]]
+
+    r = client.patch(f"/api/sessions/{sid}", json={"tags": ["balcony", "outdoor"]})
+    assert r.status_code == 200
+    assert sorted(r.json()["tags"]) == ["balcony", "outdoor"]
+
+    # Reloading shows both tags. The shots survive untouched.
+    s = client.get(f"/api/sessions/{sid}").json()
+    assert sorted(s["tags"]) == ["balcony", "outdoor"]
+    assert [x["id"] for x in s["shots"]] == shot_ids
+
+
+def test_the_same_tag_in_two_cases_is_one_tag(client, seeded):
+    """A tag in two cases within one PATCH lands as one tag, with the first
+    occurrence's case kept. The backend guarantees within-list dedupe
+    (case-insensitive); the frontend handles "add a tag" by sending the full
+    list and trusting the server to clean it up."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s", "shots": []}).json()["id"]
+    r = client.patch(f"/api/sessions/{sid}", json={"tags": ["Balcony", "balcony", "BALCONY"]})
+    assert r.json()["tags"] == ["Balcony"]
+
+
+def test_an_empty_tag_is_discarded_not_stored(client, seeded):
+    """A tag consisting of whitespace only is dropped, and the other tags on
+    the session are left alone — the route treats it as a non-event rather
+    than a request to clear the list."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s", "shots": []}).json()["id"]
+    r = client.patch(f"/api/sessions/{sid}", json={"tags": ["balcony", "  ", "\t\n", "outdoor"]})
+    assert sorted(r.json()["tags"]) == ["balcony", "outdoor"]
+
+
+def test_a_cloned_session_keeps_its_tags(client, seeded):
+    """A clone is a copy of the shoot. The tags describe the shoot, so they
+    travel with it. No "Balcony (copy)" without a "Balcony" — a clone of a
+    tagged session is still findable by that tag."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "balcony shoot",
+        "shots": [{"prompt": "standing", "count": 1}],
+    }).json()["id"]
+    client.patch(f"/api/sessions/{sid}", json={"tags": ["balcony", "outdoor"]})
+
+    clone = client.post(f"/api/sessions/{sid}/clone", json={"name": "balcony (copy)"}).json()["id"]
+    assert sorted(client.get(f"/api/sessions/{clone}").json()["tags"]) == ["balcony", "outdoor"]
+    # And the clone is itself findable by the same tag.
+    by_tag = [s["id"] for s in client.get("/api/sessions", params={"tag": "balcony"}).json()]
+    assert sorted(by_tag) == sorted([sid, clone])
+
+
+def test_text_query_searches_across_models(client, seeded):
+    """`q` reads the session's look, the place a model belongs to is irrelevant
+    to the search. Two models, two sessions, the same word in their look — the
+    query lists both, newest first."""
+    second = _second_model(client, seeded)
+    a = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "A", "look": "on a balcony at sunset",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    b = client.post("/api/sessions", json={
+        "model_id": second, "name": "B", "look": "balcony in winter",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "C", "look": "kitchen",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()
+
+    listed = [s["name"] for s in client.get("/api/sessions", params={"q": "balcony"}).json()]
+    # Newest first: B was created after A, so B comes first.
+    assert listed == ["B", "A"]
+
+
+def test_text_query_reads_the_wardrobe_too(client, seeded):
+    """The wardrobe is the half of a session that moves — the user might search
+    for the dress without remembering the name or the look. A session whose
+    wardrobe alone mentions `raincoat` must be findable."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "rainy",
+        "look": "hair down", "wardrobe": "yellow raincoat",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    listed = [s["id"] for s in client.get("/api/sessions", params={"q": "raincoat"}).json()]
+    assert listed == [sid]
+
+
+def test_a_tag_filter_matches_a_whole_tag_not_a_substring(client, seeded):
+    """`tag=night` is the session tagged `night`, not the one tagged
+    `nightclub`. A prefix match would broaden the filter past the word the
+    user typed and surface a session that is not about what they asked for."""
+    a = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "evening",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    b = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "club",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    client.patch(f"/api/sessions/{a}", json={"tags": ["night"]})
+    client.patch(f"/api/sessions/{b}", json={"tags": ["nightclub"]})
+
+    listed = [s["id"] for s in client.get("/api/sessions", params={"tag": "night"}).json()]
+    assert listed == [a]
+
+
+def test_text_and_tag_filters_must_both_hold(client, seeded):
+    """Both filters, both must hold — the AND is what makes a free-text search
+    inside one tag possible, and a session that matches only the text is not
+    what was asked for."""
+    a = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "balcony shoot",
+        "look": "on a balcony at sunset", "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    b = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "studio shoot",
+        "look": "in a kitchen at noon", "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    client.patch(f"/api/sessions/{a}", json={"tags": ["balcony"]})
+    client.patch(f"/api/sessions/{b}", json={"tags": ["balcony"]})
+
+    listed = [s["id"] for s in client.get("/api/sessions", params={"q": "balcony", "tag": "balcony"}).json()]
+    assert listed == [a]
+
+
+def test_no_filters_lists_every_session_newest_first(client, seeded):
+    """The default route still works: every session, regardless of tags or
+    text, newest first — that is the existing screen's shape and the library
+    is built on top of it rather than beside it."""
+    s1 = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "first",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    s2 = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "second",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    s3 = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "third",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+
+    listed = [s["id"] for s in client.get("/api/sessions").json()]
+    assert listed == [s3, s2, s1]   # newest first
+
+
+def test_a_query_that_matches_nothing_returns_an_empty_list(client, seeded):
+    """The route succeeds, the list is empty, the front-end shows nothing
+    rather than an error. A 404 would be a different contract — the query
+    is legitimate, the data is just not there."""
+    client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "kitchen",
+        "shots": [{"prompt": "standing", "count": 1}]})
+    r = client.get("/api/sessions", params={"q": "nonexistent"})
+    assert r.status_code == 200 and r.json() == []
+
+
+def test_each_listed_session_carries_its_cover_shot_id(client, seeded):
+    """The screen shows one photograph per row without a request per row, so
+    the cover id has to come back with the session. The cover is the
+    highest-rated, non-rejected, done shot — the same frame the model detail
+    page picks."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 3}]}).json()["id"]
+    done = [_finished_shot(client, sid, f"frame {i}", rating=i) for i in (1, 3, 5)]
+
+    # A rejected 5★ must not win — a photograph the user said no to is not the
+    # cover photograph. The 3★ keeps the cover honest.
+    db.run("UPDATE shot SET rejected=1 WHERE id=?", done[2]["id"])
+    expected = done[1]["id"]
+
+    listed = client.get("/api/sessions").json()
+    cover = next(s["cover_shot_id"] for s in listed if s["id"] == sid)
+    assert cover == expected

@@ -47,6 +47,15 @@ The four are one workflow, not four. **→** on any finished photo continues wit
 it — the same session switched to that kind, or a fresh session with the photo
 copied in as its reference. The photo never leaves the app.
 
+## Library
+
+Sessions are reachable through the model that owns them — **Library** lists
+them across every model. Each session carries free-text **tags** edited on the
+session view; the library has a search box (matches the name, look and
+wardrobe) and the tags currently in use as chips. Tags survive a session being
+cloned, and are matched whole: a query of `night` lists a `night` session and
+not a `nightclub` one. See [sessions](docs/sessions.md#tags-and-the-library).
+
 ## Run it
 
 ```bash

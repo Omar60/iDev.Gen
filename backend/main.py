@@ -163,6 +163,10 @@ class SessionPatch(BaseModel):
     # Merged into the session's settings, not replacing them: the panel sends the
     # one dial it changed.
     settings: dict | None = None
+    # The whole tag list, in its new shape. The route normalizes the values
+    # (trim, drop empties, dedupe case-insensitively) and stores the cleaned
+    # version, so a PATCH of "Balcony" then "balcony" lands as one tag.
+    tags: list[str] | None = None
 
 
 class ShotPatch(BaseModel):
@@ -446,16 +450,45 @@ def delete_model(mid: int):
 # ------------------------------------------------------------------ sessions
 
 @app.get("/api/sessions")
-def list_sessions():
-    # The settings come decoded because `cloned_from` and the base model are read
-    # off this list: it is how a session finds the copies of itself it can be
-    # compared with, without a route of its own.
-    return [db.jload(r, "settings") for r in db.q("""
+def list_sessions(q: str = "", tag: str = ""):
+    """Every session, newest first, with a free-text and a tag filter.
+
+    `q` is a case-insensitive substring of the session's name, look or wardrobe
+    - the three things a user can read and search by. `tag` is a whole tag, not a
+    substring: a query of `night` lists the session tagged `night` and not the
+    one tagged `nightclub`. Both given, both must hold.
+
+    The cover photograph is the highest-rated, non-rejected, done shot - the
+    same frame the model detail page picks, so the library's row shows one
+    photograph per session without a request per row.
+    """
+    where: list[str] = []
+    params: list = []
+    if q:
+        # LOWER on the column and the query, LIKE wrapping: case-insensitive
+        # substring. look and wardrobe default to '' so LOWER on them is safe.
+        like = f"%{q.lower()}%"
+        where.append("(LOWER(s.name) LIKE ? OR LOWER(s.look) LIKE ? OR LOWER(s.wardrobe) LIKE ?)")
+        params.extend([like, like, like])
+    if tag:
+        # Whole-tag match: `json_each` turns the array into rows, LOWER on both
+        # sides makes it case-insensitive, EXISTS keeps the predicate cheap.
+        where.append("EXISTS (SELECT 1 FROM json_each(s.tags) WHERE LOWER(value) = LOWER(?))")
+        params.append(tag)
+    sql = """
         SELECT s.*, m.name AS model_name,
                (SELECT COUNT(*) FROM shot WHERE session_id=s.id) AS shot_count,
-               (SELECT COUNT(*) FROM shot WHERE session_id=s.id AND status='done') AS done_count
-        FROM session s JOIN model m ON m.id=s.model_id ORDER BY s.id DESC
-    """)]
+               (SELECT COUNT(*) FROM shot WHERE session_id=s.id AND status='done') AS done_count,
+               (SELECT id FROM shot WHERE session_id=s.id AND status='done' AND rejected=0
+                 ORDER BY rating DESC, id LIMIT 1) AS cover_shot_id
+        FROM session s JOIN model m ON m.id=s.model_id
+    """
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY s.id DESC"
+    # settings AND tags come decoded: the gallery needs the user's raw tag list
+    # and the clone-picker reads cloned_from off the same payload.
+    return [db.jload(r, "settings", "tags") for r in db.q(sql, *params)]
 
 
 @app.get("/api/sessions/{sid}")
@@ -463,7 +496,7 @@ def get_session(sid: int):
     row = db.one("SELECT * FROM session WHERE id=?", sid)
     if not row:
         raise HTTPException(404, "session not found")
-    row = db.jload(row, "settings", "anchor_shot_ids")
+    row = db.jload(row, "settings", "anchor_shot_ids", "tags")
     row["model"] = db.jload(db.one("SELECT * FROM model WHERE id=?", row["model_id"]), "settings")
     row["shots"] = [db.jload(x, "reference_shot_ids")
                     for x in db.q("SELECT * FROM shot WHERE session_id=? ORDER BY id", sid)]
@@ -527,7 +560,14 @@ def update_session(sid: int, p: SessionPatch):
     if p.anchor_shot_ids is not None:
         db.run("UPDATE session SET anchor_shot_ids=? WHERE id=?",
                json.dumps(_valid_anchors(p.anchor_shot_ids)), sid)
-    return db.jload(db.one("SELECT * FROM session WHERE id=?", sid), "settings", "anchor_shot_ids")
+    if p.tags is not None:
+        # Stored cleaned, not echoed back, so the frontend renders the same
+        # thing the database holds. A PATCH that asks for a duplicate in a
+        # different case lands as one tag.
+        db.run("UPDATE session SET tags=? WHERE id=?",
+               json.dumps(_clean_tags(p.tags)), sid)
+    return db.jload(db.one("SELECT * FROM session WHERE id=?", sid),
+                    "settings", "anchor_shot_ids", "tags")
 
 
 def _valid_anchors(ids: list[int]) -> list[int]:
@@ -542,6 +582,30 @@ def _valid_anchors(ids: list[int]) -> list[int]:
         if not shot or shot["status"] != "done" or not shot["filename"]:
             raise HTTPException(400, f"shot {shot_id} has no finished photo to use as a reference")
     return ids
+
+
+def _clean_tags(tags: list[str]) -> list[str]:
+    """Trim, drop empties, dedupe case-insensitively, keep first occurrence's case.
+
+    The dedupe key is lowercased; the kept form is the first one the user typed,
+    so a PATCH of "Balcony" then "balcony" is one tag spelled "Balcony". An
+    empty string after stripping is the input the route accepts and silently
+    discards - it is a typo waiting to happen, not a value to store.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in tags or []:
+        if not isinstance(raw, str):
+            continue
+        t = raw.strip()
+        if not t:
+            continue
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
 
 
 class SessionClone(BaseModel):
@@ -589,11 +653,16 @@ def clone_session(sid: int, c: SessionClone):
 
     new_id = db.run(
         """INSERT INTO session (model_id, name, look, wardrobe, workflow_id,
-                                reference_workflow_id, anchor_shot_ids, settings, created_at)
-           VALUES (?,?,?,?,?,?,'[]',?,?)""",
+                                reference_workflow_id, anchor_shot_ids, settings, tags, created_at)
+           VALUES (?,?,?,?,?,?,'[]',?,?,?)""",
         src["model_id"], c.name or f"{src['name']} (copy)", src["look"], src["wardrobe"],
         c.workflow_id or src["workflow_id"], src["reference_workflow_id"],
-        json.dumps(settings), db.now(),
+        json.dumps(settings),
+        # Tags travel with the shoot they describe: a clone of "Balcony" is
+        # still a "Balcony" session. Re-stored verbatim (already cleaned on
+        # write), so the JSON column never holds a value the list route would
+        # not find.
+        src["tags"] or "[]", db.now(),
     )
 
     ids: dict[int, int] = {}

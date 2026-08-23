@@ -90,6 +90,26 @@ So a shoot can walk: dressed, straps off one shoulder, dress at the waist, none
 of it — one take each, in one session, with the hair, the makeup and the light
 unchanged throughout.
 
+## Tags and the library
+
+A session carries free-text **tags** edited on the session view. They are the
+half of a shoot that says *what the whole batch is about* — a place, a mood, a
+garment the wardrobe does not name. Trimmed of surrounding whitespace,
+compared case-insensitively (so `Balcony` and `balcony` is one tag), and an
+empty string is discarded rather than stored. Editing them does not touch the
+session's shots, look, wardrobe or settings. They survive a session being
+cloned, so a clone of *Balcony shoot* is itself a *Balcony* session.
+
+**Library** lists every session across every model, newest first, with a search
+box and the tags currently in use as chips above the list. The search reads
+the session's name, look and wardrobe as a case-insensitive substring; a tag
+chip is a whole-tag match (so `night` lists the session tagged `night` and not
+the one tagged `nightclub`). Both filters given, both must hold. Each row
+shows the session's cover photograph — the highest-rated, non-rejected
+finished shot — so the screen shows one frame per session without a request
+per row. A query that matches nothing reads as *Nothing matched* rather than an
+empty area.
+
 ## The shots
 
 A shot is what varies within that look: pose, angle, framing, where in the place

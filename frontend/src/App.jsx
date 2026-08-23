@@ -5,6 +5,7 @@ import ModelDetail from './views/ModelDetail.jsx'
 import SessionView from './views/SessionView.jsx'
 import Workflows from './views/Workflows.jsx'
 import Setup from './views/Setup.jsx'
+import Library from './views/Library.jsx'
 
 // Hash router: three views plus one detail page. react-router would be a whole
 // dependency for what `location.hash` already does.
@@ -56,6 +57,7 @@ export default function App() {
         <nav>
           <a href="#/models">Models</a>
           <a href="#/sessions">Sessions</a>
+          <a href="#/library">Library</a>
           <a href="#/workflows">Workflows</a>
           <a href="#/setup">Setup</a>
         </nav>
@@ -67,6 +69,7 @@ export default function App() {
         {view === 'session' && <SessionView id={Number(arg)} />}
         {view === 'workflows' && <Workflows />}
         {view === 'setup' && <Setup />}
+        {view === 'library' && <Library />}
         {(view === 'models' || view === 'sessions') && <Models tab={view} />}
       </main>
     </>
