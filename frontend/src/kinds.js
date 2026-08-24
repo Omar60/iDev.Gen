@@ -1187,8 +1187,8 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'the stretch you were given.\n'
   + '\n'
   + 'WITHIN A STAGE, NOTHING REPEATS. Consecutive photographs at the same stage differ by '
-  + 'the camera height and angle, by the pose, by what the hands are doing, and by the '
-  + 'expression. Four photographs of one stage are four photographs, not one with three '
+  + 'the pose, by what the hands are doing, and by the expression. Four photographs of '
+  + 'one stage are four photographs, not one with three '
   + 'copies — and the wardrobe is what holds still between them, word for word.'
   + 'A PHOTOGRAPH HAS NO MOTION IN IT, so how something moves is never what tells two '
   + 'photographs apart. `his hips rocking forward in a steady rhythm` and `his hips '
@@ -1288,6 +1288,11 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'Never describe her face, her age or her body beyond what the pose and the expression '
   + 'need. Never write a camera brand, a lens or a film stock.\n'
   + '\n'
+  // SIX and not seven on purpose: `technique` is the seventh key and this skeleton is
+  // the only thing keeping it switched off in `directed`, which defines the field
+  // nowhere. Measured 2026-08-21, n=25: the key without a bullet of its own came back
+  // as a lighting plan in 23 lines of 23, and with a bullet it changed no render in a
+  // 12-seed A/B. Candid does not need it here — MANNER.candid.line fills the field 8/8.
   + 'THE SIX FIELDS. Answer as JSON: `{"photographs": [{"camera": "…", "act": "…", '
   + '"her": "…", "him": "…", "worn": "…", "face": "…"}, …]}`, one object per photograph, '
   + 'in order. Every field is filled on every object, as prose, with no field name repeated '
