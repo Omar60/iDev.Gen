@@ -206,6 +206,25 @@ def test_a_picked_photo_travels_with_the_vision_model(configured, llm):
     assert seen["body"]["model"] == "small-vl"
 
 
+def test_the_size_of_what_goes_out_is_logged_without_the_image_in_it(configured, llm, caplog):
+    """A round of eight photographs carries the writer's instruction, the manner
+    block, the register and the chunk note, and a round that runs slow reads as a
+    slow model until something says how big the request got. The image is the one
+    thing deliberately left out of the number: a data URI is megabytes of base64
+    and it would drown the figure the log exists for."""
+    llm("a black dress, thin straps")
+    with caplog.at_level("INFO", logger="idevgen.enhance"):
+        r = configured.post("/api/enhance",
+                            json={"instruction": "read the wardrobe" + "!" * 900,
+                                  "image": PNG})
+    assert r.status_code == 200
+    said = [m for m in caplog.messages if m.startswith("asking ")]
+    assert len(said) == 1, caplog.messages
+    # The instruction and not the picture: 917 characters of it, and the PNG runs
+    # to more than that on its own.
+    assert " 917 of instruction" in said[0], said[0]
+
+
 def test_a_body_that_is_not_an_image_is_refused(configured, llm):
     llm("a")
     r = configured.post("/api/enhance", json={"instruction": "x", "image": "data:text/html,<b>"})

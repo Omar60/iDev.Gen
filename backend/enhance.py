@@ -18,11 +18,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import re
 
 import httpx
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
+
+log = logging.getLogger("idevgen.enhance")
 
 # Long because the first call to a local model pays for loading it: an 8B vision
 # model took 67 seconds to reach VRAM on a card ComfyUI had been using, before it
@@ -169,6 +172,21 @@ async def run(config: dict, p: EnhanceIn, image: str = "") -> list[dict]:
             # for a task with nothing to reason about. An endpoint that does not
             # know the parameter is retried without it below.
             "reasoning_effort": "none"}
+    # What goes out, before it goes out. A round of eight photographs carries the
+    # writer's instruction, the manner block, the register and the chunk note, and
+    # nothing on either side of the call says how big that got: a slow round reads
+    # as a slow model when it can just as easily be a prompt that grew.
+    def size(content) -> int:
+        # A vision call carries its text in a list of parts beside the image, and
+        # the image itself is not the number anyone is looking for.
+        if isinstance(content, str):
+            return len(content)
+        return sum(len(c.get("text", "")) for c in content if isinstance(c, dict))
+
+    system = sum(size(m["content"]) for m in body["messages"] if m["role"] == "system")
+    asked = sum(size(m["content"]) for m in body["messages"] if m["role"] != "system")
+    log.info("asking %s for %s: %s chars of system, %s of instruction%s",
+             model, p.n, system, asked, f", {len(p.fields)} fields" if p.fields else "")
     headers = {"Authorization": f"Bearer {config['llm_key']}"} if config.get("llm_key") else {}
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as c:
