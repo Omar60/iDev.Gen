@@ -131,6 +131,19 @@ and writes it by the rules that are otherwise only in these docs:
 All of it is a suggestion in an editable box. Nothing is generated, queued or
 changed by it — see [sessions](docs/sessions.md#writing-the-prompts).
 
+## The canvas
+
+**Canvas** on the model form and on the new-session panel picks the shape a
+shoot is painted on: portrait 832x1216 (the default), portrait 4:5, square,
+9:16 and 16:9. Width and height stay beside it for anything off the list.
+
+A platform's own pixel size is deliberately not on that menu. **A delivery size
+is a crop of a finished photograph, not a canvas** — cropping to 1080x1350 or
+1080x1920 costs nothing and can be redone, while shooting it means re-running
+the whole session to change a crop. Anything wider than 16:9 is not offered at
+all: with a whole body in frame the sampler paints two of her. See
+[sessions](docs/sessions.md#the-canvas).
+
 ## Workflows
 
 Import your workflow in **API format** (`Workflow → Export (API)` in ComfyUI) and

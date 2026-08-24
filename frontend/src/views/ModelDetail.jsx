@@ -4,6 +4,7 @@ import { go } from '../App.jsx'
 import { ModelForm, BaseModelSelect, SamplerSelect } from './Models.jsx'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
+import CanvasSize from './CanvasSize.jsx'
 import { KINDS, WORKFLOW_KINDS, forKind, checkpointProfile, profileSummary } from '../kinds.js'
 import { composed, lookFromPhoto, photoDataUri, rewriteLook, rewriteWardrobe } from '../enhance.js'
 
@@ -200,10 +201,8 @@ export default function ModelDetail({ id }) {
                 <input type="number" value={newSession.seed} onChange={(e) => setNewSession({ ...newSession, seed: Number(e.target.value) })} />
               </div>
             )}
-            <div><label>Width</label><input type="number" step="8" value={newSession.settings.width ?? 832}
-              onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, width: Number(e.target.value) } })} /></div>
-            <div><label>Height</label><input type="number" step="8" value={newSession.settings.height ?? 1216}
-              onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, height: Number(e.target.value) } })} /></div>
+            <CanvasSize width={newSession.settings.width} height={newSession.settings.height}
+              onChange={(w, h) => setNewSession({ ...newSession, settings: { ...newSession.settings, width: w, height: h } })} />
             <div><label>Steps</label><input type="number" value={newSession.settings.steps ?? 8}
               onChange={(e) => setNewSession({ ...newSession, settings: { ...newSession.settings, steps: Number(e.target.value) } })} /></div>
             <div><label>CFG</label><input type="number" step="0.1" value={newSession.settings.cfg ?? 1}

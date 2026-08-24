@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api, loraPreview } from '../api'
 import { go } from '../App.jsx'
+import CanvasSize from './CanvasSize.jsx'
 
 const EMPTY = {
   name: '', lora_name: '', trigger: '', lora_strength: 1.0,
@@ -166,8 +167,8 @@ export function ModelForm({ form, setForm, loras, workflows, models = {} }) {
             {workflows.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
           </select>
         </div>
-        <div><label>Width</label><input type="number" step="8" value={s.width ?? 832} onChange={(e) => setS('width', Number(e.target.value))} /></div>
-        <div><label>Height</label><input type="number" step="8" value={s.height ?? 1216} onChange={(e) => setS('height', Number(e.target.value))} /></div>
+        <CanvasSize width={s.width} height={s.height}
+                    onChange={(w, h) => setForm({ ...form, settings: { ...s, width: w, height: h } })} />
         <div><label>Steps</label><input type="number" value={s.steps ?? 8} onChange={(e) => setS('steps', Number(e.target.value))} /></div>
         <div><label>CFG</label><input type="number" step="0.1" value={s.cfg ?? 1} onChange={(e) => setS('cfg', parseFloat(e.target.value))} /></div>
         <div>

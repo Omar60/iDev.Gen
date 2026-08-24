@@ -615,6 +615,38 @@ vocabulary, so *“from behind, a bit lower”* ticks `back view` and
 exactly like a word it read, which is why it is dropped before it reaches a take
 rather than after.
 
+### The canvas
+
+**Canvas** on the model form and on the new-session panel is a menu of five
+shapes, and the width and height boxes stay beside it for anything off the list.
+
+| Canvas | Pixels | What it delivers |
+|---|---|---|
+| Portrait (default) | 832x1216 | Pinterest 1000x1500; Instagram 1080x1350 with a sliver cropped |
+| Portrait 4:5 | 896x1120 | Instagram portrait 1080x1350, exactly |
+| Square 1:1 | 1024x1024 | Instagram 1080x1080, Facebook 1200x1200 |
+| Tall 9:16 | 720x1280 | Stories, Reels, TikTok 1080x1920, exactly |
+| Wide 16:9 | 1280x720 | X 1600x900, Facebook post 1200x630 cropped |
+
+The list stops at 16:9 on purpose, and a platform's own pixel size is not on it.
+Those are two halves of one rule: **a delivery size is a crop of a finished
+photograph, not a canvas.** Cropping costs nothing and can be redone; shooting
+the delivery size means re-running the session to change a crop, which for a
+forty-frame shoot at twenty-five seconds a frame is nineteen minutes per ratio.
+And the wide formats do not survive being shot — a Facebook cover at 820x312 is
+2.6:1, and asking the sampler for a frame that wide with a whole body in it
+paints two of her.
+
+832x1216 stays the default and is a preset of its own rather than being rounded
+to a true 2:3. Every session in this document was shot on it.
+
+**The menu changes the shape of the photograph, not what is in it.** That is the
+measurement above: a taller canvas adds ceiling and does not lower the crop, 0
+of 4 frames. The limit is that this was measured on vertical canvases only.
+Square and wide follow the same reasoning and have not been measured, so a
+full-length take on a square canvas may put the figure further away than the
+words asked for. The default is untouched, so nothing changes until you pick.
+
 ## Seeds
 
 - **Random** — a different seed per shot. What you want for a real shoot.
