@@ -530,3 +530,23 @@ def test_the_headings_name_the_fields_the_writer_is_asked_for():
     assert listed, "SHOOT_FIELDS is no longer a literal array in kinds.js"
     fields = re.findall(r"'([^']+)'", listed.group(1))
     assert fields == list(enhance.BLOCK_HEADINGS), (fields, enhance.BLOCK_HEADINGS)
+
+
+def test_the_json_skeleton_leaves_technique_out_on_purpose():
+    """The skeleton in `SHOOT_LINE_INSTRUCTION` lists six of the seven keys, and
+    the missing one is `technique`. That is the switch, not an oversight: the
+    writer copies the example over the rule, and `directed` — which defines the
+    field in no block of its own — writes a director-of-photography lighting plan
+    the moment the key appears. Measured 2026-08-21, n=25: 23 lines of 23, and a
+    bullet of its own moved no render in a twelve-seed A/B. A future pass that
+    tidies the example into line with `SHOOT_FIELDS` turns it back on."""
+    import pathlib
+    import re
+
+    src = (pathlib.Path(__file__).resolve().parents[1]
+           / "frontend/src/kinds.js").read_text(encoding="utf-8")
+    skeleton = re.search(r"THE SIX FIELDS\.(.*?)one object per photograph", src, re.S)
+    assert skeleton, "the JSON skeleton is no longer introduced as THE SIX FIELDS"
+    keys = [k for k in re.findall(r'"(\w+)":', skeleton.group(1)) if k != "photographs"]
+    assert keys == [f for f in enhance.BLOCK_HEADINGS if f != "technique"], keys
+
