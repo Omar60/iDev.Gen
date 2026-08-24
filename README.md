@@ -56,6 +56,24 @@ wardrobe) and the tags currently in use as chips. Tags survive a session being
 cloned, and are matched whole: a query of `night` lists a `night` session and
 not a `nightclub` one. See [sessions](docs/sessions.md#tags-and-the-library).
 
+## Slideshow
+
+**Slideshow** plays the keepers across every session in a random order, full
+screen, advancing on a timer. Read-only: it shows photographs and changes
+nothing. Three settings ride in the URL — `interval` (seconds, 1–60), the
+inclusive `min_rating` threshold (0–5) and `lookahead` (1–10 photographs
+decoded ahead of their turn). Defaults fall back to a working slideshow when a
+value is absent, out of range or not a number.
+
+The threshold and the interval also have pickers in the bar over the
+photograph, so a phone never has to edit a query string; changing one writes it
+back into the URL, so a home-screen shortcut keeps carrying the configuration.
+
+`min_rating=0` is what makes the screen useful on day one: every finished,
+un-rejected photograph is unrated at first, and the bar with thirteen
+photographs in it is what the same screen looks like once a few sessions
+have been rated. See [slideshow](docs/slideshow.md) for the full page.
+
 ## Run it
 
 ```bash
@@ -70,6 +88,18 @@ Development (frontend hot reload on port 5273):
 ```bash
 npm --prefix frontend run dev
 ```
+
+### Reaching the app from a phone
+
+`start.bat` binds loopback only, which is the right default — a copy of the
+app on a public repository should not, by default, listen on the network.
+To open the app on a phone on the same network, run **`start-lan.bat`**
+instead: it prints a warning that the whole app is being exposed with no
+authentication, then binds every interface. Anyone on that network can read
+the photographs, delete sessions and queue generations; use it on a trusted
+network only. The phone's address is shown when the server starts — type it
+into the phone's browser. See [slideshow](docs/slideshow.md) for the
+full-screen mode and the settings that ride in the URL.
 
 ## Setup
 
@@ -253,6 +283,7 @@ MIT — see [LICENSE](LICENSE).
 [Getting started](docs/getting-started.md) ·
 [Workflows](docs/workflows.md) ·
 [Sessions](docs/sessions.md) ·
+[Slideshow](docs/slideshow.md) ·
 [Troubleshooting](docs/troubleshooting.md) ·
 [Known limitations](docs/known-limitations.md)
 

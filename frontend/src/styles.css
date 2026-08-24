@@ -166,3 +166,40 @@ textarea.contradicts { border-color: var(--bad); }
 .anchor { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .anchor img { width: 44px; height: 44px; object-fit: cover; border-radius: 4px; border: 1px solid var(--accent); }
 .shot.is-anchor img { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* The slideshow. Fixed over the whole window so the topbar and the rest of
+   the app chrome stop competing with the photograph; object-fit:contain so
+   a portrait photograph is fully visible without being cropped to fit a
+   landscape screen. */
+.slideshow {
+  position: fixed; inset: 0; z-index: 1000;
+  background: #000;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.slideshow img { max-width: 100vw; max-height: 100vh; object-fit: contain; display: block; }
+/* The small overlay in the corner: the session name (so a frame is named
+   when you do not remember which shoot it came from) and a way back. The
+   overlay stops click propagation so a click on the link does not also
+   trigger the photograph-click-exits handler underneath. */
+.slideshow-overlay {
+  position: fixed; top: 12px; left: 12px; z-index: 1001;
+  display: flex; align-items: center; gap: 12px;
+  background: rgba(0, 0, 0, 0.55); color: #fff;
+  padding: 6px 12px; border-radius: 6px; font-size: 13px;
+  max-width: calc(100vw - 24px);
+}
+.slideshow-overlay a { color: #fff; }
+.slideshow-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50vw; }
+.slideshow-empty { padding: 60px 20px; max-width: 480px; margin: 0 auto; text-align: center; }
+.slideshow-btn { background: transparent; color: #fff; border: 1px solid #fff; padding: 2px 8px; border-radius: 4px; font-size: 12px; cursor: pointer; }
+/* The interval and threshold pickers. A native <select> on purpose: on a phone
+   it opens the OS picker, which is a better control than anything built here
+   and needs no dependency. `color-scheme: dark` is what stops the popup list
+   itself rendering as white-on-white over the photograph. */
+.slideshow-sel {
+  background: transparent; color: #fff; border: 1px solid #fff;
+  padding: 2px 6px; border-radius: 4px; font-size: 12px; cursor: pointer;
+  color-scheme: dark;
+}
+.slideshow-empty .slideshow-sel { color: var(--text); border-color: var(--line); padding: 4px 8px; font-size: 14px; }

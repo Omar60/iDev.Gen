@@ -1364,6 +1364,44 @@ def delete_shot(shot_id: int):
     return {"ok": True}
 
 
+# ------------------------------------------------------------------ photos (cross-session)
+
+@app.get("/api/photos")
+def list_photos(min_rating: int = 0):
+    """Finished, un-rejected photographs across every session, at or above a
+    rating threshold.
+
+    The slideshow needs "every photograph, regardless of session, that meets the
+    bar" — and the only routes that pick photographs today are reached through
+    a session id. The threshold is inclusive: a 4 is listed at `min_rating=4`,
+    a 3 is not. A threshold of 0 lists the never-rated, because that is the
+    useful one the first time the slideshow is opened (the design measured
+    6,356 of 6,380 finished, un-rejected photographs as unrated on a real
+    database, and the 13 keepers it grows into is what `min_rating=4` answers).
+
+    Read-only by design: this is the slideshow's input, the slideshow shows
+    photographs and changes nothing, and the route follows that. No schema
+    change, no column touched.
+
+    The session a photograph belongs to does not narrow the list — a query of
+    `min_rating=4` answers the same set whether or not the caller knows the
+    session ids. Each entry carries the shot id, the session id and the
+    session name, which is what the screen needs to render one card per
+    photograph without a request per row.
+    """
+    rows = db.q(
+        """SELECT shot.id AS id, shot.session_id AS session_id, session.name AS session_name
+             FROM shot JOIN session ON session.id = shot.session_id
+            WHERE shot.status = 'done'
+              AND shot.rejected = 0
+              AND shot.filename != ''
+              AND shot.rating >= ?
+            ORDER BY shot.id""",
+        min_rating,
+    )
+    return rows
+
+
 # ------------------------------------------------------------------ prompt help
 
 @app.post("/api/llm/models")

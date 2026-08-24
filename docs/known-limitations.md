@@ -78,6 +78,24 @@ discover them mid-shoot.
 - **No authentication.** The server binds to `127.0.0.1` and assumes a single
   local user. Do not expose it to a network. That includes the assistant's API
   key, which sits in `config.json` in plain text like every other setting.
+  Reaching the app from a phone is opt-in through `start-lan.bat`, which
+  binds every interface; the warning it prints is the whole story. Anything
+  reachable from the loopback interface becomes reachable from every device
+  on the network, with no password and no audit trail — including deleting
+  sessions and queueing generations. Use it on a trusted network only.
+- **The slideshow's phone display sleeps mid-play.** The Screen Wake Lock API
+  is withheld on plain HTTP, and the page is served over plain HTTP. The
+  slideshow dies when the phone's display sleeps. Set the phone's display
+  timeout (Settings → Display → Sleep) to a value longer than the slideshow
+  you are running. A tunnel providing a genuine certificate (Tailscale Serve
+  or equivalent) turns the origin secure and Wake Lock becomes available;
+  until then the limitation is documented rather than worked around.
+- **Sustained bandwidth at short intervals.** The slideshow sustains roughly
+  3.3 Mbps at a three-second interval regardless of the look-ahead value,
+  because preparing ahead moves the same cost earlier rather than removing
+  it. Below roughly two seconds per photograph on the common 1.25 MB PNGs,
+  the network becomes the limit and no look-ahead value helps. The setting
+  is in the URL for when it is worth tuning.
 - **Changing the data folder needs a restart.** The database is already open on
   the old one.
 - **Moving, not copying.** A finished image leaves ComfyUI's output folder. If

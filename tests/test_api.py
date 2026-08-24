@@ -1548,3 +1548,145 @@ def test_contact_sheet_label_is_trimmed_to_its_cell():
 
     short = "a.png"
     assert main._fit_label(short, font, 120) == short
+
+
+# -- /api/photos: the slideshow's input. Cross-session, threshold-filtered,
+#    read-only. Three things had to hold at once: inclusive threshold, the
+#    never-rated showing at zero, and the rejected / pending / failed
+#    excluded alongside the threshold.
+
+def _photo(client, sid, label, *, rating=0, rejected=False, status="done", filename=None):
+    """An imported PNG with the columns the /api/photos route actually filters on.
+
+    The route only reads status, rejected, rating and filename; everything else
+    is irrelevant to the test, so a single helper shapes all four at once."""
+    shot = client.post(f"/api/sessions/{sid}/import?label={label}", content=PNG).json()
+    db.run("UPDATE shot SET rating=?, rejected=?, status=?, filename=? WHERE id=?",
+           rating, int(rejected), status, filename or shot["filename"], shot["id"])
+    return shot
+
+
+def test_photos_threshold_is_inclusive(client, seeded):
+    """A 4 is listed at `min_rating=4`; a 3 is not. The slideshow's dial is
+    `>=`, not `>`, and the design's whole point is the same threshold the
+    filter button elsewhere in the app already uses."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    four = _photo(client, sid, "four", rating=4)
+    three = _photo(client, sid, "three", rating=3)
+
+    listed = {x["id"]: x for x in client.get("/api/photos", params={"min_rating": 4}).json()}
+    assert listed.keys() == {four["id"]}
+    assert listed[four["id"]]["session_name"] == "s"
+
+
+def test_photos_min_rating_zero_lists_the_never_rated(client, seeded):
+    """`min_rating=0` is the slideshow's first-day mode: the design measured
+    6,356 of 6,380 finished, un-rejected photographs as unrated on a real
+    database, and the 13 keepers the threshold dial will eventually pick are
+    not what plays the first time. Rating 0 must list them."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    never = _photo(client, sid, "unrated")        # rating defaults to 0
+    star = _photo(client, sid, "star", rating=5)
+
+    listed = [x["id"] for x in client.get("/api/photos", params={"min_rating": 0}).json()]
+    assert sorted(listed) == sorted([never["id"], star["id"]])
+
+
+def test_photos_rejected_pending_and_failed_are_excluded(client, seeded):
+    """A 5★ rejected photo is not a keeper, a pending shot has nothing to
+    show, and a failed shot never produced one. The route's promise is the
+    set the slideshow can actually show — these three are not it, even when
+    they would otherwise pass the threshold."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 4}]}).json()["id"]
+    rejected = _photo(client, sid, "no", rating=5, rejected=True)
+    pending = _photo(client, sid, "wait", rating=5, status="pending", filename="")
+    failed = _photo(client, sid, "broken", rating=5, status="failed", filename="")
+    keeper = _photo(client, sid, "yes", rating=5)
+
+    listed = [x["id"] for x in client.get("/api/photos", params={"min_rating": 5}).json()]
+    assert listed == [keeper["id"]]
+
+
+def test_photos_listing_spans_every_session(client, seeded):
+    """The route exists because no session-scoped answer was enough. Two
+    models, two sessions, the threshold met in both — both are listed,
+    regardless of which session the caller started from."""
+    second = _second_model(client, seeded)
+    a = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "A",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    b = client.post("/api/sessions", json={
+        "model_id": second, "name": "B",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    pa = _photo(client, a, "A", rating=4)
+    pb = _photo(client, b, "B", rating=4)
+
+    listed = {x["id"]: x for x in client.get("/api/photos", params={"min_rating": 4}).json()}
+    assert listed.keys() == {pa["id"], pb["id"]}
+    assert listed[pa["id"]]["session_id"] == a and listed[pa["id"]]["session_name"] == "A"
+    assert listed[pb["id"]]["session_id"] == b and listed[pb["id"]]["session_name"] == "B"
+
+
+def test_photos_entry_carries_the_session_name(client, seeded):
+    """Each row needs the session name, not just the session id, so the
+    slideshow can label a photograph without a second request per frame."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "Balcony shoot",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    shot = _photo(client, sid, "frame", rating=4)
+
+    [entry] = client.get("/api/photos", params={"min_rating": 4}).json()
+    assert entry["id"] == shot["id"]
+    assert entry["session_id"] == sid
+    assert entry["session_name"] == "Balcony shoot"
+
+
+def test_photos_empty_result_is_an_empty_list_not_an_error(client, seeded):
+    """A threshold that matches nothing is a legitimate query — the front
+    end says 'nothing to play' and that is the right answer, not a 404."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "s",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    _photo(client, sid, "low", rating=1)
+
+    r = client.get("/api/photos", params={"min_rating": 5})
+    assert r.status_code == 200 and r.json() == []
+
+
+def test_photos_listing_leaves_everything_unmodified(client, seeded):
+    """Read-only is the whole point: a hit on the route must not change a
+    single rating, filename, shot row, or session row. Snapshots before and
+    after are equal, byte for byte."""
+    a = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "A",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    b = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "B",
+        "shots": [{"prompt": "one", "count": 1}]}).json()["id"]
+    pa = _photo(client, a, "A", rating=4)
+    pb = _photo(client, b, "B", rating=2, rejected=True)
+    pc = _photo(client, a, "C", rating=5, status="pending", filename="")
+
+    before = {
+        "shots": {s["id"]: dict(s) for s in db.q("SELECT * FROM shot ORDER BY id")},
+        "sessions": {s["id"]: dict(s) for s in db.q("SELECT * FROM session ORDER BY id")},
+    }
+
+    for params in ({"min_rating": 0}, {"min_rating": 3}, {"min_rating": 5}, {}):
+        r = client.get("/api/photos", params=params)
+        assert r.status_code == 200
+
+    after = {
+        "shots": {s["id"]: dict(s) for s in db.q("SELECT * FROM shot ORDER BY id")},
+        "sessions": {s["id"]: dict(s) for s in db.q("SELECT * FROM session ORDER BY id")},
+    }
+    assert after == before
+    # And the photographs we set up are where we expect them: the route
+    # actually saw the right rows.
+    assert {pa["id"], pb["id"], pc["id"]} <= before["shots"].keys()

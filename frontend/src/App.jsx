@@ -6,9 +6,12 @@ import SessionView from './views/SessionView.jsx'
 import Workflows from './views/Workflows.jsx'
 import Setup from './views/Setup.jsx'
 import Library from './views/Library.jsx'
+import Slideshow from './views/Slideshow.jsx'
 
 // Hash router: three views plus one detail page. react-router would be a whole
-// dependency for what `location.hash` already does.
+// dependency for what `location.hash` already does. The query string is
+// stripped before splitting, so the slideshow's `#/slideshow?interval=3…` is
+// still routed to its view and the view itself reads the params.
 function useHash() {
   const [hash, setHash] = useState(() => window.location.hash || '#/')
   useEffect(() => {
@@ -46,7 +49,11 @@ function ComfyStatus() {
 
 export default function App() {
   const hash = useHash()
-  const parts = hash.replace('#/', '').split('/')
+  // Strip the query string so a settings-bearing hash like
+  // `#/slideshow?interval=3` still routes to the slideshow view; the view
+  // itself reads the query params from the hash it gets.
+  const path = hash.replace('#/', '').split('?')[0]
+  const parts = path.split('/')
   const view = parts[0] || 'models'   // '#/' yields [''], not undefined
   const arg = parts[1]
 
@@ -58,6 +65,7 @@ export default function App() {
           <a href="#/models">Models</a>
           <a href="#/sessions">Sessions</a>
           <a href="#/library">Library</a>
+          <a href="#/slideshow">Slideshow</a>
           <a href="#/workflows">Workflows</a>
           <a href="#/setup">Setup</a>
         </nav>
@@ -70,6 +78,7 @@ export default function App() {
         {view === 'workflows' && <Workflows />}
         {view === 'setup' && <Setup />}
         {view === 'library' && <Library />}
+        {view === 'slideshow' && <Slideshow />}
         {(view === 'models' || view === 'sessions') && <Models tab={view} />}
       </main>
     </>

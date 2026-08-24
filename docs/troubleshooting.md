@@ -79,3 +79,18 @@ is cosmetic only.
 
 A run interrupted by shutting the app down cannot be resumed by the process that
 died, so it is marked failed on the next start. Retry re-queues it.
+
+## The phone cannot reach the app started with `start-lan.bat`
+
+A Windows Firewall rule is bound to the exact executable path. The rule
+that currently admits inbound traffic on port 8777 was created for the
+system Python, while `start-lan.bat` runs the virtualenv's Python — a
+different binary at a different path. The first run of `start-lan.bat`
+therefore raises a fresh firewall prompt, and a reflexive **Cancel** leaves
+it silently unreachable.
+
+When the prompt appears, allow the connection; the new rule covers this
+exact path. If the prompt was already dismissed, open **Windows Security →
+Firewall & network protection → Advanced settings → Inbound Rules**, find
+the entry for the virtualenv's `python.exe` (the path is shown in
+`start-lan.bat`'s output), and enable it.

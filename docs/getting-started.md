@@ -55,6 +55,21 @@ boxes stay typeable.
 Settings are written to `config.json`, which stays out of git because it holds
 paths specific to your machine.
 
+## Reaching the app from a phone
+
+The default `start.bat` binds loopback only — a public repository should not,
+by default, listen on the network. To open the app on a phone on the same
+network, run **`start-lan.bat`** instead. It prints a warning that the whole
+app is being exposed with no authentication, then binds every interface.
+Anyone on that network can read the photographs, delete sessions and queue
+generations; use it on a trusted network only. See the [slideshow](slideshow.md)
+page for the full-screen mode and the settings that ride in the URL.
+
+When the server starts, the line that begins `Serving on http://` carries the
+address a phone should load. A Windows Firewall prompt is expected the first
+time; allow it for the virtualenv's `python.exe` only — see
+[troubleshooting](troubleshooting.md) if it was dismissed.
+
 ## The first session, end to end
 
 1. **Workflows → Import workflow…** — pick a workflow exported from ComfyUI with
