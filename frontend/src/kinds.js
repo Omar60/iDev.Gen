@@ -1356,7 +1356,7 @@ export const SHOOT_LINE_INSTRUCTION =
  *  to stop it, and it is what a session of this kind looks like when the explicit
  *  frames read as two people sitting near each other. */
 export const reachesTheAct = (stages) =>
-  (stages || []).some((s) => /penetrat|penis|inside her|fuck|explicit|his cock|entering her/i
+  (stages || []).some((s) => /penetrat|penis|inside her|fuck|\bexplicit\b|his cock|entering her/i
     .test(s?.what || ''))
 
 /** The register for the stretch of a shoot that becomes explicit, where the

@@ -835,6 +835,60 @@ say({
 """
 
 
+# What the register gate reads is the stage plan's own prose, and the gate is a
+# regex over it. Nothing ran it on a string until this probe: the end-to-end shoot
+# above proves the gate FIRES, and a gate that fires on everything would pass that
+# test just as well.
+REACHES_PROBE = """
+import { reachesTheAct } from '%(kinds)s'
+
+const at = (what) => reachesTheAct([{ label: '5-8', what }])
+process.stdout.write(JSON.stringify({
+  // The stage plan's own vocabulary, from STAGE_PLAN_INSTRUCTION and from the
+  // plans real sessions came back with.
+  fires: ['he is behind her, penetrating her from behind',
+          'she kneels astride him, his penis inside her',
+          'his cock in her mouth, both nude',
+          'they fuck on the edge of the bed',
+          'he is entering her slowly, face to face',
+          'the explicit half of the evening'].map(at),
+  // Stages that name no act. `explicitly` is the one this was tightened for:
+  // it carried `explicit` inside it and handed a clothed round the anatomical
+  // register, which is the loud failure of the two directions.
+  quiet: ['she is dressed and standing by the window',
+          'explicitly dressed for the evening, nothing off yet',
+          'she unbuttons the shirt to the waist'].map(at),
+}))
+"""
+
+
+@pytest.fixture(scope="module")
+def reaches(tmp_path_factory) -> dict:
+    script = REACHES_PROBE % {"kinds": (ROOT / "frontend/src/kinds.js").as_posix()}
+    return _node_json(script, tmp_path_factory.mktemp("reaches"))
+
+
+def test_the_register_gate_fires_on_the_words_a_stage_plan_uses(reaches):
+    """The half that costs a session when it is wrong the other way: a stage that
+    reaches the act and gets no register writes the act as a pose, which is
+    session 196 and its three photographs of `bare hips pressed flush`."""
+    assert reaches["fires"] == [True] * 6, reaches["fires"]
+
+
+def test_the_register_gate_stays_shut_on_a_stage_with_no_act_in_it(reaches):
+    """A clothed round handed EXPLICIT_STRETCH starts writing anatomy into a
+    photograph of a woman in a shirt, and nothing downstream takes it back out.
+    `explicitly` was a substring hit until the alternative got its boundaries."""
+    assert reaches["quiet"] == [False] * 3, reaches["quiet"]
+
+
+# ponytail: `inside her` still matches `her hand inside her pocket`. Left as it is
+# — every form that keeps the true positives (`inside her`, `inside her from
+# behind`, `inside her, holding still`) also keeps that one, and the stage plan
+# writes what a body is doing, not where a hand is put. Tighten it the day a
+# stage plan comes back with one.
+
+
 @pytest.fixture(scope="module")
 def shot(tmp_path_factory) -> dict:
     script = SHOOT_PROBE % {"src": (ROOT / "frontend/src/enhance.js").as_posix()}
