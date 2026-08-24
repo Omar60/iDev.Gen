@@ -26,8 +26,10 @@ everything here is visible, so keep it free of personal data.
 ## Before every commit
 
 1. `python -m pytest` — green. No exceptions, no `-k` subsets as proof.
-2. Touched `frontend/`? `npm --prefix frontend run build` must succeed. The
-   built `dist/` stays out of the commit.
+2. Touched `frontend/`? `npm --prefix frontend run build` must succeed and
+   `npm --prefix frontend test` must be green. The built `dist/` stays out of
+   the commit. The frontend suite is small on purpose — it covers the logic
+   that is wrong in a way review cannot see, not the rendering.
 3. Touched a route, the runner or the mapping? Re-read the invariants below and
    check that a test still covers each one you touched.
 4. Conventional commit subject (`feat:`, `fix:`, `docs:`, `test:`, `chore:`),

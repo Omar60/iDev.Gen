@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api, shotImage } from '../api'
+import { shuffle, nextPlay } from '../deck'
 
 /** The three settings the screen reads from the URL, with the working defaults
  *  the page falls back to when the hash is absent, out of range or not a number.
@@ -35,35 +36,6 @@ function parseSettings(hash) {
     out[key] = Math.min(hi, Math.max(lo, Math.floor(n)))
   }
   return out
-}
-
-/** Fisher-Yates shuffle on a copy. `sort(() => Math.random() - 0.5)` is the
- *  well-known non-uniform shuffle: invisible on a large set, pronounced on
- *  thirteen photographs, which is exactly the size this runs at. */
-function shuffle(arr) {
-  const a = arr.slice()
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[a[i], a[j]] = [a[j], a[i]]
-  }
-  return a
-}
-
-/** The order for the next pass, given the photograph the last pass ended on.
- *
- *  A plain reshuffle satisfies "every photograph before any repeat" and still
- *  shows the same frame twice in a row one pass in N, because the new deck's
- *  first card can be the old deck's last. At thirteen photographs that lands
- *  often enough to read as the bug this deck exists to avoid, so the seam gets
- *  the one swap that closes it. */
-function reshuffle(deck, lastId) {
-  if (deck.length < 2) return deck
-  const a = shuffle(deck)
-  if (a[0].id === lastId) {
-    const j = 1 + Math.floor(Math.random() * (a.length - 1))
-    ;[a[0], a[j]] = [a[j], a[0]]
-  }
-  return a
 }
 
 export default function Slideshow() {
@@ -154,11 +126,7 @@ export default function Slideshow() {
   // — same set, different sequence — so a thirteen-photograph set is not a
   // memorised loop after one pass. The buffer is not touched here; the effect
   // above re-derives the window from the new index.
-  const advance = () => setPlay(({ deck, index }) => {
-    const next = index + 1
-    if (next < deck.length) return { deck, index: next }
-    return { deck: reshuffle(deck, deck[index]?.id), index: 0 }
-  })
+  const advance = () => setPlay(nextPlay)
 
   // The timer. Re-declared when the interval changes so a tighter or longer
   // setting takes effect on the next tick, mid-set. It is keyed on the deck's

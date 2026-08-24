@@ -57,8 +57,22 @@ Every photograph in the set is shown once before any is shown a second time.
 When the set is exhausted the order is drawn again, so a second pass is not a
 replay of the first.
 
+The new order also never opens with the photograph the previous pass ended on.
+Without that one swap the same frame repeats back to back one pass in thirteen,
+which is the exact symptom a shuffled deck exists to avoid.
+
 A set holding one photograph shows that photograph and does not auto-advance.
 An empty set says so on screen rather than showing a blank frame.
+
+All of it lives in `frontend/src/deck.js`, apart from the screen that renders
+it, because it is pure and because both rules above are invisible in review —
+they surface as "the slideshow feels wrong", never as a stack trace.
+`frontend/src/deck.test.js` holds them, and `npm --prefix frontend test` runs
+it. The suite was checked against four deliberately broken versions: dropping
+the seam swap, swapping Fisher–Yates for `sort(() => Math.random() - 0.5)`,
+never redrawing the order, and advancing two at a time. Each one fails at least
+one test, and the biased sort is caught by exactly one — the uniformity check —
+because it is a valid permutation that every other test accepts.
 
 ## Preparing ahead
 
