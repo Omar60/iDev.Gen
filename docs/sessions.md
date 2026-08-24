@@ -146,6 +146,21 @@ prepended:
 A shot's own negative overrides the model's default negative; leave it empty to
 inherit.
 
+### The length of the whole thing
+
+Those five pieces are one prompt, and it has a ceiling. Past roughly 85 composed
+words this sampler keeps the coarse facts and picks its own composition: the
+position and framing a take asks for stop arriving. Measured on a six-rung ladder
+of the same eight takes — they rendered what they described at 50 and at 63
+composed words and stopped at 87, and the 24 words that crossed the line were the
+look's sentence about the room, which describes nobody.
+
+The look is the largest block sitting in front of the take, so it is the one to
+drop. The **Look** checkbox on the new-session form switches it off for that
+session: the text stays where it is and can be switched back on, it just is not
+written into any prompt while it is off. A session that cares more about the pose
+than about a constant place is better off without one.
+
 ## Writing the prompts
 
 Everything on this page is a rule about text, and the app can now apply them
