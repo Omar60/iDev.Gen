@@ -1610,13 +1610,20 @@ export const fitCameras = (cameras, poses, positions, rand = Math.random) => {
   const out = [...cameras]
   for (const [key, arrangement] of Object.entries(poses || {})) {
     const at = Number(key) - 1
-    if (!arrangement.cameras || arrangement.cameras.includes(familyOf(out[at]))) continue
-    const open = positions.filter((p) => arrangement.cameras.includes(p.family))
+    if (!arrangement.cameras) continue
+    // The FIRST family the catalogue offers, not any of them: the lists are
+    // ordered by what each one scored when it was shot, and `wall` is 3/3 from
+    // a mirror and 0/3 from behind her shoulder. Drawing at random spends a
+    // third of the plantings on a form that was measured to fail.
+    const family = arrangement.cameras.find((f) => positions.some((p) => p.family === f))
+    const open = positions.filter((p) => p.family === family)
+    // Nothing this manner can take it from: the camera it was dealt stays, which
+    // is wrong, and a wrong camera is still better than none.
     if (!open.length) continue
-    const neighbours = [familyOf(out[at - 1]), familyOf(out[at + 1])]
-    const apart = open.filter((p) => !neighbours.includes(p.family))
-    const from = apart.length ? apart : open
-    out[at] = from[Math.floor(rand() * from.length) % from.length].line
+    if (familyOf(out[at]) === family) continue
+    // Inside the family the draw is free - which of its forms is a question the
+    // camera catalogue already answered.
+    out[at] = open[Math.floor(rand() * open.length) % open.length].line
   }
   return out
 }
@@ -1722,8 +1729,8 @@ export const kissPlan = (n, rand = Math.random) => spreadOver(n, KISS_FRAMES, 8,
  *  own, and the camera in particular is planned separately and must not be
  *  fought.
  *
- *  `cameras` IS WHICH FAMILIES CAN SEE IT, and it exists because session 267
- *  measured the two plans fighting. Three of its five planted arrangements were
+ *  `cameras` IS WHICH FAMILIES WERE MEASURED TO RENDER IT, in the order they
+ *  scored, and it exists because session 267 measured the two plans fighting. Three of its five planted arrangements were
  *  handed a camera behind her shoulder, and all three came back as a DIFFERENT
  *  arrangement: asked for her on top facing him with her back to the lens, the
  *  sampler turned her around on him rather than move the camera. The one that
@@ -1740,16 +1747,33 @@ export const kissPlan = (n, rand = Math.random) => spreadOver(n, KISS_FRAMES, 8,
  *  empties a manner's positions would leave the photograph with no camera at
  *  all, and `tests/test_arrangements.py` fails if one ever does.
  *
- *  WHAT IS VERIFIED, and it is one of the five. `astride` is the arrangement
+ *  ALL THREE ARE SHOT AND JUDGED, sessions 269 and 270 on the arm protocol -
+ *  one line fixed by hand, the `act` taken from here word for word, three shared
+ *  seeds, the camera swapped through the families each one allowed, read blind
+ *  three passes with `judge_camera.py --question arrangement`:
+ *
+ *  * `astride` 18 of 22 photographs, and every family it lists scored: front
+ *    6/6, overhead 4/4, mirror 4/6, pov 4/6. It is also 12 of 12 in sessions 265
+ *    and 266 on a different fixed line.
+ *  * `reverse` renders from ONE family. Behind her shoulder is 3/3; the mirror
+ *    and the overhead are 1/3 each, which is why they are gone from its list.
+ *  * `wall` is the mirror, 3/3, and nothing else: from behind her shoulder it is
+ *    0/3. The shoulder stays second on its list only as the fallback for a
+ *    manner with no mirror in its catalogue - `directed` has none - and it is
+ *    known to be weak there.
+ *
+ *  So a list here is not a guess about what a camera can see any more. It is
+ *  what was shot, strongest first, and `fitCameras` takes the first one the
+ *  manner's catalogue offers.
+ *
+ *  WHAT IS VERIFIED, and it is all three. `astride` is the arrangement
  *  sessions 265 and 266 shot on a fixed line: 12 photographs of 12 with the arm
  *  written, the act in 11 of them. The other five are read off what 155 and 161
  *  RENDERED rather than what their prompts asked for - and those two are not the
  *  same thing, which is the whole reason this catalogue is worded from the
- *  photographs. Of the other four, sessions 267 and 268 rendered `reverse` and
- *  `wall` as asked with the camera fitted, and `back` and `side` not yet - one
- *  planted photograph each, which is not a measurement of anything.
+ *  photographs, and the numbers above are what each one is worth.
  *
- *  A sixth was written and then taken out: see below the list.
+ *  Three more were written and taken out again: see below the list.
  */
 export const ARRANGEMENTS = [
   { key: 'astride',
@@ -1757,29 +1781,49 @@ export const ARRANGEMENTS = [
     cameras: ['front', 'overhead', 'mirror', 'pov'],
     act: 'She is astride him with her knees on either side of his hips and her weight down on '
        + 'him, the two of them joined, two people in frame.' },
-  { key: 'back',
-    label: 'She is on her back, he is over her',
-    cameras: ['front', 'overhead', 'mirror', 'pov'],
-    act: 'She is on her back with her legs open and he is over her between them, the two of them '
-       + 'joined, two people in frame.' },
   { key: 'reverse',
     label: 'She is on top, facing away',
-    cameras: ['shoulder', 'behind', 'overhead', 'mirror'],
+    cameras: ['shoulder'],
     act: 'She is astride him facing away from him with her weight on her feet, the two of them '
        + 'joined, two people in frame.' },
-  { key: 'side',
-    label: 'Both on their sides',
-    cameras: ['side', 'front', 'overhead', 'mirror'],
-    act: 'They are both on their sides with him behind her and her upper leg lifted, the two of '
-       + 'them joined, two people in frame.' },
   { key: 'wall',
     label: 'Standing against the wall',
-    cameras: ['shoulder', 'side', 'behind', 'mirror'],
+    cameras: ['mirror', 'shoulder'],
     act: 'She is standing with her front to the wall and one leg raised, he is behind her, the '
        + 'two of them joined, two people in frame.' },
 ]
 
-/** WHY THERE ARE FIVE AND NOT SIX, and it is the arrangement everyone asks for.
+/** WHY THERE ARE THREE AND NOT SIX.
+ *
+ *  `back` - her on her back with him over her - and `side` - both of them on
+ *  their sides, him behind her - are the two that were shot hardest and never
+ *  arrived. Sessions 269 and 271, the same fixed line and the same three seeds
+ *  on TWO checkpoints, four cameras for `back` and three for `side`:
+ *
+ *      back   0 of 12 on finepornV4, 0 of 12 on the Krea 2 mix
+ *      side   0 of  9 on finepornV4, 0 of  8 on the Krea 2 mix
+ *      astride (control, same runs)  18 of 22 and 9 of 12
+ *
+ *  It is not the checkpoint and it is not a missing act: the same Krea 2 run
+ *  reads `sex` in 29 photographs of 33 on `--question act`. Both collapse into
+ *  the same photograph, her upright on top facing the lens, which is this
+ *  sampler's default arrangement for two bodies - and an arrangement that
+ *  reliably delivers a different photograph is worse than no option at all.
+ *
+ *  The entries, so nobody writes them a second time:
+ *
+ *      { key: 'back', label: 'She is on her back, he is over her',
+ *        act: 'She is on her back with her legs open and he is over her between
+ *              them, the two of them joined, two people in frame.' }
+ *      { key: 'side', label: 'Both on their sides',
+ *        act: 'They are both on their sides with him behind her and her upper leg
+ *              lifted, the two of them joined, two people in frame.' }
+ *
+ *  What has NOT been tried on either of them is a different wording of the same
+ *  arrangement - both were shot in exactly one form. The camera is exhausted;
+ *  the sentence is not.
+ *
+ *  AND THE THIRD, the arrangement everyone asks for.
  *
  *  `behind` - on all fours, him kneeling behind her - failed in every context
  *  there is, on four separate occasions:

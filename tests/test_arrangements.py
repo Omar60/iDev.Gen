@@ -22,7 +22,7 @@ PROBE = """
 import { arrangementPlan, ARRANGEMENTS, kissPlan, shootChunkNote } from '%(kinds)s'
 
 const lengths = [1, 4, 8, 12, 16, 24, 32, 45]
-const picked = ['astride', 'back', 'reverse']
+const picked = ['astride', 'reverse', 'wall']
 const runs = lengths.flatMap((n) =>
   Array.from({ length: 50 }, () => ({ n, plan: arrangementPlan(n, picked) })))
 
@@ -81,9 +81,11 @@ console.log(JSON.stringify({
   // writer repeated a planted arrangement into the photographs after it, and
   // those were dealt cameras that cannot see it.
   noteOwnsOnePhotograph: note.includes('THAT PHOTOGRAPH AND NO OTHER'),
-  // The arrangement that never rendered is not on offer. It is kept in the file
-  // as prose, so `behind` may appear in a comment but never as a key.
-  noBehind: !ARRANGEMENTS.some((a) => a.key === 'behind'),
+  // The three that never rendered are not on offer. They are kept in the file as
+  // prose, so their names appear in comments but never as a key: `behind` was
+  // dead in every context, and `back` and `side` were 0 of 41 photographs across
+  // two checkpoints and four cameras in sessions 269 and 271.
+  noneDead: ['behind', 'back', 'side'].every((k) => !ARRANGEMENTS.some((a) => a.key === k)),
   quietIsQuiet: !quiet.includes('ALREADY DECIDED'),
   // The kiss frame still plans exactly as it did: it runs on the same spread now.
   kissStillPlans: Object.keys(kissPlan(24)).length >= 1,
@@ -122,7 +124,7 @@ def test_an_arrangement_says_the_bodies_and_nothing_else(tmp_path_factory):
     assert out["noteRowIsRight"], out
     assert out["noteIsFirm"], out
     assert out["noteOwnsOnePhotograph"], out
-    assert out["noBehind"], out
+    assert out["noneDead"], out
     assert out["quietIsQuiet"], out
 
 
@@ -135,7 +137,7 @@ import { ARRANGEMENTS, KISS_FRAMES } from '%(kinds)s'
 // standing against a wall, and the photograph came back as neither.
 const kisses = { 22: KISS_FRAMES[0], 28: KISS_FRAMES[1], 30: KISS_FRAMES[2] }
 const moved = withoutClashing(
-  { 5: ARRANGEMENTS[0], 22: ARRANGEMENTS[4], 29: ARRANGEMENTS[1] }, kisses, 30)
+  { 5: ARRANGEMENTS[0], 22: ARRANGEMENTS[2], 29: ARRANGEMENTS[1] }, kisses, 30)
 
 // Both sides of a clash blocked - 27 and 29 are taken, 28 is the kiss - so it
 // is dropped rather than stacked.
@@ -144,7 +146,7 @@ const dropped = withoutClashing(
   { 28: KISS_FRAMES[0] }, 30)
 
 console.log(JSON.stringify({
-  keeps: moved[5]?.key === 'astride' && moved[29]?.key === 'back',
+  keeps: moved[5]?.key === 'astride' && moved[29]?.key === 'reverse',
   movedOff: !moved[22] && moved[23]?.key === 'wall',
   noneOnAKiss: Object.keys(moved).every((at) => !kisses[at]),
   droppedIt: Object.keys(dropped).length === 2 && !dropped[28],
@@ -189,10 +191,16 @@ const runs = Object.entries(POSITIONS).flatMap(([manner, positions]) =>
     return { manner, positions, poses, before, after }
   }))
 
-// Every planted photograph ends on a camera its arrangement can be seen from.
+// Every planted photograph ends on a camera its arrangement was measured on -
+// and on the FIRST family of its list that this catalogue has, because the lists
+// are ordered by what each family scored: `wall` is 3/3 from a mirror and 0/3
+// from behind her shoulder, so a random draw among the two spends a third of the
+// plantings on a form that was measured to fail.
 const fitted = runs.every(({ positions, poses, after }) =>
-  Object.entries(poses).every(([at, a]) =>
-    a.cameras.includes(familyOf(positions, after[Number(at) - 1]))))
+  Object.entries(poses).every(([at, a]) => {
+    const best = a.cameras.find((f) => positions.some((p) => p.family === f))
+    return familyOf(positions, after[Number(at) - 1]) === best
+  }))
 
 // And nothing else moved: the spread the plan drew is the shoot.
 const untouched = runs.every(({ poses, before, after }) =>

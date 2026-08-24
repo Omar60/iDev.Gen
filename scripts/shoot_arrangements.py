@@ -47,6 +47,15 @@ EXPLICIT_SETTINGS = SETTINGS | {
     "steps": 12, "sampler": "er_sde", "scheduler": "beta",
 }
 
+# `SETTINGS` is the Krea 2 mix at 8 steps, which is what every camera question in
+# this project was asked on. It is here so `back` and `side` can be asked of a
+# second base: they are 0 of 21 on finepornV4 across four cameras, and a failure
+# on one checkpoint is a failure of that checkpoint until a second one says
+# otherwise. Judge such a run with `--question act` as well - Krea 2 is not the
+# base the act was ever measured on, and `no act at all` and `the wrong
+# arrangement` are two different answers.
+BASES = {"fineporn": EXPLICIT_SETTINGS, "krea": SETTINGS}
+
 # Everything the arrangement does not decide, fixed. Neither body is placed here
 # - where they are and which way they face is the `act` field, which is what is
 # being measured - so this says only that they are naked, where the light is and
@@ -88,6 +97,9 @@ def main() -> int:
                          "and the control")
     ap.add_argument("--manner", default="selfie",
                     help="whose camera catalogue the families are drawn from")
+    ap.add_argument("--base-model", choices=tuple(BASES), default="fineporn",
+                    help="which checkpoint to ask it of; `krea` is the Krea 2 mix at 8 steps, "
+                         "the base every camera question was asked on")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -117,14 +129,16 @@ def main() -> int:
             for seed in SEEDS:
                 shots.append({"label": label, "prompt": prompt, "seed": seed, "count": 1})
 
-    print(f"\n{len(shots)} photographs, {len(SEEDS)} seeds each")
+    print(f"\n{len(shots)} photographs, {len(SEEDS)} seeds each, on {args.base_model}")
     if args.dry_run:
         print("\n--- the first prompt ---")
         print(shots[0]["prompt"])
         return 0
 
-    out = create_session(args.base, "ARRANGEMENTS - one line, the act and the camera swapped",
-                         shots, EXPLICIT_SETTINGS)
+    out = create_session(args.base,
+                         "ARRANGEMENTS - one line, the act and the camera swapped"
+                         f" [{args.base_model}]",
+                         shots, BASES[args.base_model])
     print(f"\nsession {out['id']} created as a draft, {len(shots)} pending")
     print(f"run it with: curl -X POST {args.base}/api/sessions/{out['id']}/run")
     return 0
