@@ -15,7 +15,7 @@ import {
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
   takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, POSITIONS, arrangementPlan,
   fitCameras, BODY_OPENINGS,
-  kissPlan, KISS_CAMERA,
+  kissPlan, kissCameraFor,
 } from './kinds.js'
 
 export const ask = (payload) => api.post('/api/enhance', payload).then((r) => r.lines || [])
@@ -400,8 +400,14 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
     console.info('[shoot] arrangements planted at '
                  + Object.entries(poses).map(([at, a]) => `${at}:${a.key}`).join(', '))
   }
-  const kissCamera = KISS_CAMERA[manner] || KISS_CAMERA.directed
-  for (const at of Object.keys(kisses)) if (cameras) cameras[Number(at) - 1] = kissCamera
+  // The kiss frame replaces the dealt camera with the per-manner kiss camera.
+  // `kissCameraFor` returns the camera concept itself, so the wording is read
+  // from the catalogue it already lives in and not stored a second time here.
+  // Unguarded on purpose: a manner whose key names nothing is a typo in
+  // KISS_CAMERA, and a silent skip would leave the kiss frames on their dealt
+  // camera with nothing to show for it.
+  const kissCameraText = kissCameraFor(manner).wordings[0].text
+  for (const at of Object.keys(kisses)) if (cameras) cameras[Number(at) - 1] = kissCameraText
   onProgress?.(0, n)
 
   const lines = await inChunks(n, (made) => onProgress?.(made, n), (at) => {
@@ -433,7 +439,7 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
                                            .filter(([k]) => Number(k) >= at.from
                                                             && Number(k) < at.from + at.want)
                                            .map(([k, frame]) => ({ at: Number(k), frame,
-                                                                   camera: kissCamera })) })}`,
+                                                                   camera: kissCameraText })) })}`,
     // The look is context and not part of the answer: it is prepended to every
     // frame by the app, so the writer needs to know it in order not to repeat it.
     context: look,

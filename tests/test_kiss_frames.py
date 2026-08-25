@@ -17,7 +17,8 @@ from test_shoot_checks import _node_json
 ROOT = Path(__file__).resolve().parents[1]
 
 PROBE = """
-import { kissPlan, KISS_FRAMES, KISS_CAMERA, shootChunkNote } from '%(kinds)s'
+import { kissPlan, KISS_FRAMES, KISS_CAMERA, kissCameraFor, POSITIONS, MANNERS,
+         shootChunkNote } from '%(kinds)s'
 
 // Every draw of the shoot lengths the app actually offers, so a property holds
 // for a run of them and not for one lucky one.
@@ -37,10 +38,13 @@ const adjacent = runs.filter(({ plan }) => {
 }).length
 const flavours = new Set(runs.flatMap(({ plan }) => Object.values(plan).map((f) => f.key)))
 
-// The note for a chunk that contains one, and for a chunk that does not.
+// The note for a chunk that contains one, and for a chunk that does not. The
+// text comes from `kissCameraFor` now: KISS_CAMERA.candid is a KEY into the
+// candid camera catalogue, and the wording is read from the concept there.
+const candidKissText = kissCameraFor('candid').wordings[0].text
 const note = shootChunkNote({
   from: 1, want: 4, total: 8, cameras: ['Taken from directly behind her'],
-  kisses: [{ at: 2, frame: KISS_FRAMES[3], camera: KISS_CAMERA.candid }],
+  kisses: [{ at: 2, frame: KISS_FRAMES[3], camera: candidKissText }],
 })
 const quiet = shootChunkNote({ from: 5, want: 4, total: 8, cameras: [], kisses: [] })
 
@@ -51,9 +55,37 @@ console.log(JSON.stringify({
   eyesShut: KISS_FRAMES[0].wordings[0].text.includes('HER EYES ARE COMPLETELY CLOSED'),
   hands: KISS_FRAMES.filter((f) => f.hand).length,
   noteNames: note.includes('PHOTOGRAPH 2 IS A KISS FRAME'),
-  noteCamera: note.includes(KISS_CAMERA.candid),
+  noteCamera: note.includes(candidKissText),
   noteHand: note.includes('middle finger up'),
   quietIsQuiet: !quiet.includes('KISS FRAME'),
+  // --- 1.2: KISS_CAMERA is a map of manner to a key in THAT MANNER'S OWN
+  // camera catalogue. The text that used to be here lives there and nowhere
+  // else, which is the 1.3 prerequisite.
+  //
+  // Every key resolves inside its own manner's catalogue. This is the
+  // assertion a rename has to trip over: the wording lives in one place, so
+  // the only way left to break it is to point at nothing.
+  kissKeysResolve: Object.entries(KISS_CAMERA).every(
+    ([manner, key]) => POSITIONS[manner].some((p) => p.key === key)),
+  // Every manner covered - a manner missing from the map silently falls back
+  // to the directed frontal, which is the wrong camera for a phone shoot.
+  kissCoversManners: MANNERS.every((m) => m.key in KISS_CAMERA),
+  // What makes it a kiss camera and not another pick: it replaces the camera
+  // the spread dealt, and the resolved concept says so.
+  kissOverride: MANNERS.every((m) => kissCameraFor(m.key).override === 'dealt-camera'),
+  // It is a camera concept, in the ordinary 1.1 shape - not a second kind of
+  // entry with a pointer where its wording should be.
+  kissIsAConcept: MANNERS.every((m) => {
+    const c = kissCameraFor(m.key)
+    return typeof c.key === 'string' && c.slot === 'camera'
+           && typeof c.wordings[0].text === 'string'
+  }),
+  // The text is the same as before: candid reaches the candid form, directed
+  // the directed one. These are the strings that USED to be hard-coded in the
+  // per-manner map.
+  candidText: kissCameraFor('candid').wordings[0].text,
+  selfieText: kissCameraFor('selfie').wordings[0].text,
+  directedText: kissCameraFor('directed').wordings[0].text,
 }))
 """
 
@@ -91,6 +123,34 @@ def test_the_chunk_note_hands_the_frame_over_whole(tmp_path_factory):
 
     # A chunk with no kiss frame in it says nothing about kisses at all.
     assert out["quietIsQuiet"] is True, out
+
+
+def test_the_kiss_camera_is_a_camera_component_with_an_override(tmp_path_factory):
+    """Task 1.2: KISS_CAMERA used to be a 3-entry map of plain strings, and each
+    of its three values was a third copy of text that already lived in
+    CAMERA_POSITIONS or CANDID_POSITIONS - the defect 1.3 is written to catch.
+
+    The fix is that a kiss camera IS a camera component: the map holds a key
+    into that manner's own catalogue, and what makes it a kiss camera rather
+    than another pick is the `override` tag saying it replaces the camera the
+    spread dealt. One concept shape in the catalogue, not a second kind of
+    entry with a pointer where its wording should be."""
+    out = _node_json(PROBE % {"kinds": (ROOT / "frontend/src/kinds.js").as_posix()},
+                     tmp_path_factory.mktemp("kisscatalogue"))
+
+    # The assertion a rename trips over. With the text in one place, pointing
+    # at nothing is the only failure this design still has.
+    assert out["kissKeysResolve"] is True, out
+    assert out["kissCoversManners"] is True, out
+    # It replaces the dealt camera, and the resolved concept records that.
+    assert out["kissOverride"] is True, out
+    # And it is an ordinary camera concept in the 1.1 shape.
+    assert out["kissIsAConcept"] is True, out
+    # The text is the same three strings the old map carried, read from the
+    # catalogue. This is what "no prompt text changed" means for 1.2.
+    assert out["candidText"] == "Phone held out at arm's length in front of her face", out
+    assert out["selfieText"] == "Phone held out at arm's length in front of her face", out
+    assert out["directedText"] == "Taken from directly in front of her", out
 
 
 def test_the_manner_that_forbids_eye_contact_makes_room_for_it():

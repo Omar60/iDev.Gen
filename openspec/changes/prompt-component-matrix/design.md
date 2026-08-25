@@ -93,6 +93,40 @@ concepts; they are one dead wording each, and they sit in a re-test queue.
 records that something failed but not what was tried, so the re-test queue
 cannot exist and the same wording gets shot a third time.
 
+### One concept shape, and reuse is a key, not a pointer
+
+There is exactly one shape for a catalogue entry — key, slot, wordings — and
+nothing else is a concept. A component that reuses another's wording does it by
+holding that component's **key**, resolved against the catalogue at the point of
+use; it never becomes a second kind of entry whose wording is a pointer.
+
+This was decided against a working implementation. `KISS_CAMERA` — the camera a
+kiss frame takes, per manner — carried three plain strings, each a third copy of
+text already in `CAMERA_POSITIONS` or `CANDID_POSITIONS`. The first fix gave it
+its own concept list whose entries had a `ref` where their `wordings` should be.
+It removed the duplication and bought a second entry shape for it: every walk of
+the catalogue would then need to know that some concepts must be dereferenced
+before they have text — starting with the single-home test in 1.3 and again with
+the cell in 2.1, which has nothing to index on an entry with no wording.
+
+What it is instead: `KISS_CAMERA` maps a manner to a key in **that manner's own**
+camera catalogue, and `kissCameraFor` returns the camera concept itself with an
+`override: 'dealt-camera'` tag on it. A kiss camera is an ordinary camera
+component with a tag, and the tag — not a separate list — is what records that it
+replaces the camera the spread dealt.
+
+Resolving inside the manner's own catalogue is the part worth keeping. Scanning
+every catalogue for the first matching key works only while the manners word a
+shared key identically; `front-direct` lives in both the directed and the candid
+list today, and the day one of them is reworded a manner-blind scan starts
+returning the other manner's sentence.
+
+*Alternative rejected:* the `ref` shape above. It reads as the smaller change
+because it keeps the override concepts visible as a list of their own, but the
+list is the cost, not the benefit — it is a second thing to keep in step with
+the catalogue it points into, and a `ref` naming nothing is a failure that
+resolves to `null` far from the typo that caused it.
+
 ### The unit of evidence is a cell: (concept, wording, manner, checkpoint)
 
 Anything less is not a verdict. Dropping `manner` merges the directed camera

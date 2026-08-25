@@ -2079,16 +2079,51 @@ export const ARRANGEMENT = Object.fromEntries(ARRANGEMENTS.map((a) => [a.key, a]
 export const arrangementPlan = (n, picked, rand = Math.random) =>
   spreadOver(n, ARRANGEMENTS.filter((a) => picked?.includes(a.key)), 5, rand, Infinity)
 
-/** Where the kiss frame is taken from, by manner: her own arm in a candid shoot,
- *  the photographer's frontal position in a directed one. Both are measured
- *  forms - the first is `CANDID_POSITIONS`' arm's-length selfie, 3/3 in session
- *  245, the second is the frontal control that is 3/3 in every session it has
+/** The kiss frame's camera, by manner.
+ *
+ *  Where the kiss frame is taken from: her own arm in a candid shoot, the
+ *  photographer's frontal position in a directed one. Both are measured forms
+ *  - the first is `CANDID_POSITIONS`' arm's-length selfie, 3/3 in session 245,
+ *  the second is the frontal control that is 3/3 in every session it has
  *  ever been in.
+ *
+ *  The two are not the same concept even though `candid` and `selfie` happen
+ *  to reach the same one - a candid shoot and a selfie shoot arrive at the same
+ *  photograph from the same place for the same reason, and the per-manner
+ *  evidence is what 2.3 will seed into the matrix.
+ *
+ *  What makes one of these a "kiss camera" and not just another `cameras` pick
+ *  is the override: at every planted kiss it REPLACES the camera the spread
+ *  dealt. That is what `override: 'dealt-camera'` on the resolved concept
+ *  records, and it is what lets a later reading of the photograph know which
+ *  concept painted it.
+ *
+ *  The values below are keys into that manner's OWN camera catalogue, so the
+ *  wording lives there and only there. A kiss camera is a camera component
+ *  with a tag on it, not a concept of its own: one concept shape in the whole
+ *  catalogue is what keeps 1.3 and the cell model in 2.1 from needing a second
+ *  one.
  */
 export const KISS_CAMERA = {
-  candid: "Phone held out at arm's length in front of her face",
-  selfie: "Phone held out at arm's length in front of her face",
-  directed: 'Taken from directly in front of her',
+  directed: 'front-direct',
+  candid: 'front-arm-length',
+  selfie: 'front-arm-length',
+}
+
+/** The kiss camera for a manner, as the camera concept itself.
+ *
+ *  Looked up in `POSITIONS[manner]` - that manner's own catalogue - so a form
+ *  two manners word differently resolves to the right one rather than to
+ *  whichever catalogue happens to be scanned first. An unknown manner falls
+ *  back to the directed catalogue and the directed key.
+ *
+ *  Returns `null` only when the key names nothing, which is a typo in the map
+ *  above and is meant to be loud: the callers do not guard against it.
+ */
+export const kissCameraFor = (manner) => {
+  const key = KISS_CAMERA[manner] || KISS_CAMERA.directed
+  const found = (POSITIONS[manner] || POSITIONS.directed).find((p) => p.key === key)
+  return found ? { ...found, override: 'dealt-camera' } : null
 }
 
 export const shootChunkNote = (at) =>
