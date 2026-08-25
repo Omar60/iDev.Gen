@@ -363,6 +363,14 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // that survived being shot and judged blind, sessions 245-250. A manner with
   // no catalogue gets no camera guidance, and a test keeps that from happening.
   let cameras = POSITIONS[manner] ? cameraPlan(n, Math.random, POSITIONS[manner]) : null
+  // What each photograph's `technique` field opens on, dealt from the same
+  // spreader for the same reason: asked to choose, the writer keeps the subject
+  // of the line before it. See TECHNIQUE_DEFECTS. It rides on the camera rows, so
+  // a manner with no camera catalogue gets none of it either - which is fine,
+  // since the only manners with a `technique` field to fill are the ones that
+  // plan their camera.
+  const defects = MANNER[manner]?.defects
+    ? cameraPlan(n, Math.random, MANNER[manner].defects) : null
   // The kiss frames, decided here too, and they take their photograph's camera
   // with them: the gesture only reads from in front of her, close.
   const kisses = kissPlan(n)
@@ -409,6 +417,7 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
                + `\n\nThe shoot goes like this:\n${brief}`
                + `\n\n${shootChunkNote({ ...at, bare, stages: covered,
                                          cameras: cameras?.slice(at.from - 1, at.from - 1 + at.want),
+                                         defects: defects?.slice(at.from - 1, at.from - 1 + at.want),
                                          poses: Object.entries(poses)
                                            .filter(([k]) => Number(k) >= at.from
                                                             && Number(k) < at.from + at.want)

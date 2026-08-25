@@ -748,6 +748,38 @@ export const REACH = Object.fromEntries(REACHES.map((r) => [r.key, r]))
  *  Both, and not one: the brief decides what the shoot IS, the lines decide what
  *  the camera is doing, and a candid brief written into the studio camera
  *  vocabulary comes back as a studio shoot of a woman in a lived-in room. */
+/** The defect each photograph's `technique` field opens on, planned the way the
+ *  camera is and for the same failure.
+ *
+ *  Measured in session 289, thirty photographs from one brief: the field arrived
+ *  in all thirty and all thirty clauses were distinct STRINGS, so nothing in the
+ *  app noticed - but from photograph 23 every remaining line opened on the
+ *  flash, six of them in a row, each one `the flash blown out across her bare
+ *  [part]`. What repeats over a long shoot is not the wording, it is what the
+ *  clause is ABOUT: the chunk writer is handed the line before it and keeps its
+ *  subject while dutifully changing its words. A repetition check that compares
+ *  text cannot see that, so the subject is dealt out instead of asked for.
+ *
+ *  Each entry is a subject and not a finished clause. WHERE the defect falls is
+ *  still the writer's, and it has to be: measured 2026-08-24, sessions 277 and
+ *  278, the attachment is the whole of the rule and naming the anatomy in it is
+ *  worth nothing on top. So these hand over the WHAT and leave the WHERE alone.
+ *
+ *  Families, so no two photographs running open on the same kind of defect.
+ *  Grain and noise are one family because they do the same thing to a
+ *  photograph; exposure and colour are two because they do not.
+ */
+export const TECHNIQUE_DEFECTS = [
+  { family: 'motion', line: 'motion blur where a part of her moved' },
+  { family: 'noise', line: 'a shadow on her gone to noise' },
+  { family: 'noise', line: 'heavy grain in a shadow on her' },
+  { family: 'exposure', line: 'one side of her a stop too bright' },
+  { family: 'exposure', line: 'flat and overexposed across a part of her' },
+  { family: 'colour', line: 'the colour washed out of her skin' },
+  { family: 'framing', line: 'her shoulders running a few degrees off level in the frame' },
+  { family: 'framing', line: 'her body pushed to one side of the frame and cut off at an edge' },
+]
+
 const BASE_MANNERS = [
   {
     key: 'directed',
@@ -800,6 +832,9 @@ const BASE_MANNERS = [
     // Rolled once per look. Two entries and not four: the light inside each one
     // is a list for the writer to choose from, and an axis with four entries is
     // an axis whose rare ones never come up.
+    // Dealt per photograph, like the camera. It rides on the manner and not on
+    // every shoot because `directed` has no `technique` field to fill.
+    defects: TECHNIQUE_DEFECTS,
     timesOfDay: [
       'THE ROOM IS IN DAYLIGHT and the look says so: flat white light through a wide '
       + 'uncurtained window, weak grey daylight on an overcast afternoon, low sun coming in '
@@ -2010,12 +2045,27 @@ export const shootChunkNote = (at) =>
       // it.
       + at.cameras.map((c, i) => {
         const pose = at.poses?.find((p) => p.at === at.from + i)
-        return `${at.from + i} | ${c}${pose ? `\n${at.from + i} | act: ${pose.arrangement.act}` : ''}`
+        const defect = at.defects?.[i]
+        return `${at.from + i} | ${c}`
+             + (defect ? `\n${at.from + i} | technique: ${defect}` : '')
+             + (pose ? `\n${at.from + i} | act: ${pose.arrangement.act}` : '')
       }).join('\n') + '\n'
       + 'Open each line with the position given for its photograph, word for word, and then '
       + 'your framing after it. Invent no other position and reword none of these: these are '
       + 'the forms this camera was measured to obey, and a reworded one comes back as a '
       + 'front view. The framing, the pose, the act and the expression are still yours.\n'
+      + (at.defects?.length
+        ? 'SOME ROWS ALSO CARRY A `technique:` LINE, AND THAT IS THE DEFECT THAT PHOTOGRAPH '
+          + 'OPENS ITS `technique` FIELD ON. Unlike the camera it is NOT copied word for word - '
+          + 'it names WHAT the defect is and you write WHERE it falls on her, which is the whole '
+          + 'of the rule in the block above: `one side of her a stop too bright` becomes `the '
+          + 'near side of her face a stop too bright`. Write your other two or three clauses '
+          + 'after it, freely.\n'
+          + 'It is dealt out rather than chosen because over a long shoot this writer keeps the '
+          + 'defect of the photograph before while rewording it - measured in session 289, six '
+          + 'photographs in a row opened on the flash, in six different sentences. The words '
+          + 'were never the problem.\n'
+        : '')
     : '')
   // Before the kiss, which is the harder override: an arrangement says what the
   // two of them are doing and a kiss frame replaces the camera as well, so the
