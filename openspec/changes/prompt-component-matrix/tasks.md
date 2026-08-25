@@ -4,7 +4,7 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
 
 - [x] 1.1 Give every catalogue entry the concept shape — key, slot, wordings, optional reference image — keeping each existing string as that concept's first wording, and verify `python -m pytest` and `npm --prefix frontend test` stay green with no prompt text changed
 - [x] 1.2 Bring `KISS_CAMERA` into the catalogue as camera components carrying that they override a dealt camera — the map holds a key into that manner's own camera catalogue and `kissCameraFor` resolves it there, never a concept whose wording is a pointer (see the one-concept-shape decision in design.md) — and verify a session with planted kiss frames still ends up with the same camera text on those photographs
-- [ ] 1.3 Add a test asserting no catalogue wording's text appears anywhere else in the prompt system, and confirm it fails against the two inline camera examples still present — the `wink` and `finger` kiss frames carry deliberately identical wording text, so decide whether they are one concept with two `hand` values or an allowed pair, and say which in the test rather than letting it pass by accident
+- [x] 1.3 Add a test asserting no catalogue wording's text appears anywhere else in the prompt system, and confirm it fails against the two inline camera examples still present — the `wink` and `finger` kiss frames carry deliberately identical wording text, so decide whether they are one concept with two `hand` values or an allowed pair, and say which in the test rather than letting it pass by accident
 - [ ] 1.4 Add a test asserting `SHOOT_FIELDS` and `BLOCK_HEADINGS` still carry the same seven keys in the same order after the reshape, or confirm the existing one in `tests/test_enhance.py` covers it unchanged
 
 ## 2. Evidence store
@@ -44,6 +44,6 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
 
 ## 7. Cleanup and documentation
 
-- [ ] 7.1 Remove the two inline camera examples from the instruction prose and verify the single-home test from 1.3 now passes and no test asserting prompt text changes
+- [ ] 7.1 Remove the two inline camera examples from the instruction prose and verify the single-home test from 1.3 still passes with those two texts deleted from its `KNOWN_DUPLICATES` baseline, and no test asserting prompt text changes
 - [ ] 7.2 Update `README.md` and the matching page under `docs/` with the judging screen and the composer path, including that strict mode refuses rather than repeats
 - [ ] 7.3 Run the full gates — `python -m pytest`, `npm --prefix frontend run build`, `npm --prefix frontend test` — and report the output rather than the summary
