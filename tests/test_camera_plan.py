@@ -211,8 +211,12 @@ import { MANNER } from '%(kinds)s'
 // The eight forms the manner offers for the `technique` field, read off the
 // instruction rather than restated here: a list restated in a test drifts from
 // the one the writer sees, which is the failure this is guarding against.
+// The list only, and it ends at the first full stop after a closing backtick:
+// the paragraphs below it quote wordings that were RETIRED, and a slice wide
+// enough to reach them scores the retired examples as if they were offered.
 const line = MANNER.candid.line
-const menu = line.slice(line.indexOf('What goes in it'), line.indexOf('It NAMES NOTHING'))
+const start = line.indexOf('line to line:')
+const menu = line.slice(start, line.indexOf('`. ', start) + 1)
 const examples = [...menu.matchAll(/`([^`]+)`/g)].map((m) => m[1])
 
 // The property sessions 277 and 278 measured: a defect with somewhere to fall
