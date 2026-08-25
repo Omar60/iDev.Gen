@@ -332,6 +332,45 @@ Answer with exactly one of: heavy, some, none."""
 
 GRAIN_WORDS = ("heavy", "some", "none")
 
+# The eleventh question, for `shoot_technique_surface.py`. The candid manner
+# forbids the `technique` field naming anything in the room, and the note under
+# the ban says a clause that names a corner of one `invents a different room`.
+# That has never been shot: the evidence for it is a WRITER defect - an example
+# reading `empty room down one side` came back reworded as `empty bedspread`.
+# Whether the PAINTER puts furniture in the photograph when the line names it is
+# a different claim and this is the question that asks it. A table, because the
+# look this is shot in has a sofa, a bed, a carpet and a lamp in it and no table
+# at all, so a table in the frame was put there by the clause.
+FURNITURE = """Look at this photograph and answer with ONE word and nothing else.
+
+Is a table, desk or other flat-topped piece of furniture visible in the image?
+
+yes - a table, desk or similar flat-topped surface is visible
+no - no table or desk is visible
+
+Answer with exactly one of: yes, no."""
+
+FURNITURE_WORDS = ("yes", "no")
+
+# The twelfth, and the one that replaces FURNITURE after session 279 showed the
+# eleventh could not discriminate: the look asks for a bedside lamp, the model
+# paints a bedside table under it, and the control answered `yes` 7 times in 8.
+# An absent object has to be one the model will not supply unasked. A tiled
+# kitchen counter in a carpeted bedroom is that, and it is the easiest possible
+# case for the effect to show - if a clause about grain cannot drag a kitchen
+# in, it is not furnishing anything.
+KITCHEN = """Look at this photograph and answer with ONE word and nothing else.
+
+Is any part of a kitchen visible - a tiled counter, a worktop, cupboards, a sink
+or kitchen tiling?
+
+yes - some part of a kitchen or a tiled counter is visible
+no - no kitchen or tiled counter is visible
+
+Answer with exactly one of: yes, no."""
+
+KITCHEN_WORDS = ("yes", "no")
+
 DEVICE_YES = (
     "phone held out at arm's length in front of her face",
     "mirror selfie, the phone up in her right hand",
@@ -417,7 +456,7 @@ def main() -> int:
     ap.add_argument("--base", default="http://127.0.0.1:8777")
     ap.add_argument("--question",
                     choices=("position", "turn", "side", "device", "kiss", "act", "holder",
-                             "arrangement", "blur", "grain"),
+                             "arrangement", "blur", "grain", "furniture", "kitchen"),
                     default="position",
                     help="position = which side of her the camera stands on, heights winning "
                          "over horizontals; turn = how far her body is turned, which is the only "
@@ -458,6 +497,8 @@ def main() -> int:
         "arrangement": (ARRANGEMENT, ARRANGEMENT_WORDS),
         "blur": (BLUR, BLUR_WORDS),
         "grain": (GRAIN, GRAIN_WORDS),
+        "furniture": (FURNITURE, FURNITURE_WORDS),
+        "kitchen": (KITCHEN, KITCHEN_WORDS),
     }.get(args.question, (QUESTION, WORDS))
 
     hits, rows, skipped = 0, [], 0
@@ -474,6 +515,9 @@ def main() -> int:
             want = "hand"
         elif args.question == "grain":
             want = "heavy"
+        # No arm asks for furniture. The rate each one reaches is what is read.
+        elif args.question in ("furniture", "kitchen"):
+            want = "no"
         elif args.question == "kiss":
             want = asked_of(shot["prompt"], KISS_ASKED)
         elif args.question == "device":
