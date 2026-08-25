@@ -786,20 +786,20 @@ export const REACH = Object.fromEntries(REACHES.map((r) => [r.key, r]))
  *  two photographs running on the same region.
  */
 export const BODY_OPENINGS = [
-  { family: 'chest', line: 'her chest and torso' },
-  { family: 'hips', line: 'her hips and legs' },
-  { family: 'feet', line: 'her feet' },
+  { key: 'opens-chest', slot: 'her', wordings: [{ text: 'her chest and torso', family: 'chest' }] },
+  { key: 'opens-hips',  slot: 'her', wordings: [{ text: 'her hips and legs',  family: 'hips'  }] },
+  { key: 'opens-feet',  slot: 'her', wordings: [{ text: 'her feet',           family: 'feet'  }] },
 ]
 
 export const TECHNIQUE_DEFECTS = [
-  { family: 'motion', line: 'motion blur where a part of her moved' },
-  { family: 'noise', line: 'a shadow on her gone to noise' },
-  { family: 'noise', line: 'heavy grain in a shadow on her' },
-  { family: 'exposure', line: 'one side of her a stop too bright' },
-  { family: 'exposure', line: 'flat and overexposed across a part of her' },
-  { family: 'colour', line: 'the colour washed out of her skin' },
-  { family: 'framing', line: 'her shoulders running a few degrees off level in the frame' },
-  { family: 'framing', line: 'her body pushed to one side of the frame and cut off at an edge' },
+  { key: 'defect-motion-where-moved', slot: 'technique', wordings: [{ text: 'motion blur where a part of her moved', family: 'motion' }] },
+  { key: 'defect-noise-shadow',       slot: 'technique', wordings: [{ text: 'a shadow on her gone to noise',         family: 'noise'  }] },
+  { key: 'defect-noise-grain',        slot: 'technique', wordings: [{ text: 'heavy grain in a shadow on her',         family: 'noise'  }] },
+  { key: 'defect-exposure-stop',      slot: 'technique', wordings: [{ text: 'one side of her a stop too bright',     family: 'exposure' }] },
+  { key: 'defect-exposure-flat',      slot: 'technique', wordings: [{ text: 'flat and overexposed across a part of her', family: 'exposure' }] },
+  { key: 'defect-colour-washed',      slot: 'technique', wordings: [{ text: 'the colour washed out of her skin',     family: 'colour' }] },
+  { key: 'defect-framing-off-level',  slot: 'technique', wordings: [{ text: 'her shoulders running a few degrees off level in the frame', family: 'framing' }] },
+  { key: 'defect-framing-cut-edge',   slot: 'technique', wordings: [{ text: 'her body pushed to one side of the frame and cut off at an edge', family: 'framing' }] },
 ]
 
 const BASE_MANNERS = [
@@ -1668,15 +1668,15 @@ export const takesChunkNote = (at) =>
  *  ponytail: no room detection, the furniture-free nine work everywhere.
  */
 export const CAMERA_POSITIONS = [
-  { family: 'front', line: 'Taken from directly in front of her' },
-  { family: 'shoulder', line: 'Taken from behind her left shoulder, her back three-quarters to the camera' },
-  { family: 'shoulder', line: 'Taken from behind her right shoulder, her back three-quarters to the camera' },
-  { family: 'side', line: 'Taken from her right side, her body in full profile' },
-  { family: 'side', line: 'Taken from her left side, her body in full profile' },
-  { family: 'behind', line: 'Taken from directly behind her' },
-  { family: 'overhead', line: 'Overhead camera directly above her' },
-  { family: 'overhead', line: 'High camera looking steeply down at her' },
-  { family: 'floor', line: 'Low-angle shot from the floor at her feet' },
+  { key: 'front-direct',      slot: 'camera', wordings: [{ text: 'Taken from directly in front of her',                                       family: 'front'    }] },
+  { key: 'shoulder-left',     slot: 'camera', wordings: [{ text: 'Taken from behind her left shoulder, her back three-quarters to the camera', family: 'shoulder' }] },
+  { key: 'shoulder-right',    slot: 'camera', wordings: [{ text: 'Taken from behind her right shoulder, her back three-quarters to the camera', family: 'shoulder' }] },
+  { key: 'side-right',        slot: 'camera', wordings: [{ text: 'Taken from her right side, her body in full profile',                       family: 'side'     }] },
+  { key: 'side-left',         slot: 'camera', wordings: [{ text: 'Taken from her left side, her body in full profile',                        family: 'side'     }] },
+  { key: 'behind-direct',     slot: 'camera', wordings: [{ text: 'Taken from directly behind her',                                             family: 'behind'   }] },
+  { key: 'overhead-direct',   slot: 'camera', wordings: [{ text: 'Overhead camera directly above her',                                          family: 'overhead' }] },
+  { key: 'overhead-high',     slot: 'camera', wordings: [{ text: 'High camera looking steeply down at her',                                     family: 'overhead' }] },
+  { key: 'floor-low-angle',   slot: 'camera', wordings: [{ text: 'Low-angle shot from the floor at her feet',                                   family: 'floor'    }] },
 ]
 
 /** Where the PHONE was, for a shoot nobody is photographing.
@@ -1709,19 +1709,19 @@ export const CAMERA_POSITIONS = [
  *    ponytail: no `him` check, the shelf reaches the same overhead alone.
  */
 export const CANDID_POSITIONS = [
-  { family: 'front', line: 'Taken from directly in front of her' },
-  { family: 'front', line: "Phone held out at arm's length in front of her face" },
-  { family: 'overhead', line: 'Overhead camera directly above her' },
-  { family: 'overhead', line: 'Phone propped on a high shelf across the room, looking down at her' },
+  { key: 'front-direct',    slot: 'camera', wordings: [{ text: 'Taken from directly in front of her',                                         family: 'front'    }] },
+  { key: 'front-arm-length',slot: 'camera', wordings: [{ text: "Phone held out at arm's length in front of her face",                          family: 'front'    }] },
+  { key: 'overhead-direct', slot: 'camera', wordings: [{ text: 'Overhead camera directly above her',                                            family: 'overhead' }] },
+  { key: 'overhead-shelf',  slot: 'camera', wordings: [{ text: 'Phone propped on a high shelf across the room, looking down at her',           family: 'overhead' }] },
   // Both sides, session 251: 3/3 each, shot together so the left is its own
   // control and it reproduced. What the judge verifies is a shoulder
   // three-quarter view and not WHICH shoulder - left and right are one answer to
   // it on purpose, because telling her left from her right is a harder question
   // than the one being asked. The directed catalogue carries both on the same
   // evidence.
-  { family: 'shoulder', line: 'Taken from behind her left shoulder, her back three-quarters to the camera' },
-  { family: 'shoulder', line: 'Taken from behind her right shoulder, her back three-quarters to the camera' },
-  { family: 'mirror', line: 'Mirror selfie, the phone up in her right hand and visible in the mirror' },
+  { key: 'shoulder-left',   slot: 'camera', wordings: [{ text: 'Taken from behind her left shoulder, her back three-quarters to the camera',   family: 'shoulder' }] },
+  { key: 'shoulder-right',  slot: 'camera', wordings: [{ text: 'Taken from behind her right shoulder, her back three-quarters to the camera',  family: 'shoulder' }] },
+  { key: 'mirror-selfie',   slot: 'camera', wordings: [{ text: 'Mirror selfie, the phone up in her right hand and visible in the mirror',       family: 'mirror'   }] },
 ]
 
 /** The catalogue a manner plans from.
@@ -1753,8 +1753,8 @@ export const CANDID_POSITIONS = [
  */
 export const SELFIE_POSITIONS = [
   ...CANDID_POSITIONS,
-  { family: 'pov', line: 'Phone held low in her own hand at her chest, angled down along her own body' },
-  { family: 'pov', line: 'Phone held above her face in her own outstretched hand as she lies on her back, looking down at her' },
+  { key: 'pov-low-chest',  slot: 'camera', wordings: [{ text: 'Phone held low in her own hand at her chest, angled down along her own body',      family: 'pov' }] },
+  { key: 'pov-above-back', slot: 'camera', wordings: [{ text: 'Phone held above her face in her own outstretched hand as she lies on her back, looking down at her', family: 'pov' }] },
 ]
 
 export const POSITIONS = { directed: CAMERA_POSITIONS, candid: CANDID_POSITIONS,
@@ -1778,6 +1778,11 @@ export const POSITIONS = { directed: CAMERA_POSITIONS, candid: CANDID_POSITIONS,
  *  arithmetic and no two photographs running share a family.
  */
 export const cameraPlan = (n, rand = Math.random, positions = CAMERA_POSITIONS) => {
+  // Every position is now a concept whose first wording is the form the spread
+  // draws. Family lives on the wording — same place it always did for the
+  // plan's purpose, and the wording is the one thing the prompt eventually sees.
+  const textOf  = (p) => p.wordings[0].text
+  const familyOf = (p) => p.wordings[0].family
   const used = positions.map(() => 0)
   const plan = []
   let last = null
@@ -1785,13 +1790,13 @@ export const cameraPlan = (n, rand = Math.random, positions = CAMERA_POSITIONS) 
     // A single family cannot fill the ban, so there is always something left.
     const open = positions
       .map((p, at) => ({ p, at }))
-      .filter(({ p }) => p.family !== last)
+      .filter(({ p }) => familyOf(p) !== last)
     const fewest = Math.min(...open.map(({ at }) => used[at]))
     const pick = open.filter(({ at }) => used[at] === fewest)
     const { p, at } = pick[Math.floor(rand() * pick.length) % pick.length]
     used[at] += 1
-    last = p.family
-    plan.push(p.line)
+    last = familyOf(p)
+    plan.push(textOf(p))
   }
   return plan
 }
@@ -1813,7 +1818,9 @@ export const cameraPlan = (n, rand = Math.random, positions = CAMERA_POSITIONS) 
  */
 export const fitCameras = (cameras, poses, positions, rand = Math.random) => {
   if (!cameras || !positions) return cameras
-  const familyOf = (line) => positions.find((p) => p.line === line)?.family
+  // Camera forms are now concept wordings; the lookup goes through them.
+  const familyOfLine = (line) =>
+    positions.find((p) => p.wordings[0].text === line)?.wordings[0].family
   const out = [...cameras]
   for (const [key, arrangement] of Object.entries(poses || {})) {
     const at = Number(key) - 1
@@ -1822,15 +1829,16 @@ export const fitCameras = (cameras, poses, positions, rand = Math.random) => {
     // ordered by what each one scored when it was shot, and `wall` is 3/3 from
     // a mirror and 0/3 from behind her shoulder. Drawing at random spends a
     // third of the plantings on a form that was measured to fail.
-    const family = arrangement.cameras.find((f) => positions.some((p) => p.family === f))
-    const open = positions.filter((p) => p.family === family)
+    const family = arrangement.cameras.find(
+      (f) => positions.some((p) => p.wordings[0].family === f))
+    const open = positions.filter((p) => p.wordings[0].family === family)
     // Nothing this manner can take it from: the camera it was dealt stays, which
     // is wrong, and a wrong camera is still better than none.
     if (!open.length) continue
-    if (familyOf(out[at]) === family) continue
+    if (familyOfLine(out[at]) === family) continue
     // Inside the family the draw is free - which of its forms is a question the
     // camera catalogue already answered.
-    out[at] = open[Math.floor(rand() * open.length) % open.length].line
+    out[at] = open[Math.floor(rand() * open.length) % open.length].wordings[0].text
   }
   return out
 }
@@ -1853,26 +1861,23 @@ export const fitCameras = (cameras, poses, positions, rand = Math.random) => {
  *  frame; it is empty for the three that do not.
  */
 export const KISS_FRAMES = [
-  { key: 'closed',
-    face: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
-        + 'to one side, and HER EYES ARE COMPLETELY CLOSED - both eyelids shut, no iris and no '
-        + 'white showing, a peaceful dreamy expression.',
-    hand: '' },
-  { key: 'wink',
-    face: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
-        + 'to one side, and SHE IS WINKING - one eye squeezed fully shut, the other open and '
-        + 'looking straight at the lens.',
-    hand: '' },
-  { key: 'open',
-    face: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
-        + 'to one side, both eyes open and looking straight at the lens.',
-    hand: '' },
-  { key: 'finger',
-    face: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
-        + 'to one side, and SHE IS WINKING - one eye squeezed fully shut, the other open and '
-        + 'looking straight at the lens.',
+  { key: 'closed', slot: 'kiss-face', hand: '',
+    wordings: [{ text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+                      + 'to one side, and HER EYES ARE COMPLETELY CLOSED - both eyelids shut, no iris and no '
+                      + 'white showing, a peaceful dreamy expression.' }] },
+  { key: 'wink',   slot: 'kiss-face', hand: '',
+    wordings: [{ text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+                      + 'to one side, and SHE IS WINKING - one eye squeezed fully shut, the other open and '
+                      + 'looking straight at the lens.' }] },
+  { key: 'open',   slot: 'kiss-face', hand: '',
+    wordings: [{ text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+                      + 'to one side, both eyes open and looking straight at the lens.' }] },
+  { key: 'finger', slot: 'kiss-face',
     hand: 'Her free hand is raised beside her face with the middle finger up and the other '
-        + 'fingers curled down, held toward the camera.' },
+        + 'fingers curled down, held toward the camera.',
+    wordings: [{ text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+                      + 'to one side, and SHE IS WINKING - one eye squeezed fully shut, the other open and '
+                      + 'looking straight at the lens.' }] },
 ]
 
 /** Which photographs are kiss frames, and which flavour each one is.
@@ -1983,21 +1988,18 @@ export const kissPlan = (n, rand = Math.random) => spreadOver(n, KISS_FRAMES, 8,
  *  Three more were written and taken out again: see below the list.
  */
 export const ARRANGEMENTS = [
-  { key: 'astride',
-    label: 'She is on top, facing him',
+  { key: 'astride', slot: 'act', label: 'She is on top, facing him',
     cameras: ['front', 'overhead', 'mirror', 'pov'],
-    act: 'She is astride him with her knees on either side of his hips and her weight down on '
-       + 'him, the two of them joined, two people in frame.' },
-  { key: 'reverse',
-    label: 'She is on top, facing away',
+    wordings: [{ text: 'She is astride him with her knees on either side of his hips and her weight down on '
+                       + 'him, the two of them joined, two people in frame.' }] },
+  { key: 'reverse', slot: 'act', label: 'She is on top, facing away',
     cameras: ['shoulder'],
-    act: 'She is astride him facing away from him with her weight on her feet, the two of them '
-       + 'joined, two people in frame.' },
-  { key: 'wall',
-    label: 'Standing against the wall',
+    wordings: [{ text: 'She is astride him facing away from him with her weight on her feet, the two of them '
+                       + 'joined, two people in frame.' }] },
+  { key: 'wall',    slot: 'act', label: 'Standing against the wall',
     cameras: ['mirror', 'shoulder'],
-    act: 'She is standing with her front to the wall and one leg raised, he is behind her, the '
-       + 'two of them joined, two people in frame.' },
+    wordings: [{ text: 'She is standing with her front to the wall and one leg raised, he is behind her, the '
+                       + 'two of them joined, two people in frame.' }] },
 ]
 
 /** WHY THERE ARE THREE AND NOT SIX.
@@ -2116,7 +2118,7 @@ export const shootChunkNote = (at) =>
         return `${at.from + i} | ${c}`
              + (opens ? `\n${at.from + i} | her opens on: ${opens}` : '')
              + (defect ? `\n${at.from + i} | technique: ${defect}` : '')
-             + (pose ? `\n${at.from + i} | act: ${pose.arrangement.act}` : '')
+             + (pose ? `\n${at.from + i} | act: ${pose.arrangement.wordings[0].text}` : '')
       }).join('\n') + '\n'
       + 'Open each line with the position given for its photograph, word for word, and then '
       + 'your framing after it. Invent no other position and reword none of these: these are '
@@ -2187,7 +2189,7 @@ export const shootChunkNote = (at) =>
       `PHOTOGRAPH ${k} IS A KISS FRAME and it is written differently from every other line.\n`
       + `Its camera is \`${camera}\`, which replaces the position given for it above, and its `
       + 'framing is `a waist-up photograph` so the face fills the frame.\n'
-      + `Its \`face\` field is this, word for word: ${frame.face}\n`
+      + `Its \`face\` field is this, word for word: ${frame.wordings[0].text}\n`
       + (frame.hand ? `Its \`act\` field carries this: ${frame.hand}\n` : '')
       + 'Do not soften it, do not reword the eyes and do not describe her looking away: the '
       + 'kiss and the eyes are one gesture and this photograph exists for it. Everything else '
@@ -2277,15 +2279,15 @@ export const wardrobeChunkNote = (at) =>
  *  claim this list makes and a preset that quietly joins the measured ones takes
  *  the claim with it. Run one, and if it holds, flip its flag. */
 export const EXPRESSIONS = [
-  { s: 'soft smile', measured: true,
-    v: 'give her a soft closed-lip smile with the corners of her mouth turned up' },
-  { s: 'warm smile', measured: true,
-    v: 'turn the corners of her mouth up into a warm smile with her lips just parted' },
-  { s: 'happy', measured: true,
-    v: 'open her mouth into a wide happy smile showing her upper teeth' },
-  { s: 'laughing', measured: true,
-    v: 'make her laugh out loud with her mouth wide open and her upper teeth showing',
-    note: 'closes both eyes — a wink does not survive this one' },
+  { key: 'soft-smile',     label: 'soft smile',      slot: 'expression', measured: true,
+    wordings: [{ text: 'give her a soft closed-lip smile with the corners of her mouth turned up' }] },
+  { key: 'warm-smile',     label: 'warm smile',      slot: 'expression', measured: true,
+    wordings: [{ text: 'turn the corners of her mouth up into a warm smile with her lips just parted' }] },
+  { key: 'happy',          label: 'happy',           slot: 'expression', measured: true,
+    wordings: [{ text: 'open her mouth into a wide happy smile showing her upper teeth' }] },
+  { key: 'laughing',       label: 'laughing',        slot: 'expression', measured: true,
+    note: 'closes both eyes — a wink does not survive this one',
+    wordings: [{ text: 'make her laugh out loud with her mouth wide open and her upper teeth showing' }] },
   // `blowing a kiss` and not `a kiss` was the wording here for one commit, and it
   // is the mistake this list is now built to refuse: the idiom is a HAND, not a
   // mouth. Two things then go wrong at once. The keep-clause holds the two hands
@@ -2296,20 +2298,20 @@ export const EXPRESSIONS = [
   // kiss`) and the hand landed at mid-chest every time, blowing across a palm
   // nowhere near her lips. So what is left is the half that does render, and it
   // renders well: the mouth.
-  { s: 'kiss',
-    v: 'push her lips forward into a kiss towards the camera',
-    note: 'the mouth only — a hand throwing it grows a third one and never reaches her lips' },
-  { s: 'pout',
-    v: 'push her lower lip forward into a pout with her lips closed' },
-  { s: 'biting her lip',
-    v: 'catch her lower lip between her front teeth' },
-  { s: 'tongue out',
-    v: 'open her mouth and stick her tongue out towards the camera' },
+  { key: 'kiss',           label: 'kiss',            slot: 'expression',
+    note: 'the mouth only — a hand throwing it grows a third one and never reaches her lips',
+    wordings: [{ text: 'push her lips forward into a kiss towards the camera' }] },
+  { key: 'pout',           label: 'pout',            slot: 'expression',
+    wordings: [{ text: 'push her lower lip forward into a pout with her lips closed' }] },
+  { key: 'biting-her-lip', label: 'biting her lip',  slot: 'expression',
+    wordings: [{ text: 'catch her lower lip between her front teeth' }] },
+  { key: 'tongue-out',     label: 'tongue out',      slot: 'expression',
+    wordings: [{ text: 'open her mouth and stick her tongue out towards the camera' }] },
   // The two that move the eyes, and the reason `keeps` exists at all.
-  { s: 'wink', eyes: true,
-    v: 'close her left eye in a wink and leave her right eye open, her mouth closed' },
-  { s: 'sultry', eyes: true,
-    v: 'lower her eyelids into a half-lidded look with her lips slightly parted' },
+  { key: 'wink',           label: 'wink',            slot: 'expression', eyes: true,
+    wordings: [{ text: 'close her left eye in a wink and leave her right eye open, her mouth closed' }] },
+  { key: 'sultry',         label: 'sultry',          slot: 'expression', eyes: true,
+    wordings: [{ text: 'lower her eyelids into a half-lidded look with her lips slightly parted' }] },
 ]
 
 /** The tail every preset carries. Without it the edit is free to move what the
@@ -2326,7 +2328,8 @@ export const EXPRESSION_KEEP =
 export const EXPRESSION_KEEP_NO_EYES =
   ', and keep her hands, her pose and her clothes exactly as they are'
 
-export const expressionTake = (e) => e.v + (e.eyes ? EXPRESSION_KEEP_NO_EYES : EXPRESSION_KEEP)
+export const expressionTake = (e) =>
+  e.wordings[0].text + (e.eyes ? EXPRESSION_KEEP_NO_EYES : EXPRESSION_KEEP)
 
 export const ANGLE_FROM_TEXT_INSTRUCTION =
   'Translate the request into the camera vocabulary below. Pick exactly one direction, '

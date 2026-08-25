@@ -2,7 +2,7 @@
 
 Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
 
-- [ ] 1.1 Give every catalogue entry the concept shape — key, slot, wordings, optional reference image — keeping each existing string as that concept's first wording, and verify `python -m pytest` and `npm --prefix frontend test` stay green with no prompt text changed
+- [x] 1.1 Give every catalogue entry the concept shape — key, slot, wordings, optional reference image — keeping each existing string as that concept's first wording, and verify `python -m pytest` and `npm --prefix frontend test` stay green with no prompt text changed
 - [ ] 1.2 Bring `KISS_CAMERA` into the catalogue as camera components carrying that they override a dealt camera, and verify a session with planted kiss frames still ends up with the same camera text on those photographs
 - [ ] 1.3 Add a test asserting no catalogue wording's text appears anywhere else in the prompt system, and confirm it fails against the two inline camera examples still present
 - [ ] 1.4 Add a test asserting `SHOOT_FIELDS` and `BLOCK_HEADINGS` still carry the same seven keys in the same order after the reshape, or confirm the existing one in `tests/test_enhance.py` covers it unchanged

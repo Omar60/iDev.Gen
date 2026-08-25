@@ -10,7 +10,7 @@ import { undressBy } from './enhance.js'
  *  diff. */
 describe('the technique defect plan', () => {
   test('never opens two photographs running on the same kind of defect', () => {
-    const family = (line) => TECHNIQUE_DEFECTS.find((d) => d.line === line).family
+    const family = (line) => TECHNIQUE_DEFECTS.find((d) => d.wordings[0].text === line).wordings[0].family
     for (let run = 0; run < 20; run += 1) {
       const plan = cameraPlan(30, Math.random, MANNER.candid.defects)
       expect(plan).toHaveLength(30)

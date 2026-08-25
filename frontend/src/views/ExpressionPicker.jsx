@@ -16,11 +16,11 @@ import { EXPRESSIONS, expressionTake } from '../kinds.js'
 export default function ExpressionPicker({ onAdd }) {
   const [picked, setPicked] = useState([])
 
-  const toggle = (s) => setPicked(
-    picked.includes(s) ? picked.filter((x) => x !== s) : [...picked, s])
+  const toggle = (k) => setPicked(
+    picked.includes(k) ? picked.filter((x) => x !== k) : [...picked, k])
 
-  const add = () => onAdd(EXPRESSIONS.filter((e) => picked.includes(e.s)).map((e) => ({
-    label: e.s, prompt: expressionTake(e),
+  const add = () => onAdd(EXPRESSIONS.filter((e) => picked.includes(e.key)).map((e) => ({
+    label: e.label, prompt: expressionTake(e),
     negative: '', count: 1, seed: 0,
     reference: true, reference_strength: null,
   })))
@@ -39,11 +39,11 @@ export default function ExpressionPicker({ onAdd }) {
       <div className="row" style={{ marginBottom: 6 }}>
         <label style={{ width: 70, margin: 0 }}>Expression</label>
         {EXPRESSIONS.map((e) => (
-          <button key={e.s} className={'chip' + (picked.includes(e.s) ? ' on' : '')}
+          <button key={e.key} className={'chip' + (picked.includes(e.key) ? ' on' : '')}
                   title={expressionTake(e) + (e.note ? ` — ${e.note}` : '')
                          + (e.measured ? '' : ' — written to the same shape as the four that '
                                               + 'were measured, but not measured itself')}
-                  onClick={() => toggle(e.s)}>{e.s}{e.measured ? '' : ' ·'}</button>
+                  onClick={() => toggle(e.key)}>{e.label}{e.measured ? '' : ' ·'}</button>
         ))}
       </div>
       <div className="row">

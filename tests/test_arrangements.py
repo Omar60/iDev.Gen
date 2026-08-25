@@ -58,20 +58,22 @@ const note = shootChunkNote({
 })
 const quiet = shootChunkNote({ from: 5, want: 4, total: 8, cameras: [], poses: [] })
 
+const act = (a) => a.wordings[0].text
+
 console.log(JSON.stringify({
   noneIsNone, inRange, onlyPicked, capped, adjacent, share, cycles,
   keys: ARRANGEMENTS.map((a) => a.key),
   // Every arrangement names two people plainly, which is the only form this
   // project has measured as rendering the act at all.
-  twoPeople: ARRANGEMENTS.every((a) => a.act.includes('two people in frame')),
+  twoPeople: ARRANGEMENTS.every((a) => act(a).includes('two people in frame')),
   // And none of them fights the camera plan or the framing, which are planned
   // somewhere else and handed to the same line.
   noCamera: ARRANGEMENTS.every((a) =>
-    !/\\b(camera|photograph|taken from|framing|close-up|overhead)\\b/i.test(a.act)),
+    !/\\b(camera|photograph|taken from|framing|close-up|overhead)\\b/i.test(act(a))),
   // The arrangement rides on its photograph's own camera row: two lists to line
   // up put it on the photograph before the one it was given to, five rows of
   // twelve.
-  noteNames: note.includes(`3 | act: ${ARRANGEMENTS[0].act}`) && note.includes('ALREADY DECIDED'),
+  noteNames: note.includes(`3 | act: ${act(ARRANGEMENTS[0])}`) && note.includes('ALREADY DECIDED'),
   noteRowIsRight: note.indexOf('3 | act:') > note.indexOf('3 | Taken from her right side')
                   && note.indexOf('3 | act:') < note.indexOf('Open each line'),
   // Handed over in the camera note's words, which is what took arrival from 3
@@ -174,12 +176,13 @@ FIT_PROBE = """
 import { fitCameras, cameraPlan, arrangementPlan, ARRANGEMENTS, ARRANGEMENT, POSITIONS }
   from '%(kinds)s'
 
-const familyOf = (positions, line) => positions.find((p) => p.line === line)?.family
+const familyOf = (positions, line) => positions.find((p) => p.wordings[0].text === line)?.wordings[0].family
+const familyOfEntry = (p) => p.wordings[0].family
 
 // Every manner can take every arrangement: a `cameras` list that empties a
 // catalogue leaves that photograph with no camera at all.
 const reachable = Object.entries(POSITIONS).every(([, positions]) =>
-  ARRANGEMENTS.every((a) => positions.some((p) => a.cameras.includes(p.family))))
+  ARRANGEMENTS.every((a) => positions.some((p) => a.cameras.includes(familyOfEntry(p)))))
 
 // The whole thing end to end, on every manner, many draws.
 const runs = Object.entries(POSITIONS).flatMap(([manner, positions]) =>
@@ -198,7 +201,7 @@ const runs = Object.entries(POSITIONS).flatMap(([manner, positions]) =>
 // plantings on a form that was measured to fail.
 const fitted = runs.every(({ positions, poses, after }) =>
   Object.entries(poses).every(([at, a]) => {
-    const best = a.cameras.find((f) => positions.some((p) => p.family === f))
+    const best = a.cameras.find((f) => positions.some((p) => familyOfEntry(p) === f))
     return familyOf(positions, after[Number(at) - 1]) === best
   }))
 
@@ -213,7 +216,8 @@ const moved = runs.reduce((sum, { before, after }) =>
 // A camera left alone when the catalogue has nothing compatible, rather than
 // emptied. `wall` cannot be seen from the front, and a one-position catalogue
 // of exactly that is the case with no answer.
-const onlyFront = [{ family: 'front', line: 'Taken from directly in front of her' }]
+const onlyFront = [{ key: 'front-direct', slot: 'camera',
+                     wordings: [{ text: 'Taken from directly in front of her', family: 'front' }] }]
 const stuck = fitCameras(['Taken from directly in front of her'],
                          { 1: ARRANGEMENT.wall }, onlyFront)
 
@@ -223,7 +227,7 @@ console.log(JSON.stringify({
   // No arrangement allows a camera family that no catalogue has, which would be
   // a typo nothing else would catch.
   known: ARRANGEMENTS.every((a) => a.cameras.every((f) =>
-    Object.values(POSITIONS).some((positions) => positions.some((p) => p.family === f)))),
+    Object.values(POSITIONS).some((positions) => positions.some((p) => familyOfEntry(p) === f)))),
 }))
 """
 

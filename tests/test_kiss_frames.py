@@ -48,7 +48,7 @@ console.log(JSON.stringify({
   inRange, always, capped, adjacent,
   flavours: [...flavours].sort(),
   keys: KISS_FRAMES.map((f) => f.key),
-  eyesShut: KISS_FRAMES[0].face.includes('HER EYES ARE COMPLETELY CLOSED'),
+  eyesShut: KISS_FRAMES[0].wordings[0].text.includes('HER EYES ARE COMPLETELY CLOSED'),
   hands: KISS_FRAMES.filter((f) => f.hand).length,
   noteNames: note.includes('PHOTOGRAPH 2 IS A KISS FRAME'),
   noteCamera: note.includes(KISS_CAMERA.candid),

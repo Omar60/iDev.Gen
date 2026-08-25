@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROBE = """
 import { cameraPlan, CAMERA_POSITIONS } from '%(kinds)s'
 
-const family = (line) => CAMERA_POSITIONS.find((p) => p.line === line)?.family ?? 'UNKNOWN'
+const family = (line) => CAMERA_POSITIONS.find((p) => p.wordings[0].text === line)?.wordings[0].family ?? 'UNKNOWN'
 
 // Every draw of a forty-five photograph shoot, so a run of them has to hold the
 // properties and not merely one lucky one.
@@ -51,7 +51,7 @@ console.log(JSON.stringify({
   consecutive, unknown, biggest, families,
   short: cameraPlan(1).length,
   none: cameraPlan(0).length,
-  offEye: CAMERA_POSITIONS.filter((p) => ['overhead', 'floor'].includes(p.family)).length,
+  offEye: CAMERA_POSITIONS.filter((p) => ['overhead', 'floor'].includes(p.wordings[0].family)).length,
 }))
 """
 
@@ -84,15 +84,15 @@ def test_the_plan_holds_its_three_properties(tmp_path_factory):
 CATALOGUE_PROBE = """
 import { cameraPlan, CANDID_POSITIONS, POSITIONS, MANNERS } from '%(kinds)s'
 
-const family = (line) => CANDID_POSITIONS.find((p) => p.line === line)?.family ?? 'UNKNOWN'
+const family = (line) => CANDID_POSITIONS.find((p) => p.wordings[0].text === line)?.wordings[0].family ?? 'UNKNOWN'
 const runs = Array.from({ length: 200 }, () => cameraPlan(45, Math.random, CANDID_POSITIONS))
 
 console.log(JSON.stringify({
   // Every manner plans, which is why there is no list of example forms left in
   // the instruction for one to free-write from.
   unplanned: MANNERS.map((m) => m.key).filter((k) => !POSITIONS[k]),
-  lines: CANDID_POSITIONS.map((p) => p.line),
-  families: [...new Set(CANDID_POSITIONS.map((p) => p.family))].sort(),
+  lines: CANDID_POSITIONS.map((p) => p.wordings[0].text),
+  families: [...new Set(CANDID_POSITIONS.map((p) => p.wordings[0].family))].sort(),
   consecutive: runs.filter((plan) =>
     plan.some((line, i) => i > 0 && family(line) === family(plan[i - 1]))).length,
   unknown: runs.flat().filter((line) => family(line) === 'UNKNOWN').length,
@@ -150,13 +150,13 @@ def test_the_candid_catalogue_is_what_was_measured(tmp_path_factory):
 SELFIE_PROBE = """
 import { cameraPlan, CANDID_POSITIONS, SELFIE_POSITIONS, MANNER } from '%(kinds)s'
 
-const family = (line) => SELFIE_POSITIONS.find((p) => p.line === line)?.family ?? 'UNKNOWN'
+const family = (line) => SELFIE_POSITIONS.find((p) => p.wordings[0].text === line)?.wordings[0].family ?? 'UNKNOWN'
 const runs = Array.from({ length: 200 }, () => cameraPlan(45, Math.random, SELFIE_POSITIONS))
 
 console.log(JSON.stringify({
   // The measured seven are carried over untouched, and what is added is added.
   keepsCandid: CANDID_POSITIONS.every((p) => SELFIE_POSITIONS.includes(p)),
-  added: SELFIE_POSITIONS.filter((p) => !CANDID_POSITIONS.includes(p)).map((p) => p.family),
+  added: SELFIE_POSITIONS.filter((p) => !CANDID_POSITIONS.includes(p)).map((p) => p.wordings[0].family),
   // Inherited: same room, same phone, same capture quality as `candid`.
   sameLook: MANNER.selfie.look === MANNER.candid.look,
   // Overridden: the two rules this manner exists to turn around.
