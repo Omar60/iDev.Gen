@@ -190,9 +190,24 @@ export const withManner = (look, manner = 'directed') => {
   return sentences([clause, look])
 }
 
+/** The time of day, rolled rather than asked for.
+ *
+ *  Same reason the brief's axes are rolled: asked to choose, the writer answers
+ *  the same way every time, and the examples in the question are the answer.
+ *  Measured 2026-08-24 - see the comment on `timesOfDay` in kinds.js. It rides on
+ *  the look and not on the brief because the look is the half of a session every
+ *  photograph carries, and the candid `line` block reads its light off it. */
+const rollTime = (manner) => {
+  const times = MANNER[manner]?.timesOfDay
+  if (!times) return ''
+  return `\n\n${times[Math.floor(Math.random() * times.length)]}`
+}
+
+const lookNote = (manner) => (MANNER[manner]?.lookNote
+  ? `\n\n${MANNER[manner].lookNote}${rollTime(manner)}` : '')
+
 export const lookFromBrief = (brief, manner = 'directed') =>
-  ask({ instruction: LOOK_INSTRUCTION + (MANNER[manner]?.lookNote
-                                         ? `\n\n${MANNER[manner].lookNote}` : ''),
+  ask({ instruction: LOOK_INSTRUCTION + lookNote(manner),
         text: brief, n: LOOK_PIECES }).then(split)
 
 export const lookFromPhoto = (image) =>
@@ -201,10 +216,7 @@ export const lookFromPhoto = (image) =>
 /** The look box alone: hair, makeup, place, light. Never the clothes — see
  *  LOOK_ONLY_INSTRUCTION. */
 export const rewriteLook = (text, manner = 'directed') =>
-  ask({ instruction: LOOK_ONLY_INSTRUCTION + (MANNER[manner]?.lookNote
-                                              ? `
-
-${MANNER[manner].lookNote}` : ''),
+  ask({ instruction: LOOK_ONLY_INSTRUCTION + lookNote(manner),
         text, n: 2 }).then(joined)
 
 /** A shoot to run, from the look and the wardrobe already in the boxes.

@@ -778,12 +778,36 @@ const BASE_MANNERS = [
     // An existing look is left alone — appending a bare bulb to a look that says
     // `a low warm lamp pooling amber light` is a contradiction, and this sampler
     // renders a contradiction as neither.
+    // The time of day is ROLLED and handed in, not asked for, and the reason is
+    // measured 2026-08-24, 25 looks an arm off one time-neutral brief. Asked for
+    // with a list of examples, the list is the answer: the old four-light list
+    // ran three dark to one daylit and gave 16 daylit looks of 25 with 3 lit
+    // only by a bulb or a television; a list rewritten day-first with a line
+    // saying the dark room is the default trap gave 25 of 25 daylit (p=0.0008),
+    // which is the same style in the other direction. The same day, the brief's
+    // example was given a daytime twin and the twin was used in 0 briefs of 25
+    // while evening went from 17 of 25 to 25 - the writer copies the FIRST
+    // example and a rule saying `one in two` does not touch it. So the choice is
+    // made by the die in enhance.js and this block only says what light exists.
+    // The look decides for the whole session: the `line` block reads the light
+    // off the look and fires a flash only where the look says the room is dark,
+    // which is why a look that always chooses night is a shoot that is all flash.
     lookNote: 'THIS SESSION IS SHOT ON A PHONE BY THE PEOPLE IN IT, so the light is whatever '
-            + 'the room already has and never anything placed for a photograph: a bare ceiling '
-            + 'bulb, weak daylight through a half-curtained window, a bedside lamp, the '
-            + 'television. Never a lamp described for what it does to her — `pooling amber '
+            + 'the room already has and never anything placed for a photograph.\n'
+            + 'Never a lamp described for what it does to her — `pooling amber '
             + 'light from the side` is a lighting setup and it renders as one. The room is '
             + 'lived in and a little untidy.',
+    // Rolled once per look. Two entries and not four: the light inside each one
+    // is a list for the writer to choose from, and an axis with four entries is
+    // an axis whose rare ones never come up.
+    timesOfDay: [
+      'THE ROOM IS IN DAYLIGHT and the look says so: flat white light through a wide '
+      + 'uncurtained window, weak grey daylight on an overcast afternoon, low sun coming in '
+      + 'across the floor late in the day. No lamp is on and no curtain is drawn against it.',
+      'THE ROOM IS AFTER DARK and the look says so: a bare ceiling bulb, a bedside lamp, the '
+      + 'television, the room otherwise unlit and the window black. Nothing is coming in '
+      + 'through the window.',
+    ],
     label: 'Candid, on a phone',
     blurb: 'No photographer: a phone, a mirror, an ordinary evening. Nobody poses.',
     brief: 'NOBODY IS SHOOTING THIS PROFESSIONALLY. There is no photographer, no studio and no '
@@ -792,6 +816,10 @@ const BASE_MANNERS = [
          + 'who are in them. So the brief is what she is DOING and how that goes on, never a list '
          + 'of setups: `bored on the sofa on a weeknight, getting comfortable and filming herself '
          + 'through the evening` is this shoot, `an intimate boudoir session` is not.\n'
+         + 'THE TIME OF DAY IS IN THE LOOK ALREADY. Read it off and never contradict it: a '
+         + 'brief that says `through the evening` over a look lit by flat white daylight is '
+         + 'two texts disagreeing, and the writer of the photographs obeys whichever it read '
+         + 'last. If the look says nothing, the brief says nothing either.\n'
          + 'Do NOT say where the phone is or what it is propped on. The brief is read by the '
          + 'writer of every photograph, so a phone named once here is a phone named in forty '
          + 'lines and painted into forty photographs - measured, `the phone propped on the '
