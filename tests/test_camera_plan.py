@@ -200,3 +200,60 @@ def test_the_selfie_manner_is_candid_with_two_rules_turned_around(tmp_path_facto
     assert out["consecutive"] == 0, out
     assert out["unknown"] == 0, out
     assert out["biggest"] <= 1 / 3, out
+
+
+# Raw, and it has to stay raw: the word-boundary escapes below are for the JS
+# regex, and in a cooked string Python eats `\b` into a backspace byte before
+# node ever sees it. That has now cost three separate sittings.
+TECHNIQUE_PROBE = r"""
+import { MANNER } from '%(kinds)s'
+
+// The eight forms the manner offers for the `technique` field, read off the
+// instruction rather than restated here: a list restated in a test drifts from
+// the one the writer sees, which is the failure this is guarding against.
+const line = MANNER.candid.line
+const menu = line.slice(line.indexOf('What goes in it'), line.indexOf('It NAMES NOTHING'))
+const examples = [...menu.matchAll(/`([^`]+)`/g)].map((m) => m[1])
+
+// The property sessions 277 and 278 measured: a defect with somewhere to fall
+// lands there, and a bare adjective renders as if nothing had been written.
+const ATTACHED = /\b(where|across|down|under|along|beside|of her|side of|in the frame)\b/i
+const ROOM = /\b(window|sofa|couch|bed|mattress|carpet|lamp|curtain|wall|floor|headboard|bedspread|shelf|door|mirror|room)\b/i
+const DEVICE = /\b(phone|camera|lens|flash)\b/i
+
+console.log(JSON.stringify({
+  count: examples.length,
+  loose: examples.filter((e) => !ATTACHED.test(e)),
+  room: examples.filter((e) => ROOM.test(e)),
+  device: examples.filter((e) => DEVICE.test(e)),
+}))
+"""
+
+
+def test_every_candid_technique_example_has_somewhere_to_fall(tmp_path_factory):
+    """A `technique` example that names a defect and not a place teaches a clause
+    that does not render.
+
+    Measured 2026-08-24, sessions 277 and 278: four arms of eight seeds on one
+    hand-fixed line, judged blind on where the motion blur landed. `slightly
+    blurred` put it on her hand in 0 photographs of 8, and a line carrying no
+    Technique block at all scored 1 of 8 - the same photograph. `slightly
+    blurred where a hand moved` scored 4 of 8 (p=0.038 against the bare form)
+    and `blurred down her forearm where her hand moved at her side` scored 6 of
+    8, which is not a real gain over the loose one at this size (p=0.30).
+
+    So what is pinned is the ATTACHMENT and not the anatomy: every example has
+    to say where its defect falls, and none may reach for the room or a device,
+    which two older measurements in the same paragraph already forbid. The
+    writer copies the examples rather than the rule, so an example that breaks
+    either is the rule being deleted quietly.
+    """
+    out = _node_json(TECHNIQUE_PROBE % {"kinds": (ROOT / "frontend/src/kinds.js").as_posix()},
+                     tmp_path_factory.mktemp("techniquemenu"))
+
+    # Eight, and the count is pinned so that trimming the list to make room for
+    # something else is a decision somebody takes on purpose.
+    assert out["count"] == 8, out
+    assert out["loose"] == [], out
+    assert out["room"] == [], out
+    assert out["device"] == [], out

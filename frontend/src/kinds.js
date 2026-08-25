@@ -809,10 +809,30 @@ const BASE_MANNERS = [
         + 'her is in frame, and nowhere else either: a rule with no field of its own is a rule '
         + 'that does not arrive - measured, the whole-room focus asked of the line reached 0 '
         + 'lines of 25 until it was moved somewhere that owns it.\n'
+        + 'EVERY CLAUSE IN IT SAYS WHERE THE DEFECT FALLS. A defect named with no attachment '
+        + 'at all lands nowhere: measured 2026-08-24, sessions 277 and 278, four arms of eight '
+        + 'seeds sharing one hand-fixed line, judged blind on where the blur went. `slightly '
+        + 'blurred` put it on her hand in 0 photographs of 8 - which is exactly what a '
+        + 'photograph with NO technique clause at all scored, 1 of 8. The bare adjective is not '
+        + 'a weaker version of an anchored clause, it is the same photograph as writing '
+        + 'nothing.\n'
+        + 'What the attachment has to be is smaller than it looks. `slightly blurred where a '
+        + 'hand moved` - a where-clause naming nobody - already scores 4 of 8 (against the bare '
+        + 'form, p=0.038), and `blurred down her forearm where her hand moved at her side` '
+        + 'scores 6 of 8, which is not a real gain over it at this size (p=0.30). So the rule '
+        + 'is the attachment and NOT the anatomy: name where it falls, and do not pad the '
+        + 'clause chasing detail that does not render. The examples below name a part of her '
+        + 'because that is the cheapest way to always have somewhere to attach it.\n'
         + 'What goes in it, three or four of these, chosen for THIS photograph and changed from '
-        + 'line to line: `grainy`, `the shadows gone to noise`, `flat and overexposed`, '
-        + '`colour washed out`, `slightly blurred where a hand moved`, `the near side a stop too '
-        + 'bright`, `tilted a few degrees`, `off-centre with empty space down one side`. It '
+        + 'line to line: `blurred down her forearm where her hand moved`, `the shadow under her '
+        + 'arm gone to noise`, `flat and overexposed across her chest and shoulders`, `the '
+        + 'colour washed out of her skin`, `the near side of her face a stop too bright`, `the '
+        + 'grain heavy in the shadow under her jaw`, `her shoulders running a few degrees off '
+        + 'level in the frame`, `her body pushed to one side of the frame with empty space '
+        + 'beside her`. Measured over 250 lines, the old list - seven bare adjectives and one '
+        + 'anchored form - left 32% of clauses with no attachment of any kind, and this list '
+        + 'leaves none: 68% of lines carried one before and 100% carry one after, with the '
+        + 'per-run low going from 11 of 25 to 25 of 25. It '
         + 'NAMES NOTHING IN THE ROOM - no wall, no window, no bed, no furniture: the room is in '
         + 'the prompt already and a technique clause that names a corner of one invents a different room. Measured, `empty room down one side` as the example came back as '
         + '`empty bedspread down one side` and a headboard, in a shoot whose look is a living '
@@ -1292,7 +1312,33 @@ export const SHOOT_LINE_INSTRUCTION =
   // the only thing keeping it switched off in `directed`, which defines the field
   // nowhere. Measured 2026-08-21, n=25: the key without a bullet of its own came back
   // as a lighting plan in 23 lines of 23, and with a bullet it changed no render in a
-  // 12-seed A/B. Candid does not need it here — MANNER.candid.line fills the field 8/8.
+  // 12-seed A/B.
+  //
+  // The paragraph above that names SEVEN keys is NOT a stale contradiction to tidy
+  // away, and the switch is the two of them together: the skeleton is what `directed`
+  // obeys, the enumeration is what carries `technique` into `candid`. Measured
+  // 2026-08-24 with scripts/measure_writer.mjs, text only, counting `^Technique:` in
+  // the joined prompt — `clean_fields` drops an empty field before the block join, so
+  // an absent heading is an unwritten one. Correcting the header to SIX and dropping
+  // `technique` from it moved `directed` by nothing (0 of 25 on two runs a side, both
+  // arms) and took `candid` from 109 of 125 to 8 of 125, five runs a side. So
+  // MANNER.candid.line, which spends a paragraph saying the field is where the capture
+  // quality goes, delivers 6% on its own: a rule that names a field still needs
+  // something else to ASK for that field.
+  //
+  // And arriving by enumeration is not the same as arriving. Ten runs a side, candid:
+  // this six-key skeleton delivers `technique` 193 of 250, and it is wildly unstable
+  // run to run — 25, 17, 17, 25, 25, 17, 16, 9, 17, 25. Adding `technique` to THIS
+  // skeleton with a bullet of its own takes it to 250 of 250, every run 25, while the
+  // five keys already here stay put (`her` 242 of 250 against 249, `face` 248 against
+  // 237). A key in the skeleton does not miss; a key carried only by the enumeration
+  // misses a quarter of the time.
+  //
+  // Which is why the seventh key cannot simply be added here: the same bullet run
+  // against `directed` fills the field 48 of 48 with a lighting plan, repeated word for
+  // word down the run — `Available light from the window, no flash, a still quiet
+  // frame` on line after line. That is the 2026-08-21 failure above, reproduced. The
+  // field is candid's, and a skeleton that asks for it has to ask only there.
   + 'THE SIX FIELDS. Answer as JSON: `{"photographs": [{"camera": "…", "act": "…", '
   + '"her": "…", "him": "…", "worn": "…", "face": "…"}, …]}`, one object per photograph, '
   + 'in order. Every field is filled on every object, as prose, with no field name repeated '

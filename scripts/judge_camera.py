@@ -296,6 +296,42 @@ ARRANGEMENT_ASKED = [
     ("allfours", "on all fours on the bed and he is kneeling behind"),
 ]
 
+# The ninth question, and the one `shoot_technique_anchor.py` is shot for. The
+# `technique` field's whole claim to being WRITTEN rather than picked out of a
+# menu by code is that the writer ties a defect to a place - `softly out of
+# focus where her hand moved`. So this asks where the blur IS, and nothing about
+# whether there is any: an arm that names motion blur and lands it nowhere in
+# particular has not earned the sentence that names the hand.
+BLUR = """Look at this photograph and answer with ONE word and nothing else.
+
+Where is the motion blur or softness in this image?
+
+hand - one hand, arm or the area right around it is blurred while her face stays sharper
+spread - the whole image is about equally soft or blurred
+face - her face or head is the blurred part
+none - nothing looks blurred; the image is sharp throughout
+
+Answer with exactly one of: hand, spread, face, none."""
+
+BLUR_WORDS = ("hand", "spread", "face", "none")
+
+# The tenth, and the companion control. `blur` can only be read on a photograph
+# that has some defect in it at all, and the `none` arm of that session carries
+# no Technique block - only the look's own capture clause. If grain comes back
+# the same across all three arms, the field is adding nothing the look was not
+# already doing, which is the finding that deletes it.
+GRAIN = """Look at this photograph and answer with ONE word and nothing else.
+
+How much visible grain, sensor noise or speckle is in this image?
+
+heavy - obvious grain or noise across most of the image
+some - visible grain in the darker areas only
+none - the image looks clean, with no visible grain or noise
+
+Answer with exactly one of: heavy, some, none."""
+
+GRAIN_WORDS = ("heavy", "some", "none")
+
 DEVICE_YES = (
     "phone held out at arm's length in front of her face",
     "mirror selfie, the phone up in her right hand",
@@ -381,7 +417,7 @@ def main() -> int:
     ap.add_argument("--base", default="http://127.0.0.1:8777")
     ap.add_argument("--question",
                     choices=("position", "turn", "side", "device", "kiss", "act", "holder",
-                             "arrangement"),
+                             "arrangement", "blur", "grain"),
                     default="position",
                     help="position = which side of her the camera stands on, heights winning "
                          "over horizontals; turn = how far her body is turned, which is the only "
@@ -396,7 +432,11 @@ def main() -> int:
                          "manner exists for and the one the device question was standing in "
                          "for badly; arrangement = which arrangement of the two bodies is in "
                          "the photograph, scored only on the lines a planted one was written "
-                         "into")
+                         "into; blur = WHERE the motion blur landed, which is the only way to "
+                         "see whether tying a defect to a place does anything the bare word "
+                         "does not; grain = how much grain is in the photograph at all, the "
+                         "companion control that says whether the technique field adds "
+                         "anything the look was not already doing")
     ap.add_argument("--repeat", type=int, default=1,
                     help="judge each photograph this many times; the judge has its own "
                          "variance and one pass cannot see it")
@@ -416,6 +456,8 @@ def main() -> int:
         "act": (ACT, ACT_WORDS),
         "holder": (HOLDER, HOLDER_WORDS),
         "arrangement": (ARRANGEMENT, ARRANGEMENT_WORDS),
+        "blur": (BLUR, BLUR_WORDS),
+        "grain": (GRAIN, GRAIN_WORDS),
     }.get(args.question, (QUESTION, WORDS))
 
     hits, rows, skipped = 0, [], 0
@@ -424,6 +466,14 @@ def main() -> int:
         # carries which wording asked for it, so the line is not what is compared.
         if turn:
             want = "profile"
+        # Both of these are read per ARM and not per line: every shot is scored
+        # against the same word, and what is compared is the rate the three arms
+        # reach it. Only one arm asked for `hand` at all, and no arm asks for
+        # `heavy` - the look asks for grain in all three.
+        elif args.question == "blur":
+            want = "hand"
+        elif args.question == "grain":
+            want = "heavy"
         elif args.question == "kiss":
             want = asked_of(shot["prompt"], KISS_ASKED)
         elif args.question == "device":
