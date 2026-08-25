@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import { cameraPlan, shootChunkNote, MANNER, TECHNIQUE_DEFECTS, BODY_OPENINGS } from './kinds.js'
+import { cameraPlan, shootChunkNote, MANNER, TECHNIQUE_DEFECTS, BODY_OPENINGS,
+         BRIEF_AXES } from './kinds.js'
 import { undressBy } from './enhance.js'
 
 /** The defect plan exists to stop one subject running through the tail of a long
@@ -49,6 +50,27 @@ describe('the body opening plan', () => {
                                   cameras: ['CAM A'], opens: ['her feet'] })
     expect(note).toContain('9 | her opens on: her feet')
     expect(note).toContain('All three are still written in every single line')
+  })
+})
+
+/** Every axis rolls on every brief — `briefFromLook` picks one row from each and
+ *  hands them over as constraints together. So a row that names a room, a
+ *  garment or a pose is not a style choice, it is a clause fighting the look,
+ *  the reach or the writer of the lines, and none of the three shows up in a
+ *  diff. */
+describe('the brief axes', () => {
+  const rows = Object.values(BRIEF_AXES).flat()
+
+  test('read as the continuation of "it" that the brief hands over', () => {
+    for (const row of rows) expect(row).toMatch(/^[a-z]/)
+  })
+
+  test('name no room, no garment, no pose and no camera', () => {
+    // The look owns the place and the light, the wardrobe owns the clothes, and
+    // the writer of the lines owns the body and the camera.
+    const forbidden =
+      /\b(kitchen|bathroom|bedroom|hallway|studio|bed|couch|sofa|chair|table|mirror|window|floor|dress|skirt|top|blouse|bra|panties|briefs|stockings|heels|naked|nude|undress|pose|posing|angle|close-up|frame[ds]|camera|lens)\b/
+    for (const row of rows) expect(row).not.toMatch(forbidden)
   })
 })
 

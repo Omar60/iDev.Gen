@@ -1161,6 +1161,39 @@ export const BRIEF_AXES = {
     'reads as getting ready and being interrupted by her own reflection',
     'begins bored and idle and turns deliberate',
   ],
+  // WHAT THE SESSION IS ABOUT, which `register` does not say. The register rolls
+  // how a shoot READS; every one of its five is a mood, so two shoots that roll
+  // different registers are still the same shoot - she is in the room and the
+  // clothes come off at the rolled pace, and that is the whole of it.
+  //
+  // Every row here is deliberately room-blind and reach-blind, and both of those
+  // are load-bearing:
+  //
+  //  * ROOM-BLIND. The look names one room and it is prepended to every
+  //    photograph, so a brief that names a second one comes back as the first
+  //    with the words fighting each other - `BRIEF_INSTRUCTION` says so and the
+  //    room ban is about foreign things exactly like this. No row here names a
+  //    place or a piece of furniture by kind; `whatever is already in the room`
+  //    lets the brief reach for what the look put there and nothing else.
+  //  * REACH-BLIND. All the axes roll on every shoot, so a row that assumes
+  //    clothes contradicts `explicit` (which says there is no undressing and no
+  //    getting ready in it) and a contradiction kills the clause it is in. So no
+  //    row here mentions a garment or an undressing.
+  //
+  // And none of them says a pose, a framing or an angle, for the same reason the
+  // brief instruction bans those outright: the brief is handed to the writer of
+  // the lines, and a pose named here comes back forty times over.
+  //
+  // ponytail: five rows, not fifteen. The brief is one sentence of forty-five
+  // words carrying four rolled constraints already; this is the fourth, and a
+  // longer list buys variety the sentence has no room to spend.
+  activity: [
+    'is built around one thing she keeps doing with her hands all the way through',
+    'has her move once to another part of the same room and stay there',
+    'starts in the middle of something already underway and never explains it',
+    'is interrupted once by something she turns towards and carries on after it',
+    'keeps hold of one thing already in the room from the first photograph to the last',
+  ],
 }
 
 /** The shoot laid out before a word of it is written.
