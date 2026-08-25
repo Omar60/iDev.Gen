@@ -356,7 +356,8 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   const bare = reach === 'explicit'
   // The arc, decided once and in numbers. Derived per round it was derived
   // differently per round; see STAGE_PLAN_INSTRUCTION.
-  const stages = await stagePlan(brief, wardrobe, n, bare)
+  const stages = await stagePlan(brief, wardrobe, n, bare, undressBy(n, reach, bare),
+                                 dressedThrough(n, reach, bare))
   // The camera, decided once and in numbers, for the same reason the arc is.
   // Each manner plans from its own catalogue: `directed` from where a
   // photographer stands, `candid` from where a phone was put down — six forms
@@ -514,7 +515,34 @@ const STAGE_SHARE = 0.25
  *  for again, once, with the offending range quoted back. Once and not until it
  *  is right: this is a minute of somebody's time per attempt, and a plan that is
  *  merely lopsided still shoots. */
-export const stagePlan = async (brief, wardrobe, n, bare = false) => {
+/** The photograph the last garment is gone by, or 0 for a shoot that keeps its
+ *  clothes and for one that opens with none — no number, for opposite reasons.
+ *
+ *  55%: the same split the plan's own proportions already describe, a fifth on
+ *  the opening and a quarter getting there. What the number adds is that it
+ *  cannot be read two ways. */
+export const undressBy = (n, reach, bare) =>
+  (bare || reach === 'sfw' ? 0 : Math.round(n * 0.55))
+
+/** The last photograph with nothing off yet — the other end of the same clamp.
+ *
+ *  A ceiling on its own is a floor nobody set: handed only `undressed by 17`, six
+ *  plans of thirty put her topless in photograph 4 and left three dressed
+ *  photographs in a shoot the instruction asks to open on about six. A fifth,
+ *  which is the opening share that paragraph already names. */
+export const dressedThrough = (n, reach, bare) =>
+  (bare || reach === 'sfw' ? 0 : Math.max(2, Math.round(n * 0.2)))
+
+/** `undressBy`: the photograph the last garment is gone by, or 0 for a shoot
+ *  that keeps its clothes or never had them on.
+ *
+ *  A number and not a proportion, because the instruction's proportions were
+ *  measured not to become one — see the paragraph they sit in. 55% of the shoot,
+ *  which is the same split the proportions already describe (a fifth opening, a
+ *  quarter getting there); what it adds is that the planner cannot read it two
+ *  ways. */
+export const stagePlan = async (brief, wardrobe, n, bare = false, undressBy = 0,
+                                dressedTo = 0) => {
   const parse = (rows) => rows.flatMap((r) => {
     const span = /(\d+)\s*[-–—]\s*(\d+)/.exec(r.label || '')
     // A row whose label is not a range is a row the model formatted its own way.
@@ -525,6 +553,23 @@ export const stagePlan = async (brief, wardrobe, n, bare = false) => {
   })
   const cap = Math.max(2, Math.round(n * STAGE_SHARE))
   const tooBig = (stages) => stages.filter((s) => s.to - s.from + 1 > cap)
+  // The other way a plan comes back broken, and the one the numbers above made
+  // common: a photograph named in the instruction is read as a fence between two
+  // stages rather than a photograph inside one, and the ranges then step over it.
+  // Measured, six plans of thirty with both ends given as `before` and `by`: four
+  // of the six skipped a photograph, and it was one of the two named ones. It is
+  // worth a check of its own rather than a paragraph — a photograph in no stage
+  // is a photograph the writer is given no stage for.
+  const missing = (stages) => {
+    const covered = new Set(stages.flatMap((s) => {
+      const out = []
+      for (let i = s.from; i <= s.to; i += 1) out.push(i)
+      return out
+    }))
+    const gaps = []
+    for (let i = 1; i <= n; i += 1) if (!covered.has(i)) gaps.push(i)
+    return gaps
+  }
   const askFor = (extra) => ask({
     instruction: `${STAGE_PLAN_INSTRUCTION}\n\nNo stage covers more than ${cap} photographs `
                + `of the ${n}${extra}`,
@@ -536,18 +581,39 @@ export const stagePlan = async (brief, wardrobe, n, bare = false) => {
           ? 'She is NOT wearing this and never puts it on. It is the wardrobe this shoot is '
             + `without, and no stage may dress her in it:\n${wardrobe}\n\n`
           : `The wardrobe it starts in:\n${wardrobe}\n\n`)
-        + `It is ${n} photographs long.`,
+        + `It is ${n} photographs long.`
+        + (undressBy && dressedTo
+          ? `\n\nTHE UNDRESSING HAPPENS INSIDE A WINDOW, AND BOTH ENDS OF IT ARE GIVEN. `
+            + `Photographs 1 to ${dressedTo} are the whole wardrobe, nothing off yet: those `
+            + 'stages differ by where she is and what she is doing. By photograph '
+            + `${undressBy} the last garment is gone, and it stays gone — the stages from `
+            + 'there to the end are what this shoot is for, and there are several of them, '
+            + 'differing by where she is, what carries her weight and what she is doing, never '
+            + 'by a garment, because there is none left.\n'
+            + `Both numbers are photographs INSIDE stages, never gaps between them: the ranges `
+            + `still run 1 to ${n} with no photograph skipped. A plan that jumps from 1-5 to `
+            + '7-11 has lost photograph 6.'
+          : ''),
     n: 12,
   }).then(parse)
 
   const first = await askFor('.')
   const over = tooBig(first)
-  if (!over.length) return first
-  const again = await askFor('. Your last plan gave '
-    + over.map((s) => `${s.from}-${s.to}`).join(' and ')
-    + ' to a single stage, which is the whole shoot standing still and then changing all at '
-    + 'once. Break that stretch into the steps it is made of.')
-  return tooBig(again).length && again.length < first.length ? first : (again.length ? again : first)
+  const gaps = missing(first)
+  if (!over.length && !gaps.length) return first
+  const again = await askFor('.'
+    + (over.length
+      ? ' Your last plan gave '
+        + over.map((s) => `${s.from}-${s.to}`).join(' and ')
+        + ' to a single stage, which is the whole shoot standing still and then changing all '
+        + 'at once. Break that stretch into the steps it is made of.'
+      : '')
+    + (gaps.length
+      ? ` Your last plan left photograph${gaps.length > 1 ? 's' : ''} ${gaps.join(', ')} in no `
+        + 'stage at all. Every photograph is inside exactly one range.'
+      : ''))
+  const stillBroken = (s) => tooBig(s).length || missing(s).length
+  return stillBroken(again) && again.length < first.length ? first : (again.length ? again : first)
 }
 
 const covering = (stages, at) =>
