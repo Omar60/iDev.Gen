@@ -65,6 +65,16 @@ ARMS = [
      "not discriminate"),
     ("foreign", f"Technique:\n{BODY}, the white tiled kitchen counter beside her gone to noise.",
      "a surface the model will not paint on its own - the arm that carries the claim"),
+    ("plausible", f"Technique:\n{BODY}, a stretch of empty bedspread above her head.",
+     "INCONCLUSIVE, session 282 - 0 of 8, bedding never reached the top of the frame. "
+     "But `above her head` is impossible geometry for a waist-up frontal of a standing "
+     "woman, and this sampler renders a contradiction as neither, so the arm cannot "
+     "tell a harmless clause from an impossible one"),
+    ("behind", f"Technique:\n{BODY}, the bedspread behind her gone to noise.",
+     "the same plausible surface with a placement the line permits - the look puts a "
+     "bed against the far wall, so behind her is where it already is. Judged with "
+     "--question bedsize: the control shows a bed at the edge, and the question is "
+     "whether naming it brings it forward"),
 ]
 
 

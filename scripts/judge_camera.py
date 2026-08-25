@@ -371,6 +371,46 @@ Answer with exactly one of: yes, no."""
 
 KITCHEN_WORDS = ("yes", "no")
 
+# The thirteenth. `kitchen` settled the easy half - a surface the model would
+# never paint unasked gets painted when the field names it. The half that
+# actually costs a shoot is the PLAUSIBLE surface: 16 of the 30 shipped clauses
+# that name one name bed dressing, and the look already puts a bed in the room,
+# so `is a bed visible` cannot separate the arms any more than `is a table
+# visible` could. What the clause claims is not that a bed exists but WHERE it
+# is - `a stretch of empty bedspread above her head` puts bedding in the top of
+# the frame, and the control's bed sits off to one side at her hip. So the
+# question is about the upper third and nothing else.
+ABOVE = """Look at this photograph and answer with ONE word and nothing else.
+
+Look only at the top part of the image, above the woman's head. What is there?
+
+bedding — a bed, mattress, duvet, pillows or sheets
+wall — a plain wall, a ceiling, a curtain or a window
+other — furniture that is none of those, or nothing identifiable
+
+Answer with exactly one of: bedding, wall, other."""
+
+ABOVE_WORDS = ("bedding", "wall", "other")
+
+# The fourteenth, and the one that finishes the plausible-surface question after
+# `above` came back inconclusive: `a stretch of empty bedspread above her head`
+# is impossible geometry for a waist-up frontal of a standing woman, and a
+# contradiction renders as neither, so 0 of 8 could not tell harmless from
+# impossible. This asks about a placement the line permits - the look already
+# puts a bed against the far wall - so the arms differ by whether NAMING the
+# thing brings it forward, not by whether it can exist.
+BEDSIZE = """Look at this photograph and answer with ONE word and nothing else.
+
+How much of the background behind the woman is taken up by a bed or bedding?
+
+most - a bed or bedding fills most of the background behind her
+edge - a bed is visible but only at one side or in a corner
+none - no bed or bedding is visible behind her
+
+Answer with exactly one of: most, edge, none."""
+
+BEDSIZE_WORDS = ("most", "edge", "none")
+
 DEVICE_YES = (
     "phone held out at arm's length in front of her face",
     "mirror selfie, the phone up in her right hand",
@@ -456,7 +496,7 @@ def main() -> int:
     ap.add_argument("--base", default="http://127.0.0.1:8777")
     ap.add_argument("--question",
                     choices=("position", "turn", "side", "device", "kiss", "act", "holder",
-                             "arrangement", "blur", "grain", "furniture", "kitchen"),
+                             "arrangement", "blur", "grain", "furniture", "kitchen", "above", "bedsize"),
                     default="position",
                     help="position = which side of her the camera stands on, heights winning "
                          "over horizontals; turn = how far her body is turned, which is the only "
@@ -499,6 +539,8 @@ def main() -> int:
         "grain": (GRAIN, GRAIN_WORDS),
         "furniture": (FURNITURE, FURNITURE_WORDS),
         "kitchen": (KITCHEN, KITCHEN_WORDS),
+        "above": (ABOVE, ABOVE_WORDS),
+        "bedsize": (BEDSIZE, BEDSIZE_WORDS),
     }.get(args.question, (QUESTION, WORDS))
 
     hits, rows, skipped = 0, [], 0
@@ -518,6 +560,12 @@ def main() -> int:
         # No arm asks for furniture. The rate each one reaches is what is read.
         elif args.question in ("furniture", "kitchen"):
             want = "no"
+        # No arm asks for bedding overhead except the one being tested; the rate
+        # each arm reaches it is what is read.
+        elif args.question == "above":
+            want = "bedding"
+        elif args.question == "bedsize":
+            want = "most"
         elif args.question == "kiss":
             want = asked_of(shot["prompt"], KISS_ASKED)
         elif args.question == "device":
