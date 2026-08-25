@@ -77,6 +77,71 @@ Expression:
 Her mouth is open on a sound and her eyes are half-shut."""
 
 
+# THE ANCHOR ARMS. Candidate wordings that are NOT in `ARRANGEMENTS` and must not
+# be until they are measured — `--only` takes their keys the same way.
+#
+# `back` and `side` were shot in exactly ONE wording each and died in it: 0 of 12
+# and 0 of 9 on finepornV4, 0 of 12 and 0 of 8 on the Krea 2 mix, both collapsing
+# into her upright on top facing the lens, which is this sampler's default for
+# two bodies. The camera was swapped through four families and three; the SENTENCE
+# never moved. That is the gap these arms are for.
+#
+# The hypothesis, and it is a different one from `write it again but harder`: the
+# collapse is the sampler averaging towards its dominant mode, so what beats it is
+# not more adjectives on the bodies but a THIRD THING in the sentence whose
+# geometry the dominant mode cannot satisfy. A woman upright astride a man cannot
+# also be lying across the edge of a bed with him standing on the floor: one of
+# the two bodies is vertical and the other is horizontal, and the anchor is what
+# says so. Naming the anchor is safe — a prop named in a line gets built 7 of 8,
+# which is the finding that makes this affordable.
+#
+# So each dead arrangement gets its plain wording back as its OWN control and two
+# anchored rewordings beside it, on the same cameras and the same seeds. If the
+# plain one dies again and an anchored one lands, the anchor is the reason. If all
+# three die together, the wording was never the problem and this arrangement is
+# the base model's ceiling — which is the answer nobody has actually earned yet.
+#
+# The cameras are `side` and `overhead` on every arm on purpose, and `front` is
+# deliberately absent: a frontal camera is the one that AGREES with the collapse
+# (her upright, facing the lens), so a miss under it says nothing. A horizontal
+# body against a vertical one is legible from the side and from above and nowhere
+# else. Note `side` is a full profile, which Krea 2 cannot render at all — on that
+# base the overhead half of each arm is the half that carries the answer.
+CANDIDATES = [
+    # The controls: the exact wording that died, so this rig can see it die again.
+    {"key": "under-plain", "cameras": ["side", "overhead"],
+     "act": "She is on her back with her legs open and he is over her between them, "
+            "the two of them joined, two people in frame."},
+    {"key": "spoon-plain", "cameras": ["side", "overhead"],
+     "act": "They are both on their sides with him behind her and her upper leg lifted, "
+            "the two of them joined, two people in frame."},
+    # Her horizontal, him VERTICAL. The edge of the bed and the floor he stands on
+    # are the anchor: the collapse has both bodies stacked on the same surface.
+    {"key": "under-edge", "cameras": ["side", "overhead"],
+     "act": "She is lying on her back across the edge of the bed with her knees up "
+            "against his chest, he is standing on the floor at the edge of the bed "
+            "between her legs, the two of them joined, two people in frame."},
+    # The same shape hung on a piece of furniture that is not a bed, because a bed
+    # is the surface the collapse already lives on and may be half the reason for it.
+    {"key": "under-table", "cameras": ["side", "overhead"],
+     "act": "She is lying on her back on the table with her shoulders flat on it, he "
+            "is standing on the floor at the end of the table between her legs, the "
+            "two of them joined, two people in frame."},
+    # Both bodies horizontal, said as a fact about the mattress rather than as
+    # `on their sides` — the phrase the collapse ignored twice.
+    {"key": "spoon-flat", "cameras": ["side", "overhead"],
+     "act": "They are both lying down flat along the mattress with their bodies "
+            "horizontal, he is behind her back with his chest against it and her "
+            "knees drawn up, the two of them joined, two people in frame."},
+    # The pillow as the anchor, and her head on it as the thing that cannot be true
+    # of a woman sitting upright.
+    {"key": "spoon-pillow", "cameras": ["side", "overhead"],
+     "act": "Her head is down on the pillow and her shoulder is flat on the mattress, "
+            "he is lying along her back behind her with his arm over her, the two of "
+            "them joined, two people in frame."},
+]
+
+
 def catalogue() -> dict:
     """`ARRANGEMENTS` and the positions, read from the module that owns them."""
     # A file:// URL, not a bare path: node's ESM loader reads `C:` as a protocol.
@@ -92,11 +157,13 @@ def catalogue() -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8777")
-    ap.add_argument("--only", default="back,side,astride",
-                    help="arrangement keys; the default is the two unmeasured ones "
-                         "and the control")
-    ap.add_argument("--manner", default="selfie",
-                    help="whose camera catalogue the families are drawn from")
+    ap.add_argument("--only", default="under-plain,under-edge,under-table,"
+                                      "spoon-plain,spoon-flat,spoon-pillow,astride",
+                    help="arrangement keys, from ARRANGEMENTS or from CANDIDATES; the "
+                         "default is the six anchor arms and the rig control")
+    ap.add_argument("--manner", default="directed",
+                    help="whose camera catalogue the families are drawn from; the anchor "
+                         "arms want `directed`, the only one with a `side` in it")
     ap.add_argument("--base-model", choices=tuple(BASES), default="fineporn",
                     help="which checkpoint to ask it of; `krea` is the Krea 2 mix at 8 steps, "
                          "the base every camera question was asked on")
@@ -106,7 +173,8 @@ def main() -> int:
     read = catalogue()
     positions = read["POSITIONS"][args.manner]
     wanted = [k.strip() for k in args.only.split(",") if k.strip()]
-    arrangements = [a for a in read["ARRANGEMENTS"] if a["key"] in wanted]
+    pool = read["ARRANGEMENTS"] + CANDIDATES
+    arrangements = [a for a in pool if a["key"] in wanted]
     missing = set(wanted) - {a["key"] for a in arrangements}
     if missing:
         print(f"no arrangement named {sorted(missing)} - it may have been taken out of the pool")
@@ -121,7 +189,12 @@ def main() -> int:
             if p["family"] in a["cameras"] and p["family"] not in seen:
                 seen.add(p["family"])
                 cameras.append(p)
-        print(f"{a['key']:<9} {len(cameras)} cameras: {', '.join(sorted(seen))}")
+        # A family this manner has no position for is a silent no-op: the arm
+        # would just not be shot and the run would look complete. `side` is the
+        # one that does it - it exists in `directed` alone.
+        assert cameras, (f"{a['key']} wants {a['cameras']} and the `{args.manner}` "
+                         f"catalogue has none of them")
+        print(f"{a['key']:<13} {len(cameras)} cameras: {', '.join(sorted(seen))}")
         for p in cameras:
             label = f"{a['key']}-{p['family']}"
             prompt = (f"zchar_jir.\n\n{LOOK}\n\nAngle & Framing:\n{p['line']}, {FRAMING}.\n"

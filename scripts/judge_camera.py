@@ -288,6 +288,15 @@ ARRANGEMENT_WORDS = ("ontop", "away", "under", "allfours", "spooning", "standing
 # scored: it is a photograph the plan left to the writer, and there is no
 # expectation to compare it against.
 ARRANGEMENT_ASKED = [
+    # The anchor arms of `shoot_arrangements.py` first, because they are longer
+    # wordings of the same two arrangements and the plain forms below would
+    # otherwise match some of them first. Each one is the phrase that carries the
+    # ANCHOR - the edge, the table, the mattress, the pillow - so a hand-written
+    # line that says the arrangement some other way is still read as unplanted.
+    ("under", "on her back across the edge of the bed"),
+    ("under", "on her back on the table"),
+    ("spooning", "lying down flat along the mattress"),
+    ("spooning", "her head is down on the pillow"),
     ("ontop", "astride him with her knees"),
     ("away", "astride him facing away"),
     ("under", "on her back with her legs open and he is over her"),
