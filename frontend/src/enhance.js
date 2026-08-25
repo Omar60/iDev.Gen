@@ -14,7 +14,7 @@ import {
   SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
   takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, POSITIONS, arrangementPlan,
-  fitCameras,
+  fitCameras, BODY_OPENINGS,
   kissPlan, KISS_CAMERA,
 } from './kinds.js'
 
@@ -371,6 +371,10 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // plan their camera.
   const defects = MANNER[manner]?.defects
     ? cameraPlan(n, Math.random, MANNER[manner].defects) : null
+  // Which body region each photograph's `her` field opens on. Not per manner:
+  // every shoot walks the whole body, and every shoot opened on the chest. Dealt
+  // from the same spreader, and rides on the camera rows like the rest.
+  const opens = cameras ? cameraPlan(n, Math.random, BODY_OPENINGS) : null
   // The kiss frames, decided here too, and they take their photograph's camera
   // with them: the gesture only reads from in front of her, close.
   const kisses = kissPlan(n)
@@ -418,6 +422,7 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
                + `\n\n${shootChunkNote({ ...at, bare, stages: covered,
                                          cameras: cameras?.slice(at.from - 1, at.from - 1 + at.want),
                                          defects: defects?.slice(at.from - 1, at.from - 1 + at.want),
+                                         opens: opens?.slice(at.from - 1, at.from - 1 + at.want),
                                          poses: Object.entries(poses)
                                            .filter(([k]) => Number(k) >= at.from
                                                             && Number(k) < at.from + at.want)

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { cameraPlan, shootChunkNote, MANNER, TECHNIQUE_DEFECTS } from './kinds.js'
+import { cameraPlan, shootChunkNote, MANNER, TECHNIQUE_DEFECTS, BODY_OPENINGS } from './kinds.js'
 
 /** The defect plan exists to stop one subject running through the tail of a long
  *  shoot, and it is dealt by the camera spreader. Both halves are worth a check:
@@ -31,5 +31,22 @@ describe('the technique defect plan', () => {
     expect(MANNER.directed.defects).toBeUndefined()
     const note = shootChunkNote({ from: 1, want: 1, total: 8, cameras: ['CAM A'] })
     expect(note).not.toContain('technique:')
+  })
+})
+
+/** Same spreader, same failure, a different field: the `her` field opened on the
+ *  chest in half the lines of three shoots of thirty. All three regions are
+ *  still written every line — only which one comes first is dealt. */
+describe('the body opening plan', () => {
+  test('never opens two photographs running on the same region', () => {
+    const plan = cameraPlan(30, Math.random, BODY_OPENINGS)
+    expect(plan.slice(1).some((o, i) => o === plan[i])).toBe(false)
+  })
+
+  test('reaches the writer, and says all three are still written', () => {
+    const note = shootChunkNote({ from: 9, want: 1, total: 30,
+                                  cameras: ['CAM A'], opens: ['her feet'] })
+    expect(note).toContain('9 | her opens on: her feet')
+    expect(note).toContain('All three are still written in every single line')
   })
 })

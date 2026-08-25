@@ -769,6 +769,28 @@ export const REACH = Object.fromEntries(REACHES.map((r) => [r.key, r]))
  *  Grain and noise are one family because they do the same thing to a
  *  photograph; exposure and colour are two because they do not.
  */
+/** Which of the three body regions the `her` field opens on, dealt per
+ *  photograph.
+ *
+ *  `EVERY LINE WALKS THE WHOLE BODY: the chest and torso, then the hips and
+ *  legs, then the feet` is a rule that cannot go - a line that stops naming the
+ *  torso comes back in a nightgown nobody wrote, and it stays lost for every
+ *  line after it. But the writer reads the order in it as the sentence, and the
+ *  field then opens the same way all shoot: 19 lines of 30 on `Her chest and
+ *  torso in ...` in session 291, 14 of 30 in 290, 14 of 30 in 289 - three runs,
+ *  two briefs, before and after the technique fix.
+ *
+ *  The three regions are all still written in every line. Only which one comes
+ *  FIRST is dealt, so the rule keeps its teeth and loses its template. One
+ *  family each: with three entries the spreader alternates them and never opens
+ *  two photographs running on the same region.
+ */
+export const BODY_OPENINGS = [
+  { family: 'chest', line: 'her chest and torso' },
+  { family: 'hips', line: 'her hips and legs' },
+  { family: 'feet', line: 'her feet' },
+]
+
 export const TECHNIQUE_DEFECTS = [
   { family: 'motion', line: 'motion blur where a part of her moved' },
   { family: 'noise', line: 'a shadow on her gone to noise' },
@@ -1272,10 +1294,14 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'with `Photograph 12.` or `Frame 12:` — the line is queued exactly as written, so a '
   + 'number at the front of it is a number in the prompt.\n'
   + '\n'
-  + 'EVERY LINE WALKS THE WHOLE BODY: the chest and torso, then the hips and legs, then the '
-  + 'feet. Every one of the three, in every single line, whether there is a garment there or '
-  + 'not — and when there is not, the skin is what you write: `her chest bare`, `bare from '
+  + 'EVERY LINE WALKS THE WHOLE BODY: the chest and torso, the hips and legs, and the feet. '
+  + 'All three, in every single line, whether there is a garment there or not — and when '
+  + 'there is not, the skin is what you write: `her chest bare`, `bare from '
   + 'the waist down`, `nude but for the boots`.\n'
+  + 'WHICH OF THE THREE COMES FIRST IS GIVEN TO YOU with each photograph and it is not the '
+  + 'same one twice running. There is no fixed order here to copy: this sentence used to '
+  + 'name one, and half the lines of three shoots of thirty then opened on the same five '
+  + 'words about her chest.\n'
   + 'This is the rule that most needs saying, because it fails silently and it fails late. A '
   + 'line that lists a choker, stockings and boots has said nothing whatsoever about the '
   + 'torso — and an unstated torso is not a bare torso, it is a torso the reader dresses '
@@ -2046,7 +2072,9 @@ export const shootChunkNote = (at) =>
       + at.cameras.map((c, i) => {
         const pose = at.poses?.find((p) => p.at === at.from + i)
         const defect = at.defects?.[i]
+        const opens = at.opens?.[i]
         return `${at.from + i} | ${c}`
+             + (opens ? `\n${at.from + i} | her opens on: ${opens}` : '')
              + (defect ? `\n${at.from + i} | technique: ${defect}` : '')
              + (pose ? `\n${at.from + i} | act: ${pose.arrangement.act}` : '')
       }).join('\n') + '\n'
@@ -2054,6 +2082,15 @@ export const shootChunkNote = (at) =>
       + 'your framing after it. Invent no other position and reword none of these: these are '
       + 'the forms this camera was measured to obey, and a reworded one comes back as a '
       + 'front view. The framing, the pose, the act and the expression are still yours.\n'
+      + (at.opens?.length
+        ? 'EACH ROW ALSO CARRIES AN `her opens on:` LINE, AND THAT IS THE BODY REGION THAT '
+          + 'PHOTOGRAPH WRITES FIRST in its `her` field. The other two follow it, in whatever '
+          + 'order reads best. All three are still written in every single line - that rule '
+          + 'does not bend, and a region left out is a region the reader dresses for you.\n'
+          + 'It is dealt out because the order in that rule is read as the sentence: measured '
+          + 'over three shoots of thirty, half the lines opened on the same five words about '
+          + 'her chest, whatever else the photograph was doing.\n'
+        : '')
       + (at.defects?.length
         ? 'SOME ROWS ALSO CARRY A `technique:` LINE, AND THAT IS THE DEFECT THAT PHOTOGRAPH '
           + 'OPENS ITS `technique` FIELD ON. Unlike the camera it is NOT copied word for word - '
