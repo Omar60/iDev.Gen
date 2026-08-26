@@ -40,7 +40,8 @@ const MAX_TAKES = 100
  */
 export default function ShotsEditor({ shots, onChange, kind, llm = false,
                                       context = '', look = '', wardrobe = '',
-                                      onLook = null }) {
+                                      onLook = null, manner: mannerProp,
+                                      onManner = null }) {
   const set = (i, k, v) => onChange(shots.map((s, j) => (j === i ? { ...s, [k]: v } : s)))
   const total = shots.reduce((n, s) => n + (s.prompt.trim() ? Math.max(1, s.count) : 0), 0)
   const spec = KINDS[kind] || KINDS.shoot
@@ -64,7 +65,19 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
   // Whether anyone is photographing this. Beside the reach and not folded into
   // it: the two are orthogonal, and a candid shoot that ends in penetration is
   // as ordinary a thing to ask for as a directed one that keeps its clothes on.
-  const [manner, setManner] = useState('directed')
+  //
+  // The value rides on the session row too, not only on this <select>: 3.2's
+  // strict check (cell table keyed on the session's manner) reads it off the
+  // row, and a session that does not declare it is refused before the lookup.
+  // `onManner` lifts the chosen value up to the create-session POST; without
+  // it, every session in the app was born with manner='' and compose refused.
+  // The default here matches the parent's default, so the editor's first
+  // write is on the same manner the row says.
+  const [manner, setMannerState] = useState(mannerProp ?? 'directed')
+  const setManner = (v) => {
+    setMannerState(v)
+    if (onManner) onManner(v)
+  }
   // Which arrangements of two bodies the shoot may pass through, picked rather
   // than planned: sessions 155 and 161 are made of a handful of them, and a
   // shoot chasing a particular photograph should be able to ask for it. None by

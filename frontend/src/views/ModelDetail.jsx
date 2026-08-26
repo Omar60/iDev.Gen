@@ -52,6 +52,14 @@ export default function ModelDetail({ id }) {
     settings: { ...model.settings, lora_strength: model.lora_strength, kind: 'shoot' },
     seed_mode: 'random',
     seed: 0,
+    // Manner rides on the row, not only on the editor's <select>. The editor
+    // already shows it and uses it to ask the writer for a line; without this
+    // default, the POST would carry no manner, the session would be born with
+    // manner='', and 3.2's strict check would refuse every compose. The
+    // default matches the editor's (ShotsEditor.jsx:67 was the second home
+    // for this fact), and the <ShotsEditor> onManner callback below updates
+    // it when the user picks another.
+    manner: 'directed',
   })
 
   // One candidate is not a choice worth making twice, so it is made here.
@@ -326,6 +334,7 @@ export default function ModelDetail({ id }) {
                        wardrobe={newSession.wardrobe}
                        onLook={({ look, wardrobe }) => setNewSession((cur) => ({
                          ...cur, look: look ?? cur.look, wardrobe: wardrobe ?? cur.wardrobe }))}
+                       onManner={(m) => setNewSession((cur) => ({ ...cur, manner: m }))}
                        onChange={(shots) => setNewSession((cur) => ({ ...cur, shots }))} />
 
           <div className="row" style={{ marginTop: 12 }}>

@@ -360,11 +360,27 @@ def test_a_strict_compose_requires_manner_and_checkpoint_on_the_session(client, 
     resolve. A session with empty manner or empty checkpoint would
     silently find zero cells and read as "not verified" — the
     422 before the lookup names what the session is missing.
+
+    The seeded workflow names its checkpoint in its loader, so the
+    backend would derive session.checkpoint from it. To exercise the
+    truly-missing path, the session is pointed at a bare workflow
+    whose graph has no CheckpointLoaderSimple / UNETLoader: that is
+    the shape the derivation sees when the source-of-truth is empty
+    on both sides (no override, no loader).
     """
+    # A graph with one CLIPTextEncode and no loader: passes
+    # _require_api_graph (one class_type) and graph_checkpoint returns
+    # '' (no ckpt_name, no unet_name).
+    bare_wf = client.post("/api/workflows", json={
+        "name": "bare",
+        "graph": {"1": {"class_type": "CLIPTextEncode",
+                        "inputs": {"text": "x", "clip": ["2", 1]}}},
+    }).json()
     sid = client.post("/api/sessions", json={
         "model_id": seeded["model_id"], "name": "no dimensions",
-        # No manner, no checkpoint - an older session that predates
-        # 3.2, or a fresh one the operator has not declared.
+        "workflow_id": bare_wf["id"],
+        # No manner, no checkpoint, no settings.checkpoint, and a
+        # workflow with no loader — every source is empty.
         "shots": [],
     }).json()["id"]
 
@@ -383,6 +399,73 @@ def test_a_strict_compose_requires_manner_and_checkpoint_on_the_session(client, 
     assert "checkpoint" in r.json()["detail"]
     n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
     assert n == 0
+
+
+def test_a_session_created_via_the_apps_path_can_be_composed_in_strict_mode(client, seeded):
+    """The app's session creation POST has no top-level manner or
+    checkpoint. The editor's manner is lifted into the body (so the
+    POST carries the value the <select> already shows), and the
+    checkpoint is derived server-side from settings.checkpoint or
+    the workflow's own loader — the system already names the model
+    (comfy.py:35-38, ckpt_name/unet_name; the graph_checkpoint
+    function reads it back at comfy.py:252-273), and the operator
+    is not asked to type it twice.
+
+    A strict compose against that session must succeed: the cell
+    table is keyed on the session's effective dimensions, and the
+    dimensions the cell was verified for must be the ones the
+    session carries, not the ones the body happened to include.
+
+    The five 3.2 tests above declare manner and checkpoint in the
+    POST body, so they pass over a function no real session can
+    reach. This one uses the body the app actually sends, and
+    would have caught the gap 3.2 closed with: every session
+    created in the app was born with both dimensions empty, and
+    strict mode refused the compose unconditionally.
+    """
+    # The app's body: model_id, name, look, wardrobe, settings,
+    # shots. No top-level manner or checkpoint. settings.checkpoint
+    # is not set, so the backend must derive from the workflow's
+    # loader (the fixture's GRAPH has ckpt_name "base.safetensors"
+    # at conftest.py:32).
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "app path",
+        "look": "white summer dress, hair down, on a beach",
+        "manner": "directed",   # lifted by ShotsEditor.jsx:67,259
+        "shots": [],
+    }).json()["id"]
+
+    s = client.get(f"/api/sessions/{sid}").json()
+    # Manner lifted by the editor (its default is "directed");
+    # checkpoint derived from the workflow's loader, exactly the
+    # value graph_checkpoint returned at create time.
+    assert s["manner"] == "directed"
+    assert s["checkpoint"] == "base.safetensors"
+
+    # Pre-seed a cell for the trio, on the session's effective
+    # dimensions. 10/8 is the verified boundary (cell_state in
+    # db.py returns "verified" for arrived*10 >= judged*8).
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "base.safetensors", 10, 8)
+
+    # Compose. The session carries the dimensions the cell was
+    # seeded for, so strict mode accepts the draw and queues the
+    # shot — the path the app reaches.
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": "front-direct",
+                   "wordings": [{"key": "front-direct",
+                                 "text": "Taken from directly in front of her"}]},
+        "act": {"key": "astride",
+                "wordings": [{"key": "astride", "text": "astride text"}]},
+        "framing": {"key": "full-length",
+                    "wordings": [{"key": "full-length", "text": "framing text"}]},
+    })
+    assert r.status_code == 200, r.text
+    assert "id" in r.json()
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 1
 
 
 def test_a_verified_cell_for_the_sessions_dimensions_is_drawn_in_strict_mode(client, seeded):
@@ -462,6 +545,144 @@ def test_a_request_with_an_unknown_mode_field_still_runs_the_strict_check(client
     # The strict check then refuses the compose.
     assert r.status_code == 422, r.text
     assert "no measurement" in r.json()["detail"] or "unknown" in r.json()["detail"]
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0
+
+
+# -------------------------------------------------------------- 3.2 PATCH keep
+#
+# The cell table is keyed on (manner, checkpoint) and the strict check
+# looks up the cell against the session's row. A PATCH that changes
+# the source of truth — workflow_id (a new loader) or settings.checkpoint
+# (a new override) — must re-derive session.checkpoint, or the cell key
+# goes stale and the strict check approves draws against a checkpoint
+# the session no longer runs on. The probe + the loop-closed tests
+# together pin both halves: the row follows the source, and the strict
+# check actually refuses on the wrong side of the swap.
+
+
+def test_a_workflow_swap_re_derives_session_checkpoint(client, seeded):
+    """A PATCH that swaps the session's workflow re-derives
+    `session.checkpoint` from the new graph's loader. Without the
+    re-derivation, the cell key stays on the old checkpoint and the
+    strict check approves draws against a checkpoint the session no
+    longer runs on.
+
+    The probe: create with the seeded workflow (loader says
+    "base.safetensors"), verify the row's checkpoint, swap to a
+    second workflow whose loader says "OTHER.safetensors", verify
+    the row followed.
+    """
+    # The seeded fixture's GRAPH already has ckpt_name "base.safetensors"
+    # (conftest.py:32). The new workflow below is the swap target; its
+    # loader names a different model.
+    other_wf = client.post("/api/workflows", json={
+        "name": "other",
+        "graph": {"1": {"class_type": "CheckpointLoaderSimple",
+                        "inputs": {"ckpt_name": "OTHER.safetensors"}}},
+    }).json()
+
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "swap",
+        "manner": "directed",
+        # No settings.checkpoint, no top-level checkpoint — the
+        # derivation is what the row reads on create.
+        "shots": [],
+    }).json()["id"]
+
+    s = client.get(f"/api/sessions/{sid}").json()
+    assert s["checkpoint"] == "base.safetensors"
+
+    # Swap. The cell key must follow.
+    client.patch(f"/api/sessions/{sid}", json={"workflow_id": other_wf["id"]})
+    s = client.get(f"/api/sessions/{sid}").json()
+    assert s["workflow_id"] == other_wf["id"]
+    assert s["checkpoint"] == "OTHER.safetensors"
+
+
+def test_a_settings_checkpoint_override_re_derives_session_checkpoint(client, seeded):
+    """A PATCH that changes `settings.checkpoint` (the BaseModelSelect
+    on the session panel sends exactly this shape) re-derives
+    `session.checkpoint` to the new override. The override is the
+    next rung above the workflow's loader in the resolution order,
+    so a value sent in settings wins over whatever the workflow
+    names.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "override",
+        "manner": "directed",
+        "shots": [],
+    }).json()["id"]
+
+    s = client.get(f"/api/sessions/{sid}").json()
+    assert s["checkpoint"] == "base.safetensors"
+
+    # Pick a different base model on the session panel. The PATCH
+    # carries the override in settings.checkpoint and the cell key
+    # must follow.
+    client.patch(f"/api/sessions/{sid}", json={
+        "settings": {"checkpoint": "krea2-mix.safetensors"},
+    })
+    s = client.get(f"/api/sessions/{sid}").json()
+    assert s["checkpoint"] == "krea2-mix.safetensors"
+
+
+def test_after_a_workflow_swap_a_cell_verified_on_the_old_checkpoint_is_refused(client, seeded):
+    """The loop-closed test: the re-derivation is not just a row
+    update, it is what makes the strict check refuse on the wrong
+    side of a swap. A cell verified for (trio, directed,
+    "base.safetensors") does not entitle a session now running on
+    "OTHER.safetensors" to draw the same trio — that is the bypass
+    3.2 exists to prevent, and a PATCH that left the cell key on
+    the old checkpoint would defeat it.
+
+    Steps: create on workflow 1, seed a verified cell for the trio
+    on the seed checkpoint, swap the workflow, compose. The cell
+    lookup is for the new checkpoint, finds nothing, and the strict
+    check refuses with 422. A regression that drops the re-derivation
+    flips this to 200: the row still says "base.safetensors", the
+    cell matches, the compose is approved.
+    """
+    other_wf = client.post("/api/workflows", json={
+        "name": "other",
+        "graph": {"1": {"class_type": "CheckpointLoaderSimple",
+                        "inputs": {"ckpt_name": "OTHER.safetensors"}}},
+    }).json()
+
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "stale cell",
+        "manner": "directed",
+        "shots": [],
+    }).json()["id"]
+    assert client.get(f"/api/sessions/{sid}").json()["checkpoint"] == "base.safetensors"
+
+    # A cell verified for the seed checkpoint. After the swap, the
+    # session is on OTHER.safetensors; this cell must NOT satisfy
+    # the new lookup.
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "base.safetensors", 10, 8)
+
+    client.patch(f"/api/sessions/{sid}", json={"workflow_id": other_wf["id"]})
+    assert client.get(f"/api/sessions/{sid}").json()["checkpoint"] == "OTHER.safetensors"
+
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct",
+                            "text": "Taken from directly in front of her"}]}
+    act = {"key": "astride",
+           "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "framing text"}]}
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+    })
+    # The cell is on the OLD checkpoint, the session is on the NEW
+    # one. The strict check refuses: the trio is not verified for
+    # the session's effective dimensions, and that is exactly the
+    # gate 3.2 exists to keep closed across a PATCH.
+    assert r.status_code == 422, r.text
+    assert "no measurement" in r.json()["detail"] or "OTHER.safetensors" in r.json()["detail"]
     n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
     assert n == 0
 

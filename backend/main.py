@@ -149,13 +149,14 @@ class SessionIn(BaseModel):
     seed: int = 0
     # The session's manner and checkpoint: the two non-trio dimensions
     # the cell table is keyed on. 3.2 reads them off the row to check
-    # the cell for (trio, manner, checkpoint) in strict mode. Empty
-    # means the operator did not declare either, and a strict compose
-    # on such a session is refused (the 3.1 free compose is
-    # unaffected). The defaults are empty on purpose: the operator who
-    # wants strict draws has to declare the dimensions, because the
-    # alternative (guessing) is the failure mode the cell model exists
-    # to avoid.
+    # the cell for (trio, manner, checkpoint) in strict mode. Both
+    # default to empty on the body — the operator who wants strict
+    # draws has to declare them, because the alternative (guessing)
+    # is the failure mode the cell model exists to avoid. `manner`
+    # comes from the editor's <select> (lifted at create), and
+    # `checkpoint` is derived at create from settings.checkpoint or
+    # the workflow's loader (graph_checkpoint). An empty value after
+    # that is refused before the cell lookup, naming what is missing.
     manner: str = ""
     checkpoint: str = ""
 
@@ -542,6 +543,39 @@ def get_session(sid: int):
     return row
 
 
+def _resolve_session_checkpoint(workflow_id, settings, explicit=""):
+    """The cell table is keyed on (manner, checkpoint) and 3.2 refuses a
+    compose when the checkpoint is empty. The session's effective
+    checkpoint is, in order: an explicit value from the caller (the
+    body's `checkpoint` field on create, or a stored row's prior
+    value), the user-picked override in `settings.checkpoint`, and the
+    workflow's own loader via `graph_checkpoint` (which reads
+    `ckpt_name` / `unet_name` from the graph, comfy.py:35-38). The
+    operator is not asked to type what the system already names.
+
+    Called from `create_session` (where `explicit` is the body's
+    `checkpoint` field) and `update_session` (where `explicit` is the
+    row's stored value and a re-derivation runs when the source —
+    `workflow_id` or `settings.checkpoint` — changed). The two sites
+    MUST go through this function: copying the rule into the PATCH
+    is how the cell table gets a stale key and the strict check
+    starts approving draws against a checkpoint the session no
+    longer runs on. That is the bypass 3.2 exists to prevent.
+    """
+    if explicit:
+        return explicit
+    override = (settings.get("checkpoint") or "").strip()
+    if override:
+        return override
+    if not workflow_id:
+        return ""
+    wf = db.one("SELECT graph, node_map FROM workflow WHERE id=?", workflow_id)
+    if not wf:
+        return ""
+    wf = db.jload(wf, "graph", "node_map")
+    return graph_checkpoint(wf.get("graph") or {}, wf.get("node_map"))
+
+
 @app.post("/api/sessions")
 def create_session(s: SessionIn):
     model = db.one("SELECT * FROM model WHERE id=?", s.model_id)
@@ -555,6 +589,13 @@ def create_session(s: SessionIn):
     settings.update(json.loads(model["settings"] or "{}"))
     settings.update(s.settings)
 
+    # The session's effective checkpoint: explicit body field, then
+    # settings.checkpoint, then the workflow's own loader. The function
+    # is the same one the PATCH uses; see _resolve_session_checkpoint
+    # for why that matters.
+    checkpoint = _resolve_session_checkpoint(
+        s.workflow_id or model["workflow_id"], settings, s.checkpoint)
+
     sid = db.run(
         """INSERT INTO session (model_id, name, look, wardrobe, workflow_id,
                                 reference_workflow_id, anchor_shot_ids, settings,
@@ -562,7 +603,7 @@ def create_session(s: SessionIn):
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         s.model_id, s.name, s.look, s.wardrobe, s.workflow_id, s.reference_workflow_id,
         json.dumps(_valid_anchors(s.anchor_shot_ids)), json.dumps(settings),
-        s.manner, s.checkpoint, db.now(),
+        s.manner, checkpoint, db.now(),
     )
     _expand_shots(sid, model, _look_for(settings, s.look), s.wardrobe, s.shots, s.seed_mode, s.seed)
     return {"id": sid}
@@ -594,6 +635,25 @@ def update_session(sid: int, p: SessionPatch):
     if p.settings is not None:
         db.run("UPDATE session SET settings=? WHERE id=?",
                json.dumps({**json.loads(row["settings"] or "{}"), **p.settings}), sid)
+    # Re-derive the session's effective checkpoint when the source of
+    # truth changed: a workflow swap, a settings.checkpoint override
+    # move, or both. Without this, the cell table key stays on the old
+    # checkpoint and the strict check approves draws against a
+    # checkpoint the session no longer runs on — the bypass 3.2
+    # exists to prevent. The re-derivation goes through the same
+    # function as create_session, so the two sites cannot drift.
+    if p.workflow_id is not None or (p.settings is not None and "checkpoint" in p.settings):
+        # The model's workflow is the fallback when the session clears
+        # its own (a 0 / null workflow_id is "the model's", the same
+        # rule create_session applies).
+        model = db.one("SELECT workflow_id FROM model WHERE id=?", row["model_id"])
+        effective_wf_id = p.workflow_id if p.workflow_id is not None else row["workflow_id"]
+        effective_wf_id = effective_wf_id or (model["workflow_id"] if model else None)
+        merged_settings = {**json.loads(row["settings"] or "{}"), **(p.settings or {})}
+        new_checkpoint = _resolve_session_checkpoint(
+            effective_wf_id, merged_settings)
+        if new_checkpoint != (row["checkpoint"] or ""):
+            db.run("UPDATE session SET checkpoint=? WHERE id=?", new_checkpoint, sid)
     if p.reference_workflow_id is not None:
         db.run("UPDATE session SET reference_workflow_id=? WHERE id=?",
                p.reference_workflow_id or None, sid)
