@@ -112,6 +112,24 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
   that matter, and reading `'mixed'` after a composed-then-written
   sequence is the loop-closed test.
 
+  **FIX 2026-08-26 (the back-fill never ran in any test).** The back-fill
+  shipped calling the RAW sqlite3 connection with varargs -
+  `conn.execute("UPDATE session SET origin=? WHERE id=?", value, sid)`.
+  `db.run` takes varargs; `sqlite3.Connection.execute` takes a params
+  tuple. On any database that predates the column and holds at least one
+  shot, `connect()` raised `TypeError: execute expected at most 2
+  arguments, got 3` and the app failed to open the database at all. Every
+  test in the suite starts from a fresh database, where `SCHEMA` already
+  creates the column and `_migrate` skips the branch, so all 321 tests
+  passed over a back-fill that could not run once. The fix passes the
+  params as a tuple. `tests/test_db_migrate.py::test_the_origin_backfill_runs_on_a_database_that_predates_the_column`
+  is the guard: it drops the column from a fresh database, plants the four
+  shapes the back-fill has to tell apart (written-only, composed-only,
+  both, and a session with no shots), reopens, and asserts the four
+  values; reverting the tuple fails it. The back-fill's own bucketing
+  logic was correct as written - the derivation, not the reasoning, was
+  what had never executed.
+
   The import path (`POST /api/sessions/{sid}/import`) is the same
   shape — an imported photo is a written shot by definition (no
   `components` JSON) and the import's `db.run` does not touch origin

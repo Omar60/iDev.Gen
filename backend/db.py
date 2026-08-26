@@ -426,7 +426,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 value = "composed"
             else:
                 value = "written"
-            conn.execute("UPDATE session SET origin=? WHERE id=?", value, sid)
+            # Params as a tuple: this is the raw sqlite3 connection, not
+            # `db.run`, and sqlite3.Connection.execute takes (sql, params).
+            conn.execute("UPDATE session SET origin=? WHERE id=?", (value, sid))
 
     # The verdicts already paid for. An empty cell table is a database that
     # has never carried the seed, not one someone emptied on purpose, so the
