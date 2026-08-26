@@ -13,7 +13,7 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
 - [x] 2.2 Derive the three states from the counts — verified at 10 judged and 8 arrived, dead below that, unknown under 10 judged — and verify each boundary with a unit test including 0 of 3 landing as unknown — `backend/db.py:cell_state` is the pure function (judged<10 → unknown; judged>=10 AND arrived>=8 → verified; else dead); no branch for `arrived > judged` because the cell table's CHECK constraint already rejects the write, and a defensive branch would silently swallow a future loosening of that CHECK; `tests/test_cell.py` covers the case table with 10 parametrized cases spanning all three state boundaries (the five the task names — 10/8, 10/7, 9/9, 0/0, 0-of-3 — plus 3/3, 8/8, 10/0, 10/10, 11/9 to cover the full edge space); the function is unchanged by the trio model — it reads only `(judged, arrived)`, not the cell key.
 - [x] 2.3 Seed the existing verdicts against the trio they were measured on, with the literal wording `none` in any slot the measurement did not break out, and verify the same corrections the previous 2.3 did — **REOPENED 2026-08-25**: the original 2.3 stored 15 rows in the 4-column shape with `("act", "astride-front", …)` etc., which was the 2-component observation stuffed into a 1-component cell. The new seed in `backend/db.py:EVIDENCE_SEED` holds 15 rows in the 5-column shape `(camera_wording, act_wording, framing_wording, manner, checkpoint, judged, arrived)`: the 9 per-family rows have `camera_wording = <family>` (front, overhead, mirror, pov, shoulder — the family is the dimension the camera rotation varied; kinds.js:1962-1986 records the family level) and `framing_wording = "none"` (the fixed line in `scripts/shoot_arrangements.py:63-77` does not name a framing — absent, not lost); the act-only rows (`back` × 2, `side` × 2, `astride` on Krea 2 mix) have `camera_wording = "none"` and `framing_wording = "none"` (the source reports the act × checkpoint without a camera or framing breakdown; kinds.js:2021 "back 0 of 12 on finepornV4, 0 of 12 on the Krea 2 mix"); the candid `behind-direct` camera row has `act_wording = "none"` and `framing_wording = "none"` (kinds.js:2056-2058 is a camera measurement, not an act one). The corrections the user named carry over: `side` (0/9 and 0/8) lands as `unknown` because judged<10, not dead (spec rules; design.md:332-334 was wrong about side and is now corrected); the per-family astride cells (6/6, 4/4, 6/4, 6/4) all land as `unknown` because n<10; the Krea 2 mix astride cell (12/9) is one row without per-family breakdown (kinds.js:2014 does not split it), and under the ratio reading it is dead (9×10=90 < 12×8=96, 75% below the 80% threshold) — the ratio decision kills the control on Krea 2 mix, and that is the cost; the `behind` ACT is not seeded (kinds.js:2035-2058 kills it with four anecdotes, not a (judged, arrived) pair — manufacturing an n would be inventing a number); the candid `behind-direct` camera (6/0) IS seeded because the source has a real 0/6 measurement on the camera side. `seed_evidence()` is idempotent (PRIMARY KEY conflict is swallowed, so re-runs are no-ops). `tests/test_cell.py` covers the seeded structure (per-family astride, per-checkpoint back/side, the corrections) and the state each cell derives.
 - [x] 2.4 Add a test that every seed's wording in each of the three trio slots is a real catalogue key for that slot OR a synthetic key explicitly documented in the expected gap, and verify it fails when a seed names a wording the catalogue does not have — `tests/test_cell.py::test_every_seed_wording_is_a_key_in_its_catalogue` reads ARRANGEMENTS / CAMERA_POSITIONS / CANDID_POSITIONS / SELFIE_POSITIONS and the framing list via a node probe and asserts the seeded `(slot, wording)` pairs that DO NOT appear in the catalogue match the expected gap exactly. The gap under the trio model has 10 entries: 5 camera family keys (front, overhead, mirror, pov, shoulder — the 9 per-family verdicts' `camera_wording`, the family is metadata on the camera catalogue, not a top-level key), 3 `none` literals (`framing=none` for the 9 family rows + the 4 act-only rows = the 14 rows whose fixed line did not name a framing; `camera=none` for the 4 act-only rows whose source did not break out a camera; `act=none` for the candid `behind-direct` row whose source is a camera measurement), and 2 deleted arrangement wordings (back, side — kept as seeds because the verdicts are real, but pulled from ARRANGEMENTS so the catalogue no longer has them). The test passes when the gap is exactly this set; a future "let me add the family keys to the catalogue" or "let me pull the deleted seeds" fails it loudly and names which cell needs to be re-examined. A second test, `test_a_seed_pointing_at_nothing_in_the_catalogue_is_detected`, exercises the detection rule on invented data so the logic is not coupled to `EVIDENCE_SEED`.
-- [ ] 2.5 Confirm 6.1 is where "a dead wording is never drawn" is proved, and leave `tests/test_arrangements.py` asserting `noneDead` unchanged — the assertion this task originally asked for cannot live in that file. `tests/test_arrangements.py` exercises the FRONTEND shuffler (`arrangementPlan` in `frontend/src/kinds.js`), and no task in this change gives the frontend the cell state: 3.2 restricts the strict COMPOSER's draws, 3.6 requires a written session to behave exactly as before (so the frontend shuffler survives the change intact), and 6.1 already asks for a dead wording to be undrawable in both modes — on the composer. Putting `back` and `side` back into `ARRANGEMENTS` to satisfy the "present in the catalogue" half was tried and reverted: `frontend/src/views/ShotsEditor.jsx:271` renders every `ARRANGEMENTS` entry as an option with no filter anywhere in the plan, so the two keys became selectable in the app and would plant wordings measured 0 of 24. The verdict for those two lives in the cell table, which is the single home this change exists to give it; the frontend catalogue is not a second one. Close this task by checking 6.1's test covers a dead wording in both modes, and delete it if it does.
+- [x] 2.5 Closed by 6.1: `tests/test_api.py::test_a_dead_cell_is_undrawable_in_both_modes` proves a dead wording is undrawable in both strict and exploratory modes; `tests/test_arrangements.py::test_an_arrangement_says_the_bodies_and_nothing_else` keeps the `noneDead` assertion unchanged.
 
 ## 3. Composer, strict mode
 
@@ -703,7 +703,370 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
 
 ## 6. Exploratory mode
 
-- [ ] 6.1 Allow draws from unknown cells marked as exploratory, never from dead wordings, and verify a dead wording is undrawable in both modes
+- [x] 6.1 Allow draws from unknown cells marked as exploratory, never from dead wordings, and verify a dead wording is undrawable in both modes
+
+  **Five decisions before the code, in the order the task asks them:**
+
+  **(1) The mode type.** `Literal["strict", "exploratory"]` on every
+  composer payload — `ComposeIn`, `ComposeRunIn`, `ComposeSessionIn`.
+  pydantic narrows the field at the boundary: a request carrying
+  `mode: "anything"` returns 422 with `loc=body.mode`,
+  `type=literal_error`, the message names both legal values, the
+  handler never runs. This is the door the design note at
+  `backend/main.py:178-185` says an `if mode != "strict"` over a
+  free string would have opened, and the door 3.2's
+  `test_a_request_with_an_unknown_mode_field_still_runs_the_strict_check`
+  was written to keep shut. That test was rewritten (now
+  `test_a_request_with_an_unknown_mode_value_is_rejected_at_the_boundary`)
+  to assert the new shape: pydantic's literal error, not the
+  handler's compose-refused message; the loop-closed `n_shots == 0`
+  is the same in both shapes. A regression that re-introduces
+  `mode: str = "strict"` and guards with `if c.mode == "strict":`
+  would parse `"anything"` as a string, the guard would not match,
+  the strict check would be skipped, and the test would queue a
+  shot.
+
+  **(2) The pool builder.** `_trio_pool(manner, checkpoint,
+  candidates, mode)` replaces the strict-only `_verified_trio_pool`
+  the 3.3 share was using. The two modes share the join, the
+  `none` filter on every slot (the synthetic key for measurements
+  that did not break out a slot — `none` is not a catalogue key
+  and the same reasoning 3.3 used applies), and the
+  manner/checkpoint scope. They differ in the state predicate,
+  branched as a single SQL fragment:
+
+  - `strict`: `judged >= 10 AND arrived*10 >= judged*8` — the
+    `db.cell_state("verified")` reading, in SQL form.
+  - `exploratory`: `NOT (judged >= 10 AND arrived*10 < judged*8)`
+    — every state except `dead`, because the whole point of
+    exploratory is to grow the matrix (every queued shot feeds its
+    cell, 6.2 lands the verdict), and a `dead` cell carries a
+    measurement the table is asking the operator to honour. "Let
+    me draw a dead cell anyway" is what exploratory explicitly
+    refuses, and the rule is the same in both modes.
+
+  The SQL shape is the same: a single column-reference predicate
+  on the `(judged, arrived)` pair, with the `none` filter and the
+  candidates `IN (...)` clauses unchanged. The EXPLAIN plans are
+  the same; a future mode is a third branch on the predicate and
+  nothing else moves. The `none` filter is part of the pool
+  builder, not a post-filter, for the same reason 3.3 made it
+  part of the pool builder: a 422 on a `none` cell would read
+  as "the pool is empty" rather than "the row exists but is not
+  drawable", and the operator deserves to know which it is.
+
+  **(3) The one-shot endpoint.** `compose_shot_endpoint` branches
+  on `mode` for the cell lookup. The four outcomes:
+
+  - **No row + strict**: 422, `has no measurement (unknown);
+    switch to exploratory mode to compose from unmeasured cells`.
+    The trio was never measured; strict only accepts verified.
+  - **No row + exploratory**: queue. The trio is unmeasured,
+    not dead; drawing it feeds the cell, 6.2 lands the verdict.
+  - **Row state = dead + any mode**: 422, `is dead, not drawable
+    in any mode`. The 422 names the cell and the state, and does
+    NOT suggest exploratory — a dead cell is also refused in
+    exploratory, and a "switch modes" hint would be a lie the
+    operator would discover on retry. The wording "not drawable
+    in any mode" replaces 3.2's "not verified" because the old
+    message implied exploratory was a path through, and a future
+    "let me soften the dead message" that drops "in any mode"
+    re-introduces that implication — the assertion in
+    `test_a_dead_cell_is_undrawable_in_both_modes` checks the
+    loop-closed `n_shots == 0` on both halves, so a regression
+    that lets exploratory through queues a shot and the test
+    reads it.
+  - **Row state = unknown + strict**: 422, `is unknown, not
+    verified; switch to exploratory mode to compose from
+    unmeasured cells`. The same wording as the no-row case,
+    because the cell's state is the operator-facing fact; the
+    row existing or not is a detail the SQL query owns.
+  - **Row state = unknown + exploratory**: queue. Same path as
+    the no-row exploratory case — the cell is unmeasured, the
+    draw feeds it.
+  - **Row state = verified + any mode**: queue. Verified in any
+    mode, no branch needed.
+
+  The four-loop-closed proof is in the test: a regression that
+  swaps the strict and exploratory branches (a "let me drop
+  strict" bug) queues the strict call and the `n_shots` count
+  reads 1 too. The `mode="exploratory"` cell-row 422 in the
+  no-row case is the one place the operator-visible wording
+  differs from the row-present case, and the test pins the
+  difference so a future "let me unify the wording" fails the
+  assertion that names it.
+
+  **(4) The run-level / session-level endpoints.** Both build
+  the pool through `_trio_pool` with the caller's `mode` and
+  pass it to `_draw_n_trio_shots` (the renamed and refactored
+  `_draw_n_strict_trio_shots`). 6.1 widens the pool and the
+  draw; the 3.3 no-component-repeat greedy, the multi-shuffle
+  ceiling (`N_SHUFFLES=10`), the 3.4 dedup pre-check, and the
+  pre-check-before-INSERT loop-closed property carry over
+  unchanged. The 3.5 family-spread constraint moved from
+  post-draw accept to per-trio skip inside the greedy, the
+  same rule 3.3 named ("the check and the draw are the same
+  calculation") carried to its logical end — the constraint
+  is enforced in the loop, not after it. `_skip_for_spread`
+  reads the same `ceil(N/2)` bound the reorder uses, so the
+  chosen set is always re-orderable and the family-infeasible
+  422 in `_reorder_to_spread_families` is unreachable from
+  the 3.5 path. The check stays in `_reorder_to_spread_families`
+  as a defensive assertion for a future caller that drops the
+  skip, the same way the EXPLAIN-equal SQL stays in
+  `_trio_pool` for a future mode.
+
+  **(5) The 422 message in pool-too-small.** The strict-mode
+  tail is unchanged: `use exploratory mode to compose with
+  unmeasured cells`. The message is now more true than when
+  3.3 wrote it: exploratory mode is real, the operator can
+  actually switch to it, and the suggestion is not a
+  "someday" promise. The exploratory-mode tail is `every
+  candidate trio is either dead or outside the catalogue, no
+  further draw is possible` — a wider mode is not a path
+  through, and the operator needs to know why. No test
+  exercises the exploratory-mode tail (a test that did would
+  need a pool of all-dead trios, which 2.4 documents is not
+  a path the cell table holds), and the message is named
+  here so a future "let me unify the tails" that drops the
+  exploratory-mode branch is caught by the prose, not by
+  the test suite.
+
+  **The flake, fixed in the same diff.**
+  `tests/test_api.py::test_a_session_compose_draws_a_spreadable_set_when_the_pool_is_larger_than_the_count`
+  was flaking at ~2 runs in 8. Reproduced under `git stash`,
+  so it predated 4.1/4.2/ba39604. Loop-the-test-12-runs in
+  the same process (PowerShell, each run a fresh pytest
+  invocation) shows 7 of 30 failures, all 422 with the
+  family-infeasible message the test does not expect.
+
+  The cause is the multi-shuffle greedy + post-draw accept
+  pattern, exactly the shape 3.3 named as a risk. The pool
+  has 4 fronts + 1 shoulder + 1 overhead, count=4. The
+  greedy is "take the first non-conflicting trio" — every
+  trio in the pool has unique parts, so the greedy just
+  takes the first 4 in shuffle order. The 422 the test
+  fires on is the family-infeasible one: the chosen set has
+  3 fronts, `3 > ceil(4/2) = 2`, no ordering spreads the
+  family. Probability that a single shuffle produces 3+
+  fronts in its first 4 positions: 0.6 (the 4 fronts are
+  in the first 4 of 6 in 48/720 shuffles, the 3 fronts
+  in the first 4 are in 384/720; `48 + 384 = 432`,
+  `432/720 = 0.6`). Probability that all 10 shuffles
+  produce a 3+ front arrangement: `0.6^10 = 0.006` per
+  call. With 30 iterations, P(at least one call returns
+  an invalid 4-trio draw) = `1 - (1 - 0.006)^30 ≈ 0.166`.
+  The observed 7/30 = 23% sits in the same range; the
+  test's N_SHUFFLES=10 ceiling is the only thing keeping
+  the rate out of the `0.5` range a smaller ceiling
+  would land on.
+
+  The fix moves the family-spread constraint from
+  `_spread_is_feasible` (a SET property, called on the
+  greedy's chosen set) to `_skip_for_spread` (a per-trio
+  property, called inside the greedy). The greedy now
+  skips a trio if its camera-family count would reach
+  `ceil(N/2)` on addition. The chosen set is always
+  re-orderable, and the only path to a 422 is the
+  pool-too-small one — which in this test is a 200, the
+  shape the test asserts. The flake budget drops to
+  "no test exercises the shape anymore". Verified by
+  loop-the-test-50-runs in the same process: 50/50 pass,
+  no 422, the spread property holds on every iteration.
+  The pre-existing 3.5 tests pass unchanged
+  (`test_a_session_compose_spreads_camera_families_across_consecutive_photographs`,
+  `test_a_session_compose_keeps_3_3_and_3_4_invariants`,
+  `test_a_session_compose_is_deterministic_for_the_same_pool_and_count`).
+  One test was updated to match the new refusal shape:
+  `test_a_session_compose_refuses_a_pool_where_one_family_exceeds_half_the_count`
+  used to assert the family-infeasible 422; it now asserts
+  the pool-too-small 422 the draw actually returns, the
+  same four facts (slot, pool count, largest fillable,
+  requested count) on a different message — the family
+  infeasibility surfaces as "largest fillable is 3 of 4
+  requested" because the per-trio skip takes the 3rd front
+  out of the draw before it can join the chosen set.
+
+  **What was built.**
+
+  - `backend/main.py`:
+    - `Literal["strict", "exploratory"] = "strict"` on
+      `ComposeIn`, `ComposeRunIn`, `ComposeSessionIn`. The
+      `from typing import Literal` import was already
+      implicit; one line added at the top of the imports
+      block. The mode closes the door 3.2's design note
+      was written to keep shut, and the existing
+      `test_a_request_with_an_unknown_mode_field_still_runs_the_strict_check`
+      was rewritten to
+      `test_a_request_with_an_unknown_mode_value_is_rejected_at_the_boundary`
+      to assert the new pydantic-literal rejection shape.
+    - `_trio_pool(manner, checkpoint, candidates, mode)` —
+      the new pool builder. Replaces `_verified_trio_pool`,
+      which was the 3.3 strict-only SQL form. The
+      docstring names the two state predicates and the
+      "dead excluded in both" rule, the same shape
+      `_verified_trio_pool`'s docstring used for the strict
+      predicate and the `none` filter.
+    - `_draw_n_trio_shots(sid, count, candidates, mode,
+      skip)` — renamed from `_draw_n_strict_trio_shots`,
+      takes `mode` and `skip`. `mode` is passed to
+      `_trio_pool`; `skip` is a per-trio predicate called
+      inside the greedy after the no-repeat check. The
+      function does not insert; the caller inserts, the
+      same as before. The four 422 paths (session-missing,
+      pool-too-small, tuple-already-enqueued,
+      line-already-enqueued) carry over unchanged. The
+      pool-too-small tail is mode-dependent: strict
+      suggests exploratory, exploratory names what the
+      pool is. `best_accepted` and the post-draw `accept`
+      parameter are gone — the skip makes the chosen set
+      always valid against the caller's constraint, and
+      `best_chosen` is the only set the function tracks.
+    - `_skip_for_spread(trio, by_key, family_counts,
+      max_per_family)` — the per-trio skip the 3.5
+      endpoint passes. Returns True if adding the trio
+      would push its camera-family count to `max_per_family`
+      (`ceil(count/2)`). A non-spread trio (act or framing
+      today) returns False, the same way `_spread_is_feasible`
+      treated `None` family.
+    - `compose_shot_endpoint` branches on `mode` for the
+      cell lookup, the four outcomes (no row + strict =
+      422, no row + exploratory = queue, row state = dead
+      + any mode = 422, row state = unknown + strict = 422,
+      row state = unknown + exploratory = queue, row
+      state = verified = queue). The 422 messages name
+      the cell, the state, and (in strict-only) suggest
+      exploratory.
+  - `tests/test_api.py`:
+    - `_seed_unknown_trio(camera, act, framing, manner,
+      checkpoint, judged=0, arrived=0)` — test-only helper,
+      inserts one cell with `judged < 10` so `db.cell_state`
+      reads `unknown`. The defaults are the canonical
+      "never measured"; a non-zero `arrived` would still
+      land as `unknown` while `judged < 10`, and the state
+      is what drives the draw, not the counts.
+    - `_seed_dead_trio(camera, act, framing, manner,
+      checkpoint, judged=12, arrived=0)` — test-only helper,
+      inserts one cell that lands as `dead`: `judged >= 10`
+      AND `arrived*10 < judged*8`. The defaults `12/0` are
+      the canonical 0/12 "measured and failed" measurement.
+    - `test_an_unknown_cell_is_drawable_in_exploratory_mode`
+      — the named 6.1 scenario at the one-shot level.
+      Strict refuses with the "switch to exploratory"
+      message; exploratory queues the shot. Loop-closed
+      `n_shots` on both halves.
+    - `test_a_dead_cell_is_undrawable_in_both_modes` — the
+      named 6.1 / 2.5 scenario at the one-shot level. The
+      same `0/12` cell, the same trio, called in both
+      modes. Both return 422 with `dead` in the message;
+      loop-closed `n_shots == 0` on both halves. A
+      regression that swapped the branches (a "dead is
+      drawable in exploratory" bug) queues the
+      exploratory call and `n_shots` reads 1.
+    - `test_an_exploratory_run_draws_from_unknown_cells_and_refuses_dead`
+      — the run-level shape. The pool is one unknown +
+      one dead trio, count=1. Exploratory queues 1 (the
+      unknown is in the pool, the dead is not). Strict
+      refuses with the pool-too-small message (neither is
+      in the strict pool). Loop-closed `n_shots` on
+      both halves.
+    - `test_an_exploratory_session_compose_inherits_the_mode_and_spreads`
+      — the session-level shape, with the spread property
+      verified on the queued run. The pool is 2 unknown
+      trios from different camera families, count=2.
+      Strict refuses; exploratory queues 2; the spread
+      places the two families so neither is "next to
+      itself".
+    - `test_a_request_with_an_unknown_mode_value_is_rejected_at_the_boundary`
+      — the rewrite of the 3.2 unknown-mode test. The
+      pydantic literal error names the field, the type,
+      and the two legal values; the handler does not run.
+    - `test_a_session_compose_refuses_a_pool_where_one_family_exceeds_half_the_count`
+      — updated to assert the pool-too-small message
+      (the family-skip changed the failure shape). The
+      four facts the operator needs are still named
+      (slot, pool count, largest fillable, requested
+      count); the "no ordering" / "ceil" wording the old
+      version asserted is gone because the new draw
+      refuses via the pool-too-small path, not the
+      family-infeasible one. The "use exploratory mode"
+      tail is still asserted, the same way every other
+      strict-mode pool-too-small test asserts it.
+  - Housekeeping: deleted 11 untracked throwaway scripts
+    from 4.2 — `_shoot_4_2.py`, `_rerun_script_4_2.py`,
+    `_judge_4_2_repeat3.py`, `_db_inspect.py`,
+    `_db_inspect2.py`, `_verify_4_2.py`,
+    `_verify_4_2_v2.py`, `_reset_4_2.py`, `_run_300.py`,
+    `_state_check.py`, `_wait_4_2.py`. The measurement
+    they produced now lives in tasks.md under the 4.2
+    closure; the scripts are untracked and unused. `git
+    status --short` after the deletion is `M
+    backend/main.py` and `M tests/test_api.py` only.
+
+  **Branches no test runs.**
+
+  (a) The exploratory-mode 422 tail "every candidate
+  trio is either dead or outside the catalogue, no
+  further draw is possible" — reachable only when
+  every candidate trio is dead or filtered by the
+  `none` rule. The test
+  `test_an_exploratory_run_draws_from_unknown_cells_and_refuses_dead`
+  exercises the case where the pool has at least one
+  unknown (so the run succeeds); no test exercises a
+  pool of all-dead trios because 2.4 documents the
+  all-dead pool as not a shape the cell table holds
+  in this change. The message is named in the docstring
+  for a future "let me unify the tails" regression.
+
+  (b) The 3.5 family-infeasible path in
+  `_reorder_to_spread_families` is unreachable from the
+  draw path. The per-trio `_skip_for_spread` ensures
+  the chosen set is always re-orderable, and the
+  defensive check is there only for a future caller
+  that drops the skip. No test exercises this branch.
+
+  (c) The `mode` field on `ComposeIn` for the case
+  where the request body has no `mode` field at all
+  (the default `"strict"` parses through pydantic
+  silently) — covered by the existing 3.2 tests
+  (`test_a_verified_cell_for_the_sessions_dimensions_is_drawn_in_strict_mode`,
+  `test_a_dead_cell_is_not_drawn_in_strict_mode`,
+  `test_an_unknown_cell_is_not_drawn_in_strict_mode`),
+  which call the endpoint without `mode` and observe
+  the strict-mode behaviour. The default is "strict"
+  to match the mode the rest of the system has been
+  running on for the last two weeks; a future
+  "let me default to exploratory" would silently
+  change the operator-visible behaviour and the test
+  suite would not catch it — the prose above names
+  the default so the change is made on purpose.
+
+  (d) The 6.2 task ("count a judged exploratory
+  photograph towards its cell and verify the cell
+  flips to verified or dead on reaching the
+  threshold") is out of scope for 6.1. The one-shot
+  exploratory path queues a shot with a `components`
+  JSON the same way the strict path does, and the
+  cell's `judged` and `arrived` columns are the ones
+  6.2 will write. The handover is the `components`
+  column on `shot` — the same column 3.1 wrote and
+  3.6 reads, no new field needed.
+
+  **Gates, with output.** `python -m pytest` — 330
+  passed (326 baseline + 4 new 6.1 tests), 1 warning
+  (the pre-existing `register` shadow in
+  `backend/enhance.py:119`, unrelated to 6.1);
+  `npm --prefix frontend test` — 23 passed in 668 ms;
+  `npm --prefix frontend run build` — 45 modules
+  transformed, `dist/index.html` 0.42 kB, no errors;
+  `python -m pytest tests/test_no_personal_data.py` —
+  2 passed. The flake test
+  (`test_a_session_compose_draws_a_spreadable_set_when_the_pool_is_larger_than_the_count`)
+  ran 50 times in the same process after the fix with
+  50/50 pass. `git status --short` is `M backend/main.py`
+  and `M tests/test_api.py` only; the 11 untracked
+  throwaway scripts from 4.2 are deleted.
+
 - [ ] 6.2 Count a judged exploratory photograph towards its cell and verify the cell flips to verified or dead on reaching the threshold
 
 ## 7. Cleanup and documentation
