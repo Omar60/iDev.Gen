@@ -1067,6 +1067,58 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
   and `M tests/test_api.py` only; the 11 untracked
   throwaway scripts from 4.2 are deleted.
 
+  **The N-draw could not reach an unmeasured cell, and that is now
+  fixed.** The 6.1 tests above all go through `/compose`, one shot at
+  a time, and they seed the cell explicitly. `_trio_pool` shipped as a
+  `SELECT ... FROM cell` with a looser predicate for exploratory —
+  which returns only trios that already HAVE a row. A cell nobody has
+  measured has no row at all, and `judged < 10` is the definition of
+  `unknown`, so "unknown" is mostly the cells the table has never
+  heard of. Exploratory could therefore explore only what somebody
+  had already measured, on the two paths that actually shoot a
+  session (`/compose-run`, `/compose-session`). Measured through the
+  API, with no rows for the candidate trios:
+
+      compose (one shot) exploratory, no row -> 200 queued
+      compose-run        exploratory, no row -> 422
+
+  and the 422 read `every candidate trio is either dead or outside
+  the catalogue`, which was false — they were unknown. Two
+  calculations that were supposed to agree and did not, which is the
+  same shape as every group-3 bug.
+
+  The pool is now asked the question each mode actually has. Strict
+  asks "which rows are verified" and a row is required. Exploratory
+  asks "which candidate trios are NOT dead", so it starts from the
+  product of the candidate keys and uses the table to SUBTRACT the
+  dead rows. The refusal message needed no change: once unmeasured
+  trios are in the pool, an empty exploratory pool really does mean
+  every candidate is dead or filtered out by `none`.
+
+  Two tests, both verified by breaking the code:
+  `test_the_n_draw_reaches_a_trio_the_cell_table_has_never_heard_of`
+  (no cell seeded at all; strict refuses and names exploratory,
+  exploratory queues `count` rows — restoring the `SELECT`-only shape
+  fails it with `assert 422 == 200`) and
+  `test_the_n_draw_never_reaches_a_dead_trio_even_with_no_other_row`
+  (one candidate per slot, and that single product IS the dead trio,
+  so refusal is the only legal answer in either mode — deleting the
+  `- matched` subtraction fails it with `exploratory:
+  {"ids":[1],"count":1}`).
+
+  That second test was written wrong first, and the way it was wrong
+  is worth keeping. It offered two candidates per slot with one dead
+  trio among the eight products and asked for `count=1`: the draw
+  picks a live trio nearly every time, so it passed with the
+  subtraction deleted, and it failed at random on the correct code
+  because it asserted on a component key rather than the trio. A pool
+  that is entirely dead is what makes the refusal the only outcome.
+
+  **Gates after the fix.** `python -m pytest` — 332 passed, run three
+  times, same number each time; `npm --prefix frontend test` — 23
+  passed; `npm --prefix frontend run build` — built in 1.16s;
+  `python -m pytest tests/test_no_personal_data.py` — 2 passed.
+
 - [ ] 6.2 Count a judged exploratory photograph towards its cell and verify the cell flips to verified or dead on reaching the threshold
 
 ## 7. Cleanup and documentation

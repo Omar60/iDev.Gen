@@ -1030,15 +1030,20 @@ def _trio_pool(
       `judged >= 10 AND arrived*10 >= judged*8`. Mirrors
       `db.cell_state` exactly — the same definition; the pool
       builder is the SQL form of the same rule.
-    - `exploratory`: `verified` AND `unknown` cells, predicate
-      `NOT (judged >= 10 AND arrived*10 < judged*8)`. A cell
-      with fewer than 10 photographs judged (`unknown`) is
-      drawable in exploratory mode, because the whole point of
-      exploratory is to grow the matrix: every composed shot
-      feeds its cell and the threshold lands the verdict
-      (6.2). A `dead` cell stays out — measured 0 of 12 is a
-      result, not a gap, and "let me draw it anyway" would
-      skip what the measurement said.
+    - `exploratory`: every candidate trio EXCEPT the `dead`
+      ones. Not a `SELECT` over the table: a cell that was
+      never measured has no row at all, and `judged < 10` is
+      the definition of `unknown` — so "unknown" is mostly
+      the cells the table has never heard of. Selecting from
+      `cell` would have made exploratory able to explore only
+      what somebody already measured, which is the opposite
+      of the mode. The pool is therefore the product of the
+      candidate keys minus the dead rows, and the whole point
+      is to grow the matrix: every composed shot feeds its
+      cell and the threshold lands the verdict (6.2). A `dead`
+      cell stays out — measured 0 of 12 is a result, not a
+      gap, and "let me draw it anyway" would skip what the
+      measurement said.
 
     The literal `none` is filtered on every slot in both modes:
     it represents measurements that did not break out a slot,
@@ -1059,21 +1064,19 @@ def _trio_pool(
     cam_ph = ",".join("?" for _ in cam_keys)
     act_ph = ",".join("?" for _ in act_keys)
     framing_ph = ",".join("?" for _ in framing_keys)
-    # Exploratory drops only `dead` (`judged >= 10 AND arrived*10 < judged*8`);
-    # strict drops `dead` AND `unknown` (`judged < 10`). The same SQL shape,
-    # branched on the predicate, so a future mode is a third branch and
-    # nothing about the join or the `none` filter changes.
-    if mode == "strict":
-        state_pred = "AND judged >= 10 AND arrived*10 >= judged*8"
-    else:
-        # `NOT (judged >= 10 AND arrived*10 < judged*8)` is the same as
-        # `judged < 10 OR arrived*10 >= judged*8` over non-negative integers
-        # (the cell CHECK rejects `arrived > judged`, so `arrived*10 < judged*8`
-        # implies `arrived < judged` implies `judged >= 1`). The negated form
-        # keeps the predicate on the same axes as the strict one — a single
-        # column reference either way — and the EXPLAIN plans are
-        # the same.
-        state_pred = "AND NOT (judged >= 10 AND arrived*10 < judged*8)"
+    # The two modes ask the table opposite questions, so they read it
+    # in opposite directions. Strict asks "which rows are verified" and
+    # a row is required. Exploratory asks "which trios are NOT dead",
+    # and a trio with no row is exactly the thing it exists to reach —
+    # so the pool starts from the candidates and the table is used to
+    # SUBTRACT. Doing it as one `SELECT` with a looser predicate was
+    # the first shape and it was wrong: it made exploratory able to
+    # draw only cells somebody had already measured, while the
+    # one-shot `/compose` endpoint queued an unmeasured trio happily.
+    # Two calculations that were supposed to agree and did not, which
+    # is the same shape as every group-3 bug.
+    state_pred = ("AND judged >= 10 AND arrived*10 >= judged*8" if mode == "strict"
+                  else "AND judged >= 10 AND arrived*10 < judged*8")
     rows = db.q(
         f"SELECT camera_wording, act_wording, framing_wording FROM cell "
         f"WHERE manner = ? AND checkpoint = ? "
@@ -1083,7 +1086,18 @@ def _trio_pool(
         f"{state_pred}",
         manner, checkpoint, *cam_keys, *act_keys, *framing_keys,
     )
-    return {(r["camera_wording"], r["act_wording"], r["framing_wording"]) for r in rows}
+    matched = {(r["camera_wording"], r["act_wording"], r["framing_wording"]) for r in rows}
+    if mode == "strict":
+        return matched
+    # ponytail: the full product, which is len(cam) * len(act) * len(framing)
+    # trios. The candidate lists are a session's picks, tens at the very
+    # most, so this is thousands of tuples at the ceiling and the draw
+    # already walks the pool. If a caller ever passes whole catalogues,
+    # push the `none` filter and the dead subtraction into SQL instead.
+    return {(cam, act, framing)
+            for cam in cam_keys if cam != "none"
+            for act in act_keys if act != "none"
+            for framing in framing_keys if framing != "none"} - matched
 
 
 def _min_slot_within(pool: set[tuple[str, str, str]]) -> tuple[str, int]:

@@ -4488,3 +4488,103 @@ def test_photos_listing_leaves_everything_unmodified(client, seeded):
     # And the photographs we set up are where we expect them: the route
     # actually saw the right rows.
     assert {pa["id"], pb["id"], pc["id"]} <= before["shots"].keys()
+
+
+def test_the_n_draw_reaches_a_trio_the_cell_table_has_never_heard_of(client, seeded):
+    """The half of 6.1 the one-shot tests could not see.
+
+    `test_an_unknown_cell_is_drawable_in_exploratory_mode` seeds the
+    cell explicitly and calls `/compose`, one shot at a time. The
+    N-draw (`/compose-run`, and `/compose-session` behind it) goes
+    through `_trio_pool`, and that used to be a `SELECT` over `cell`
+    with a looser predicate — so a trio with NO ROW was not in the
+    pool at all. Since a cell nobody measured has no row, and
+    `judged < 10` is the definition of `unknown`, exploratory could
+    only explore what had already been measured. The one-shot
+    endpoint queued the same trio happily. Two calculations that
+    were supposed to agree and did not, measured through the API:
+
+        compose (one shot) exploratory, no row -> 200 queued
+        compose-run        exploratory, no row -> 422
+
+    and the 422 said "every candidate trio is either dead or outside
+    the catalogue", which was false — they were unknown, which is
+    the one thing exploratory exists to draw.
+
+    No cell is seeded here on purpose. The assertion is that the run
+    is queued anyway, and `count` rows land. A regression to the
+    `SELECT` shape refuses with a 422 and the count reads 0.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "never measured",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+    trios = [("cam-x", "act-x", "frame-x"), ("cam-y", "act-y", "frame-y")]
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k} text")  for k, _, _ in trios],
+        "act":     [_candidate(k, f"act {k} text")     for _, k, _ in trios],
+        "framing": [_candidate(k, f"framing {k} text") for _, _, k in trios],
+    }
+
+    # Strict first, as the control: with no rows there is nothing
+    # verified, so strict refuses and points at the wider mode. This
+    # is what makes the exploratory half mean something — without it
+    # the test would pass on a composer that ignored `mode` entirely.
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 2, "candidates": candidates, "mode": "strict",
+    })
+    assert r.status_code == 422, r.text
+    assert "exploratory" in r.json()["detail"], r.json()["detail"]
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, f"strict refused run queued shots: {n} rows for session {sid}"
+
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 2, "candidates": candidates, "mode": "exploratory",
+    })
+    assert r.status_code == 200, r.text
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 2, f"exploratory run did not queue 2 shots: {n} rows"
+
+
+def test_the_n_draw_never_reaches_a_dead_trio_even_with_no_other_row(client, seeded):
+    """The dead half of 6.1 on the N-draw, which is where the new pool
+    shape could have lost it: the pool is now the product of the
+    candidates MINUS the dead rows, so "dead is excluded" moved from a
+    `WHERE` clause to a set subtraction, and a subtraction silently
+    does nothing if the tuple shape drifts.
+
+    ONE candidate per slot, and that single product IS the dead trio.
+    The pool is therefore exactly one trio, and it is dead, so the run
+    must be refused whatever the mode. A wider candidate list was the
+    first shape of this test and it did not bite: with 8 products and
+    one of them dead, `count=1` draws a live trio almost every time and
+    the test passes on a composer that never subtracts anything. The
+    pool has to be all-dead for the refusal to be the only legal
+    answer — see the note on tests that cannot fail in the 3.x
+    write-ups.
+
+    Verified by deleting the `- matched` subtraction: the exploratory
+    call comes back 200 with a queued photograph of the trio the
+    measurement already refused.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "dead in the n draw",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+    _seed_dead_trio("cam-dead", "act-dead", "frame-dead",
+                    manner="directed", checkpoint="finepornV4")
+    candidates = {
+        "camera":  [_candidate("cam-dead", "camera dead text")],
+        "act":     [_candidate("act-dead", "act dead text")],
+        "framing": [_candidate("frame-dead", "framing dead text")],
+    }
+
+    for mode in ("strict", "exploratory"):
+        r = client.post(f"/api/sessions/{sid}/compose-run", json={
+            "count": 1, "candidates": candidates, "mode": mode,
+        })
+        assert r.status_code == 422, f"{mode}: {r.text}"
+        n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+        assert n == 0, f"{mode} queued a dead trio: {n} rows for session {sid}"
