@@ -168,3 +168,7 @@ needs in order to choose between lowering the count and switching mode.
 #### Scenario: A strict run that cannot be filled is refused in the operator's view
 - **WHEN** a strict run is refused because the verified pool is too small
 - **THEN** the slot, its verified count and the largest fillable count are shown as the composer worded them, and nothing is queued
+
+#### Scenario: N photographs of one trio fill a cell from the screen
+- **WHEN** the operator picks one trio and a count on an existing session
+- **THEN** that many photographs of the same trio are queued on the session with the trio's components recorded on every row, and the cell check (verified in strict, unknown refused in strict but drawable in exploratory, dead refused in both) runs ONCE before any insert — N rows or zero rows, never some

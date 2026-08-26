@@ -2056,6 +2056,74 @@ session's manner".
   `python -m pytest tests/test_no_personal_data.py` — 2 passed;
   `python scripts/verify_compose_frontend.py` — ALL OK, 4 of 4.
 
+- [ ] 8.5 Queue N photographs of one chosen trio from the screen, so an operator can take a cell to its `judged=10` threshold without a script
+
+  **Why this task exists, in one paragraph.** Group 8 gave the composer a
+  screen, and that surfaced this. `compose-run` produces VARIETY: 3.4's
+  rule takes a trio only if none of its three components was used in the
+  run, so the same control queues different trios across the batch and
+  no two photographs land on the same cell. A cell needs n=10 photographs
+  judged before `db.cell_state` will call it verified or dead. Composing
+  a shoot and filling a cell are two different requests, and the change
+  up to here only ever wrote the first one. The scripts do the second
+  one (same line, several seeds), which is why every measurement on this
+  project so far has come from a script. The judging screen can be fed
+  variety today, but no cell reaches its threshold through the app, and
+  5.4 / 5.5 are blocked until that door opens.
+
+  **The behaviour already exists, one call at a time — what is missing
+  is asking for N at once, and asking from the screen.** Three facts the
+  implementation does not have to re-derive:
+
+  1. The one-shot endpoint `POST /api/sessions/{sid}/compose` already
+     allows repeating a trio. I called it three times with the same
+     three components: three 200s, three rows, three byte-identical
+     prompts. The no-repeat rule lives in the run-level draw, not here.
+  2. The rows are stored with `seed=0`, and `backend/runner.py:117`
+     reads `shot["seed"] or random.randint(...)`, writing the drawn
+     seed back on the row. So N identical prompts DO render N different
+     photographs. Seed handling needs nothing from us.
+  3. The cell check already runs ONCE, before any insert, in the
+     existing one-shot path (`compose_shot_endpoint`, lines 936-998):
+     a dead cell is refused in both modes, an unknown cell is refused
+     in strict and drawn in exploratory. The N-rows path is the same
+     check with N INSERTs after it, and the pre-check makes "k rows
+     committed, k+1 refused" impossible.
+
+  **The shape I would build (one paragraph; argue if you disagree).**
+  Add `count: int = 1` to `ComposeIn` and queue N rows in one call.
+  Three reasons: `ShotIn.count` already means exactly this on the
+  written path, `_expand_shots` already loops it, and the alternative
+  — the frontend calling `/compose` N times — cannot honour this
+  repo's rule that a refused run queues NOTHING, because a frontend
+  loop that fails on the seventh call leaves six rows behind
+  (`db.run` auto-commits per INSERT). The pre-check stays where it is
+  in `compose_shot_endpoint`; the loop calls `compose_and_queue_shot`
+  N times after the check has passed, and a future "let me also
+  refuse the loop mid-way" lands here as a second calculation layered
+  on top of the first — the same door 3.3 closed ("the check and the
+  draw are the same calculation").
+
+  **Update the docstring the existing code argues against.** The
+  `ComposeIn` docstring near `backend/main.py:170` was written when
+  the only case was 3.1's single shot, and it argues AGAINST a count
+  field. With 8.5 the field is added and the docstring contradicts
+  the code, which is the exact way the next reader loses an hour. The
+  fix is in scope for 8.5: rewrite the docstring to say what changed
+  and why (one shot is the count=1 case, not the only case).
+
+  **On the screen.** A control on the session view for "N photographs
+  of one trio", sitting beside the existing Compose control. The trio
+  picker reads the same catalogue slice `candidatePool(manner)`
+  already returns (`frontend/src/compose.js`) — do not build a second
+  pool. The framing is fixed (the same wording the existing Compose
+  control exposes, the one `scripts/shoot_arrangements.py:_FRAMING_CONCEPT`
+  ships), and the camera and act are `<select>`s of the catalogue
+  keys. Keep the pure logic in `compose.js` with its own vitest tests
+  the way `judge.js` and `deck.js` are laid out; the view only
+  renders. The 422 path is the existing `setError(e.message)` the
+  SessionView already uses, the way group 8's 8.3 documents it.
+
 ## 7. Cleanup and documentation
 
 - [ ] 7.1 Remove the two inline camera examples from the instruction prose and verify the single-home test from 1.3 still passes with those two texts deleted from its `KNOWN_DUPLICATES` baseline, and no test asserting prompt text changes
