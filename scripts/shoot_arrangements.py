@@ -186,6 +186,20 @@ _FRAMING_CONCEPT = {"key": "framing",
                     "wordings": [{"key": "framing", "text": FRAMING}]}
 
 
+def _shot(label: str, prompt: str, seed: int) -> dict:
+    """One take, shaped the way `/api/sessions` wants it.
+
+    `verbatim`, like every other `shoot_*.py`: `prompt_for` already ran the
+    line through the composer (4.1), and `_expand_shots` composes AGAIN unless
+    the take says not to — which prepended the trigger a second time and stored
+    1220 bytes where the composer stores 1208 (found in 4.2, session 300 against
+    301). A function rather than a dict literal inside the loop so a test can
+    call it without the catalogue and without the network.
+    """
+    return {"label": label, "prompt": prompt, "verbatim": True,
+            "seed": seed, "count": 1}
+
+
 def prompt_for(camera_concept: dict, act: dict, look: str = LOOK,
                wardrobe: str = REST) -> str:
     """Build the line through the composer.
@@ -256,7 +270,7 @@ def main() -> int:
             # `wordings[0]["text"]` off it, so no rewrap is needed.
             prompt = prompt_for(p, a)
             for seed in SEEDS:
-                shots.append({"label": label, "prompt": prompt, "seed": seed, "count": 1})
+                shots.append(_shot(label, prompt, seed))
 
     print(f"\n{len(shots)} photographs, {len(SEEDS)} seeds each, on {args.base_model}")
     if args.dry_run:

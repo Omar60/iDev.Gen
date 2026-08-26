@@ -656,6 +656,43 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
   `_rerun_script_4_2.py`, `_judge_4_2_repeat3.py`, `_verify_4_2_v2.py`)
   were used only for this task and are not part of the commit.
 
+  **The fix, shipped.** 4.2's write-up named the doubled trigger and left the
+  canonical fix as a follow-up, with `verbatim=True` living only in the
+  throwaway `scripts/_shoot_4_2.py` and `scripts/_rerun_script_4_2.py`. Both
+  are untracked, so the script in the repo still stored the trigger twice and
+  no test saw it. The line now ships: `scripts/shoot_arrangements.py` builds
+  its takes through `_shot()`, which carries `verbatim: True` the way the other
+  six `shoot_*.py` already did (`shoot_camera_forms.py:138`,
+  `shoot_candid_cameras.py:274`, `shoot_kiss_frames.py:79`,
+  `shoot_technique_anchor.py:119`, `shoot_technique_specificity.py:82`,
+  `shoot_technique_surface.py:107`) — `shoot_arrangements.py` was the only one
+  that did not. The doubling predates 4.1: `git show 82b4e5d` has the old
+  f-string opening on `zchar_jir.` too, so 4.1 carried the bug forward rather
+  than introducing it.
+
+  The fix is `verbatim` and not a change to `_expand_shots`, because
+  `_expand_shots` composing an uncomposed take is the app's own path and six
+  scripts already opt out of it the same way; moving the fix into the backend
+  would change what every written session stores to fix one script.
+
+  `tests/test_shoot_arrangements_compose.py::test_the_script_stores_the_line_it_composed_and_not_the_line_composed_twice`
+  pins it where 4.1's test could not look: it POSTs the script's own `_shot()`
+  payload through the API and reads the row back, with a second take sent
+  without the flag as the control. Verified by deleting `"verbatim": True` from
+  `_shot()`: `assert stored["verbatim"] == line` fails with
+  `'4da woman.
+...' == 'zchar_jir.
+...'` — the doubling itself. Reverted, 4
+  passed.
+
+  **What this does NOT close.** n=2 on the COMPOSER arm. The task asked for
+  n=10 a side and the catalogue only holds two directed cameras for `astride`,
+  so the composer's rate rests on two photographs and its own analysis puts the
+  95% interval at 0.14-1.0. The SCRIPT arm (6 of 6 against a 9 of 12 control)
+  carries the comparison; the COMPOSER arm does not measure anything yet. Any
+  later claim that the composer matches the script needs a question whose trio
+  reaches ten cells, not this one.
+
 ## 5. Judging screen
 
 - [ ] 5.1 Present a photograph with no brief, no composed line, no wording and no reference image, and verify none of them reach the client

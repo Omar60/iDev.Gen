@@ -33,7 +33,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from main import _sentences, compose_shot  # noqa: E402
 
 from shoot_arrangements import (  # noqa: E402
-    FRAMING, LOOK, MODEL, REST, _act_concept, prompt_for,
+    FRAMING, LOOK, MODEL, REST, _act_concept, _shot, prompt_for,
 )
 
 # A representative trio, the one the script's `astride` arm shoots: the first
@@ -180,3 +180,38 @@ def test_a_candidate_act_without_wordings_is_wrapped_into_a_concept():
     # line; the assertion is the act's `act` text appears in the take.
     assert candidate["act"] in from_candidate, (
         "the wrapped act text did not reach the take")
+
+
+def test_the_script_stores_the_line_it_composed_and_not_the_line_composed_twice(client, seeded):
+    """Task 4.2's finding, pinned where 4.1's test could not see it.
+
+    4.1 proved `prompt_for` and `compose_shot` return the same string. That is
+    a FUNCTION-level equality, and the script does not render its return value —
+    it POSTs it. `_expand_shots` runs `_compose` over every take that does not
+    say `verbatim`, so a line the script already composed got the trigger
+    prepended a second time and reached the database 12 bytes longer than the
+    composer's own (session 300 against 301). Every other `shoot_*.py` sends
+    `verbatim: True`; `shoot_arrangements.py` was the one that did not.
+
+    The second take is the control: without the flag the same prompt comes back
+    changed, which is what makes the first assertion mean something.
+    """
+    line = prompt_for(CAMERA, ACT)
+    r = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "arrangements storage",
+        "look": LOOK, "wardrobe": "", "seed_mode": "fixed", "seed": 7,
+        "shots": [_shot("verbatim", line, 7),
+                  {"label": "composed-again", "prompt": line, "count": 1}],
+    })
+    assert r.status_code == 200
+    stored = {x["shot_label"]: x["prompt"]
+              for x in client.get(f"/api/sessions/{r.json()['id']}").json()["shots"]}
+
+    # What the script sends is what the database holds, byte for byte.
+    assert stored["verbatim"] == line
+
+    # And without the flag it is not: the model's trigger arrives in front of a
+    # line that already carries one.
+    assert stored["composed-again"] != line
+    assert stored["composed-again"].startswith("4da woman.")
+    assert len(stored["composed-again"]) > len(line)
