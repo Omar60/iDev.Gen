@@ -2000,6 +2000,15 @@ export const ARRANGEMENTS = [
     cameras: ['mirror', 'shoulder'],
     wordings: [{ text: 'She is standing with her front to the wall and one leg raised, he is behind her, the '
                        + 'two of them joined, two people in frame.' }] },
+  // `back` and `side` are NOT in this list. They are seeded as cells in
+  // `backend/db.py:EVIDENCE_SEED` (task 2.3 of the prompt-component-matrix
+  // change) with the verdicts the source paid for, and that cell table is
+  // the only home this change gives them: ShotsEditor.jsx paints every
+  // entry in ARRANGEMENTS as an <option> in the arrangement dropdown, and
+  // no task in the plan (3.x, 6.x, 7.x) filters that dropdown. With back
+  // and side in here, they are eligible and would plant phrases the
+  // source measured at 0 of 24. The verdict of these two lives in the
+  // cell table, not as a second home in the frontend catalogue.
 ]
 
 /** WHY THERE ARE THREE AND NOT SIX.

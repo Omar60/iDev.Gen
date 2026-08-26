@@ -330,10 +330,13 @@ that carry most of the catalogue's value have nowhere to live in a row.
   says do not compete (`technique`, `face`) stay outside the grid.
 - **Seeding the matrix imports old verdicts taken at n=3.** → Seeded cells carry
   their real `n`. A seeded 0/3 lands as `unknown`, not `dead`; only `back`
-  (0 of 12 and 0 of 12) and `side` (0 of 9 and 0 of 8) carry enough to seed as
-  `dead`, split per checkpoint as the source records them rather than as the
-  0-of-41 sum a test derives, and then only for the
-  wording they were shot in.
+  (0 of 12 and 0 of 12) carries enough to seed as `dead`, split per
+  checkpoint as the source records them rather than as the 0-of-41 sum a
+  test derives. `side` (0 of 9 and 0 of 8) does NOT carry enough: 9 and 8 are
+  below the n=10 threshold the spec says is the minimum for a verdict at
+  all, so `side` lands as `unknown` despite the zero ratio. The wording of
+  a dead verdict matters: a cell seeded dead for one wording must remain
+  `unknown` for the other wordings of the same concept.
 
 ## Migration Plan
 

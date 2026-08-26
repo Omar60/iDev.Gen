@@ -34,9 +34,10 @@ A cell SHALL hold exactly one of three states.
 state of every cell. `unknown` is not `dead`: never measured and measured-and-
 failed are different facts, and the system SHALL NOT collapse them.
 
-`verified` SHALL require at least 10 photographs judged with at least 8 of them
-arriving. Below 8 of 10 the cell SHALL be `dead`. A cell with fewer than 10
-photographs judged SHALL remain `unknown` whatever its ratio.
+`verified` SHALL require at least 10 photographs judged, and at least 8 arrived
+for every 10 judged. Below that ratio, at 10 or more judged, the cell SHALL be
+`dead`. A cell with fewer than 10 photographs judged SHALL remain `unknown`
+whatever its ratio.
 
 #### Scenario: A cell passes
 - **WHEN** a cell has 10 photographs judged and 8 arrived
