@@ -127,16 +127,35 @@ list is the cost, not the benefit — it is a second thing to keep in step with
 the catalogue it points into, and a `ref` naming nothing is a failure that
 resolves to `null` far from the typo that caused it.
 
-### The unit of evidence is a cell: (concept, wording, manner, checkpoint)
+### The unit of evidence is a cell: (camera_wording, act_wording, framing_wording, manner, checkpoint)
 
-Anything less is not a verdict. Dropping `manner` merges the directed camera
-list with the candid one, and `behind` is 3/3 in the first and 0/6 in the
-second. Dropping `checkpoint` merges Krea 2 with finepornV4, which disagree on
-the profile from identical text.
+A photograph is the trio — camera × act × framing — and a cell is one
+observation of one trio under one manner × checkpoint. The trio is the unit
+because a single component alone misses the combination: a close framing on
+the face renders a different act on all nine checkpoints (the risk below),
+and the same camera text comes back as a different photograph behind a
+different framing. The 9 per-family verdicts in kinds.js:1962-1986 are the
+evidence: each is a measurement of an act at one camera family, with framing
+absent, and the 4-column key that recorded them under a single
+`(concept, wording)` pair was stuffing two components into a cell shaped
+for one. The trio is what the 9 rows are already measuring — the cell key
+has to match the data, not the other way around.
+
+Anything less than the 5-column trio is not a verdict. Dropping `manner`
+merges the directed camera list with the candid one, and `behind` is 3/3 in
+the first and 0/6 in the second. Dropping `checkpoint` merges Krea 2 with
+finepornV4, which disagree on the profile from identical text. Dropping any
+of the three slot wordings loses the combination that produced the
+photograph. A cell whose act was the only thing being measured carries the
+literal wording `none` in the other two slots (a fact of the measurement,
+not an invention — `back` and `side` were shot on a line without a camera
+breakdown and the candid `behind-direct` was shot without naming the act),
+and the same literal marks the framing for the 9 family rows whose fixed
+line in `scripts/shoot_arrangements.py:63-77` does not include one.
 
 A cell holds one of three states, and the third is load-bearing: `verified`,
-`dead`, `unknown`. `unknown` is not `dead`. Most of what this project currently
-treats as ruled out is `unknown` at n=3.
+`dead`, `unknown`. `unknown` is not `dead`. Most of what this project
+currently treats as ruled out is `unknown` at n=3.
 
 ### n=10 to admit, 8 of 10 to pass
 
@@ -303,7 +322,9 @@ that carry most of the catalogue's value have nowhere to live in a row.
 ## Risks / Trade-offs
 
 - **Coverage may never reach the point where strict mode is usable.** The full
-  space is on the order of 10^3 cells and 10^4 photographs. → Strict mode
+  space is on the order of 10^4 cells (camera × act × framing × manner ×
+  checkpoint — roughly 10 × 10 × 10 × 3 × 2) and 10^5 photographs at n=10
+  each. → Strict mode
   refusing loudly (above) makes an inadequate pool visible instead of silently
   degrading, and exploratory mode is what grows it. What is *not* yet known is
   how many verified cells a 40-take session actually needs before strict is
@@ -344,9 +365,11 @@ that carry most of the catalogue's value have nowhere to live in a row.
    string as the first wording of its concept and bringing `KISS_CAMERA` in.
    Behaviour-neutral: the shufflers draw the same lines, and `SHOOT_FIELDS` /
    `BLOCK_HEADINGS` are untouched.
-2. Add the evidence store and seed it from the verdicts already paid for,
-   including the wordings currently deleted, as `dead` against the one wording
-   and checkpoint they were shot on.
+2. Add the evidence store (the trio cell — `camera_wording, act_wording,
+   framing_wording, manner, checkpoint`) and seed it from the verdicts
+   already paid for, including the wordings currently deleted and the 9
+   per-family observations, against the trio configuration and checkpoint
+   they were actually measured on.
 3. Add the composer in strict mode beside the writer path, reading the reshaped
    catalogue. Both remain.
 4. Measure the composer against the eight fixed-line scripts at n=10 — the

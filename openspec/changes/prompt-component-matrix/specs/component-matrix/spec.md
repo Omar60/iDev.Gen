@@ -6,20 +6,30 @@ works" is a number a program can read rather than a sentence in a comment.
 
 ## ADDED Requirements
 
-### Requirement: A cell is identified by concept, wording, manner and checkpoint
+### Requirement: A cell is identified by the trio, manner and checkpoint
 
-The unit of evidence SHALL be a cell identified by all four of: the concept, the
-wording, the manner the photograph was shot in, and the checkpoint it was
-painted by. A verdict recorded against fewer than four SHALL NOT be accepted.
+The unit of evidence SHALL be a cell identified by all five of: the wording of
+the camera, the wording of the act, the wording of the framing, the manner the
+photograph was shot in, and the checkpoint it was painted by. A verdict
+recorded against fewer than five SHALL NOT be accepted.
 
-Each of the four has already changed an outcome on its own: the same camera
-wording is verified under one manner and dead under another, and two checkpoints
-disagree on the same clause.
+A photograph is the trio — camera × act × framing — and a single component
+alone misses the combination. Each of the five has already changed an outcome
+on its own: the same camera wording is verified under one manner and dead
+under another; two checkpoints disagree on the same clause; and a close
+framing on the face renders a different act on all nine checkpoints.
+
+A cell whose measurement did not break out a slot carries the literal wording
+`none` in that slot: the 9 per-family observations in kinds.js:1962-1986 were
+shot on a line that did not name the framing (scripts/shoot_arrangements.py:63-77),
+and the act-only and camera-only measurements did not name the other two slots.
+The literal `none` is a fact of the measurement, not an invention, and passes
+the non-empty CHECK the cell table enforces.
 
 A cell SHALL hold the number of photographs judged and the number that arrived.
 
-#### Scenario: The same wording under two manners
-- **WHEN** a wording is measured under one manner and then under another
+#### Scenario: The same trio under two manners
+- **WHEN** a trio is measured under one manner and then under another
 - **THEN** the two results are separate cells and neither overwrites the other
 
 #### Scenario: A verdict missing a dimension
