@@ -2632,12 +2632,13 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # read for a refused call (the UPSERT would still no-op on
     # the same cell, but a refusal that does no work is a
     # cleaner log line than a refusal that touches a row).
-    if shot["verdicts"]:
-        raise HTTPException(
-            409,
-            f"judge refused: shot {shot_id} has already been judged "
-            f"(verdicts: {shot['verdicts']})",
-        )
+    # Answers already on the row, from earlier passes. 5.2 asks ONE
+    # question per pass over a whole batch, so a photograph is
+    # judged for its camera on one pass and for its act on another;
+    # a per-SHOT marker would refuse the second pass and the act
+    # would never be measured. The marker is therefore per slot.
+    already = json.loads(shot["verdicts"]) if shot["verdicts"] else {}
+    already = {slot: ans for slot, ans in already.items() if ans is not None}
 
     session = db.one("SELECT * FROM session WHERE id=?", shot["session_id"])
     if not session:
@@ -2685,40 +2686,63 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # "none or cannot tell" — counted but not arrived. A wrong
     # key is the same as "" — counted but not arrived, and the
     # wrong key is preserved on the row for the operator to see.
-    answers = {"camera": j.camera, "act": j.act, "framing": j.framing}
+    answers = {slot: ans for slot, ans in
+               (("camera", j.camera), ("act", j.act), ("framing", j.framing))
+               if ans is not None}
     drawn = {"camera": cam_w, "act": act_w, "framing": framing_w}
-    judged_delta = 0
-    arrived_delta = 0
-    for slot in ("camera", "act", "framing"):
-        ans = answers[slot]
-        if ans is None:
-            # The question was not asked on this pass. The slot
-            # is not measured by this judgement and the cell
-            # count does not change.
-            continue
-        judged_delta += 1
-        if ans and ans == drawn[slot]:
-            arrived_delta += 1
-        # The `else` branches (empty string, wrong key) are
-        # silent: the slot is measured, the cell gets +1 judged
-        # and the verdicts JSON keeps the answer the operator
-        # saw. A "let me record the wrong key against a
-        # different cell" bug is the silent-substitution trap
-        # 6.2 names, and the test pins that the increment
-        # always lands on the drawn trio.
 
-    if judged_delta == 0:
+    if not answers:
         # No question was asked on this pass: every slot is
         # None. A pass that asks nothing measures nothing, and
         # a 200 with no cell update is a silent no-op. Refused
         # at 422 so the call that "did nothing" never goes
-        # through, the same shape `reshoot-below` already
+        # through, the same shape `reshoot` below already
         # pins on its 400.
         raise HTTPException(
             422,
             "judge refused: at least one slot must be answered (not None); "
             "an empty pass measures nothing",
         )
+
+    # A slot already answered is not answered again. 5.3 asks for
+    # exactly this ("a disagreement does not overwrite the stored
+    # verdict"): the re-presented photograph feeds the agreement
+    # rate, it does not rewrite the row. A NEW slot on the same
+    # photograph is not a re-judgement and passes through.
+    repeats = sorted(set(answers) & set(already))
+    if repeats:
+        raise HTTPException(
+            409,
+            f"judge refused: shot {shot_id} already has an answer for "
+            f"{', '.join(repeats)} (verdicts: {shot['verdicts']}); "
+            f"a stored verdict is never overwritten",
+        )
+
+    # `judged` counts PHOTOGRAPHS, not answers. The spec says it in
+    # three places — specs/component-matrix/spec.md:47 and :70, and
+    # `db.cell_state` itself ("at least 10 photographs judged") —
+    # and the seeded rows are photograph counts too (astride 9/12 is
+    # 9 photographs of 12). Counting +1 per answered SLOT was the
+    # first shape of this endpoint and it reached `judged=3` on one
+    # photograph, so a cell flipped to `verified` on four of them.
+    # The threshold exists because a measurement below n=10 does not
+    # survive its own noise; letting three answers stand in for
+    # three photographs would have retired it silently.
+    judged_delta = 0 if already else 1
+
+    # `arrived` is a property of the photograph, so it is derived
+    # from ALL the answers the row now carries, not from this pass
+    # alone: the photograph arrived if every slot answered so far
+    # is the one the line asked for. An empty string ("none or
+    # cannot tell") and a wrong catalogue key are both misses; the
+    # wrong key is kept on the row for the operator to read.
+    # Because a later pass can turn a hit into a miss, the delta is
+    # the difference between the two states, which is -1, 0 or +1.
+    def _all_arrived(seen: dict) -> int:
+        return int(bool(seen) and all(ans and ans == drawn[slot]
+                                      for slot, ans in seen.items()))
+
+    arrived_delta = _all_arrived({**already, **answers}) - _all_arrived(already)
 
     # The cell UPSERT. The ON CONFLICT clause names the PRIMARY
     # KEY (the same five columns the spec keys on), and the
@@ -2731,15 +2755,31 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # delta is `arrived_delta <= judged_delta` by construction
     # — a slot that arrives is a slot that was judged, and
     # the loop above guarantees it.
-    db.run(
-        "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
-        "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(camera_wording, act_wording, framing_wording, manner, checkpoint) "
-        "DO UPDATE SET judged = judged + excluded.judged, "
-        "arrived = arrived + excluded.arrived",
-        cam_w, act_w, framing_w, session["manner"], session["checkpoint"],
-        judged_delta, arrived_delta,
-    )
+    key = (cam_w, act_w, framing_w, session["manner"], session["checkpoint"])
+    if already:
+        # A later pass on a photograph already counted. The row
+        # exists by construction (the first pass created it), and
+        # `arrived_delta` can be -1 here — which an UPSERT cannot
+        # carry: SQLite validates the row the INSERT proposes
+        # BEFORE the conflict is resolved, so `VALUES (..., 0, -1)`
+        # trips `CHECK arrived BETWEEN 0 AND judged` even though the
+        # row the UPDATE would produce is legal. A plain UPDATE is
+        # both correct and the smaller statement.
+        db.run(
+            "UPDATE cell SET arrived = arrived + ? "
+            "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
+            "AND manner=? AND checkpoint=?",
+            arrived_delta, *key,
+        )
+    else:
+        db.run(
+            "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+            "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(camera_wording, act_wording, framing_wording, manner, checkpoint) "
+            "DO UPDATE SET judged = judged + excluded.judged, "
+            "arrived = arrived + excluded.arrived",
+            *key, judged_delta, arrived_delta,
+        )
 
     # Record the verdicts on the row. Empty default '' is the
     # "not yet judged" marker the idempotence check reads; a
@@ -2747,7 +2787,10 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # is round-tripped through `json.dumps` so the operator
     # can read what was answered and 5.2 can resume an
     # interrupted pass.
-    verdicts_json = json.dumps({"camera": j.camera, "act": j.act, "framing": j.framing})
+    # MERGED with what earlier passes stored, never replaced: the row
+    # accumulates one answer per slot across passes, and an
+    # already-answered slot never reaches this line (the 409 above).
+    verdicts_json = json.dumps({**already, **answers})
     db.run("UPDATE shot SET verdicts=? WHERE id=?", verdicts_json, shot_id)
 
     # The cell's new state, derived from the new counts via

@@ -1492,6 +1492,71 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
   `M backend/main.py`, `M tests/test_api.py`
   only.
 
+  **The counting unit was wrong, and is fixed.** The endpoint shipped
+  incrementing `judged` by one per ANSWERED SLOT, so one photograph
+  answered on three slots reached `judged=3`, measured through the
+  API:
+
+      one photograph, three slots -> {'judged': 3, 'arrived': 3}
+
+  The spec counts photographs, in three places —
+  `specs/component-matrix/spec.md:47` ("at least 10 photographs
+  judged"), `:70` ("A seeded result below 10 photographs"), and
+  `db.cell_state` itself — and the seeded rows are photograph counts
+  (astride 9/12 is 9 photographs of 12). Under the slot rule a cell
+  flipped to `verified` off FOUR photographs, which retires the n=10
+  threshold the whole change is built on, and it put two units in one
+  column beside the seed. `judged` is now +1 per photograph, on the
+  first pass only.
+
+  **The idempotence marker was too coarse for 5.2.** It was per SHOT,
+  and 5.2 asks one question per pass over a batch — so a photograph
+  judged for its camera could never be judged for its act:
+
+      pass 1 (camera only) -> 200  judged=1 arrived=1
+      pass 2 (act only)    -> 409  "has already been judged"
+
+  The marker is per SLOT now. A new slot on the same photograph is
+  accepted and does not count the photograph again; re-answering a
+  slot that already has an answer is still 409, which is what 5.3's
+  "a disagreement does not overwrite the stored verdict" asks for.
+  The `verdicts` JSON is merged across passes, never replaced.
+
+  **`arrived` follows from all the answers, not from one pass.** The
+  photograph arrived if every slot answered so far is the one the
+  line asked for, so a later pass can turn a hit into a miss and the
+  delta is -1, 0 or +1. That negative delta cannot go through the
+  UPSERT: SQLite validates the row the INSERT proposes before the
+  conflict is resolved, so `VALUES (..., 0, -1)` trips
+  `CHECK arrived BETWEEN 0 AND judged` even though the row the UPDATE
+  would produce is legal. A later pass therefore takes a plain
+  `UPDATE` — the row exists by construction — and the first pass
+  keeps the UPSERT.
+
+  Six of the eleven 6.2 tests were renumbered to the photograph unit;
+  three were added, each verified by breaking the code:
+  `test_a_second_pass_answers_a_new_slot_without_counting_the_photo_again`
+  (restore the per-shot marker: `assert 409 == 200`),
+  `test_a_later_pass_that_misses_takes_the_photograph_out_of_arrived`
+  (drop the recompute: `assert (1, 1) == (1, 0)`), and
+  `test_ten_photographs_judged_one_slot_each_reach_the_threshold`.
+  `test_judging_three_slots_increments_three` became
+  `test_judging_three_slots_is_still_one_photograph` and is the one
+  that bites on the unit (restore +1 per slot: `assert 3 == 1`).
+
+  The threshold test does NOT catch the unit collision and its
+  docstring says so: one question per photograph makes the two rules
+  identical. Worth writing down — it was drafted claiming it did,
+  which is the "test that cannot fail" mistake in its quieter form,
+  a true-sounding claim about which regression a green test rules out.
+
+  **Gates after the fix.** `python -m pytest` — 346 passed;
+  `npm --prefix frontend test` — 23 passed; `npm --prefix frontend run
+  build` — built in 1.07s; `python -m pytest tests/test_no_personal_data.py`
+  — 2 passed. The `verdicts` migration was probed against a pre-6.2
+  database with no such column: the `ALTER TABLE` runs and the
+  existing rows survive.
+
 ## 7. Cleanup and documentation
 
 - [ ] 7.1 Remove the two inline camera examples from the instruction prose and verify the single-home test from 1.3 still passes with those two texts deleted from its `KNOWN_DUPLICATES` baseline, and no test asserting prompt text changes

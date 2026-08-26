@@ -2984,8 +2984,8 @@ def test_a_judged_exploratory_photograph_counts_toward_its_cell(client, seeded):
     body = r.json()
     assert body["cell"] == ["front-direct", "astride", "full-length",
                             "directed", "finepornV4"]
-    assert body["judged"] == 3
-    assert body["arrived"] == 3
+    assert body["judged"] == 1
+    assert body["arrived"] == 1
     assert body["state"] == "unknown"
 
     # The row exists with the right counts, in the cell table
@@ -2998,7 +2998,7 @@ def test_a_judged_exploratory_photograph_counts_toward_its_cell(client, seeded):
         "AND manner=? AND checkpoint=?",
         "front-direct", "astride", "full-length", "directed", "finepornV4",
     )
-    assert cell == {"judged": 3, "arrived": 3}
+    assert cell == {"judged": 1, "arrived": 1}
 
     # The verdicts column on the shot carries the answers, so a
     # re-judge (which the test below covers) is a 409 rather
@@ -3075,7 +3075,7 @@ def test_the_judged_cell_uses_the_wording_key_not_the_concept_key(client, seeded
         "SELECT judged, arrived FROM cell WHERE camera_wording=?",
         "cam-wording",
     )
-    assert wording_cell == {"judged": 3, "arrived": 3}
+    assert wording_cell == {"judged": 1, "arrived": 1}
     concept_cell = db.one(
         "SELECT judged, arrived FROM cell WHERE camera_wording=?",
         "cam-concept",
@@ -3106,7 +3106,9 @@ def test_a_correct_answer_increments_arrived_a_wrong_answer_only_judged(client, 
                "wordings": [{"key": "full-length", "text": "full-length text"}]}
 
     # Three shots on the same trio. The cell is unknown at
-    # n=0; the deltas carry it through 0 -> 3 -> 6 -> 9.
+    # n=0; one photograph is one `judged`, so the deltas carry
+    # it through 0 -> 1 -> 2 -> 3 however many slots each pass
+    # answers.
     shot_ids = [
         _composed_shot_in_session(
             client, seeded, manner="directed", checkpoint="finepornV4",
@@ -3115,35 +3117,38 @@ def test_a_correct_answer_increments_arrived_a_wrong_answer_only_judged(client, 
         ) for i in range(3)
     ]
 
-    # Shot 0: all three correct. judged+=3, arrived+=3.
+    # Shot 0: all three correct. One photograph, and every
+    # answered slot arrived: judged+=1, arrived+=1.
     r = client.post(f"/api/shots/{shot_ids[0]}/judge", json={
         "camera": "front-direct", "act": "astride", "framing": "full-length",
     })
     assert r.status_code == 200, r.text
-    assert r.json()["judged"] == 3 and r.json()["arrived"] == 3
+    assert r.json()["judged"] == 1 and r.json()["arrived"] == 1
     assert r.json()["state"] == "unknown"
 
     # Shot 1: camera wrong (a different catalogue key), act
     # "none or cannot tell" (empty string), framing correct.
-    # Per-slot: camera judged+1 arrived+0, act judged+1
-    # arrived+0, framing judged+1 arrived+1 -> +3 judged,
-    # +1 arrived.
+    # `arrived` is a property of the PHOTOGRAPH: it arrived only
+    # if every slot answered is the one the line asked for, and
+    # two of these three are misses -> judged+=1, arrived+=0.
     r = client.post(f"/api/shots/{shot_ids[1]}/judge", json={
         "camera": "overhead-direct", "act": "", "framing": "full-length",
     })
     assert r.status_code == 200, r.text
-    assert r.json()["judged"] == 6
-    assert r.json()["arrived"] == 4
+    assert r.json()["judged"] == 2
+    assert r.json()["arrived"] == 1
     assert r.json()["state"] == "unknown"
 
-    # Shot 2: act correct, the other two unanswered. Per-slot:
-    # +1 judged, +1 arrived.
+    # Shot 2: act correct, the other two unanswered. One
+    # photograph, and the only slot asked arrived: +1 judged,
+    # +1 arrived. A slot nobody asked about cannot make the
+    # photograph a miss.
     r = client.post(f"/api/shots/{shot_ids[2]}/judge", json={
         "act": "astride",
     })
     assert r.status_code == 200, r.text
-    assert r.json()["judged"] == 7
-    assert r.json()["arrived"] == 5
+    assert r.json()["judged"] == 3
+    assert r.json()["arrived"] == 2
     assert r.json()["state"] == "unknown"
 
     # The cell row carries the totals. A "let me add
@@ -3155,7 +3160,7 @@ def test_a_correct_answer_increments_arrived_a_wrong_answer_only_judged(client, 
         "AND manner=? AND checkpoint=?",
         "front-direct", "astride", "full-length", "directed", "finepornV4",
     )
-    assert cell == {"judged": 7, "arrived": 5}
+    assert cell == {"judged": 3, "arrived": 2}
 
     # The verdicts on shot 1 keep the wrong camera key and
     # the empty act answer. The operator can see what was
@@ -3430,7 +3435,7 @@ def test_judging_the_same_shot_twice_is_refused_at_409(client, seeded):
         "act": "astride",
     })
     assert r.status_code == 409, r.text
-    assert "already been judged" in r.json()["detail"]
+    assert "already has an answer" in r.json()["detail"]
 
     # The cell count is unchanged: still (1, 1), not (2, 2).
     # A code change that dropped the column check would
@@ -3478,12 +3483,20 @@ def test_judging_with_no_answers_is_refused(client, seeded):
     )
 
 
-def test_judging_three_slots_increments_three(client, seeded):
-    """A pass that answers all three slots increments the cell
-    by 3 on `judged` and up to 3 on `arrived`. The
-    per-slot delta is the only thing the UPSERT reads, and
-    a regression that hard-coded `+1` for every pass
-    would land at (1, 0/1) instead of (3, 0..3).
+def test_judging_three_slots_is_still_one_photograph(client, seeded):
+    """A pass that answers all three slots is ONE photograph
+    judged, not three. The spec counts photographs
+    (specs/component-matrix/spec.md:47 and :70, and
+    `db.cell_state` itself), and the seeded rows are
+    photograph counts. Counting +1 per answered slot was the
+    first shape of this endpoint: it reached `judged=3` on a
+    single photograph, so a cell flipped to `verified` on four
+    of them and the n=10 threshold quietly became n=4.
+
+    `arrived` is the photograph's own property: it arrived only
+    if every slot answered is the one the line asked for. Here
+    the camera is a different catalogue key, so the photograph
+    is a miss whatever the other two say.
     """
     camera = {"key": "front-direct",
               "wordings": [{"key": "front-direct", "text": "front text"}]}
@@ -3497,15 +3510,137 @@ def test_judging_three_slots_increments_three(client, seeded):
     )
 
     # Two of three correct: camera wrong, act + framing
-    # correct -> +3 judged, +2 arrived.
+    # correct -> one photograph judged, and it did not arrive.
     r = client.post(f"/api/shots/{shot_id}/judge", json={
         "camera": "overhead-direct",
         "act": "astride",
         "framing": "full-length",
     })
     assert r.status_code == 200, r.text
-    assert r.json()["judged"] == 3
-    assert r.json()["arrived"] == 2
+    assert r.json()["judged"] == 1
+    assert r.json()["arrived"] == 0
+
+
+def test_a_second_pass_answers_a_new_slot_without_counting_the_photo_again(client, seeded):
+    """5.2 asks ONE question per pass over a whole batch, so a
+    photograph is judged for its camera on one pass and for its act
+    on another. The first shape of this endpoint refused the second
+    pass at 409 (the marker was per SHOT), so a photograph could
+    never be measured on more than one slot:
+
+        pass 1 (camera only) -> 200  judged=1 arrived=1
+        pass 2 (act only)    -> 409  "has already been judged"
+
+    The marker is per SLOT now. The second pass is accepted, the
+    photograph is still ONE `judged`, and the answers accumulate on
+    the row. Re-answering a slot that already has an answer is what
+    stays refused — 5.3's "a disagreement does not overwrite the
+    stored verdict" is the same rule.
+    """
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing, session_name="two passes",
+    )
+
+    r = client.post(f"/api/shots/{shot_id}/judge", json={"camera": "front-direct"})
+    assert r.status_code == 200, r.text
+    assert (r.json()["judged"], r.json()["arrived"]) == (1, 1)
+
+    # A different slot on the same photograph: accepted, and the
+    # photograph is not counted a second time.
+    r = client.post(f"/api/shots/{shot_id}/judge", json={"act": "astride"})
+    assert r.status_code == 200, r.text
+    assert (r.json()["judged"], r.json()["arrived"]) == (1, 1)
+
+    # The same slot again: refused, and nothing moves.
+    r = client.post(f"/api/shots/{shot_id}/judge", json={"camera": "overhead-direct"})
+    assert r.status_code == 409, r.text
+    assert "camera" in r.json()["detail"], r.json()["detail"]
+
+    # Both answers are on the row; the second pass merged rather
+    # than replaced.
+    import json as _json
+    verdicts = _json.loads(db.one("SELECT verdicts FROM shot WHERE id=?", shot_id)["verdicts"])
+    assert verdicts == {"camera": "front-direct", "act": "astride"}, verdicts
+
+
+def test_a_later_pass_that_misses_takes_the_photograph_out_of_arrived(client, seeded):
+    """`arrived` is a property of the photograph, so a slot answered
+    on a LATER pass can turn a hit into a miss. The photograph
+    arrived on its camera; the act pass says "none or cannot tell";
+    the photograph did not arrive after all and `arrived` goes back
+    down. Without the recompute, `arrived` would be stuck at the
+    value the first pass happened to produce and a cell could read
+    10/10 while half its photographs missed on a slot asked later.
+    """
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing, session_name="miss on pass two",
+    )
+
+    r = client.post(f"/api/shots/{shot_id}/judge", json={"camera": "front-direct"})
+    assert (r.json()["judged"], r.json()["arrived"]) == (1, 1)
+
+    r = client.post(f"/api/shots/{shot_id}/judge", json={"act": ""})
+    assert r.status_code == 200, r.text
+    assert (r.json()["judged"], r.json()["arrived"]) == (1, 0), r.json()
+
+    # And never below zero: the cell's CHECK is `arrived BETWEEN 0
+    # AND judged`, so a double subtraction would raise here rather
+    # than store a negative count.
+    cell = db.one(
+        "SELECT judged, arrived FROM cell WHERE camera_wording=? AND act_wording=? "
+        "AND framing_wording=? AND manner=? AND checkpoint=?",
+        "front-direct", "astride", "full-length", "directed", "finepornV4",
+    )
+    assert cell == {"judged": 1, "arrived": 0}
+
+
+def test_ten_photographs_judged_one_slot_each_reach_the_threshold(client, seeded):
+    """The threshold in the unit the spec uses. Ten photographs, one
+    question each — the shape 5.2 actually produces — and the cell
+    flips on the tenth, not on the fourth.
+
+    This test does NOT catch the +1-per-slot unit collision — one
+    question per photograph makes the two rules identical, and it
+    passes under both. `test_judging_three_slots_is_still_one_photograph`
+    is the one that bites there (verified: it fails `assert 3 == 1`).
+    What this one pins is the boundary itself in the shape 5.2 will
+    call it: unknown through nine, verified on the tenth.
+    """
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    seen = []
+    for i in range(10):
+        shot_id = _composed_shot_in_session(
+            client, seeded, manner="directed", checkpoint="finepornV4",
+            camera=camera, act=act, framing=framing, session_name=f"threshold {i}",
+        )
+        # Nine arrive, the tenth is a miss: 9 of 10 is above the
+        # 8-in-10 ratio, so the cell lands `verified`.
+        answer = "astride" if i < 9 else ""
+        r = client.post(f"/api/shots/{shot_id}/judge", json={"act": answer})
+        assert r.status_code == 200, r.text
+        seen.append((r.json()["judged"], r.json()["state"]))
+
+    # Unknown all the way to nine, whatever the ratio.
+    assert [state for _, state in seen[:9]] == ["unknown"] * 9, seen
+    assert [judged for judged, _ in seen] == list(range(1, 11)), seen
+    assert seen[-1] == (10, "verified"), seen
 
 
 def test_use_look_false_leaves_the_look_out_of_every_prompt(client, seeded):
