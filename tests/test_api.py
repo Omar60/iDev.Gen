@@ -3983,6 +3983,76 @@ def test_a_control_answering_two_slots_is_refused_rather_than_half_read(client, 
     assert "act" in detail and "camera" in detail, detail
 
 
+def test_a_slot_with_one_value_does_not_cap_the_run_at_one_photograph(client, seeded):
+    """3.4's rule is "no component twice in a run". A slot the pool offers
+    ONE value for cannot be spread over, and holding it to that rule caps
+    every run at one photograph.
+
+    That is not hypothetical. The compose control shipped in group 8 sends
+    a single fixed framing wording, because framing has no catalogue, and
+    its own default count came back refused with nothing queued:
+
+        exploratory count=4 -> 422
+        compose refused: framing slot has 1 drawable values within the
+        trio pool, largest fillable is 1 (of 4 requested)
+
+    Here: three cameras, three acts, ONE framing. A run of 3 must be
+    queued with three distinct cameras and three distinct acts, all
+    sharing the one framing.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "one framing",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    cams = ["cam-a", "cam-b", "cam-c"]
+    acts = ["act-a", "act-b", "act-c"]
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k}") for k in cams],
+        "act":     [_candidate(k, f"act {k}") for k in acts],
+        "framing": [_candidate("only-framing", "the one framing")],
+    }
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 3, "candidates": candidates, "mode": "exploratory",
+    })
+    assert r.status_code == 200, r.text
+    rows = db.q("SELECT components FROM shot WHERE session_id=?", sid)
+    assert len(rows) == 3, rows
+    import json as _json
+    drawn = [_json.loads(row["components"]) for row in rows]
+    # The two slots that HAVE a choice are still spread: no repeats.
+    assert len({d["camera"]["wording"] for d in drawn}) == 3, drawn
+    assert len({d["act"]["wording"] for d in drawn}) == 3, drawn
+    # And the one-value slot is the same on all three, which is the whole
+    # point — it had nowhere else to go.
+    assert {d["framing"]["wording"] for d in drawn} == {"only-framing"}, drawn
+
+
+def test_a_slot_with_a_choice_still_refuses_a_run_that_would_repeat_it(client, seeded):
+    """The other half: exempting one-value slots must not exempt the rest.
+    Three cameras, THREE acts, one framing, and a run of 4 — one more than
+    the act list can fill without repeating. Refused, nothing queued, and
+    the message names the act slot rather than the exempt framing.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "act runs out",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k}") for k in ("cam-a", "cam-b", "cam-c", "cam-d")],
+        "act":     [_candidate(k, f"act {k}") for k in ("act-a", "act-b", "act-c")],
+        "framing": [_candidate("only-framing", "the one framing")],
+    }
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 4, "candidates": candidates, "mode": "exploratory",
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "act slot has 3" in detail, detail
+    assert "framing" not in detail, f"the exempt slot was named as the shortfall: {detail!r}"
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, f"a refused run queued {n} shots"
+
+
 def test_use_look_false_leaves_the_look_out_of_every_prompt(client, seeded):
     """The look is a switch, not a deletion.
 

@@ -2001,6 +2001,61 @@ session's manner".
   script ran end-to-end against a throwaway `IDEVGEN_DATA_DIR`
   and reported `ALL OK` on all four cases.
 
+  **Review fix: the control refused its own default.** Group 8 shipped a
+  count of 4 and exploratory mode, and clicking Compose returned a 422
+  with nothing queued. Measured with the real pool read out of
+  `compose.js` through node:
+
+      pool sizes: {'camera': 9, 'act': 3, 'framing': 1}
+      exploratory count=4  -> 422, queued=0
+        framing slot has 1 drawable values within the trio pool,
+        largest fillable is 1 (of 4 requested)
+
+  The cause is 3.4's rule (`backend/main.py`, the `used` sets in the draw):
+  a trio is taken only if none of its three components was used in the run.
+  With one fixed framing wording the second trio always repeats it, so the
+  ceiling of every run was one photograph. The proposal asked for the fixed
+  framing and nobody checked it against the shipped no-repeat rule; the
+  group-8 verification script did not see it because its exploratory case
+  asked for `count=1` and its refusal case ran a strict pool of 1 — the
+  pool-sized-to-the-count shape that already hid the 3.5 flake.
+
+  The rule now applies per slot only while the pool offers that slot more
+  than one value (`_spreadable_slots`). "Do not repeat when you had
+  somewhere else to go" is what 3.4 wrote; a one-value slot is not a
+  repeat, it is the only road. `_min_slot_within` reads the same set, so
+  the reported ceiling and the draw cannot disagree — they are the pair
+  that has produced every bug in this change.
+
+  Two tests, both verified by restoring the old rule:
+  `test_a_slot_with_one_value_does_not_cap_the_run_at_one_photograph`
+  (three cameras, three acts, one framing, `count=3` queues three with
+  distinct cameras and acts sharing the framing — old rule: `assert 422 ==
+  200`) and
+  `test_a_slot_with_a_choice_still_refuses_a_run_that_would_repeat_it`
+  (`count=4` against three acts is still refused and the message names the
+  act slot, not the exempt framing — old rule names framing).
+
+  The control's default count is now derived (`defaultCount` in
+  `compose.js`): the smallest slot that has a choice, which is the act list
+  at 3. Written as a derivation rather than a number so a fourth
+  arrangement moves it without anyone remembering to.
+
+  **The ceiling is 3 per run, and that is the rule working.** Nine cameras
+  and three acts give 27 distinct trios, but no run may repeat an act, so a
+  batch of 25 photographs is nine clicks rather than one. Worth stating
+  plainly because it bears on 5.4 and 5.5: `compose-run` produces VARIETY,
+  and the matrix needs n=10 photographs of the SAME cell to reach a
+  verdict. Filling a cell is a different request from composing a shoot,
+  and this change never wrote it. Whoever takes 5.4 will meet it
+  immediately.
+
+  **Gates after the fix.** `python -m pytest` — 358 passed;
+  `npm --prefix frontend test` — 42 passed in 4 files;
+  `npm --prefix frontend run build` — built in 1.03s;
+  `python -m pytest tests/test_no_personal_data.py` — 2 passed;
+  `python scripts/verify_compose_frontend.py` — ALL OK, 4 of 4.
+
 ## 7. Cleanup and documentation
 
 - [ ] 7.1 Remove the two inline camera examples from the instruction prose and verify the single-home test from 1.3 still passes with those two texts deleted from its `KNOWN_DUPLICATES` baseline, and no test asserting prompt text changes

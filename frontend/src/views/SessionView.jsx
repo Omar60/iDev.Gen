@@ -6,7 +6,7 @@ import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
 import { BaseModelSelect, SamplerSelect } from './Models.jsx'
 import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary } from '../kinds.js'
-import { candidatePool, FRAMING_WORDING } from '../compose.js'
+import { candidatePool, defaultCount, FRAMING_WORDING } from '../compose.js'
 import { composed } from '../enhance.js'
 
 /** A checkpoint's name for a session title: no folder, no extension. Three copies
@@ -51,7 +51,14 @@ export default function SessionView({ id }) {
   // draws unknown and verified cells, never dead ones, so the first click
   // queues a real shot; strict is one click away when the operator has
   // measured enough to want it.
-  const [composeCount, setComposeCount] = useState(4)
+  // Opens on the largest run the no-repeat rule allows for this manner
+  // (see `defaultCount`), so the first click is not a 422 for the same
+  // reason the mode defaults to exploratory. The initialiser runs once,
+  // before the session has loaded, so it reads the `directed` fallback —
+  // which is the right number for every manner today because the binding
+  // slot is the act list and that list is shared. A manner-specific act
+  // catalogue would make this stale and it would have to move to an effect.
+  const [composeCount, setComposeCount] = useState(() => defaultCount(s?.manner))
   const [composeMode, setComposeMode] = useState('exploratory')
   const llm = !!config.llm_ok
 

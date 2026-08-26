@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { POSITIONS, ARRANGEMENTS, CAMERA_POSITIONS, CANDID_POSITIONS, SELFIE_POSITIONS } from './kinds.js'
-import { candidatePool, FRAMING_WORDING } from './compose.js'
+import { candidatePool, defaultCount, FRAMING_WORDING } from './compose.js'
 
 /** The candidate pool the compose control posts. Each test pins a different
  *  fact: the catalogue slice (every camera of the manner, every act), the
@@ -95,6 +95,28 @@ describe('candidatePool', () => {
       expect(c.wordings.length).toBeGreaterThan(0)
       expect(typeof c.wordings[0].text).toBe('string')
       expect(c.wordings[0].text).not.toBe('')
+    }
+  })
+})
+
+
+describe('defaultCount', () => {
+  it('opens on the smallest slot that has a choice, not on the fixed framing', () => {
+    // The framing is one wording and the no-repeat rule exempts it, so it
+    // must not be what the control opens on — a default of 1 would make the
+    // button useless for the batch it exists to produce.
+    expect(defaultCount('directed')).toBe(Math.min(POSITIONS.directed.length, ARRANGEMENTS.length))
+    expect(defaultCount('directed')).toBeGreaterThan(1)
+  })
+
+  it('is the same for every manner while the act list is the binding slot', () => {
+    // The initialiser in SessionView runs before the session loads and reads
+    // the `directed` fallback. That is only safe while the smallest slot with
+    // a choice is the shared act list; this test fails the day a manner gets
+    // fewer cameras than there are acts, which is when the value has to move
+    // out of the initialiser.
+    for (const manner of ['directed', 'candid', 'selfie']) {
+      expect(defaultCount(manner)).toBe(defaultCount('directed'))
     }
   })
 })

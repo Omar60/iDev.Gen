@@ -61,3 +61,22 @@ export function candidatePool(manner) {
  *  view wants to say what it is. Exported as a constant so the control
  *  shows the wording the composer will use, not a paraphrase. */
 export const FRAMING_WORDING = FRAMING_CONCEPT.wordings[0].text
+
+
+/** The count the control opens on: the smallest slot the no-repeat rule
+ *  actually binds. A run never uses a component twice
+ *  (`backend/main.py`, task 3.4), and a slot the pool offers one value
+ *  for is exempt — so the ceiling is the smallest slot that HAS a
+ *  choice, which today is the act list. Derived rather than written as
+ *  a number so it follows the catalogue: adding a fourth arrangement
+ *  moves the default without anyone remembering to.
+ *
+ *  It is an opening value, not a promise. Dead cells shrink the real
+ *  pool below this, and the composer's own refusal names the largest
+ *  fillable count when that happens.
+ */
+export function defaultCount(manner) {
+  const pool = candidatePool(manner)
+  const sizes = [pool.camera.length, pool.act.length, pool.framing.length].filter((n) => n > 1)
+  return sizes.length ? Math.min(...sizes) : 1
+}

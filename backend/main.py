@@ -1130,6 +1130,28 @@ def _trio_pool(
             for framing in framing_keys if framing != "none"} - matched
 
 
+def _spreadable_slots(pool: set[tuple[str, str, str]]) -> set[str]:
+    """The slots the no-repeat rule can be applied to: the ones the pool
+    offers more than one distinct value for.
+
+    A slot with a single value in the pool cannot be spread over, and
+    holding it to "no component twice in a run" caps every run at one
+    photograph. That is not hypothetical: the compose control shipped in
+    group 8 sends one fixed framing wording (framing has no catalogue),
+    so `count=4` was refused with "framing slot has 1 drawable values,
+    largest fillable is 1" and nothing was queued.
+
+    An empty pool has no spreadable slot, and the ceiling for an empty
+    pool is zero either way.
+    """
+    if not pool:
+        return set()
+    distinct = {"camera": {t[0] for t in pool},
+                "act": {t[1] for t in pool},
+                "framing": {t[2] for t in pool}}
+    return {slot for slot in _SLOT_ORDER if len(distinct[slot]) > 1}
+
+
 def _min_slot_within(pool: set[tuple[str, str, str]]) -> tuple[str, int]:
     """The slot the 422 message names when the pool runs short.
     "The slot that ran out" only exists as a per-slot count when
@@ -1153,8 +1175,16 @@ def _min_slot_within(pool: set[tuple[str, str, str]]) -> tuple[str, int]:
         "act":     {t[1] for t in pool},
         "framing": {t[2] for t in pool},
     }
-    counts = {s: len(distinct[s]) for s in _SLOT_ORDER}
-    slot = min(_SLOT_ORDER, key=lambda s: (counts[s], _SLOT_ORDER.index(s)))
+    # Only the spreadable slots bound the run — the draw skips a repeat
+    # on those alone, so a one-value slot must not be reported as the
+    # dimension that ran out. When NO slot is spreadable the pool holds
+    # exactly one trio and the ceiling is that one photograph; the slot
+    # named is `camera` by the same tie-break the spreadable case uses.
+    spreadable = _spreadable_slots(pool)
+    if not spreadable:
+        return "camera", len(pool)
+    counts = {s: len(distinct[s]) for s in _SLOT_ORDER if s in spreadable}
+    slot = min(counts, key=lambda s: (counts[s], _SLOT_ORDER.index(s)))
     return slot, counts[slot]
 
 
@@ -1411,6 +1441,11 @@ def _draw_n_trio_shots(
         slot: {x["key"]: x for x in candidates.get(slot, []) if isinstance(x, dict) and x.get("key")}
         for slot in _SLOT_ORDER
     }
+    # The slots the "no component twice" rule applies to: the ones the
+    # pool offers more than one value for. Computed off the POOL and not
+    # off the candidates, because a candidate whose trios are all dead is
+    # not a road the draw can take.
+    spreadable = _spreadable_slots(pool)
     # `max_per_family` is the bound the family-spread skip
     # keys on. `ceil(count/2)` is the classical "reorganize
     # string" feasibility condition, with the cap of count
@@ -1427,6 +1462,15 @@ def _draw_n_trio_shots(
         random.shuffle(shuffled)
         chosen: list[tuple[str, str, str]] = []
         used = {"camera": set(), "act": set(), "framing": set()}
+        # Only slots that HAVE a choice are held to "no component
+        # twice in a run". A slot the pool offers one value for
+        # cannot be spread over, and demanding it anyway caps every
+        # run at one photograph — which is what the app's own
+        # compose button hit on its first click: the framing is a
+        # single fixed wording (there is no framing catalogue yet),
+        # so the second trio always repeated it. The rule 3.4 wrote
+        # is "do not repeat when you had somewhere else to go";
+        # a one-value slot is not a repeat, it is the only road.
         # The family-skip needs the family counts updated as
         # the greedy picks, so a 3rd front is skipped on a
         # 4-trio draw before it would otherwise enter the
@@ -1435,9 +1479,9 @@ def _draw_n_trio_shots(
         # get, and they are exempt).
         family_counts: dict[object, int] = {}
         for cam, act, framing in shuffled:
-            if (cam in used["camera"]
-                    or act in used["act"]
-                    or framing in used["framing"]):
+            if any(value in used[slot]
+                   for slot, value in (("camera", cam), ("act", act), ("framing", framing))
+                   if slot in spreadable):
                 continue
             trio = (cam, act, framing)
             if skip is not None and skip(trio, by_key, family_counts, max_per_family):
