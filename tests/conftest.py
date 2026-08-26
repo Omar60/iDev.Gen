@@ -124,7 +124,7 @@ def client():
 
     with TestClient(main.app) as c:
         yield c
-    for table in ("shot", "session", "model", "workflow"):
+    for table in ("shot", "session", "model", "workflow", "cell"):
         db.run(f"DELETE FROM {table}")
 
 

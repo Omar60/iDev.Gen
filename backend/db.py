@@ -87,10 +87,40 @@ CREATE TABLE IF NOT EXISTS shot (
     prompt_id     TEXT NOT NULL DEFAULT '',
     filename      TEXT NOT NULL DEFAULT '',        -- relative to the session folder
     rating        INTEGER NOT NULL DEFAULT 0,      -- 0-5
+    -- The three drawn components (camera, act, framing) as (concept, wording)
+    -- pairs, JSON-encoded. A written shot leaves this at the empty default
+    -- '{}', which is the marker 3.6 uses to tell a composed session from a
+    -- written one. A future task (6.2) reads the wording off the row to
+    -- know which cell to count the photo toward — the prose does not
+    -- survive the round-trip, and a column on `shot` is the only home
+    -- this change gives it.
+    components    TEXT NOT NULL DEFAULT '{}',
     rejected      INTEGER NOT NULL DEFAULT 0,
     error         TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL,
     finished_at   TEXT NOT NULL DEFAULT ''
+);
+
+-- The cell is the unit of evidence: a (concept, wording, manner, checkpoint)
+-- tuple holding the counts that 2.2 turns into a verdict. NOT NULL on the four
+-- keys is what makes a write missing one a hard rejection; PRIMARY KEY is the
+-- row identity, not a separate rule. See task 2.1 of the prompt-component-
+-- matrix change: the rejection lives in the schema, not in a Python if.
+CREATE TABLE IF NOT EXISTS cell (
+    concept    TEXT NOT NULL,
+    wording    TEXT NOT NULL,
+    manner     TEXT NOT NULL,
+    checkpoint TEXT NOT NULL,
+    judged     INTEGER NOT NULL DEFAULT 0,
+    arrived    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (concept, wording, manner, checkpoint),
+    -- NOT NULL alone would let '' through, and '' is this schema's idiom for
+    -- "not set" (every other TEXT column here is DEFAULT ''). A cell with an
+    -- empty wording is the entry design.md:110 says there is nothing to index.
+    CHECK (concept <> '' AND wording <> '' AND manner <> '' AND checkpoint <> ''),
+    -- 2.2 reads a verdict off these two. More arrivals than judgements is not a
+    -- state it can answer, so it never gets stored.
+    CHECK (judged >= 0 AND arrived BETWEEN 0 AND judged)
 );
 
 CREATE INDEX IF NOT EXISTS ix_shot_session ON shot(session_id);
@@ -102,6 +132,128 @@ _conn: sqlite3.Connection | None = None
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def cell_state(judged: int, arrived: int) -> str:
+    """The state a cell's two counts imply.
+
+    Per the component-matrix spec:
+    - `verified`: at least 10 photographs judged AND at least 8 arrived
+      for every 10 judged (the ratio reading).
+    - `dead`: at least 10 photographs judged AND below the 8-in-10 ratio.
+    - `unknown`: fewer than 10 photographs judged (whatever the ratio).
+
+    The two readings ("at least 8 arrived" absolute, vs "below 8 of 10"
+    ratio) are identical at the n=10 boundary the spec names, and they
+    diverge above it: 8 of 20 is 40%, not verified. The strict drawer
+    (design.md:218) draws only verified, so the ratio reading is what
+    feeds strict. Integer math, no float: `arrived * 10 >= judged * 8`.
+
+    `arrived > judged` is unreachable through the cell table: its CHECK
+    rejects the write at insert time, so a state derived from such a count
+    is not a state the table can hold. The function does not branch for it
+    - that would be testing a case the schema already forbids, and a
+    "let me also defensively check" branch is what silently swallows a
+    future loosening of the CHECK.
+    """
+    if judged < 10:
+        return "unknown"
+    if arrived * 10 >= judged * 8:
+        return "verified"
+    return "dead"
+
+
+# Verdicts this project already paid GPU time for, carried into the cell
+# table with the sample size, manner and checkpoint they were actually
+# taken at (task 2.3 of the prompt-component-matrix change). Four traps
+# the sources set that the seed deliberately does not fall into:
+#
+#   1. `side` (0/9, 0/8) lands unknown, not dead: 9 and 8 are below the
+#      n=10 the spec sets as the minimum for any verdict at all, so the
+#      zero ratio is irrelevant. design.md:332-334 was wrong about side
+#      and is now corrected; the spec rules.
+#   2. `astride` seeds per family, not as its 18/22 aggregate. The four
+#      per-family measurements (6/6, 4/4, 6/4, 6/4) all have n<10 and
+#      land unknown. Seeding the aggregate instead of the split is the
+#      failure that makes `astride` look measured when it is not.
+#   3. `astride` on the Krea 2 mix (12/9) is one cell without per-family
+#      breakdown, because kinds.js:2014 does not split that run by
+#      family. Inventing a split is the failure 2.4 catches. Under the
+#      ratio reading, this cell is dead (9*10=90 < 12*8=96, 75% below
+#      the 80% threshold) - the ratio decision kills the control on
+#      Krea 2 mix, and that is the cost.
+#   4. The `behind` ACT is not seeded. kinds.js:2035-2058 kills it with
+#      four anecdotes (sessions 155, 161, 267, 268), not with a
+#      (judged, arrived) pair. The 0/6 in the source is the CAMERA
+#      `behind-direct` under candid, and that is what is seeded - as
+#      a camera, not as the act. Manufacturing an n for the act would
+#      be inventing a number.
+#
+# Wording convention: a family cell uses `<arrangement>-<family>`
+# (e.g. `astride-front`, `wall-mirror`); an aggregate cell uses the
+# bare arrangement key (e.g. `astride` on Krea 2 mix, `back`, `side`).
+# The family cells are synthetic: the cell key has 4 columns, the
+# family is the 5th, and the wording is the only place to carry it.
+# 2.4 pins that gap and the 2.4 test will fail until either the
+# catalogue carries the family entries or the seeds are pulled.
+#
+# The third astride measurement from kinds.js:1968-1969 ("12 of 12
+# in sessions 265 and 266 on a different fixed line") is also not
+# seeded: the source does not name the checkpoint, and inventing one
+# would be the failure 2.4 is set up to catch. Documented here so
+# the omission is not silent.
+EVIDENCE_SEED: list[tuple[str, str, str, str, int, int]] = [
+    # (concept, wording, manner, checkpoint, judged, arrived)
+    # astride, per family, finepornV4 - all unknown (n<10)
+    ("act", "astride-front",    "directed", "finepornV4", 6, 6),
+    ("act", "astride-overhead", "directed", "finepornV4", 4, 4),
+    ("act", "astride-mirror",   "directed", "finepornV4", 6, 4),
+    ("act", "astride-pov",      "directed", "finepornV4", 6, 4),
+    # astride, second checkpoint, no per-family - DEAD (12 judged, 9 arrived; 75% below 80% ratio)
+    ("act", "astride",          "directed", "Krea 2 mix", 12, 9),
+    # reverse, per family, finepornV4 - all unknown (n<10)
+    ("act", "reverse-shoulder", "directed", "finepornV4", 3, 3),
+    ("act", "reverse-mirror",   "directed", "finepornV4", 3, 1),
+    ("act", "reverse-overhead", "directed", "finepornV4", 3, 1),
+    # wall, per family, finepornV4 - all unknown (n<10)
+    ("act", "wall-mirror",      "directed", "finepornV4", 3, 3),
+    ("act", "wall-shoulder",    "directed", "finepornV4", 3, 0),
+    # back, per checkpoint - dead (12 judged, 0 arrived)
+    ("act", "back",             "directed", "finepornV4", 12, 0),
+    ("act", "back",             "directed", "Krea 2 mix", 12, 0),
+    # side, per checkpoint - UNKNOWN (9 and 8 judged, below 10)
+    ("act", "side",             "directed", "finepornV4", 9, 0),
+    ("act", "side",             "directed", "Krea 2 mix", 8, 0),
+    # camera: behind-direct under candid, 0/6 - unknown (6 judged)
+    ("camera", "behind-direct", "candid",   "finepornV4", 6, 0),
+]
+
+
+def seed_evidence(rows: list[tuple[str, str, str, str, int, int]] | None = None) -> int:
+    """Insert evidence rows into the cell table. Returns the count of new
+    rows inserted.
+
+    The INSERT uses `ON CONFLICT DO NOTHING`, which only swallows the
+    PRIMARY KEY conflict (the "already seeded" case). It does NOT swallow
+    CHECK or NOT NULL violations: a row with an empty `''` for any of the
+    four key columns, or `arrived > judged`, raises `sqlite3.IntegrityError`.
+    A bare `except IntegrityError: pass` would let those disappear as if
+    they were PK conflicts — exactly the failure the CHECK is set up to
+    make noisy, and the one the test
+    `test_seed_evidence_does_not_swallow_check_violations` pins.
+
+    Also called from `_migrate` on first connect (when the cell table is
+    empty), so the verdicts already paid for are in any real DB without
+    an explicit startup step.
+    """
+    if rows is None:
+        rows = EVIDENCE_SEED
+    before = one("SELECT COUNT(*) AS n FROM cell")["n"]
+    for concept, wording, manner, checkpoint, judged, arrived in rows:
+        run("INSERT INTO cell (concept, wording, manner, checkpoint, judged, arrived) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            concept, wording, manner, checkpoint, judged, arrived)
+    return one("SELECT COUNT(*) AS n FROM cell")["n"] - before
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -174,6 +326,22 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # and not a NULL the route has to remember to handle.
     if "tags" not in columns("session"):
         conn.execute("ALTER TABLE session ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+
+    # The three drawn components (camera, act, framing) on a composed shot.
+    # A written shot leaves the column at the empty default '{}', and 3.6 uses
+    # that empty default to tell a composed session from a written one. The
+    # pattern matches `tags` and `kind` above: a TEXT default that survives
+    # the round-trip through the row, decoded with `db.jload` at read time.
+    if "components" not in columns("shot"):
+        conn.execute("ALTER TABLE shot ADD COLUMN components TEXT NOT NULL DEFAULT '{}'")
+
+    # The verdicts already paid for. An empty cell table is a database that
+    # has never carried the seed, not one someone emptied on purpose, so the
+    # only safe move is to fill it. `seed_evidence` is idempotent (ON
+    # CONFLICT DO NOTHING) so a re-run is a no-op and the guard is belt-
+    # and-braces rather than load-bearing.
+    if conn.execute("SELECT COUNT(*) FROM cell").fetchone()[0] == 0:
+        seed_evidence()
 
 
 def conn() -> sqlite3.Connection:
