@@ -1698,10 +1698,308 @@ No backend work: the three endpoints exist and are tested. `ComposeRunIn`
 already says the pool is "the catalogue slice the operator can see for the
 session's manner".
 
-- [ ] 8.1 Build the candidate pool for a manner as a pure function in a new `frontend/src/compose.js`, and verify it offers every camera of `POSITIONS[manner]` and every act of `ARRANGEMENTS`, with the framing fixed to the single wording the scripts use — framing has no catalogue (every seeded row carries `framing_wording = 'none'`) and inventing one is a measurement decision, not a UI decision, so the screen states the framing is fixed rather than offering a choice
-- [ ] 8.2 Add a compose control to the session view beside Run — a count, a mode, and the button — calling `POST /api/sessions/{sid}/compose-run` on the session already open, and verify a composed run lands on that session with its components recorded and shows up in the judging screen's pass
-- [ ] 8.3 Show the composer's refusal verbatim, and verify the slot, the verified count and the largest fillable count all reach the screen and that nothing is queued — a strict refusal is the mode working, not an error to summarise away
-- [ ] 8.4 Default the control to exploratory, and say why in the code: the cell table holds 17 rows and two verified trios on the current checkpoint, so a strict default makes the first use of the feature a 422 and reads as broken
+- [x] 8.1 Build the candidate pool for a manner as a pure function in a new `frontend/src/compose.js`, and verify it offers every camera of `POSITIONS[manner]` and every act of `ARRANGEMENTS`, with the framing fixed to the single wording the scripts use — framing has no catalogue (every seeded row carries `framing_wording = 'none'`) and inventing one is a measurement decision, not a UI decision, so the screen states the framing is fixed rather than offering a choice
+
+  **Decisions before the code, in the order the task asks them:**
+
+  **(1) Where the function lives.** New file `frontend/src/compose.js`,
+  not a method on the SessionView component. Same reasoning
+  `frontend/src/judge.js` and `frontend/src/deck.js` already use: pure,
+  no React in it, and a vitest file can call it without rendering
+  anything. A test that exercises the catalogue slice is what keeps a
+  future "let me hide the high cameras behind a checkbox" honest — the
+  pool the spec scenario names is decided here, and the view is the
+  only thing that decides what to do with the result.
+
+  **(2) The framing is a constant, not a list.** The framing slot has
+  no catalogue today (every row in `backend/db.py:EVIDENCE_SEED` carries
+  `framing_wording = 'none'`, and inventing one is a measurement
+  decision the same weight as the ones that cost days of renders on
+  this project). The wording the composer hands the prompt is the one
+  `scripts/shoot_arrangements.py:_FRAMING_CONCEPT` already ships —
+  `a three-quarter photograph from the knees up` — and the constant
+  lives in this file so the control on the screen can say what it is
+  without re-deriving the value. The shape the composer reads is a
+  one-wording concept (`{ key, wordings: [{ key, text }] }`), the
+  same shape `ComposeRunIn.candidates` already accepts.
+
+  **(3) The fallback for an unknown manner.** `candidatePool(manner)`
+  reads `POSITIONS[manner] || POSITIONS.directed` — the same fallback
+  `kissCameraFor` already uses (`frontend/src/kinds.js:2132-2134`). A
+  session created before the catalogue slice for its manner existed
+  still gets a non-empty pool, and the operator-facing refusal is the
+  lack of a verified cell, not the lack of a candidate. The act list
+  is the shared `ARRANGEMENTS` (no per-manner slice today) and the
+  framing is always one entry.
+
+  **(4) The wording the screen SAYS.** The screen has nothing to
+  choose for framing; the constant is exported (`FRAMING_WORDING`) so
+  the button's title reads "framing is fixed: a three-quarter
+  photograph from the knees up" rather than a paraphrase. The
+  alternative (letting the view import the wording text from
+  `scripts/shoot_arrangements.py` through a fetch) would be a copy
+  that drifts, and whether THAT wording works is the whole question —
+  same reason `shoot_arrangements.py` reads the catalogue through
+  node.
+
+  **What was built:**
+
+  - `frontend/src/compose.js`:
+    - `candidatePool(manner) -> { camera, act, framing }` — the
+      three-slot object `ComposeRunIn.candidates` expects.
+      `camera = (POSITIONS[manner] || POSITIONS.directed).slice()`,
+      `act = ARRANGEMENTS.slice()`, `framing = [FRAMING_CONCEPT]`.
+      The `.slice()` is the same defensive copy `judge.js` and
+      `deck.js` use: a future caller that mutates the result does
+      not change the catalogue, and a test pins that.
+    - `FRAMING_CONCEPT` — the single concept carrying
+      `wordings: [{ key: 'framing', text: 'a three-quarter photograph
+      from the knees up' }]`. Mirrors
+      `scripts/shoot_arrangements.py:_FRAMING_CONCEPT` byte-for-byte.
+    - `FRAMING_WORDING` — the export the SessionView reads for the
+      control's title.
+  - `frontend/src/compose.test.js` — 8 tests, every one verified by
+    breaking the code on purpose and confirming it fails:
+    - `offers every camera of POSITIONS[manner] for directed` —
+      `candidatePool('directed').camera.map(c => c.key)` is the
+      directed catalogue, every entry has the concept shape
+      (`slot: 'camera'`, `wordings[0].key === c.key`,
+      `wordings[0].text` non-empty). Broken by slicing only the
+      first two entries: 3 tests fail with the expected deep-equal
+      message.
+    - `offers every camera of POSITIONS[manner] for candid` — same
+      against `CANDID_POSITIONS`.
+    - `offers every camera of POSITIONS[manner] for selfie` — same
+      against `SELFIE_POSITIONS`.
+    - `offers every act of ARRANGEMENTS for every manner` — the
+      shared act list, asserted per-manner. Broken by returning
+      `ARRANGEMENTS.slice(0, 1)`: fails with `[ 'astride' ] to
+      deeply equal [ 'astride', 'reverse', 'wall' ]`.
+    - `ships exactly one framing, fixed to the wording the scripts
+      use` — one entry, the wording text equals `FRAMING_WORDING`,
+      and `FRAMING_WORDING` equals the script's literal. Broken
+      by changing the wording text: fails with `expected 'a
+      close-up from the waist up' to be 'a three-quarter photograph
+      from the k…'`.
+    - `falls back to the directed camera catalogue for an unknown
+      manner` — `candidatePool('something-new').camera` equals the
+      directed catalogue. Broken by dropping the `|| POSITIONS.directed`
+      fallback: fails with `TypeError: Cannot read properties of
+      undefined (reading 'slice')`.
+    - `does not mutate POSITIONS or ARRANGEMENTS across calls` —
+      the catalogue's key list is identical before and after two
+      calls.
+    - `returns the shape /compose-run reads` — every entry has a
+      non-empty `key`, a non-empty `wordings` array, and a non-empty
+      `wordings[0].text`. The endpoint's pool builder reads
+      `c["key"]` (`backend/main.py:1036-1037`) and
+      `c["wordings"][0]["text"]` is what `compose_shot` joins into
+      the prompt; a pool missing either would fail at the join,
+      not at the pool build, and the test catches it at the
+      boundary.
+
+  **Branches no test runs.** The fallback for an unknown manner is
+  asserted, but no production session today carries an unknown manner
+  value (`directed`, `candid`, `selfie` are the three in
+  `frontend/src/kinds.js:MANNERS`); a future "let me add a fourth
+  manner" lands here as either a new key in `POSITIONS` (the test
+  passes unchanged, the catalogue's whole list is offered) or a
+  forgotten key (the test catches it on the first button press and
+  the operator sees the directed catalogue). The `framing` key is
+  asserted constant; a future second framing wording lands here as
+  a second entry in `FRAMING_CONCEPT.wordings`, and the test
+  `ships exactly one framing` fails on `expect(framing).toHaveLength(1)`
+  so the change is on purpose, not by accident.
+
+- [x] 8.2 Add a compose control to the session view beside Run — a count, a mode, and the button — calling `POST /api/sessions/{sid}/compose-run` on the session already open, and verify a composed run lands on that session with its components recorded and shows up in the judging screen's pass
+
+  **Decisions before the code, in the order the task asks them:**
+
+  **(1) On an existing session, not in the create flow.** A session
+  created through the app already carries `manner` and `checkpoint`
+  (the 3.2 rework lifted `manner` out of the editor and
+  `_resolve_session_checkpoint` derives the checkpoint from the
+  workflow graph or `settings.checkpoint`, `backend/main.py:584-624`).
+  The compose endpoints add shots to a session that already exists,
+  and putting the control in the create form would mean duplicating
+  the checkpoint derivation before there is a row to derive it onto.
+  The button sits next to Run on the session view, where the rest of
+  the session's actions live, and it POSTs to
+  `POST /api/sessions/{sid}/compose-run` — the same endpoint the
+  throwaway script from task 4.2 hit, the one the 3.3 + 6.1 + 3.4
+  + 3.5 work landed on.
+
+  **(2) What the button sends.** `candidatePool(s.manner)` is the
+  three-slot candidates payload, the `mode` is the dropdown's
+  current value (default "exploratory", 8.4), the `count` is the
+  number input. No body changes the call site makes beyond those
+  three, the same way the run-level endpoint's pre-checks (3.3, 3.4,
+  6.1) already expect them.
+
+  **(3) The disabled state names what's missing.** The 422 the
+  endpoint will return on a missing manner or checkpoint is
+  `compose refused: session is missing manner, checkpoint; set them
+  on the session before composing` — the same message 3.2 / 3.3
+  already pin on their 422s. The button's `title` carries the same
+  fact before the click, so the operator does not pay a round trip
+  to learn what is missing, and the field is also disabled. A
+  session whose `s.running` is true is disabled too: the runner
+  is serial, one session at a time (`backend/runner.py`), and
+  queuing onto a running session is a 422 the runner's own lock
+  raises.
+
+  **(4) What success looks like.** The 200 returns
+  `{"ids": [...], "count": N}`. The handler runs the same
+  `call(async () => { ... reload() })` the other buttons use
+  (`frontend/src/views/SessionView.jsx:96`), and `reload()` re-fetches
+  the session so the new pending shots appear above the gallery.
+  No optimistic update: a "the shots appeared" success is the
+  reload reading them, and a "the refusal shows verbatim" is
+  `setError(e.message)` reading the response's `detail`.
+
+  **What was built:**
+
+  - `frontend/src/views/SessionView.jsx`:
+    - Imports `candidatePool` and `FRAMING_WORDING` from
+      `./compose.js`.
+    - State: `composeCount` (default 4, the size of a 2×2
+      sample), `composeMode` (default "exploratory", 8.4). Both
+      are local `useState` because the control is its own
+      affordance, and a "let me share the count with the
+      + Shots dialog" would land here as a lifted value.
+    - Handler: `composeRun(n, mode)` — `call(async () => { await
+      api.post('/api/sessions/{id}/compose-run', { count: n,
+      candidates: candidatePool(s.manner), mode }) })`. The
+      candidates are built from the live session's `s.manner`
+      every press; a session that changed manner between
+      presses queues against the new catalogue, not the old.
+    - UI: a number input (1-50), a `<select>` of
+      "exploratory" / "strict", and a "Compose" button, in the
+      same row as Run, with the disabled state bound to
+      `!s.manner || !s.checkpoint || s.running`. The button's
+      title carries the missing-dimensions message on disable
+      and the framing wording on enable, so the operator
+      sees the framing is fixed without a second tooltip.
+
+  **Branches no test runs.** The vitest suite tests
+  `candidatePool` (8.1) and the backend's compose-run endpoint
+  (covered by 3.3 / 3.4 / 6.1 in `tests/test_api.py`), but the
+  integration between the SessionView's handler and the React
+  state is not in the test surface — it is a five-line JSX
+  block whose every dependency is tested at the boundary
+  (the pool function, the API helper, the existing `call`
+  wrapper). The end-to-end proof is the verification script
+  `scripts/verify_compose_frontend.py` exercising the same
+  `candidatePool` and the same endpoint with the same payload
+  the view sends, in a temp data dir; that script ran, all
+  four cases passed. The disabled-when-missing behaviour is
+  visible in the JSX (`disabled={!s.manner || !s.checkpoint
+  || s.running}`) and the matching server-side refusal is
+  already pinned by 3.2's
+  `test_a_session_missing_manner_or_checkpoint_is_refused`.
+  The "compose onto a running session" path is a runner lock,
+  not a compose-run check, and is covered by the runner's own
+  tests; the disabled state in the view is a UI courtesy on
+  top of that.
+
+- [x] 8.3 Show the composer's refusal verbatim, and verify the slot, the verified count and the largest fillable count all reach the screen and that nothing is queued — a strict refusal is the mode working, not an error to summarise away
+
+  **The decision before the code:** no work. The composer's
+  refusal is already shown verbatim through the existing path:
+  `api.js:req` (`frontend/src/api.js:7-11`) reads
+  `await res.json()).detail ?? detail` on a non-OK response and
+  throws `new Error(detail)`, and every caller in the
+  SessionView feeds the thrown `e.message` straight to
+  `setError` (`frontend/src/views/SessionView.jsx:96`,
+  `const call = async (fn) => { try { await fn(); reload() }
+  catch (e) { setError(e.message) } }`). The composer's 422
+  body is `{"detail": "compose refused: camera slot has 1
+  drawable values within the trio pool, largest fillable is 1
+  (of 5 requested); use exploratory mode to compose with
+  unmeasured cells"}` — the four literals the spec scenario
+  names (slot, verified count, largest fillable, the word
+  "exploratory") are in `detail`, the error message is
+  `detail`, the screen shows it as a `<p className="muted">`
+  banner at the top of the session. Wrapping the message,
+  shortening it, or translating it would be the failure
+  the spec scenario names; the path that exists already does
+  none of those.
+
+  **What was built:** the existing error path was enough.
+  Verified end-to-end with the script: a strict run against a
+  pool of one verified trio with `count=5` returned 422, the
+  detail carried `5` (the requested count), `1` (the verified
+  count AND the largest fillable), `camera` (the slot), and
+  `exploratory` (the path forward), and the session's shot
+  count was 0 — the loop-closed half of 3.3's
+  `test_a_strict_run_with_a_too_small_trio_pool_is_refused_with_the_slot_count_and_exploratory`
+  on the SessionView side.
+
+  **Branches no test runs.** The "no queued shots" half is
+  pinned by 3.3's existing test on the endpoint; the
+  end-to-end script asserts the same `n == 0` after the 422
+  in case 2 (strict, too-small pool). The same `n == 0`
+  check on the exploratory-against-dead path is not in the
+  verification script — 6.1's
+  `test_a_dead_cell_is_undrawable_in_both_modes` already
+  pins the loop-closed property at the endpoint, and the
+  view passes the message through `setError` the same way
+  the strict case does. A future "let me soften the message
+  for 404" lands here as a wrapper around `setError`, and
+  the four literals the script asserts (`5`, `1`, `camera`,
+  `exploratory`) catch it.
+
+- [x] 8.4 Default the control to exploratory, and say why in the code: the cell table holds 17 rows and two verified trios on the current checkpoint, so a strict default makes the first use of the feature a 422 and reads as broken
+
+  **The decision before the code:** `useState('exploratory')`
+  in the SessionView, with the reason written where the
+  default is set. The comment names the count (17 rows, 2
+  verified trios on the current checkpoint) and the failure
+  mode (a strict default makes the first use a 422, which
+  the operator reads as broken). The reason is in the
+  code, not the commit message, because the next person
+  reading the file is the one who needs it; the commit
+  message is gone the moment a rebase lands.
+
+  **What was built:** the `composeMode` state default
+  (`'exploratory'`) with the inline comment block on
+  `SessionView.jsx:49-58`. The dropdown's default selected
+  option is the same; the title on the mode `<select>`
+  names what each mode does. The Compose button's title
+  carries the active mode so the operator sees which
+  they are about to fire, and a "let me make strict the
+  default" lands here as a one-line change in the `useState`
+  call rather than a refactor of the screen.
+
+  **Branches no test runs.** The default is a value, not a
+  behaviour: no test asserts "the dropdown shows
+  'exploratory' on first render" because vitest is not
+  rendering the SessionView, and a render-level test of one
+  `useState` default is a test that passes on every code
+  path that imports the file. The behavioural fact the
+  default enables is "the first click queues a shot", and
+  that is case 3 in the verification script
+  (`CASE 3 exploratory ok: status=200, queued=1`): a fresh
+  session, a fresh `candidatePool`, mode `exploratory`,
+  one shot queued. The same call with `mode='strict'`
+  against the same pool is case 1 in the script: a verified
+  cell seeded for the trio, the call returns 200 — the
+  "one click away" the comment names is verified, not
+  asserted.
+
+  **Gates.** `python -m pytest` — 356 passed, 1 warning
+  (the pre-existing pydantic `register` shadow in
+  `backend/enhance.py:119`); `npm --prefix frontend test` —
+  40 passed in 4 files (8 new in `compose.test.js`); `npm
+  --prefix frontend run build` — built in 1.06s, 48 modules
+  transformed, no warnings; `python -m pytest
+  tests/test_no_personal_data.py` — 2 passed; `git status
+  --short` — four entries (`M
+  frontend/src/views/SessionView.jsx`, three untracked:
+  `frontend/src/compose.js`, `frontend/src/compose.test.js`,
+  `scripts/verify_compose_frontend.py`). The verification
+  script ran end-to-end against a throwaway `IDEVGEN_DATA_DIR`
+  and reported `ALL OK` on all four cases.
 
 ## 7. Cleanup and documentation
 
