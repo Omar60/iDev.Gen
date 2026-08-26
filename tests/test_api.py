@@ -2112,6 +2112,79 @@ def test_a_session_compose_is_deterministic_for_the_same_pool_and_count(client, 
     )
 
 
+def test_a_session_compose_draws_a_spreadable_set_when_the_pool_is_larger_than_the_count(client, seeded):
+    """The draw obeys the spread, it is not filtered by it.
+
+    Every other 3.5 test runs a pool whose size equals the
+    count, so the greedy has no choice to make and the family
+    mix of the drawn set is fixed before the reorder ever
+    sees it. This one gives the greedy a choice: 6 verified
+    trios (4 in the `front` family, 1 shoulder, 1 overhead)
+    and a count of 4. `ceil(4/2) = 2`, so a draw that takes 3
+    or 4 fronts has no valid ordering while a draw that takes
+    2 does, and both are reachable by the shuffle.
+
+    With the spread applied AFTER the draw the verdict
+    followed the shuffle's luck: 11 of 30 calls returned 200
+    and 19 returned a 422 naming the `front` family, on the
+    same pool and the same count, with `(f1, s1, f2, o1)`
+    sitting in the pool the whole time. That is the shape of
+    the single-shuffle bug 3.3 closed, re-entered through the
+    family constraint. Handing the feasibility to the draw as
+    its `accept` predicate is the fix, and 30 identical 200s
+    is the assertion that a future "let me filter after the
+    draw" cannot pass.
+
+    The spread property itself is asserted on every
+    iteration, not just the verdict: a draw that satisfies
+    the feasibility bound but comes back badly ordered is a
+    different regression and this test would name it.
+    """
+    trios = [("cam-f%d" % i, "act-f%d" % i, "frame-f%d" % i) for i in range(4)]
+    trios += [("cam-s1", "act-s1", "frame-s1"), ("cam-o1", "act-o1", "frame-o1")]
+    for cam, act, framing in trios:
+        _seed_verified_trio(cam, act, framing,
+                            manner="directed", checkpoint="finepornV4")
+
+    families = {"cam-s1": "shoulder", "cam-o1": "overhead"}
+    for i in range(4):
+        families["cam-f%d" % i] = "front"
+    candidates = {
+        "camera":  [_family_candidate(k, k + " text", families[k]) for k, _, _ in trios],
+        "act":     [_candidate(a, a + " text") for _, a, _ in trios],
+        "framing": [_candidate(f, f + " text") for _, _, f in trios],
+    }
+
+    verdicts = []
+    for i in range(30):
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": "spreadable draw %d" % i,
+            "manner": "directed", "checkpoint": "finepornV4",
+            "shots": [],
+        }).json()["id"]
+        r = client.post(f"/api/sessions/{sid}/compose-session",
+                        json={"count": 4, "candidates": candidates})
+        if r.status_code != 200:
+            verdicts.append((r.status_code, r.json()["detail"]))
+            continue
+        verdicts.append(("200", len(r.json()["ids"])))
+        rows = db.q("SELECT components FROM shot WHERE session_id=? "
+                    "ORDER BY shot_index, id", sid)
+        drawn = [families[db.jload(row, "components")["components"]["camera"]["wording"]]
+                 for row in rows]
+        for k in range(len(drawn) - 1):
+            assert drawn[k] != drawn[k + 1], (
+                f"iteration {i}: adjacent shots {k} and {k+1} share "
+                f"family {drawn[k]!r} in {drawn!r}"
+            )
+
+    assert set(verdicts) == {("200", 4)}, (
+        f"the same pool and count did not give the same verdict: "
+        f"{sorted(set(verdicts), key=str)!r} - a spreadable set exists "
+        f"in this pool, so a 422 here is the draw ignoring the spread"
+    )
+
+
 def test_a_written_shot_leaves_components_empty(client, seeded):
     """A shot written by the writer (not composed) leaves the
     `components` column at its empty default '{}'. That empty default

@@ -1073,7 +1073,12 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     return {"ids": shot_ids, "count": len(shot_ids)}
 
 
-def _draw_n_strict_trio_shots(sid: int, count: int, candidates: dict) -> tuple[dict, list[tuple[str, str, str]]]:
+def _draw_n_strict_trio_shots(
+    sid: int,
+    count: int,
+    candidates: dict,
+    accept=None,
+) -> tuple[dict, list[tuple[str, str, str]]]:
     """The shared draw used by `compose_run_endpoint` (3.3) and
     `compose_session_endpoint` (3.5). Returns `(by_key,
     best_chosen)` after the session is validated, the verified
@@ -1128,6 +1133,32 @@ def _draw_n_strict_trio_shots(sid: int, count: int, candidates: dict) -> tuple[d
     of the SET of trios (order-independent) and the
     reordering is a property of the LIST of trios
     (order-dependent).
+
+    `accept` is the caller's own constraint on the SET of
+    trios a shuffle produced, and it is what keeps 3.3's rule
+    - "the check and the draw are the same calculation" -
+    true for 3.5. Without it the family spread was a filter
+    applied AFTER the draw had closed: the greedy picked
+    `count` trios blind to the family, and a pool of 4 front
+    + 1 shoulder + 1 overhead with count=4 refused or passed
+    depending on which four the shuffle happened to take (11
+    of 30 calls returned 200, 19 returned a 422 naming a
+    family, on the same pool - the exact shape of the
+    single-shuffle bug 3.3 closed). With `accept`, a shuffle
+    whose chosen set cannot satisfy the caller's constraint
+    is not a candidate for the returned draw, and the run
+    refuses only when no shuffle found an acceptable set.
+
+    ponytail: the same approximation ceiling the greedy
+    already carries. Ten shuffles failing to find an
+    acceptable set of size `count` is not a proof that none
+    exists; on the pool sizes this project measures the gap
+    is zero or one. When a shuffle DID reach `count` but no
+    acceptable one did, the unacceptable draw is returned and
+    the caller's own check raises its own message (the
+    family-infeasible 422 for 3.5) - the operator reads why
+    the constraint failed rather than a pool-size number that
+    was not the problem.
     """
     session = db.one("SELECT * FROM session WHERE id=?", sid)
     if not session:
@@ -1181,8 +1212,18 @@ def _draw_n_strict_trio_shots(sid: int, count: int, candidates: dict) -> tuple[d
     # tuned so the probability of all-bad on the user's probe
     # pool is ~(1/3)^10 ≈ 1.7e-5, well below the 20-call
     # test's flake budget.
+    # Built before the draw, not after it: `accept` is the
+    # caller's constraint on a chosen set, and every caller
+    # that has one needs the candidate catalogue to evaluate
+    # it (3.5 reads the camera's family off the wording).
+    by_key: dict[str, dict[str, dict]] = {
+        slot: {x["key"]: x for x in candidates.get(slot, []) if isinstance(x, dict) and x.get("key")}
+        for slot in _SLOT_ORDER
+    }
+
     N_SHUFFLES = 10
     best_chosen: list[tuple[str, str, str]] = []
+    best_accepted: list[tuple[str, str, str]] = []
     for _ in range(N_SHUFFLES):
         shuffled = list(pool)
         random.shuffle(shuffled)
@@ -1201,8 +1242,20 @@ def _draw_n_strict_trio_shots(sid: int, count: int, candidates: dict) -> tuple[d
                 break
         if len(chosen) > len(best_chosen):
             best_chosen = chosen
-        if len(best_chosen) == count:
+        # A shuffle whose set the caller cannot use is not a
+        # winner, however long it is: the constraint is part
+        # of the draw, not a filter downstream of it.
+        if (accept is None or accept(chosen, by_key)) and len(chosen) > len(best_accepted):
+            best_accepted = chosen
+        if len(best_accepted) == count:
             break
+
+    # An acceptable full-count draw wins. Otherwise `best_chosen`
+    # stands, so the pool-too-small refusal below still reports
+    # the true ceiling, and a full-count-but-unacceptable draw
+    # reaches the caller for the caller's own refusal.
+    if len(best_accepted) == count:
+        best_chosen = best_accepted
 
     if len(best_chosen) < count:
         # The slot named is the per-slot min of the POOL — the
@@ -1224,11 +1277,6 @@ def _draw_n_strict_trio_shots(sid: int, count: int, candidates: dict) -> tuple[d
             f"{len(best_chosen)} (of {count} requested); use "
             f"exploratory mode to compose with unverified cells",
         )
-
-    by_key: dict[str, dict[str, dict]] = {
-        slot: {x["key"]: x for x in candidates.get(slot, []) if isinstance(x, dict) and x.get("key")}
-        for slot in _SLOT_ORDER
-    }
 
     # 3.4 dedup: refuse the run on the FIRST collision, before
     # any INSERT (db.run auto-commits, a check that fires at k+1
@@ -1348,6 +1396,52 @@ def _spread_family_of(trio: tuple[str, str, str], by_key: dict) -> object:
     return family if family else None
 
 
+def _spread_worst_family(
+    trios: list[tuple[str, str, str]],
+    by_key: dict,
+) -> tuple[object, int, int, int]:
+    """The most numerous family among `trios`, its count, how
+    many trios carry a family at all, and the `ceil(n/2)`
+    bound a spread has to stay under. Returns `(None, 0, 0,
+    0)` when no trio is in a spread slot.
+
+    One place holds the rule, because two callers ask the
+    same question for different reasons: `_reorder_to_spread_families`
+    needs the family and the count to name them in its 422,
+    and `_spread_is_feasible` needs the yes/no to keep a
+    shuffle out of the draw. A copy of `> ceil(n/2)` in the
+    second caller is the drift that lets the draw accept a
+    set the reorder then refuses.
+    """
+    counts: dict[object, int] = {}
+    for t in trios:
+        fam = _spread_family_of(t, by_key)
+        if fam is None:
+            continue
+        counts[fam] = counts.get(fam, 0) + 1
+    n = sum(counts.values())
+    if not counts:
+        return None, 0, 0, 0
+    worst_fam = max(counts, key=lambda f: counts[f])
+    return worst_fam, counts[worst_fam], n, (n + 1) // 2
+
+
+def _spread_is_feasible(trios: list[tuple[str, str, str]], by_key: dict) -> bool:
+    """Whether SOME ordering of `trios` puts no two
+    consecutive photographs in the same family — the
+    classical "reorganize string" condition, `max(count per
+    family) <= ceil(n/2)`.
+
+    This is the `accept` the 3.5 endpoint hands to the draw.
+    It is a property of the SET, which is why it can decide
+    a shuffle before the order exists: the reorder that runs
+    afterwards is the construction, this is the existence
+    question the construction needs answered first.
+    """
+    worst_fam, worst_count, _n, ceil_n2 = _spread_worst_family(trios, by_key)
+    return worst_fam is None or worst_count <= ceil_n2
+
+
 def _reorder_to_spread_families(
     trios: list[tuple[str, str, str]],
     by_key: dict,
@@ -1421,26 +1515,15 @@ def _reorder_to_spread_families(
     for t, fam in family_trios:
         buckets.setdefault(fam, []).append(t)
 
-    n = len(family_trios)
-    ceil_n2 = (n + 1) // 2
-    # Feasibility: max count per family <= ceil(N/2). A
-    # family whose count equals ceil(N/2)+1 admits no
-    # permutation: every position is "next" to another of
-    # the same family, and one extra is forced adjacent. A
-    # family with count == ceil(N/2) is fine: it can sit in
-    # the even positions and the others in the odd ones (or
-    # vice versa).
-    if n > 0:
-        worst_fam = max(buckets, key=lambda f: len(buckets[f]))
-        worst_count = len(buckets[worst_fam])
-        if worst_count > ceil_n2:
-            raise HTTPException(
-                422,
-                f"compose refused: family {worst_fam!r} has {worst_count} "
-                f"entries in the chosen trios, larger than ceil({n}/2)={ceil_n2}; "
-                f"no ordering places no two consecutive photographs in different "
-                f"families, the spread cannot be satisfied",
-            )
+    worst_fam, worst_count, n, ceil_n2 = _spread_worst_family(trios, by_key)
+    if worst_fam is not None and worst_count > ceil_n2:
+        raise HTTPException(
+            422,
+            f"compose refused: family {worst_fam!r} has {worst_count} "
+            f"entries in the chosen trios, larger than ceil({n}/2)={ceil_n2}; "
+            f"no ordering places no two consecutive photographs in different "
+            f"families, the spread cannot be satisfied",
+        )
 
     # Max-heap keyed on (-count, family). Python's tuple
     # comparison gives a stable order on ties (the family
@@ -1548,7 +1631,15 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     family). Both run BEFORE any INSERT, the caller sees
     whichever fires first.
     """
-    by_key, best_chosen = _draw_n_strict_trio_shots(sid, c.count, c.candidates)
+    # The spread is handed to the draw as its accept predicate,
+    # not applied to the draw's result: a shuffle whose chosen
+    # set has no valid ordering is not a winner. Without this,
+    # the same pool and count returned 200 or 422 depending on
+    # which trios the shuffle happened to take - 3.3's rule,
+    # "the check and the draw are the same calculation", with
+    # the family as the check.
+    by_key, best_chosen = _draw_n_strict_trio_shots(
+        sid, c.count, c.candidates, accept=_spread_is_feasible)
     ordered = _reorder_to_spread_families(best_chosen, by_key)
     shot_ids: list[int] = []
     for cam_key, act_key, framing_key in ordered:
