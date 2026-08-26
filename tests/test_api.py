@@ -1669,6 +1669,449 @@ def test_a_strict_run_refuses_a_within_run_line_collision(client, seeded):
     )
 
 
+# -------------------------------------------------------------- 3.5 session spread
+#
+# A whole session is the same draw as 3.3 plus the family-spread
+# ordering: no two consecutive photographs share a camera family.
+# 3.5 inherits 3.3's draw (verified-trio pool, multi-shuffle greedy
+# ceiling) and 3.4's dedup (tuple + line) unchanged, and adds one
+# ordering constraint on top. The new endpoint is
+# `POST /api/sessions/{sid}/compose-session`, a sibling of
+# `compose-run` — the two share the same draw helper and differ only
+# at the post-draw step.
+#
+# The scenario the spec names: a session of several photographs has
+# no two consecutive photographs sharing a component family in the
+# spread slots. Today only the camera slot is a spread slot (its
+# wordings carry `family` in `frontend/src/kinds.js:1671-1690`); the
+# act and framing slots carry no family, so the spread is exempt on
+# them. The reading "a slot without family falls to its own key as a
+# family of size 1" would make the constraint unsatisfiable as soon
+# as N exceeded the number of act entries (3 today), and the spec
+# phrase "in the spread slots" names the slots the catalogue has
+# spread data for.
+#
+# The constraint is the classical "reorganize string" problem.
+# Feasibility: `max(count per family) <= ceil(N/2)`. When violated,
+# the run is refused with 422 — same shape as the 3.3 pool-too-small
+# and 3.4 dedup refusals, the same loop-closed property
+# (`n_shots == 0` after the 422), the same message discipline.
+#
+# The 422 names four facts: the family, its count in the chosen
+# trios, the ceil bound, and the conclusion. A future "let me soften
+# the message" that drops one fails the assertion that names the
+# dropped fact, the same way the 3.3 and 3.4 tests pin their
+# messages.
+
+
+def _family_candidate(key: str, text: str, family: str | None = None) -> dict:
+    """One catalogue entry with an explicit `family` on the first
+    wording. The 3.5 tests need a candidate whose `family` is set
+    so the spread pre-check can read it; the 3.3 / 3.4
+    `_candidate` helper omits the field by design. None means
+    "no family on this slot" — the spread treats it as a
+    non-spread slot (decision 1 in tasks.md 3.5).
+    """
+    wording = {"key": key, "text": text}
+    if family is not None:
+        wording["family"] = family
+    return {"key": key, "wordings": [wording]}
+
+
+def test_a_session_compose_spreads_camera_families_across_consecutive_photographs(client, seeded):
+    """The named scenario: a session of 4 photographs, the camera
+    slot drawn from 4 different cameras across 3 families
+    (2 front, 1 shoulder, 1 overhead), and the ordered run has
+    no two consecutive photographs sharing a camera family.
+
+    The pool is 4 trios with all components distinct so the
+    3.3 no-component-repeat greedy can draw 4 (the multi-shuffle
+    ceiling is 4 with this shape, and the multi-shuffle pass
+    converges to it across the 10 shuffles). The 3.5 reorder
+    then arranges the 4 so the two `front` cameras are not
+    adjacent — the feasibility condition
+    `max(count per family) <= ceil(4/2) = 2` is satisfied (2 == 2).
+
+    The loop-closed assertion: read the new shots back in
+    `shot_index` order (the column the gallery walks, written
+    by `compose_and_queue_shot` as `MAX(shot_index) + 1` per
+    shot), extract the camera key from `components`, look up
+    the family, and assert no two adjacent indices share it.
+    A future "let me reorder by family but ignore N=1 spacing"
+    would put the two fronts adjacent and this assert catches
+    the regression.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "session spread",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    # 4 trios: 2 from the front family, 1 shoulder, 1 overhead.
+    # All cameras / acts / framings distinct so the 3.3 greedy
+    # draws 4. Two front cameras at the ceil(N/2) bound — the
+    # hardest case the feasibility check still admits.
+    trios = [
+        ("cam-front-a", "act-a", "frame-a"),
+        ("cam-front-b", "act-b", "frame-b"),
+        ("cam-shoulder", "act-c", "frame-c"),
+        ("cam-overhead", "act-d", "frame-d"),
+    ]
+    for cam, act, framing in trios:
+        _seed_verified_trio(cam, act, framing,
+                            manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        "camera":  [_family_candidate("cam-front-a", "front-a text",  "front"),
+                    _family_candidate("cam-front-b", "front-b text",  "front"),
+                    _family_candidate("cam-shoulder", "shoulder text", "shoulder"),
+                    _family_candidate("cam-overhead", "overhead text", "overhead")],
+        "act":     [_candidate("act-a", "act-a text"),
+                    _candidate("act-b", "act-b text"),
+                    _candidate("act-c", "act-c text"),
+                    _candidate("act-d", "act-d text")],
+        "framing": [_candidate("frame-a", "frame-a text"),
+                    _candidate("frame-b", "frame-b text"),
+                    _candidate("frame-c", "frame-c text"),
+                    _candidate("frame-d", "frame-d text")],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-session",
+                    json={"count": 4, "candidates": candidates})
+    assert r.status_code == 200, r.text
+    ids = r.json()["ids"]
+    assert len(ids) == 4
+
+    # Read back the new shots in shot_index order — the column
+    # `compose_and_queue_shot` writes as `MAX(shot_index) + 1`,
+    # so the order the gallery walks is the order the reorder
+    # produced. The components column carries the (concept,
+    # wording) pairs per slot, and the camera's family lives
+    # on the candidate's wording (read it from the test's own
+    # table — the backend does not store family).
+    rows = db.q("SELECT id, shot_index, components FROM shot "
+                "WHERE session_id=? AND id IN ({}) "
+                "ORDER BY shot_index, id".format(",".join("?" * len(ids))),
+                sid, *ids)
+    families = []
+    family_lookup = {
+        "cam-front-a": "front",
+        "cam-front-b": "front",
+        "cam-shoulder": "shoulder",
+        "cam-overhead": "overhead",
+    }
+    for row in rows:
+        comps = db.jload(row, "components")["components"]
+        cam_key = comps["camera"]["wording"]
+        families.append(family_lookup[cam_key])
+
+    # The two fronts MUST be separated. A 4-shot session of
+    # [front, front, shoulder, overhead] would fail the
+    # assertion and the test would name the regression.
+    for i in range(len(families) - 1):
+        assert families[i] != families[i + 1], (
+            f"adjacent shot {i} and {i+1} share family "
+            f"{families[i]!r}; the 3.5 reorder did not spread "
+            f"the camera family"
+        )
+
+    # And the run queued exactly what was asked for — 4 shots,
+    # no shorter, no extras. A future "let me skip the spread
+    # when count==4" would still pass the family check but
+    # might drop a row, and the loop-closed count catches it.
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 4, f"expected 4 shots queued, got {n}"
+
+
+def test_a_session_compose_refuses_a_pool_where_one_family_exceeds_half_the_count(client, seeded):
+    """The infeasible case: a pool whose majority family
+    exceeds `ceil(N/2)`. With N=4, `ceil(4/2) = 2`, and a
+    family with 3 cameras admits no permutation where no two
+    consecutive share the family — every position is "next"
+    to another of the same family and one is forced adjacent.
+    The 422 fires before any INSERT, the message names the
+    four facts (family, count, ceil bound, the conclusion),
+    and `n_shots == 0` after the 422 is the loop-closed
+    proof.
+
+    The pool has 4 trios with 3 distinct cameras from the
+    `front` family and 1 from `shoulder` — `ceil(4/2) = 2`,
+    `3 > 2`, refuses. The 3.3 no-component-repeat greedy
+    can still draw 4 (the 4 cameras are distinct), so the
+    422 is from the 3.5 spread, not from 3.3.
+
+    The 422 message carries the family, the count, the ceil
+    bound, and the conclusion — each one asserted separately
+    so a future "let me shorten the message" that drops one
+    fails the assertion that names it, the same shape 3.3
+    and 3.4 pin on their 422 messages.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "session spread refuse",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    # 3 cameras in the `front` family, 1 in `shoulder`. All
+    # 4 trios distinct on every component so the 3.3 greedy
+    # can draw 4.
+    trios = [
+        ("cam-front-a", "act-a", "frame-a"),
+        ("cam-front-b", "act-b", "frame-b"),
+        ("cam-front-c", "act-c", "frame-c"),
+        ("cam-shoulder", "act-d", "frame-d"),
+    ]
+    for cam, act, framing in trios:
+        _seed_verified_trio(cam, act, framing,
+                            manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        "camera":  [_family_candidate("cam-front-a", "front-a text",  "front"),
+                    _family_candidate("cam-front-b", "front-b text",  "front"),
+                    _family_candidate("cam-front-c", "front-c text",  "front"),
+                    _family_candidate("cam-shoulder", "shoulder text", "shoulder")],
+        "act":     [_candidate("act-a", "act-a text"),
+                    _candidate("act-b", "act-b text"),
+                    _candidate("act-c", "act-c text"),
+                    _candidate("act-d", "act-d text")],
+        "framing": [_candidate("frame-a", "frame-a text"),
+                    _candidate("frame-b", "frame-b text"),
+                    _candidate("frame-c", "frame-c text"),
+                    _candidate("frame-d", "frame-d text")],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-session",
+                    json={"count": 4, "candidates": candidates})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+
+    # The four facts the operator needs to act, asserted
+    # separately so the message discipline is pinned.
+    assert "'front'" in detail, (
+        f"family not named in the 422: {detail!r}"
+    )
+    assert "3" in detail and "4" in detail, (
+        f"count and N not both in the 422: {detail!r}"
+    )
+    assert "ceil" in detail, (
+        f"ceil(N/2) bound not in the 422: {detail!r}"
+    )
+    assert "no ordering" in detail or "cannot" in detail, (
+        f"conclusion not in the 422: {detail!r}"
+    )
+
+    # Loop-closed: the refused run queued nothing. A future
+    # "let me queue first, validate after" would flip the
+    # count to 4 and the test pins that.
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, (
+        f"refused session compose queued shots: shot table has "
+        f"{n} rows for session {sid}, expected 0"
+    )
+
+
+def test_a_session_compose_keeps_3_3_and_3_4_invariants(client, seeded):
+    """Regression: 3.5 inherits 3.3's "every queued shot is on
+    a verified cell" and 3.4's "no tuple or line collision
+    with a prior composed or written shot". The endpoint is
+    the same draw + a reorder on top, and the loop-closed
+    property is that the two invariants still hold on the
+    3.5 path.
+
+    Two halves:
+
+    (a) The 3.3 invariant. Run a session compose on a pool of
+    3 trios, assert every queued shot's `(camera_wording,
+    act_wording, framing_wording)` is a row in `cell` for
+    the session's `(manner, checkpoint)`. The cell table is
+    the only home for "is this trio drawable" and a 3.5 shot
+    not on a cell would be a 3.3-shaped regression smuggled
+    in through the new endpoint.
+
+    (b) The 3.4 invariant. A session with one prior composed
+    shot on `(cam-a, act-a, frame-a)`; the next call asks for
+    the same trio; the dedup fires on the tuple axis (3.4's
+    loop-closed). The session compose reuses the same dedup
+    helper, so a future "let me skip dedup on the session
+    path" would let the duplicate through and this assert
+    catches the regression.
+    """
+    # ---- (a) the 3.3 invariant
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "session keeps 3.3",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    trios = [
+        ("cam-a", "act-a", "frame-a"),
+        ("cam-b", "act-b", "frame-b"),
+        ("cam-c", "act-c", "frame-c"),
+    ]
+    for cam, act, framing in trios:
+        _seed_verified_trio(cam, act, framing,
+                            manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        "camera":  [_family_candidate("cam-a", "cam-a text", "family-a"),
+                    _family_candidate("cam-b", "cam-b text", "family-b"),
+                    _family_candidate("cam-c", "cam-c text", "family-c")],
+        "act":     [_candidate("act-a", "act-a text"),
+                    _candidate("act-b", "act-b text"),
+                    _candidate("act-c", "act-c text")],
+        "framing": [_candidate("frame-a", "frame-a text"),
+                    _candidate("frame-b", "frame-b text"),
+                    _candidate("frame-c", "frame-c text")],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-session",
+                    json={"count": 3, "candidates": candidates})
+    assert r.status_code == 200, r.text
+    ids = r.json()["ids"]
+    assert len(ids) == 3
+
+    # Every queued trio is a row in the cell table for the
+    # session's (manner, checkpoint). A 3.5 path that drew a
+    # trio not on a cell would be a regression on 3.3, and
+    # the explicit query is the loop-closed proof.
+    for shot_id in ids:
+        row = db.one("SELECT components FROM shot WHERE id=?", shot_id)
+        comps = db.jload(row, "components")["components"]
+        trio = (comps["camera"]["wording"],
+                comps["act"]["wording"],
+                comps["framing"]["wording"])
+        cell = db.one(
+            "SELECT 1 AS hit FROM cell "
+            "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
+            "AND manner=? AND checkpoint=?",
+            *trio, "directed", "finepornV4",
+        )
+        assert cell is not None, (
+            f"3.5 path queued a trio {trio!r} that is not a "
+            f"verified cell for (directed, finepornV4) — 3.3 "
+            f"invariant broken on the 3.5 endpoint"
+        )
+
+    # ---- (b) the 3.4 invariant
+    # A fresh session, pre-populated with one composed shot
+    # on (cam-d, act-d, frame-d), the same trio the second
+    # call will ask for. The session compose's dedup
+    # pre-check refuses on the tuple axis, the same way
+    # 3.4's compose-run does.
+    sid2 = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "session keeps 3.4",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+    _seed_verified_trio("cam-d", "act-d", "frame-d",
+                        manner="directed", checkpoint="finepornV4")
+    candidates_d = {
+        "camera":  [_family_candidate("cam-d", "cam-d text", "family-d")],
+        "act":     [_candidate("act-d", "act-d text")],
+        "framing": [_candidate("frame-d", "frame-d text")],
+    }
+    first = client.post(f"/api/sessions/{sid2}/compose-session",
+                        json={"count": 1, "candidates": candidates_d})
+    assert first.status_code == 200, first.text
+    assert len(first.json()["ids"]) == 1
+
+    # The same trio, asked for again, must refuse on the
+    # tuple axis. The dedup's "tuple" message is the loop-
+    # closed property: a future "let me skip dedup on the
+    # session path" would queue a duplicate and this
+    # assert catches it.
+    second = client.post(f"/api/sessions/{sid2}/compose-session",
+                         json={"count": 1, "candidates": candidates_d})
+    assert second.status_code == 422, second.text
+    assert "tuple already enqueued" in second.json()["detail"], (
+        f"3.4 dedup did not fire on the 3.5 path: {second.json()['detail']!r}"
+    )
+    n2 = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid2)["n"]
+    assert n2 == 1, (
+        f"refused session compose queued a duplicate: shot "
+        f"table has {n2} rows for session {sid2}, expected 1"
+    )
+
+
+def test_a_session_compose_is_deterministic_for_the_same_pool_and_count(client, seeded):
+    """The 3.3 determinism test, shaped for 3.5: 30 calls on
+    the same pool+count return the same verdict. The multi-
+    shuffle greedy is the only source of variance (the 3.5
+    reorder is a deterministic heap pass given the input
+    list), and the 3.3 ceiling (N_SHUFFLES=10) keeps the
+    verdict stable. With the old single-shuffle code the
+    verdicts varied between ("200", 4) and ("422",
+    "largest fillable is 1"); the multi-shuffle pass makes
+    30 identical verdicts.
+
+    Each iteration runs against a fresh session, the same
+    reason 3.3's test does: 3.4's tuple dedup refuses a
+    second compose-session on a session that already holds
+    the same trios, and the test has to be shaped around
+    it. The cell table is shared (the pool does not
+    change); only the session is fresh. The within-iteration
+    property (the no-two-consecutive-same-family) is the
+    same on every iteration; only the verdict stability
+    is what this test pins.
+
+    The pool is 4 trios across 3 families (2 front, 1
+    shoulder, 1 overhead) so the spread is feasible and
+    every successful iteration must produce exactly 4
+    shots, no shorter, no extras. A future "let me return
+    the count the greedy reached" would flip the verdict
+    to ("200", k) for k < 4 and the assertion that names
+    the expected count catches the regression.
+    """
+    trios = [
+        ("cam-front-a", "act-a", "frame-a"),
+        ("cam-front-b", "act-b", "frame-b"),
+        ("cam-shoulder", "act-c", "frame-c"),
+        ("cam-overhead", "act-d", "frame-d"),
+    ]
+    for cam, act, framing in trios:
+        _seed_verified_trio(cam, act, framing,
+                            manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        "camera":  [_family_candidate("cam-front-a", "front-a text",  "front"),
+                    _family_candidate("cam-front-b", "front-b text",  "front"),
+                    _family_candidate("cam-shoulder", "shoulder text", "shoulder"),
+                    _family_candidate("cam-overhead", "overhead text", "overhead")],
+        "act":     [_candidate("act-a", "act-a text"),
+                    _candidate("act-b", "act-b text"),
+                    _candidate("act-c", "act-c text"),
+                    _candidate("act-d", "act-d text")],
+        "framing": [_candidate("frame-a", "frame-a text"),
+                    _candidate("frame-b", "frame-b text"),
+                    _candidate("frame-c", "frame-c text"),
+                    _candidate("frame-d", "frame-d text")],
+    }
+
+    verdicts = []
+    for i in range(30):
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"verdict consistency {i}",
+            "manner": "directed", "checkpoint": "finepornV4",
+            "shots": [],
+        }).json()["id"]
+        r = client.post(f"/api/sessions/{sid}/compose-session",
+                        json={"count": 4, "candidates": candidates})
+        if r.status_code == 200:
+            verdicts.append(("200", len(r.json()["ids"])))
+        else:
+            verdicts.append((str(r.status_code), r.json()["detail"]))
+
+    assert len(set(verdicts)) == 1, (
+        f"verdicts vary across calls: {verdicts!r} — the "
+        f"3.5 path is non-deterministic given the same "
+        f"pool+count"
+    )
+    assert verdicts[0] == ("200", 4), (
+        f"expected all 30 calls to return 200 with 4 shots, "
+        f"got {verdicts[0]!r}"
+    )
+
+
 def test_a_written_shot_leaves_components_empty(client, seeded):
     """A shot written by the writer (not composed) leaves the
     `components` column at its empty default '{}'. That empty default

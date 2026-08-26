@@ -9,6 +9,8 @@ moved into the session folder.
 from __future__ import annotations
 
 import base64
+import collections
+import heapq
 import io
 import json
 import logging
@@ -1055,6 +1057,77 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     Until then, the strict check runs unconditionally and a
     refusal names the exploratory mode as the path the
     operator can take, not as a mode this endpoint accepts.
+
+    3.5 (`compose_session_endpoint`) is a sibling: same draw,
+    same dedup, then a reordering pass that spreads camera
+    families across consecutive shots. The shared body lives
+    in `_draw_n_strict_trio_shots`; the two endpoints differ
+    only at the post-draw step.
+    """
+    by_key, best_chosen = _draw_n_strict_trio_shots(sid, c.count, c.candidates)
+    shot_ids: list[int] = []
+    for cam_key, act_key, framing_key in best_chosen:
+        shot_ids.append(compose_and_queue_shot(
+            sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
+        ))
+    return {"ids": shot_ids, "count": len(shot_ids)}
+
+
+def _draw_n_strict_trio_shots(sid: int, count: int, candidates: dict) -> tuple[dict, list[tuple[str, str, str]]]:
+    """The shared draw used by `compose_run_endpoint` (3.3) and
+    `compose_session_endpoint` (3.5). Returns `(by_key,
+    best_chosen)` after the session is validated, the verified
+    pool is built, the multi-shuffle greedy has run, and the
+    3.4 dedup pre-check has passed.
+
+    The function never inserts; the caller inserts. That is
+    the property the two endpoints share: the draw is
+    side-effect-free until the caller decides what to do with
+    the chosen trios (3.3 inserts in `best_chosen` order, 3.5
+    reorders for the family spread and inserts in the
+    reordered order).
+
+    The four 422 paths that may fire on the way:
+
+    1. `404 session not found`
+    2. `422 session is missing {manner,checkpoint}` — the
+       same pre-check 3.2's one-shot endpoint runs. A
+       session that has no non-trio dimensions cannot match
+       any cell, and "no cell matches" is a different shape
+       from "the pool is too small" — refuse the
+       session-level one first.
+    3. `422 {min_slot} slot has {min_count} verified
+       values, largest fillable is {len(best_chosen)} (of
+       {count} requested)` — the pool-too-small refusal from
+       3.3, the multi-shuffle ceiling the operator sees
+       rather than one shuffle's luck.
+    4. `422 tuple already enqueued` / `422 line already
+       enqueued` — the 3.4 dedup, which runs BEFORE the
+       caller inserts and refuses the whole run on the
+       first collision. The dedup's tuple/line SETS are the
+       in-loop half: the first candidate seeds them, the
+       second one fires. Both checks are run for both
+       endpoints, and 3.5 inherits them unchanged.
+
+    ponytail: the 3.3 multi-shuffle greedy is what makes
+    `len(best_chosen)` the right answer to "what is the
+    largest fillable". A single shuffle can fall short on
+    pathological pools (e.g., the (c1,a1,f1) / (c1,a2,f2)
+    / (c2,a1,f3) probe), and the ceiling is what the
+    operator wants to read in the 422. N_SHUFFLES=10 keeps
+    the probability of all-bad on the user's probe below the
+    20-call test's flake budget.
+
+    ponytail: dedup is a pre-check, not a skip-and-fill. A
+    loop that walks `best_chosen` and replaces a collision
+    on the fly is a second calculation layered on top of
+    the greedy, and 3.3 closed that door — "the check and
+    the draw are the same calculation". The 3.5 caller
+    sees the same refusal; the reordering it does next is
+    independent of the dedup, because dedup is a property
+    of the SET of trios (order-independent) and the
+    reordering is a property of the LIST of trios
+    (order-dependent).
     """
     session = db.one("SELECT * FROM session WHERE id=?", sid)
     if not session:
@@ -1076,7 +1149,7 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
             f"set them on the session before composing",
         )
 
-    pool = _verified_trio_pool(session["manner"], session["checkpoint"], c.candidates)
+    pool = _verified_trio_pool(session["manner"], session["checkpoint"], candidates)
 
     # The check and the draw are the same calculation. Greedy
     # on a shuffled pool, repeated over a handful of shuffles:
@@ -1124,14 +1197,14 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
             used["camera"].add(cam)
             used["act"].add(act)
             used["framing"].add(framing)
-            if len(chosen) == c.count:
+            if len(chosen) == count:
                 break
         if len(chosen) > len(best_chosen):
             best_chosen = chosen
-        if len(best_chosen) == c.count:
+        if len(best_chosen) == count:
             break
 
-    if len(best_chosen) < c.count:
+    if len(best_chosen) < count:
         # The slot named is the per-slot min of the POOL — the
         # dimension the operator would broaden to grow the
         # pool. The largest fillable is `len(best_chosen)`,
@@ -1143,18 +1216,17 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
         # carries both so the operator sees the shortfall
         # the multi-shuffle pass hit, not the per-slot ceiling
         # the pool promised.
-        # the pool promised.
         min_slot, min_count = _min_slot_within(pool)
         raise HTTPException(
             422,
             f"compose refused: {min_slot} slot has {min_count} verified "
             f"values within the trio pool, largest fillable is "
-            f"{len(best_chosen)} (of {c.count} requested); use "
+            f"{len(best_chosen)} (of {count} requested); use "
             f"exploratory mode to compose with unverified cells",
         )
 
     by_key: dict[str, dict[str, dict]] = {
-        slot: {x["key"]: x for x in c.candidates.get(slot, []) if isinstance(x, dict) and x.get("key")}
+        slot: {x["key"]: x for x in candidates.get(slot, []) if isinstance(x, dict) and x.get("key")}
         for slot in _SLOT_ORDER
     }
 
@@ -1240,8 +1312,246 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
         seen_tuples.add(trio)
         seen_lines.add(line)
 
+    return by_key, best_chosen
+
+
+def _spread_family_of(trio: tuple[str, str, str], by_key: dict) -> object:
+    """The family the spread constraint keys on for a given
+    trio, or `None` if the trio is not in a spread slot. Today
+    the only spread slot is `camera` (its wordings carry
+    `family` in `frontend/src/kinds.js:1671-1690`); `act` and
+    `framing` have no family, so their trios return `None` and
+    the spread is exempt on them. A future "let me add a
+    family to act" lands here as a second branch — the function
+    already returns a generic family key, not a hard-coded
+    "camera".
+
+    The check is on `wordings[0].get("family")` because today
+    every concept has a single wording. A future "let me add
+    a second wording with a different family" lands here as a
+    question for the catalogue reshape, not for the spread:
+    the family is a property of the concept in the catalogue,
+    and wordings of one concept share a family by
+    construction. The check that answers "is this slot a
+    spread slot" is the same field the check that answers
+    "what is the family of this trio" reads, so the two
+    questions are one answer.
+    """
+    cam_key = trio[0]
+    cam = by_key["camera"].get(cam_key)
+    if not cam:
+        return None
+    wordings = cam.get("wordings") or []
+    if not wordings:
+        return None
+    family = wordings[0].get("family")
+    return family if family else None
+
+
+def _reorder_to_spread_families(
+    trios: list[tuple[str, str, str]],
+    by_key: dict,
+) -> list[tuple[str, str, str]]:
+    """Reorder `trios` so no two consecutive photographs share
+    a family in the spread slots, or raise 422 if no such
+    reordering exists. The classical "reorganize string"
+    feasibility condition: `max(count per family) <=
+    ceil(N/2)`. If the chosen trios violate it, no
+    permutation satisfies the spread and the run is refused
+    — same shape as the 3.3 pool-too-small and 3.4 dedup
+    refusals, the same loop-closed property
+    (`n_shots == 0` after the 422), the same message
+    discipline (the four facts the operator needs to act).
+
+    The pass:
+
+    1. Group the trios by their family (via
+       `_spread_family_of`, which returns `None` for trios in
+       non-spread slots). Trios with `None` family carry no
+       spread constraint and the function does not need to
+       interleave them — they are appended to the end in
+       input order. The interleaving is on the family-bearing
+       trios only.
+    2. Feasibility check on the family-bearing trios: if
+       `max(count) > ceil(N/2)`, refuse with the family and
+       its count named in the message, plus the ceil bound
+       and the conclusion that no reordering works.
+    3. Heap-based "reorganize string": each step pop the
+       most-numerous remaining family, and if it equals the
+       previous pick, defer to the second-most-numerous. This
+       is the standard online construction; the feasibility
+       check above guarantees the second-most is always
+       available when the most equals the previous family
+       (otherwise step 2 would have refused).
+
+    The 422 message names four facts: the family, its count
+    in the chosen trios, the ceil bound, and the conclusion
+    "no ordering places no two consecutive photographs in
+    different families". A future "let me soften the
+    message" that drops one of the four fails the assertion
+    that names the dropped fact, the same shape 3.3 and 3.4
+    pin on their 422 messages.
+
+    The function is pure: it does not insert, it does not
+    write, it raises on the only error path. The caller
+    inserts in the returned order, the same way
+    `compose_run_endpoint` inserts in `best_chosen` order.
+    """
+    if len(trios) <= 1:
+        return list(trios)
+
+    # Split: family-bearing trios (the ones the constraint
+    # applies to) and non-family trios (constraint-exempt).
+    # Non-family trios carry no family field, so they cannot
+    # be ordered relative to a family; they go at the end in
+    # the order the greedy chose them, and the spread
+    # property on the family-bearing prefix is what the
+    # operator sees.
+    family_trios: list[tuple[tuple[str, str, str], object]] = []
+    other_trios: list[tuple[str, str, str]] = []
+    for t in trios:
+        fam = _spread_family_of(t, by_key)
+        if fam is None:
+            other_trios.append(t)
+        else:
+            family_trios.append((t, fam))
+
+    # Group by family.
+    buckets: dict[object, list[tuple[str, str, str]]] = {}
+    for t, fam in family_trios:
+        buckets.setdefault(fam, []).append(t)
+
+    n = len(family_trios)
+    ceil_n2 = (n + 1) // 2
+    # Feasibility: max count per family <= ceil(N/2). A
+    # family whose count equals ceil(N/2)+1 admits no
+    # permutation: every position is "next" to another of
+    # the same family, and one extra is forced adjacent. A
+    # family with count == ceil(N/2) is fine: it can sit in
+    # the even positions and the others in the odd ones (or
+    # vice versa).
+    if n > 0:
+        worst_fam = max(buckets, key=lambda f: len(buckets[f]))
+        worst_count = len(buckets[worst_fam])
+        if worst_count > ceil_n2:
+            raise HTTPException(
+                422,
+                f"compose refused: family {worst_fam!r} has {worst_count} "
+                f"entries in the chosen trios, larger than ceil({n}/2)={ceil_n2}; "
+                f"no ordering places no two consecutive photographs in different "
+                f"families, the spread cannot be satisfied",
+            )
+
+    # Max-heap keyed on (-count, family). Python's tuple
+    # comparison gives a stable order on ties (the family
+    # value), and the function is deterministic given
+    # `trios` — the multi-shuffle pass above is the only
+    # source of variance, and the 3.3 ceiling (N_SHUFFLES)
+    # keeps the verdict stable.
+    heap = [(-len(v), f) for f, v in buckets.items()]
+    heapq.heapify(heap)
+
+    out: list[tuple[str, str, str]] = []
+    prev_fam: object = None
+    while heap:
+        neg_count, fam = heap[0]
+        if fam == prev_fam:
+            # Top equals the previous family. Defer: pop
+            # both top entries, take the second, push the
+            # first back. If the heap has only one entry
+            # here the feasibility check above has missed
+            # the case, but the N==0 branch and the
+            # worst_count > ceil_n2 branch already cover
+            # it; an "only one family left and it equals
+            # prev" would mean N=1 (already returned at
+            # the top of the function), so the heap has at
+            # least two entries when the top conflicts
+            # with prev.
+            if len(heap) < 2:
+                # Defensive: the feasibility check would
+                # have refused before this point. An
+                # extra check here keeps the function
+                # correct under future refactors.
+                raise HTTPException(
+                    422,
+                    f"compose refused: family {fam!r} is the only family "
+                    f"left and equals the previous one, no reordering spreads",
+                )
+            heapq.heappop(heap)
+            neg_count2, fam2 = heapq.heappop(heap)
+            out.append(buckets[fam2].pop())
+            if buckets[fam2]:
+                heapq.heappush(heap, (neg_count2, fam2))
+            heapq.heappush(heap, (neg_count, fam))
+            prev_fam = fam2
+        else:
+            heapq.heappop(heap)
+            out.append(buckets[fam].pop())
+            if buckets[fam]:
+                heapq.heappush(heap, (neg_count, fam))
+            prev_fam = fam
+
+    return out + other_trios
+
+
+class ComposeSessionIn(BaseModel):
+    """A session-sized compose: same draw as 3.3, with the
+    family-spread reordering on top. The shape mirrors
+    `ComposeRunIn` so the frontend can build both from the
+    same picker state, and the only new rule (the family
+    spread) is the operator-visible difference.
+
+    `count` is on the body, not the path: the run-level
+    endpoint asks for a run, this one asks for a session,
+    and the request shape is what carries the intent. A
+    request with `count=1` and a request with `count=40`
+    are the same kind of request, and the family spread
+    applies to both (it is trivially satisfied at N=1).
+
+    There is no `mode` field. The same reasoning as 3.2
+    and 3.3: strict is the only legal mode today, and
+    encoding it as a string would let a wrong value
+    bypass the check.
+    """
+    count: int = Field(..., ge=1)
+    candidates: dict  # same shape as ComposeRunIn.candidates
+
+
+@app.post("/api/sessions/{sid}/compose-session")
+def compose_session_endpoint(sid: int, c: ComposeSessionIn):
+    """Compose a whole session with the same draw as 3.3 plus
+    the family-spread ordering constraint 3.5 adds. Sibling of
+    `compose_run_endpoint`, not a replacement: 3.3 is "give
+    me N from this pool" and 3.5 is "give me a session of N
+    that spreads the slot's family across consecutive
+    photographs".
+
+    The draw is the shared helper — same verified-trio pool,
+    same multi-shuffle greedy, same 3.4 dedup. The new step
+    is the reorder: a 422 if no reordering exists, the
+    reordered list otherwise. The 422 message names the
+    family, its count, the ceil bound, and the conclusion
+    the operator needs to act.
+
+    The check is BEFORE any INSERT (db.run auto-commits;
+    a check that fires at k+1 would leave k rows — the same
+    loop-closed property 3.3 and 3.4 pin on their 422s).
+    With the pre-check in place, a refusal queues nothing,
+    and the assertion `n_shots == 0` after a 422 is the
+    proof.
+
+    The reorder is a property of the LIST of trios, not the
+    SET, and the 3.4 dedup is a property of the SET, not
+    the LIST. The two checks commute: dedup runs first
+    (its 422 names the duplicated tuple or line), the
+    spread runs second (its 422 names the unsplittable
+    family). Both run BEFORE any INSERT, the caller sees
+    whichever fires first.
+    """
+    by_key, best_chosen = _draw_n_strict_trio_shots(sid, c.count, c.candidates)
+    ordered = _reorder_to_spread_families(best_chosen, by_key)
     shot_ids: list[int] = []
-    for cam_key, act_key, framing_key in best_chosen:
+    for cam_key, act_key, framing_key in ordered:
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
         ))
