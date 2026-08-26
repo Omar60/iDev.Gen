@@ -3643,6 +3643,346 @@ def test_ten_photographs_judged_one_slot_each_reach_the_threshold(client, seeded
     assert seen[-1] == (10, "verified"), seen
 
 
+# ----------------------------------------------------------------- 5.1 / 5.3 judging pass & control tests
+
+def test_judge_pass_returns_only_shot_id_keys_and_exact_structure(client, seeded):
+    """5.1 Decision A: GET /api/sessions/{sid}/judge-pass?slot=camera
+    returns {"shots": [id, ...], "controls": [id, ...]}. Each entry
+    in the lists is an integer ID only — no prompt, no components, no
+    wording, no reference, and no label. The screen must not show what
+    the photograph was composed from (spec.md:104-107).
+    """
+    camera = {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride"}]}
+    framing = {"key": "full-length", "wordings": [{"key": "full-length", "text": "full"}]}
+
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "judge pass bare",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    shot_id = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
+    }).json()["id"]
+    db.run("UPDATE shot SET status='done' WHERE id=?", shot_id)
+
+    r = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    # Exact top-level keys
+    assert set(data.keys()) == {"shots", "controls"}
+    assert data["shots"] == [shot_id]
+    assert data["controls"] == []
+
+    # Elements must be plain integers
+    assert all(isinstance(x, int) for x in data["shots"])
+    assert all(isinstance(x, int) for x in data["controls"])
+
+
+def test_judge_pass_default_unjudged_shots_with_empty_verdicts(client, seeded):
+    """The default for every shot that has never been judged is
+    verdicts=''. It must be included in `shots` and excluded from
+    `controls`.
+    """
+    camera = {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride"}]}
+    framing = {"key": "full-length", "wordings": [{"key": "full-length", "text": "full"}]}
+
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "empty verdicts",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    s1 = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
+    }).json()["id"]
+    s2 = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
+    }).json()["id"]
+    db.run("UPDATE shot SET status='done' WHERE session_id=?", sid)
+
+    # Verify database has verdicts=''
+    for row in db.q("SELECT verdicts FROM shot WHERE session_id=?", sid):
+        assert row["verdicts"] == ""
+
+    r = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
+    assert r.status_code == 200
+    assert r.json() == {"shots": [s1, s2], "controls": []}
+
+
+def test_judge_pass_categorizes_judged_shots_as_controls(client, seeded):
+    """An already-judged shot for a slot moves to `controls` when that
+    slot is queried, while remaining in `shots` for an unjudged slot.
+    """
+    camera = {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride"}]}
+    framing = {"key": "full-length", "wordings": [{"key": "full-length", "text": "full"}]}
+
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "categorize controls",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    s1 = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
+    }).json()["id"]
+    s2 = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
+    }).json()["id"]
+    db.run("UPDATE shot SET status='done' WHERE session_id=?", sid)
+
+    # Judge s1 on camera only
+    client.post(f"/api/shots/{s1}/judge", json={"camera": "front-direct"})
+
+    # Query slot=camera: s1 is control, s2 is unjudged shot
+    r_cam = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
+    assert r_cam.status_code == 200
+    assert r_cam.json() == {"shots": [s2], "controls": [s1]}
+
+    # Query slot=act: both are unjudged shots, neither is control
+    r_act = client.get(f"/api/sessions/{sid}/judge-pass?slot=act")
+    assert r_act.status_code == 200
+    assert r_act.json() == {"shots": [s1, s2], "controls": []}
+
+
+def test_judge_pass_never_leaks_shots_from_another_session(client, seeded):
+    """A judging pass on session A must never return shots from session B."""
+    camera = {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride"}]}
+    framing = {"key": "full-length", "wordings": [{"key": "full-length", "text": "full"}]}
+
+    sid_a = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "session A",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    sid_b = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "session B",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    sa1 = client.post(f"/api/sessions/{sid_a}/compose", json={
+        "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
+    }).json()["id"]
+    sb1 = client.post(f"/api/sessions/{sid_b}/compose", json={
+        "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
+    }).json()["id"]
+    db.run("UPDATE shot SET status='done'")
+
+    r = client.get(f"/api/sessions/{sid_a}/judge-pass?slot=camera")
+    assert r.status_code == 200
+    assert sb1 not in r.json()["shots"]
+    assert sb1 not in r.json()["controls"]
+    assert r.json() == {"shots": [sa1], "controls": []}
+
+
+def test_judge_pass_excludes_written_rejected_and_non_done_shots(client, seeded):
+    """Written shots (components='{}'), rejected shots, and pending shots
+    are never returned for judging.
+    """
+    camera = {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride"}]}
+    framing = {"key": "full-length", "wordings": [{"key": "full-length", "text": "full"}]}
+
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "filters pass",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [{"prompt": "written line", "count": 1}],
+    }).json()["id"]
+
+    # Composed shot 1 (done, not rejected) -> INCLUDED
+    s1 = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
+    }).json()["id"]
+    # Composed shot 2 (rejected) -> EXCLUDED
+    s2 = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
+    }).json()["id"]
+    # Composed shot 3 (pending) -> EXCLUDED
+    s3 = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
+    }).json()["id"]
+
+    db.run("UPDATE shot SET status='done' WHERE id IN (?, ?)", s1, s2)
+    db.run("UPDATE shot SET rejected=1 WHERE id=?", s2)
+    # The written shot is also done, but has components='{}'
+    written_id = db.one("SELECT id FROM shot WHERE session_id=? AND components='{}'", sid)["id"]
+    db.run("UPDATE shot SET status='done' WHERE id=?", written_id)
+
+    r = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
+    assert r.status_code == 200
+    assert r.json() == {"shots": [s1], "controls": []}
+
+
+def test_judge_pass_refuses_framing_and_invalid_slots(client, seeded):
+    """The framing slot has no catalogue yet and returns 422.
+    Unknown slots return 422. Nonexistent session returns 404.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "refusals",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    # framing slot refusal
+    r_frame = client.get(f"/api/sessions/{sid}/judge-pass?slot=framing")
+    assert r_frame.status_code == 422
+    assert "framing slot has no catalogue yet" in r_frame.json()["detail"]
+
+    # invalid slot
+    r_inv = client.get(f"/api/sessions/{sid}/judge-pass?slot=nonexistent")
+    assert r_inv.status_code == 422
+    assert "invalid slot" in r_inv.json()["detail"]
+
+    # 404 for missing session
+    r_404 = client.get("/api/sessions/999999/judge-pass?slot=camera")
+    assert r_404.status_code == 404
+
+
+def test_judge_control_shot_agreement_does_not_modify_state(client, seeded):
+    """5.3 Decision B: Re-presenting an already judged shot with control=True
+    compares against the stored verdict and returns agreed=True.
+    It writes NOTHING to the database (shot.verdicts and cell counts unchanged).
+    """
+    camera = {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length", "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing, session_name="control agree",
+    )
+
+    # Initial judgement: records verdict and cell
+    r_init = client.post(f"/api/shots/{shot_id}/judge", json={"camera": "front-direct"})
+    assert r_init.status_code == 200
+    assert (r_init.json()["judged"], r_init.json()["arrived"]) == (1, 1)
+
+    # Control call agreeing with stored verdict
+    r_ctrl = client.post(f"/api/shots/{shot_id}/judge", json={
+        "camera": "front-direct", "control": True,
+    })
+    assert r_ctrl.status_code == 200, r_ctrl.text
+    assert r_ctrl.json() == {
+        "control": True,
+        "slot": "camera",
+        "agreed": True,
+        "stored": "front-direct",
+        "answered": "front-direct",
+    }
+
+    # Verify cell counts did NOT change
+    cell = db.one(
+        "SELECT judged, arrived FROM cell WHERE camera_wording=? AND act_wording=? "
+        "AND framing_wording=? AND manner=? AND checkpoint=?",
+        "front-direct", "astride", "full-length", "directed", "finepornV4",
+    )
+    assert cell == {"judged": 1, "arrived": 1}
+
+    # Verify shot verdicts unchanged
+    import json as _json
+    verdicts = _json.loads(db.one("SELECT verdicts FROM shot WHERE id=?", shot_id)["verdicts"])
+    assert verdicts == {"camera": "front-direct"}
+
+
+def test_judge_control_shot_disagreement_does_not_overwrite_stored_verdict(client, seeded):
+    """5.3 Decision B: When an operator answers a control photograph
+    differently from its stored verdict, agreed is False and the stored
+    verdict is NEVER overwritten (spec.md:141-144).
+    """
+    camera = {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length", "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing, session_name="control disagree",
+    )
+
+    # Initial judgement: camera='front-direct'
+    client.post(f"/api/shots/{shot_id}/judge", json={"camera": "front-direct"})
+
+    # Control call disagreeing: answered='overhead-direct'
+    r_ctrl = client.post(f"/api/shots/{shot_id}/judge", json={
+        "camera": "overhead-direct", "control": True,
+    })
+    assert r_ctrl.status_code == 200, r_ctrl.text
+    assert r_ctrl.json() == {
+        "control": True,
+        "slot": "camera",
+        "agreed": False,
+        "stored": "front-direct",
+        "answered": "overhead-direct",
+    }
+
+    # Stored verdict is STILL 'front-direct' (not overwritten)
+    import json as _json
+    verdicts = _json.loads(db.one("SELECT verdicts FROM shot WHERE id=?", shot_id)["verdicts"])
+    assert verdicts == {"camera": "front-direct"}, "stored verdict was overwritten!"
+
+    # Cell counts unchanged
+    cell = db.one(
+        "SELECT judged, arrived FROM cell WHERE camera_wording=? AND act_wording=? "
+        "AND framing_wording=? AND manner=? AND checkpoint=?",
+        "front-direct", "astride", "full-length", "directed", "finepornV4",
+    )
+    assert cell == {"judged": 1, "arrived": 1}
+
+
+def test_judge_control_shot_on_unjudged_slot_is_refused(client, seeded):
+    """control=True on a shot that has no stored verdict for that slot is refused with 422."""
+    camera = {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length", "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing, session_name="control unjudged",
+    )
+
+    # Shot has not been judged for camera
+    r = client.post(f"/api/shots/{shot_id}/judge", json={
+        "camera": "front-direct", "control": True,
+    })
+    assert r.status_code == 422
+    assert "no stored verdict for slot 'camera'" in r.json()["detail"]
+
+
+def test_a_control_answering_two_slots_is_refused_rather_than_half_read(client, seeded):
+    """A control call carries one slot. The first shape of the control
+    branch took `next(iter(answers.items()))` and dropped the rest, so a
+    call answering camera correctly and act wrongly came back
+
+        {'control': True, 'slot': 'camera', 'agreed': True, ...}
+
+    with the act disagreement silently lost — an instrument that measures
+    the judge quietly discarding one of its own measurements. A pass asks
+    one question across a batch (spec.md:118), so more than one slot on a
+    control is a caller bug and is refused.
+    """
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing, session_name="control two slots",
+    )
+    # Both slots answered for real first, so the control has something
+    # stored to compare against on each of them.
+    client.post(f"/api/shots/{shot_id}/judge", json={"camera": "front-direct"})
+    client.post(f"/api/shots/{shot_id}/judge", json={"act": "astride"})
+
+    r = client.post(f"/api/shots/{shot_id}/judge", json={
+        "camera": "front-direct", "act": "reverse", "control": True,
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "one slot per call" in detail, detail
+    # Both slot names are named, so the caller can see what it sent.
+    assert "act" in detail and "camera" in detail, detail
+
+
 def test_use_look_false_leaves_the_look_out_of_every_prompt(client, seeded):
     """The look is a switch, not a deletion.
 

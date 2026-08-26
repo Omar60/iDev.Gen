@@ -248,6 +248,7 @@ class JudgeShotIn(BaseModel):
     camera: str | None = None
     act: str | None = None
     framing: str | None = None
+    control: bool = False
 
 
 class ConfigIn(BaseModel):
@@ -2542,6 +2543,58 @@ def patch_shot(shot_id: int, p: ShotPatch):
     return db.one("SELECT * FROM shot WHERE id=?", shot_id)
 
 
+@app.get("/api/sessions/{sid}/judge-pass")
+def get_judge_pass(sid: int, slot: str):
+    """Photographs in this session ready for a judging pass on one slot.
+
+    Returns {"shots": [id, ...], "controls": [id, ...]} for the session.
+    - "shots": photographs that are done, un-rejected, composed from
+      components (not '{}'), and have NO stored answer yet for this slot
+      (including shots where verdicts='').
+    - "controls": photographs meeting the same criteria that ALREADY have
+      a stored answer for this slot.
+
+    Each list carries ONLY integer shot IDs — no prompt, no components,
+    no wording, no reference image, and no label. The screen must not
+    show what the photograph was composed from, because an operator
+    shown the expected answer will find it (spec.md:104-107).
+
+    The framing slot has no catalogue yet and returns 422.
+    """
+    if slot == "framing":
+        raise HTTPException(
+            422,
+            "judge-pass refused: framing slot has no catalogue yet; "
+            "only 'camera' and 'act' are supported",
+        )
+    if slot not in ("camera", "act"):
+        raise HTTPException(
+            422,
+            f"invalid slot {slot!r}; expected 'camera' or 'act'",
+        )
+    session = db.one("SELECT id FROM session WHERE id=?", sid)
+    if not session:
+        raise HTTPException(404, "session not found")
+
+    rows = db.q(
+        "SELECT id, components, verdicts FROM shot "
+        "WHERE session_id=? AND status='done' AND (rejected=0 OR rejected IS NULL) "
+        "ORDER BY shot_index, id",
+        sid,
+    )
+    shots = []
+    controls = []
+    for r in rows:
+        if not r["components"] or r["components"] == "{}":
+            continue
+        v = json.loads(r["verdicts"]) if r["verdicts"] else {}
+        if v.get(slot) is not None:
+            controls.append(r["id"])
+        else:
+            shots.append(r["id"])
+    return {"shots": shots, "controls": controls}
+
+
 @app.post("/api/shots/{shot_id}/judge")
 def judge_shot(shot_id: int, j: JudgeShotIn):
     """Record the judging screen's answer against the shot's trio and
@@ -2703,6 +2756,39 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
             "judge refused: at least one slot must be answered (not None); "
             "an empty pass measures nothing",
         )
+
+    if j.control:
+        # A control photograph is re-presented to check the judge's agreement
+        # against stored verdicts (spec.md:132-144, task 5.3). It writes NOTHING
+        # to the database (not shot.verdicts, not the cell table) and returns the
+        # comparison against the stored verdict for the answered slot.
+        # One slot per control call. A pass asks one question across a
+        # batch (spec.md:118), so a control answering two slots is a
+        # caller bug — and taking the first of the dict and dropping
+        # the rest returns an agreement for one slot while a
+        # disagreement on the other is silently lost. A measuring
+        # instrument does not lose measurements quietly.
+        if len(answers) > 1:
+            raise HTTPException(
+                422,
+                f"judge refused: a control answers one slot per call, got "
+                f"{', '.join(sorted(answers))}",
+            )
+        slot, answered_val = next(iter(answers.items()))
+        if slot not in already or already[slot] is None:
+            raise HTTPException(
+                422,
+                f"judge refused: control shot {shot_id} has no stored verdict for slot {slot!r}",
+            )
+        stored_val = already[slot]
+        agreed = bool(stored_val == answered_val)
+        return {
+            "control": True,
+            "slot": slot,
+            "agreed": agreed,
+            "stored": stored_val,
+            "answered": answered_val,
+        }
 
     # A slot already answered is not answered again. 5.3 asks for
     # exactly this ("a disagreement does not overwrite the stored

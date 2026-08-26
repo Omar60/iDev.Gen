@@ -695,9 +695,115 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
 
 ## 5. Judging screen
 
-- [ ] 5.1 Present a photograph with no brief, no composed line, no wording and no reference image, and verify none of them reach the client
-- [ ] 5.2 Ask one question across a batch as a forced choice over the slot's whole list plus "none or cannot tell", recording the answer chosen and not only whether it matched, and verify a miss stores which component was seen
-- [ ] 5.3 Re-present already-judged photographs unmarked during a pass and report the agreement rate at the end, and verify a disagreement does not overwrite the stored verdict
+- [x] 5.1 Present a photograph with no brief, no composed line, no wording and no reference image, and verify none of them reach the client
+
+  **Decisions before the code:**
+
+  **(1) The bare-pass endpoint.** `GET /api/sessions/{sid}/judge-pass?slot={slot}`
+  returns `{"shots": [id, ...], "controls": [id, ...]}` where both lists carry
+  only plain integer shot IDs. The endpoint queries `shot` rows for `session_id=sid`,
+  `status='done'`, un-rejected (`rejected=0 OR rejected IS NULL`), and composed from
+  components (`components != '{}'`). A photograph with no stored verdict for `slot`
+  lands in `shots`; a photograph already carrying a stored verdict for `slot` lands
+  in `controls`.
+
+  **(2) Information leakage prevention at the boundary.** The screen must never
+  present the brief, the prompt, the drawn component words, or the reference image
+  (spec.md:104-107). Rather than filtering client-side or handing over candidate
+  metadata in the response, the endpoint strips everything down to integer IDs. The
+  test `test_judge_pass_returns_only_shot_id_keys_and_exact_structure` asserts the
+  exact set of response keys is `{"shots", "controls"}` and that every element is an `int`.
+
+  **(3) Exclusion of written shots, rejected shots, and foreign sessions.** Written shots
+  (`components='{}'`) have no component trio to judge and are skipped. A session query
+  strictly filters by `session_id=sid`, verified by `test_judge_pass_never_leaks_shots_from_another_session`.
+
+  **What was built:**
+  - `GET /api/sessions/{sid}/judge-pass` in `backend/main.py`.
+  - Backend tests in `tests/test_api.py`:
+    - `test_judge_pass_returns_only_shot_id_keys_and_exact_structure`
+    - `test_judge_pass_default_unjudged_shots_with_empty_verdicts`
+    - `test_judge_pass_categorizes_judged_shots_as_controls`
+    - `test_judge_pass_never_leaks_shots_from_another_session`
+    - `test_judge_pass_excludes_written_rejected_and_non_done_shots`
+    - `test_judge_pass_refuses_framing_and_invalid_slots`
+
+  **Negative verification:**
+  - Broken return shape to return `{"shots": [{"shot_id": s} for s in shots]}` -> failed with `AssertionError: assert [{'shot_id': 1}] == [1]`.
+
+- [x] 5.2 Ask one question across a batch as a forced choice over the slot's whole list plus "none or cannot tell", recording the answer chosen and not only whether it matched, and verify a miss stores which component was seen
+
+  **Decisions before the code:**
+
+  **(1) Client-side catalogue resolution without backend wording imports.** The component
+  catalogue lives entirely in `frontend/src/kinds.js` (`POSITIONS`, `ARRANGEMENTS`). To preserve
+  the single-home invariant (`tests/test_one_home.py`), the backend does not parse or validate
+  catalogue text. Pure helper function `slotChoices(slot, manner)` in `frontend/src/judge.js`
+  resolves the choice list client-side, mapping `POSITIONS[manner] || CAMERA_POSITIONS` for camera
+  and `ARRANGEMENTS` for act, appending the explicit `{ key: '', label: 'None or cannot tell' }`
+  as the final option.
+
+  **(2) Known limitation: Framing slot has no catalogue.** The framing slot travels in the existing
+  codebase as a per-shot string without an enumerated catalogue, and all seeded evidence rows carry
+  `framing_wording = 'none'`. Inventing a framing catalogue would be a measurement decision outside
+  the scope of UI. Therefore, `slotChoices('framing')` returns `[]`, `GET /api/sessions/{sid}/judge-pass?slot=framing`
+  returns 422 ("judge-pass refused: framing slot has no catalogue yet; only 'camera' and 'act' are supported"),
+  and the framing button in the UI is disabled with an explanatory tooltip.
+
+  **(3) Recording the exact choice.** When the operator answers, `POST /api/shots/{shot_id}/judge`
+  is called with `{ [slot]: choiceKey }`. A miss (e.g. `camera: "overhead-direct"` when `"front-direct"`
+  was drawn) increments `judged` by 1 and `arrived` by 0, while storing the exact choice in `shot.verdicts`
+  as `{"camera": "overhead-direct"}` so operators can inspect miss patterns. An empty answer `""` records
+  "None or cannot tell".
+
+  **(4) Keyboard hotkeys and blind UI presentation.** `frontend/src/views/Judge.jsx` provides hotkeys
+  (`1` through `9` for catalogue options, `0` for "None or cannot tell", `Escape` to exit). The photograph
+  is presented bare in the center viewport with progress indicators.
+
+  **What was built:**
+  - `frontend/src/judge.js`: `slotChoices(slot, manner)`.
+  - `frontend/src/views/Judge.jsx`: Blind evaluation view, session/slot picker, forced choice buttons.
+  - `frontend/src/App.jsx`: Hash router `#/judge` route and navigation link.
+  - `frontend/src/judge.test.js`: Vitest unit tests for choice resolution across manners.
+
+  **Negative verification:**
+  - Modified `slotChoices` to return `{ key: 'none', label: 'None' }` instead of `{ key: '', label: 'None or cannot tell' }` -> Vitest failed with `AssertionError: expected { key: 'none', label: 'None' } to deeply equal { key: '' }`.
+
+- [x] 5.3 Re-present already-judged photographs unmarked during a pass and report the agreement rate at the end, and verify a disagreement does not overwrite the stored verdict
+
+  **Decisions before the code:**
+
+  **(1) Control photograph delivery and mixing.** `GET /api/sessions/{sid}/judge-pass` delivers already-judged
+  photographs in the `controls` list. `buildJudgeDeck(shots, controls, rand)` in `frontend/src/judge.js`
+  mixes controls with regular unjudged shots using a Fisher-Yates shuffle. The UI presents every photograph
+  identically with zero visual markers (no badge, border, or label differentiating controls from regular shots).
+
+  **(2) Control submission protocol (`control: bool = False`).** `JudgeShotIn` accepts `control: bool = False`.
+  When `control=True`, `POST /api/shots/{shot_id}/judge` reads the stored verdict from `shot.verdicts` for the
+  answered slot, verifies a stored verdict exists (raising 422 if unjudged), checks `stored == answered`, and
+  returns `{"control": True, "slot": slot, "agreed": bool, "stored": stored, "answered": answered}`.
+  It performs ZERO database writes (no cell table update, no `shot.verdicts` rewrite).
+
+  **(3) Disagreements never overwrite stored verdicts.** If an operator disagrees with a control photograph's
+  earlier verdict, `agreed=False` is returned to the client for agreement rate calculation, and `shot.verdicts`
+  remains completely unchanged (spec.md:141-144).
+
+  **(4) Agreement reporting.** At the end of a pass, `computeAgreement(results)` calculates total controls,
+  agreed count, agreement percentage, and extracts any disagreements `[{ shot_id, stored, answered }]`,
+  rendered in a summary table on the report screen.
+
+  **What was built:**
+  - `control: bool = False` in `JudgeShotIn` and `if j.control:` handling in `judge_shot` (`backend/main.py`).
+  - `buildJudgeDeck` and `computeAgreement` in `frontend/src/judge.js`.
+  - Backend tests in `tests/test_api.py`:
+    - `test_judge_control_shot_agreement_does_not_modify_state`
+    - `test_judge_control_shot_disagreement_does_not_overwrite_stored_verdict`
+    - `test_judge_control_shot_on_unjudged_slot_is_refused`
+  - Frontend unit tests in `frontend/src/judge.test.js` covering deck shuffling and agreement arithmetic.
+
+  **Negative verification:**
+  - Removed `if j.control:` branch -> `test_judge_control_shot_disagreement_does_not_overwrite_stored_verdict` failed with `AssertionError: assert 409 == 200` (due to idempotence refusal on re-judging).
+
 - [ ] 5.4 Judge an already-judged session through the screen against a verdict already known, and report whether the screen reproduces it
 - [ ] 5.5 Time one batch of human judging against one batch of vision judging and record the real ratio, replacing the estimate in design.md
 
@@ -1556,6 +1662,27 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
   — 2 passed. The `verdicts` migration was probed against a pre-6.2
   database with no such column: the `ALTER TABLE` runs and the
   existing rows survive.
+
+  **Review fix: a control call answering two slots read only the first.**
+  The control branch took `next(iter(answers.items()))` and dropped the
+  rest, so a call answering the camera correctly and the act wrongly came
+  back as
+
+      {'control': True, 'slot': 'camera', 'agreed': True, ...}
+
+  with the act disagreement silently lost. The whole purpose of a control
+  is to catch the judge drifting; an instrument that discards one of its
+  own measurements without saying so is worse than no control. A pass asks
+  one question across a batch (spec.md:118), so more than one slot on a
+  control is a caller bug and is now refused at 422 naming both slots.
+  Pinned by `test_a_control_answering_two_slots_is_refused_rather_than_half_read`,
+  verified by disabling the guard: `assert 200 == 422` with the half-read
+  body in the message.
+
+  **Gates after the fix.** `python -m pytest` — 356 passed;
+  `npm --prefix frontend test` — 32 passed in 3 files;
+  `npm --prefix frontend run build` — built clean;
+  `python -m pytest tests/test_no_personal_data.py` — 2 passed.
 
 ## 7. Cleanup and documentation
 
