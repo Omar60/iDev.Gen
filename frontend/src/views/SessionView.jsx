@@ -6,6 +6,7 @@ import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
 import { BaseModelSelect, SamplerSelect } from './Models.jsx'
 import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary } from '../kinds.js'
+import { candidatePool, FRAMING_WORDING } from '../compose.js'
 import { composed } from '../enhance.js'
 
 /** A checkpoint's name for a session title: no folder, no extension. Three copies
@@ -43,6 +44,15 @@ export default function SessionView({ id }) {
   // Open when the user starts typing; close on blur once the field is empty
   // again, so a session with no tags does not eat a row of vertical space.
   const [tagsOpen, setTagsOpen] = useState(false)
+  // The compose-run control. `mode` defaults to "exploratory" rather than
+  // "strict" because the cell table holds 17 rows and two verified trios on
+  // the current checkpoint, and a strict default makes the first use of
+  // this feature a 422 — which the operator reads as broken. Exploratory
+  // draws unknown and verified cells, never dead ones, so the first click
+  // queues a real shot; strict is one click away when the operator has
+  // measured enough to want it.
+  const [composeCount, setComposeCount] = useState(4)
+  const [composeMode, setComposeMode] = useState('exploratory')
   const llm = !!config.llm_ok
 
   const reload = () => api.get(`/api/sessions/${id}`).then(setS).catch((e) => setError(e.message))
@@ -84,6 +94,22 @@ export default function SessionView({ id }) {
         : true))
 
   const call = async (fn) => { try { await fn(); reload() } catch (e) { setError(e.message) } }
+
+  // Compose a run of N photographs from the catalogue. The button is on
+  // an EXISTING session (not in the create flow) because the 3.2 rework
+  // lifted `manner` and `checkpoint` out of the editor onto the row, and
+  // the compose endpoints add shots to a session that already carries
+  // them; putting this in the create form would mean duplicating the
+  // checkpoint derivation before there is a row to derive it onto. The
+  // 422 path is the refusal 3.3 already wrote (`backend/main.py`),
+  // surfaced verbatim through the same `setError(e.message)` the other
+  // call sites use — the slot, its verified count, the largest fillable
+  // count and the word "exploratory" all reach the screen the way the
+  // operator's eye expects them.
+  const composeRun = (n, mode) => call(async () => {
+    const candidates = candidatePool(s.manner)
+    await api.post(`/api/sessions/${id}/compose-run`, { count: n, candidates, mode })
+  })
 
   const rate = (shot, rating) => call(async () => {
     await api.patch(`/api/shots/${shot.id}`, { rating: shot.rating === rating ? 0 : rating })
@@ -341,6 +367,38 @@ export default function SessionView({ id }) {
             <button className="primary" onClick={() => call(() => api.post(`/api/sessions/${id}/run`))}>
               Run ({pending})
             </button>}
+          {/* The compose control: a count, a mode, and a button, on the session
+              that's already open. The candidate pool is the whole catalogue slice
+              for the session's manner (see compose.js for the per-manner rule);
+              the framing is fixed and the screen says so, because picking
+              framings is a measurement decision not yet made. Disabled when
+              manner or checkpoint is missing, with the reason on the title —
+              the same refusal the endpoint will give, surfaced before the click
+              so the operator does not pay a round trip to learn what is
+              missing. Mode defaults to "exploratory" (8.4): a strict default
+              makes the first use of this feature a 422 on a 17-row, 2-trios
+              cell table, and reads as broken. */}
+          <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <input type="number" min={1} max={50} value={composeCount}
+                   disabled={!s.manner || !s.checkpoint || s.running}
+                   onChange={(e) => setComposeCount(Math.max(1, Number(e.target.value) || 1))}
+                   style={{ width: 60 }}
+                   title="How many photographs to compose and queue" />
+            <select value={composeMode}
+                    disabled={!s.manner || !s.checkpoint || s.running}
+                    onChange={(e) => setComposeMode(e.target.value)}
+                    title="exploratory draws unknown and verified cells (never dead); strict draws verified only">
+              <option value="exploratory">exploratory</option>
+              <option value="strict">strict</option>
+            </select>
+            <button disabled={!s.manner || !s.checkpoint || s.running || composeCount < 1}
+                    onClick={() => composeRun(composeCount, composeMode)}
+                    title={!s.manner || !s.checkpoint
+                      ? `Compose needs manner and checkpoint (manner="${s.manner || ''}", checkpoint="${s.checkpoint || ''}")`
+                      : `Compose ${composeCount} ${composeMode} photograph${composeCount === 1 ? '' : 's'}; framing is fixed: ${FRAMING_WORDING}`}>
+              Compose
+            </button>
+          </span>
           {s.status === 'running' &&
             <button onClick={() => call(() => api.post(`/api/sessions/${id}/cancel`))}>Cancel</button>}
           {failed > 0 && s.status !== 'running' &&
