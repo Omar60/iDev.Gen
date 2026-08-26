@@ -1684,6 +1684,25 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
   `npm --prefix frontend run build` — built clean;
   `python -m pytest tests/test_no_personal_data.py` — 2 passed.
 
+## 8. The composer, reachable from the app
+
+Added 2026-08-26, after group 5 shipped. The judging screen came up empty: of
+292 sessions in the working database exactly one holds composed photographs, and
+that one was made by a throwaway script. `grep -rn "compose" frontend/src/`
+returns no call to `/compose`, `/compose-run` or `/compose-session` — the whole
+composer is API-only. This is the same class of gap the 3.2 REWORK closed one
+level down, where the strict check guarded a route no session created by the app
+could reach.
+
+No backend work: the three endpoints exist and are tested. `ComposeRunIn`
+already says the pool is "the catalogue slice the operator can see for the
+session's manner".
+
+- [ ] 8.1 Build the candidate pool for a manner as a pure function in a new `frontend/src/compose.js`, and verify it offers every camera of `POSITIONS[manner]` and every act of `ARRANGEMENTS`, with the framing fixed to the single wording the scripts use — framing has no catalogue (every seeded row carries `framing_wording = 'none'`) and inventing one is a measurement decision, not a UI decision, so the screen states the framing is fixed rather than offering a choice
+- [ ] 8.2 Add a compose control to the session view beside Run — a count, a mode, and the button — calling `POST /api/sessions/{sid}/compose-run` on the session already open, and verify a composed run lands on that session with its components recorded and shows up in the judging screen's pass
+- [ ] 8.3 Show the composer's refusal verbatim, and verify the slot, the verified count and the largest fillable count all reach the screen and that nothing is queued — a strict refusal is the mode working, not an error to summarise away
+- [ ] 8.4 Default the control to exploratory, and say why in the code: the cell table holds 17 rows and two verified trios on the current checkpoint, so a strict default makes the first use of the feature a 422 and reads as broken
+
 ## 7. Cleanup and documentation
 
 - [ ] 7.1 Remove the two inline camera examples from the instruction prose and verify the single-home test from 1.3 still passes with those two texts deleted from its `KNOWN_DUPLICATES` baseline, and no test asserting prompt text changes

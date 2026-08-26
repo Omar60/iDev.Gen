@@ -118,3 +118,25 @@ is described by AGENTS.md rather than by a spec.
 - No new runtime dependency. Reference images are authored outside the app and
   stored as files; nothing in the app calls an external image service.
 - `README.md` and `docs/` gain the new screen and the composer path.
+
+
+## Added 2026-08-26: the composer needs a way in
+
+Group 5 shipped the judging screen and it opened empty. The reason is not in the
+screen: of 292 sessions in the working database exactly one holds composed
+photographs, and that one was a throwaway script written to measure something
+else in task 4.2. `grep -rn "compose" frontend/src/` returns no call to
+`/compose`, `/compose-run` or `/compose-session`.
+
+So the composer — the half of this change that draws from measured evidence — is
+reachable only from a script, while the writing half has had a screen all along.
+Nothing in the plan ever asked for the button, and each group tested its own
+endpoints from the outside and found them working.
+
+Group 8 adds it: a count, a mode and a button on a session that already exists,
+plus the refusal shown as the composer worded it. No backend work — the
+endpoints are built, tested, and already documented as taking a catalogue slice
+the operator picks.
+
+This also unblocks 5.4 and 5.5, which need a batch of composed photographs to
+judge, and it means 7.2 documents a path an operator can actually walk.

@@ -141,3 +141,30 @@ on itself is how a measurement returns believable numbers that are wrong.
 #### Scenario: A control photograph disagrees
 - **WHEN** an operator answers a re-presented photograph differently from its stored verdict
 - **THEN** the disagreement is reported at the end of the pass rather than silently overwriting the stored verdict
+
+
+### Requirement: The composer is reachable from the app
+
+The application SHALL offer composing a run of photographs from the catalogue on
+an existing session, in either mode, without a script.
+
+A capability that only a script can reach is a capability the operator does not
+have. Every endpoint of the composer shipped and was tested from the outside,
+and no screen ever called one: of 292 sessions in the working database exactly
+one holds composed photographs, and that one was made by a throwaway script
+written to measure something else. The judging screen therefore had nothing to
+show, which is how the gap was found.
+
+The refusal SHALL be shown to the operator as the composer worded it, naming the
+slot, its verified count and the largest fillable count. Strict mode refusing
+rather than repeating a component is the behaviour the mode exists for, and a
+screen that softens it into a generic failure hides the number the operator
+needs in order to choose between lowering the count and switching mode.
+
+#### Scenario: A run is composed from a screen
+- **WHEN** the operator asks for a run of N photographs on a session that carries a manner and a checkpoint
+- **THEN** the photographs are queued on that session with their components recorded, and are offered to the judging screen
+
+#### Scenario: A strict run that cannot be filled is refused in the operator's view
+- **WHEN** a strict run is refused because the verified pool is too small
+- **THEN** the slot, its verified count and the largest fillable count are shown as the composer worded them, and nothing is queued
