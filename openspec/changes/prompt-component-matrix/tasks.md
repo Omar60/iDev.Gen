@@ -277,7 +277,7 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
 
 ## 4. Measure the composer against the fixed-line scripts
 
-- [ ] 4.1 Point one `scripts/shoot_*.py` at the composer instead of its hand-built line and verify it produces the same line it built by hand
+- [x] 4.1 Point one `scripts/shoot_*.py` at the composer instead of its hand-built line and verify it produces the same line it built by hand
 
   **Five decisions before the code, in the order the task asks them:**
 
