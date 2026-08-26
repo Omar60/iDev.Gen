@@ -221,6 +221,18 @@ def test_a_composed_shot_records_the_three_components_on_the_row(client, seeded)
 # finepornV4 does not entitle a session on the Krea 2 mix to draw
 # the same trio, because the cell is the trio plus the session's two
 # non-trio dimensions and the lookup is exact.
+#
+# The endpoint has no `mode` field on the payload. Strict is the
+# only legal mode today; encoding it as a string would let a wrong
+# value bypass the check (an if over a free string is a door open by
+# default), and there is no second mode to switch to. The test below
+# pins the bypass attempt shut: a request that tries to set
+# `mode=anything` is parsed by pydantic with the default
+# extra="ignore", the field is silently dropped, the strict check
+# runs unconditionally, and the compose is refused. This is the
+# shape "validate at the type, not at the branch" — the check is
+# structural, not string-equal, and a wrong value cannot turn it off
+# by being misspelled.
 
 def test_a_component_verified_on_another_checkpoint_is_not_drawn_in_strict_mode(client, seeded):
     """A trio verified on finepornV4 is not drawable in a session on
@@ -405,6 +417,53 @@ def test_a_verified_cell_for_the_sessions_dimensions_is_drawn_in_strict_mode(cli
     assert "id" in r.json()
     n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
     assert n == 1
+
+
+def test_a_request_with_an_unknown_mode_field_still_runs_the_strict_check(client, seeded):
+    """The compose endpoint has no `mode` field on its payload.
+    Strict is the only legal mode today; encoding it as a string
+    would let a wrong value bypass the check (an if over a free
+    string is a door open by default — the type definition is the
+    check, the consumer's branch is the lock), and there is no
+    second mode to switch to. A request that tries to set
+    `mode=anything` (or `mode=exploratory`, or any other string)
+    is parsed by pydantic with the default extra="ignore": the
+    field is silently dropped, the strict check still runs
+    unconditionally, and the compose is refused. This is the test
+    that distinguishes "there is a strict mode" from "there is a
+    strict mode that can be turned off by writing it wrong". A
+    future regression that re-introduces `mode: str = "strict"`
+    with a `if c.mode == "strict":` guard breaks this test on the
+    spot — the cell is not verified, the request passes
+    `mode="anything"`, and the assertion is `n_shots == 0`.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "bypass attempt",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    # No cell seeded. The strict check should refuse the compose.
+    # A "mode" field on the payload is silently dropped by pydantic
+    # because ComposeIn does not declare it; the strict check
+    # still runs and finds no verified cell.
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
+    act = {"key": "astride",
+           "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "framing text"}]}
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+        "mode": "anything",
+    })
+    # pydantic drops the unknown field; the request body parses.
+    # The strict check then refuses the compose.
+    assert r.status_code == 422, r.text
+    assert "no measurement" in r.json()["detail"] or "unknown" in r.json()["detail"]
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0
 
 
 def test_a_written_shot_leaves_components_empty(client, seeded):
