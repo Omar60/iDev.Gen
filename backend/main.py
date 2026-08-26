@@ -912,7 +912,7 @@ class ComposeRunIn(BaseModel):
     """A run of N composed shots, drawn from the caller's candidate
     pool per slot. The pool is the catalogue slice the operator
     can see for the session's manner; the backend validates that
-    the verified-trío subset of that pool is large enough to fill
+    the verified-trio subset of that pool is large enough to fill
     `count` distinct shots before any insertion, and refuses the
     whole run otherwise.
 
@@ -945,17 +945,17 @@ def _candidate_keys(slot: str, candidates: dict) -> list[str]:
 
 
 def _verified_trio_pool(manner: str, checkpoint: str, candidates: dict) -> set[tuple[str, str, str]]:
-    """The strict pool: the set of `(camera, act, framing)` tríos
+    """The strict pool: the set of `(camera, act, framing)` trios
     that are verified for `(manner, checkpoint)` AND whose three
     keys all sit in the caller's candidate lists. A "verified
-    component" alone is not enough — a cell is the trío (the
+    component" alone is not enough — a cell is the trio (the
     schema went to five columns for this reason, design.md:130
     and decision C: "the unit of evidence is a cell"), and a
     component verified alone can still fail in combination
     (design.md:326-329). Counting DISTINCT per slot independently
-    reads as N×M×K tríos when only some of them are rows in the
-    table, and the zipped picker then draws tríos that nobody
-    verified. The 3.3 success path is "draw N tríos that are
+    reads as N×M×K trios when only some of them are rows in the
+    table, and the zipped picker then draws trios that nobody
+    verified. The 3.3 success path is "draw N trios that are
     cells", not "draw N×1 cameras and N×1 acts and N×1 framings
     and zip".
 
@@ -989,16 +989,16 @@ def _verified_trio_pool(manner: str, checkpoint: str, candidates: dict) -> set[t
 def _min_slot_within(pool: set[tuple[str, str, str]]) -> tuple[str, int]:
     """The slot the 422 message names when the pool runs short.
     "The slot that ran out" only exists as a per-slot count when
-    the pool is per-slot; under the trío model the pool is rows,
+    the pool is per-slot; under the trio model the pool is rows,
     not values, and the spec still asks to name a slot. The
     reasonable read is the slot whose number of distinct values
-    INSIDE the verified tríos is the smallest — the dimension
+    INSIDE the verified trios is the smallest — the dimension
     the operator would have to broaden to grow the pool. Ties go
     to camera, then act, then framing.
 
     Returns (slot_name, count). For an empty pool the slot is
     `camera` with 0: the per-slot count is undefined when there
-    are no tríos, and the convention keeps the message shape
+    are no trios, and the convention keeps the message shape
     stable across "the pool is empty" and "the pool is smaller
     than the request".
     """
@@ -1021,19 +1021,19 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     per call) but the caller asks for N at once and the backend
     draws, instead of passing the three components in.
 
-    The pool is the SET of verified tríos for the session's
+    The pool is the SET of verified trios for the session's
     manner and checkpoint, filtered to the candidates' keys. Not
     DISTINCT counts per slot — those would read as 3 verified
-    cameras × 3 verified acts = 9 tríos when only 3 of them are
+    cameras × 3 verified acts = 9 trios when only 3 of them are
     actually cells in the table, and a zipped picker would draw
-    tríos that nobody verified. The cell is the trío (the schema
+    trios that nobody verified. The cell is the trio (the schema
     went to five columns for this reason); the pool is the set
     of rows that pass the verified predicate, and the picker
     draws from that set.
 
     The 422 names four literals the user pinned: the slot
     (the one whose number of distinct values within the
-    verified tríos is the smallest), its verified count, the
+    verified trios is the smallest), its verified count, the
     largest fillable count, and the word "exploratory". A
     refusal is a usable answer — "ask for 3 instead of 5, or
     switch to exploratory" — rather than a dead end that
@@ -1101,7 +1101,7 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     # real matching would find the ceiling on one pass; greedy
     # with retries can still fall short of it on a pathological
     # pool (e.g., a pool where every shuffle wastes the same
-    # trío). With the pool sizes this project actually
+    # trio). With the pool sizes this project actually
     # measures — a handful of verified trios per session —
     # the gap is zero or one, and a real tripartite matching
     # lands here if the ceilings ever matter. N_SHUFFLES is
@@ -1138,7 +1138,7 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
         # the best result across N_SHUFFLES greedy passes.
         # They can differ: the pool says "2 cameras
         # available" and every shuffle delivered 1 because
-        # each one happened to waste the only trío that would
+        # each one happened to waste the only trio that would
         # have unblocked the second camera. The message
         # carries both so the operator sees the shortfall
         # the multi-shuffle pass hit, not the per-slot ceiling

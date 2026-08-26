@@ -698,26 +698,26 @@ def test_after_a_workflow_swap_a_cell_verified_on_the_old_checkpoint_is_refused(
 # written in tasks.md and is what the test below pins).
 #
 # The rule 3.3 enforces: in strict mode, a run of N photographs is either
-# fully filled (the verified-trío pool is large enough) or fully refused
+# fully filled (the verified-trio pool is large enough) or fully refused
 # (it is not). A refusal queues nothing. The pre-check is what stops a
 # "shorter run, delivered" — `db.run` commits per INSERT, so a loop that
 # queues k and refuses at k+1 would leave k rows. The check runs up front,
 # and the loop-closed test is `n_shots == 0` after a 422, not just the
 # status code.
 #
-# The pool is the set of verified `(camera, act, framing)` tríos, NOT a
+# The pool is the set of verified `(camera, act, framing)` trios, NOT a
 # DISTINCT count per slot. A component verified alone can still fail in
 # combination (design.md:326-329), and counting DISTINCT per slot reads as
-# N×M×K tríos when only some of them are cells in the table. The schema
+# N×M×K trios when only some of them are cells in the table. The schema
 # went to five columns for this reason; the picker draws from the set of
 # rows that pass the verified predicate, not from per-slot lists zipped
-# together. The user's probe (3 tríos with no shared components, asked
+# together. The user's probe (3 trios with no shared components, asked
 # for 3) is the case that distinguishes the two readings, and the success
-# test below pins it: every queued trío has to be a row in the cell
+# test below pins it: every queued trio has to be a row in the cell
 # table.
 #
 # The count is on the session's manner and checkpoint, the same way 3.2
-# scopes the cell lookup. A trío verified on another checkpoint does not
+# scopes the cell lookup. A trio verified on another checkpoint does not
 # add to the pool: the cell is the five-tuple, and a session on a
 # different checkpoint looks at a different cell.
 
@@ -726,10 +726,10 @@ def _seed_verified_trio(camera: str, act: str, framing: str,
                         *, manner: str, checkpoint: str,
                         judged: int = 10, arrived: int = 8) -> None:
     """Insert one verified cell with the given (camera, act, framing)
-    and (manner, checkpoint). 3.3 seeds specific tríos, not a
+    and (manner, checkpoint). 3.3 seeds specific trios, not a
     cartesian product — a per-slot cartesian product was the broken
     arithmetic the original 3.3 had, and the tests have to use the
-    trío shape or they would still pass on it.
+    trio shape or they would still pass on it.
     """
     db.run(
         "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
@@ -748,10 +748,10 @@ def _candidate(key: str, text: str) -> dict:
 
 
 def test_a_strict_run_with_a_too_small_trio_pool_is_refused_with_the_slot_count_and_exploratory(client, seeded):
-    """The case the user pinned: 3 verified tríos (each with its own
+    """The case the user pinned: 3 verified trios (each with its own
     camera, act, framing — no shared components, the shape that
     catches a per-slot DISTINCT pool that inflates the count); the
-    operator asks for 5 photographs; the trío pool is 3 and the run
+    operator asks for 5 photographs; the trio pool is 3 and the run
     is refused. The 422 message names the four literals the user
     listed — the slot, its verified count, the largest fillable
     count, and the word "exploratory" — so the operator can take
@@ -759,7 +759,7 @@ def test_a_strict_run_with_a_too_small_trio_pool_is_refused_with_the_slot_count_
     by hand.
 
     The pool is seeded explicitly. The shipped EVIDENCE_SEED has
-    no verified trío (every cell is n<10 or dead under the ratio
+    no verified trio (every cell is n<10 or dead under the ratio
     reading), so a "rejects" test against the seed would pass on
     completely broken arithmetic. The 3-and-5 numbers are the ones
     the user named; the test asserts the message carries both 3
@@ -773,15 +773,15 @@ def test_a_strict_run_with_a_too_small_trio_pool_is_refused_with_the_slot_count_
     message" that drops one is caught by the assert that names it.
     """
     sid = client.post("/api/sessions", json={
-        "model_id": seeded["model_id"], "name": "too small trío pool",
+        "model_id": seeded["model_id"], "name": "too small trio pool",
         "manner": "directed", "checkpoint": "finepornV4",
         "shots": [],
     }).json()["id"]
 
-    # 3 verified tríos, no shared components — the shape the
+    # 3 verified trios, no shared components — the shape the
     # user named, the one that would inflate under a per-slot
     # DISTINCT count (3 cameras × 3 acts × 3 framings = 27
-    # "tríos" by the broken reading, of which only 3 are real).
+    # "trios" by the broken reading, of which only 3 are real).
     trios = [
         ("cam-a", "act-a", "frame-a"),
         ("cam-b", "act-b", "frame-b"),
@@ -835,20 +835,20 @@ def test_a_strict_run_with_a_too_small_trio_pool_is_refused_with_the_slot_count_
 
 def test_a_strict_run_counts_only_the_sessions_checkpoint_in_the_pool(client, seeded):
     """The count is on the session's manner and checkpoint, the same
-    way 3.2 scopes the cell lookup. A trío verified on a different
+    way 3.2 scopes the cell lookup. A trio verified on a different
     checkpoint does not add to the pool — the cell is the
     five-tuple, and a session on a different checkpoint looks at a
     different cell. Without this, a session on the Krea 2 mix
-    could claim finepornV4's verified tríos as its own pool and
+    could claim finepornV4's verified trios as its own pool and
     queue a run that the cell table says nothing about.
 
-    The session is on the Krea 2 mix; the verified tríos are
+    The session is on the Krea 2 mix; the verified trios are
     seeded on finepornV4. The pool scoped to the session is
     empty, and the refusal names a slot with a count of 0. The 0
     case is the one a broken query (e.g., a "let me drop the
     checkpoint from the WHERE") would silently turn into a
     pass: a session on the Krea 2 mix with an empty pool in its
-    scope would be told the pool has 3 tríos and would queue.
+    scope would be told the pool has 3 trios and would queue.
     The test pins the refusal.
     """
     sid = client.post("/api/sessions", json={
@@ -857,7 +857,7 @@ def test_a_strict_run_counts_only_the_sessions_checkpoint_in_the_pool(client, se
         "shots": [],
     }).json()["id"]
 
-    # 3 verified tríos on finepornV4. The session is on the
+    # 3 verified trios on finepornV4. The session is on the
     # Krea 2 mix, so the scoped pool is empty — a different
     # checkpoint is a different cell, and the cell is the
     # five-tuple.
@@ -890,31 +890,31 @@ def test_a_strict_run_counts_only_the_sessions_checkpoint_in_the_pool(client, se
 
 
 def test_a_strict_run_queues_only_trios_that_are_verified_cells(client, seeded):
-    """The loop-closed test the user named: three verified tríos
+    """The loop-closed test the user named: three verified trios
     with no shared components, asked for 3, and every queued
-    trío has to be a row in the cell table. This is the
+    trio has to be a row in the cell table. This is the
     assertion that distinguishes "there are verified
     components" (the per-slot reading, which the original 3.3
-    had) from "there are verified tríos" (the cell-table
-    reading, which the trío pool enforces). A zipped picker
-    reading 3 cameras × 3 acts as 9 "tríos" and drawing
-    `(cam-a, act-c, frame-b)` — a trío that nobody verified
+    had) from "there are verified trios" (the cell-table
+    reading, which the trio pool enforces). A zipped picker
+    reading 3 cameras × 3 acts as 9 "trios" and drawing
+    `(cam-a, act-c, frame-b)` — a trio that nobody verified
     — would queue 3 shots, satisfy the count, and only fail
     this test. The pre-check is what makes the test
     consistent: the pool is the set of rows, the picker
-    draws from the set, every queued trío is a cell.
+    draws from the set, every queued trio is a cell.
 
     The shape the user named is the one that catches the
-    bug: 3 tríos, 3 distinct cameras, 3 distinct acts, 3
+    bug: 3 trios, 3 distinct cameras, 3 distinct acts, 3
     distinct framings — a per-slot DISTINCT count reads the
     same 3 / 3 / 3 from this seed, but a cartesian product
     of the three lists (the per-slot reading) would say
-    27 tríos, of which 24 are not in the table. The
+    27 trios, of which 24 are not in the table. The
     original 3.3's first test (`test_a_strict_run_with_a_large_enough_pool_queues_n_distinct_shots`)
     seeded the same shape and passed on the broken
     arithmetic, because the assertion was per-slot
     no-repeat and the per-slot reading happened to satisfy
-    it by coincidence. The new test asserts the trío is
+    it by coincidence. The new test asserts the trio is
     in the seeded set, which the per-slot reading
     cannot satisfy.
     """
@@ -947,10 +947,10 @@ def test_a_strict_run_queues_only_trios_that_are_verified_cells(client, seeded):
     assert body["count"] == 3
     assert len(body["ids"]) == 3
 
-    # The loop-closed assertion: every queued trío is a
+    # The loop-closed assertion: every queued trio is a
     # row in the cell table. The `components` column on
     # the shot row carries the (slot, wording) pair; we
-    # read it back and assert each shot's trío is in the
+    # read it back and assert each shot's trio is in the
     # seeded set. A picker that zips per-slot lists and
     # produces `(cam-a, act-c, frame-b)` would queue 3
     # shots that are NOT in the seeded set, and the
@@ -973,7 +973,7 @@ def test_a_strict_run_queues_only_trios_that_are_verified_cells(client, seeded):
         assert actual in seeded_set, (
             f"shot {shot['id']} drew {actual!r}, which is not a "
             f"verified cell — the picker read per-slot DISTINCT and "
-            f"zipped, and that is the bug the trío pool exists to prevent"
+            f"zipped, and that is the bug the trio pool exists to prevent"
         )
 
 
@@ -1059,16 +1059,16 @@ def test_a_strict_run_on_a_session_missing_manner_or_checkpoint_is_refused_befor
 
 def test_a_strict_run_never_repeats_a_component_within_a_single_run(client, seeded):
     """The loop-closed test the user named: a pool with fewer
-    distinct cameras than tríos, asked for the per-slot min
+    distinct cameras than trios, asked for the per-slot min
     (which the pre-check said fit), and the greedy must never
     deliver a run with a repeated component. The pre-check
     and the draw are the same calculation now — a parallel
     DISTINCT count over-promised and `shuffle(pool)[:count]`
-    under-delivered: the user's probe (3 tríos, 2 cameras,
-    count=2) put both c1 tríos first in 2 of 6 shuffles, and
+    under-delivered: the user's probe (3 trios, 2 cameras,
+    count=2) put both c1 trios first in 2 of 6 shuffles, and
     the old code queued 2 shots with c1 four times in twelve.
-    The new greedy skips a trío whose components are already
-    in `used`, so every chosen trío lands on a fresh slot
+    The new greedy skips a trio whose components are already
+    in `used`, so every chosen trio lands on a fresh slot
     in every slot. The test runs the endpoint twelve times
     because a single iteration often hits a lucky shuffle
     and the no-repeat assertion passes by chance — twelve is
@@ -1093,12 +1093,12 @@ def test_a_strict_run_never_repeats_a_component_within_a_single_run(client, seed
         "shots": [],
     }).json()["id"]
 
-    # The user's probe pool: 3 tríos, 2 distinct cameras. The
+    # The user's probe pool: 3 trios, 2 distinct cameras. The
     # per-slot min is 2 (cameras), which the pre-check says
     # fits. The shuffle is probabilistic over 3! = 6
-    # orderings: 2/6 put both c1 tríos first, and the old
+    # orderings: 2/6 put both c1 trios first, and the old
     # `shuffle(pool)[:2]` delivered both. The new greedy
-    # takes the first c1 trío, skips the second (c1 used),
+    # takes the first c1 trio, skips the second (c1 used),
     # and takes c2.
     trios = [
         ("cam-a", "act-a", "frame-a"),
