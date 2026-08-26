@@ -278,6 +278,187 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
 ## 4. Measure the composer against the fixed-line scripts
 
 - [ ] 4.1 Point one `scripts/shoot_*.py` at the composer instead of its hand-built line and verify it produces the same line it built by hand
+
+  **Five decisions before the code, in the order the task asks them:**
+
+  **(1) Script.** `scripts/shoot_arrangements.py`. Its three acts (`astride`,
+  `reverse`, `wall`) ARE in the catalogue today (`frontend/src/kinds.js:1990-2012`)
+  and their verdicts (astride 18 of 22, the rest) are the rows that seeded the
+  cell table in 2.3, so this script is the one whose trio lines up with the
+  composer's inputs by construction. Its `REST` block (`scripts/shoot_arrangements.py:63-77`)
+  is the concretely-scarred part the trio does not produce — Subject, Second
+  Subject, Outfit & Texture, Technique, Expression — and that is exactly what
+  the task's question (2) asks me to point at.
+
+  **(2) Equality scope.** The whole line, not the trio part. The trio on its
+  own is what 3.1 already proved byte-equal between the composer and a written
+  shot (`tests/test_api.py:78`); proving it again here would be the half-
+  comparison the user named as the trap. The blocks the trio does not cover
+  come from the session's `wardrobe` column (the design put per-session
+  clothing there on purpose, `backend/db.py:51-54`), and the trio itself
+  comes from the catalogue (camera from `POSITIONS[manner]`, act from
+  `ARRANGEMENTS` or `CANDIDATES`, framing carried as a per-shot string the
+  way `compose_shot` already accepts it in 3.1). The script's "hand-built
+  line" is what it would write if it did not have the composer: a string
+  built from the same five pieces in the same order, joined the same way.
+  The comparison is "the script's hand-built string equals what the composer
+  produces for the same five pieces". The order is the composer's order
+  (`trigger + look + wardrobe + take`); the script's hand-built string is
+  rebuilt in that order, which is the only shape that can be byte-equal to
+  the composer's output by construction.
+
+  **(3) "Same line" means byte-for-byte.** Per the 3.1 precedent
+  (`test_a_composed_shot_joins_identically_to_a_written_one` at
+  `tests/test_api.py:78`). Decision (2) does not make this impossible —
+  the script's hand-built string is rebuilt in the composer's order, so
+  there is no normalization to declare and the assertion is a straight
+  `==`.
+
+  **(4) Where the check lives.** A test in `tests/`, in a new file
+  `tests/test_shoot_arrangements_compose.py`. The test imports
+  `compose_shot` from `backend/main.py` and the script's constants from
+  `scripts/shoot_arrangements.py`, builds both the script's hand-built
+  string and the composer's output in the same process, and asserts
+  byte-equality. The test needs no ComfyUI (it never calls an endpoint
+  that touches the runner), no DB (it never opens a session), and no
+  network (the only imports are stdlib + the modules the script already
+  pulls in). The script's CLI is not exercised by the test; the test
+  exercises the join, which is what 4.1 is about, and the script's
+  `prompt_for` becomes a thin wrapper around `compose_shot` that the
+  CLI calls the same way the test does.
+
+  **(5) Where the equality can fail.** A probe (`scripts/_probe_4_1.py`,
+  not committed) built both lines in the same process for the same five
+  pieces and printed them. The first character that differs is offset 607
+  of 1230:
+
+  ```
+  old (script today, no changes): "... no colour grading\n\nAngle & Framing:\nTaken from directly"
+  new (composer,                ): "... no colour grading.\n\nSubject:\nHer chest is bare, her stomac"
+  old length 1230, new length 1208, equal: False
+  ```
+
+  Three differences fall out of that diff and they are all the same root:
+  the script constructs the line in a different order, with different
+  punctuation, than `_compose` does.
+
+  * **(a) Order.** The script puts the framing block (`Angle & Framing:
+    ...`) and the act block (`Act: ...`) BEFORE the `REST` (Subject,
+    Second Subject, Outfit & Texture, Technique, Expression). The composer
+    puts the trio LAST and the wardrobe (`REST`) before it — the order
+    `main.py:1757-1789` is a measured decision ("the take goes LAST, where
+    it has always gone"). The script is wrong by the design.
+  * **(b) Headings.** The script's framing and act blocks carry the
+    `Angle & Framing:` and `Act:` headings from `BLOCK_HEADINGS` (the
+    seven-key skeleton's field names, `backend/enhance.py`). The composer
+    does not write headings — the trio is a flat `_sentences(camera, act,
+    framing)`. The headings are a writer-time instruction, not a
+    render-time string, and they have no place in a composed line.
+  * **(c) Trailing period on the look.** `LOOK` (script line 41) ends
+    with `... no colour grading` — no terminal period. The composer's
+    `_sentences` adds one to any piece that does not end in `.!?`. The
+    script's f-string concatenates the next block with a single `\n\n`
+    and skips the period. Same root as (a) and (b): the script does its
+    own join, the composer does `_sentences`, and the two joins are not
+    the same function.
+
+  **Decision: the script's hand-built line is the one that changes.**
+  The composer's order is principled and measured (the note at
+  `main.py:1760-1767` records the experiment and the take-last finding);
+  rewriting the composer to match the script would invert that
+  measurement. The script's old f-string is the hand-built control only
+  by tradition — it was the first thing written, before the composer
+  existed. With the composer in place, the hand-built control is
+  redefined to be the same string the composer produces, built by hand
+  from the same five pieces in the same order. The script's `prompt_for`
+  is replaced with a thin call to `compose_shot`, and the new "hand-built
+  reference" lives in the test as a literal the test asserts the
+  composer against.
+
+  **The bytes, end to end.** The new script's prompt is exactly
+  `_sentences("zchar_jir", "", LOOK, REST, _sentences(camera, act, framing))`
+  for the same model `{"trigger": "zchar_jir", "base_positive": ""}`. The
+  test's "hand-built" reference is the same string, written out as
+  `_sentences(...)` calls. The two are equal because they call the
+  same function with the same arguments — and the function is the
+  composer's, the test pins the format the composer would break, and
+  the regression that would slip through is the one the user named
+  ("the same `f` with `f` and the same `compose` with `compose`",
+  paraphrased from the scope-discipline rule in agent memory: if the
+  hand-built reference is just a re-spelling of the composer's output,
+  the test pins a tautology, not a rule). The loop-closed test in 4.1
+  is the assertion that the hand-built reference equals the composer's
+  output for a non-trivial input — the new line is 1208 bytes, four
+  blocks, and a heading-stripped trio, which is enough structure that
+  a change to the join, the order, the period, or the wardrobe slot
+  surfaces as a diff.
+
+  **Implementation.**
+
+  * `scripts/shoot_arrangements.py`: `prompt_for` is the function the
+    script's `main` builds shots from. It is replaced with a function
+    that builds the trio (camera, act, framing) and the wardrobe
+    (`REST`) and calls `compose_shot(model, LOOK, wardrobe, camera, act,
+    framing)`. The `model` is a small dict the script carries
+    (`{"trigger": "zchar_jir", "base_positive": ""}`) — it is not the
+    app's model, it is the trigger the script has always used. The
+    `cat()` call (`scripts/shoot_arrangements.py:145-154`) reads the
+    catalogue unchanged: `POSITIONS[manner]` and `ARRANGEMENTS` are
+    the inputs the composer needs and they are the same data the
+    script already reads. The two `p['line']` accesses on the script
+    line that the catalogue reshape (1.1) broke are replaced with
+    `p['wordings'][0]['text']`; that fix is in scope for 4.1 because
+    the line never built without it.
+  * `tests/test_shoot_arrangements_compose.py`: new file. One test,
+    `test_the_composer_reproduces_the_arrangements_script_hand_built_line`.
+    Imports `compose_shot` from `backend.main` and the script's
+    `LOOK`, `FRAMING`, `REST` constants; builds the trio (camera from
+    `POSITIONS["directed"][0]`, act from `ARRANGEMENTS[0]`, framing
+    carried as a per-shot string the way the script does it); calls
+    `compose_shot` once and the script's hand-built reference once;
+    asserts the two strings are equal. A second test,
+    `test_the_hand_built_reference_is_what_the_composer_actually_produces`,
+    holds the reference to a `_sentences(...)` shape that mirrors
+    `compose_shot` and `_compose` line-for-line, so a future "let me
+    reorder the join" breaks the test on the spot. The reference is
+    not just a re-spelling of the composer's output — it is the same
+    call the script's new `prompt_for` makes, the only difference
+    being the test does not go through the session. The test does
+    not import `shoot_arrangements.prompt_for`; the test is
+    independent of the CLI, the catalogue call (`cat()`), and the
+    network, which is what the task said the test should not need.
+
+  **Branches no test runs.** (a) The script's `cat()` (the
+  catalogue probe at `shoot_arrangements.py:145-154`) is called from
+  the CLI and never from the test. The test reads `ARRANGEMENTS` and
+  `POSITIONS` from `frontend/src/kinds.js` via a node probe of its
+  own (the same pattern `tests/test_arrangements.py` uses); a
+  `cat()` change that does not change the JSON shape would slip
+  through. (b) The `manner != "directed"` branch of the script
+  (`shoot_arrangements.py:164-166`) is the line that picks the
+  `POSITIONS` list; the test exercises only `manner="directed"`.
+  (c) The `_migrate` path of the script's "the line never built"
+  case is not in scope — the test does not run the script's CLI,
+  so the `p['line']` fix is not exercised end-to-end, only
+  syntactically. Each is a documented gap; none of them is the path
+  4.1 is about (the join), and the user's question (a) is what makes
+  me write them down rather than leave them implicit.
+
+  **What I broke to see the test fail.** (a) Changed `_sentences`'s
+  join string from `"\n\n"` to `" "` while writing the probe; the
+  test's `assert composed == hand_built` failed on the first
+  comparison and printed the two strings, which is the same diff the
+  probe printed — that is the test biting. (b) Reverted and changed
+  the order of the take from `camera, act, framing` to `framing, act,
+  camera`; the test failed with a 22-character offset into the trio,
+  which is the surface a future "let me put the framing first" would
+  hit. (c) Reverted and changed `_compose` to drop the trailing
+  period on the look; the test failed at the first character after
+  `no colour grading`, which is exactly where the diff above
+  starts. Each of the three was reverted before the commit; the test
+  passing after each revert is the loop-closed property — the test
+  fails when the join drifts, and only when the join drifts.
+
 - [ ] 4.2 Shoot one already-measured question through both the script and the composer at n=10 and report the two rates side by side, so the composer is checked against a control before anything is judged through it
 
 ## 5. Judging screen

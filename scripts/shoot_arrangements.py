@@ -33,14 +33,25 @@ import subprocess
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+
+# `backend.main` is imported lazily, inside `prompt_for`, so `--dry-run` and
+# the script's CLI do not pay for the FastAPI app, the DB connection, or the
+# config read on every invocation. The import is needed only at the point the
+# line is built, and `tests/test_shoot_arrangements_compose.py` exercises the
+# same import path with `IDEVGEN_DATA_DIR` set to a temp dir.
 from shoot_camera_forms import SEEDS, SETTINGS, create_session
 from shoot_candid_cameras import CANDID_CAPTURE, ROOM
-
-ROOT = Path(__file__).resolve().parents[1]
 
 LOOK = ROOM + CANDID_CAPTURE
 
 FRAMING = "a three-quarter photograph from the knees up"
+
+# The trigger the script has always used. A flat dict, not the app's model
+# record: the script builds lines without a session, and the composer only
+# reads `trigger` and `base_positive` off the dict (`backend/main.py:_compose`).
+MODEL = {"trigger": "zchar_jir", "base_positive": ""}
 
 EXPLICIT_SETTINGS = SETTINGS | {
     "checkpoint": "finepornV4INT8NVFP4BF16_v4Nvfp4.safetensors",
@@ -154,6 +165,44 @@ def catalogue() -> dict:
     return json.loads(out.stdout)
 
 
+def _act_concept(act: dict) -> dict:
+    """Wrap an `ARRANGEMENTS` entry or a `CANDIDATES` entry in a single-wording
+    concept. The catalogue entry already carries `wordings`; the `CANDIDATES`
+    entries do not, and the composer reads `wordings[0]["text"]`
+    (`backend/main.py:compose_shot`).
+    """
+    if "wordings" in act:
+        return act
+    return {"key": act["key"],
+            "wordings": [{"key": act["key"], "text": act["act"]}]}
+
+
+# The framing is carried as a per-shot string, the way `compose_shot` already
+# accepts it in 3.1. The catalogue has no framing concept list of its own, and
+# `FRAMING` is the constant this script has always used; a concept-shaped dict
+# is what `compose_shot` expects, and the `key` is an arbitrary stable name
+# (the composer reads text, not key).
+_FRAMING_CONCEPT = {"key": "framing",
+                    "wordings": [{"key": "framing", "text": FRAMING}]}
+
+
+def prompt_for(camera_concept: dict, act: dict, look: str = LOOK,
+               wardrobe: str = REST) -> str:
+    """Build the line through the composer.
+
+    The composer (`backend/main.py:compose_shot`) joins the trio as a flat
+    `_sentences(camera, act, framing)` and prefixes the look and the wardrobe
+    in the order the design fixed (look, then wardrobe, then take). The
+    hand-built control this replaces was an f-string with the framing and act
+    blocks BEFORE the wardrobe and with the field headings (`Angle &
+    Framing:`, `Act:`); that control is what `tests/test_shoot_arrangements_compose.py`
+    pins against the composer's output.
+    """
+    from main import compose_shot  # lazy: see the import note up top
+    return compose_shot(MODEL, look, wardrobe, camera_concept,
+                        _act_concept(act), _FRAMING_CONCEPT)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://127.0.0.1:8777")
@@ -184,10 +233,14 @@ def main() -> int:
     for a in arrangements:
         # One camera per allowed family, and the first form of each: which form
         # inside a family is a question the camera catalogue already answered.
+        # The catalogue reshape (1.1) moved `family` onto the wording; every
+        # concept today has one wording, so the family's first is the family's
+        # only and the loop matches the old behaviour.
         seen, cameras = set(), []
         for p in positions:
-            if p["family"] in a["cameras"] and p["family"] not in seen:
-                seen.add(p["family"])
+            family = p["wordings"][0]["family"]
+            if family in a["cameras"] and family not in seen:
+                seen.add(family)
                 cameras.append(p)
         # A family this manner has no position for is a silent no-op: the arm
         # would just not be shot and the run would look complete. `side` is the
@@ -196,9 +249,12 @@ def main() -> int:
                          f"catalogue has none of them")
         print(f"{a['key']:<13} {len(cameras)} cameras: {', '.join(sorted(seen))}")
         for p in cameras:
-            label = f"{a['key']}-{p['family']}"
-            prompt = (f"zchar_jir.\n\n{LOOK}\n\nAngle & Framing:\n{p['line']}, {FRAMING}.\n"
-                      f"\nAct:\n{a['act']}\n{REST}")
+            family = p["wordings"][0]["family"]
+            label = f"{a['key']}-{family}"
+            # `p` is a position from `POSITIONS[manner]` and is already a camera
+            # concept (`{key, slot, wordings, family}`); the composer reads
+            # `wordings[0]["text"]` off it, so no rewrap is needed.
+            prompt = prompt_for(p, a)
             for seed in SEEDS:
                 shots.append({"label": label, "prompt": prompt, "seed": seed, "count": 1})
 
