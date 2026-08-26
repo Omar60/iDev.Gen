@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
+from typing import Literal
 
 import db
 import enhance
@@ -175,18 +176,23 @@ class ComposeIn(BaseModel):
     respect cell state (strict, verified-only), 6.1 makes
     unknown drawable in exploratory mode.
 
-    There is no `mode` field on purpose. Strict is the only legal
-    mode today; encoding it as a string field on the payload would
-    open a door that is shut by the type definition today (an if
-    over a free string is "anything but strict" passes through) and
-    would invite a second mode that does not exist yet. 6.1 opens
-    the seam when the second mode exists, with its own Literal type
-    and its own test. Until then, the strict check runs
-    unconditionally on the trio's cell.
+    `mode` is a `Literal["strict", "exploratory"]` (not a free
+    string) on purpose. A free string would be a door the type
+    definition does not shut today: an `if mode != "strict"` over a
+    free string is "anything but strict" passes through, and a
+    payload carrying `mode: "anything"` would slip past the check
+    and the strict line would still draw. pydantic rejects an
+    unknown mode at the boundary, before the cell lookup runs.
+    `mode: "exploratory"` widens the draw to include cells that
+    have not been measured yet (`unknown`), and excludes `dead`
+    cells in both modes — a cell measured 0 of 12 stays out of the
+    pool no matter what the caller says. 6.1 is the task that
+    opened the second mode.
     """
     camera: dict
     act: dict
     framing: dict
+    mode: Literal["strict", "exploratory"] = "strict"
 
 
 class SessionPatch(BaseModel):
@@ -862,23 +868,21 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
     `compose_shot` and `_compose` go through the same `_sentences`
     join (see `test_a_composed_shot_joins_identically_to_a_written_one`).
 
-    The check below is strict and unconditional: the trio's cell
-    must be verified for the session's manner and checkpoint, or
-    the compose is refused with 422. A trio verified on a different
-    checkpoint is not enough — the cell is the trio plus the
-    session's two non-trio dimensions, and the lookup is exact.
-    Unknown and dead cells are refused the same way. The 422
-    message names the trio, the session's manner and checkpoint,
-    and the cell state the lookup found, so the caller can see
-    whether the gap is a missing measurement (unknown) or a failed
-    one (dead).
+    The cell lookup is exact: a cell is the trio plus the session's
+    two non-trio dimensions, and a trio verified on a different
+    checkpoint is not enough. The 422 message names the trio, the
+    session's manner and checkpoint, and the cell state the lookup
+    found, so the caller can see whether the gap is a missing
+    measurement (unknown) or a failed one (dead).
 
-    There is no `mode` field on the payload. Strict is the only
-    legal mode today; encoding it as a string would let a wrong
-    value bypass the check (an if over a free string is a door open
-    by default), and there is no second mode to switch to. 6.1
-    opens the seam when the second mode exists, with a Literal
-    type on `mode` and a test for the new case.
+    `mode` selects what is drawable. In `strict`, only `verified`
+    cells pass — `unknown` and `dead` are refused. In
+    `exploratory`, `verified` and `unknown` pass; `dead` is refused
+    in both modes, because a dead cell carries a measurement the
+    table is asking the operator to honour. The Literal on the
+    payload closes the door an `if mode != "strict"` over a free
+    string would open: a wrong value never reaches this branch.
+    6.1 is the task that opened the second mode.
     """
     session = db.one("SELECT * FROM session WHERE id=?", sid)
     if not session:
@@ -907,21 +911,60 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
         session["manner"], session["checkpoint"],
     )
     if not cell:
-        raise HTTPException(
-            422,
-            f"compose refused: cell "
-            f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
-            f"{session['manner']}, {session['checkpoint']}) "
-            f"has no measurement (unknown)",
-        )
+        # No row means the trio was never measured (the
+        # measurement did not name a component of the trio at
+        # all). In strict mode, this is a 422 — the cell is
+        # unknown. In exploratory mode, the trio is drawable
+        # if every other candidate is also unmeasured, but
+        # the `none` filter is a pool-level concern, not a
+        # one-shot one: the one-shot endpoint has no pool, it
+        # looks the trio up directly, and an absent cell is
+        # an unknown trio. Exploratory mode widens the pool
+        # to include these, so the same call with
+        # `mode=exploratory` queues the shot.
+        if c.mode == "strict":
+            raise HTTPException(
+                422,
+                f"compose refused: cell "
+                f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
+                f"{session['manner']}, {session['checkpoint']}) "
+                f"has no measurement (unknown); switch to exploratory "
+                f"mode to compose from unmeasured cells",
+            )
+        # Exploratory: no row but the trio is still drawable
+        # because there is no measurement that says it is
+        # dead. The shot is queued and 6.2 will land it on
+        # the cell once a judge records a verdict.
+        shot_id = compose_and_queue_shot(sid, c.camera, c.act, c.framing)
+        return {"id": shot_id}
     state = db.cell_state(cell["judged"], cell["arrived"])
-    if state != "verified":
+    if state == "dead":
+        # Dead in both modes. A measured 0 of 12 is a result,
+        # not a gap, and "let me draw it anyway" would
+        # contradict the measurement the cell table is
+        # asking the operator to honour. The 422 message
+        # names the cell and the state, the same shape 3.2
+        # carries.
         raise HTTPException(
             422,
             f"compose refused: cell "
             f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
             f"{session['manner']}, {session['checkpoint']}) "
-            f"is {state}, not verified",
+            f"is {state}, not drawable in any mode",
+        )
+    if state != "verified" and c.mode == "strict":
+        # Unknown on a row exists when judged < 10 but a row
+        # is present. Strict refuses; exploratory accepts
+        # the same row. The 422 names the cell and the state
+        # and suggests the wider mode, the same way the
+        # "no row at all" branch does.
+        raise HTTPException(
+            422,
+            f"compose refused: cell "
+            f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
+            f"{session['manner']}, {session['checkpoint']}) "
+            f"is {state}, not verified; switch to exploratory "
+            f"mode to compose from unmeasured cells",
         )
 
     shot_id = compose_and_queue_shot(sid, c.camera, c.act, c.framing)
@@ -941,15 +984,15 @@ class ComposeRunIn(BaseModel):
     because `db.run` commits per INSERT. The check runs up front
     and a refusal queues nothing.
 
-    There is no `mode` field, the same way there is none on the
-    one-shot payload. Strict is the only legal mode today. 6.1
-    opens the seam with a Literal["strict", "exploratory"] on this
-    payload when the second mode exists, and the test for the new
-    case lands there; until then, the absence of a `mode` field is
-    the mode, the same way it is on `ComposeIn`.
+    `mode` is a `Literal["strict", "exploratory"]` (not a free
+    string) on purpose, the same way it is on `ComposeIn` and
+    `ComposeSessionIn`. A free string would let a wrong value
+    bypass the check; the Literal narrows it to the two modes the
+    pool builders know how to build. 6.1 opens the seam.
     """
     count: int = Field(..., ge=1)
     candidates: dict  # {"camera": [...], "act": [...], "framing": [...]}, each a list of {key, wordings:[{key, text}]}
+    mode: Literal["strict", "exploratory"] = "strict"
 
 
 _SLOT_COLS = (
@@ -964,27 +1007,49 @@ def _candidate_keys(slot: str, candidates: dict) -> list[str]:
     return [c["key"] for c in candidates.get(slot, []) if isinstance(c, dict) and c.get("key")]
 
 
-def _verified_trio_pool(manner: str, checkpoint: str, candidates: dict) -> set[tuple[str, str, str]]:
-    """The strict pool: the set of `(camera, act, framing)` trios
-    that are verified for `(manner, checkpoint)` AND whose three
-    keys all sit in the caller's candidate lists. A "verified
-    component" alone is not enough — a cell is the trio (the
-    schema went to five columns for this reason, design.md:130
-    and decision C: "the unit of evidence is a cell"), and a
-    component verified alone can still fail in combination
-    (design.md:326-329). Counting DISTINCT per slot independently
-    reads as N×M×K trios when only some of them are rows in the
-    table, and the zipped picker then draws trios that nobody
-    verified. The 3.3 success path is "draw N trios that are
-    cells", not "draw N×1 cameras and N×1 acts and N×1 framings
-    and zip".
+def _trio_pool(
+    manner: str,
+    checkpoint: str,
+    candidates: dict,
+    mode: Literal["strict", "exploratory"],
+) -> set[tuple[str, str, str]]:
+    """The drawable trio pool for `mode`. The unit of evidence is
+    a cell identified by the trio plus manner and checkpoint
+    (design.md:130 and decision C: "the unit of evidence is a
+    cell"), and a component verified alone can still fail in
+    combination (design.md:326-329). Counting DISTINCT per slot
+    independently reads as N×M×K trios when only some of them
+    are rows in the table, and the zipped picker then draws
+    trios that nobody verified. The 3.3 success path is "draw N
+    trios that are cells", not "draw N×1 cameras and N×1 acts
+    and N×1 framings and zip".
 
-    The verified predicate mirrors `db.cell_state` exactly
-    (`judged >= 10 AND arrived*10 >= judged*8`). The literal
-    `none` is filtered on every slot: it represents measurements
-    that did not break out a slot, not a real catalogue key, and
-    letting it into the pool would inflate the count with
-    something no compose can draw.
+    `mode` selects which cells are in the pool:
+
+    - `strict`: only `verified` cells, predicate
+      `judged >= 10 AND arrived*10 >= judged*8`. Mirrors
+      `db.cell_state` exactly — the same definition; the pool
+      builder is the SQL form of the same rule.
+    - `exploratory`: `verified` AND `unknown` cells, predicate
+      `NOT (judged >= 10 AND arrived*10 < judged*8)`. A cell
+      with fewer than 10 photographs judged (`unknown`) is
+      drawable in exploratory mode, because the whole point of
+      exploratory is to grow the matrix: every composed shot
+      feeds its cell and the threshold lands the verdict
+      (6.2). A `dead` cell stays out — measured 0 of 12 is a
+      result, not a gap, and "let me draw it anyway" would
+      skip what the measurement said.
+
+    The literal `none` is filtered on every slot in both modes:
+    it represents measurements that did not break out a slot,
+    not a real catalogue key, and letting it into the pool
+    would inflate the count with something no compose can
+    draw. The filter is part of the pool builder, not a
+    post-filter: a 422 on a `none` cell would read as "the
+    pool is empty" rather than "the row exists but is not
+    drawable", and the operator deserves to know which it
+    is. (This mirrors what `_draw_n_trio_shots` already
+    relied on.)
     """
     cam_keys = _candidate_keys("camera", candidates)
     act_keys = _candidate_keys("act", candidates)
@@ -994,13 +1059,28 @@ def _verified_trio_pool(manner: str, checkpoint: str, candidates: dict) -> set[t
     cam_ph = ",".join("?" for _ in cam_keys)
     act_ph = ",".join("?" for _ in act_keys)
     framing_ph = ",".join("?" for _ in framing_keys)
+    # Exploratory drops only `dead` (`judged >= 10 AND arrived*10 < judged*8`);
+    # strict drops `dead` AND `unknown` (`judged < 10`). The same SQL shape,
+    # branched on the predicate, so a future mode is a third branch and
+    # nothing about the join or the `none` filter changes.
+    if mode == "strict":
+        state_pred = "AND judged >= 10 AND arrived*10 >= judged*8"
+    else:
+        # `NOT (judged >= 10 AND arrived*10 < judged*8)` is the same as
+        # `judged < 10 OR arrived*10 >= judged*8` over non-negative integers
+        # (the cell CHECK rejects `arrived > judged`, so `arrived*10 < judged*8`
+        # implies `arrived < judged` implies `judged >= 1`). The negated form
+        # keeps the predicate on the same axes as the strict one — a single
+        # column reference either way — and the EXPLAIN plans are
+        # the same.
+        state_pred = "AND NOT (judged >= 10 AND arrived*10 < judged*8)"
     rows = db.q(
         f"SELECT camera_wording, act_wording, framing_wording FROM cell "
         f"WHERE manner = ? AND checkpoint = ? "
         f"AND camera_wording IN ({cam_ph}) AND camera_wording != 'none' "
         f"AND act_wording IN ({act_ph}) AND act_wording != 'none' "
         f"AND framing_wording IN ({framing_ph}) AND framing_wording != 'none' "
-        f"AND judged >= 10 AND arrived*10 >= judged*8",
+        f"{state_pred}",
         manner, checkpoint, *cam_keys, *act_keys, *framing_keys,
     )
     return {(r["camera_wording"], r["act_wording"], r["framing_wording"]) for r in rows}
@@ -1079,10 +1159,11 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     3.5 (`compose_session_endpoint`) is a sibling: same draw,
     same dedup, then a reordering pass that spreads camera
     families across consecutive shots. The shared body lives
-    in `_draw_n_strict_trio_shots`; the two endpoints differ
-    only at the post-draw step.
+    in `_draw_n_trio_shots`; the two endpoints differ only at
+    the post-draw step (3.5 adds `_skip_for_spread` as the
+    caller's skip predicate, 3.3 passes no skip).
     """
-    by_key, best_chosen = _draw_n_strict_trio_shots(sid, c.count, c.candidates)
+    by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode)
     shot_ids: list[int] = []
     for cam_key, act_key, framing_key in best_chosen:
         shot_ids.append(compose_and_queue_shot(
@@ -1091,17 +1172,54 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     return {"ids": shot_ids, "count": len(shot_ids)}
 
 
-def _draw_n_strict_trio_shots(
+def _skip_for_spread(
+    trio: tuple[str, str, str],
+    by_key: dict,
+    family_counts: dict,
+    max_per_family: int,
+) -> bool:
+    """The family-spread skip predicate `_draw_n_trio_shots`
+    takes for 3.5. The bound is `max_per_family = ceil(count/2)`,
+    the classical "reorganize string" feasibility condition:
+    no family may exceed `ceil(N/2)` in the chosen set, or no
+    ordering places no two consecutive photographs in different
+    families.
+
+    A trio whose family is `None` (a non-spread slot, the act
+    or the framing today) is exempt — the spread does not
+    bind it. A trio whose family count is already at the
+    bound is skipped, so the next shuffle iteration that
+    walks the same pool still has that trio available (it is
+    only the greedy's set that loses it).
+
+    The function is the per-trio form of the 3.3 set-level
+    accept `_spread_is_feasible`. Both read the same bound
+    off `count`; the per-trio form is what lets the bound be
+    enforced in the draw itself, and the set-level form
+    becomes the `_spread_worst_family` / `_reorder_to_spread_families`
+    defensive check on the caller's path. The shape of the
+    pre-check is the same — a refusal that names the family,
+    the count, and the bound — but the draw never returns an
+    invalid set for the caller's check to refuse.
+    """
+    fam = _spread_family_of(trio, by_key)
+    if fam is None:
+        return False
+    return family_counts.get(fam, 0) >= max_per_family
+
+
+def _draw_n_trio_shots(
     sid: int,
     count: int,
     candidates: dict,
-    accept=None,
+    mode: Literal["strict", "exploratory"] = "strict",
+    skip: "Callable | None" = None,
 ) -> tuple[dict, list[tuple[str, str, str]]]:
     """The shared draw used by `compose_run_endpoint` (3.3) and
     `compose_session_endpoint` (3.5). Returns `(by_key,
-    best_chosen)` after the session is validated, the verified
-    pool is built, the multi-shuffle greedy has run, and the
-    3.4 dedup pre-check has passed.
+    best_chosen)` after the session is validated, the
+    mode-dependent pool is built, the multi-shuffle greedy has
+    run, and the 3.4 dedup pre-check has passed.
 
     The function never inserts; the caller inserts. That is
     the property the two endpoints share: the draw is
@@ -1109,6 +1227,25 @@ def _draw_n_strict_trio_shots(
     the chosen trios (3.3 inserts in `best_chosen` order, 3.5
     reorders for the family spread and inserts in the
     reordered order).
+
+    `mode` selects which cells are in the pool. `strict` is
+    verified cells only; `exploratory` is verified plus
+    unmeasured (`unknown`) cells, with `dead` cells excluded
+    in both modes. The Literal type on the payload closes the
+    door an `if mode != "strict"` over a free string would
+    open: a wrong value never reaches the pool builder.
+
+    `skip` is the caller's per-trio skip predicate, called
+    AFTER the no-repeat check on each candidate trio. It is
+    how the family-spread constraint (3.5) is part of the
+    draw, not a filter on the draw's result. The greedy
+    skips a trio if `skip(trio, by_key, family_counts,
+    max_per_family)` returns True; the chosen set is then
+    always valid against the constraint, and the post-draw
+    accept/filter is gone. This is the rule 3.3 named —
+    "the check and the draw are the same calculation" —
+    carried to its logical end: the family bound is enforced
+    in the loop, not after it.
 
     The four 422 paths that may fire on the way:
 
@@ -1119,11 +1256,15 @@ def _draw_n_strict_trio_shots(
        any cell, and "no cell matches" is a different shape
        from "the pool is too small" — refuse the
        session-level one first.
-    3. `422 {min_slot} slot has {min_count} verified
+    3. `422 {min_slot} slot has {min_count} drawable
        values, largest fillable is {len(best_chosen)} (of
-       {count} requested)` — the pool-too-small refusal from
-       3.3, the multi-shuffle ceiling the operator sees
-       rather than one shuffle's luck.
+       {count} requested)` — the pool-too-small refusal
+       from 3.3, the multi-shuffle ceiling the operator
+       sees rather than one shuffle's luck. The message
+       names the mode suggestion in strict mode only:
+       exploratory is the way to grow the pool, and a
+       request that is already in exploratory has no
+       "switch to a wider mode" step to take.
     4. `422 tuple already enqueued` / `422 line already
        enqueued` — the 3.4 dedup, which runs BEFORE the
        caller inserts and refuses the whole run on the
@@ -1152,31 +1293,19 @@ def _draw_n_strict_trio_shots(
     reordering is a property of the LIST of trios
     (order-dependent).
 
-    `accept` is the caller's own constraint on the SET of
-    trios a shuffle produced, and it is what keeps 3.3's rule
-    - "the check and the draw are the same calculation" -
-    true for 3.5. Without it the family spread was a filter
-    applied AFTER the draw had closed: the greedy picked
-    `count` trios blind to the family, and a pool of 4 front
-    + 1 shoulder + 1 overhead with count=4 refused or passed
-    depending on which four the shuffle happened to take (11
-    of 30 calls returned 200, 19 returned a 422 naming a
-    family, on the same pool - the exact shape of the
-    single-shuffle bug 3.3 closed). With `accept`, a shuffle
-    whose chosen set cannot satisfy the caller's constraint
-    is not a candidate for the returned draw, and the run
-    refuses only when no shuffle found an acceptable set.
-
-    ponytail: the same approximation ceiling the greedy
-    already carries. Ten shuffles failing to find an
-    acceptable set of size `count` is not a proof that none
-    exists; on the pool sizes this project measures the gap
-    is zero or one. When a shuffle DID reach `count` but no
-    acceptable one did, the unacceptable draw is returned and
-    the caller's own check raises its own message (the
-    family-infeasible 422 for 3.5) - the operator reads why
-    the constraint failed rather than a pool-size number that
-    was not the problem.
+    ponytail: 3.5 used to pass `accept=_spread_is_feasible`
+    as a post-draw filter, which made the test
+    `test_a_session_compose_draws_a_spreadable_set_when_the_pool_is_larger_than_the_count`
+    flake at ~2 runs in 8. The flake shape was: 10 shuffles,
+    none found a 4-trio set whose family counts satisfied
+    `max <= ceil(N/2)`, so `best_accepted` stayed empty and
+    `best_chosen` (the longest invalid draw) was returned,
+    the caller's spread reorder raised 422, and the test
+    read it as a verdict mismatch. With `skip` running
+    inside the greedy, the chosen set is always valid
+    against the constraint, and the only way the run
+    refuses is the pool-too-small path. The flake budget
+    drops to "no test exercises the shape anymore".
     """
     session = db.one("SELECT * FROM session WHERE id=?", sid)
     if not session:
@@ -1198,24 +1327,25 @@ def _draw_n_strict_trio_shots(
             f"set them on the session before composing",
         )
 
-    pool = _verified_trio_pool(session["manner"], session["checkpoint"], candidates)
+    pool = _trio_pool(session["manner"], session["checkpoint"], candidates, mode)
 
     # The check and the draw are the same calculation. Greedy
     # on a shuffled pool, repeated over a handful of shuffles:
     # take a trio only if none of its three components has been
-    # used yet, stop at `count`; keep the best result across
-    # shuffles; stop early when a shuffle reaches `count`. The
-    # largest fillable is `len(best_chosen)` by construction —
-    # not the result of one shuffle's luck, which is the
-    # failure the previous 3.3 had: the pool (c1,a1,f1),
-    # (c1,a2,f2), (c2,a1,f3) with count=2 has a maximum of 2,
-    # but a single shuffle that starts with (c1,a1,f1) blocks
-    # both other trios (a1 is used, c1 is used) and the greedy
-    # reports 1. Twenty calls on the same data gave 9 of "200,
-    # 2 shots" and 11 of "422, largest fillable is 1" — the
-    # operator refused would retry without changing anything
-    # and get 200, which is the bug the multi-shuffle pass
-    # fixes.
+    # used yet AND the caller's `skip` (the family-spread
+    # constraint for 3.5, no-op for 3.3) lets it through; stop
+    # at `count`; keep the best result across shuffles; stop
+    # early when a shuffle reaches `count`. The largest
+    # fillable is `len(best_chosen)` by construction — not the
+    # result of one shuffle's luck, which is the failure the
+    # previous 3.3 had: the pool (c1,a1,f1), (c1,a2,f2),
+    # (c2,a1,f3) with count=2 has a maximum of 2, but a single
+    # shuffle that starts with (c1,a1,f1) blocks both other
+    # trios (a1 is used, c1 is used) and the greedy reports 1.
+    # Twenty calls on the same data gave 9 of "200, 2 shots"
+    # and 11 of "422, largest fillable is 1" — the operator
+    # refused would retry without changing anything and get
+    # 200, which is the bug the multi-shuffle pass fixes.
     #
     # ponytail: greedy with retries is an approximation of
     # the tripartite matching (maximum independent set of
@@ -1230,50 +1360,61 @@ def _draw_n_strict_trio_shots(
     # tuned so the probability of all-bad on the user's probe
     # pool is ~(1/3)^10 ≈ 1.7e-5, well below the 20-call
     # test's flake budget.
-    # Built before the draw, not after it: `accept` is the
-    # caller's constraint on a chosen set, and every caller
-    # that has one needs the candidate catalogue to evaluate
-    # it (3.5 reads the camera's family off the wording).
+    # Built before the draw, not after it: `skip` is the
+    # caller's per-trio skip, and the camera family read
+    # happens off the candidate catalogue (`by_key`).
     by_key: dict[str, dict[str, dict]] = {
         slot: {x["key"]: x for x in candidates.get(slot, []) if isinstance(x, dict) and x.get("key")}
         for slot in _SLOT_ORDER
     }
+    # `max_per_family` is the bound the family-spread skip
+    # keys on. `ceil(count/2)` is the classical "reorganize
+    # string" feasibility condition, with the cap of count
+    # itself (N=0 has no bound, N=1 has trivially no two
+    # adjacent families). 3.3 passes `skip=None` and the
+    # bound is unused; 3.5 passes `_skip_for_spread`, which
+    # reads it from `count`.
+    max_per_family = (count + 1) // 2
 
     N_SHUFFLES = 10
     best_chosen: list[tuple[str, str, str]] = []
-    best_accepted: list[tuple[str, str, str]] = []
     for _ in range(N_SHUFFLES):
         shuffled = list(pool)
         random.shuffle(shuffled)
         chosen: list[tuple[str, str, str]] = []
         used = {"camera": set(), "act": set(), "framing": set()}
+        # The family-skip needs the family counts updated as
+        # the greedy picks, so a 3rd front is skipped on a
+        # 4-trio draw before it would otherwise enter the
+        # set. `family_counts` only carries families (None
+        # is the value the spread slot's non-camera trios
+        # get, and they are exempt).
+        family_counts: dict[object, int] = {}
         for cam, act, framing in shuffled:
             if (cam in used["camera"]
                     or act in used["act"]
                     or framing in used["framing"]):
                 continue
-            chosen.append((cam, act, framing))
+            trio = (cam, act, framing)
+            if skip is not None and skip(trio, by_key, family_counts, max_per_family):
+                continue
+            chosen.append(trio)
             used["camera"].add(cam)
             used["act"].add(act)
             used["framing"].add(framing)
+            # Update the family counts only on a non-None
+            # family, so a None trio does not enter the dict
+            # and the count stays the same for the rest of
+            # the shuffle.
+            fam = _spread_family_of(trio, by_key)
+            if fam is not None:
+                family_counts[fam] = family_counts.get(fam, 0) + 1
             if len(chosen) == count:
                 break
         if len(chosen) > len(best_chosen):
             best_chosen = chosen
-        # A shuffle whose set the caller cannot use is not a
-        # winner, however long it is: the constraint is part
-        # of the draw, not a filter downstream of it.
-        if (accept is None or accept(chosen, by_key)) and len(chosen) > len(best_accepted):
-            best_accepted = chosen
-        if len(best_accepted) == count:
+        if len(best_chosen) == count:
             break
-
-    # An acceptable full-count draw wins. Otherwise `best_chosen`
-    # stands, so the pool-too-small refusal below still reports
-    # the true ceiling, and a full-count-but-unacceptable draw
-    # reaches the caller for the caller's own refusal.
-    if len(best_accepted) == count:
-        best_chosen = best_accepted
 
     if len(best_chosen) < count:
         # The slot named is the per-slot min of the POOL — the
@@ -1288,12 +1429,23 @@ def _draw_n_strict_trio_shots(
         # the multi-shuffle pass hit, not the per-slot ceiling
         # the pool promised.
         min_slot, min_count = _min_slot_within(pool)
+        # The mode determines what the operator can do next.
+        # Strict says "switch to exploratory" because the
+        # pool only had verified cells; exploratory is the
+        # same path the operator is on, so the suggestion
+        # is to revisit the candidates — the pool is empty
+        # of any drawable cell, which means every candidate
+        # trio is either dead (refused in any mode) or
+        # outside the catalogue filter.
+        if mode == "strict":
+            tail = "; use exploratory mode to compose with unmeasured cells"
+        else:
+            tail = "; every candidate trio is either dead or outside the catalogue, no further draw is possible"
         raise HTTPException(
             422,
-            f"compose refused: {min_slot} slot has {min_count} verified "
+            f"compose refused: {min_slot} slot has {min_count} drawable "
             f"values within the trio pool, largest fillable is "
-            f"{len(best_chosen)} (of {count} requested); use "
-            f"exploratory mode to compose with unverified cells",
+            f"{len(best_chosen)} (of {count} requested){tail}",
         )
 
     # 3.4 dedup: refuse the run on the FIRST collision, before
@@ -1609,13 +1761,15 @@ class ComposeSessionIn(BaseModel):
     are the same kind of request, and the family spread
     applies to both (it is trivially satisfied at N=1).
 
-    There is no `mode` field. The same reasoning as 3.2
-    and 3.3: strict is the only legal mode today, and
-    encoding it as a string would let a wrong value
-    bypass the check.
+    `mode` is the same `Literal["strict", "exploratory"]`
+    `ComposeIn` and `ComposeRunIn` carry, and the same reasoning
+    applies: a free string would be a door open by default, the
+    Literal narrows it to the two modes the pool builders know
+    how to build. 6.1 is the task that opened the second mode.
     """
     count: int = Field(..., ge=1)
     candidates: dict  # same shape as ComposeRunIn.candidates
+    mode: Literal["strict", "exploratory"] = "strict"
 
 
 @app.post("/api/sessions/{sid}/compose-session")
@@ -1650,14 +1804,22 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     whichever fires first.
     """
     # The spread is handed to the draw as its accept predicate,
-    # not applied to the draw's result: a shuffle whose chosen
-    # set has no valid ordering is not a winner. Without this,
-    # the same pool and count returned 200 or 422 depending on
-    # which trios the shuffle happened to take - 3.3's rule,
-    # "the check and the draw are the same calculation", with
-    # the family as the check.
-    by_key, best_chosen = _draw_n_strict_trio_shots(
-        sid, c.count, c.candidates, accept=_spread_is_feasible)
+    # The family spread is part of the draw itself, not
+    # applied to the draw's result: a shuffle whose chosen
+    # set has no valid ordering is not a winner. Without
+    # this, the same pool and count returned 200 or 422
+    # depending on which trios the shuffle happened to take —
+    # 3.3's rule, "the check and the draw are the same
+    # calculation", with the family as the check. The
+    # per-trio skip is `_skip_for_spread`; the bound it
+    # reads off `count` is the same `ceil(N/2)` the reorder
+    # uses, so the chosen set is always re-orderable and the
+    # `_reorder_to_spread_families` feasibility branch is
+    # defensive (it is unreachable on the 3.5 path with the
+    # skip in place, but the function keeps the assertion
+    # for a future caller that drops the skip).
+    by_key, best_chosen = _draw_n_trio_shots(
+        sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread)
     ordered = _reorder_to_spread_families(best_chosen, by_key)
     shot_ids: list[int] = []
     for cam_key, act_key, framing_key in ordered:

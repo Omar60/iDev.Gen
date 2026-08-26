@@ -502,23 +502,27 @@ def test_a_verified_cell_for_the_sessions_dimensions_is_drawn_in_strict_mode(cli
     assert n == 1
 
 
-def test_a_request_with_an_unknown_mode_field_still_runs_the_strict_check(client, seeded):
-    """The compose endpoint has no `mode` field on its payload.
-    Strict is the only legal mode today; encoding it as a string
-    would let a wrong value bypass the check (an if over a free
-    string is a door open by default — the type definition is the
-    check, the consumer's branch is the lock), and there is no
-    second mode to switch to. A request that tries to set
-    `mode=anything` (or `mode=exploratory`, or any other string)
-    is parsed by pydantic with the default extra="ignore": the
-    field is silently dropped, the strict check still runs
-    unconditionally, and the compose is refused. This is the test
-    that distinguishes "there is a strict mode" from "there is a
-    strict mode that can be turned off by writing it wrong". A
-    future regression that re-introduces `mode: str = "strict"`
-    with a `if c.mode == "strict":` guard breaks this test on the
-    spot — the cell is not verified, the request passes
-    `mode="anything"`, and the assertion is `n_shots == 0`.
+def test_a_request_with_an_unknown_mode_value_is_rejected_at_the_boundary(client, seeded):
+    """`mode` on `ComposeIn` is a `Literal["strict", "exploratory"]`,
+    not a free string, and pydantic rejects an unknown value
+    BEFORE the handler runs. A request that tries to set
+    `mode=anything` is a 422 from pydantic — `loc=body.mode`,
+    `type=literal_error`, the message names the two legal values.
+    The handler's strict check never fires on this path because
+    the request never reaches it; that is the whole point of
+    the Literal type. A future regression that re-introduces
+    `mode: str = "strict"` and guards with
+    `if c.mode == "strict":` lets the bypass through: the
+    unknown value would be parsed as the string `"anything"`,
+    the guard would not match, the strict check would be
+    skipped, and the cell lookup would either find nothing
+    (a 422 from the no-row branch) or queue a shot. The
+    loop-closed assertion (`n_shots == 0`) is the same in
+    both shapes; the test that distinguishes them is the
+    status code and the response body (pydantic's literal
+    error vs the handler's compose-refused message). 6.1
+    opened the second mode and closed the door the loose
+    type would have left open.
     """
     sid = client.post("/api/sessions", json={
         "model_id": seeded["model_id"], "name": "bypass attempt",
@@ -526,10 +530,6 @@ def test_a_request_with_an_unknown_mode_field_still_runs_the_strict_check(client
         "shots": [],
     }).json()["id"]
 
-    # No cell seeded. The strict check should refuse the compose.
-    # A "mode" field on the payload is silently dropped by pydantic
-    # because ComposeIn does not declare it; the strict check
-    # still runs and finds no verified cell.
     camera = {"key": "front-direct",
               "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
     act = {"key": "astride",
@@ -541,12 +541,28 @@ def test_a_request_with_an_unknown_mode_field_still_runs_the_strict_check(client
         "camera": camera, "act": act, "framing": framing,
         "mode": "anything",
     })
-    # pydantic drops the unknown field; the request body parses.
-    # The strict check then refuses the compose.
+    # Pydantic rejects the unknown value at the boundary; the
+    # handler does not run, the strict check is not bypassed.
     assert r.status_code == 422, r.text
-    assert "no measurement" in r.json()["detail"] or "unknown" in r.json()["detail"]
+    detail = r.json()["detail"]
+    # The literal error names the field and the two legal
+    # values. Asserted separately so a future "let me
+    # generalize the message" that drops one of the literals
+    # fails the assertion that names it.
+    assert isinstance(detail, list) and any(
+        err.get("type") == "literal_error" and err.get("loc") == ["body", "mode"]
+        for err in detail
+    ), f"expected a pydantic literal_error on body.mode, got: {detail!r}"
+    assert any("strict" in (err.get("msg") or "") and "exploratory" in (err.get("msg") or "")
+               for err in detail), (
+        f"the literal error should name both legal modes, got: {detail!r}"
+    )
+    # Loop-closed: a request that was rejected at the boundary
+    # did not insert anything.
     n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
-    assert n == 0
+    assert n == 0, (
+        f"rejected request queued shots: shot table has {n} rows for session {sid}"
+    )
 
 
 # -------------------------------------------------------------- 3.2 PATCH keep
@@ -1829,22 +1845,32 @@ def test_a_session_compose_refuses_a_pool_where_one_family_exceeds_half_the_coun
     family with 3 cameras admits no permutation where no two
     consecutive share the family — every position is "next"
     to another of the same family and one is forced adjacent.
-    The 422 fires before any INSERT, the message names the
-    four facts (family, count, ceil bound, the conclusion),
-    and `n_shots == 0` after the 422 is the loop-closed
-    proof.
+    The 422 fires before any INSERT, and `n_shots == 0`
+    after the 422 is the loop-closed proof.
 
     The pool has 4 trios with 3 distinct cameras from the
     `front` family and 1 from `shoulder` — `ceil(4/2) = 2`,
     `3 > 2`, refuses. The 3.3 no-component-repeat greedy
-    can still draw 4 (the 4 cameras are distinct), so the
-    422 is from the 3.5 spread, not from 3.3.
+    can still draw 3 (2 fronts + 1 shoulder, the 3rd front
+    is skipped by the family constraint), and the 422 is
+    the pool-too-small refusal from the draw, not the
+    post-draw family-infeasible one.
 
-    The 422 message carries the family, the count, the ceil
-    bound, and the conclusion — each one asserted separately
-    so a future "let me shorten the message" that drops one
-    fails the assertion that names it, the same shape 3.3
-    and 3.4 pin on their 422 messages.
+    Before 6.1's flake fix, the family-spread constraint
+    was enforced by `_spread_is_feasible` as a post-draw
+    accept on the greedy's result. A greedy that happened
+    to take all 3 fronts and the shoulder would return
+    `best_chosen = 4` and the caller's reorder would raise
+    a 422 naming the family, the count, the ceil bound,
+    and the conclusion. With the constraint moved into
+    the draw itself (the per-trio `_skip_for_spread`),
+    the greedy never returns an invalid set: the chosen
+    set is always `max <= ceil(N/2)`, and the only
+    shape a refusal can take is the pool-too-small one
+    (`largest fillable is 3 of 4 requested`). The test
+    pins the new shape — the slot, the pool count, the
+    largest fillable, the requested count — and the
+    loop-closed `n_shots == 0`.
     """
     sid = client.post("/api/sessions", json={
         "model_id": seeded["model_id"], "name": "session spread refuse",
@@ -1854,7 +1880,7 @@ def test_a_session_compose_refuses_a_pool_where_one_family_exceeds_half_the_coun
 
     # 3 cameras in the `front` family, 1 in `shoulder`. All
     # 4 trios distinct on every component so the 3.3 greedy
-    # can draw 4.
+    # can draw 4 without the no-component-repeat rule firing.
     trios = [
         ("cam-front-a", "act-a", "frame-a"),
         ("cam-front-b", "act-b", "frame-b"),
@@ -1885,20 +1911,24 @@ def test_a_session_compose_refuses_a_pool_where_one_family_exceeds_half_the_coun
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
 
-    # The four facts the operator needs to act, asserted
-    # separately so the message discipline is pinned.
-    assert "'front'" in detail, (
-        f"family not named in the 422: {detail!r}"
-    )
-    assert "3" in detail and "4" in detail, (
-        f"count and N not both in the 422: {detail!r}"
-    )
-    assert "ceil" in detail, (
-        f"ceil(N/2) bound not in the 422: {detail!r}"
-    )
-    assert "no ordering" in detail or "cannot" in detail, (
-        f"conclusion not in the 422: {detail!r}"
-    )
+    # The four facts the pool-too-small message carries,
+    # asserted separately so a future "let me shorten the
+    # message" that drops one fails the assertion that names
+    # it. The slot is the per-slot min of the pool (here the
+    # camera slot's 4 distinct cameras ties with act and
+    # framing; ties go to camera, then act, then framing).
+    # The pool count is the per-slot min, the largest
+    # fillable is the multi-shuffle ceiling, the requested
+    # count is what the caller asked for.
+    assert "camera" in detail, f"slot not named in 422: {detail!r}"
+    assert "4" in detail, f"pool count not in 422: {detail!r}"
+    assert "3" in detail, f"largest fillable not in 422: {detail!r}"
+    assert "largest fillable" in detail, f"phrase 'largest fillable' missing: {detail!r}"
+    # Mode tail: in strict mode the operator can switch to
+    # exploratory; the message has to keep that suggestion
+    # true. The tail is the wording the spec pinned
+    # (`use exploratory mode to compose with ... cells`).
+    assert "exploratory" in detail, f"exploratory hint missing: {detail!r}"
 
     # Loop-closed: the refused run queued nothing. A future
     # "let me queue first, validate after" would flip the
@@ -2391,6 +2421,356 @@ def test_a_mixed_session_is_recorded_as_mixed(client, seeded):
         "a 'mixed' session must stay 'mixed' on the next insertion, "
         "the state machine does not regress"
     )
+
+
+# ---------------------------------------------------------------- 6.1 exploratory
+#
+# Exploratory mode widens the strict draw to include unmeasured
+# (`unknown`) cells, and refuses `dead` cells in both modes. The
+# mode is a Literal on every composer payload — pydantic rejects
+# unknown values at the boundary, so a request that tries to set
+# `mode=anything` cannot bypass the check. The four tests below
+# cover the four named scenarios from 6.1 and 2.5: an unknown
+# cell is drawable in exploratory, a dead cell is undrawable in
+# both modes, a free-string mode is rejected at the boundary,
+# and the run-level / session-level endpoints inherit the same
+# mode semantics. The "dead wording is never drawn" property
+# 2.5 asked for is what `test_a_dead_cell_is_undrawable_in_both_modes`
+# pins at the one-shot, run, and session levels — the
+# loop-closed property 2.5 named, applied to both modes the
+# composer now accepts.
+
+
+def _seed_unknown_trio(camera: str, act: str, framing: str, *, manner: str, checkpoint: str,
+                       judged: int = 0, arrived: int = 0) -> None:
+    """Insert one cell with `judged < 10` (so `db.cell_state` reads
+    `unknown`). 6.1's exploratory mode is allowed to draw from
+    these; strict refuses them. The defaults `judged=0, arrived=0`
+    are the canonical "never measured" state. A non-zero `arrived`
+    would still land as `unknown` while `judged < 10`, and the
+    state is the one that drives the draw, not the counts.
+    """
+    assert judged < 10, "an unknown cell has judged < 10, not a verified cell"
+    db.run(
+        "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+        "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        camera, act, framing, manner, checkpoint, judged, arrived,
+    )
+
+
+def _seed_dead_trio(camera: str, act: str, framing: str, *, manner: str, checkpoint: str,
+                    judged: int = 12, arrived: int = 0) -> None:
+    """Insert one cell that lands as `dead` under `db.cell_state`:
+    `judged >= 10` AND `arrived*10 < judged*8`. The defaults
+    `judged=12, arrived=0` give 0/12 — the canonical "measured
+    and failed". A dead cell is undrawable in BOTH modes; 2.5's
+    "a dead wording is never drawn" rests on this helper, and
+    6.1's "never from dead wordings" is the same rule, named
+    once.
+    """
+    assert judged >= 10 and arrived * 10 < judged * 8, (
+        "a dead cell has judged >= 10 and arrived*10 < judged*8, not any other state"
+    )
+    db.run(
+        "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+        "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        camera, act, framing, manner, checkpoint, judged, arrived,
+    )
+
+
+def test_an_unknown_cell_is_drawable_in_exploratory_mode(client, seeded):
+    """The named 6.1 scenario: a trio whose cell is `unknown`
+    (the measurement did not reach n=10) is refused in strict
+    mode and accepted in exploratory mode. The one-shot endpoint
+    branches on `mode`: strict refuses with a 422 naming the
+    state and suggesting the wider mode; exploratory queues the
+    shot, the cell stays `unknown` until 6.2 lands a verdict
+    on it.
+
+    The cell is seeded explicitly with `judged=0, arrived=0`
+    (the canonical "never measured" state). A test against the
+    shipped `EVIDENCE_SEED` would not exercise the unknown
+    branch — the seed has no row that lands as `unknown` for
+    the directed/finepornV4 the seeded fixture uses — and a
+    green-bar test on the seed would pass on a hand-coded
+    "if state == 'unknown': refuse" that never fires.
+
+    Two halves: strict refuses, exploratory draws. The
+    loop-closed `n_shots` is the proof the strict check
+    ran (a bypass would queue the strict call and the
+    second `n_shots` would read 1 too).
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "exploratory unknown",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+    _seed_unknown_trio("front-direct", "astride", "full-length",
+                        manner="directed", checkpoint="finepornV4")
+
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    # Strict refuses: the cell is unknown, strict only accepts
+    # verified. The 422 names the cell and the state, and
+    # suggests exploratory.
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+        "mode": "strict",
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "unknown" in detail, f"state not named in 422: {detail!r}"
+    assert "exploratory" in detail, f"exploratory hint missing: {detail!r}"
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, f"strict refused call queued a shot: {n} rows for session {sid}"
+
+    # Exploratory draws: the same trio, same cell, same data,
+    # but the wider mode is now legal. The shot is queued.
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+        "mode": "exploratory",
+    })
+    assert r.status_code == 200, r.text
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 1, f"exploratory call did not queue a shot: {n} rows for session {sid}"
+
+
+def test_a_dead_cell_is_undrawable_in_both_modes(client, seeded):
+    """The named 2.5 / 6.1 scenario: a dead wording is never
+    drawn, in either mode. The 0/12 measurement is a result, not
+    a gap, and "let me draw it anyway" would contradict the
+    measurement the cell table is asking the operator to honour.
+    Strict refuses (3.2 already pins this); exploratory refuses
+    too, with the same cell-naming message — the 422 names the
+    cell and the state `dead`, and does not suggest a wider
+    mode because exploratory IS the wider mode and the refusal
+    stands.
+
+    The cell is seeded explicitly with `judged=12, arrived=0`
+    (0/12, the canonical "measured and failed"). A test against
+    the shipped `EVIDENCE_SEED` could exercise the dead branch
+    (the seed has `back` 12/0 on both checkpoints), but the
+    test uses its own cell so a future change to the seed
+    does not silently retire the test.
+
+    Two halves: strict refuses with "is dead, not verified",
+    exploratory refuses with "is dead, not drawable in any
+    mode". The loop-closed `n_shots == 0` is the same
+    proof on both halves — a regression that swapped the
+    branches (a "dead is drawable in exploratory" bug)
+    would queue the exploratory call and `n_shots` would
+    read 1.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "dead in both modes",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+    _seed_dead_trio("back-camera", "back", "full-length",
+                    manner="directed", checkpoint="finepornV4")
+
+    camera = {"key": "back-camera",
+              "wordings": [{"key": "back-camera", "text": "Taken from behind her"}]}
+    act = {"key": "back", "wordings": [{"key": "back", "text": "back text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    # Strict refuses. The message names the state and the
+    # cell, and stops at "not verified" — it does NOT
+    # suggest exploratory, because a dead cell is also
+    # refused in exploratory mode, and suggesting the wider
+    # mode would be a lie the operator would discover on
+    # retry.
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+        "mode": "strict",
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "dead" in detail, f"state not named in 422: {detail!r}"
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, f"strict call queued a shot: {n} rows for session {sid}"
+
+    # Exploratory refuses too. The message still names the
+    # state; the wider mode is not a way through.
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+        "mode": "exploratory",
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "dead" in detail, f"state not named in 422: {detail!r}"
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, f"exploratory call queued a shot: {n} rows for session {sid}"
+
+
+def test_an_exploratory_run_draws_from_unknown_cells_and_refuses_dead(client, seeded):
+    """The run-level shape of the 6.1 scenario: the
+    `/api/sessions/{sid}/compose-run` endpoint accepts `mode`
+    on its payload, and the pool is the mode-dependent set of
+    trios. With a pool of one unknown and one dead trio, the
+    unknown is drawable in exploratory and the dead is not, in
+    either mode.
+
+    The two halves:
+
+    1. Exploratory: ask for 1, the unknown is in the pool,
+       the dead is not, the run queues 1 shot.
+    2. Strict: ask for 1, neither unknown nor dead is in the
+       strict pool, the pool-too-small refusal fires. The
+       message names the slot, the pool count, the largest
+       fillable (0 of 1), and the wider mode (the same
+       suggestion the one-shot endpoint carries).
+
+    A test that only exercised the strict half would pass on
+    a regression that silently dropped the `mode` field (the
+    default `"strict"` would still run). A test that only
+    exercised the exploratory half would pass on a regression
+    that always treated the pool as exploratory. The two
+    halves together pin the mode branch and the dead-excluded
+    branch.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "exploratory run",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+    _seed_unknown_trio("cam-unknown", "act-unknown", "frame-unknown",
+                        manner="directed", checkpoint="finepornV4")
+    _seed_dead_trio("cam-dead", "act-dead", "frame-dead",
+                    manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        "camera":  [_candidate("cam-unknown", "unknown camera text"),
+                    _candidate("cam-dead", "dead camera text")],
+        "act":     [_candidate("act-unknown", "unknown act text"),
+                    _candidate("act-dead", "dead act text")],
+        "framing": [_candidate("frame-unknown", "unknown framing text"),
+                    _candidate("frame-dead", "dead framing text")],
+    }
+
+    # Exploratory: the unknown trio is in the pool, the dead
+    # is not, count=1 fits. The run queues 1 shot.
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 1, "candidates": candidates, "mode": "exploratory",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["count"] == 1
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 1, f"exploratory run did not queue: {n} rows for session {sid}"
+
+    # Strict: neither trio is in the pool, the run refuses
+    # with the pool-too-small message. The wider-mode
+    # suggestion is the only path the operator has to
+    # actually draw on this pool.
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 1, "candidates": candidates, "mode": "strict",
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "largest fillable" in detail, f"phrase missing: {detail!r}"
+    assert "exploratory" in detail, f"exploratory hint missing: {detail!r}"
+    n_after = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n_after == 1, (
+        f"refused run queued shots: shot table has {n_after} rows for session {sid}, "
+        f"expected 1 (the exploratory run only)"
+    )
+
+
+def test_an_exploratory_session_compose_inherits_the_mode_and_spreads(client, seeded):
+    """The session-level shape of the 6.1 scenario:
+    `/api/sessions/{sid}/compose-session` accepts `mode` and
+    builds the same mode-dependent pool the run-level does.
+    With a pool of 2 unknown trios (one front, one shoulder)
+    and `count=2`, the run queues 2 shots and the spread
+    reorder places them so no two consecutive photographs
+    share a family.
+
+    The pool is 2 unknown trios with all components distinct
+    so the no-component-repeat greedy can draw 2, and the
+    families are different so the spread's `ceil(2/2)=1`
+    bound is satisfied trivially. Strict would refuse the
+    same payload (the pool is empty in strict mode);
+    exploratory queues 2 shots and the spread's loop-closed
+    assertion (no two adjacent families) holds.
+
+    A regression that ignored `mode` on the session-level
+    payload would default to strict and refuse — the strict
+    422 is the control the test reads against. A regression
+    that let the spread skip a check would put the two
+    families adjacent in some order; the loop-closed
+    adjacency assertion catches that.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "exploratory session",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+    _seed_unknown_trio("cam-front", "act-a", "frame-a",
+                        manner="directed", checkpoint="finepornV4")
+    _seed_unknown_trio("cam-shoulder", "act-b", "frame-b",
+                        manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        "camera":  [_family_candidate("cam-front", "front text", "front"),
+                    _family_candidate("cam-shoulder", "shoulder text", "shoulder")],
+        "act":     [_candidate("act-a", "act-a text"),
+                    _candidate("act-b", "act-b text")],
+        "framing": [_candidate("frame-a", "frame-a text"),
+                    _candidate("frame-b", "frame-b text")],
+    }
+
+    # Strict: the pool is empty (no verified trios), the
+    # run refuses with the pool-too-small message. This is
+    # the control the test reads against — the same payload
+    # with `mode=strict` cannot draw, and the refusal
+    # names the wider mode as the path through.
+    r = client.post(f"/api/sessions/{sid}/compose-session", json={
+        "count": 2, "candidates": candidates, "mode": "strict",
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "largest fillable" in detail, f"phrase missing: {detail!r}"
+    assert "exploratory" in detail, f"exploratory hint missing: {detail!r}"
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, f"strict refused call queued shots: {n} rows for session {sid}"
+
+    # Exploratory: the unknown trios are in the pool, the
+    # run queues 2 shots, the spread places them so the two
+    # families are not adjacent.
+    r = client.post(f"/api/sessions/{sid}/compose-session", json={
+        "count": 2, "candidates": candidates, "mode": "exploratory",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["count"] == 2
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 2, f"exploratory session did not queue 2: {n} rows for session {sid}"
+
+    # The spread property on the queued run: read the new
+    # shots back, look up the family, assert no two
+    # adjacent share it. The pool had 2 distinct families
+    # (`front`, `shoulder`) and the reorder must place
+    # them so neither is "next to itself" — trivially
+    # satisfied with 2 trios from 2 families, but the
+    # assertion is the loop-closed property 3.5 inherits
+    # here, the same shape 3.5's own test pins.
+    rows = db.q("SELECT id, shot_index, components FROM shot "
+                "WHERE session_id=? ORDER BY shot_index, id", sid)
+    family_lookup = {"cam-front": "front", "cam-shoulder": "shoulder"}
+    families = []
+    for row in rows:
+        comps = db.jload(row, "components")["components"]
+        cam_key = comps["camera"]["wording"]
+        families.append(family_lookup[cam_key])
+    for k in range(len(families) - 1):
+        assert families[k] != families[k + 1], (
+            f"adjacent shot {k} and {k+1} share family {families[k]!r}; "
+            f"the 3.5 reorder did not spread the camera family"
+        )
 
 
 def test_a_clone_of_a_composed_session_preserves_components_and_origin(client, seeded):
