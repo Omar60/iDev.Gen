@@ -106,6 +106,17 @@ CREATE TABLE IF NOT EXISTS shot (
     -- survive the round-trip, and a column on `shot` is the only home
     -- this change gives it.
     components    TEXT NOT NULL DEFAULT '{}',
+    -- The judging screen's verdict per slot. JSON of
+    -- {camera: "wording" | "" | null, act: ..., framing: ...}: a non-null
+    -- value means the judge answered that slot (a catalogue key is a
+    -- match, "" is "none or cannot tell" per the spec), null means the
+    -- question was not asked on this pass. The empty default '' means
+    -- the shot has not been judged — 6.2's idempotence marker. A
+    -- re-judge on a non-empty value is refused at 409 rather than
+    -- silently double-counted (the cell's CHECK would surface a
+    -- double-increment as IntegrityError, but the column check is the
+    -- upstream gate the user sees).
+    verdicts      TEXT NOT NULL DEFAULT '',
     rejected      INTEGER NOT NULL DEFAULT 0,
     error         TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL,
@@ -373,6 +384,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # the round-trip through the row, decoded with `db.jload` at read time.
     if "components" not in columns("shot"):
         conn.execute("ALTER TABLE shot ADD COLUMN components TEXT NOT NULL DEFAULT '{}'")
+
+    # The judging screen's verdicts per slot. Same idiom as `components`:
+    # a TEXT JSON column, the empty default '' means "not yet judged",
+    # 6.2 reads it to enforce idempotence (a non-empty value means a
+    # judge already answered, the second call is a 409) and to compute
+    # the per-slot (judged, arrived) delta the cell update carries.
+    # A separate `shot_verdict` table would be one column's worth of
+    # data, and the row already carries the matching input (the trio
+    # in `components`) — the verdicts live next to what they answer.
+    if "verdicts" not in columns("shot"):
+        conn.execute("ALTER TABLE shot ADD COLUMN verdicts TEXT NOT NULL DEFAULT ''")
 
     # The session's manner and checkpoint: the two non-trio dimensions the
     # cell table is keyed on. Strict mode (3.2) reads them off the row to

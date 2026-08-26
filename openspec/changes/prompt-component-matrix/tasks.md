@@ -1119,7 +1119,378 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
   passed; `npm --prefix frontend run build` — built in 1.16s;
   `python -m pytest tests/test_no_personal_data.py` — 2 passed.
 
-- [ ] 6.2 Count a judged exploratory photograph towards its cell and verify the cell flips to verified or dead on reaching the threshold
+- [x] 6.2 Count a judged exploratory photograph towards its cell and verify the cell flips to verified or dead on reaching the threshold
+
+  **Five decisions before the code, in the order the task asks them:**
+
+  **(1) What event counts a photograph.** The 6.1 end-of-task note
+  named 6.2 as "the task that opens the bookkeeping" — the
+  exploratory shot has a `components` JSON, and the cell is a
+  function of that trio. The judging screen that records verdicts
+  is group 5 (5.2: "record the answer chosen over a forced choice
+  per slot"), and 5.2 is not built yet. Two readings:
+
+  - **Define the counting path now, 5.2 writes through it
+    later.** The data the cell update needs is on the row
+    already: `shot.components` carries the trio (3.1 wrote it),
+    the session carries manner and checkpoint (3.2 read them at
+    create), and the answer to "did the act the line asked for
+    land in the photograph" is a per-slot binary the operator
+    records. The path 6.2 builds is the function 5.2 calls per
+    shot. Without 6.2, 5.2 has no place to land a verdict; with
+    6.2, 5.2 stays focused on the screen and never has to touch
+    the cell table.
+  - **Block on 5.2.** "Honest" in the sense that the path
+    depends on the screen — but 5.2's screen design (per-slot
+    forced choice over the whole list, the `verdicts` per shot)
+    is the spec scenario 5.1 / 5.2 names, and 6.2's data path
+    reads from the same `components` JSON 5.2's payload carries.
+    The dependency is on the shape, not the implementation, and
+    the shape is already decided.
+
+  So: **define the path now**. The argument is short — 5.2
+  needs 6.2 to have a place to land verdicts, and the path
+  6.2 builds is a function of the trio already on the row.
+
+  The path is `POST /api/shots/{shot_id}/judge` with a body
+  of `{camera, act, framing}` (each a string, `""`, or `None`).
+  The endpoint reads the shot's components, the session's
+  manner and checkpoint, computes the per-slot delta, UPSERTs
+  the cell, and writes the verdicts on the row. 5.2's screen
+  builds the payload, calls the endpoint per shot, and shows
+  the response's new state. 6.2 is the data layer; 5.2 is the
+  screen; the verb is "judge".
+
+  **No second verdict store.** The verdicts live on the shot
+  row in a new column `verdicts` (TEXT, JSON). The alternative
+  readings:
+
+  - A new table `shot_verdict(shot_id, slot, answer, arrived)`
+    would be four columns' worth of data for one row's
+    worth of input. The shot row already carries the matching
+    input (the trio in `components`); the verdicts live next
+    to what they answer.
+  - A column on the cell is wrong on the wrong axis: the
+    cell is shared across all the photographs that landed on
+    it, the verdicts are per-shot, and storing the per-shot
+    data on the per-cell row would inflate the cell with
+    per-shot JSONs the cell update never reads.
+  - A re-use of `shot.rating` (0-5) is the silent
+    substitution the user names: rating is photo quality
+    (0-5 stars, separate column on the row), the act the
+    line asked for is a different fact (design.md:296-308),
+    and conflating them is the second calculation the
+    task says not to invent.
+
+  So: a new column `shot.verdicts TEXT NOT NULL DEFAULT ''`.
+  Empty default '' means "not yet judged" — the same idiom
+  as `manner=''` and `checkpoint=''` — and the empty value
+  is the idempotence marker 6.2's spec scenario names.
+
+  **(2) `arrived` means the act/camera/framing the line
+  asked for is in the frame, not that the photograph is
+  good.** The verdict's signal is per-slot: for the act
+  slot, "the act the line asked for is the act in the
+  frame" is a yes/no, the same for camera and framing.
+  Rating is something else (photo quality), and the
+  endpoint does not read it. The body is per-slot so the
+  5.2 forced-choice questions map onto it directly:
+
+  - A catalogue key (e.g. `"astride"`): the judge picked
+    that wording from the slot's whole list.
+  - `""`: "none or cannot tell" — the spec scenario
+    `The judge cannot tell`. Counted as judged (the
+    question was answered), not arrived.
+  - `None` (or the key absent): the question was not
+    asked on this pass. 5.2 asks one question across a
+    batch, so the slots the pass did not ask stay at
+    `None` and the endpoint does not count them.
+
+  Reaching for `rating` as the signal is exactly the
+  conflation design.md:296-308 warns against. The
+  endpoint reads the per-slot answer, not the rating,
+  and the test
+  `test_a_correct_answer_increments_arrived_a_wrong_answer_only_judged`
+  pins the per-slot delta: a wrong key is `+1 judged, +0
+  arrived`, not `+1 arrived, +0` (the "let me invert the
+  match" bug) and not `+1 judged, +0` for an empty
+  answer (which the test exercises too).
+
+  **(3) Which cell a photograph counts toward.** The
+  cell is keyed on the three WORDING keys plus the
+  session's manner and checkpoint. `components` carries
+  both per slot, and a future "let me add a second
+  wording" lands here as a different `wording` value
+  while `concept` stays put. Every concept in the
+  catalogue today has a single wording whose key equals
+  the concept key (1.1's reshape), so the two coincide
+  and a test that reads the wrong one passes by
+  accident.
+
+  The test pins the distinction:
+  `test_the_judged_cell_uses_the_wording_key_not_the_concept_key`
+  plants a shot whose camera's `concept` and `wording`
+  keys differ (`cam-concept` vs `cam-wording`), composes
+  it through the public endpoint, judges it, and asserts
+  the cell row is at the wording key, not at the concept
+  key. Verified by breaking the code: replacing
+  `comps[slot]["wording"]` with `comps[slot]["concept"]`
+  in the endpoint makes the cell row land on the concept
+  key, leaves the wording row empty, and the test fails
+  on the `cell` lookup with no row found.
+
+  **(4) The flip.** `db.cell_state` is the ONE
+  definition of verified/dead/unknown: `verified =
+  judged >= 10 AND arrived*10 >= judged*8`, `dead =
+  judged >= 10 AND arrived*10 < judged*8`, `unknown =
+  judged < 10`. The endpoint never invents a second
+  rule; the response carries the new state via
+  `db.cell_state(cell["judged"], cell["arrived"])`, the
+  same call 2.2 already pins on the case table.
+
+  The task's "flips to verified or dead on reaching the
+  threshold" means crossing judged=10. The test covers
+  both directions from a known starting cell, with the
+  third case (9 still unknown) named for the side that
+  the 9->10 boundary has:
+
+  - `test_a_judged_cell_flips_to_verified_on_reaching_the_threshold`:
+    pre-seeded at (9, 8) — unknown, 9<10. The tenth
+    judgement is a pass on the act. New counts: (10, 9).
+    `9*10=90 >= 10*8=80` → verified. The cell flipped.
+  - `test_a_judged_cell_flips_to_dead_on_reaching_the_threshold`:
+    pre-seeded at (9, 7) — unknown, 9<10. The tenth
+    judgement is a fail on the act. New counts: (10, 7).
+    `7*10=70 < 10*8=80` → dead. The cell flipped the
+    other way.
+  - `test_nine_judged_still_reads_as_unknown`:
+    pre-seeded at (9, 9). The cell is `unknown`,
+    whatever the ratio. The 9->10 boundary is the only
+    place the state can change from unknown; a
+    regression that landed 9/9 as `verified` (a
+    "let me also accept 9 of 10" bug) is the same
+    shape as every group-3 bug and the test pins it.
+
+  Each was verified by breaking the code: replacing
+  `db.cell_state` with a hand-coded "if n >= 10: verified"
+  in the endpoint makes the dead-flip test fail with
+  `state='verified' instead of 'dead'`, and reverting
+  the test passes.
+
+  **(5) Idempotence.** The `verdicts` column is the
+  marker: a non-empty value means a judge already
+  answered, the second call is a 409, the cell counts
+  do not change. The endpoint reads `shot.verdicts`
+  before the UPSERT and refuses the re-judge — the
+  refusal runs on the row read, not on the cell
+  update, so a refused call does no work.
+
+  The cell table's CHECK `arrived BETWEEN 0 AND judged`
+  is the upstream safety net: a code change that
+  drops the column check and tries to double-count
+  would surface as `IntegrityError` on the UPSERT
+  rather than as a wrong number. The user names this:
+  "the cell table's CHECK rejects `arrived > judged`
+  at insert time, so a double-count can surface as an
+  IntegrityError rather than a wrong number — that is
+  a real failure mode, not a hypothetical." The
+  IntegrityError is the noisy failure the CHECK was
+  set up to make; the column check is the cleaner
+  failure the user sees at 409.
+
+  `test_judging_the_same_shot_twice_is_refused_at_409`
+  pins both halves: a second call is 409, the cell
+  counts are unchanged. Verified by breaking the code:
+  deleting the `if shot["verdicts"]` check makes the
+  second call return 200 with `judged=2, arrived=2`
+  and the test fails on the `assert r.status_code == 409`
+  check. Reverted, the test passes.
+
+  **What was built.**
+
+  - `backend/db.py`:
+    - `shot.verdicts TEXT NOT NULL DEFAULT ''` added to
+      `SCHEMA` (next to `components` and the
+      `idempotence marker` comment, the same
+      `default-and-comment` shape `kind`, `tags` and
+      `components` already use).
+    - `ALTER TABLE shot ADD COLUMN verdicts ... DEFAULT ''`
+      added to `_migrate`, guarded by the same
+      `if "verdicts" not in columns("shot")` test the
+      other `shot` columns use, so re-runs are no-ops.
+  - `backend/main.py`:
+    - `JudgeShotIn` pydantic model with the three
+      optional string fields and a docstring that
+      names the spec scenarios each value shape maps
+      to (catalogue key, "", None). Same `default
+      None` idiom the other `Optional` fields use.
+    - `POST /api/shots/{shot_id}/judge` endpoint:
+      - 404 if the shot does not exist.
+      - 422 if `shot.components == '{}'`: a written
+        shot has no trio, no cell to count toward.
+        The message names the marker (`shot has no
+        components`) so the operator sees why.
+      - 409 if `shot.verdicts` is non-empty: the
+        idempotence marker. The message keeps the
+        verdicts JSON so the operator sees what was
+        answered the first time.
+      - 422 if the session is missing manner or
+        checkpoint: the same pre-check 3.2 / 3.3
+        already pin on their 422s, the same shape
+        `compose_shot_endpoint` runs. The message
+        names the missing dimensions.
+      - 422 if the components JSON is not in the
+        trio shape (missing one of the three
+        wording keys): the message names the bad
+        JSON. Defensive against a future shot row
+        whose components are not the expected
+        `{slot: {concept, wording}}` shape — the
+        cell's NOT NULL on the trio would reject
+        the UPSERT, but a refusal with a clear
+        message is a cleaner log line than a
+        `sqlite3.IntegrityError`.
+      - 422 if every slot is `None`: a pass that
+        asks nothing measures nothing, and a 200
+        with no cell update is a silent no-op.
+        The same shape `reshoot-below` already pins
+        on its 400.
+      - The per-slot delta loop: each non-`None`
+        slot increments `judged` by 1, and a
+        non-empty answer that equals the drawn
+        wording also increments `arrived` by 1. The
+        loop guarantees `arrived_delta <= judged_delta`
+        by construction (a slot that arrives is a
+        slot that was judged).
+      - The cell UPSERT: `INSERT ... ON CONFLICT(...)
+        DO UPDATE SET judged = judged + excluded.judged,
+        arrived = arrived + excluded.arrived`. The
+        SET is the only place the cell counts change,
+        and the CHECK is the safety net.
+      - `db.cell_state(cell["judged"], cell["arrived"])`
+        for the response state. The function is the
+        only definition; the endpoint does not branch.
+      - The `verdicts` JSON is written to the shot
+        row at the end, on the same `db.run` so the
+        shot's `verdicts` is the post-update state
+        and the cell's counts match.
+      - Response: `{cell: [5-tuple], judged, arrived,
+        state}`. The five-tuple is the wording keys
+        in the same order the cell table keys on
+        them, so the operator can read the cell the
+        judgement landed on without a second query.
+  - `tests/test_api.py`:
+    - `_wording_split_candidate(concept, wording, text)`:
+      the helper that plants a shot whose
+      `concept != wording`. The trap the task
+      names.
+    - `_composed_shot_in_session(client, seeded,
+      *, manner, checkpoint, camera, act, framing,
+      session_name, seed_cell=None)`: the helper
+      that creates a session, optionally pre-seeds
+      the cell to a known `(judged, arrived)`,
+      composes one exploratory shot, returns the
+      shot id. The composing endpoint is the
+      public path 6.1 already shipped; the helper
+      is the 6.2 layer on top of it, not a
+      parallel composing path.
+    - 11 tests in `tests/test_api.py` (all verified
+      by breaking the code on purpose and
+      confirming they fail):
+      - `test_a_judged_exploratory_photograph_counts_toward_its_cell`:
+        the named 6.2 scenario at the one-shot
+        level. A composed shot from an unmeasured
+        trio is judged, the cell is created at
+        (3, 3) unknown.
+      - `test_the_judged_cell_uses_the_wording_key_not_the_concept_key`:
+        the trap the task names. Plants a shot
+        whose camera's `concept` and `wording`
+        differ, composes it, judges it, reads the
+        cell. The cell is at the wording key, not
+        the concept key.
+      - `test_a_correct_answer_increments_arrived_a_wrong_answer_only_judged`:
+        the per-slot delta. Three shots, three
+        different per-slot patterns, the cell
+        deltas add up correctly.
+      - `test_a_judged_cell_flips_to_verified_on_reaching_the_threshold`:
+        the positive flip. (9, 8) unknown + pass =
+        (10, 9) verified.
+      - `test_a_judged_cell_flips_to_dead_on_reaching_the_threshold`:
+        the negative flip. (9, 7) unknown + fail =
+        (10, 7) dead.
+      - `test_nine_judged_still_reads_as_unknown`:
+        the side of the boundary. (9, 9) is
+        unknown, whatever the ratio.
+      - `test_judging_a_written_shot_is_refused`:
+        a written shot has no trio, the cell
+        update has nowhere to land, the endpoint
+        refuses at 422.
+      - `test_judging_a_session_missing_manner_or_checkpoint_is_refused`:
+        the pre-check 3.2 / 3.3 already pin on
+        their 422s.
+      - `test_judging_the_same_shot_twice_is_refused_at_409`:
+        the idempotence. A second call is 409, the
+        cell counts are unchanged.
+      - `test_judging_with_no_answers_is_refused`:
+        a pass that asks nothing measures nothing,
+        the endpoint refuses at 422.
+      - `test_judging_three_slots_increments_three`:
+        the per-slot delta is the only thing the
+        UPSERT reads. A regression that hard-coded
+        `+1` for every pass would land at (1, ...)
+        instead of (3, ...).
+
+  **Branches no test runs.**
+
+  (a) The 5.2 path: the endpoint accepts the
+  per-slot answers, but 5.2 is the screen that
+  builds the payload and posts it. 6.2 ships the
+  data path; 5.2 ships the screen. The two are
+  independent enough that 6.2 can land before
+  5.2, and the endpoint is the only contract
+  between them.
+
+  (b) The "judge multiple slots with mixed
+  pass/fail" path is covered by
+  `test_a_correct_answer_increments_arrived_a_wrong_answer_only_judged`,
+  but a per-photo judgement that asks one
+  question per pass (5.2's "one question
+  across a batch") is not the shape 6.2 tests.
+  5.2 is the place that owns the batch-level
+  flow; 6.2 owns the per-shot one.
+
+  (c) The `verdicts` JSON on a clone's shot
+  row: `clone_session` already copies
+  `components` byte-for-byte (3.6's fix), and
+  `verdicts` lives in the same INSERT column
+  list. A clone of a judged shot copies the
+  verdicts, and a re-judge of the clone is a
+  409 — same shape as a re-judge of the
+  source. The test that pins this is the 3.6
+  clone test, and the `verdicts` column rides
+  on the same `INSERT` the `components` column
+  rides on.
+
+  (d) The "judge a written shot, count its
+  rating instead" path. The endpoint refuses
+  with 422 rather than silently counting the
+  rating, and the test pins the refusal. A
+  future "let me count rating as a fallback"
+  bug would re-introduce the silent
+  substitution the design explicitly forbids,
+  and the test fails on the 422 assertion.
+
+  **Gates, with output.** `python -m pytest` —
+  343 passed (332 baseline + 11 new 6.2 tests),
+  ran twice consecutively with the same number
+  each time (17.79s and 17.36s); `npm --prefix
+  frontend test` — 23 passed in 386 ms;
+  `npm --prefix frontend run build` — 45 modules
+  transformed, `dist/index.html` 0.42 kB, built
+  in 1.02 s, no errors; `python -m pytest
+  tests/test_no_personal_data.py` — 2 passed.
+  `git status --short` is `M backend/db.py`,
+  `M backend/main.py`, `M tests/test_api.py`
+  only.
 
 ## 7. Cleanup and documentation
 

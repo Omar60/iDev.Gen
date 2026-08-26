@@ -2873,6 +2873,641 @@ def test_a_clone_of_a_composed_session_preserves_components_and_origin(client, s
     )
 
 
+# -- 6.2: a judged exploratory photograph counts toward its cell, and the
+# cell flips to verified or dead on reaching the n=10 threshold. The 6.1
+# end-of-task note names this as the task that opens the bookkeeping: the
+# exploratory shot has a `components` JSON, and the cell is a function of
+# that trio. The 5.2 judging screen will be what builds the verdict; 6.2
+# is the path it lands on, not the screen itself.
+
+
+def _wording_split_candidate(concept_key: str, wording_key: str, text: str) -> dict:
+    """A catalogue entry whose `concept` and `wording` keys differ.
+
+    Every concept in the catalogue today has a single wording whose key
+    equals the concept key (1.1's reshape). A future "let me add a
+    second wording" lands here as a different `wording` value while
+    `concept` stays put, and the cell the photograph counts toward is
+    keyed on the wording (3.1's explicit decision, repeated in
+    `compose_and_queue_shot`). A test that uses `_candidate` (concept
+    key == wording key) would not see a bug that reads `concept`
+    instead of `wording`, because the two values coincide. The
+    wording-vs-concept test below uses this helper to plant a shot
+    whose trio carries a wording key that does not match the concept
+    key, then asserts the cell the judgement lands on is the wording
+    one. A "let me use `comps[slot]['concept']`" bug would create a
+    row with the wrong five-tuple and the test would read it.
+    """
+    return {"key": concept_key, "wordings": [{"key": wording_key, "text": text}]}
+
+
+def _composed_shot_in_session(client, seeded, *, manner: str, checkpoint: str,
+                              camera: dict, act: dict, framing: dict,
+                              session_name: str = "judge test",
+                              seed_cell: tuple | None = None) -> int:
+    """Create a session, pre-seed an optional cell, compose one shot,
+    return the shot id. The composing endpoint is the public path
+    6.1 already shipped — the test is the 6.2 layer on top of it, not
+    a parallel composing path.
+
+    `seed_cell`, when given, is the (judged, arrived) the test wants
+    the cell to start at. A cell with no row is `unknown` (judged=0,
+    arrived=0) and a fresh UPSERT will create it; a pre-seeded cell
+    gives the test a known starting point for the flip assertions.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": session_name,
+        "manner": manner, "checkpoint": checkpoint, "shots": [],
+    }).json()["id"]
+    if seed_cell is not None:
+        # The trio is whatever the caller passed in; the cell
+        # matches on (camera_wording, act_wording, framing_wording,
+        # manner, checkpoint) and the test reads the same five
+        # values back through `shot.components`.
+        cam_w = camera["wordings"][0]["key"]
+        act_w = act["wordings"][0]["key"]
+        framing_w = framing["wordings"][0]["key"]
+        db.run(
+            "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+            "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            cam_w, act_w, framing_w, manner, checkpoint,
+            seed_cell[0], seed_cell[1],
+        )
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+        "mode": "exploratory",
+    })
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+def test_a_judged_exploratory_photograph_counts_toward_its_cell(client, seeded):
+    """The named 6.2 scenario at the one-shot level: a composed
+    shot from an unmeasured trio (the 6.1 exploratory draw) is
+    judged, the cell is created, and its (judged, arrived) carry
+    the per-slot delta. The response carries the new state so
+    the operator sees the flip when the threshold is crossed.
+
+    The shot is the one 6.1 already drew, the cell is the one
+    `_trio_pool` already uses, and the function that turns the
+    counts into a state is `db.cell_state` — three single
+    sources of truth, and a future "let me write the state
+    myself" bug has nothing to land on.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "judge creates the cell",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+        "mode": "exploratory",
+    })
+    assert r.status_code == 200, r.text
+    shot_id = r.json()["id"]
+
+    # No cell yet: the trio was unmeasured, exploratory drew it,
+    # and the judgement is what creates the row. The judge
+    # answers all three slots correctly, so the cell lands at
+    # (3, 3) — still unknown (3 < 10) but the bookkeeping is in
+    # place.
+    r = client.post(f"/api/shots/{shot_id}/judge", json={
+        "camera": "front-direct", "act": "astride", "framing": "full-length",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["cell"] == ["front-direct", "astride", "full-length",
+                            "directed", "finepornV4"]
+    assert body["judged"] == 3
+    assert body["arrived"] == 3
+    assert body["state"] == "unknown"
+
+    # The row exists with the right counts, in the cell table
+    # the spec says is the only home for "is this trio
+    # drawable" (2.1). A "let me write the counts to a
+    # different table" bug would skip this read.
+    cell = db.one(
+        "SELECT judged, arrived FROM cell "
+        "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
+        "AND manner=? AND checkpoint=?",
+        "front-direct", "astride", "full-length", "directed", "finepornV4",
+    )
+    assert cell == {"judged": 3, "arrived": 3}
+
+    # The verdicts column on the shot carries the answers, so a
+    # re-judge (which the test below covers) is a 409 rather
+    # than a double-count.
+    shot = db.one("SELECT verdicts FROM shot WHERE id=?", shot_id)
+    import json as _json
+    assert _json.loads(shot["verdicts"]) == {
+        "camera": "front-direct", "act": "astride", "framing": "full-length",
+    }
+
+
+def test_the_judged_cell_uses_the_wording_key_not_the_concept_key(client, seeded):
+    """The cell is keyed on the three WORDING keys, not on the
+    concept keys. `components` carries both, and a future "let
+    me add a second wording" lands here as a different
+    `wording` value while `concept` stays put. A code change
+    that reads `comps[slot]['concept']` instead of
+    `comps[slot]['wording']` would UPSERT a row on the wrong
+    five-tuple and the cell the judgement actually belongs to
+    would stay at zero counts.
+
+    The fixture plants a shot whose camera's `concept` and
+    `wording` keys differ (`cam-concept` vs `cam-wording`),
+    composes it through the public endpoint, judges it, and
+    reads the cell. The cell must be at the wording key, not
+    at the concept key.
+
+    Verified by breaking the code: replacing
+    `comps[slot]["wording"]` with `comps[slot]["concept"]`
+    in the judge endpoint makes the cell row land on
+    (`cam-concept`, `act-concept`, `frame-concept`, ...) and
+    leave the wording row empty, and the test fails on the
+    `cell` lookup with no row found.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "wording vs concept",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    # concept key `cam-concept`, wording key `cam-wording` —
+    # the two are different on purpose. The cell the judgement
+    # lands on must be keyed on `cam-wording`, not on
+    # `cam-concept`. The act and framing keep the keys
+    # identical so the test reads the failure cleanly: the
+    # camera axis is the one whose key shape changes.
+    camera = _wording_split_candidate("cam-concept", "cam-wording", "front text")
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    shot_id = _composed_shot_in_session(
+        client, seeded,
+        manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing,
+        session_name="wording vs concept",
+    )
+
+    r = client.post(f"/api/shots/{shot_id}/judge", json={
+        "camera": "cam-wording", "act": "astride", "framing": "full-length",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # The cell tuple is the wording key, not the concept key.
+    assert body["cell"][0] == "cam-wording", (
+        f"judgement landed on concept key {body['cell'][0]!r}, not the wording key"
+    )
+    assert body["cell"][0] != "cam-concept"
+
+    # The cell row exists at the wording key, and the concept
+    # key has no row. A "let me use concept" bug creates a
+    # row at the concept key and the test fails on the
+    # `WHERE camera_wording='cam-wording'` lookup.
+    wording_cell = db.one(
+        "SELECT judged, arrived FROM cell WHERE camera_wording=?",
+        "cam-wording",
+    )
+    assert wording_cell == {"judged": 3, "arrived": 3}
+    concept_cell = db.one(
+        "SELECT judged, arrived FROM cell WHERE camera_wording=?",
+        "cam-concept",
+    )
+    assert concept_cell is None, (
+        f"judgement also created a row at the concept key {concept_cell!r}; "
+        f"the cell is on the wording, not the concept"
+    )
+
+
+def test_a_correct_answer_increments_arrived_a_wrong_answer_only_judged(client, seeded):
+    """`arrived` means the act the line asked for is the act in
+    the frame, not that the photograph is good. The spec
+    scenario `A wrong answer is kept` is the same fact: a
+    judge who picks a different catalogue key records a miss
+    on the cell, judged+1 arrived+0, and the wrong key is
+    preserved in `verdicts` for the operator to see.
+
+    The test plants three shots on the same trio, judges each
+    with a different per-slot pattern, and reads the cell
+    after every judgement to verify the deltas are
+    independent and add up.
+    """
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    # Three shots on the same trio. The cell is unknown at
+    # n=0; the deltas carry it through 0 -> 3 -> 6 -> 9.
+    shot_ids = [
+        _composed_shot_in_session(
+            client, seeded, manner="directed", checkpoint="finepornV4",
+            camera=camera, act=act, framing=framing,
+            session_name=f"arrived {i}",
+        ) for i in range(3)
+    ]
+
+    # Shot 0: all three correct. judged+=3, arrived+=3.
+    r = client.post(f"/api/shots/{shot_ids[0]}/judge", json={
+        "camera": "front-direct", "act": "astride", "framing": "full-length",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["judged"] == 3 and r.json()["arrived"] == 3
+    assert r.json()["state"] == "unknown"
+
+    # Shot 1: camera wrong (a different catalogue key), act
+    # "none or cannot tell" (empty string), framing correct.
+    # Per-slot: camera judged+1 arrived+0, act judged+1
+    # arrived+0, framing judged+1 arrived+1 -> +3 judged,
+    # +1 arrived.
+    r = client.post(f"/api/shots/{shot_ids[1]}/judge", json={
+        "camera": "overhead-direct", "act": "", "framing": "full-length",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["judged"] == 6
+    assert r.json()["arrived"] == 4
+    assert r.json()["state"] == "unknown"
+
+    # Shot 2: act correct, the other two unanswered. Per-slot:
+    # +1 judged, +1 arrived.
+    r = client.post(f"/api/shots/{shot_ids[2]}/judge", json={
+        "act": "astride",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["judged"] == 7
+    assert r.json()["arrived"] == 5
+    assert r.json()["state"] == "unknown"
+
+    # The cell row carries the totals. A "let me add
+    # arrived and judged separately" bug would land
+    # different numbers here.
+    cell = db.one(
+        "SELECT judged, arrived FROM cell "
+        "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
+        "AND manner=? AND checkpoint=?",
+        "front-direct", "astride", "full-length", "directed", "finepornV4",
+    )
+    assert cell == {"judged": 7, "arrived": 5}
+
+    # The verdicts on shot 1 keep the wrong camera key and
+    # the empty act answer. The operator can see what was
+    # picked, the cell just got the counts.
+    import json as _json
+    verdicts = _json.loads(db.one("SELECT verdicts FROM shot WHERE id=?",
+                                  shot_ids[1])["verdicts"])
+    assert verdicts == {"camera": "overhead-direct", "act": "", "framing": "full-length"}
+
+
+def test_a_judged_cell_flips_to_verified_on_reaching_the_threshold(client, seeded):
+    """The 9 -> 10 boundary in the positive direction. The cell
+    is unknown at 9 judged, the tenth judgement is a pass on
+    the act, and the cell flips to verified.
+
+    `db.cell_state` is the only definition of verified/dead/
+    unknown: at 10/9, 9*10=90 >= 10*8=80, so `verified`. A
+    future "let me also accept 7 of 10" bug is the second
+    calculation 6.2 explicitly names, and the test pins the
+    8/10 ratio.
+    """
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    # The cell starts at (9, 8): 9 judged, 8 arrived. Under
+    # `db.cell_state`, judged < 10, so the state is `unknown`
+    # whatever the ratio. The 10th judgement is the flip.
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing,
+        session_name="flip to verified",
+        seed_cell=(9, 8),
+    )
+
+    r = client.post(f"/api/shots/{shot_id}/judge", json={
+        "act": "astride",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # The act slot answers the question correctly: +1 judged,
+    # +1 arrived -> 10/9.
+    assert body["judged"] == 10
+    assert body["arrived"] == 9
+    # 9*10=90 >= 10*8=80 -> verified. The cell flipped.
+    assert body["state"] == "verified", (
+        f"cell did not flip to verified at 10/9: state={body['state']!r}"
+    )
+
+    cell = db.one(
+        "SELECT judged, arrived FROM cell "
+        "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
+        "AND manner=? AND checkpoint=?",
+        "front-direct", "astride", "full-length", "directed", "finepornV4",
+    )
+    assert cell == {"judged": 10, "arrived": 9}
+
+
+def test_a_judged_cell_flips_to_dead_on_reaching_the_threshold(client, seeded):
+    """The 9 -> 10 boundary in the negative direction. The cell
+    is unknown at 9 judged, the tenth judgement is a fail on
+    the act (a wrong catalogue key), and the cell flips to
+    dead.
+
+    At 10/8, 8*10=80 >= 10*8=80 -> verified (the boundary
+    is inclusive at the ratio). The test uses 9/7 so the
+    tenth judgement — a miss — moves to 10/7, which is
+    70 < 80 -> dead. The starting point is what makes
+    this the "flip to dead" half; 9/8 + miss would land at
+    10/8 = verified, the same shape as the verified test.
+    """
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing,
+        session_name="flip to dead",
+        seed_cell=(9, 7),
+    )
+
+    # The tenth judgement answers the act slot with a
+    # different catalogue key — a miss. Per-slot: +1 judged,
+    # +0 arrived -> 10/7.
+    r = client.post(f"/api/shots/{shot_id}/judge", json={
+        "act": "wall",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["judged"] == 10
+    assert body["arrived"] == 7
+    # 7*10=70 < 10*8=80 -> dead. The cell flipped the other way.
+    assert body["state"] == "dead", (
+        f"cell did not flip to dead at 10/7: state={body['state']!r}"
+    )
+
+
+def test_nine_judged_still_reads_as_unknown(client, seeded):
+    """The other side of the same boundary: at 9 judged the
+    cell is `unknown` whatever the ratio. The 9/9
+    hypothetical and the 9/0 hypothetical are both
+    `unknown`, and a regression that landed either as
+    `verified` or `dead` (a "let me also accept 9 of 10"
+    bug) would read the cell_state rule wrong.
+
+    Pre-seeds the cell at (9, 9) — the most-likely shape a
+    9/9 surface would take — and reads it back through
+    `db.cell_state` rather than the endpoint. The endpoint
+    is the 9->10 path, not the 9 alone path, and the
+    state at 9 is what the spec calls `unknown`.
+    """
+    db.run(
+        "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+        "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "front-direct", "astride", "full-length", "directed", "finepornV4", 9, 9,
+    )
+    cell = db.one(
+        "SELECT judged, arrived FROM cell "
+        "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
+        "AND manner=? AND checkpoint=?",
+        "front-direct", "astride", "full-length", "directed", "finepornV4",
+    )
+    assert db.cell_state(cell["judged"], cell["arrived"]) == "unknown"
+
+
+def test_judging_a_written_shot_is_refused(client, seeded):
+    """A written shot has no trio (its `components` is the
+    empty default `'{}'`), and the cell is keyed on the
+    trio. Counting the shot's rating instead would conflate
+    photo quality with the act the line asked for — the
+    design note at the top of the file: `arrived` means
+    the act the line asked for is the act in the frame, not
+    that the photograph is good. The endpoint refuses
+    rather than silently counting a rating.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "written shot",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [{"prompt": "standing", "count": 1}],
+    }).json()["id"]
+    shot_id = client.get(f"/api/sessions/{sid}").json()["shots"][0]["id"]
+    # The written row's components are the empty default
+    # `'{}'`, which is the marker the test reads.
+    assert db.one("SELECT components FROM shot WHERE id=?", shot_id)["components"] == "{}"
+
+    r = client.post(f"/api/shots/{shot_id}/judge", json={
+        "act": "astride",
+    })
+    assert r.status_code == 422, r.text
+    assert "no components" in r.json()["detail"]
+
+    # No cell was created: the refusal ran before the
+    # UPSERT. A code change that dropped the components
+    # check would have created a row at the (None, None,
+    # None, ...) five-tuple (which the cell's own NOT NULL
+    # on the trio would then reject) or, worse, at
+    # ('', '', '', '', '') — a silent injection into the
+    # table. The test pins the refusal.
+    n = db.one("SELECT COUNT(*) AS n FROM cell")["n"]
+    assert n == len(db.EVIDENCE_SEED), (
+        f"judge created a cell for a written shot: cell table has {n} rows"
+    )
+
+
+def test_judging_a_session_missing_manner_or_checkpoint_is_refused(client, seeded):
+    """The cell is keyed on (trio, manner, checkpoint). A
+    session with no manner or no checkpoint cannot match
+    any cell, and "no cell matches" is a different shape
+    from "the cell is unknown" — the former is a
+    session-level problem (the operator forgot to declare
+    the dimension), the latter is a request-level one
+    (the trio is unmeasured). The endpoint refuses
+    before the UPSERT, naming what is missing.
+
+    The pre-check is the same one 3.2 / 3.3 already pin
+    on their 422s; the test reuses the same refusal
+    shape so a "let me unify the refusals" refactor
+    fails it loudly if it drops the missing-dimension
+    branch.
+
+    The test only checks `manner`: `checkpoint` is
+    auto-derived from the model's workflow at create
+    time (the same hook 3.2 closed the door on), so a
+    freshly created session on the seeded fixture has a
+    `checkpoint` already. The missing-manner case is the
+    only one a test can build without bypassing the
+    create-time derivation, and the test pins the same
+    shape 3.2's missing-dimensions test pins: a 422
+    that names the missing dimension.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "missing manner",
+        "shots": [],
+    }).json()["id"]
+    # The session was created without a `manner` field.
+    # The model's workflow auto-derived `checkpoint` to
+    # `base.safetensors` (the seeded GRAPH's loader), so
+    # only `manner` is missing. The 422 names what is
+    # missing rather than silently finding zero cells
+    # and reading as "the cell is unknown" — the
+    # silent-substitution trap the user named.
+    db.run(
+        "INSERT INTO shot (session_id, shot_index, shot_label, prompt, "
+        "components, created_at) VALUES (?, 0, 'c', 'p', ?, ?)",
+        sid,
+        '{"camera":{"concept":"x","wording":"x"},'
+        '"act":{"concept":"y","wording":"y"},'
+        '"framing":{"concept":"z","wording":"z"}}',
+        db.now(),
+    )
+    shot_id = db.one("SELECT id FROM shot WHERE session_id=? ORDER BY id DESC LIMIT 1",
+                     sid)["id"]
+
+    r = client.post(f"/api/shots/{shot_id}/judge", json={"act": "y"})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    # The message names the missing dimension. The
+    # sentence is shaped so the operator sees what
+    # to set without having to read the code.
+    assert "manner" in detail, (
+        f"422 does not name the missing dimension: {detail!r}"
+    )
+    assert "set them on the session" in detail, (
+        f"422 does not say what to do: {detail!r}"
+    )
+
+    # No cell was created.
+    n = db.one("SELECT COUNT(*) AS n FROM cell")["n"]
+    assert n == len(db.EVIDENCE_SEED), (
+        f"judge on a session missing dimensions created a cell: {n} rows"
+    )
+
+
+def test_judging_the_same_shot_twice_is_refused_at_409(client, seeded):
+    """The idempotence marker is the `verdicts` column on the
+    shot: a non-empty value means a judge already answered,
+    the second call is a 409, and the cell counts do not
+    change.
+
+    A regression that drops the column check surfaces
+    two ways: the second UPSERT adds another increment
+    (the silent double-count) or the cell's CHECK
+    `arrived BETWEEN 0 AND judged` rejects the write
+    (the noisy double-count). The first is the failure
+    6.2 names; the test pins the first.
+    """
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing,
+        session_name="judge twice",
+    )
+
+    # First judgement: the cell is created at (3, 3).
+    r = client.post(f"/api/shots/{shot_id}/judge", json={
+        "act": "astride",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["judged"] == 1 and r.json()["arrived"] == 1
+
+    # Second judgement on the same shot: refused at 409.
+    r = client.post(f"/api/shots/{shot_id}/judge", json={
+        "act": "astride",
+    })
+    assert r.status_code == 409, r.text
+    assert "already been judged" in r.json()["detail"]
+
+    # The cell count is unchanged: still (1, 1), not (2, 2).
+    # A code change that dropped the column check would
+    # have arrived at (2, 2), and the test reads it.
+    cell = db.one(
+        "SELECT judged, arrived FROM cell "
+        "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
+        "AND manner=? AND checkpoint=?",
+        "front-direct", "astride", "full-length", "directed", "finepornV4",
+    )
+    assert cell == {"judged": 1, "arrived": 1}, (
+        f"second judgement double-counted: cell is {dict(cell)!r}, "
+        f"expected (1, 1)"
+    )
+
+
+def test_judging_with_no_answers_is_refused(client, seeded):
+    """A pass that asks nothing measures nothing. The endpoint
+    refuses at 422 rather than returning 200 with no
+    cell update, the same shape `reshoot-below` already
+    pins on its 400 — a click that "did nothing" never
+    goes through.
+    """
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing,
+        session_name="empty pass",
+    )
+
+    r = client.post(f"/api/shots/{shot_id}/judge", json={})
+    assert r.status_code == 422, r.text
+    assert "at least one slot" in r.json()["detail"]
+
+    # No cell was created. The refusal ran before the
+    # UPSERT, and a 200 with no work is the silent
+    # no-op this test refuses.
+    n = db.one("SELECT COUNT(*) AS n FROM cell")["n"]
+    assert n == len(db.EVIDENCE_SEED), (
+        f"empty pass created a cell: cell table has {n} rows"
+    )
+
+
+def test_judging_three_slots_increments_three(client, seeded):
+    """A pass that answers all three slots increments the cell
+    by 3 on `judged` and up to 3 on `arrived`. The
+    per-slot delta is the only thing the UPSERT reads, and
+    a regression that hard-coded `+1` for every pass
+    would land at (1, 0/1) instead of (3, 0..3).
+    """
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera=camera, act=act, framing=framing,
+        session_name="three slots",
+    )
+
+    # Two of three correct: camera wrong, act + framing
+    # correct -> +3 judged, +2 arrived.
+    r = client.post(f"/api/shots/{shot_id}/judge", json={
+        "camera": "overhead-direct",
+        "act": "astride",
+        "framing": "full-length",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["judged"] == 3
+    assert r.json()["arrived"] == 2
+
+
 def test_use_look_false_leaves_the_look_out_of_every_prompt(client, seeded):
     """The look is a switch, not a deletion.
 

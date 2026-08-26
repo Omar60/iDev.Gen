@@ -221,6 +221,35 @@ class ShotPatch(BaseModel):
     rejected: bool | None = None
 
 
+class JudgeShotIn(BaseModel):
+    """One judging pass's answer for one shot, per slot.
+
+    Each slot records what the judge saw in the photograph:
+
+    - A catalogue key (e.g. ``"astride"``): the judge picked that
+      wording from the slot's whole list.
+    - ``""``: the judge answered "none or cannot tell" — the spec
+      scenario `The judge cannot tell`.
+    - ``None`` (or the key absent): the question was not asked on
+      this pass. A 5.2 pass asks one question across a batch, so
+      the slots the pass did not ask stay at ``None`` and the
+      endpoint does not count them.
+
+    The endpoint translates the answers into a per-slot delta the
+    cell update carries: each non-``None`` slot increments
+    ``judged`` by 1, and a non-empty answer that equals the drawn
+    wording also increments ``arrived`` by 1. The endpoint is
+    idempotent — a re-judge of a shot that already has verdicts is
+    a 409, not a silent double-count.
+
+    6.2 is the task that introduced this shape. 5.2 (the judging
+    screen) is the one that builds the payload and posts it here.
+    """
+    camera: str | None = None
+    act: str | None = None
+    framing: str | None = None
+
+
 class ConfigIn(BaseModel):
     comfy_url: str
     comfy_output_dir: str = ""
@@ -2511,6 +2540,236 @@ def patch_shot(shot_id: int, p: ShotPatch):
     if p.rejected is not None:
         db.run("UPDATE shot SET rejected=? WHERE id=?", int(p.rejected), shot_id)
     return db.one("SELECT * FROM shot WHERE id=?", shot_id)
+
+
+@app.post("/api/shots/{shot_id}/judge")
+def judge_shot(shot_id: int, j: JudgeShotIn):
+    """Record the judging screen's answer against the shot's trio and
+    update the cell's (judged, arrived) counts.
+
+    The cell is the unit of evidence (design.md decision C): a
+    (camera_wording, act_wording, framing_wording, manner, checkpoint)
+    row holding the counts that 2.2 turns into a verdict. The shot
+    carries the trio in ``components`` (3.1 wrote it) and the
+    session carries manner and checkpoint (3.2 read them at create),
+    so the row the increment lands on is fixed by the data: the
+    drawn trio plus the session's two non-trio dimensions.
+
+    The per-slot delta is what the judge's answer implies:
+
+    - A non-``None`` slot increments ``judged`` by 1. The question
+      was asked and an answer was given — the slot was measured
+      against the photograph.
+    - A non-empty answer that equals the drawn wording also
+      increments ``arrived`` by 1. A catalogue key that matches
+      the trio is the act/camera/framing the line asked for is
+      the act/camera/framing in the frame, which is what
+      ``arrived`` means.
+    - An empty string ``""`` is "none or cannot tell" — the spec
+      scenario `The judge cannot tell`. It counts as judged (the
+      question was answered) but not arrived.
+    - A wrong catalogue key is the same as ``""``: judged+1,
+      arrived unchanged. The shot was measured, the slot did not
+      arrive. The wrong key is preserved in ``shot.verdicts`` for
+      the operator to see what was picked (the spec scenario
+      `A wrong answer is kept`).
+
+    The cell is keyed on the three WORDING keys, not on the
+    concept keys. ``components`` carries both per slot, and a
+    future "let me add a second wording" lands here as a
+    different ``wording`` value while ``concept`` stays put. The
+    test that pins this distinction plants a shot whose
+    ``concept != wording`` and checks the increment lands on the
+    wording key.
+
+    Idempotence. The ``verdicts`` column is the marker: a non-empty
+    value means a judge already answered, the second call returns
+    409 and the cell counts are unchanged. The cell's CHECK
+    (``arrived BETWEEN 0 AND judged``) is the upstream safety net:
+    a code change that drops the column check and tries to
+    double-count would surface as ``IntegrityError`` on the UPSERT
+    rather than as a wrong number. Two failures, not one.
+
+    What is NOT in the endpoint:
+
+    - A written shot has no trio (``components='{}'``) and no cell
+      to count toward. Refused with 422 rather than silently
+      counted as judged.
+    - A session that has no manner or no checkpoint cannot match
+      any cell. Refused with 422 naming what is missing, the
+      same pre-check 3.2 / 3.3 already run.
+    - The cell state is derived from the new counts via
+      ``db.cell_state`` (the only definition of
+      verified/dead/unknown). The response carries the new state
+      so the operator sees the flip when the threshold is reached.
+
+    5.2 (the judging screen) is what builds the payload: one
+    answer per shot, the slot the pass asked plus the others at
+    ``None``. The endpoint accepts every shape 5.2 can build
+    because the per-slot delta is the only thing the cell update
+    reads.
+    """
+    shot = db.one("SELECT * FROM shot WHERE id=?", shot_id)
+    if not shot:
+        raise HTTPException(404, "shot not found")
+    if shot["components"] == "{}" or not shot["components"]:
+        # A written shot has no trio, and the cell is keyed on the
+        # trio. "Let me count the rating instead" would conflate
+        # photo quality with the act the line asked for — they
+        # are different facts (design.md:296-308), and counting
+        # rating is the silent-substitution trap 6.2 names.
+        raise HTTPException(
+            422,
+            "judge refused: shot has no components (written shot), "
+            "there is no cell to count this photo toward",
+        )
+
+    # The shot's stored verdicts are the idempotence marker. The
+    # empty default '' means "not yet judged"; a non-empty value
+    # means a judge already answered. A re-judge is refused at
+    # 409, not silently double-counted. The column check runs
+    # BEFORE the cell update so the cell counts are not even
+    # read for a refused call (the UPSERT would still no-op on
+    # the same cell, but a refusal that does no work is a
+    # cleaner log line than a refusal that touches a row).
+    if shot["verdicts"]:
+        raise HTTPException(
+            409,
+            f"judge refused: shot {shot_id} has already been judged "
+            f"(verdicts: {shot['verdicts']})",
+        )
+
+    session = db.one("SELECT * FROM session WHERE id=?", shot["session_id"])
+    if not session:
+        raise HTTPException(404, "session not found")
+
+    # The cell is keyed on (trio, manner, checkpoint). The session
+    # is the only home for the two non-trio dimensions, and a
+    # session that has neither cannot match any cell. The
+    # pre-check names what is missing rather than silently
+    # failing the cell lookup — the same shape 3.2 and 3.3
+    # already pin on their 422s.
+    missing = [name for name, value in (("manner", session["manner"]),
+                                        ("checkpoint", session["checkpoint"]))
+               if not value]
+    if missing:
+        raise HTTPException(
+            422,
+            f"judge refused: session is missing {', '.join(missing)}; "
+            f"set them on the session before judging",
+        )
+
+    # The trio is the wording keys per slot, not the concept keys.
+    # A concept can have several wordings (1.1's reshape), and the
+    # cell is on the wording. Reading `concept` here would land
+    # the increment on a row that does not exist, and the SQLite
+    # UPSERT would silently create one with the wrong key —
+    # a "let me use concept to look up the cell" bug is exactly
+    # the trap the test for wording-vs-concept is written to catch.
+    comps = json.loads(shot["components"])
+    try:
+        cam_w = comps["camera"]["wording"]
+        act_w = comps["act"]["wording"]
+        framing_w = comps["framing"]["wording"]
+    except (KeyError, TypeError):
+        raise HTTPException(
+            422,
+            f"judge refused: shot components are not in the trio shape "
+            f"({shot['components']!r}); the cell needs the three wording keys",
+        )
+
+    # The per-slot delta. The answers map to slots in the same
+    # order the components do. A non-None answer is a counted
+    # measurement; a non-empty string that matches the drawn
+    # wording is a "the slot arrived". An empty string is
+    # "none or cannot tell" — counted but not arrived. A wrong
+    # key is the same as "" — counted but not arrived, and the
+    # wrong key is preserved on the row for the operator to see.
+    answers = {"camera": j.camera, "act": j.act, "framing": j.framing}
+    drawn = {"camera": cam_w, "act": act_w, "framing": framing_w}
+    judged_delta = 0
+    arrived_delta = 0
+    for slot in ("camera", "act", "framing"):
+        ans = answers[slot]
+        if ans is None:
+            # The question was not asked on this pass. The slot
+            # is not measured by this judgement and the cell
+            # count does not change.
+            continue
+        judged_delta += 1
+        if ans and ans == drawn[slot]:
+            arrived_delta += 1
+        # The `else` branches (empty string, wrong key) are
+        # silent: the slot is measured, the cell gets +1 judged
+        # and the verdicts JSON keeps the answer the operator
+        # saw. A "let me record the wrong key against a
+        # different cell" bug is the silent-substitution trap
+        # 6.2 names, and the test pins that the increment
+        # always lands on the drawn trio.
+
+    if judged_delta == 0:
+        # No question was asked on this pass: every slot is
+        # None. A pass that asks nothing measures nothing, and
+        # a 200 with no cell update is a silent no-op. Refused
+        # at 422 so the call that "did nothing" never goes
+        # through, the same shape `reshoot-below` already
+        # pins on its 400.
+        raise HTTPException(
+            422,
+            "judge refused: at least one slot must be answered (not None); "
+            "an empty pass measures nothing",
+        )
+
+    # The cell UPSERT. The ON CONFLICT clause names the PRIMARY
+    # KEY (the same five columns the spec keys on), and the
+    # SET adds the per-slot delta to the existing counts. The
+    # CHECK `arrived BETWEEN 0 AND judged` enforces the
+    # invariant the function below reads, and a code change
+    # that double-counts would surface here as IntegrityError
+    # (the user names this in the task: "the cell table's
+    # CHECK rejects `arrived > judged` at insert time"). The
+    # delta is `arrived_delta <= judged_delta` by construction
+    # — a slot that arrives is a slot that was judged, and
+    # the loop above guarantees it.
+    db.run(
+        "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+        "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(camera_wording, act_wording, framing_wording, manner, checkpoint) "
+        "DO UPDATE SET judged = judged + excluded.judged, "
+        "arrived = arrived + excluded.arrived",
+        cam_w, act_w, framing_w, session["manner"], session["checkpoint"],
+        judged_delta, arrived_delta,
+    )
+
+    # Record the verdicts on the row. Empty default '' is the
+    # "not yet judged" marker the idempotence check reads; a
+    # non-empty value here is a successful judgement. The JSON
+    # is round-tripped through `json.dumps` so the operator
+    # can read what was answered and 5.2 can resume an
+    # interrupted pass.
+    verdicts_json = json.dumps({"camera": j.camera, "act": j.act, "framing": j.framing})
+    db.run("UPDATE shot SET verdicts=? WHERE id=?", verdicts_json, shot_id)
+
+    # The cell's new state, derived from the new counts via
+    # `db.cell_state`. The function is the only definition of
+    # verified/dead/unknown — this endpoint never invents a
+    # second rule. The response carries the new (judged,
+    # arrived, state) so the caller sees the flip when the
+    # n=10 threshold is crossed (the spec scenario
+    # `An exploratory draw is recorded`).
+    cell = db.one(
+        "SELECT judged, arrived FROM cell "
+        "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
+        "AND manner=? AND checkpoint=?",
+        cam_w, act_w, framing_w, session["manner"], session["checkpoint"],
+    )
+    new_state = db.cell_state(cell["judged"], cell["arrived"]) if cell else "unknown"
+    return {
+        "cell": (cam_w, act_w, framing_w, session["manner"], session["checkpoint"]),
+        "judged": cell["judged"] if cell else judged_delta,
+        "arrived": cell["arrived"] if cell else arrived_delta,
+        "state": new_state,
+    }
 
 
 @app.post("/api/shots/{shot_id}/reshoot")
