@@ -149,6 +149,23 @@ class SessionIn(BaseModel):
     seed: int = 0
 
 
+class ComposeIn(BaseModel):
+    """One composed shot: a camera, an act and a framing, all drawn from
+    the catalogue. Each is a (key, wordings) pair; the composer takes
+    the first wording of each and joins them the same way the writer's
+    `_compose` joins a take, so the queued line is byte-for-byte
+    identical to one a writer would produce from the same components.
+
+    The draw is deterministic for 3.1: the caller passes the
+    components, and the composer joins them. 3.2 makes the draw
+    respect cell state (strict mode, verified-only), 6.1 makes
+    unknown drawable in exploratory mode.
+    """
+    camera: dict
+    act: dict
+    framing: dict
+
+
 class SessionPatch(BaseModel):
     name: str | None = None
     # The wardrobe the *next* takes start from. The look is not here on purpose:
@@ -724,6 +741,19 @@ def add_shots(sid: int, payload: dict):
     return {"added": added}
 
 
+@app.post("/api/sessions/{sid}/compose")
+def compose_shot_endpoint(sid: int, c: ComposeIn):
+    """Compose a single shot from drawn components and queue it, with
+    no writer request. The components are recorded on the shot in
+    the `prompt` field; the queued line joins identically to one a
+    writer would produce from the same three components, because
+    `compose_shot` and `_compose` go through the same `_sentences`
+    join (see `test_a_composed_shot_joins_identically_to_a_written_one`).
+    """
+    shot_id = compose_and_queue_shot(sid, c.camera, c.act, c.framing)
+    return {"id": shot_id}
+
+
 def _expand_shots(sid: int, model: dict, look: str, wardrobe: str, shots: list[ShotIn],
                   seed_mode: str, seed: int) -> int:
     """One take x N variations = N pending shot rows."""
@@ -835,6 +865,79 @@ def _compose(model: dict, look: str, wardrobe: str, prompt: str) -> str:
         prompt = prompt.replace("{trigger}", model["trigger"])
         return _sentences(model["base_positive"], look, wardrobe, prompt)
     return _sentences(model["trigger"], model["base_positive"], look, wardrobe, prompt)
+
+
+def compose_shot(model: dict, look: str, wardrobe: str,
+                 camera: dict, act: dict, framing: dict) -> str:
+    """Compose a line from drawn components, no writer request.
+
+    The camera, act and framing are catalogue entries with at least
+    one wording each. The composed line is what `_compose` would
+    produce if the writer wrote the same three pieces in the take
+    position: trigger + base + look + wardrobe + the three components,
+    joined with full stops via `_sentences`.
+
+    The composer and the writer go through the SAME join function
+    on purpose: the composed line is byte-for-byte identical to a
+    written one for the same components, and the test
+    `test_a_composed_shot_joins_identically_to_a_written_one`
+    pins that. Group 4 measures the composer's render rate against
+    the writer's, and the comparison is only valid if the two produce
+    the same line for the same input.
+    """
+    take = _sentences(
+        camera["wordings"][0]["text"],
+        act["wordings"][0]["text"],
+        framing["wordings"][0]["text"],
+    )
+    return _compose(model, look, wardrobe, take)
+
+
+def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict) -> int:
+    """Compose a single shot from drawn components and queue it.
+
+    Returns the shot id. The three drawn components are recorded on
+    the row in the `components` column as (concept, wording) pairs:
+    the prose does not survive the round-trip, and the cell is keyed
+    by (concept, wording, manner, checkpoint), so 6.2 reads the
+    wording off the row to know which cell to count the photo
+    toward. A written shot leaves the column at its empty default
+    '{}', which is the marker 3.6 uses to tell a composed session
+    from a written one.
+
+    The session's `look` and `wardrobe` are read here, not from the
+    payload: a composed shot is part of the session, and the look
+    and wardrobe are the session's halves — same reason `add_shots`
+    reads them from the row.
+    """
+    session = db.one("SELECT * FROM session WHERE id=?", sid)
+    if not session:
+        raise HTTPException(404, "session not found")
+    model = db.one("SELECT * FROM model WHERE id=?", session["model_id"])
+    if not model:
+        raise HTTPException(404, "model not found")
+    settings = json.loads(session["settings"] or "{}")
+    look = session["look"] if settings.get("use_look", True) else ""
+    wardrobe = session["wardrobe"]
+    prompt = compose_shot(model, look, wardrobe, camera, act, framing)
+    # The (concept, wording) pair per slot, not just the wording: the
+    # concept is the slot type the cell is keyed on, the wording is the
+    # specific catalogue key `compose_shot` picked (always wordings[0]
+    # for now). 6.2 needs both to land the photo on the right cell.
+    components = json.dumps({
+        "camera":  {"concept": "camera",  "wording": camera["key"]},
+        "act":     {"concept": "act",     "wording": act["key"]},
+        "framing": {"concept": "framing", "wording": framing["key"]},
+    })
+    shot_index = db.one("SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id=?", sid)["m"] + 1
+    shot_id = db.run(
+        """INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative,
+                              components, created_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        sid, shot_index, f"composed {shot_index + 1}", prompt,
+        model["base_negative"], components, db.now(),
+    )
+    return shot_id
 
 
 IMPORT_MAX_BYTES = 40 * 1024 * 1024

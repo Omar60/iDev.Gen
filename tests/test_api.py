@@ -75,6 +75,127 @@ def test_session_expands_shots_and_composes_the_prompt(client, seeded):
     assert s["look"] == "white summer dress, hair down, on a beach"
 
 
+def test_a_composed_shot_joins_identically_to_a_written_one(client, seeded):
+    """A shot composed from drawn components joins its line byte-for-byte
+    to one written from the same three components. The composer
+    goes through the same `_sentences` join as the writer's
+    `_compose`, so for the same camera + act + framing the output
+    is identical.
+
+    The equality is the assertion, not a similarity: if the composed
+    line differs from the written one by a space, group 4 cannot
+    compare the composer's render rate against the writer's, and
+    every measured rate after that is apples to oranges. A future
+    "let me change the join" or "let me reorder the components"
+    that drifts the two outputs apart breaks this test on the spot.
+
+    The test composes one shot from three known components and
+    writes one shot with the same three components as the prompt,
+    then asserts the two prompts are identical: same trigger, same
+    base, same look, same wardrobe, same three pieces in the take
+    position, same join.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "compose equals write",
+        "look": "white summer dress, hair down, on a beach",
+        "shots": [],
+    }).json()["id"]
+
+    # Three drawn components. The draw is deterministic for 3.1: the
+    # caller passes the components, the composer joins them. 3.2 makes
+    # the draw respect cell state, 6.1 makes unknown drawable in
+    # exploratory mode.
+    camera = {"key": "front-direct",
+              "wordings": [{"text": "Taken from directly in front of her"}]}
+    act = {"key": "astride",
+           "wordings": [{"text": "She is astride him with her knees on either side of his hips and her weight down on him, the two of them joined, two people in frame."}]}
+    framing = {"key": "full-length",
+               "wordings": [{"text": "a full-length photograph, head to feet"}]}
+
+    # Compose and queue.
+    composed_id = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+    }).json()["id"]
+
+    # Write the same line: add a shot with the three components as
+    # the take. The writer's _compose joins the same way the
+    # composer's does, so the two prompts should match exactly.
+    take_text = (f"{camera['wordings'][0]['text']}. "
+                 f"{act['wordings'][0]['text']} "
+                 f"{framing['wordings'][0]['text']}.")
+    client.post(f"/api/sessions/{sid}/shots", json={
+        "shots": [{"prompt": take_text, "count": 1}],
+    })
+
+    # Get both shots and assert the composed line joins identically
+    # to the written one.
+    session = client.get(f"/api/sessions/{sid}").json()
+    shots = {s["id"]: s["prompt"] for s in session["shots"]}
+    composed_prompt = shots[composed_id]
+    written_prompt = next(p for sid, p in shots.items() if sid != composed_id)
+    assert composed_prompt == written_prompt, (
+        f"composed: {composed_prompt!r}\n"
+        f"written:  {written_prompt!r}"
+    )
+
+
+def test_a_composed_shot_records_the_three_components_on_the_row(client, seeded):
+    """A composed shot records the three (concept, wording) pairs on
+    the row in the `components` column. The prose does not survive
+    the round-trip — from `'4da woman. photo, 35mm. white summer dress,
+    hair down, on a beach. Taken from directly in front of her. ...'`
+    you cannot recover `front-direct` — and the cell is keyed by
+    (concept, wording, manner, checkpoint), so 6.2 needs the wording
+    off the row to know which cell to count the photo toward.
+
+    The structure stored: each slot is `{"concept": <slot type>,
+    "wording": <catalogue key>}`, JSON-encoded. A written shot
+    leaves the column at the empty default '{}', which is the
+    marker 3.6 uses to tell a composed session from a written one.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "components on row",
+        "look": "white summer dress, hair down, on a beach",
+        "shots": [],
+    }).json()["id"]
+
+    camera = {"key": "front-direct",
+              "wordings": [{"text": "Taken from directly in front of her"}]}
+    act = {"key": "astride",
+           "wordings": [{"text": "She is astride him with her knees on either side of his hips and her weight down on him, the two of them joined, two people in frame."}]}
+    framing = {"key": "full-length",
+               "wordings": [{"text": "a full-length photograph, head to feet"}]}
+
+    composed_id = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+    }).json()["id"]
+
+    row = db.one("SELECT * FROM shot WHERE id=?", composed_id)
+    db.jload(row, "components")
+    assert row["components"] == {
+        "camera":  {"concept": "camera",  "wording": "front-direct"},
+        "act":     {"concept": "act",     "wording": "astride"},
+        "framing": {"concept": "framing", "wording": "full-length"},
+    }
+
+
+def test_a_written_shot_leaves_components_empty(client, seeded):
+    """A shot written by the writer (not composed) leaves the
+    `components` column at its empty default '{}'. That empty default
+    is the marker 3.6 looks for to distinguish a composed session
+    from a written one — a written session has no drawn components
+    to record, and the column staying empty is the truthful seed.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "written components",
+        "look": "white summer dress, hair down, on a beach",
+        "shots": [{"prompt": "full body, walking", "count": 1}],
+    }).json()["id"]
+    row = db.one("SELECT * FROM shot WHERE session_id=?", sid)
+    db.jload(row, "components")
+    assert row["components"] == {}
+
+
 def test_use_look_false_leaves_the_look_out_of_every_prompt(client, seeded):
     """The look is a switch, not a deletion.
 
