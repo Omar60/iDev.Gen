@@ -376,38 +376,40 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # synthetic 'astride-front' wording — a 2-component observation stuffed
     # into a 1-component cell. The new shape is 5 columns: the trio plus
     # manner and checkpoint, with the literal `none` in any slot the
-    # measurement did not break out. If the table is in the old shape it
-    # has to be dropped: SQLite's `ALTER TABLE` cannot change a PRIMARY KEY
-    # in place, and the data conversion is rule-based (the family lives in
-    # `camera_wording` for the 9 family rows, in `act_wording` for the act-
-    # only rows, and the candid behind-direct row is the only camera-only
-    # row) and is captured by re-seeding from `EVIDENCE_SEED` rather than by
-    # a per-row translation. The cell table currently holds only the seed;
-    # if it ever holds user-entered rows this destructive migration will
-    # need to translate them, and that is the cost of changing the key.
+    # measurement did not break out.
+    #
+    # The migration is destructive: SQLite's `ALTER TABLE` cannot change a
+    # PRIMARY KEY in place, and the (concept, wording) -> trio conversion is
+    # rule-based (the family lives in `camera_wording` for the 9 family
+    # rows, in `act_wording` for the act-only rows, the candid
+    # behind-direct row is the only camera-only row) and is captured by
+    # re-seeding from `EVIDENCE_SEED` rather than by a per-row translation.
+    # 6.2 in this same change populates the cell table with human
+    # judgements, so the destructive migration only runs when the old
+    # table is empty or holds exactly the seed rows; any other content
+    # means a human wrote rows the 4-column shape cannot represent and
+    # the migration has to translate them by hand. A noisy failure is
+    # information; a silent loss is not.
     cell_cols = columns("cell")
     if cell_cols and "concept" in cell_cols:
-        conn.execute("DROP TABLE cell")
-        # Re-execute the cell creation part of SCHEMA so the table is back
-        # in the new shape. The full SCHEMA above ran before _migrate and
-        # CREATE TABLE IF NOT EXISTS was a no-op on the old-shape table;
-        # running it again now would also be a no-op because the table is
-        # gone. The CREATE below is the canonical cell definition.
-        conn.execute("""
-            CREATE TABLE cell (
-                camera_wording  TEXT NOT NULL,
-                act_wording     TEXT NOT NULL,
-                framing_wording TEXT NOT NULL,
-                manner          TEXT NOT NULL,
-                checkpoint      TEXT NOT NULL,
-                judged          INTEGER NOT NULL DEFAULT 0,
-                arrived         INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (camera_wording, act_wording, framing_wording, manner, checkpoint),
-                CHECK (camera_wording <> '' AND act_wording <> '' AND framing_wording <> ''
-                       AND manner <> '' AND checkpoint <> ''),
-                CHECK (judged >= 0 AND arrived BETWEEN 0 AND judged)
+        n_rows = conn.execute("SELECT COUNT(*) FROM cell").fetchone()[0]
+        if n_rows != 0 and n_rows != len(EVIDENCE_SEED):
+            raise RuntimeError(
+                f"cell table is in the old 4-column shape and holds "
+                f"{n_rows} rows ({len(EVIDENCE_SEED)} would be the seed "
+                f"alone). The trio migration is destructive and the rows "
+                f"need to be translated by hand: the old "
+                f"(concept, wording) shape does not map cleanly to the "
+                f"trio. Drain or translate the table before re-running "
+                f"the migration."
             )
-        """)
+        conn.execute("DROP TABLE cell")
+        # Re-run the full SCHEMA: the cell part recreates the table in the
+        # new shape; the other parts are no-ops on their IF NOT EXISTS
+        # clauses. SCHEMA is the single source of truth for the cell
+        # DDL — the previous hand copy here had already lost the CHECK
+        # comments and was drifting.
+        conn.executescript(SCHEMA)
     if conn.execute("SELECT COUNT(*) FROM cell").fetchone()[0] == 0:
         seed_evidence()
 
