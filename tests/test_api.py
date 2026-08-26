@@ -1086,13 +1086,18 @@ def test_a_strict_run_never_repeats_a_component_within_a_single_run(client, seed
     per-slot min (the tripartite-matching ceiling the
     ponytail names) will sometimes 422, and that is also
     correct.
-    """
-    sid = client.post("/api/sessions", json={
-        "model_id": seeded["model_id"], "name": "greedy no-repeat",
-        "manner": "directed", "checkpoint": "finepornV4",
-        "shots": [],
-    }).json()["id"]
 
+    Each iteration runs against a FRESH session: 3.4's
+    tuple dedup refuses a second compose-run on a session
+    that already holds the same trios, and the cross-run
+    refusal is exactly the behavior the new check exists to
+    pin. Reusing one session across iterations would have
+    every iteration after the first refuse on the tuple
+    axis and the within-run no-repeat would be untested
+    after iteration 0. The cell table is shared (the pool
+    does not change) so the within-run property is the same
+    on every iteration; only the session is fresh.
+    """
     # The user's probe pool: 3 trios, 2 distinct cameras. The
     # per-slot min is 2 (cameras), which the pre-check says
     # fits. The shuffle is probabilistic over 3! = 6
@@ -1117,6 +1122,11 @@ def test_a_strict_run_never_repeats_a_component_within_a_single_run(client, seed
 
     n_iterations = 12
     for i in range(n_iterations):
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"greedy no-repeat {i}",
+            "manner": "directed", "checkpoint": "finepornV4",
+            "shots": [],
+        }).json()["id"]
         r = client.post(f"/api/sessions/{sid}/compose-run",
                         json={"count": 2, "candidates": candidates})
         if r.status_code == 422:
@@ -1130,6 +1140,10 @@ def test_a_strict_run_never_repeats_a_component_within_a_single_run(client, seed
             detail = r.json()["detail"]
             assert "largest fillable" in detail, (
                 f"iteration {i}: 422 must name largest fillable, got {detail!r}"
+            )
+            n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+            assert n == 0, (
+                f"iteration {i}: 422 must not queue, shot table has {n} rows"
             )
             continue
         assert r.status_code == 200, (
@@ -1189,13 +1203,15 @@ def test_a_strict_run_gives_the_same_verdict_for_the_same_pool_and_count(client,
     test's flake budget. The old single-shuffle code
     fails this test ~100% of the time: roughly half the
     calls return 422 and the verdicts vary.
-    """
-    sid = client.post("/api/sessions", json={
-        "model_id": seeded["model_id"], "name": "verdict consistency",
-        "manner": "directed", "checkpoint": "finepornV4",
-        "shots": [],
-    }).json()["id"]
 
+    Each iteration runs against a fresh session for the
+    same reason `test_a_strict_run_never_repeats_a_component_within_a_single_run`
+    does: 3.4's tuple dedup refuses a second compose-run
+    on a session that already holds the same trios, and
+    the multi-shuffle pass is what the verdict is supposed
+    to be stable across — the dedup is orthogonal to that
+    and the test has to be shaped around it.
+    """
     # The user's probe pool: 3 trios, 2 distinct cameras.
     # The maximum independent set is 2 (take
     # (cam-a, act-b, frame-b) and (cam-b, act-a, frame-c),
@@ -1225,6 +1241,11 @@ def test_a_strict_run_gives_the_same_verdict_for_the_same_pool_and_count(client,
 
     verdicts = []
     for i in range(20):
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"verdict consistency {i}",
+            "manner": "directed", "checkpoint": "finepornV4",
+            "shots": [],
+        }).json()["id"]
         r = client.post(f"/api/sessions/{sid}/compose-run",
                         json={"count": 2, "candidates": candidates})
         if r.status_code == 200:
@@ -1252,6 +1273,399 @@ def test_a_strict_run_gives_the_same_verdict_for_the_same_pool_and_count(client,
     # regression the test exists to catch.
     assert verdicts[0] == ("200", 2), (
         f"expected all calls to return 200 with 2 shots, got {verdicts[0]!r}"
+    )
+
+
+# -------------------------------------------------------------- 3.4 run dedup
+#
+# 3.3 says "the pool is the set of verified trios, the picker draws
+# distinct trios from it". 3.4 adds: even when the pool is large enough
+# and the picker drew N distinct trios, the run is still refused if a
+# chosen trio collides with what is already in the session. Two
+# distinct checks, both running BEFORE any INSERT (`db.run` auto-commits,
+# a check that fires at k+1 would leave k rows — the same loop-closed
+# property 3.3 pins on the pool-too-small refusal):
+#
+# 1. **Tuple check.** A candidate `(camera_wording, act_wording,
+#    framing_wording)` is refused if it equals a row's stored trio in
+#    `shot.components`. A written row has `components='{}'`, the
+#    schema's marker for "no trio here" (3.1's note: "A written shot
+#    leaves the column at its empty default '{}'"), so it is skipped on
+#    the tuple axis — `if not comps: continue` is the explicit answer
+#    to the decision the user pinned. The line check below still runs
+#    against it.
+#
+# 2. **Line check.** A candidate composed `prompt` is refused if it
+#    equals an existing row's `prompt` text. This is the only check
+#    that catches the wink/finger shape: two distinct act keys whose
+#    wording text is identical, the tuple key differs, the joined
+#    line does not. Two distinct tuples can join to the same line
+#    (`design.md:286-291` and the cell-spec decision the trio key
+#    encodes), and the line check is the loop-closed test the user
+#    named. The within-run case (a wink/finger pair in `best_chosen`,
+#    no prior shots) is the same check against an in-loop set: the
+#    first candidate adds its line to `seen_lines`, the second fires.
+#
+# The 422 names the axis that collided: "tuple already enqueued" for
+# the trio, "line already enqueued" for the joined line. The two
+# messages are asserted separately so a future "let me drop the axis
+# name" fails the test that names the dropped word.
+
+
+def test_a_strict_run_refuses_a_tuple_already_enqueued_by_an_earlier_compose(client, seeded):
+    """The tuple-axis case: a previous compose on this session
+    enqueued `(cam-a, act-a, frame-a)`, and the next compose-run
+    asks the picker to draw the same trio again. The tuple check
+    refuses on the FIRST collision (no shorter run, no mid-loop
+    INSERT — the 3.3 refusal shape carries over). The 422 names
+    the axis (`tuple`) and the trio, so the operator can see
+    WHICH trio they re-asked for, not just that they did.
+
+    The session is fresh except for one composed shot on the
+    exact trio the test asks for; the pool seeded in the cell
+    table is one trio, and the picker would draw it. The check
+    fires before the picker would have written the second copy,
+    so `n_shots` after the 422 is 1 (the pre-existing composed
+    shot), not 0 — the loop-closed property is "the refused
+    run queued nothing NEW", not "the table is empty". A
+    future "let me queue first, validate after" would flip the
+    count to 2 and the test pins that.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "tuple dedup",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    _seed_verified_trio("cam-a", "act-a", "frame-a",
+                        manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        "camera":  [_candidate("cam-a", "cam-a text")],
+        "act":     [_candidate("act-a", "act-a text")],
+        "framing": [_candidate("frame-a", "frame-a text")],
+    }
+
+    # Pre-populate: the first compose-run on a fresh session
+    # enqueues one shot on the trio.
+    first = client.post(f"/api/sessions/{sid}/compose-run",
+                        json={"count": 1, "candidates": candidates})
+    assert first.status_code == 200, first.text
+    assert len(first.json()["ids"]) == 1
+
+    # The second compose-run asks for the same trio. The
+    # tuple check refuses before any INSERT: `n_shots`
+    # after the 422 is the pre-existing 1, not 2.
+    r = client.post(f"/api/sessions/{sid}/compose-run",
+                    json={"count": 1, "candidates": candidates})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "tuple already enqueued" in detail, (
+        f"axis name not in message: {detail!r}"
+    )
+    assert "('cam-a', 'act-a', 'frame-a')" in detail, (
+        f"the trio not named in the message: {detail!r}"
+    )
+    # Loop-closed: the refused run queued nothing new. The
+    # pre-existing shot is the only one in the table — a
+    # future "let me queue before validating" would flip
+    # this to 2 and the test pins that.
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 1, (
+        f"refused run queued new shots: shot table has {n} rows "
+        f"for session {sid}, expected 1 (the pre-existing compose)"
+    )
+
+
+def test_a_strict_run_refuses_a_line_already_enqueued_by_an_earlier_compose_wink_finger(client, seeded):
+    """The line-axis case the user named: two distinct tuples
+    that join to the same composed line. The user's reference
+    pair is `wink` and `finger` in KISS_FRAMES — two concepts
+    whose wording text is identical by design (tested in
+    `tests/test_one_home.py::test_wink_and_finger_are_an_allowed_pair_with_shared_text`).
+    The test uses the same pair as the act candidates; the
+    camera and framing candidates also share their wording
+    text across the two distinct keys, so the joined line is
+    identical on both trios.
+
+    Two verified trios in the cell table — `(cam-a, wink,
+    frame-a)` and `(cam-b, finger, frame-b)` — and the picker
+    draws both. The two tuples are distinct on every key
+    (cam-a/cam-b, wink/finger, frame-a/frame-b), so the tuple
+    check does NOT fire; the joined line is the same wording
+    text concatenated the same way, so the line check DOES
+    fire on the second candidate. The 422 names the axis
+    (`line`) and the joined prompt.
+
+    Without the line check, the two shots would queue with
+    identical prompts and `shot.prompt` would carry the same
+    line twice in the gallery — exactly the kind of "two
+    photographs of one line" failure `repeats` in
+    `enhance.js:99-115` was added to catch on the writer's
+    side. The composer side now catches it before the line
+    reaches the queue, which is the only place it can be
+    caught on a non-LLM path (the model is not in the loop).
+
+    A note on the test shape: 3.3's pool-too-small refusal
+    fires before 3.4's line check, so the pool has to be
+    large enough for the picker to draw 2. That is the
+    reason all three slots carry two distinct keys with the
+    same wording text — 2 cameras × 2 acts × 2 framings is
+    the shape that lets the no-component-repeat rule draw 2
+    from a 2-trio pool, where 1 camera would cap the draw
+    at 1 and the run would refuse on 3.3's axis, not 3.4's.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "wink finger line",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    # The wink/finger wording text — identical by design, the
+    # documented exception in `tests/test_one_home.py`. Pulled
+    # from `KISS_FRAMES` in kinds.js so the test reads as the
+    # real pair, not a synthetic stand-in. The test does not
+    # import kinds.js (the backend test surface is Python) —
+    # the constant below is the wording text the pair shares
+    # verbatim, copied once so the test is self-contained.
+    kiss_text = (
+        "Her lips are pushed forward in a kiss blown at the camera, "
+        "her head tilted playfully to one side, and SHE IS WINKING - "
+        "one eye squeezed fully shut, the other open and looking "
+        "straight at the lens."
+    )
+    cam_text = "the camera text, shared across cam-a and cam-b."
+    frame_text = "the framing text, shared across frame-a and frame-b."
+
+    _seed_verified_trio("cam-a", "wink",   "frame-a",
+                        manner="directed", checkpoint="finepornV4")
+    _seed_verified_trio("cam-b", "finger", "frame-b",
+                        manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        # Two camera keys, SAME wording text. The picker
+        # can draw both because the keys differ; the
+        # joined line is identical because the text is.
+        "camera":  [_candidate("cam-a", cam_text),
+                    _candidate("cam-b", cam_text)],
+        # The act candidates are the wink/finger pair:
+        # two distinct keys, SAME wording text, the
+        # pattern the user pinned.
+        "act":     [_candidate("wink",   kiss_text),
+                    _candidate("finger", kiss_text)],
+        "framing": [_candidate("frame-a", frame_text),
+                    _candidate("frame-b", frame_text)],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-run",
+                    json={"count": 2, "candidates": candidates})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "line already enqueued" in detail, (
+        f"axis name not in message: {detail!r}"
+    )
+    # The composed line carries the camera text, the kiss
+    # text, and the framing text. The kiss text is the
+    # wink/finger-distinguishing content; the camera and
+    # framing texts are what makes the two trios'
+    # joined lines actually identical. Pin the kiss
+    # text in the 422 so the operator sees WHICH line
+    # collided.
+    assert kiss_text in detail, (
+        f"the joined line not in the 422 message: {detail!r}"
+    )
+    # The tuple axis did NOT fire: "tuple" is not in the
+    # message. A future "let me always say tuple" would
+    # put it in and this assert catches the regression.
+    assert "tuple already enqueued" not in detail, (
+        f"tuple axis should not fire on a wink/finger "
+        f"line collision: {detail!r}"
+    )
+    # Loop-closed: the refused run queued nothing.
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, (
+        f"refused run queued shots: shot table has {n} rows "
+        f"for session {sid}, expected 0"
+    )
+
+
+def test_a_strict_run_refuses_a_line_already_enqueued_by_an_earlier_written_shot(client, seeded):
+    """The cross-domain case the user pinned: a written shot
+    (the writer's path, not the composer's) carries a `prompt`
+    that the composer would join to. The written row's
+    `components='{}'` is the explicit case the comparison
+    decision answers — tuple check skipped (no trio to
+    compare), line check fires (the prompt text is fully
+    comparable regardless of how the row was generated).
+
+    The test writes one shot with a prompt that the composer
+    would reproduce verbatim, then runs compose-run on a
+    trio that joins to the same line. Without the line check
+    crossing the written/composed boundary, the run would
+    queue a second shot with the same prompt — the gallery
+    would carry the same line twice, one written and one
+    composed, which is the kind of cross-domain repeat the
+    user's "the dedup target includes lines written by the
+    writer" callout names. The line check fires on
+    `existing_lines` (which includes the written shot's
+    `prompt`), the run refuses with the line-axis message.
+
+    The verification of the composed line: the writer's
+    `_compose` and the composer's `compose_shot` go through
+    the same `_sentences` join, so a take prompt identical
+    to the trio's concatenated wording text joins to the
+    same line the composer would produce. The test reads
+    the written shot's prompt back from the row and asserts
+    the 422 message carries it, which is the loop-closed
+    property — the message names the line the operator
+    already has.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "written line dedup",
+        "manner": "directed", "checkpoint": "finepornV4",
+        # The look and wardrobe are empty so the joined
+        # line is just trigger + base + the take text —
+        # matching the composed line below is one
+        # substitution away.
+        "look": "",
+        "wardrobe": "",
+        "shots": [],
+    }).json()["id"]
+
+    _seed_verified_trio("cam-a", "act-a", "frame-a",
+                        manner="directed", checkpoint="finepornV4")
+
+    # The take's `prompt` is what the writer hands to
+    # `_compose`. The composed line for the trio below
+    # joins to the same line because `compose_shot` and
+    # `_compose` use the same `_sentences` (3.1's loop-
+    # closed test pins that — `test_a_composed_shot_joins_identically_to_a_written_one`).
+    # The take prompt IS the trio's joined sentence.
+    take_prompt = "cam-a text. act-a text. frame-a text."
+    client.post(f"/api/sessions/{sid}/shots", json={
+        "shots": [{"prompt": take_prompt, "count": 1}],
+    })
+    written = db.one(
+        "SELECT id, prompt, components FROM shot WHERE session_id=?",
+        sid,
+    )
+    assert written is not None, "written shot was not created"
+    # The written row's `components` is the empty default,
+    # the explicit case the comparison decision answers:
+    # tuple check skipped, line check runs.
+    assert written["components"] == "{}"
+
+    candidates = {
+        "camera":  [_candidate("cam-a", "cam-a text")],
+        "act":     [_candidate("act-a", "act-a text")],
+        "framing": [_candidate("frame-a", "frame-a text")],
+    }
+    r = client.post(f"/api/sessions/{sid}/compose-run",
+                    json={"count": 1, "candidates": candidates})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "line already enqueued" in detail, (
+        f"line axis not in message: {detail!r}"
+    )
+    # The joined line carries the take's text — pin it
+    # in the message so the operator sees which line
+    # collided.
+    assert take_prompt in detail, (
+        f"the joined line not in the 422 message: {detail!r}"
+    )
+    # The tuple axis did NOT fire: the written row has
+    # no trio, and the tuple check explicitly skips
+    # `components='{}'` rows. A future "let me always
+    # check tuple" would put "tuple" in the message
+    # and this assert catches the regression.
+    assert "tuple already enqueued" not in detail, (
+        f"tuple axis should not fire on a written row "
+        f"with components='{{}}': {detail!r}"
+    )
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    # The refused run queued nothing NEW. The written shot
+    # is the only row — a future "let me queue first"
+    # would flip this to 2 and the test pins that.
+    assert n == 1, (
+        f"refused run queued new shots: shot table has {n} rows "
+        f"for session {sid}, expected 1 (the written shot)"
+    )
+
+
+def test_a_strict_run_refuses_a_within_run_line_collision(client, seeded):
+    """The in-loop line check: two trios in `best_chosen`
+    that join to the same line. No prior shots, so
+    `existing_lines` is empty — the collision is between
+    the first and the second candidate in the run itself.
+    The first candidate adds its line to `seen_lines`; the
+    second fires the line check against `seen_lines`. The
+    422 names the line, not the trio (the trios are
+    distinct — that's the whole point).
+
+    This is the within-run shape of the wink/finger
+    collision: a session that has never been composed on
+    before, the operator asks for 2, and the picker draws
+    two trios whose joined lines collide. The session
+    never had a chance to "already have" the line, so the
+    cross-run case (the previous test) is a different
+    axis — the in-loop set is the loop-closed property:
+    the pre-check walks `best_chosen` in order, the
+    first candidate seeds `seen_lines`, the second one
+    is the one that fires. A future "let me only check
+    existing_lines" would miss this case: `seen_lines`
+    is the in-loop half, and the test pins it.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "within-run line",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    # All three slots carry two distinct keys with the
+    # SAME wording text. The pool has 2 trios, one on each
+    # key combination: (cam-a, act-a, frame-a) and
+    # (cam-b, act-b, frame-b). The joined line is the
+    # same on both. The 3.3 within-run component check
+    # passes (all three keys are distinct), so the picker
+    # draws both — and without the line check, both would
+    # queue with the same prompt.
+    _seed_verified_trio("cam-a", "act-a", "frame-a",
+                        manner="directed", checkpoint="finepornV4")
+    _seed_verified_trio("cam-b", "act-b", "frame-b",
+                        manner="directed", checkpoint="finepornV4")
+
+    shared = "the same text, word for word, on both trios."
+    candidates = {
+        "camera":  [_candidate("cam-a", shared),
+                    _candidate("cam-b", shared)],
+        "act":     [_candidate("act-a", shared),
+                    _candidate("act-b", shared)],
+        "framing": [_candidate("frame-a", shared),
+                    _candidate("frame-b", shared)],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-run",
+                    json={"count": 2, "candidates": candidates})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "line already enqueued" in detail, (
+        f"line axis not in message: {detail!r}"
+    )
+    # The shared text is in the joined line — pin it so
+    # the operator sees which line collided within the
+    # run. The first candidate's line is the one that
+    # seeds `seen_lines`; the second's collides with it
+    # and is the one refused.
+    assert shared in detail, (
+        f"the joined line not in the 422 message: {detail!r}"
+    )
+    # Loop-closed: nothing queued. The within-run
+    # collision is the second candidate, and the run
+    # refused before the insert loop started.
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, (
+        f"refused run queued shots: shot table has {n} rows "
+        f"for session {sid}, expected 0"
     )
 
 

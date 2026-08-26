@@ -1157,6 +1157,89 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
         slot: {x["key"]: x for x in c.candidates.get(slot, []) if isinstance(x, dict) and x.get("key")}
         for slot in _SLOT_ORDER
     }
+
+    # 3.4 dedup: refuse the run on the FIRST collision, before
+    # any INSERT (db.run auto-commits, a check that fires at k+1
+    # would leave k rows — the same loop-closed property 3.3
+    # pins on the pool-too-small refusal). Two distinct tuples
+    # can join to the same composed line (the wink/finger
+    # pattern: two act candidates with the same wording text,
+    # different keys), and the tuple check does not catch it —
+    # the line check is the only thing that does. Within the
+    # same run, a tuple dedup would let a wink/finger pair
+    # through too, so the line check also fires against the
+    # in-loop set the greedy has already chosen.
+    existing = db.q("SELECT components, prompt FROM shot WHERE session_id=?", sid)
+    existing_tuples: set[tuple[str, str, str]] = set()
+    existing_lines: set[str] = set()
+    for row in existing:
+        existing_lines.add(row["prompt"])
+        # components='{}' is this schema's marker for "no trio
+        # here" (the writer drew the line, not the composer —
+        # 3.1 leaves the column at the empty default on a
+        # written shot). A row without a tuple cannot collide
+        # on the tuple axis; the line check below still runs
+        # against it, and a written line that the composer
+        # would join to is a real repeat. The two checks
+        # therefore have different scopes: tuple check on
+        # composed rows only, line check on every row.
+        comps = db.jload(row, "components")["components"]
+        if not comps:
+            continue
+        existing_tuples.add((
+            comps.get("camera", {}).get("wording", ""),
+            comps.get("act", {}).get("wording", ""),
+            comps.get("framing", {}).get("wording", ""),
+        ))
+
+    # The dedup check composes each candidate to compare on
+    # the line axis, which needs the model and the session's
+    # look and wardrobe. Read them once, the same way
+    # `compose_and_queue_shot` does on the insert path.
+    model = db.one("SELECT * FROM model WHERE id=?", session["model_id"])
+    if not model:
+        raise HTTPException(404, "model not found")
+    settings = json.loads(session["settings"] or "{}")
+    look = session["look"] if settings.get("use_look", True) else ""
+    wardrobe = session["wardrobe"]
+
+    seen_tuples: set[tuple[str, str, str]] = set()
+    seen_lines: set[str] = set()
+    for cam_key, act_key, framing_key in best_chosen:
+        cam = by_key["camera"][cam_key]
+        act = by_key["act"][act_key]
+        framing = by_key["framing"][framing_key]
+        line = compose_shot(model, look, wardrobe, cam, act, framing)
+        trio = (cam_key, act_key, framing_key)
+        if trio in existing_tuples or trio in seen_tuples:
+            # The tuple is already enqueued (or would be, by an
+            # earlier trio in this same run). The composed line
+            # is identical in either case — the two checks fire
+            # on the same data — and the operator's question is
+            # "did I re-draw the same trio?". Name the trio in
+            # the message so the operator sees WHICH trio they
+            # asked to re-queue, not just that they did.
+            raise HTTPException(
+                422,
+                f"compose refused: tuple already enqueued in this "
+                f"session: {trio}",
+            )
+        if line in existing_lines or line in seen_lines:
+            # The composed line is already in the session. The
+            # tuple is distinct (otherwise the previous branch
+            # would have fired), so this is the wink/finger
+            # shape: two keys, one wording text, one joined
+            # line. Name the line so the operator can see what
+            # collided and pull the duplicate candidate out of
+            # the next attempt.
+            raise HTTPException(
+                422,
+                f"compose refused: line already enqueued in this "
+                f"session: {line}",
+            )
+        seen_tuples.add(trio)
+        seen_lines.add(line)
+
     shot_ids: list[int] = []
     for cam_key, act_key, framing_key in best_chosen:
         shot_ids.append(compose_and_queue_shot(
