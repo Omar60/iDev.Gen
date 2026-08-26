@@ -909,17 +909,17 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
 
 
 class ComposeRunIn(BaseModel):
-    """A run of N composed shots, drawn from a pool of candidates the
-    caller supplies per slot. The pool is what the operator can see
-    in the catalogue for the session's manner; the backend validates
-    that the verified subset of that pool is large enough to fill
+    """A run of N composed shots, drawn from the caller's candidate
+    pool per slot. The pool is the catalogue slice the operator
+    can see for the session's manner; the backend validates that
+    the verified-trío subset of that pool is large enough to fill
     `count` distinct shots before any insertion, and refuses the
     whole run otherwise.
 
     The pre-check is what stops a "shorter run, delivered" — a loop
-    that queues k shots and refuses at k+1 would leave k rows, because
-    `db.run` commits per INSERT. The check runs up front and a
-    refusal queues nothing.
+    that queues k shots and refuses at k+1 would leave k rows,
+    because `db.run` commits per INSERT. The check runs up front
+    and a refusal queues nothing.
 
     There is no `mode` field, the same way there is none on the
     one-shot payload. Strict is the only legal mode today. 6.1
@@ -932,38 +932,86 @@ class ComposeRunIn(BaseModel):
     candidates: dict  # {"camera": [...], "act": [...], "framing": [...]}, each a list of {key, wordings:[{key, text}]}
 
 
-def _verified_pool_sizes(manner: str, checkpoint: str, candidates: dict) -> dict[str, int]:
-    """For each slot, count distinct candidates whose key has at least
-    one verified cell for (manner, checkpoint). The synthetic 'none'
-    value is excluded — it represents measurements that did not
-    break out a slot, not a real catalogue key, and counting it
-    would inflate the pool with something no compose can draw.
+_SLOT_COLS = (
+    ("camera", "camera_wording"),
+    ("act", "act_wording"),
+    ("framing", "framing_wording"),
+)
+_SLOT_ORDER = ("camera", "act", "framing")
+
+
+def _candidate_keys(slot: str, candidates: dict) -> list[str]:
+    return [c["key"] for c in candidates.get(slot, []) if isinstance(c, dict) and c.get("key")]
+
+
+def _verified_trio_pool(manner: str, checkpoint: str, candidates: dict) -> set[tuple[str, str, str]]:
+    """The strict pool: the set of `(camera, act, framing)` tríos
+    that are verified for `(manner, checkpoint)` AND whose three
+    keys all sit in the caller's candidate lists. A "verified
+    component" alone is not enough — a cell is the trío (the
+    schema went to five columns for this reason, design.md:130
+    and decision C: "the unit of evidence is a cell"), and a
+    component verified alone can still fail in combination
+    (design.md:326-329). Counting DISTINCT per slot independently
+    reads as N×M×K tríos when only some of them are rows in the
+    table, and the zipped picker then draws tríos that nobody
+    verified. The 3.3 success path is "draw N tríos that are
+    cells", not "draw N×1 cameras and N×1 acts and N×1 framings
+    and zip".
 
     The verified predicate mirrors `db.cell_state` exactly
-    (`judged >= 10 AND arrived*10 >= judged*8`); the function is
-    not used because the count needs DISTINCT over a filtered set,
-    which is one SQL query per slot, not a Python pass over the
-    full cell table.
+    (`judged >= 10 AND arrived*10 >= judged*8`). The literal
+    `none` is filtered on every slot: it represents measurements
+    that did not break out a slot, not a real catalogue key, and
+    letting it into the pool would inflate the count with
+    something no compose can draw.
     """
-    pools: dict[str, int] = {}
-    for slot_name, col in (("camera", "camera_wording"),
-                           ("act", "act_wording"),
-                           ("framing", "framing_wording")):
-        keys = [c["key"] for c in candidates.get(slot_name, []) if isinstance(c, dict) and c.get("key")]
-        if not keys:
-            pools[slot_name] = 0
-            continue
-        placeholders = ",".join("?" for _ in keys)
-        rows = db.q(
-            f"SELECT DISTINCT {col} FROM cell "
-            f"WHERE manner = ? AND checkpoint = ? "
-            f"AND {col} IN ({placeholders}) "
-            f"AND {col} != 'none' "
-            f"AND judged >= 10 AND arrived*10 >= judged*8",
-            manner, checkpoint, *keys,
-        )
-        pools[slot_name] = len(rows)
-    return pools
+    cam_keys = _candidate_keys("camera", candidates)
+    act_keys = _candidate_keys("act", candidates)
+    framing_keys = _candidate_keys("framing", candidates)
+    if not (cam_keys and act_keys and framing_keys):
+        return set()
+    cam_ph = ",".join("?" for _ in cam_keys)
+    act_ph = ",".join("?" for _ in act_keys)
+    framing_ph = ",".join("?" for _ in framing_keys)
+    rows = db.q(
+        f"SELECT camera_wording, act_wording, framing_wording FROM cell "
+        f"WHERE manner = ? AND checkpoint = ? "
+        f"AND camera_wording IN ({cam_ph}) AND camera_wording != 'none' "
+        f"AND act_wording IN ({act_ph}) AND act_wording != 'none' "
+        f"AND framing_wording IN ({framing_ph}) AND framing_wording != 'none' "
+        f"AND judged >= 10 AND arrived*10 >= judged*8",
+        manner, checkpoint, *cam_keys, *act_keys, *framing_keys,
+    )
+    return {(r["camera_wording"], r["act_wording"], r["framing_wording"]) for r in rows}
+
+
+def _min_slot_within(pool: set[tuple[str, str, str]]) -> tuple[str, int]:
+    """The slot the 422 message names when the pool runs short.
+    "The slot that ran out" only exists as a per-slot count when
+    the pool is per-slot; under the trío model the pool is rows,
+    not values, and the spec still asks to name a slot. The
+    reasonable read is the slot whose number of distinct values
+    INSIDE the verified tríos is the smallest — the dimension
+    the operator would have to broaden to grow the pool. Ties go
+    to camera, then act, then framing.
+
+    Returns (slot_name, count). For an empty pool the slot is
+    `camera` with 0: the per-slot count is undefined when there
+    are no tríos, and the convention keeps the message shape
+    stable across "the pool is empty" and "the pool is smaller
+    than the request".
+    """
+    if not pool:
+        return "camera", 0
+    distinct = {
+        "camera":  {t[0] for t in pool},
+        "act":     {t[1] for t in pool},
+        "framing": {t[2] for t in pool},
+    }
+    counts = {s: len(distinct[s]) for s in _SLOT_ORDER}
+    slot = min(_SLOT_ORDER, key=lambda s: (counts[s], _SLOT_ORDER.index(s)))
+    return slot, counts[slot]
 
 
 @app.post("/api/sessions/{sid}/compose-run")
@@ -971,29 +1019,42 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     """Queue a run of N composed shots, or refuse the whole run with
     422. The run-level is the same draw as 3.1 (one composed shot
     per call) but the caller asks for N at once and the backend
-    draws, instead of passing the three components in. The 422
-    names the slot that ran out, its verified count, the largest
-    fillable count, and the exploratory mode the operator can
-    switch to, so the refusal is a usable answer — "ask for 3
-    instead of 5, or switch to exploratory" — rather than a
-    dead end that bisects by hand.
+    draws, instead of passing the three components in.
+
+    The pool is the SET of verified tríos for the session's
+    manner and checkpoint, filtered to the candidates' keys. Not
+    DISTINCT counts per slot — those would read as 3 verified
+    cameras × 3 verified acts = 9 tríos when only 3 of them are
+    actually cells in the table, and a zipped picker would draw
+    tríos that nobody verified. The cell is the trío (the schema
+    went to five columns for this reason); the pool is the set
+    of rows that pass the verified predicate, and the picker
+    draws from that set.
+
+    The 422 names four literals the user pinned: the slot
+    (the one whose number of distinct values within the
+    verified tríos is the smallest), its verified count, the
+    largest fillable count, and the word "exploratory". A
+    refusal is a usable answer — "ask for 3 instead of 5, or
+    switch to exploratory" — rather than a dead end that
+    bisects by hand.
 
     The check runs BEFORE any insertion. `db.run` commits per
-    INSERT, so a loop that queues k and refuses at k+1 would leave
-    k rows — a shorter run, delivered. The pre-check is the
-    loop-closed test: with the pre-check in place, a refusal
-    queues nothing, and the assertion `n_shots == 0` after a 422
-    is the proof.
+    INSERT, so a loop that queues k and refuses at k+1 would
+    leave k rows — a shorter run, delivered. The pre-check is
+    the loop-closed test: with the pre-check in place, a
+    refusal queues nothing, and the assertion `n_shots == 0`
+    after a 422 is the proof.
 
-    There is no `mode` field on the payload. Strict is the only
-    legal mode today; encoding it as a string would let a wrong
-    value bypass the check (an if over a free string is a door
-    open by default), and there is no second mode to switch to.
-    6.1 opens the seam when the second mode exists, with a
-    Literal type on `mode` and a test for the new case. Until
-    then, the strict check runs unconditionally and a refusal
-    names the exploratory mode as the path the operator can
-    take, not as a mode this endpoint accepts.
+    There is no `mode` field on the payload. Strict is the
+    only legal mode today; encoding it as a string would let a
+    wrong value bypass the check (an if over a free string is
+    a door open by default), and there is no second mode to
+    switch to. 6.1 opens the seam when the second mode exists,
+    with a Literal type on `mode` and a test for the new case.
+    Until then, the strict check runs unconditionally and a
+    refusal names the exploratory mode as the path the
+    operator can take, not as a mode this endpoint accepts.
     """
     session = db.one("SELECT * FROM session WHERE id=?", sid)
     if not session:
@@ -1015,85 +1076,37 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
             f"set them on the session before composing",
         )
 
-    pools = _verified_pool_sizes(session["manner"], session["checkpoint"], c.candidates)
-    # The slot that runs out first is the one with the smallest
-    # pool. Ties go to camera, then act, then framing — the slot
-    # order the catalogue itself uses. The "naming the slot" in
-    # the spec is singular, so one slot is reported even when
-    # several are equally tight; the verified count named is the
-    # count for that slot, and the largest fillable is the global
-    # minimum.
-    slot_order = ("camera", "act", "framing")
-    min_slot = min(slot_order, key=lambda s: (pools[s], slot_order.index(s)))
-    min_count = pools[min_slot]
-    largest_fillable = min(c.count, min_count)
-
+    pool = _verified_trio_pool(session["manner"], session["checkpoint"], c.candidates)
+    largest_fillable = min(c.count, len(pool))
     if largest_fillable < c.count:
+        min_slot, min_count = _min_slot_within(pool)
         raise HTTPException(
             422,
             f"compose refused: {min_slot} slot has {min_count} verified "
-            f"components, largest fillable is {largest_fillable} "
-            f"(of {c.count} requested); use exploratory mode to compose "
-            f"with unverified cells",
+            f"values within the trío pool, largest fillable is "
+            f"{largest_fillable} (of {c.count} requested); use "
+            f"exploratory mode to compose with unverified cells",
         )
 
-    # The pool is large enough. Pick `count` distinct verified
-    # candidates per slot (no repeat within a slot — the spec's
-    # "no component is drawn twice") and zip. 3.4 adds the
-    # cross-slot tuple dedup on top; the within-slot dedup is
-    # what makes "fill a slot without repeating" hold for 3.3.
-    verified_keys: dict[str, set[str]] = {}
-    for slot_name, col in (("camera", "camera_wording"),
-                           ("act", "act_wording"),
-                           ("framing", "framing_wording")):
-        keys = [x["key"] for x in c.candidates.get(slot_name, []) if isinstance(x, dict) and x.get("key")]
-        if not keys:
-            raise HTTPException(422, f"compose refused: {slot_name} slot has no candidates")
-        placeholders = ",".join("?" for _ in keys)
-        rows = db.q(
-            f"SELECT DISTINCT {col} FROM cell "
-            f"WHERE manner = ? AND checkpoint = ? "
-            f"AND {col} IN ({placeholders}) "
-            f"AND {col} != 'none' "
-            f"AND judged >= 10 AND arrived*10 >= judged*8",
-            session["manner"], session["checkpoint"], *keys,
-        )
-        verified_keys[slot_name] = {r[col] for r in rows}
-        if len(verified_keys[slot_name]) < c.count:
-            # Defensive: the pre-check said this slot was large
-            # enough, and a request that just passed the check
-            # should still pass here. A future "let me add a
-            # write to the cell table mid-run" would re-open
-            # this; the message is the same shape as the refusal
-            # above so the operator sees the same answer.
-            raise HTTPException(
-                422,
-                f"compose refused: {slot_name} slot has "
-                f"{len(verified_keys[slot_name])} verified components, "
-                f"largest fillable is {len(verified_keys[slot_name])} "
-                f"(of {c.count} requested); use exploratory mode to "
-                f"compose with unverified cells",
-            )
-
-    # Index candidates by key for the zip.
+    # The pool is large enough. Pick `count` distinct tríos FROM
+    # THE POOL — not one per slot, the way the original 3.3
+    # did. The set we draw from is the set we just measured: N
+    # distinct rows of `(camera, act, framing)`, each of which
+    # is a verified cell. Every shot queued this way lands on a
+    # verified trío, which is the rule the cell table exists to
+    # enforce.
     by_key: dict[str, dict[str, dict]] = {
         slot: {x["key"]: x for x in c.candidates.get(slot, []) if isinstance(x, dict) and x.get("key")}
-        for slot in slot_order
+        for slot in _SLOT_ORDER
     }
-    picked: dict[str, list[dict]] = {}
-    for slot in slot_order:
-        # Random order is fine: the run is one compose, and a
-        # deterministic order would make the same input produce
-        # the same gallery every time, which is what the existing
-        # writer produces and what 3.6 is about, not 3.3.
-        verified = [by_key[slot][k] for k in verified_keys[slot] if k in by_key[slot]]
-        random.shuffle(verified)
-        picked[slot] = verified[:c.count]
+    chosen = list(pool)
+    random.shuffle(chosen)
+    chosen = chosen[:c.count]
 
     shot_ids: list[int] = []
-    for i in range(c.count):
+    for cam_key, act_key, framing_key in chosen:
         shot_ids.append(compose_and_queue_shot(
-            sid, picked["camera"][i], picked["act"][i], picked["framing"][i],
+            sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
         ))
     return {"ids": shot_ids, "count": len(shot_ids)}
 
