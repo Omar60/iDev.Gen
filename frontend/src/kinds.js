@@ -786,20 +786,20 @@ export const REACH = Object.fromEntries(REACHES.map((r) => [r.key, r]))
  *  two photographs running on the same region.
  */
 export const BODY_OPENINGS = [
-  { key: 'opens-chest', slot: 'her', wordings: [{ text: 'her chest and torso', family: 'chest' }] },
-  { key: 'opens-hips',  slot: 'her', wordings: [{ text: 'her hips and legs',  family: 'hips'  }] },
-  { key: 'opens-feet',  slot: 'her', wordings: [{ text: 'her feet',           family: 'feet'  }] },
+  { key: 'opens-chest', slot: 'her', wordings: [{ key: 'opens-chest',  text: 'her chest and torso', family: 'chest' }] },
+  { key: 'opens-hips',  slot: 'her', wordings: [{ key: 'opens-hips',  text: 'her hips and legs',  family: 'hips'  }] },
+  { key: 'opens-feet',  slot: 'her', wordings: [{ key: 'opens-feet',  text: 'her feet',           family: 'feet'  }] },
 ]
 
 export const TECHNIQUE_DEFECTS = [
-  { key: 'defect-motion-where-moved', slot: 'technique', wordings: [{ text: 'motion blur where a part of her moved', family: 'motion' }] },
-  { key: 'defect-noise-shadow',       slot: 'technique', wordings: [{ text: 'a shadow on her gone to noise',         family: 'noise'  }] },
-  { key: 'defect-noise-grain',        slot: 'technique', wordings: [{ text: 'heavy grain in a shadow on her',         family: 'noise'  }] },
-  { key: 'defect-exposure-stop',      slot: 'technique', wordings: [{ text: 'one side of her a stop too bright',     family: 'exposure' }] },
-  { key: 'defect-exposure-flat',      slot: 'technique', wordings: [{ text: 'flat and overexposed across a part of her', family: 'exposure' }] },
-  { key: 'defect-colour-washed',      slot: 'technique', wordings: [{ text: 'the colour washed out of her skin',     family: 'colour' }] },
-  { key: 'defect-framing-off-level',  slot: 'technique', wordings: [{ text: 'her shoulders running a few degrees off level in the frame', family: 'framing' }] },
-  { key: 'defect-framing-cut-edge',   slot: 'technique', wordings: [{ text: 'her body pushed to one side of the frame and cut off at an edge', family: 'framing' }] },
+  { key: 'defect-motion-where-moved', slot: 'technique', wordings: [{ key: 'defect-motion-where-moved',  text: 'motion blur where a part of her moved', family: 'motion' }] },
+  { key: 'defect-noise-shadow',       slot: 'technique', wordings: [{ key: 'defect-noise-shadow',  text: 'a shadow on her gone to noise',         family: 'noise'  }] },
+  { key: 'defect-noise-grain',        slot: 'technique', wordings: [{ key: 'defect-noise-grain',  text: 'heavy grain in a shadow on her',         family: 'noise'  }] },
+  { key: 'defect-exposure-stop',      slot: 'technique', wordings: [{ key: 'defect-exposure-stop',  text: 'one side of her a stop too bright',     family: 'exposure' }] },
+  { key: 'defect-exposure-flat',      slot: 'technique', wordings: [{ key: 'defect-exposure-flat',  text: 'flat and overexposed across a part of her', family: 'exposure' }] },
+  { key: 'defect-colour-washed',      slot: 'technique', wordings: [{ key: 'defect-colour-washed',  text: 'the colour washed out of her skin',     family: 'colour' }] },
+  { key: 'defect-framing-off-level',  slot: 'technique', wordings: [{ key: 'defect-framing-off-level',  text: 'her shoulders running a few degrees off level in the frame', family: 'framing' }] },
+  { key: 'defect-framing-cut-edge',   slot: 'technique', wordings: [{ key: 'defect-framing-cut-edge',  text: 'her body pushed to one side of the frame and cut off at an edge', family: 'framing' }] },
 ]
 
 const BASE_MANNERS = [
@@ -1668,15 +1668,15 @@ export const takesChunkNote = (at) =>
  *  ponytail: no room detection, the furniture-free nine work everywhere.
  */
 export const CAMERA_POSITIONS = [
-  { key: 'front-direct',      slot: 'camera', wordings: [{ text: 'Taken from directly in front of her',                                       family: 'front'    }] },
-  { key: 'shoulder-left',     slot: 'camera', wordings: [{ text: 'Taken from behind her left shoulder, her back three-quarters to the camera', family: 'shoulder' }] },
-  { key: 'shoulder-right',    slot: 'camera', wordings: [{ text: 'Taken from behind her right shoulder, her back three-quarters to the camera', family: 'shoulder' }] },
-  { key: 'side-right',        slot: 'camera', wordings: [{ text: 'Taken from her right side, her body in full profile',                       family: 'side'     }] },
-  { key: 'side-left',         slot: 'camera', wordings: [{ text: 'Taken from her left side, her body in full profile',                        family: 'side'     }] },
-  { key: 'behind-direct',     slot: 'camera', wordings: [{ text: 'Taken from directly behind her',                                             family: 'behind'   }] },
-  { key: 'overhead-direct',   slot: 'camera', wordings: [{ text: 'Overhead camera directly above her',                                          family: 'overhead' }] },
-  { key: 'overhead-high',     slot: 'camera', wordings: [{ text: 'High camera looking steeply down at her',                                     family: 'overhead' }] },
-  { key: 'floor-low-angle',   slot: 'camera', wordings: [{ text: 'Low-angle shot from the floor at her feet',                                   family: 'floor'    }] },
+  { key: 'front-direct',      slot: 'camera', wordings: [{ key: 'front-direct',  text: 'Taken from directly in front of her',                                       family: 'front'    }] },
+  { key: 'shoulder-left',     slot: 'camera', wordings: [{ key: 'shoulder-left',  text: 'Taken from behind her left shoulder, her back three-quarters to the camera', family: 'shoulder' }] },
+  { key: 'shoulder-right',    slot: 'camera', wordings: [{ key: 'shoulder-right',  text: 'Taken from behind her right shoulder, her back three-quarters to the camera', family: 'shoulder' }] },
+  { key: 'side-right',        slot: 'camera', wordings: [{ key: 'side-right',  text: 'Taken from her right side, her body in full profile',                       family: 'side'     }] },
+  { key: 'side-left',         slot: 'camera', wordings: [{ key: 'side-left',  text: 'Taken from her left side, her body in full profile',                        family: 'side'     }] },
+  { key: 'behind-direct',     slot: 'camera', wordings: [{ key: 'behind-direct',  text: 'Taken from directly behind her',                                             family: 'behind'   }] },
+  { key: 'overhead-direct',   slot: 'camera', wordings: [{ key: 'overhead-direct',  text: 'Overhead camera directly above her',                                          family: 'overhead' }] },
+  { key: 'overhead-high',     slot: 'camera', wordings: [{ key: 'overhead-high',  text: 'High camera looking steeply down at her',                                     family: 'overhead' }] },
+  { key: 'floor-low-angle',   slot: 'camera', wordings: [{ key: 'floor-low-angle',  text: 'Low-angle shot from the floor at her feet',                                   family: 'floor'    }] },
 ]
 
 /** Where the PHONE was, for a shoot nobody is photographing.
@@ -1709,19 +1709,19 @@ export const CAMERA_POSITIONS = [
  *    ponytail: no `him` check, the shelf reaches the same overhead alone.
  */
 export const CANDID_POSITIONS = [
-  { key: 'front-direct',    slot: 'camera', wordings: [{ text: 'Taken from directly in front of her',                                         family: 'front'    }] },
-  { key: 'front-arm-length',slot: 'camera', wordings: [{ text: "Phone held out at arm's length in front of her face",                          family: 'front'    }] },
-  { key: 'overhead-direct', slot: 'camera', wordings: [{ text: 'Overhead camera directly above her',                                            family: 'overhead' }] },
-  { key: 'overhead-shelf',  slot: 'camera', wordings: [{ text: 'Phone propped on a high shelf across the room, looking down at her',           family: 'overhead' }] },
+  { key: 'front-direct',    slot: 'camera', wordings: [{ key: 'front-direct',  text: 'Taken from directly in front of her',                                         family: 'front'    }] },
+  { key: 'front-arm-length',slot: 'camera', wordings: [{ key: 'front-arm-length',  text: "Phone held out at arm's length in front of her face",                          family: 'front'    }] },
+  { key: 'overhead-direct', slot: 'camera', wordings: [{ key: 'overhead-direct',  text: 'Overhead camera directly above her',                                            family: 'overhead' }] },
+  { key: 'overhead-shelf',  slot: 'camera', wordings: [{ key: 'overhead-shelf',  text: 'Phone propped on a high shelf across the room, looking down at her',           family: 'overhead' }] },
   // Both sides, session 251: 3/3 each, shot together so the left is its own
   // control and it reproduced. What the judge verifies is a shoulder
   // three-quarter view and not WHICH shoulder - left and right are one answer to
   // it on purpose, because telling her left from her right is a harder question
   // than the one being asked. The directed catalogue carries both on the same
   // evidence.
-  { key: 'shoulder-left',   slot: 'camera', wordings: [{ text: 'Taken from behind her left shoulder, her back three-quarters to the camera',   family: 'shoulder' }] },
-  { key: 'shoulder-right',  slot: 'camera', wordings: [{ text: 'Taken from behind her right shoulder, her back three-quarters to the camera',  family: 'shoulder' }] },
-  { key: 'mirror-selfie',   slot: 'camera', wordings: [{ text: 'Mirror selfie, the phone up in her right hand and visible in the mirror',       family: 'mirror'   }] },
+  { key: 'shoulder-left',   slot: 'camera', wordings: [{ key: 'shoulder-left',  text: 'Taken from behind her left shoulder, her back three-quarters to the camera',   family: 'shoulder' }] },
+  { key: 'shoulder-right',  slot: 'camera', wordings: [{ key: 'shoulder-right',  text: 'Taken from behind her right shoulder, her back three-quarters to the camera',  family: 'shoulder' }] },
+  { key: 'mirror-selfie',   slot: 'camera', wordings: [{ key: 'mirror-selfie',  text: 'Mirror selfie, the phone up in her right hand and visible in the mirror',       family: 'mirror'   }] },
 ]
 
 /** The catalogue a manner plans from.
@@ -1753,8 +1753,8 @@ export const CANDID_POSITIONS = [
  */
 export const SELFIE_POSITIONS = [
   ...CANDID_POSITIONS,
-  { key: 'pov-low-chest',  slot: 'camera', wordings: [{ text: 'Phone held low in her own hand at her chest, angled down along her own body',      family: 'pov' }] },
-  { key: 'pov-above-back', slot: 'camera', wordings: [{ text: 'Phone held above her face in her own outstretched hand as she lies on her back, looking down at her', family: 'pov' }] },
+  { key: 'pov-low-chest',  slot: 'camera', wordings: [{ key: 'pov-low-chest',  text: 'Phone held low in her own hand at her chest, angled down along her own body',      family: 'pov' }] },
+  { key: 'pov-above-back', slot: 'camera', wordings: [{ key: 'pov-above-back',  text: 'Phone held above her face in her own outstretched hand as she lies on her back, looking down at her', family: 'pov' }] },
 ]
 
 export const POSITIONS = { directed: CAMERA_POSITIONS, candid: CANDID_POSITIONS,
@@ -1862,20 +1862,20 @@ export const fitCameras = (cameras, poses, positions, rand = Math.random) => {
  */
 export const KISS_FRAMES = [
   { key: 'closed', slot: 'kiss-face', hand: '',
-    wordings: [{ text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+    wordings: [{ key: 'closed',  text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
                       + 'to one side, and HER EYES ARE COMPLETELY CLOSED - both eyelids shut, no iris and no '
                       + 'white showing, a peaceful dreamy expression.' }] },
   { key: 'wink',   slot: 'kiss-face', hand: '',
-    wordings: [{ text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+    wordings: [{ key: 'wink',  text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
                       + 'to one side, and SHE IS WINKING - one eye squeezed fully shut, the other open and '
                       + 'looking straight at the lens.' }] },
   { key: 'open',   slot: 'kiss-face', hand: '',
-    wordings: [{ text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+    wordings: [{ key: 'open',  text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
                       + 'to one side, both eyes open and looking straight at the lens.' }] },
   { key: 'finger', slot: 'kiss-face',
     hand: 'Her free hand is raised beside her face with the middle finger up and the other '
         + 'fingers curled down, held toward the camera.',
-    wordings: [{ text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
+    wordings: [{ key: 'finger',  text: 'Her lips are pushed forward in a kiss blown at the camera, her head tilted playfully '
                       + 'to one side, and SHE IS WINKING - one eye squeezed fully shut, the other open and '
                       + 'looking straight at the lens.' }] },
 ]
@@ -1990,15 +1990,15 @@ export const kissPlan = (n, rand = Math.random) => spreadOver(n, KISS_FRAMES, 8,
 export const ARRANGEMENTS = [
   { key: 'astride', slot: 'act', label: 'She is on top, facing him',
     cameras: ['front', 'overhead', 'mirror', 'pov'],
-    wordings: [{ text: 'She is astride him with her knees on either side of his hips and her weight down on '
+    wordings: [{ key: 'astride',  text: 'She is astride him with her knees on either side of his hips and her weight down on '
                        + 'him, the two of them joined, two people in frame.' }] },
   { key: 'reverse', slot: 'act', label: 'She is on top, facing away',
     cameras: ['shoulder'],
-    wordings: [{ text: 'She is astride him facing away from him with her weight on her feet, the two of them '
+    wordings: [{ key: 'reverse',  text: 'She is astride him facing away from him with her weight on her feet, the two of them '
                        + 'joined, two people in frame.' }] },
   { key: 'wall',    slot: 'act', label: 'Standing against the wall',
     cameras: ['mirror', 'shoulder'],
-    wordings: [{ text: 'She is standing with her front to the wall and one leg raised, he is behind her, the '
+    wordings: [{ key: 'wall',  text: 'She is standing with her front to the wall and one leg raised, he is behind her, the '
                        + 'two of them joined, two people in frame.' }] },
   // `back` and `side` are NOT in this list. They are seeded as cells in
   // `backend/db.py:EVIDENCE_SEED` (task 2.3 of the prompt-component-matrix
@@ -2324,14 +2324,14 @@ export const wardrobeChunkNote = (at) =>
  *  the claim with it. Run one, and if it holds, flip its flag. */
 export const EXPRESSIONS = [
   { key: 'soft-smile',     label: 'soft smile',      slot: 'expression', measured: true,
-    wordings: [{ text: 'give her a soft closed-lip smile with the corners of her mouth turned up' }] },
+    wordings: [{ key: 'soft-smile',  text: 'give her a soft closed-lip smile with the corners of her mouth turned up' }] },
   { key: 'warm-smile',     label: 'warm smile',      slot: 'expression', measured: true,
-    wordings: [{ text: 'turn the corners of her mouth up into a warm smile with her lips just parted' }] },
+    wordings: [{ key: 'warm-smile',  text: 'turn the corners of her mouth up into a warm smile with her lips just parted' }] },
   { key: 'happy',          label: 'happy',           slot: 'expression', measured: true,
-    wordings: [{ text: 'open her mouth into a wide happy smile showing her upper teeth' }] },
+    wordings: [{ key: 'happy',  text: 'open her mouth into a wide happy smile showing her upper teeth' }] },
   { key: 'laughing',       label: 'laughing',        slot: 'expression', measured: true,
     note: 'closes both eyes — a wink does not survive this one',
-    wordings: [{ text: 'make her laugh out loud with her mouth wide open and her upper teeth showing' }] },
+    wordings: [{ key: 'laughing',  text: 'make her laugh out loud with her mouth wide open and her upper teeth showing' }] },
   // `blowing a kiss` and not `a kiss` was the wording here for one commit, and it
   // is the mistake this list is now built to refuse: the idiom is a HAND, not a
   // mouth. Two things then go wrong at once. The keep-clause holds the two hands
@@ -2344,18 +2344,18 @@ export const EXPRESSIONS = [
   // renders well: the mouth.
   { key: 'kiss',           label: 'kiss',            slot: 'expression',
     note: 'the mouth only — a hand throwing it grows a third one and never reaches her lips',
-    wordings: [{ text: 'push her lips forward into a kiss towards the camera' }] },
+    wordings: [{ key: 'kiss',  text: 'push her lips forward into a kiss towards the camera' }] },
   { key: 'pout',           label: 'pout',            slot: 'expression',
-    wordings: [{ text: 'push her lower lip forward into a pout with her lips closed' }] },
+    wordings: [{ key: 'pout',  text: 'push her lower lip forward into a pout with her lips closed' }] },
   { key: 'biting-her-lip', label: 'biting her lip',  slot: 'expression',
-    wordings: [{ text: 'catch her lower lip between her front teeth' }] },
+    wordings: [{ key: 'biting-her-lip',  text: 'catch her lower lip between her front teeth' }] },
   { key: 'tongue-out',     label: 'tongue out',      slot: 'expression',
-    wordings: [{ text: 'open her mouth and stick her tongue out towards the camera' }] },
+    wordings: [{ key: 'tongue-out',  text: 'open her mouth and stick her tongue out towards the camera' }] },
   // The two that move the eyes, and the reason `keeps` exists at all.
   { key: 'wink',           label: 'wink',            slot: 'expression', eyes: true,
-    wordings: [{ text: 'close her left eye in a wink and leave her right eye open, her mouth closed' }] },
+    wordings: [{ key: 'wink',  text: 'close her left eye in a wink and leave her right eye open, her mouth closed' }] },
   { key: 'sultry',         label: 'sultry',          slot: 'expression', eyes: true,
-    wordings: [{ text: 'lower her eyelids into a half-lidded look with her lips slightly parted' }] },
+    wordings: [{ key: 'sultry',  text: 'lower her eyelids into a half-lidded look with her lips slightly parted' }] },
 ]
 
 /** The tail every preset carries. Without it the edit is free to move what the

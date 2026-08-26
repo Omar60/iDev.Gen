@@ -101,23 +101,33 @@ CREATE TABLE IF NOT EXISTS shot (
     finished_at   TEXT NOT NULL DEFAULT ''
 );
 
--- The cell is the unit of evidence: a (concept, wording, manner, checkpoint)
--- tuple holding the counts that 2.2 turns into a verdict. NOT NULL on the four
--- keys is what makes a write missing one a hard rejection; PRIMARY KEY is the
--- row identity, not a separate rule. See task 2.1 of the prompt-component-
--- matrix change: the rejection lives in the schema, not in a Python if.
+-- The cell is the unit of evidence: a (camera_wording, act_wording,
+-- framing_wording, manner, checkpoint) tuple holding the counts that 2.2
+-- turns into a verdict. NOT NULL on the five keys is what makes a write
+-- missing one a hard rejection; PRIMARY KEY is the row identity, not a
+-- separate rule. See task 2.1 of the prompt-component-matrix change: the
+-- rejection lives in the schema, not in a Python if. The trio is the unit
+-- because a photograph is camera × act × framing — the 9 per-family
+-- observations in kinds.js:1962-1986 are (act, family) measurements, and
+-- the 4-column key that recorded them under a single (concept, wording)
+-- pair was the wrong shape.
 CREATE TABLE IF NOT EXISTS cell (
-    concept    TEXT NOT NULL,
-    wording    TEXT NOT NULL,
-    manner     TEXT NOT NULL,
-    checkpoint TEXT NOT NULL,
-    judged     INTEGER NOT NULL DEFAULT 0,
-    arrived    INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (concept, wording, manner, checkpoint),
+    camera_wording  TEXT NOT NULL,
+    act_wording     TEXT NOT NULL,
+    framing_wording TEXT NOT NULL,
+    manner          TEXT NOT NULL,
+    checkpoint      TEXT NOT NULL,
+    judged          INTEGER NOT NULL DEFAULT 0,
+    arrived         INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (camera_wording, act_wording, framing_wording, manner, checkpoint),
     -- NOT NULL alone would let '' through, and '' is this schema's idiom for
-    -- "not set" (every other TEXT column here is DEFAULT ''). A cell with an
-    -- empty wording is the entry design.md:110 says there is nothing to index.
-    CHECK (concept <> '' AND wording <> '' AND manner <> '' AND checkpoint <> ''),
+    -- "not set" (every other TEXT column here is DEFAULT ''). A cell with
+    -- an empty wording is one the cell has nothing to index on. The literal
+    -- 'none' is a fact of the measurement (scripts/shoot_arrangements.py:63-77
+    -- has no framing, and the act-only and camera-only seeds did not name
+    -- the other two slots) and is the only value the synthetic keys take.
+    CHECK (camera_wording <> '' AND act_wording <> '' AND framing_wording <> ''
+           AND manner <> '' AND checkpoint <> ''),
     -- 2.2 reads a verdict off these two. More arrivals than judgements is not a
     -- state it can answer, so it never gets stored.
     CHECK (judged >= 0 AND arrived BETWEEN 0 AND judged)
@@ -165,8 +175,10 @@ def cell_state(judged: int, arrived: int) -> str:
 
 # Verdicts this project already paid GPU time for, carried into the cell
 # table with the sample size, manner and checkpoint they were actually
-# taken at (task 2.3 of the prompt-component-matrix change). Four traps
-# the sources set that the seed deliberately does not fall into:
+# taken at (task 2.3 of the prompt-component-matrix change). Each row is
+# the trio that produced the photograph, with the literal wording `none`
+# in a slot the measurement did not break out. Five traps the sources
+# set that the seed deliberately does not fall into:
 #
 #   1. `side` (0/9, 0/8) lands unknown, not dead: 9 and 8 are below the
 #      n=10 the spec sets as the minimum for any verdict at all, so the
@@ -175,68 +187,84 @@ def cell_state(judged: int, arrived: int) -> str:
 #   2. `astride` seeds per family, not as its 18/22 aggregate. The four
 #      per-family measurements (6/6, 4/4, 6/4, 6/4) all have n<10 and
 #      land unknown. Seeding the aggregate instead of the split is the
-#      failure that makes `astride` look measured when it is not.
+#      failure that makes `astride` look measured when it is not. The
+#      family lives in the `camera_wording` slot because that is the
+#      dimension the measurement varied (the camera was rotated through
+#      its families; kinds.js:1962-1986 records the family level), and
+#      `framing_wording` is the literal `none` because the fixed line
+#      in scripts/shoot_arrangements.py:63-77 does not name one — the
+#      framing was absent from the measurement, not lost.
 #   3. `astride` on the Krea 2 mix (12/9) is one cell without per-family
 #      breakdown, because kinds.js:2014 does not split that run by
-#      family. Inventing a split is the failure 2.4 catches. Under the
-#      ratio reading, this cell is dead (9*10=90 < 12*8=96, 75% below
-#      the 80% threshold) - the ratio decision kills the control on
-#      Krea 2 mix, and that is the cost.
+#      family. Inventing a split is the failure 2.4 catches. The
+#      `camera_wording` is also `none` because the source does not
+#      name a camera for that run, and `framing_wording` is `none` for
+#      the same reason as the per-family rows. Under the ratio reading,
+#      this cell is dead (9*10=90 < 12*8=96, 75% below the 80%
+#      threshold) — the ratio decision kills the control on Krea 2 mix,
+#      and that is the cost.
 #   4. The `behind` ACT is not seeded. kinds.js:2035-2058 kills it with
 #      four anecdotes (sessions 155, 161, 267, 268), not with a
 #      (judged, arrived) pair. The 0/6 in the source is the CAMERA
-#      `behind-direct` under candid, and that is what is seeded - as
-#      a camera, not as the act. Manufacturing an n for the act would
-#      be inventing a number.
-#
-# Wording convention: a family cell uses `<arrangement>-<family>`
-# (e.g. `astride-front`, `wall-mirror`); an aggregate cell uses the
-# bare arrangement key (e.g. `astride` on Krea 2 mix, `back`, `side`).
-# The family cells are synthetic: the cell key has 4 columns, the
-# family is the 5th, and the wording is the only place to carry it.
-# 2.4 pins that gap and the 2.4 test will fail until either the
-# catalogue carries the family entries or the seeds are pulled.
+#      `behind-direct` under candid, and that is what is seeded — as a
+#      camera cell, with `act_wording` and `framing_wording` set to
+#      `none` because the source is a camera measurement that did not
+#      name the act or the framing. Manufacturing an n for the act
+#      would be inventing a number.
+#   5. `back` and `side` are seeded as the arrangement wordings they
+#      were shot on, with `camera_wording` and `framing_wording` set
+#      to `none` because the source (kinds.js:2021, "back 0 of 12 on
+#      finepornV4, 0 of 12 on the Krea 2 mix") reports the act ×
+#      checkpoint without breaking out camera or framing. The wording
+#      remains `back` and `side` even though the catalogue no longer
+#      carries them (2.4) — the verdict is real, and a future reshape
+#      can either re-introduce them in ARRANGEMENTS or pull the seeds
+#      out.
 #
 # The third astride measurement from kinds.js:1968-1969 ("12 of 12
 # in sessions 265 and 266 on a different fixed line") is also not
 # seeded: the source does not name the checkpoint, and inventing one
 # would be the failure 2.4 is set up to catch. Documented here so
 # the omission is not silent.
-EVIDENCE_SEED: list[tuple[str, str, str, str, int, int]] = [
-    # (concept, wording, manner, checkpoint, judged, arrived)
-    # astride, per family, finepornV4 - all unknown (n<10)
-    ("act", "astride-front",    "directed", "finepornV4", 6, 6),
-    ("act", "astride-overhead", "directed", "finepornV4", 4, 4),
-    ("act", "astride-mirror",   "directed", "finepornV4", 6, 4),
-    ("act", "astride-pov",      "directed", "finepornV4", 6, 4),
-    # astride, second checkpoint, no per-family - DEAD (12 judged, 9 arrived; 75% below 80% ratio)
-    ("act", "astride",          "directed", "Krea 2 mix", 12, 9),
-    # reverse, per family, finepornV4 - all unknown (n<10)
-    ("act", "reverse-shoulder", "directed", "finepornV4", 3, 3),
-    ("act", "reverse-mirror",   "directed", "finepornV4", 3, 1),
-    ("act", "reverse-overhead", "directed", "finepornV4", 3, 1),
-    # wall, per family, finepornV4 - all unknown (n<10)
-    ("act", "wall-mirror",      "directed", "finepornV4", 3, 3),
-    ("act", "wall-shoulder",    "directed", "finepornV4", 3, 0),
-    # back, per checkpoint - dead (12 judged, 0 arrived)
-    ("act", "back",             "directed", "finepornV4", 12, 0),
-    ("act", "back",             "directed", "Krea 2 mix", 12, 0),
-    # side, per checkpoint - UNKNOWN (9 and 8 judged, below 10)
-    ("act", "side",             "directed", "finepornV4", 9, 0),
-    ("act", "side",             "directed", "Krea 2 mix", 8, 0),
-    # camera: behind-direct under candid, 0/6 - unknown (6 judged)
-    ("camera", "behind-direct", "candid",   "finepornV4", 6, 0),
+EVIDENCE_SEED: list[tuple[str, str, str, str, str, int, int]] = [
+    # (camera_wording, act_wording, framing_wording, manner, checkpoint, judged, arrived)
+    # astride, per family, finepornV4 — all unknown (n<10).
+    # The camera dimension is the family (kinds.js:1967-1968); framing was absent.
+    ("front",    "astride", "none", "directed", "finepornV4", 6, 6),
+    ("overhead", "astride", "none", "directed", "finepornV4", 4, 4),
+    ("mirror",   "astride", "none", "directed", "finepornV4", 6, 4),
+    ("pov",      "astride", "none", "directed", "finepornV4", 6, 4),
+    # astride on Krea 2 mix, no per-family or per-camera breakdown - DEAD.
+    # kinds.js:2014 does not split this run by family or camera.
+    ("none", "astride", "none", "directed", "Krea 2 mix", 12, 9),
+    # reverse, per family, finepornV4 — all unknown (n<10).
+    ("shoulder", "reverse", "none", "directed", "finepornV4", 3, 3),
+    ("mirror",   "reverse", "none", "directed", "finepornV4", 3, 1),
+    ("overhead", "reverse", "none", "directed", "finepornV4", 3, 1),
+    # wall, per family, finepornV4 — all unknown (n<10).
+    ("mirror",   "wall", "none", "directed", "finepornV4", 3, 3),
+    ("shoulder", "wall", "none", "directed", "finepornV4", 3, 0),
+    # back, per checkpoint - dead (12 judged, 0 arrived).
+    # Source: kinds.js:2021 — act × checkpoint, no camera or framing breakdown.
+    ("none", "back", "none", "directed", "finepornV4", 12, 0),
+    ("none", "back", "none", "directed", "Krea 2 mix", 12, 0),
+    # side, per checkpoint - UNKNOWN (9 and 8 judged, below 10) per spec rules.
+    ("none", "side", "none", "directed", "finepornV4", 9, 0),
+    ("none", "side", "none", "directed", "Krea 2 mix", 8, 0),
+    # camera: behind-direct under candid, 0/6 - unknown (6 judged).
+    # Source: kinds.js:2056-2058 — camera measurement, no act or framing named.
+    ("behind-direct", "none", "none", "candid", "finepornV4", 6, 0),
 ]
 
 
-def seed_evidence(rows: list[tuple[str, str, str, str, int, int]] | None = None) -> int:
+def seed_evidence(rows: list[tuple[str, str, str, str, str, int, int]] | None = None) -> int:
     """Insert evidence rows into the cell table. Returns the count of new
     rows inserted.
 
     The INSERT uses `ON CONFLICT DO NOTHING`, which only swallows the
     PRIMARY KEY conflict (the "already seeded" case). It does NOT swallow
     CHECK or NOT NULL violations: a row with an empty `''` for any of the
-    four key columns, or `arrived > judged`, raises `sqlite3.IntegrityError`.
+    five key columns, or `arrived > judged`, raises `sqlite3.IntegrityError`.
     A bare `except IntegrityError: pass` would let those disappear as if
     they were PK conflicts — exactly the failure the CHECK is set up to
     make noisy, and the one the test
@@ -249,10 +277,10 @@ def seed_evidence(rows: list[tuple[str, str, str, str, int, int]] | None = None)
     if rows is None:
         rows = EVIDENCE_SEED
     before = one("SELECT COUNT(*) AS n FROM cell")["n"]
-    for concept, wording, manner, checkpoint, judged, arrived in rows:
-        run("INSERT INTO cell (concept, wording, manner, checkpoint, judged, arrived) "
-            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-            concept, wording, manner, checkpoint, judged, arrived)
+    for camera_wording, act_wording, framing_wording, manner, checkpoint, judged, arrived in rows:
+        run("INSERT INTO cell (camera_wording, act_wording, framing_wording, manner, checkpoint, judged, arrived) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            camera_wording, act_wording, framing_wording, manner, checkpoint, judged, arrived)
     return one("SELECT COUNT(*) AS n FROM cell")["n"] - before
 
 
@@ -340,6 +368,46 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # only safe move is to fill it. `seed_evidence` is idempotent (ON
     # CONFLICT DO NOTHING) so a re-run is a no-op and the guard is belt-
     # and-braces rather than load-bearing.
+    #
+    # The trio is the cell (design.md decision C, spec.md: "A cell is
+    # identified by the trio, manner and checkpoint"). The earlier 4-column
+    # shape (`concept, wording, manner, checkpoint`) recorded the 9
+    # per-family verdicts of kinds.js:1962-1986 as a single concept with a
+    # synthetic 'astride-front' wording — a 2-component observation stuffed
+    # into a 1-component cell. The new shape is 5 columns: the trio plus
+    # manner and checkpoint, with the literal `none` in any slot the
+    # measurement did not break out. If the table is in the old shape it
+    # has to be dropped: SQLite's `ALTER TABLE` cannot change a PRIMARY KEY
+    # in place, and the data conversion is rule-based (the family lives in
+    # `camera_wording` for the 9 family rows, in `act_wording` for the act-
+    # only rows, and the candid behind-direct row is the only camera-only
+    # row) and is captured by re-seeding from `EVIDENCE_SEED` rather than by
+    # a per-row translation. The cell table currently holds only the seed;
+    # if it ever holds user-entered rows this destructive migration will
+    # need to translate them, and that is the cost of changing the key.
+    cell_cols = columns("cell")
+    if cell_cols and "concept" in cell_cols:
+        conn.execute("DROP TABLE cell")
+        # Re-execute the cell creation part of SCHEMA so the table is back
+        # in the new shape. The full SCHEMA above ran before _migrate and
+        # CREATE TABLE IF NOT EXISTS was a no-op on the old-shape table;
+        # running it again now would also be a no-op because the table is
+        # gone. The CREATE below is the canonical cell definition.
+        conn.execute("""
+            CREATE TABLE cell (
+                camera_wording  TEXT NOT NULL,
+                act_wording     TEXT NOT NULL,
+                framing_wording TEXT NOT NULL,
+                manner          TEXT NOT NULL,
+                checkpoint      TEXT NOT NULL,
+                judged          INTEGER NOT NULL DEFAULT 0,
+                arrived         INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (camera_wording, act_wording, framing_wording, manner, checkpoint),
+                CHECK (camera_wording <> '' AND act_wording <> '' AND framing_wording <> ''
+                       AND manner <> '' AND checkpoint <> ''),
+                CHECK (judged >= 0 AND arrived BETWEEN 0 AND judged)
+            )
+        """)
     if conn.execute("SELECT COUNT(*) FROM cell").fetchone()[0] == 0:
         seed_evidence()
 

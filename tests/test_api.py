@@ -106,11 +106,12 @@ def test_a_composed_shot_joins_identically_to_a_written_one(client, seeded):
     # the draw respect cell state, 6.1 makes unknown drawable in
     # exploratory mode.
     camera = {"key": "front-direct",
-              "wordings": [{"text": "Taken from directly in front of her"}]}
+              "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
     act = {"key": "astride",
-           "wordings": [{"text": "She is astride him with her knees on either side of his hips and her weight down on him, the two of them joined, two people in frame."}]}
+           "wordings": [{"key": "astride",
+                         "text": "She is astride him with her knees on either side of his hips and her weight down on him, the two of them joined, two people in frame."}]}
     framing = {"key": "full-length",
-               "wordings": [{"text": "a full-length photograph, head to feet"}]}
+               "wordings": [{"key": "full-length", "text": "a full-length photograph, head to feet"}]}
 
     # Compose and queue.
     composed_id = client.post(f"/api/sessions/{sid}/compose", json={
@@ -144,14 +145,17 @@ def test_a_composed_shot_records_the_three_components_on_the_row(client, seeded)
     the row in the `components` column. The prose does not survive
     the round-trip — from `'4da woman. photo, 35mm. white summer dress,
     hair down, on a beach. Taken from directly in front of her. ...'`
-    you cannot recover `front-direct` — and the cell is keyed by
-    (concept, wording, manner, checkpoint), so 6.2 needs the wording
-    off the row to know which cell to count the photo toward.
+    you cannot recover `front-direct` — and the cell is keyed by the
+    trio (camera_wording, act_wording, framing_wording, manner,
+    checkpoint), so 6.2 needs all three wordings to land the photo on
+    the right cell.
 
-    The structure stored: each slot is `{"concept": <slot type>,
-    "wording": <catalogue key>}`, JSON-encoded. A written shot
-    leaves the column at the empty default '{}', which is the
-    marker 3.6 uses to tell a composed session from a written one.
+    The structure stored: the JSON key is the slot name (camera, act,
+    framing), and each value is `{"concept": <concept key>,
+    "wording": <wording key>}` — both real catalogue keys, equal
+    when the concept has a single wording. A written shot leaves the
+    column at the empty default '{}', which is the marker 3.6 uses to
+    tell a composed session from a written one.
     """
     sid = client.post("/api/sessions", json={
         "model_id": seeded["model_id"], "name": "components on row",
@@ -160,11 +164,12 @@ def test_a_composed_shot_records_the_three_components_on_the_row(client, seeded)
     }).json()["id"]
 
     camera = {"key": "front-direct",
-              "wordings": [{"text": "Taken from directly in front of her"}]}
+              "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
     act = {"key": "astride",
-           "wordings": [{"text": "She is astride him with her knees on either side of his hips and her weight down on him, the two of them joined, two people in frame."}]}
+           "wordings": [{"key": "astride",
+                         "text": "She is astride him with her knees on either side of his hips and her weight down on him, the two of them joined, two people in frame."}]}
     framing = {"key": "full-length",
-               "wordings": [{"text": "a full-length photograph, head to feet"}]}
+               "wordings": [{"key": "full-length", "text": "a full-length photograph, head to feet"}]}
 
     composed_id = client.post(f"/api/sessions/{sid}/compose", json={
         "camera": camera, "act": act, "framing": framing,
@@ -173,9 +178,9 @@ def test_a_composed_shot_records_the_three_components_on_the_row(client, seeded)
     row = db.one("SELECT * FROM shot WHERE id=?", composed_id)
     db.jload(row, "components")
     assert row["components"] == {
-        "camera":  {"concept": "camera",  "wording": "front-direct"},
-        "act":     {"concept": "act",     "wording": "astride"},
-        "framing": {"concept": "framing", "wording": "full-length"},
+        "camera":  {"concept": "front-direct", "wording": "front-direct"},
+        "act":     {"concept": "astride",      "wording": "astride"},
+        "framing": {"concept": "full-length",  "wording": "full-length"},
     }
 
 

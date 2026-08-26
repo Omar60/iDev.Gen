@@ -897,13 +897,20 @@ def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict) -> 
     """Compose a single shot from drawn components and queue it.
 
     Returns the shot id. The three drawn components are recorded on
-    the row in the `components` column as (concept, wording) pairs:
-    the prose does not survive the round-trip, and the cell is keyed
-    by (concept, wording, manner, checkpoint), so 6.2 reads the
-    wording off the row to know which cell to count the photo
-    toward. A written shot leaves the column at its empty default
-    '{}', which is the marker 3.6 uses to tell a composed session
-    from a written one.
+    the row in the `components` column as (concept, wording) pairs
+    per slot, where the JSON key is the slot name and the value is
+    `{concept, wording}`: `concept` is the catalogue key of the
+    concept (front-direct, astride, full-length) and `wording` is
+    the catalogue key of the wording that was drawn. For every
+    concept in the catalogue today they are the same key, because
+    1.1 left each concept with a single wording; a future "let me
+    add a second wording" will land here as a different `wording`
+    value, and the cell the photograph counts toward (6.2) is keyed
+    by the trio, not by the concept.
+
+    A written shot leaves the column at its empty default '{}',
+    which is the marker 3.6 uses to tell a composed session from
+    a written one.
 
     The session's `look` and `wardrobe` are read here, not from the
     payload: a composed shot is part of the session, and the look
@@ -920,14 +927,16 @@ def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict) -> 
     look = session["look"] if settings.get("use_look", True) else ""
     wardrobe = session["wardrobe"]
     prompt = compose_shot(model, look, wardrobe, camera, act, framing)
-    # The (concept, wording) pair per slot, not just the wording: the
-    # concept is the slot type the cell is keyed on, the wording is the
-    # specific catalogue key `compose_shot` picked (always wordings[0]
-    # for now). 6.2 needs both to land the photo on the right cell.
+    # The (concept, wording) pair per slot, not just the wording.
+    # Today every concept has a single wording and the two keys
+    # coincide, so the cell the photograph counts toward is keyed
+    # by the trio (camera, act, framing) directly. The slot is
+    # the JSON key, not a value, because the cell is the trio and
+    # the slot is the part of the trio this entry names.
     components = json.dumps({
-        "camera":  {"concept": "camera",  "wording": camera["key"]},
-        "act":     {"concept": "act",     "wording": act["key"]},
-        "framing": {"concept": "framing", "wording": framing["key"]},
+        "camera":  {"concept": camera["key"],  "wording": camera["wordings"][0]["key"]},
+        "act":     {"concept": act["key"],     "wording": act["wordings"][0]["key"]},
+        "framing": {"concept": framing["key"], "wording": framing["wordings"][0]["key"]},
     })
     shot_index = db.one("SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id=?", sid)["m"] + 1
     shot_id = db.run(
