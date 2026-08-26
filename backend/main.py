@@ -1078,60 +1078,78 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
 
     pool = _verified_trio_pool(session["manner"], session["checkpoint"], c.candidates)
 
-    # The check and the draw are the same calculation. Greedy on
-    # a shuffled pool: take a trío only if none of its three
-    # components has been used yet, stop at `count`. The largest
-    # fillable is `len(chosen)` by construction — not a parallel
-    # DISTINCT count that can lie, which is the failure the
-    # previous 3.3 had (the pre-check said "2 cameras fit",
-    # `shuffle(pool)[:2]` delivered two shots with the same
-    # camera 4 times in 12 — the pre-check and the draw were
-    # two different calculations, and the draw over-promised).
-    # Here they are one pass, and the largest fillable is the
-    # number of tríos the pass actually picked.
+    # The check and the draw are the same calculation. Greedy
+    # on a shuffled pool, repeated over a handful of shuffles:
+    # take a trio only if none of its three components has been
+    # used yet, stop at `count`; keep the best result across
+    # shuffles; stop early when a shuffle reaches `count`. The
+    # largest fillable is `len(best_chosen)` by construction —
+    # not the result of one shuffle's luck, which is the
+    # failure the previous 3.3 had: the pool (c1,a1,f1),
+    # (c1,a2,f2), (c2,a1,f3) with count=2 has a maximum of 2,
+    # but a single shuffle that starts with (c1,a1,f1) blocks
+    # both other trios (a1 is used, c1 is used) and the greedy
+    # reports 1. Twenty calls on the same data gave 9 of "200,
+    # 2 shots" and 11 of "422, largest fillable is 1" — the
+    # operator refused would retry without changing anything
+    # and get 200, which is the bug the multi-shuffle pass
+    # fixes.
     #
-    # ponytail: greedy is an approximation of the tripartite
-    # matching (maximum independent set of tríos under the
-    # "no component repeated" constraint). A real matching would
-    # find the ceiling; greedy on a shuffled pool can fall short
-    # of it (e.g., a bad shuffle wastes a trío that would have
-    # been pickable later). With the pool sizes this project
-    # actually measures — a handful of verified tríos per
-    # session — the gap is zero or one, and a real matching
-    # lands here if the ceilings ever do.
-    shuffled = list(pool)
-    random.shuffle(shuffled)
-    chosen: list[tuple[str, str, str]] = []
-    used = {"camera": set(), "act": set(), "framing": set()}
-    for cam, act, framing in shuffled:
-        if (cam in used["camera"]
-                or act in used["act"]
-                or framing in used["framing"]):
-            continue
-        chosen.append((cam, act, framing))
-        used["camera"].add(cam)
-        used["act"].add(act)
-        used["framing"].add(framing)
-        if len(chosen) == c.count:
+    # ponytail: greedy with retries is an approximation of
+    # the tripartite matching (maximum independent set of
+    # trios under the "no component repeated" constraint). A
+    # real matching would find the ceiling on one pass; greedy
+    # with retries can still fall short of it on a pathological
+    # pool (e.g., a pool where every shuffle wastes the same
+    # trío). With the pool sizes this project actually
+    # measures — a handful of verified trios per session —
+    # the gap is zero or one, and a real tripartite matching
+    # lands here if the ceilings ever matter. N_SHUFFLES is
+    # tuned so the probability of all-bad on the user's probe
+    # pool is ~(1/3)^10 ≈ 1.7e-5, well below the 20-call
+    # test's flake budget.
+    N_SHUFFLES = 10
+    best_chosen: list[tuple[str, str, str]] = []
+    for _ in range(N_SHUFFLES):
+        shuffled = list(pool)
+        random.shuffle(shuffled)
+        chosen: list[tuple[str, str, str]] = []
+        used = {"camera": set(), "act": set(), "framing": set()}
+        for cam, act, framing in shuffled:
+            if (cam in used["camera"]
+                    or act in used["act"]
+                    or framing in used["framing"]):
+                continue
+            chosen.append((cam, act, framing))
+            used["camera"].add(cam)
+            used["act"].add(act)
+            used["framing"].add(framing)
+            if len(chosen) == c.count:
+                break
+        if len(chosen) > len(best_chosen):
+            best_chosen = chosen
+        if len(best_chosen) == c.count:
             break
 
-    if len(chosen) < c.count:
+    if len(best_chosen) < c.count:
         # The slot named is the per-slot min of the POOL — the
-        # dimension the operator would broaden to grow the pool.
-        # The largest fillable is `len(chosen)`, the actual
-        # greedy result. They can differ: the pool says "2
-        # cameras available" and the greedy delivered 1 because
-        # the shuffle put a trío whose other components were
-        # already used before the only second-camera trío. The
-        # message carries both so the operator sees the
-        # shortfall the greedy actually hit, not the ceiling
+        # dimension the operator would broaden to grow the
+        # pool. The largest fillable is `len(best_chosen)`,
+        # the best result across N_SHUFFLES greedy passes.
+        # They can differ: the pool says "2 cameras
+        # available" and every shuffle delivered 1 because
+        # each one happened to waste the only trío that would
+        # have unblocked the second camera. The message
+        # carries both so the operator sees the shortfall
+        # the multi-shuffle pass hit, not the per-slot ceiling
+        # the pool promised.
         # the pool promised.
         min_slot, min_count = _min_slot_within(pool)
         raise HTTPException(
             422,
             f"compose refused: {min_slot} slot has {min_count} verified "
-            f"values within the trío pool, largest fillable is "
-            f"{len(chosen)} (of {c.count} requested); use "
+            f"values within the trio pool, largest fillable is "
+            f"{len(best_chosen)} (of {c.count} requested); use "
             f"exploratory mode to compose with unverified cells",
         )
 
@@ -1140,7 +1158,7 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
         for slot in _SLOT_ORDER
     }
     shot_ids: list[int] = []
-    for cam_key, act_key, framing_key in chosen:
+    for cam_key, act_key, framing_key in best_chosen:
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
         ))

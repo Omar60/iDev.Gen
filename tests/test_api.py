@@ -1158,6 +1158,103 @@ def test_a_strict_run_never_repeats_a_component_within_a_single_run(client, seed
             )
 
 
+def test_a_strict_run_gives_the_same_verdict_for_the_same_pool_and_count(client, seeded):
+    """The loop-closed test for the multi-shuffle greedy: the
+    largest fillable reported by a refusal must be the best
+    result the greedy can deliver across multiple shuffles,
+    not one shuffle's luck. The single-shuffle code gave
+    inconsistent verdicts on the same pool+count: the user's
+    probe (pool (c1,a1,f1), (c1,a2,f2), (c2,a1,f3), count=2)
+    returned 200 nine times in twenty and 422 saying
+    "largest fillable is 1" the other eleven — a shuffle
+    that starts with (c1,a1,f1) blocks both other trios
+    (a1 is used, c1 is used) and the greedy reports 1 even
+    though 2 is reachable. The operator refused would retry
+    without changing anything and get 200, which is the
+    bug the multi-shuffle pass fixes.
+
+    The fix: run the greedy over N_SHUFFLES (=10) shuffles,
+    keep the best, stop early when a shuffle reaches
+    `count`. The check and the draw are still one
+    calculation (selection and number come from the same
+    place), and the largest fillable is the best result,
+    not one shuffle's draw.
+
+    The test repeats the same pool+count twenty times and
+    asserts all twenty return the same status code and
+    (if 200) the same shot count. With the multi-shuffle
+    greedy, all twenty should return 200 with 2 shots;
+    the probability of all-bad shuffles on the user's
+    pool is (1/3)^10 ≈ 1.7e-5, well below the 20-call
+    test's flake budget. The old single-shuffle code
+    fails this test ~100% of the time: roughly half the
+    calls return 422 and the verdicts vary.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "verdict consistency",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    # The user's probe pool: 3 trios, 2 distinct cameras.
+    # The maximum independent set is 2 (take
+    # (cam-a, act-b, frame-b) and (cam-b, act-a, frame-c),
+    # which share no components). A single shuffle that
+    # starts with (cam-a, act-a, frame-a) blocks both
+    # other trios: act-a is used, blocking the only
+    # cam-b trio; cam-a is used, blocking the second
+    # cam-a trio. The greedy returns 1, the operator sees
+    # "largest fillable is 1", and the 2 that was
+    # achievable is silently lost. The multi-shuffle
+    # greedy finds 2 on any shuffle that doesn't start
+    # with (cam-a, act-a, frame-a).
+    trios = [
+        ("cam-a", "act-a", "frame-a"),
+        ("cam-a", "act-b", "frame-b"),
+        ("cam-b", "act-a", "frame-c"),
+    ]
+    for cam, act, framing in trios:
+        _seed_verified_trio(cam, act, framing,
+                            manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k} text")  for k in {"cam-a", "cam-b"}],
+        "act":     [_candidate(k, f"act {k} text")     for k in {"act-a", "act-b"}],
+        "framing": [_candidate(k, f"framing {k} text") for k in {"frame-a", "frame-b", "frame-c"}],
+    }
+
+    verdicts = []
+    for i in range(20):
+        r = client.post(f"/api/sessions/{sid}/compose-run",
+                        json={"count": 2, "candidates": candidates})
+        if r.status_code == 200:
+            verdicts.append(("200", len(r.json()["ids"])))
+        else:
+            verdicts.append((str(r.status_code), r.json()["detail"]))
+
+    # The loop-closed assertion: all 20 calls on the same
+    # pool+count return the same verdict. The old code
+    # varied between ("200", 2) and ("422", "largest
+    # fillable is 1"); the new code is consistent because
+    # the multi-shuffle greedy finds 2 on essentially
+    # every call.
+    assert len(set(verdicts)) == 1, (
+        f"verdicts vary across calls: {verdicts!r} — the "
+        f"largest fillable is the result of one shuffle, "
+        f"not the best across multiple"
+    )
+    # The pool's maximum is 2, so every call should
+    # return 200 with 2 shots. The shape of the
+    # assertion is "all the same AND that same is the
+    # expected one" — a future "let me always refuse"
+    # would flip the verdict to ("422", ...) for all
+    # 20 and fail this half too, which is the
+    # regression the test exists to catch.
+    assert verdicts[0] == ("200", 2), (
+        f"expected all calls to return 200 with 2 shots, got {verdicts[0]!r}"
+    )
+
+
 def test_a_written_shot_leaves_components_empty(client, seeded):
     """A shot written by the writer (not composed) leaves the
     `components` column at its empty default '{}'. That empty default
