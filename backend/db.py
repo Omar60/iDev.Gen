@@ -59,6 +59,17 @@ CREATE TABLE IF NOT EXISTS session (
     -- tables is what this app is shaped to, and a `session_tag` join is a column
     -- the whole point of NOT having.
     tags          TEXT NOT NULL DEFAULT '[]',
+    -- The session's manner and checkpoint: the two non-trio dimensions the
+    -- cell table is keyed on (design.md decision C). Manner is the camera
+    -- list the session draws from (directed/candid/selfie, matching
+    -- POSITIONS in kinds.js); checkpoint is the base model the workflow
+    -- loads. Strict mode (3.2) checks the cell for (trio, manner,
+    -- checkpoint) and refuses a draw whose cell is not verified, so a
+    -- session without these is refused on a strict compose — a free
+    -- compose (the 3.1 path) is unaffected. Empty default = an older
+    -- session that predates 3.2, kept unverified rather than guessed.
+    manner        TEXT NOT NULL DEFAULT '',
+    checkpoint    TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL
 );
 
@@ -362,6 +373,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # the round-trip through the row, decoded with `db.jload` at read time.
     if "components" not in columns("shot"):
         conn.execute("ALTER TABLE shot ADD COLUMN components TEXT NOT NULL DEFAULT '{}'")
+
+    # The session's manner and checkpoint: the two non-trio dimensions the
+    # cell table is keyed on. Strict mode (3.2) reads them off the row to
+    # check the cell for (trio, manner, checkpoint). Empty default for
+    # older sessions, which is the right migration answer for "we don't
+    # know what manner or checkpoint this session was shot under" - the
+    # alternative (guessing from the model or workflow) is the failure
+    # mode this default avoids. The default also keeps the column CHECK
+    # honest: a session that never set manner or checkpoint reads as
+    # 'unknown' and a strict compose on it fails loudly.
+    session_cols = columns("session")
+    if "manner" not in session_cols:
+        conn.execute("ALTER TABLE session ADD COLUMN manner TEXT NOT NULL DEFAULT ''")
+    if "checkpoint" not in session_cols:
+        conn.execute("ALTER TABLE session ADD COLUMN checkpoint TEXT NOT NULL DEFAULT ''")
 
     # The verdicts already paid for. An empty cell table is a database that
     # has never carried the seed, not one someone emptied on purpose, so the

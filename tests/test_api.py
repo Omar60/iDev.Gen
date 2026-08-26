@@ -94,12 +94,28 @@ def test_a_composed_shot_joins_identically_to_a_written_one(client, seeded):
     then asserts the two prompts are identical: same trigger, same
     base, same look, same wardrobe, same three pieces in the take
     position, same join.
+
+    The session declares manner and checkpoint, and the cell for
+    the trio is pre-seeded as verified, because 3.2 makes strict
+    mode the default and a missing manner or unverified cell would
+    refuse the compose with 422. The cell here is the same trio the
+    test composes against, so strict passes and the assertion is
+    about the join, not the strict check.
     """
     sid = client.post("/api/sessions", json={
         "model_id": seeded["model_id"], "name": "compose equals write",
         "look": "white summer dress, hair down, on a beach",
+        "manner": "directed", "checkpoint": "finepornV4",
         "shots": [],
     }).json()["id"]
+
+    # Pre-seed a verified cell for the trio so strict mode (the
+    # default since 3.2) accepts the compose. 10/8 is the spec
+    # admission boundary (cell_state returns "verified" for
+    # arrived * 10 >= judged * 8, i.e. 8*10 >= 10*8).
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
 
     # Three drawn components. The draw is deterministic for 3.1: the
     # caller passes the components, the composer joins them. 3.2 makes
@@ -156,12 +172,23 @@ def test_a_composed_shot_records_the_three_components_on_the_row(client, seeded)
     when the concept has a single wording. A written shot leaves the
     column at the empty default '{}', which is the marker 3.6 uses to
     tell a composed session from a written one.
+
+    The session declares manner and checkpoint, and the cell for
+    the trio is pre-seeded as verified, for the same reason as the
+    join test above: strict mode (3.2) is the default and a missing
+    cell would refuse the compose before this test's assertion
+    could run.
     """
     sid = client.post("/api/sessions", json={
         "model_id": seeded["model_id"], "name": "components on row",
         "look": "white summer dress, hair down, on a beach",
+        "manner": "directed", "checkpoint": "finepornV4",
         "shots": [],
     }).json()["id"]
+
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
 
     camera = {"key": "front-direct",
               "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
@@ -182,6 +209,202 @@ def test_a_composed_shot_records_the_three_components_on_the_row(client, seeded)
         "act":     {"concept": "astride",      "wording": "astride"},
         "framing": {"concept": "full-length",  "wording": "full-length"},
     }
+
+
+# ----------------------------------------------------------------- 3.2 strict
+#
+# The trio's cell is the unit a photograph counts toward (design.md
+# decision C, spec/component-matrix). Strict mode refuses a compose
+# when the cell is not verified for the session's manner and
+# checkpoint. The negative case the task names is "a component
+# verified on another checkpoint is not drawn": a cell verified for
+# finepornV4 does not entitle a session on the Krea 2 mix to draw
+# the same trio, because the cell is the trio plus the session's two
+# non-trio dimensions and the lookup is exact.
+
+def test_a_component_verified_on_another_checkpoint_is_not_drawn_in_strict_mode(client, seeded):
+    """A trio verified on finepornV4 is not drawable in a session on
+    the Krea 2 mix, even with the same three components. The cell
+    table is keyed on (camera_wording, act_wording, framing_wording,
+    manner, checkpoint); the lookup is exact, and a verified cell
+    for (front-direct, astride, full-length, directed, finepornV4)
+    does not satisfy (front-direct, astride, full-length, directed,
+    Krea 2 mix).
+
+    The 422 message names the trio, the session's manner and
+    checkpoint, and the state the lookup found, so the caller can
+    see the gap is a missing measurement on the Krea 2 mix rather
+    than something else.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "wrong checkpoint",
+        "manner": "directed", "checkpoint": "Krea 2 mix",
+        "shots": [],
+    }).json()["id"]
+
+    # The trio is verified on finepornV4, NOT on the Krea 2 mix the
+    # session is shot on. A future "let me cache the cell lookup at
+    # the trio level and only check the non-trio dimensions" would
+    # silently pass this test on the wrong behaviour, which is the
+    # exact regression the cell table is shaped to prevent.
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
+
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
+    act = {"key": "astride",
+           "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "framing text"}]}
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+    })
+    assert r.status_code == 422, r.text
+    assert "no measurement" in r.json()["detail"] or "unknown" in r.json()["detail"]
+    # Nothing queued: the refused compose is a refused compose, not a
+    # queued one with a 422. The shot table is the proof.
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0
+
+
+def test_a_dead_cell_is_not_drawn_in_strict_mode(client, seeded):
+    """A cell that is dead (n>=10 with a failed ratio) is not
+    drawable in strict mode. Dead is a verdict: the cell is the
+    truth of the measurement, and the trio's photograph came back
+    as something other than what the wording described. Reusing the
+    same trio is a different photograph, not the same one.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "dead cell",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    # 12 judged, 0 arrived. cell_state returns "dead" (n>=10 and
+    # arrived*10 < judged*8, i.e. 0 < 96). Same trio, same manner and
+    # checkpoint as the session.
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 12, 0)
+
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
+    act = {"key": "astride",
+           "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "framing text"}]}
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+    })
+    assert r.status_code == 422, r.text
+    assert "dead" in r.json()["detail"]
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0
+
+
+def test_an_unknown_cell_is_not_drawn_in_strict_mode(client, seeded):
+    """A cell with n<10 is unknown, not verified, and the strict
+    check refuses the draw the same way it refuses a dead cell. The
+    cell table is the only home for "is this trio drawable", and
+    the unknown state is the explicit answer for "we have not
+    measured enough to know".
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "unknown cell",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    # 3 judged, 3 arrived. n<10, so cell_state returns "unknown"
+    # even at a perfect ratio. The trio is the one the 3.1 join
+    # test uses, but the cell is under-measured.
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 3, 3)
+
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
+    act = {"key": "astride",
+           "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "framing text"}]}
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+    })
+    assert r.status_code == 422, r.text
+    assert "unknown" in r.json()["detail"]
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0
+
+
+def test_a_strict_compose_requires_manner_and_checkpoint_on_the_session(client, seeded):
+    """A session that does not declare manner or checkpoint cannot
+    be composed in strict mode. The cell table is keyed on the
+    five-tuple and the lookup needs both non-trio dimensions to
+    resolve. A session with empty manner or empty checkpoint would
+    silently find zero cells and read as "not verified" — the
+    422 before the lookup names what the session is missing.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "no dimensions",
+        # No manner, no checkpoint - an older session that predates
+        # 3.2, or a fresh one the operator has not declared.
+        "shots": [],
+    }).json()["id"]
+
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "X"}]}
+    act = {"key": "astride",
+           "wordings": [{"key": "astride", "text": "Y"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "Z"}]}
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+    })
+    assert r.status_code == 422, r.text
+    assert "manner" in r.json()["detail"]
+    assert "checkpoint" in r.json()["detail"]
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0
+
+
+def test_a_verified_cell_for_the_sessions_dimensions_is_drawn_in_strict_mode(client, seeded):
+    """The positive case the strict check is supposed to allow: a
+    trio whose cell is verified for the session's exact manner and
+    checkpoint is drawable, and the compose queues the shot. The
+    assertion is the same as the 3.1 join test but with the cell
+    keyed for the session's dimensions rather than another
+    checkpoint's, so the strict check is what passes.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "happy path",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
+
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
+    act = {"key": "astride",
+           "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "framing text"}]}
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+    })
+    assert r.status_code == 200, r.text
+    assert "id" in r.json()
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 1
 
 
 def test_a_written_shot_leaves_components_empty(client, seeded):

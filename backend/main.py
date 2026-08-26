@@ -147,6 +147,17 @@ class SessionIn(BaseModel):
     settings: dict = Field(default_factory=dict)
     seed_mode: str = "random"   # random | fixed
     seed: int = 0
+    # The session's manner and checkpoint: the two non-trio dimensions
+    # the cell table is keyed on. 3.2 reads them off the row to check
+    # the cell for (trio, manner, checkpoint) in strict mode. Empty
+    # means the operator did not declare either, and a strict compose
+    # on such a session is refused (the 3.1 free compose is
+    # unaffected). The defaults are empty on purpose: the operator who
+    # wants strict draws has to declare the dimensions, because the
+    # alternative (guessing) is the failure mode the cell model exists
+    # to avoid.
+    manner: str = ""
+    checkpoint: str = ""
 
 
 class ComposeIn(BaseModel):
@@ -160,10 +171,28 @@ class ComposeIn(BaseModel):
     components, and the composer joins them. 3.2 makes the draw
     respect cell state (strict mode, verified-only), 6.1 makes
     unknown drawable in exploratory mode.
+
+    `mode` is the only knob between 3.1 and the modes 3.2/6.1 add:
+    - "strict" (default): the trio's cell must be verified for the
+      session's manner and checkpoint, or the compose is refused
+      with 422. The same trio verified on a different checkpoint is
+      not enough — the cell is the trio with the session's two
+      non-trio dimensions, not the trio alone. Unknown and dead cells
+      are refused the same way; only `verified` is drawable.
+    - "exploratory" (6.1, not in this commit): unknown cells are
+      drawable and the resulting shot is marked exploratory. Dead
+      wordings stay undrawable in any mode (the design rule 6.1
+      inherits from spec/shot-composer).
+    The 3.1 free compose is gone: a free compose is one where the
+    caller asserts the trio without asking the cell, and that is
+    exactly the case 6.1 calls `unknown` and 3.2 calls `not verified`
+    — the cell table is the only home for "is this trio drawable",
+    and there is no third answer.
     """
     camera: dict
     act: dict
     framing: dict
+    mode: str = "strict"
 
 
 class SessionPatch(BaseModel):
@@ -537,10 +566,12 @@ def create_session(s: SessionIn):
 
     sid = db.run(
         """INSERT INTO session (model_id, name, look, wardrobe, workflow_id,
-                                reference_workflow_id, anchor_shot_ids, settings, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+                                reference_workflow_id, anchor_shot_ids, settings,
+                                manner, checkpoint, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         s.model_id, s.name, s.look, s.wardrobe, s.workflow_id, s.reference_workflow_id,
-        json.dumps(_valid_anchors(s.anchor_shot_ids)), json.dumps(settings), db.now(),
+        json.dumps(_valid_anchors(s.anchor_shot_ids)), json.dumps(settings),
+        s.manner, s.checkpoint, db.now(),
     )
     _expand_shots(sid, model, _look_for(settings, s.look), s.wardrobe, s.shots, s.seed_mode, s.seed)
     return {"id": sid}
@@ -745,11 +776,66 @@ def add_shots(sid: int, payload: dict):
 def compose_shot_endpoint(sid: int, c: ComposeIn):
     """Compose a single shot from drawn components and queue it, with
     no writer request. The components are recorded on the shot in
-    the `prompt` field; the queued line joins identically to one a
-    writer would produce from the same three components, because
+    the `components` column; the queued line joins identically to one
+    a writer would produce from the same three components, because
     `compose_shot` and `_compose` go through the same `_sentences`
     join (see `test_a_composed_shot_joins_identically_to_a_written_one`).
+
+    Strict mode (the default, 3.2) refuses the composition with 422
+    if the trio's cell is not verified for the session's manner and
+    checkpoint. A trio verified on a different checkpoint is not
+    enough — the cell is the trio plus the session's two non-trio
+    dimensions, and the lookup is exact. Unknown and dead cells are
+    refused the same way. The 422 message names the trio, the
+    session's manner and checkpoint, and the cell state the lookup
+    found, so the caller can see whether the gap is a missing
+    measurement (unknown) or a failed one (dead).
     """
+    session = db.one("SELECT * FROM session WHERE id=?", sid)
+    if not session:
+        raise HTTPException(404, "session not found")
+
+    if c.mode == "strict":
+        # The cell table is the only home for "is this trio drawable
+        # for this session". A session that has no manner or no
+        # checkpoint cannot have any cell that matches: the strict
+        # check below would silently find zero rows, and zero rows
+        # would silently read as "not verified". Refuse loudly before
+        # the lookup, naming what the session is missing.
+        missing = [name for name, value in (("manner", session["manner"]),
+                                            ("checkpoint", session["checkpoint"]))
+                   if not value]
+        if missing:
+            raise HTTPException(
+                422,
+                f"strict compose refused: session is missing {', '.join(missing)}; "
+                f"set them on the session before composing",
+            )
+        cell = db.one(
+            "SELECT judged, arrived FROM cell "
+            "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
+            "AND manner=? AND checkpoint=?",
+            c.camera["key"], c.act["key"], c.framing["key"],
+            session["manner"], session["checkpoint"],
+        )
+        if not cell:
+            raise HTTPException(
+                422,
+                f"strict compose refused: cell "
+                f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
+                f"{session['manner']}, {session['checkpoint']}) "
+                f"has no measurement (unknown)",
+            )
+        state = db.cell_state(cell["judged"], cell["arrived"])
+        if state != "verified":
+            raise HTTPException(
+                422,
+                f"strict compose refused: cell "
+                f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
+                f"{session['manner']}, {session['checkpoint']}) "
+                f"is {state}, not verified",
+            )
+
     shot_id = compose_and_queue_shot(sid, c.camera, c.act, c.framing)
     return {"id": shot_id}
 
