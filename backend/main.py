@@ -561,6 +561,16 @@ def _resolve_session_checkpoint(workflow_id, settings, explicit=""):
     is how the cell table gets a stale key and the strict check
     starts approving draws against a checkpoint the session no
     longer runs on. That is the bypass 3.2 exists to prevent.
+
+    The two inputs have different lives and the call site is what
+    makes them so: the body's `explicit` is a create-time value that
+    is NOT re-read on a PATCH (update_session always re-derives, and
+    a workflow swap or a settings.checkpoint move loses the row's
+    `explicit` to whichever of the next two sources is non-empty).
+    A persistent override that survives a PATCH has to go through
+    `settings.checkpoint`, the second source below. A session row
+    that wants to keep a specific checkpoint across a workflow swap
+    has to put it in settings, not on the body field.
     """
     if explicit:
         return explicit
@@ -896,6 +906,196 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
 
     shot_id = compose_and_queue_shot(sid, c.camera, c.act, c.framing)
     return {"id": shot_id}
+
+
+class ComposeRunIn(BaseModel):
+    """A run of N composed shots, drawn from a pool of candidates the
+    caller supplies per slot. The pool is what the operator can see
+    in the catalogue for the session's manner; the backend validates
+    that the verified subset of that pool is large enough to fill
+    `count` distinct shots before any insertion, and refuses the
+    whole run otherwise.
+
+    The pre-check is what stops a "shorter run, delivered" — a loop
+    that queues k shots and refuses at k+1 would leave k rows, because
+    `db.run` commits per INSERT. The check runs up front and a
+    refusal queues nothing.
+
+    There is no `mode` field, the same way there is none on the
+    one-shot payload. Strict is the only legal mode today. 6.1
+    opens the seam with a Literal["strict", "exploratory"] on this
+    payload when the second mode exists, and the test for the new
+    case lands there; until then, the absence of a `mode` field is
+    the mode, the same way it is on `ComposeIn`.
+    """
+    count: int = Field(..., ge=1)
+    candidates: dict  # {"camera": [...], "act": [...], "framing": [...]}, each a list of {key, wordings:[{key, text}]}
+
+
+def _verified_pool_sizes(manner: str, checkpoint: str, candidates: dict) -> dict[str, int]:
+    """For each slot, count distinct candidates whose key has at least
+    one verified cell for (manner, checkpoint). The synthetic 'none'
+    value is excluded — it represents measurements that did not
+    break out a slot, not a real catalogue key, and counting it
+    would inflate the pool with something no compose can draw.
+
+    The verified predicate mirrors `db.cell_state` exactly
+    (`judged >= 10 AND arrived*10 >= judged*8`); the function is
+    not used because the count needs DISTINCT over a filtered set,
+    which is one SQL query per slot, not a Python pass over the
+    full cell table.
+    """
+    pools: dict[str, int] = {}
+    for slot_name, col in (("camera", "camera_wording"),
+                           ("act", "act_wording"),
+                           ("framing", "framing_wording")):
+        keys = [c["key"] for c in candidates.get(slot_name, []) if isinstance(c, dict) and c.get("key")]
+        if not keys:
+            pools[slot_name] = 0
+            continue
+        placeholders = ",".join("?" for _ in keys)
+        rows = db.q(
+            f"SELECT DISTINCT {col} FROM cell "
+            f"WHERE manner = ? AND checkpoint = ? "
+            f"AND {col} IN ({placeholders}) "
+            f"AND {col} != 'none' "
+            f"AND judged >= 10 AND arrived*10 >= judged*8",
+            manner, checkpoint, *keys,
+        )
+        pools[slot_name] = len(rows)
+    return pools
+
+
+@app.post("/api/sessions/{sid}/compose-run")
+def compose_run_endpoint(sid: int, c: ComposeRunIn):
+    """Queue a run of N composed shots, or refuse the whole run with
+    422. The run-level is the same draw as 3.1 (one composed shot
+    per call) but the caller asks for N at once and the backend
+    draws, instead of passing the three components in. The 422
+    names the slot that ran out, its verified count, the largest
+    fillable count, and the exploratory mode the operator can
+    switch to, so the refusal is a usable answer — "ask for 3
+    instead of 5, or switch to exploratory" — rather than a
+    dead end that bisects by hand.
+
+    The check runs BEFORE any insertion. `db.run` commits per
+    INSERT, so a loop that queues k and refuses at k+1 would leave
+    k rows — a shorter run, delivered. The pre-check is the
+    loop-closed test: with the pre-check in place, a refusal
+    queues nothing, and the assertion `n_shots == 0` after a 422
+    is the proof.
+
+    There is no `mode` field on the payload. Strict is the only
+    legal mode today; encoding it as a string would let a wrong
+    value bypass the check (an if over a free string is a door
+    open by default), and there is no second mode to switch to.
+    6.1 opens the seam when the second mode exists, with a
+    Literal type on `mode` and a test for the new case. Until
+    then, the strict check runs unconditionally and a refusal
+    names the exploratory mode as the path the operator can
+    take, not as a mode this endpoint accepts.
+    """
+    session = db.one("SELECT * FROM session WHERE id=?", sid)
+    if not session:
+        raise HTTPException(404, "session not found")
+
+    # Same pre-check as 3.2: a session that has no manner or no
+    # checkpoint cannot have any cell that matches, and "no cell
+    # matches" is a different shape from "the pool is too small"
+    # — the former is a session-level problem, the latter is a
+    # request-level one. Refuse the session-level one first,
+    # naming what is missing.
+    missing = [name for name, value in (("manner", session["manner"]),
+                                        ("checkpoint", session["checkpoint"]))
+               if not value]
+    if missing:
+        raise HTTPException(
+            422,
+            f"compose refused: session is missing {', '.join(missing)}; "
+            f"set them on the session before composing",
+        )
+
+    pools = _verified_pool_sizes(session["manner"], session["checkpoint"], c.candidates)
+    # The slot that runs out first is the one with the smallest
+    # pool. Ties go to camera, then act, then framing — the slot
+    # order the catalogue itself uses. The "naming the slot" in
+    # the spec is singular, so one slot is reported even when
+    # several are equally tight; the verified count named is the
+    # count for that slot, and the largest fillable is the global
+    # minimum.
+    slot_order = ("camera", "act", "framing")
+    min_slot = min(slot_order, key=lambda s: (pools[s], slot_order.index(s)))
+    min_count = pools[min_slot]
+    largest_fillable = min(c.count, min_count)
+
+    if largest_fillable < c.count:
+        raise HTTPException(
+            422,
+            f"compose refused: {min_slot} slot has {min_count} verified "
+            f"components, largest fillable is {largest_fillable} "
+            f"(of {c.count} requested); use exploratory mode to compose "
+            f"with unverified cells",
+        )
+
+    # The pool is large enough. Pick `count` distinct verified
+    # candidates per slot (no repeat within a slot — the spec's
+    # "no component is drawn twice") and zip. 3.4 adds the
+    # cross-slot tuple dedup on top; the within-slot dedup is
+    # what makes "fill a slot without repeating" hold for 3.3.
+    verified_keys: dict[str, set[str]] = {}
+    for slot_name, col in (("camera", "camera_wording"),
+                           ("act", "act_wording"),
+                           ("framing", "framing_wording")):
+        keys = [x["key"] for x in c.candidates.get(slot_name, []) if isinstance(x, dict) and x.get("key")]
+        if not keys:
+            raise HTTPException(422, f"compose refused: {slot_name} slot has no candidates")
+        placeholders = ",".join("?" for _ in keys)
+        rows = db.q(
+            f"SELECT DISTINCT {col} FROM cell "
+            f"WHERE manner = ? AND checkpoint = ? "
+            f"AND {col} IN ({placeholders}) "
+            f"AND {col} != 'none' "
+            f"AND judged >= 10 AND arrived*10 >= judged*8",
+            session["manner"], session["checkpoint"], *keys,
+        )
+        verified_keys[slot_name] = {r[col] for r in rows}
+        if len(verified_keys[slot_name]) < c.count:
+            # Defensive: the pre-check said this slot was large
+            # enough, and a request that just passed the check
+            # should still pass here. A future "let me add a
+            # write to the cell table mid-run" would re-open
+            # this; the message is the same shape as the refusal
+            # above so the operator sees the same answer.
+            raise HTTPException(
+                422,
+                f"compose refused: {slot_name} slot has "
+                f"{len(verified_keys[slot_name])} verified components, "
+                f"largest fillable is {len(verified_keys[slot_name])} "
+                f"(of {c.count} requested); use exploratory mode to "
+                f"compose with unverified cells",
+            )
+
+    # Index candidates by key for the zip.
+    by_key: dict[str, dict[str, dict]] = {
+        slot: {x["key"]: x for x in c.candidates.get(slot, []) if isinstance(x, dict) and x.get("key")}
+        for slot in slot_order
+    }
+    picked: dict[str, list[dict]] = {}
+    for slot in slot_order:
+        # Random order is fine: the run is one compose, and a
+        # deterministic order would make the same input produce
+        # the same gallery every time, which is what the existing
+        # writer produces and what 3.6 is about, not 3.3.
+        verified = [by_key[slot][k] for k in verified_keys[slot] if k in by_key[slot]]
+        random.shuffle(verified)
+        picked[slot] = verified[:c.count]
+
+    shot_ids: list[int] = []
+    for i in range(c.count):
+        shot_ids.append(compose_and_queue_shot(
+            sid, picked["camera"][i], picked["act"][i], picked["framing"][i],
+        ))
+    return {"ids": shot_ids, "count": len(shot_ids)}
 
 
 def _expand_shots(sid: int, model: dict, look: str, wardrobe: str, shots: list[ShotIn],

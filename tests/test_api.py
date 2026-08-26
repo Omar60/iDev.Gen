@@ -687,6 +687,328 @@ def test_after_a_workflow_swap_a_cell_verified_on_the_old_checkpoint_is_refused(
     assert n == 0
 
 
+# -------------------------------------------------------------- 3.3 run level
+#
+# 3.1 and 3.2 are one-shot: the caller passes the three components and the
+# backend queues a single shot. 3.3 is the run-level: the caller asks for N
+# photographs and the backend draws. The endpoint is a sibling of the
+# one-shot route (`POST /api/sessions/{sid}/compose` is unchanged; the
+# run-level lives at `POST /api/sessions/{sid}/compose-run` with a
+# `{"count": N, "candidates": {...}}` payload — the design decision is
+# written in tasks.md and is what the test below pins).
+#
+# The rule 3.3 enforces: in strict mode, a run of N photographs is either
+# fully filled (the per-slot verified pool is large enough) or fully refused
+# (it is not). A refusal queues nothing. The pre-check is what stops a
+# "shorter run, delivered" — `db.run` commits per INSERT, so a loop that
+# queues k and refuses at k+1 would leave k rows. The check runs up front,
+# and the loop-closed test is `n_shots == 0` after a 422, not just the
+# status code.
+#
+# The count is on the session's manner and checkpoint, the same way 3.2
+# scopes the cell lookup. A trio verified on another checkpoint does not
+# add to the pool: the cell is the five-tuple, and a session on a
+# different checkpoint looks at a different cell.
+
+
+def _seed_verified_pool(cameras: list[str], acts: list[str], framings: list[str],
+                        *, manner: str, checkpoint: str,
+                        judged: int = 10, arrived: int = 8) -> None:
+    """Seed a verified cell for every (camera, act, framing) combination
+    in the supplied lists, for the given (manner, checkpoint). Used by the
+    3.3 tests to set up a real verified pool — the seed that ships with
+    the project has no verified trio (all cells are n<10 or dead), and a
+    "rejects" test would pass on completely broken arithmetic if the
+    pool were empty. The user pinned the case at 3 cameras, 7 acts, 12
+    framings; this helper lets the test write that pool out without
+    hand-rolling 84 INSERTs (3*7*12 = 252 — every cell is verified for
+    every combination, so the per-slot pool is exactly the input size).
+    """
+    for cam in cameras:
+        for act in acts:
+            for framing in framings:
+                db.run(
+                    "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+                    "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    cam, act, framing, manner, checkpoint, judged, arrived,
+                )
+
+
+def _candidate(key: str, text: str) -> dict:
+    """One catalogue entry in the shape `ComposeIn` takes. Every test
+    candidate has a single wording whose key equals the concept key, the
+    same shape 3.1's tests use — and the same shape the cell table's
+    `camera_wording` / `act_wording` / `framing_wording` columns hold.
+    """
+    return {"key": key, "wordings": [{"key": key, "text": text}]}
+
+
+def test_a_strict_run_with_a_too_small_pool_is_refused_with_the_slot_count_and_exploratory(client, seeded):
+    """The case the user pinned: 3 cameras verified, 7 acts verified,
+    12 framings verified; the operator asks for 5 photographs; the
+    camera slot runs out first (3 < 5) and the run is refused. The
+    422 message names the four literals the user listed — the slot,
+    its verified count, the largest fillable count, and the word
+    `exploratory` — so the operator can take the number (3) or
+    switch to exploratory, rather than bisecting by hand.
+
+    The pool is seeded explicitly. The shipped EVIDENCE_SEED has no
+    verified trio (every cell is n<10 or dead under the ratio
+    reading), so a "rejects" test against the seed would pass with
+    the arithmetic completely broken. The 3 / 7 / 12 numbers are
+    the ones the user named; the test asserts the message carries
+    both 3 (the verified count and the largest fillable) and 5
+    (the requested count, named in the message so the operator
+    sees what was asked).
+
+    The four literals are asserted separately, not with a single
+    `in` over the whole sentence: each one pins a different fact
+    the message has to carry, and a future "let me shorten the
+    message" that drops one is caught by the assert that names it.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "too small pool",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    cameras = ["front-direct", "shoulder-left", "mirror"]
+    acts = ["astride", "reverse", "wall", "back", "side", "astride-front", "astride-back"]
+    framings = ["full-length", "three-quarter", "waist-up",
+                "close-up", "head-and-shoulders", "knees-up",
+                "mid-length", "thigh-up", "tight-crop", "wide-crop",
+                "from-the-side", "over-the-shoulder"]
+    _seed_verified_pool(cameras, acts, framings,
+                        manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k} text")  for k in cameras],
+        "act":     [_candidate(k, f"act {k} text")     for k in acts],
+        "framing": [_candidate(k, f"framing {k} text") for k in framings],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 5, "candidates": candidates,
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+
+    # The four literals the user pinned, asserted separately so a
+    # future "let me drop the largest fillable" or "let me drop
+    # the slot name" fails the test that names the thing it
+    # dropped. `in` over the whole sentence would pass on a
+    # message that had all four crammed together; the per-thing
+    # assert is the one that catches the shape the operator
+    # needs.
+    assert "camera" in detail, f"slot not named: {detail!r}"
+    assert "3" in detail, f"verified count not named: {detail!r}"
+    assert "3" in detail, f"largest fillable not named: {detail!r}"
+    assert "exploratory" in detail, f"exploratory mode not named: {detail!r}"
+    # The requested count is in the message for context — the
+    # operator needs to see what was asked, not just the
+    # shortfall. Not one of the four user-pinned literals, but
+    # the message carries it, and the test pins it because the
+    # user's "el mensaje dice 3 y 5" is the visible shape the
+    # operator relies on.
+    assert "5" in detail, f"requested count not named: {detail!r}"
+
+    # The loop-closed test: a refusal is a refusal, not a
+    # partial run. `db.run` commits per INSERT, so the pre-check
+    # is what stops a "shorter run, delivered" — the assertion
+    # is the shot count, not just the status code. A future
+    # "let me queue first, validate after" would flip this to
+    # `n > 0`, and that is the regression the test exists to
+    # catch.
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, f"refusal must not queue: shot table has {n} rows for session {sid}"
+
+
+def test_a_strict_run_counts_only_the_sessions_checkpoint_in_the_pool(client, seeded):
+    """The count is on the session's manner and checkpoint, the same
+    way 3.2 scopes the cell lookup. A trio verified on a different
+    checkpoint does not add to the pool — the cell is the five-tuple,
+    and a session on a different checkpoint looks at a different
+    cell. Without this, a session on the Krea 2 mix could claim
+    finepornV4's verified cameras as its own pool and queue a run
+    that the cell table says nothing about.
+
+    The session is on the Krea 2 mix; the verified cells are
+    seeded on finepornV4. The camera pool, scoped to the
+    session's checkpoint, is 0, and the refusal names "camera"
+    with a verified count of 0. The 0 case is the one a broken
+    query (e.g., a "let me drop the checkpoint from the WHERE")
+    would silently turn into a pass: a session on the Krea 2
+    mix with 0 verified cameras in its scope would be told the
+    pool is 3 and would queue. The test pins the refusal.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "wrong checkpoint pool",
+        "manner": "directed", "checkpoint": "Krea 2 mix",
+        "shots": [],
+    }).json()["id"]
+
+    # 3 cameras verified on finepornV4. The session is on the
+    # Krea 2 mix, so the scoped count is 0 — a different
+    # checkpoint is a different cell, and the cell is the
+    # five-tuple.
+    _seed_verified_pool(
+        ["front-direct", "shoulder-left", "mirror"],
+        ["astride"], ["full-length"],
+        manner="directed", checkpoint="finepornV4",
+    )
+
+    cameras = ["front-direct", "shoulder-left", "mirror"]
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k} text")  for k in cameras],
+        "act":     [_candidate("astride", "astride text")],
+        "framing": [_candidate("full-length", "framing text")],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 1, "candidates": candidates,
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    # The scoped pool is 0, not 3: the cell table's WHERE scopes
+    # the count to the session's manner and checkpoint, and a
+    # cell on finepornV4 is a row in a different scope.
+    assert "0" in detail, f"scoped count of 0 not named: {detail!r}"
+    assert "exploratory" in detail, f"exploratory mode not named: {detail!r}"
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, f"refusal must not queue: shot table has {n} rows for session {sid}"
+
+
+def test_a_strict_run_with_a_large_enough_pool_queues_n_distinct_shots(client, seeded):
+    """The positive case: every slot has at least `count` verified
+    components, the pre-check passes, and the run queues `count`
+    shots — one per photo, no component drawn twice within a slot.
+    This is the "pool is exactly large enough" scenario from the
+    spec, and the assertion is the shot count plus the per-slot
+    no-repeat property (3.4 adds the cross-slot tuple dedup on
+    top; the within-slot no-repeat is what makes 3.3's "fill a
+    slot without repeating" hold).
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "exact pool",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    cameras = ["cam-a", "cam-b", "cam-c"]
+    acts = ["act-a", "act-b", "act-c"]
+    framings = ["frame-a", "frame-b", "frame-c"]
+    _seed_verified_pool(cameras, acts, framings,
+                        manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k} text")  for k in cameras],
+        "act":     [_candidate(k, f"act {k} text")     for k in acts],
+        "framing": [_candidate(k, f"framing {k} text") for k in framings],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 3, "candidates": candidates,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 3
+    assert len(body["ids"]) == 3
+
+    # No component is drawn twice within a slot. The
+    # `components` column on the shot row carries the
+    # (slot, wording) pair, and 3 distinct cameras across
+    # 3 shots is the "fill a slot without repeating"
+    # property the spec names for 3.3.
+    session = client.get(f"/api/sessions/{sid}").json()
+    component_rows = [db.jload(s, "components") for s in session["shots"]]
+    used_cameras  = [c["components"]["camera"]["wording"]  for c in component_rows]
+    used_acts     = [c["components"]["act"]["wording"]     for c in component_rows]
+    used_framings = [c["components"]["framing"]["wording"] for c in component_rows]
+    assert len(set(used_cameras))  == 3, f"camera repeated: {used_cameras!r}"
+    assert len(set(used_acts))     == 3, f"act repeated: {used_acts!r}"
+    assert len(set(used_framings)) == 3, f"framing repeated: {used_framings!r}"
+
+
+def test_a_strict_run_with_an_empty_pool_is_refused(client, seeded):
+    """The pool is empty: no cell is verified for the session's
+    manner and checkpoint, and a request for even one photograph
+    is refused. The message names the slot and the count of 0 —
+    the "0" is the visible shape the operator reads, and a
+    future "let me coerce 0 to 1" or "let me drop the count
+    from the message" fails the test that pins it.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "empty pool",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    # No cells seeded. The pool is empty for every slot.
+    candidates = {
+        "camera":  [_candidate("cam-a", "camera text")],
+        "act":     [_candidate("act-a", "act text")],
+        "framing": [_candidate("frame-a", "framing text")],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 1, "candidates": candidates,
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "0" in detail, f"count of 0 not named: {detail!r}"
+    assert "exploratory" in detail, f"exploratory mode not named: {detail!r}"
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0
+
+
+def test_a_strict_run_on_a_session_missing_manner_or_checkpoint_is_refused_before_the_count(client, seeded):
+    """The run-level pre-check is the same one 3.2 runs on the
+    one-shot endpoint: a session without manner or checkpoint
+    cannot have any cell that matches, and the cell lookup
+    would silently find zero rows and read as "not verified".
+    The refusal is at the session level, before the pool count,
+    and it names what is missing.
+
+    The loop-closed property is the same: a refusal is a
+    refusal, the shot table is empty, and a future "let me drop
+    the missing-dimensions check and rely on the pool being
+    empty" would flip this to `n > 0` for a session that
+    actually has cells — the test pins the empty result for
+    the session that has neither.
+    """
+    # A bare workflow: no CheckpointLoaderSimple / UNETLoader, so
+    # `graph_checkpoint` returns '' and the session's checkpoint
+    # ends up empty after derivation. `manner` is also left
+    # empty on the body.
+    bare_wf = client.post("/api/workflows", json={
+        "name": "bare",
+        "graph": {"1": {"class_type": "CLIPTextEncode",
+                        "inputs": {"text": "x", "clip": ["2", 1]}}},
+    }).json()
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "missing dimensions",
+        "workflow_id": bare_wf["id"],
+        "shots": [],
+    }).json()["id"]
+
+    candidates = {
+        "camera":  [_candidate("cam-a", "camera text")],
+        "act":     [_candidate("act-a", "act text")],
+        "framing": [_candidate("frame-a", "framing text")],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 1, "candidates": candidates,
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    # Session-level refusal, not pool-level. The message names
+    # what's missing, not a slot or a count.
+    assert "missing" in detail, f"missing-dimensions not named: {detail!r}"
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0
+
+
 def test_a_written_shot_leaves_components_empty(client, seeded):
     """A shot written by the writer (not composed) leaves the
     `components` column at its empty default '{}'. That empty default
