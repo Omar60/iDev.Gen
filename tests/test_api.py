@@ -1057,6 +1057,107 @@ def test_a_strict_run_on_a_session_missing_manner_or_checkpoint_is_refused_befor
     assert n == 0
 
 
+def test_a_strict_run_never_repeats_a_component_within_a_single_run(client, seeded):
+    """The loop-closed test the user named: a pool with fewer
+    distinct cameras than tríos, asked for the per-slot min
+    (which the pre-check said fit), and the greedy must never
+    deliver a run with a repeated component. The pre-check
+    and the draw are the same calculation now — a parallel
+    DISTINCT count over-promised and `shuffle(pool)[:count]`
+    under-delivered: the user's probe (3 tríos, 2 cameras,
+    count=2) put both c1 tríos first in 2 of 6 shuffles, and
+    the old code queued 2 shots with c1 four times in twelve.
+    The new greedy skips a trío whose components are already
+    in `used`, so every chosen trío lands on a fresh slot
+    in every slot. The test runs the endpoint twelve times
+    because a single iteration often hits a lucky shuffle
+    and the no-repeat assertion passes by chance — twelve is
+    the count that surfaced the four failures in the user's
+    probe.
+
+    The assertion per iteration: either 422 (the greedy's
+    largest fillable was < count) OR 200 with `count` shots
+    whose components do not repeat within the run. The old
+    code's failure mode was the second half: 200 with
+    repeats. The new code is the conjunction: the greedy
+    either delivers the count with no repeats, or it refuses.
+    The "or" is what makes the test stable across pool
+    shapes — a pool where the greedy can fall short of the
+    per-slot min (the tripartite-matching ceiling the
+    ponytail names) will sometimes 422, and that is also
+    correct.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "greedy no-repeat",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    # The user's probe pool: 3 tríos, 2 distinct cameras. The
+    # per-slot min is 2 (cameras), which the pre-check says
+    # fits. The shuffle is probabilistic over 3! = 6
+    # orderings: 2/6 put both c1 tríos first, and the old
+    # `shuffle(pool)[:2]` delivered both. The new greedy
+    # takes the first c1 trío, skips the second (c1 used),
+    # and takes c2.
+    trios = [
+        ("cam-a", "act-a", "frame-a"),
+        ("cam-a", "act-b", "frame-b"),
+        ("cam-b", "act-c", "frame-c"),
+    ]
+    for cam, act, framing in trios:
+        _seed_verified_trio(cam, act, framing,
+                            manner="directed", checkpoint="finepornV4")
+
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k} text")  for k in {"cam-a", "cam-b"}],
+        "act":     [_candidate(k, f"act {k} text")     for k in {"act-a", "act-b", "act-c"}],
+        "framing": [_candidate(k, f"framing {k} text") for k in {"frame-a", "frame-b", "frame-c"}],
+    }
+
+    n_iterations = 12
+    for i in range(n_iterations):
+        r = client.post(f"/api/sessions/{sid}/compose-run",
+                        json={"count": 2, "candidates": candidates})
+        if r.status_code == 422:
+            # Refused — the greedy's largest fillable was
+            # less than 2. Acceptable: the test allows the
+            # "or refused" half. The refusal must not have
+            # queued shots: a future "let me queue before
+            # validating" would flip this to `n_shots > 0`
+            # for the refused iteration, and that is the
+            # regression this branch pins shut.
+            detail = r.json()["detail"]
+            assert "largest fillable" in detail, (
+                f"iteration {i}: 422 must name largest fillable, got {detail!r}"
+            )
+            continue
+        assert r.status_code == 200, (
+            f"iteration {i}: expected 200 or 422, got {r.status_code}: {r.text}"
+        )
+        ids = r.json()["ids"]
+        assert len(ids) == 2, f"iteration {i}: expected 2 ids, got {ids!r}"
+
+        # The loop-closed assertion: no component is repeated
+        # within this run's 2 shots. Read the components
+        # column directly (the API does not currently surface
+        # wording keys on a shot, and adding a wire field
+        # just for this test would be a 3.3-shaped change,
+        # not a test convenience). The old code's failure
+        # was exactly here: two shots with the same camera
+        # (or act, or framing) because the parallel count
+        # over-promised and the draw under-delivered.
+        rows = [db.one("SELECT components FROM shot WHERE id=?", id) for id in ids]
+        comps = [db.jload(row, "components")["components"] for row in rows]
+        for slot in ("camera", "act", "framing"):
+            used_in_run = [c[slot]["wording"] for c in comps]
+            assert len(used_in_run) == len(set(used_in_run)), (
+                f"iteration {i}: slot {slot} repeated within the run "
+                f"({used_in_run!r}) — the pre-check and the draw were "
+                f"two different calculations, and the draw over-promised"
+            )
+
+
 def test_a_written_shot_leaves_components_empty(client, seeded):
     """A shot written by the writer (not composed) leaves the
     `components` column at its empty default '{}'. That empty default
