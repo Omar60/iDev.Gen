@@ -62,6 +62,201 @@ Behaviour-neutral throughout: the shufflers must keep drawing the same lines.
   **FIX 2026-08-26 (the spread was a filter, not part of the draw).** The four tests above all ran a pool whose size equalled the count, so the greedy had no choice to make and the family mix of the drawn set was fixed before `_reorder_to_spread_families` ever saw it. On a pool LARGER than the count the verdict followed the shuffle's luck: 6 verified trios (4 in the `front` family, 1 shoulder, 1 overhead) with `count=4` returned 200 on 11 of 30 calls and a 422 naming the `front` family on the other 19, with `(f1, s1, f2, o1)` sitting in the pool the whole time. That is the single-shuffle bug 3.3 closed (`c7b72c1`, "the strict run pre-check and the draw are the same greedy pass"), re-entered through the family constraint: the draw picked `count` trios blind to the family and the spread was applied to the result. The fix hands the constraint to the draw. `_draw_n_strict_trio_shots` takes an optional `accept(chosen, by_key)` predicate; a shuffle whose chosen set the predicate rejects is not a candidate for the returned draw (`best_accepted`), and `by_key` moved above the shuffle loop because the predicate needs the catalogue to read a family. `compose_session_endpoint` passes `accept=_spread_is_feasible`; `compose_run_endpoint` passes nothing, so 3.3's behaviour is byte-identical. `_spread_worst_family` is the one place the `max(count per family) <= ceil(n/2)` rule lives, read by the 422 message (which needs the family and its count) and by the predicate (which needs the yes/no) - a copy of the bound in the predicate is the drift that would let the draw accept a set the reorder then refuses. When no shuffle found an acceptable set but some shuffle reached `count`, the unacceptable draw is returned and the caller's own 422 fires, so a genuinely infeasible pool still reads as a family refusal rather than a pool-size number that was not the problem. `test_a_session_compose_draws_a_spreadable_set_when_the_pool_is_larger_than_the_count` is the guard: 30 calls on the 6-trio pool, all 200 with 4 shots, the no-two-adjacent property asserted on every iteration; reverting the `accept` argument fails it. Gates after the fix: 317 passed, frontend 23 passed, build green.
 - [ ] 3.6 Record on the session whether its lines were composed or written, and verify a written session behaves exactly as before
 
+  **Four decisions before the code, in the order the task asks them:**
+
+  **(1) New column, not derived.** A `session` row carries no marker today; the
+  per-shot marker `shot.components='{}'` is the schema's "no trio here" (3.1
+  left it at the empty default on the writer's path, and 3.4 reads it as the
+  skip on the tuple axis). The temptation is to derive the session's origin from
+  its shots, and the two cases the derivation has to answer are the two the
+  comparison 6.2 will read:
+  - **Zero shots.** A brand-new session has no row to derive from. The operator
+    who has just created a draft and not yet added a take cannot tell whether
+    the session is meant to be composed or written; the per-shot derivation
+    returns "no answer", and that is a different shape from "the session says
+    it is written" or "the session says it is composed". A column has a
+    default that fills the gap; a derivation has nothing to return.
+  - **Mixed shots (3.4's case).** 3.4's spec scenario explicitly contemplates a
+    session that carries both composed and written lines (the line-axis dedup
+    runs across both kinds of rows). The derivation collapses the three cases
+    to two (or to one, "any non-empty component", which lies about the written
+    ones), and the third value is information the comparison needs without
+    re-reading every shot row. A column carries the third value natively.
+
+  So: a new column `session.origin TEXT NOT NULL DEFAULT ''` with three
+  values: `''` (draft, no shots yet — the same idiom as `manner=''` and
+  `checkpoint=''`), `'written'`, `'composed'`, `'mixed'`. The 3.4 spec
+  scenario is the test case that drives the third value: a session that
+  carries both kinds of rows exists, and the column has to reflect that
+  without losing the per-row information.
+
+  **(2) Who writes it, and when — a small state machine on every insertion.**
+  Three readings to decide between:
+  - On create: stamp `'written'` once and never look again. This lies the
+    moment someone composes on a written session; the original written
+    shots are now misattributed.
+  - On first compose: flip from `'written'` to `'composed'` once, then
+    never look. Same lie, in the other direction: the original written
+    shots are now misattributed the moment the first compose lands.
+  - On every insertion, with a state machine. The state machine is the
+    only answer that does not lie: a written shot on a `'composed'`
+    session flips it to `'mixed'`, a composed shot on a `'written'`
+    session flips it to `'mixed'`, and `'mixed'` never regresses.
+
+  The state machine is six lines, it runs in the same two write paths
+  (`_expand_shots` for the writer, `compose_and_queue_shot` for the
+  composer) plus the clone, and the test pins the four transitions
+  explicitly: empty → written (a write), written → composed (a compose
+  on a written session), composed → mixed (a write on a composed
+  session), mixed (stays mixed). The transitions are the only ones
+  that matter, and reading `'mixed'` after a composed-then-written
+  sequence is the loop-closed test.
+
+  The import path (`POST /api/sessions/{sid}/import`) is the same
+  shape — an imported photo is a written shot by definition (no
+  `components` JSON) and the import's `db.run` does not touch origin
+  unless asked, so the same helper runs there. The user's test list
+  does not name the import path, but the column has to be right on it
+  too: a session that already has composed shots and then imports a
+  photo must read as `'mixed'`, not regress to `'written'`. The
+  helper is shared.
+
+  **(3) Older sessions — back-fill, not the empty-default dance.** Manner
+  and checkpoint migrated with default `''` and the note "unverified
+  rather than guessed", because there is no source of truth to derive
+  from (the workflow's loader is a guess). Here the source of truth is
+  the `shot.components` column 3.1 already wrote: every composed shot
+  carries a non-empty JSON, every written shot carries `'{}'`, and the
+  session's origin is a one-pass scan over its shots. The migration
+  back-fills: a session with at least one shot is read once, its
+  `components` JSONs are bucketed, and the column is set to
+  `'written'` (all `{}`), `'composed'` (none `{}`), or `'mixed'`
+  (both). A session with zero shots keeps the empty default, which
+  reads as "draft, no shots yet" — the same shape the new sessions
+  get. The empty value is documented as "no shots, no origin"; every
+  consumer (3.2's lookup, 6.2's count, 7.2's docs) treats it the
+  same as `'written'` for a session that has no composed shot.
+
+  Back-fill is one query, runs once per session on the migration,
+  guarded by the same `if "origin" not in columns("session")` test
+  the column ADD uses, so re-runs are no-ops. A future "let me
+  default origin to 'composed'" lands here as a second migration
+  that flips the default but does not touch existing rows.
+
+  **(4) Frontend scope: no UI.** The spec has no UI requirement for
+  3.6; the two scenarios are "the written path still runs" (a
+  behaviour assertion) and "the origin is recorded" (a record
+  assertion). Both are satisfied by the column being readable on
+  `GET /api/sessions/{sid}` (a `SELECT *` already returns it) and
+  writable from the two write paths. 6.2 is the consumer; 7.2 is
+  where the documentation lands. No new screen, no new button, no
+  new field on the session form.
+
+  **The clone bug, in scope for 3.6 — the spec scenario 3.6 names the
+  comparison the clone enables.** `clone_session` at `main.py:781-795`
+  copies every shot through a hand-written `INSERT` that names its
+  columns; `components` is not on the list, so every cloned shot is
+  born with the schema's empty default `'{}'` and reads as written. The
+  clone is the path of "reshoot with one thing changed" (`main.py:738`,
+  the comparison the spec says this column has to make possible), and
+  a reshoot whose 40 clone shots have lost the trio means 6.2 counts
+  them toward no cell. That is the bypass 3.6 exists to prevent, just
+  on the clone path instead of the PATCH path 3.2 closed. The fix
+  adds `components` to the column list and the VALUES, and copies the
+  source's value byte-for-byte; the clone's `origin` is the source's
+  `origin` (the source is "all composed", "all written", or "mixed",
+  and the clone is the same kind of shoot). The single test pins
+  both halves: a composed source is cloned, every clone shot has the
+  source's trio, the clone's session `origin` is `'composed'`.
+
+  **Tests — four named, each with the failure mode pinned.** The
+  discipline from the 3.5 fix carries over: a test that does not
+  fail when the code is broken does not prove anything. Each test
+  below was checked by the author by breaking the code on purpose
+  and confirming the test fails (notes inline). The four tests are
+  in `tests/test_api.py`:
+
+  1. `test_a_written_session_behaves_exactly_as_before_and_records_written`
+     — the named scenario: create with one written shot, add a
+     written shot via `/api/sessions/{sid}/shots`, expand a take
+     (`count=3`), read the session back. The assertions cover
+     everything the written path returned before this column
+     existed: status, prompt, shot count, `components == {}` on
+     every shot. The new assertion is `session['origin'] ==
+     'written'`. Failure mode: a code change that writes
+     `'composed'` on create (the wrong default) or that never
+     writes the column at all (the column is `''` and the test
+     fails on the explicit `'written'` check). The pre-existing
+     `test_a_written_shot_leaves_components_empty` covers the
+     per-shot side; this test covers the lifecycle end to end.
+  2. `test_a_composed_session_is_recorded_as_composed` — the named
+     scenario: declare `manner` and `checkpoint` on the session,
+     pre-seed the cell to `verified` (the same pattern 3.1's test
+     uses for the strict path), compose one shot via
+     `/api/sessions/{sid}/compose`. Read the session back, assert
+     `origin == 'composed'`. Failure mode: a code change that
+     never updates the column on the compose path lets the test
+     fail with `''`; a code change that defaults the column to
+     `'written'` lets the test fail with `'written'`. The test
+     does not assert `'mixed'` because the session has no
+     written shots.
+  3. `test_a_mixed_session_is_recorded_as_mixed` — the case (2)
+     decided: create a session, add a written shot, compose a
+     shot, add another written shot, read the session back,
+     assert `origin == 'mixed'`. Failure mode: a "last write
+     wins" code change lets the test fail with `'written'` (the
+     last insertion wins); a "first write wins" code change
+     lets the test fail with `'written'` (the first insertion
+     sticks); a code change that never updates the column on
+     the composed path lets the test fail with `'written'`. The
+     third insertion is the load-bearing one — the test
+     asserts the `'mixed'` transition the state machine has
+     to hold.
+  4. `test_a_clone_of_a_composed_session_preserves_components_and_origin`
+     — the clone bug fix. Create a session, declare
+     `manner` and `checkpoint`, pre-seed the cell to `verified`,
+     compose two shots with distinct trios (so the JSONs are
+     distinguishable), clone the session, read the clone back,
+     assert every clone shot's `components` JSON equals the
+     source's corresponding shot's, and assert the clone's
+     `origin == 'composed'`. Failure mode: the current code
+     (before the fix) makes every clone shot's `components`
+     equal to `{}` and the test fails on the JSON equality
+     check. The `origin` check catches a separate failure mode
+     where the column-update helper is run on compose but not
+     on clone, so the clone's origin defaults to `''` and the
+     test fails on the explicit `'composed'` check.
+
+  **Implementation outline (no surprises, called out so the diff is
+  reviewable):**
+  - `backend/db.py:SCHEMA` adds `origin TEXT NOT NULL DEFAULT ''`
+    to the `session` table; `_migrate` runs the `ALTER TABLE`
+    inside the same `if "origin" not in columns("session")` guard
+    the `manner` and `checkpoint` columns use, then runs one
+    `SELECT` per session to bucket the components and
+    `UPDATE` the column. The bucket function is a one-line
+    `all(c == '{}' for c in components)`, `any`, etc.
+  - `backend/main.py:_expand_shots` runs the origin write
+    helper after every successful INSERT; the helper is
+    `_update_session_origin(sid, kind)` where `kind` is
+    `'written'` for the expand path and `'composed'` for the
+    compose path. The state machine: `''` -> `kind` on the
+    first non-empty session; `kind` -> `'mixed'` on a write
+    that disagrees; `'mixed'` stays. The helper is a single
+    `db.run` with a CASE expression so the read-modify-write
+    is one statement and the commit is atomic.
+  - `backend/main.py:compose_and_queue_shot` calls the same
+    helper with `kind='composed'`.
+  - `backend/main.py:clone_session` adds `components` to the
+    column list and VALUES (the bug), and calls
+    `_update_session_origin(new_id, src['origin'])` after
+    the loop (the source's origin is the clone's, by
+    construction — a clone of a `'mixed'` session is a
+    `'mixed'` session; a clone of a `'composed'` session is
+    a `'composed'` session).
+  - `backend/main.py:import_photo` calls the helper with
+    `kind='written'`.
+
 ## 4. Measure the composer against the fixed-line scripts
 
 - [ ] 4.1 Point one `scripts/shoot_*.py` at the composer instead of its hand-built line and verify it produces the same line it built by hand

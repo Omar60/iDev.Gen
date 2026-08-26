@@ -776,6 +776,14 @@ def clone_session(sid: int, c: SessionClone):
         # not find.
         src["tags"] or "[]", db.now(),
     )
+    # The clone's origin is the source's: a clone of a `'composed'`
+    # session is a `'composed'` session, a clone of a `'mixed'`
+    # session is a `'mixed'` session, a clone of a `'written'`
+    # session is a `'written'` session. A draft (`''` default,
+    # the source has no shots yet) clones as a draft — the
+    # first insertion on the clone is what stamps the column.
+    if src["origin"]:
+        db.run("UPDATE session SET origin=? WHERE id=?", src["origin"], new_id)
 
     ids: dict[int, int] = {}
     for shot in db.q("SELECT * FROM shot WHERE session_id=? ORDER BY id", sid):
@@ -783,11 +791,21 @@ def clone_session(sid: int, c: SessionClone):
         new_shot = db.run(
             """INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative,
                                  use_reference, reference_strength, seed, status,
-                                 origin_shot_id, created_at, finished_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                 components, origin_shot_id, created_at, finished_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             new_id, shot["shot_index"], shot["shot_label"], shot["prompt"], shot["negative"],
             shot["use_reference"], shot["reference_strength"], shot["seed"],
             "done" if imported else "pending",
+            # The components JSON is copied byte-for-byte: a
+            # composed source is a composed clone, and the
+            # trio is what 6.2 will read off the clone's
+            # shots to count the reshoot toward the right
+            # cell. A written source carries `'{}'` here
+            # (3.1's marker for "no trio"), and the clone
+            # carries the same. A future "let me skip the
+            # column for old clones" lands here as a
+            # regression on this INSERT.
+            shot["components"] or "{}",
             # The original take, never the row copied from: a clone of a clone
             # pairs with the whole family, and the pair then survives a reshoot
             # (↺) on either side, which rolls a new seed by design.
@@ -1683,6 +1701,19 @@ def _expand_shots(sid: int, model: dict, look: str, wardrobe: str, shots: list[S
                 shot_seed, db.now(),
             )
             added += 1
+    # The session's origin is stamped by the write path, every
+    # time: a written shot is one data point for `'written'`,
+    # and the column moves to `'mixed'` if a future compose
+    # lands on the same session. The helper is only called
+    # when at least one shot was actually added — `create_session`
+    # calls `_expand_shots` with `shots=[]` to keep the create
+    # path single, and a no-op expand must NOT stamp `'written'`
+    # on a draft (a draft that has no shots yet reads as `''`,
+    # the column default). The same logic gates
+    # `import_photo`'s call, but `import_photo` always adds
+    # one row, so the gate is a no-op there.
+    if added > 0:
+        _update_session_origin(sid, "written")
     return added
 
 
@@ -1841,6 +1872,12 @@ def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict) -> 
         sid, shot_index, f"composed {shot_index + 1}", prompt,
         model["base_negative"], components, db.now(),
     )
+    # The session's origin moves to `'composed'` on the first
+    # compose, or to `'mixed'` if the session already has a
+    # written shot (3.4's spec scenario). The helper is the
+    # single place this state machine lives, so the rule
+    # cannot drift between the three write paths.
+    _update_session_origin(sid, "composed")
     return shot_id
 
 
@@ -1857,6 +1894,48 @@ def _image_suffix(data: bytes) -> str:
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return ".webp"
     return ""
+
+
+def _update_session_origin(sid: int, kind: str) -> None:
+    """Stamp `session.origin` for the path that just wrote a shot.
+
+    The session's origin has three values: `''` (draft, no shots
+    yet — the column default), `'written'`, `'composed'`, and
+    `'mixed'`. Every shot insertion calls this helper with the
+    path it came from (`'written'` for `_expand_shots` and
+    `import_photo`, `'composed'` for `compose_and_queue_shot`).
+    The state machine:
+
+    - `''` -> `kind` (a draft that just took its first shot).
+    - `kind` stays put (the path is the only one so far).
+    - The OTHER kind -> `'mixed'` (3.4's spec scenario: a
+      session that carries both kinds of rows exists, and the
+      column has to reflect that without losing the per-row
+      information).
+    - `'mixed'` stays put (a `'mixed'` session does not
+      regress to a single kind just because the next insertion
+      matches the first).
+
+    The single statement reads the current value, applies the
+    state machine, and writes the new one. `db.run` commits per
+    call, and the next shot's call re-reads what the previous
+    call wrote, so the loop is safe under concurrent
+    insertions in a future that needs it. The read-modify-
+    write is in one `db.run` rather than a Python-side
+    read-then-write to keep the column a single source of
+    truth, even at the cost of one extra round trip.
+    """
+    assert kind in ("written", "composed"), kind
+    db.run(
+        "UPDATE session SET origin = CASE "
+        "  WHEN origin = '' THEN ? "
+        "  WHEN origin = ? THEN ? "
+        "  WHEN origin = 'mixed' THEN 'mixed' "
+        "  ELSE 'mixed' "
+        "END "
+        "WHERE id = ?",
+        kind, kind, kind, sid,
+    )
 
 
 @app.post("/api/sessions/{sid}/import")
@@ -1915,6 +1994,13 @@ async def import_photo(sid: int, request: Request, label: str = "", from_shot: i
         db.run("DELETE FROM shot WHERE id=?", shot_id)
         raise HTTPException(500, f"could not save the image: {exc}")
     db.run("UPDATE shot SET filename=? WHERE id=?", name, shot_id)
+    # An imported photo is a written shot by definition (no
+    # trio on the row), so the same helper `_expand_shots`
+    # runs: the session's origin moves to `'written'` if it
+    # was empty, stays put if it was already `'written'`, and
+    # flips to `'mixed'` if a compose landed here earlier
+    # (3.4's spec scenario).
+    _update_session_origin(sid, "written")
 
     # An imported photo in a session that edits photos and has none marked is the
     # photo you imported it to edit. Same default as `runner._adopt_anchor`, same

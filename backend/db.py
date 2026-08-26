@@ -389,6 +389,45 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "checkpoint" not in session_cols:
         conn.execute("ALTER TABLE session ADD COLUMN checkpoint TEXT NOT NULL DEFAULT ''")
 
+    # The session's origin: written, composed, or mixed. 3.6's spec
+    # scenario "a later comparison can tell which produced which
+    # photographs" needs this recorded on the session, not derived
+    # from its shots: a draft with zero shots has no answer to
+    # derive, and a session that carries both kinds of rows (3.4
+    # contemplates this) is information a per-shot scan would
+    # collapse. The empty default is the same idiom as manner and
+    # checkpoint: a brand-new session has no shots yet, and the
+    # first shot's write is what stamps the column. Older sessions
+    # are back-filled from the shot table below - unlike manner
+    # and checkpoint, the shot table IS a source of truth here
+    # (3.1 already wrote components to every composed shot), so
+    # the derivation is not a guess. A session with at least one
+    # shot gets 'written', 'composed', or 'mixed' from the
+    # components JSONs on its rows; a session with zero shots
+    # keeps the empty default, which the routes read as
+    # "draft, no shots yet".
+    if "origin" not in session_cols:
+        conn.execute("ALTER TABLE session ADD COLUMN origin TEXT NOT NULL DEFAULT ''")
+        # Back-fill: read every shot's components once, bucket per
+        # session in Python, write the bucket value. The JSON
+        # column needs jload, and a five-line Python scan is
+        # clearer than a SQL CASE that has to inspect JSON-as-
+        # TEXT. Re-runs of `_migrate` skip the back-fill because
+        # the column check above fails the second time around.
+        per_session: dict[int, set[str]] = {}
+        for row in conn.execute("SELECT session_id, components FROM shot").fetchall():
+            per_session.setdefault(row["session_id"], set()).add(row["components"] or "")
+        for sid, comp_set in per_session.items():
+            has_written = "{}" in comp_set
+            has_composed = any(c != "{}" for c in comp_set)
+            if has_written and has_composed:
+                value = "mixed"
+            elif has_composed:
+                value = "composed"
+            else:
+                value = "written"
+            conn.execute("UPDATE session SET origin=? WHERE id=?", value, sid)
+
     # The verdicts already paid for. An empty cell table is a database that
     # has never carried the seed, not one someone emptied on purpose, so the
     # only safe move is to fill it. `seed_evidence` is idempotent (ON

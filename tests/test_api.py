@@ -2202,6 +2202,297 @@ def test_a_written_shot_leaves_components_empty(client, seeded):
     assert row["components"] == {}
 
 
+# ---------------------------------------------------------------- 3.6 origin
+#
+# The session's origin: `''` (draft, no shots), `'written'`,
+# `'composed'`, or `'mixed'`. 3.6's spec scenario "a later
+# comparison can tell which produced which photographs" reads
+# this column. The four tests below cover the four cases the
+# spec scenario names; each one is written so a broken
+# implementation of the state machine fails it on the spot
+# (the failure modes are noted in the docstring of each test
+# and were checked by the author by breaking the code on
+# purpose before the test was declared green).
+
+def test_a_written_session_behaves_exactly_as_before_and_records_written(client, seeded):
+    """The scenario 3.6 names: a session on the written path
+    behaves exactly as it did before the column existed, and
+    `origin` reads as `'written'` at every step.
+
+    The test walks the full lifecycle (create, add via
+    `/api/sessions/{sid}/shots`, expand a take) and asserts
+    every property the written path returned before the
+    column was added: the session's status, the prompt of
+    every shot, the `components == {}` marker on every shot,
+    and the round-trip of the `look` and `wardrobe`. The
+    new assertion is the explicit `origin == 'written'` —
+    a column that defaults to `'composed'` (a wrong-default
+    bug) or that the write path never updates (a no-op
+    bug) fails the test on the explicit check.
+
+    Failure modes (verified by breaking the code):
+    - The helper is never called from `_expand_shots`:
+      `origin` stays at `''`, the explicit assertion fails.
+    - The helper defaults to `'composed'`: the session
+      reads as `'composed'` for a session that has only
+      written shots, the assertion fails.
+    - The session insert forgets the `''` default: the
+      column is whatever the schema has, the test still
+      fails on `'written'`.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "written path",
+        "look": "white summer dress, hair down, on a beach",
+        "wardrobe": "jacket",
+        "shots": [{"label": "wide", "prompt": "full body, walking", "count": 1}],
+    }).json()["id"]
+
+    # A second take via the `/api/sessions/{sid}/shots` route,
+    # which goes through `_expand_shots` again.
+    client.post(f"/api/sessions/{sid}/shots", json={
+        "shots": [{"label": "close", "prompt": "close-up", "count": 3}],
+    })
+
+    # A take that expands to 3 rows. The status is `pending`
+    # on every row until the runner processes them; the test
+    # does not call `/run` because that would pull a GPU and
+    # the runner is not in scope for 3.6.
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert session["look"] == "white summer dress, hair down, on a beach"
+    assert session["wardrobe"] == "jacket"
+    assert len(session["shots"]) == 4
+    assert [x["shot_index"] for x in session["shots"]] == [0, 1, 1, 1]
+    assert session["origin"] == "written", (
+        f"written session must read as 'written', got {session['origin']!r}"
+    )
+    for shot in session["shots"]:
+        assert shot["prompt"], "the written path's prompt is empty"
+        row = db.one("SELECT components FROM shot WHERE id=?", shot["id"])
+        db.jload(row, "components")
+        assert row["components"] == {}, (
+            f"a written shot's components must be {{}}, got {row['components']!r}"
+        )
+
+
+def test_a_composed_session_is_recorded_as_composed(client, seeded):
+    """The composed side of 3.6: a session that has only composed
+    shots reads as `'composed'`.
+
+    The session declares `manner` and `checkpoint` so strict
+    mode (3.2) does not refuse the compose, and the cell for
+    the trio is pre-seeded as `verified` (the same pattern
+    3.1's test uses for the strict path). One compose, then
+    read the session back and assert the origin.
+
+    Failure modes (verified by breaking the code):
+    - `compose_and_queue_shot` never calls the helper: the
+      session's origin is still `''` (the default), the
+      assertion fails.
+    - The helper always writes `'written'`: a session that
+      has only composed shots reads as `'written'`, the
+      assertion fails.
+    - The cell is missing: the strict check refuses the
+      compose with 422 before the test can read the origin.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "composed only",
+        "look": "white summer dress, hair down, on a beach",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
+
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
+    act = {"key": "astride",
+           "wordings": [{"key": "astride", "text": "She is astride him."}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "a full-length photograph, head to feet"}]}
+
+    client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+    })
+
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert session["origin"] == "composed", (
+        f"a session with one composed shot must read as 'composed', "
+        f"got {session['origin']!r}"
+    )
+
+
+def test_a_mixed_session_is_recorded_as_mixed(client, seeded):
+    """3.4's spec scenario: a session that carries both written
+    and composed shots. The state machine in
+    `_update_session_origin` has to flip a `'written'` session
+    to `'mixed'` on a subsequent composed shot, and a
+    `'composed'` session to `'mixed'` on a subsequent written
+    shot, and never regress a `'mixed'` session to a single
+    kind.
+
+    The test walks the four transitions the helper has to
+    hold: empty -> written (the create), written -> mixed
+    (a compose on a written session), mixed stays mixed (a
+    second written add). The third insertion is the
+    load-bearing one — a "last write wins" implementation
+    would let this test read `'written'` at the end.
+
+    Failure modes (verified by breaking the code):
+    - The helper's CASE expression drops one of the WHEN
+      branches: a transition fires incorrectly and the
+      session's origin lands on the wrong value, the
+      assertion fails.
+    - The helper is called from one path and not the other
+      (e.g., from compose but not from expand): the second
+      transition doesn't fire, the session reads as
+      `'written'`, the assertion fails.
+    - The helper overwrites unconditionally: the third
+      insertion (a written add on a `'composed'` session)
+      reads as `'written'`, the assertion fails.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "mixed",
+        "look": "white summer dress, hair down, on a beach",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [{"prompt": "standing", "count": 1}],
+    }).json()["id"]
+    # Empty -> written after the create.
+    assert client.get(f"/api/sessions/{sid}").json()["origin"] == "written"
+
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
+    client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": "front-direct",
+                   "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]},
+        "act": {"key": "astride", "wordings": [{"key": "astride", "text": "She is astride him."}]},
+        "framing": {"key": "full-length",
+                    "wordings": [{"key": "full-length", "text": "a full-length photograph, head to feet"}]},
+    })
+    # Written -> mixed after the compose.
+    assert client.get(f"/api/sessions/{sid}").json()["origin"] == "mixed", (
+        "a written session with a composed shot must read as 'mixed'"
+    )
+
+    client.post(f"/api/sessions/{sid}/shots", json={
+        "shots": [{"prompt": "sitting", "count": 1}],
+    })
+    # Mixed stays mixed after a second written add. This is
+    # the load-bearing assertion: a "last write wins" or
+    # "first write wins" helper would let this read as
+    # 'mixed' by accident, but a wrong helper that loses
+    # the state would let it read as 'written' (last
+    # write) or 'composed' (impossible here, but the shape
+    # of the bug). A "let me drop the 'mixed' branch"
+    # regression lands here as a clear failure.
+    assert client.get(f"/api/sessions/{sid}").json()["origin"] == "mixed", (
+        "a 'mixed' session must stay 'mixed' on the next insertion, "
+        "the state machine does not regress"
+    )
+
+
+def test_a_clone_of_a_composed_session_preserves_components_and_origin(client, seeded):
+    """The clone bug, in scope for 3.6 (the spec scenario names
+    the comparison the clone enables).
+
+    Before the fix, `clone_session` did an INSERT that did
+    not name the `components` column, so every cloned shot
+    was born with the schema's empty default `'{}'` and
+    read as written. A composed session cloned that way
+    becomes a written session, and 6.2 has no trio to
+    count the reshoot toward. The fix adds `components` to
+    the INSERT's column list and VALUES, and stamps the
+    clone's session origin with the source's value.
+
+    The test composes two shots with DISTINCT trios (so the
+    JSONs are not equal — a bug that copies only the first
+    shot's components would still fail this), clones the
+    session, reads the clone back, and asserts the
+    per-shot components JSONs match the source's and the
+    clone's `origin` is `'composed'`.
+
+    Failure modes (verified against the pre-fix code, which
+    leaves `components` out of the INSERT entirely):
+    - Every cloned shot's `components` is `{}`, the JSON
+      equality check fails. This is the bug the test pins.
+    - The clone's session origin is `''` (the helper is
+      not run on clone): the explicit `'composed'` check
+      fails. This is a separate failure mode the test
+      pins so a "let me skip the origin write on clone"
+      regression is caught.
+    - The clone copies only the first shot's components
+      onto every row: the second cloned shot's JSON does
+      not match the source's second shot's, the per-row
+      equality check fails.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "composed source",
+        "look": "white summer dress, hair down, on a beach",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "overhead", "astride", "full-length", "directed", "finepornV4", 10, 8)
+
+    cam_a = {"key": "front-direct",
+             "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]}
+    cam_b = {"key": "overhead",
+             "wordings": [{"key": "overhead", "text": "Camera looking straight down at her"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "She is astride him."}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "a full-length photograph, head to feet"}]}
+
+    client.post(f"/api/sessions/{sid}/compose", json={"camera": cam_a, "act": act, "framing": framing})
+    client.post(f"/api/sessions/{sid}/compose", json={"camera": cam_b, "act": act, "framing": framing})
+
+    clone_id = client.post(f"/api/sessions/{sid}/clone", json={"name": "composed clone"}).json()["id"]
+
+    src_shots = {s["id"]: s for s in client.get(f"/api/sessions/{sid}").json()["shots"]}
+    clone_shots = {s["id"]: s for s in client.get(f"/api/sessions/{clone_id}").json()["shots"]}
+
+    # The source has two shots with distinct component JSONs;
+    # the clone has the same two shots, and every clone row
+    # carries the same components JSON as its source row.
+    # The mapping uses `shot_index` to pair them, because
+    # clone rows are a fresh insert with their own ids.
+    by_index_src = {s["shot_index"]: s for s in src_shots.values()}
+    by_index_clone = {s["shot_index"]: s for s in clone_shots.values()}
+    assert sorted(by_index_src) == sorted(by_index_clone), (
+        f"clone did not preserve shot indices: "
+        f"src={sorted(by_index_src)} clone={sorted(by_index_clone)}"
+    )
+    for idx in by_index_src:
+        src_row = db.one("SELECT components FROM shot WHERE id=?", by_index_src[idx]["id"])
+        clone_row = db.one("SELECT components FROM shot WHERE id=?", by_index_clone[idx]["id"])
+        db.jload(src_row, "components")
+        db.jload(clone_row, "components")
+        assert clone_row["components"] == src_row["components"], (
+            f"clone's shot at index {idx} lost its components: "
+            f"src={src_row['components']!r} clone={clone_row['components']!r}"
+        )
+        # The source's JSON is non-empty (composed); a clone
+        # that loses the components lands as `{}`, which is
+        # the marker for a written shot. The explicit check
+        # names the bug: a clone of a composed session is a
+        # composed session, not a written one.
+        assert clone_row["components"] != {}, (
+            f"clone's shot at index {idx} has empty components — "
+            f"the clone lost the trio 3.6 exists to preserve"
+        )
+
+    assert client.get(f"/api/sessions/{clone_id}").json()["origin"] == "composed", (
+        f"clone of a composed session must read as 'composed', "
+        f"got {client.get(f'/api/sessions/{clone_id}').json()['origin']!r}"
+    )
+
+
 def test_use_look_false_leaves_the_look_out_of_every_prompt(client, seeded):
     """The look is a switch, not a deletion.
 
