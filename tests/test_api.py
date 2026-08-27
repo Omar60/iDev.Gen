@@ -129,10 +129,13 @@ def test_a_composed_shot_joins_identically_to_a_written_one(client, seeded):
     framing = {"key": "full-length",
                "wordings": [{"key": "full-length", "text": "a full-length photograph, head to feet"}]}
 
-    # Compose and queue.
+    # Compose and queue. `count` defaults to 1, so the response is
+    # `{"ids": [shot_id], "count": 1}` — the same shape the run-level
+    # endpoint (`compose-run`) and 8.5's fill-cell call return when
+    # asked for N.
     composed_id = client.post(f"/api/sessions/{sid}/compose", json={
         "camera": camera, "act": act, "framing": framing,
-    }).json()["id"]
+    }).json()["ids"][0]
 
     # Write the same line: add a shot with the three components as
     # the take. The writer's _compose joins the same way the
@@ -200,7 +203,7 @@ def test_a_composed_shot_records_the_three_components_on_the_row(client, seeded)
 
     composed_id = client.post(f"/api/sessions/{sid}/compose", json={
         "camera": camera, "act": act, "framing": framing,
-    }).json()["id"]
+    }).json()["ids"][0]
 
     row = db.one("SELECT * FROM shot WHERE id=?", composed_id)
     db.jload(row, "components")
@@ -463,7 +466,12 @@ def test_a_session_created_via_the_apps_path_can_be_composed_in_strict_mode(clie
                     "wordings": [{"key": "full-length", "text": "framing text"}]},
     })
     assert r.status_code == 200, r.text
-    assert "id" in r.json()
+    # 8.5 changed the response shape to {ids, count} so the fill-cell
+    # call (count=N) and the single-shot call (count=1) return the
+    # same shape. With count=1 the list has one element.
+    body = r.json()
+    assert "ids" in body and body["count"] == 1
+    assert len(body["ids"]) == 1
     n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
     assert n == 1
 
@@ -497,7 +505,9 @@ def test_a_verified_cell_for_the_sessions_dimensions_is_drawn_in_strict_mode(cli
         "camera": camera, "act": act, "framing": framing,
     })
     assert r.status_code == 200, r.text
-    assert "id" in r.json()
+    # 8.5 changed the response shape to {ids, count}; count=1 here.
+    body = r.json()
+    assert body["count"] == 1 and len(body["ids"]) == 1
     n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
     assert n == 1
 
@@ -2938,7 +2948,7 @@ def _composed_shot_in_session(client, seeded, *, manner: str, checkpoint: str,
         "mode": "exploratory",
     })
     assert r.status_code == 200, r.text
-    return r.json()["id"]
+    return r.json()["ids"][0]
 
 
 def test_a_judged_exploratory_photograph_counts_toward_its_cell(client, seeded):
@@ -2970,7 +2980,7 @@ def test_a_judged_exploratory_photograph_counts_toward_its_cell(client, seeded):
         "mode": "exploratory",
     })
     assert r.status_code == 200, r.text
-    shot_id = r.json()["id"]
+    shot_id = r.json()["ids"][0]
 
     # No cell yet: the trio was unmeasured, exploratory drew it,
     # and the judgement is what creates the row. The judge
@@ -3663,7 +3673,7 @@ def test_judge_pass_returns_only_shot_id_keys_and_exact_structure(client, seeded
 
     shot_id = client.post(f"/api/sessions/{sid}/compose", json={
         "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
-    }).json()["id"]
+    }).json()["ids"][0]
     db.run("UPDATE shot SET status='done' WHERE id=?", shot_id)
 
     r = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
@@ -3696,10 +3706,10 @@ def test_judge_pass_default_unjudged_shots_with_empty_verdicts(client, seeded):
 
     s1 = client.post(f"/api/sessions/{sid}/compose", json={
         "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
-    }).json()["id"]
+    }).json()["ids"][0]
     s2 = client.post(f"/api/sessions/{sid}/compose", json={
         "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
-    }).json()["id"]
+    }).json()["ids"][0]
     db.run("UPDATE shot SET status='done' WHERE session_id=?", sid)
 
     # Verify database has verdicts=''
@@ -3726,10 +3736,10 @@ def test_judge_pass_categorizes_judged_shots_as_controls(client, seeded):
 
     s1 = client.post(f"/api/sessions/{sid}/compose", json={
         "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
-    }).json()["id"]
+    }).json()["ids"][0]
     s2 = client.post(f"/api/sessions/{sid}/compose", json={
         "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
-    }).json()["id"]
+    }).json()["ids"][0]
     db.run("UPDATE shot SET status='done' WHERE session_id=?", sid)
 
     # Judge s1 on camera only
@@ -3763,10 +3773,10 @@ def test_judge_pass_never_leaks_shots_from_another_session(client, seeded):
 
     sa1 = client.post(f"/api/sessions/{sid_a}/compose", json={
         "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
-    }).json()["id"]
+    }).json()["ids"][0]
     sb1 = client.post(f"/api/sessions/{sid_b}/compose", json={
         "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
-    }).json()["id"]
+    }).json()["ids"][0]
     db.run("UPDATE shot SET status='done'")
 
     r = client.get(f"/api/sessions/{sid_a}/judge-pass?slot=camera")
@@ -3793,15 +3803,15 @@ def test_judge_pass_excludes_written_rejected_and_non_done_shots(client, seeded)
     # Composed shot 1 (done, not rejected) -> INCLUDED
     s1 = client.post(f"/api/sessions/{sid}/compose", json={
         "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
-    }).json()["id"]
+    }).json()["ids"][0]
     # Composed shot 2 (rejected) -> EXCLUDED
     s2 = client.post(f"/api/sessions/{sid}/compose", json={
         "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
-    }).json()["id"]
+    }).json()["ids"][0]
     # Composed shot 3 (pending) -> EXCLUDED
     s3 = client.post(f"/api/sessions/{sid}/compose", json={
         "camera": camera, "act": act, "framing": framing, "mode": "exploratory",
-    }).json()["id"]
+    }).json()["ids"][0]
 
     db.run("UPDATE shot SET status='done' WHERE id IN (?, ?)", s1, s2)
     db.run("UPDATE shot SET rejected=1 WHERE id=?", s2)
@@ -5768,3 +5778,278 @@ def test_the_n_draw_never_reaches_a_dead_trio_even_with_no_other_row(client, see
         assert r.status_code == 422, f"{mode}: {r.text}"
         n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
         assert n == 0, f"{mode} queued a dead trio: {n} rows for session {sid}"
+
+
+# ---------------------------------------------------------------------- 8.5
+
+
+def test_compose_with_count_one_queues_one_row_of_the_trio(client, seeded):
+    """The 3.1 single-shot case is the count=1 case. The field is
+    on the payload (it was added in 8.5), but the default keeps
+    the pre-8.5 callers' behaviour: one POST, one row, response
+    `{"ids": [id], "count": 1}`.
+
+    Verified by breaking the code: replacing `for _ in range(c.count)`
+    with `for _ in range(1)` would make this test pass on count=1
+    (the default), but the n=10 test below would fail with 1 row
+    instead of 10. The count=1 regression is the cheap half; the
+    n=10 test is the loop-closed half.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "fill one",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front text"}]},
+        "act": {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]},
+        "framing": {"key": "full-length", "wordings": [{"key": "full-length", "text": "framing text"}]},
+        "count": 1,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 1
+    assert len(body["ids"]) == 1
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 1
+
+
+def test_compose_with_count_ten_queues_ten_rows_of_the_same_trio(client, seeded):
+    """The 8.5 named scenario: an operator picks one trio and a count
+    on an existing session, and the screen queues that many
+    photographs of the same trio so the cell can be filled to its
+    `judged=10` threshold from the app.
+
+    The trio is verified (10/8), the session carries the cell's
+    manner and checkpoint, the request asks for `count=10` on a
+    pool that has at least one verified trio. The assertion is
+    THREE things, each of which would fail under a different
+    pre-8.5 bug:
+
+    1. The response says `count: 10` and the ids list has 10
+       elements. A pre-8.5 endpoint that ignored `count` would
+       return `count: 1` and a 1-element list, and this
+       assertion fails.
+    2. The shot table has 10 rows for this session. The same
+       pre-8.5 bug surfaces here too — 1 row, not 10.
+    3. Every row's `components` JSON is the SAME trio, byte
+       for byte. A bug that re-drew the trio per row (e.g. a
+       future "let me re-randomise each insert") surfaces
+       here, and the cell the 10 photographs are filling is
+       the cell every row counts toward.
+
+    The cell check is on the TRIO, not on the COUNT — a cell
+    is a row in the cell table, and the same trio, no matter
+    how many rows the operator asks for, is one cell. So the
+    pre-check passes for the verified trio, and 10 rows queue.
+
+    Verified by breaking the code: replacing
+    `for _ in range(c.count)` with `for _ in range(1)` makes
+    the assertion `n == 10` fail with `n == 1`. Reverting and
+    replacing `c.count` with `1` directly makes the response
+    `count: 1` fail. Reverting and reading the trio from
+    `best_chosen` (a different trio each iteration) makes the
+    `components == same` assertion fail. Three loops, three
+    failures, three surfaces a future bug has to trip.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "fill ten",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
+
+    camera = {"key": "front-direct",
+              "wordings": [{"key": "front-direct", "text": "front text"}]}
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "framing text"}]}
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": camera, "act": act, "framing": framing,
+        "count": 10,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 10
+    assert len(body["ids"]) == 10
+    # 10 distinct ids. The runner allocates them one per INSERT, and
+    # SQLite's autoincrement gives each one a fresh number.
+    assert len(set(body["ids"])) == 10
+
+    # Every row is the same trio, recorded in the components column.
+    expected_comps = {
+        "camera":  {"concept": "front-direct", "wording": "front-direct"},
+        "act":     {"concept": "astride",      "wording": "astride"},
+        "framing": {"concept": "full-length",  "wording": "full-length"},
+    }
+    rows = db.q("SELECT id, components, prompt, seed FROM shot WHERE session_id=?", sid)
+    assert len(rows) == 10
+    for row in rows:
+        db.jload(row, "components")
+        assert row["components"] == expected_comps, f"row {row['id']} has different components: {row['components']}"
+
+    # Every row carries seed=0 at queue time. The runner rolls a fresh
+    # random per row (backend/runner.py:117 reads `shot["seed"] or
+    # random.randint(...)`), and N identical prompts DO render N
+    # different photographs — that is the runner's job, not 8.5's.
+    # The byte-equal prompt check is what 8.5 owns.
+    seeds = {row["seed"] for row in rows}
+    assert seeds == {0}, f"rows queued with non-zero seed: {seeds}"
+    # Every row's prompt is byte-equal: same trigger, same base, same
+    # look, same wardrobe, same trio joined the same way. The
+    # runner's per-row seed (above) is what differentiates the
+    # rendered photographs.
+    prompts = {row["prompt"] for row in rows}
+    assert len(prompts) == 1, f"expected 1 prompt, got {len(prompts)}: {prompts}"
+    # The prompt is non-empty: a real composed line.
+    assert next(iter(prompts)) != "", "queued rows have empty prompt"
+
+
+def test_compose_with_count_ten_refuses_a_dead_trio_before_any_insert(client, seeded):
+    """The pre-check protects the loop: a dead cell is refused in
+    both modes, and the refusal fires BEFORE any INSERT (db.run
+    auto-commits per INSERT; a check that fires at row k+1 would
+    leave k rows behind). With `count=10` the loop-closed test is
+    loud: 10 rows committed before the refusal would fail this
+    assertion with `n == 10` instead of `n == 0`.
+
+    Verified by breaking the code: moving the cell check INSIDE
+    the loop (after the first `compose_and_queue_shot`) makes
+    rows 0-9 commit and row 10 (the next iteration) refuse. The
+    `n == 0` assertion fails with `n == 10` and the test prints
+    the count.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "fill ten dead",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    # 10/0 lands as `dead` (cell_state returns "dead" for
+    # judged >= 10 AND arrived * 10 < judged * 8).
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 0)
+
+    for mode in ("strict", "exploratory"):
+        # A fresh session per mode so the loop-closed assertion
+        # (n == 0 for THIS session) is unambiguous.
+        sub = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"fill ten dead {mode}",
+            "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+        }).json()["id"]
+        r = client.post(f"/api/sessions/{sub}/compose", json={
+            "camera": {"key": "front-direct",
+                       "wordings": [{"key": "front-direct", "text": "front text"}]},
+            "act": {"key": "astride",
+                    "wordings": [{"key": "astride", "text": "astride text"}]},
+            "framing": {"key": "full-length",
+                        "wordings": [{"key": "full-length", "text": "framing text"}]},
+            "count": 10, "mode": mode,
+        })
+        assert r.status_code == 422, f"{mode}: {r.text}"
+        n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sub)["n"]
+        assert n == 0, f"{mode} queued a dead cell on count=10: {n} rows for session {sub}"
+
+
+def test_compose_with_count_ten_refuses_an_unknown_trio_in_strict(client, seeded):
+    """The unknown-trio branch of the pre-check: a trio that was
+    never measured is unknown, and strict mode refuses to draw
+    it. With `count=10` the loop-closed assertion is the same:
+    0 rows for THIS session, not 10. The 422 message names the
+    trio, the manner, the checkpoint, and the state (`unknown`)
+    so the operator can see what is missing.
+
+    Verified by breaking the code: skipping the pre-check
+    (jumping straight to the loop) lets 10 rows commit on an
+    unknown trio in strict mode, and `n == 0` fails with
+    `n == 10`. The response code is 200, not 422, and the test
+    fails on the status check too.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "fill ten unknown strict",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    # No cell seeded: the trio is unknown.
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": "front-direct",
+                   "wordings": [{"key": "front-direct", "text": "front text"}]},
+        "act": {"key": "astride",
+                "wordings": [{"key": "astride", "text": "astride text"}]},
+        "framing": {"key": "full-length",
+                    "wordings": [{"key": "full-length", "text": "framing text"}]},
+        "count": 10, "mode": "strict",
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "unknown" in detail, f"refusal should name the state: {detail!r}"
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, f"strict queued an unknown trio on count=10: {n} rows"
+
+
+def test_compose_with_count_ten_draws_an_unknown_trio_in_exploratory(client, seeded):
+    """The exploratory mode widens the draw to include `unknown`
+    cells (a cell is not `dead` until it has been measured at
+    10+, and an absent cell is `unknown` by definition). With
+    `count=10` the loop queues 10 rows of the unknown trio, the
+    cell is created on the first judgement (6.2's responsibility,
+    not 8.5's), and the response carries the 10 ids.
+
+    The point of this test: the count=10 path is the same draw
+    as the count=1 path in exploratory mode, and the loop
+    inherits the `unknown is drawable` decision the one-shot
+    branch already made. A code change that "let me also
+    refuse unknown in exploratory for count>1" lands here as a
+    regression on the explorer's intended behaviour.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "fill ten unknown exploratory",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    # No cell seeded: the trio is unknown.
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": "front-direct",
+                   "wordings": [{"key": "front-direct", "text": "front text"}]},
+        "act": {"key": "astride",
+                "wordings": [{"key": "astride", "text": "astride text"}]},
+        "framing": {"key": "full-length",
+                    "wordings": [{"key": "full-length", "text": "framing text"}]},
+        "count": 10, "mode": "exploratory",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 10
+    assert len(body["ids"]) == 10
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 10
+
+
+def test_compose_with_count_zero_is_rejected_at_the_boundary(client, seeded):
+    """`count` is a `Field(1, ge=1)` on `ComposeIn`: pydantic
+    refuses `count=0` or negative BEFORE the handler runs. A
+    code change that drops the bound to `int = 1` (no `ge=1`)
+    lets `count=0` slip into the loop, and `range(0)` is
+    a no-op — the response is `count: 0` with an empty ids
+    list. The assertion on the 422 status fails on `200`.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "fill zero",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    for bad in (0, -1):
+        r = client.post(f"/api/sessions/{sid}/compose", json={
+            "camera": {"key": "front-direct",
+                       "wordings": [{"key": "front-direct", "text": "front text"}]},
+            "act": {"key": "astride",
+                    "wordings": [{"key": "astride", "text": "astride text"}]},
+            "framing": {"key": "full-length",
+                        "wordings": [{"key": "full-length", "text": "framing text"}]},
+            "count": bad,
+        })
+        assert r.status_code == 422, f"count={bad}: {r.status_code} {r.text}"

@@ -165,11 +165,27 @@ class SessionIn(BaseModel):
 
 
 class ComposeIn(BaseModel):
-    """One composed shot: a camera, an act and a framing, all drawn from
-    the catalogue. Each is a (key, wordings) pair; the composer takes
-    the first wording of each and joins them the same way the writer's
-    `_compose` joins a take, so the queued line is byte-for-byte
-    identical to one a writer would produce from the same components.
+    """One composed shot, repeated `count` times: a camera, an act
+    and a framing, all drawn from the catalogue. Each is a
+    (key, wordings) pair; the composer takes the first wording of
+    each and joins them the same way the writer's `_compose` joins
+    a take, so the queued line is byte-for-byte identical to one
+    a writer would produce from the same components.
+
+    `count` defaults to 1, and the original 3.1 single-shot
+    behaviour is `count=1` with no callers passing anything else.
+    8.5 added the field: filling a cell to its `judged=10`
+    threshold from the screen needs N photographs of the SAME
+    trio on the same session, and the alternative — the frontend
+    calling `/compose` N times in a loop — cannot honour this
+    repo's rule that a refused run queues NOTHING. A frontend
+    loop that fails on the seventh call leaves six rows behind
+    because `db.run` auto-commits per INSERT, and the cell check
+    would have to fire on every loop iteration instead of once.
+    The pre-check still runs ONCE, before any insert, in
+    `compose_shot_endpoint`: a dead cell is refused in both
+    modes, an unknown cell is refused in strict and drawn in
+    exploratory. N rows or zero rows, never some.
 
     The draw is deterministic for 3.1: the caller passes the
     components, and the composer joins them. 3.2 makes the draw
@@ -192,6 +208,7 @@ class ComposeIn(BaseModel):
     camera: dict
     act: dict
     framing: dict
+    count: int = Field(1, ge=1)
     mode: Literal["strict", "exploratory"] = "strict"
 
 
@@ -891,19 +908,32 @@ def add_shots(sid: int, payload: dict):
 
 @app.post("/api/sessions/{sid}/compose")
 def compose_shot_endpoint(sid: int, c: ComposeIn):
-    """Compose a single shot from drawn components and queue it, with
-    no writer request. The components are recorded on the shot in
-    the `components` column; the queued line joins identically to one
-    a writer would produce from the same three components, because
-    `compose_shot` and `_compose` go through the same `_sentences`
-    join (see `test_a_composed_shot_joins_identically_to_a_written_one`).
+    """Compose `count` photographs of one trio from the catalogue
+    and queue them, with no writer request. `count=1` is the 3.1
+    single-shot case; `count>1` is the 8.5 fill-cell case
+    (queue N photographs of the same trio on the same session,
+    so an operator can take a cell to its `judged=10` threshold
+    without a script). The components are recorded on every row
+    in the `components` column; the queued line joins identically
+    to one a writer would produce from the same three components,
+    because `compose_shot` and `_compose` go through the same
+    `_sentences` join (see
+    `test_a_composed_shot_joins_identically_to_a_written_one`).
 
     The cell lookup is exact: a cell is the trio plus the session's
     two non-trio dimensions, and a trio verified on a different
     checkpoint is not enough. The 422 message names the trio, the
     session's manner and checkpoint, and the cell state the lookup
     found, so the caller can see whether the gap is a missing
-    measurement (unknown) or a failed one (dead).
+    measurement (unknown) or a failed one (dead). The check runs
+    ONCE, before any insert: a dead cell is refused in both modes,
+    an unknown cell is refused in strict and drawn in exploratory,
+    and the pre-check makes "k rows committed, k+1 refused"
+    impossible. N rows or zero rows, never some. Seed handling is
+    the runner's: every row is stored with `seed=0` and the runner
+    rolls a fresh `random.randint` per shot
+    (`backend/runner.py:117`), so N identical prompts DO render N
+    different photographs.
 
     `mode` selects what is drawable. In `strict`, only `verified`
     cells pass — `unknown` and `dead` are refused. In
@@ -961,44 +991,49 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
                 f"has no measurement (unknown); switch to exploratory "
                 f"mode to compose from unmeasured cells",
             )
-        # Exploratory: no row but the trio is still drawable
-        # because there is no measurement that says it is
-        # dead. The shot is queued and 6.2 will land it on
-        # the cell once a judge records a verdict.
-        shot_id = compose_and_queue_shot(sid, c.camera, c.act, c.framing)
-        return {"id": shot_id}
-    state = db.cell_state(cell["judged"], cell["arrived"])
-    if state == "dead":
-        # Dead in both modes. A measured 0 of 12 is a result,
-        # not a gap, and "let me draw it anyway" would
-        # contradict the measurement the cell table is
-        # asking the operator to honour. The 422 message
-        # names the cell and the state, the same shape 3.2
-        # carries.
-        raise HTTPException(
-            422,
-            f"compose refused: cell "
-            f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
-            f"{session['manner']}, {session['checkpoint']}) "
-            f"is {state}, not drawable in any mode",
-        )
-    if state != "verified" and c.mode == "strict":
-        # Unknown on a row exists when judged < 10 but a row
-        # is present. Strict refuses; exploratory accepts
-        # the same row. The 422 names the cell and the state
-        # and suggests the wider mode, the same way the
-        # "no row at all" branch does.
-        raise HTTPException(
-            422,
-            f"compose refused: cell "
-            f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
-            f"{session['manner']}, {session['checkpoint']}) "
-            f"is {state}, not verified; switch to exploratory "
-            f"mode to compose from unmeasured cells",
-        )
+    else:
+        state = db.cell_state(cell["judged"], cell["arrived"])
+        if state == "dead":
+            # Dead in both modes. A measured 0 of 12 is a result,
+            # not a gap, and "let me draw it anyway" would
+            # contradict the measurement the cell table is
+            # asking the operator to honour. The 422 message
+            # names the cell and the state, the same shape 3.2
+            # carries.
+            raise HTTPException(
+                422,
+                f"compose refused: cell "
+                f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
+                f"{session['manner']}, {session['checkpoint']}) "
+                f"is {state}, not drawable in any mode",
+            )
+        if state != "verified" and c.mode == "strict":
+            # Unknown on a row exists when judged < 10 but a row
+            # is present. Strict refuses; exploratory accepts
+            # the same row. The 422 names the cell and the state
+            # and suggests the wider mode, the same way the
+            # "no row at all" branch does.
+            raise HTTPException(
+                422,
+                f"compose refused: cell "
+                f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
+                f"{session['manner']}, {session['checkpoint']}) "
+                f"is {state}, not verified; switch to exploratory "
+                f"mode to compose from unmeasured cells",
+            )
 
-    shot_id = compose_and_queue_shot(sid, c.camera, c.act, c.framing)
-    return {"id": shot_id}
+    # All checks have passed. Queue `count` rows of the same trio.
+    # The cell check above has already refused any path that would
+    # leave a partial batch (dead in both modes, unknown in
+    # strict), so the loop is unconditional here. `db.run` commits
+    # per INSERT inside `compose_and_queue_shot`; the runner rolls
+    # a fresh `random.randint` seed per row, so the same trio
+    # renders N different photographs.
+    shot_ids = [
+        compose_and_queue_shot(sid, c.camera, c.act, c.framing)
+        for _ in range(c.count)
+    ]
+    return {"ids": shot_ids, "count": len(shot_ids)}
 
 
 class ComposeRunIn(BaseModel):
