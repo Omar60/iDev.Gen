@@ -6,7 +6,7 @@ import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
 import { BaseModelSelect, SamplerSelect } from './Models.jsx'
 import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary } from '../kinds.js'
-import { candidatePool, defaultCount, FRAMING_WORDING } from '../compose.js'
+import { candidatePool, defaultCount, fillCellDefaultCount, FRAMING_WORDING } from '../compose.js'
 import { composed } from '../enhance.js'
 
 /** A checkpoint's name for a session title: no folder, no extension. Three copies
@@ -60,6 +60,21 @@ export default function SessionView({ id }) {
   // catalogue would make this stale and it would have to move to an effect.
   const [composeCount, setComposeCount] = useState(() => defaultCount(s?.manner))
   const [composeMode, setComposeMode] = useState('exploratory')
+  // The fill-cell control: pick one trio (camera, act; framing is
+  // fixed), pick a count, queue N photographs of that trio on
+  // THIS session. The picker reads the same catalogue slice the
+  // Compose control reads (`candidatePool(manner)`) — no second
+  // pool, no second source of truth. Initial state opens on the
+  // first camera and first act of the slice and the threshold
+  // count (10) a cell needs to reach verified or dead. The
+  // `s?.manner` initialiser runs before the session has loaded
+  // and falls back to the `directed` slice, which is the right
+  // first paint while we wait: the catalogue re-resolves on
+  // every press.
+  const [fillCellCamera, setFillCellCamera] = useState(() => candidatePool(s?.manner).camera[0]?.key || '')
+  const [fillCellAct, setFillCellAct] = useState(() => candidatePool(s?.manner).act[0]?.key || '')
+  const [fillCellMode, setFillCellMode] = useState('exploratory')
+  const [fillCellCount, setFillCellCount] = useState(() => fillCellDefaultCount())
   const llm = !!config.llm_ok
 
   const reload = () => api.get(`/api/sessions/${id}`).then(setS).catch((e) => setError(e.message))
@@ -116,6 +131,27 @@ export default function SessionView({ id }) {
   const composeRun = (n, mode) => call(async () => {
     const candidates = candidatePool(s.manner)
     await api.post(`/api/sessions/${id}/compose-run`, { count: n, candidates, mode })
+  })
+
+  // Fill a cell: queue N photographs of the picked trio on this
+  // session. The cell check (verified in strict, unknown refused
+  // in strict but drawable in exploratory, dead refused in both)
+  // runs ONCE on the backend before any insert; a 422 leaves
+  // nothing queued, and the response's `detail` reaches the
+  // screen verbatim through `setError(e.message)` the way 8.3
+  // already pins. The trio is built from the same `candidatePool`
+  // the Compose control reads — picking the first wording of
+  // each selected concept — so the payload matches the shape
+  // `/compose` reads, and the operator sees no second list to
+  // learn.
+  const fillCell = (camKey, actKey, n, mode) => call(async () => {
+    const pool = candidatePool(s.manner)
+    const camera = pool.camera.find((c) => c.key === camKey) || pool.camera[0]
+    const act = pool.act.find((a) => a.key === actKey) || pool.act[0]
+    const framing = pool.framing[0]
+    await api.post(`/api/sessions/${id}/compose`, {
+      camera, act, framing, count: n, mode,
+    })
   })
 
   const rate = (shot, rating) => call(async () => {
@@ -404,6 +440,54 @@ export default function SessionView({ id }) {
                       ? `Compose needs manner and checkpoint (manner="${s.manner || ''}", checkpoint="${s.checkpoint || ''}")`
                       : `Compose ${composeCount} ${composeMode} photograph${composeCount === 1 ? '' : 's'}; framing is fixed: ${FRAMING_WORDING}`}>
               Compose
+            </button>
+          </span>
+          {/* The fill-cell control: pick one trio, queue N photographs of it on
+              this session so an operator can take a single cell to its
+              `judged=10` threshold without a script. The camera and act
+              are <select>s of the catalogue slice the Compose control also
+              reads (`candidatePool(manner)`); the framing is fixed and
+              the button's title says so. Default count is 10 — the
+              threshold `db.cell_state` reads — so a single press queues
+              the batch that pushes a cell to verified or dead. Strict
+              mode refuses unknowns (the cell check 3.2 already pinned);
+              exploratory draws them too. The 422 path is the same
+              `setError(e.message)` the Compose control uses. */}
+          <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <select value={fillCellCamera}
+                    disabled={!s.manner || !s.checkpoint || s.running}
+                    onChange={(e) => setFillCellCamera(e.target.value)}
+                    title="Camera concept for the fill-cell compose">
+              {candidatePool(s.manner).camera.map((c) => (
+                <option key={c.key} value={c.key}>{c.key}</option>
+              ))}
+            </select>
+            <select value={fillCellAct}
+                    disabled={!s.manner || !s.checkpoint || s.running}
+                    onChange={(e) => setFillCellAct(e.target.value)}
+                    title="Act concept for the fill-cell compose">
+              {candidatePool(s.manner).act.map((a) => (
+                <option key={a.key} value={a.key}>{a.key}</option>
+              ))}
+            </select>
+            <input type="number" min={1} max={50} value={fillCellCount}
+                   disabled={!s.manner || !s.checkpoint || s.running}
+                   onChange={(e) => setFillCellCount(Math.max(1, Number(e.target.value) || 1))}
+                   style={{ width: 50 }}
+                   title="How many photographs of this trio to queue" />
+            <select value={fillCellMode}
+                    disabled={!s.manner || !s.checkpoint || s.running}
+                    onChange={(e) => setFillCellMode(e.target.value)}
+                    title="Mode for the fill-cell compose (strict refuses unknown cells; exploratory draws them)">
+              <option value="exploratory">exploratory</option>
+              <option value="strict">strict</option>
+            </select>
+            <button disabled={!s.manner || !s.checkpoint || s.running || fillCellCount < 1 || !fillCellCamera || !fillCellAct}
+                    onClick={() => fillCell(fillCellCamera, fillCellAct, fillCellCount, fillCellMode)}
+                    title={!s.manner || !s.checkpoint
+                      ? `Fill cell needs manner and checkpoint (manner="${s.manner || ''}", checkpoint="${s.checkpoint || ''}")`
+                      : `Queue ${fillCellCount} ${fillCellMode} photograph${fillCellCount === 1 ? '' : 's'} of (${fillCellCamera}, ${fillCellAct}, framing) so the cell can be judged; framing is fixed: ${FRAMING_WORDING}`}>
+              Fill cell
             </button>
           </span>
           {s.status === 'running' &&

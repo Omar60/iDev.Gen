@@ -80,3 +80,23 @@ export function defaultCount(manner) {
   const sizes = [pool.camera.length, pool.act.length, pool.framing.length].filter((n) => n > 1)
   return sizes.length ? Math.min(...sizes) : 1
 }
+
+
+/** The count the "fill cell" control opens on: the threshold a cell
+ *  needs to reach `verified` or `dead`, which is `db.cell_state`'s
+ *  `judged >= 10`. `compose-run` produces VARIETY (3.4's no-repeat
+ *  rule), so a 10-photograph run is 10 distinct trios — that fills 10
+ *  cells, not one. The fill-cell control is a different request: pick
+ *  one trio, queue N photographs of it, take ONE cell to its
+ *  threshold. The default is 10 because that is the operator's
+ *  intent most of the time, and a number the form can show without
+ *  a sentence explaining it.
+ *
+ *  The function is pure: same input, same number. The view
+ *  initialises the count input with this, and the operator can
+ *  edit it. A future "let me also fill below threshold" lands
+ *  here as a different value, not a code change in the view.
+ */
+export function fillCellDefaultCount() {
+  return 10
+}

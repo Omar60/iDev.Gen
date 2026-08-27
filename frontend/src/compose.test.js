@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { POSITIONS, ARRANGEMENTS, CAMERA_POSITIONS, CANDID_POSITIONS, SELFIE_POSITIONS } from './kinds.js'
-import { candidatePool, defaultCount, FRAMING_WORDING } from './compose.js'
+import { candidatePool, defaultCount, fillCellDefaultCount, FRAMING_WORDING } from './compose.js'
 
 /** The candidate pool the compose control posts. Each test pins a different
  *  fact: the catalogue slice (every camera of the manner, every act), the
@@ -118,5 +118,27 @@ describe('defaultCount', () => {
     for (const manner of ['directed', 'candid', 'selfie']) {
       expect(defaultCount(manner)).toBe(defaultCount('directed'))
     }
+  })
+})
+
+
+describe('fillCellDefaultCount', () => {
+  it('is the threshold a cell needs to reach verified or dead', () => {
+    // `db.cell_state` returns "verified" for judged >= 10 AND
+    // arrived*10 >= judged*8, and "dead" for judged >= 10 AND
+    // arrived*10 < judged*8. The fill-cell control queues N
+    // photographs of ONE trio on ONE session so the operator can
+    // take a single cell to that threshold; the default count
+    // is 10 because that is the intent, and any other number
+    // would be a promise the cell will not honour.
+    expect(fillCellDefaultCount()).toBe(10)
+  })
+
+  it('takes no arguments and is a constant', () => {
+    // Two reads, same answer: a future "let me also pass the
+    // manner" lands here as a new function or a parameter; the
+    // existing callers continue to read the same number, and
+    // this test fails the day the value drifts between renders.
+    expect(fillCellDefaultCount()).toBe(fillCellDefaultCount())
   })
 })

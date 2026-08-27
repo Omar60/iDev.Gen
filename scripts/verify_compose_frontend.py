@@ -184,6 +184,58 @@ def main() -> int:
         assert r.status_code == 422, f"missing manner should 422, got {r.status_code}"
         assert "manner" in r.json()["detail"], f"refusal should name manner: {r.json()['detail']!r}"
 
+        # -- Case 5 (8.5): the fill-cell flow. Pick one trio, ask for N
+        # photographs of it on the session, and the endpoint queues N rows
+        # on the session with the same trio recorded on every row. The
+        # backend's `ComposeIn.count` is the new field; the response is
+        # `{"ids": [...], "count": N}` (8.5 also changed the response
+        # shape from `{"id": id}` to `{"ids": [...], "count": N}` so
+        # the single-shot case and the fill-cell case share a shape).
+        # The cell is verified at 10/8 so the strict check passes; the
+        # three components are the same the Compose control would have
+        # built via candidatePool(manner). The trio uses the SECOND
+        # camera and SECOND act, because case 1 already seeds the
+        # (cam_keys[0], act_keys[0], framing_keys[0]) cell, and a
+        # duplicate INSERT on the 5-column PRIMARY KEY would error.
+        sid5 = client.post("/api/sessions", json={
+            "model_id": model["id"], "name": "verify fill cell",
+            "manner": "directed",
+            "checkpoint": "finepornV4",
+            "shots": [],
+        }).json()["id"]
+        cam5 = cam_keys[1] if len(cam_keys) > 1 else cam_keys[0]
+        act5 = act_keys[1] if len(act_keys) > 1 else act_keys[0]
+        framing5 = framing_keys[0]
+        db.run(
+            "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+            "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            cam5, act5, framing5, "directed", "finepornV4", 10, 8,
+        )
+        camera5 = next(c for c in pool["camera"] if c["key"] == cam5)
+        act5_obj = next(a for a in pool["act"] if a["key"] == act5)
+        framing5_obj = pool["framing"][0]
+        r = client.post(f"/api/sessions/{sid5}/compose", json={
+            "camera": camera5, "act": act5_obj, "framing": framing5_obj,
+            "count": 10, "mode": "strict",
+        })
+        body = r.json()
+        n5 = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid5)["n"]
+        print(f"CASE 5 fill cell: status={r.status_code}, count={body.get('count')}, "
+              f"ids={len(body.get('ids', []))}, queued={n5}")
+        assert r.status_code == 200, f"fill cell should 200, got {r.status_code}: {r.text}"
+        assert body["count"] == 10, f"response count should be 10, got {body.get('count')}"
+        assert len(body["ids"]) == 10, f"response should carry 10 ids, got {len(body.get('ids', []))}"
+        assert n5 == 10, f"expected 10 queued, got {n5}"
+        # Every row carries the same trio in components, byte for byte.
+        rows = db.q("SELECT components FROM shot WHERE session_id=?", sid5)
+        import json
+        for row in rows:
+            assert json.loads(row["components"]) == {
+                "camera":  {"concept": cam5,  "wording": camera5["wordings"][0]["key"]},
+                "act":     {"concept": act5,  "wording": act5_obj["wordings"][0]["key"]},
+                "framing": {"concept": framing5, "wording": framing5_obj["wordings"][0]["key"]},
+            }
+
     print("ALL OK")
     return 0
 
