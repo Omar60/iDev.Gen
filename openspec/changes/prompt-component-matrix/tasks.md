@@ -2056,7 +2056,7 @@ session's manner".
   `python -m pytest tests/test_no_personal_data.py` — 2 passed;
   `python scripts/verify_compose_frontend.py` — ALL OK, 4 of 4.
 
-- [ ] 8.5 Queue N photographs of one chosen trio from the screen, so an operator can take a cell to its `judged=10` threshold without a script
+- [x] 8.5 Queue N photographs of one chosen trio from the screen, so an operator can take a cell to its `judged=10` threshold without a script
 
   **Why this task exists, in one paragraph.** Group 8 gave the composer a
   screen, and that surfaced this. `compose-run` produces VARIETY: 3.4's
@@ -2071,58 +2071,196 @@ session's manner".
   variety today, but no cell reaches its threshold through the app, and
   5.4 / 5.5 are blocked until that door opens.
 
-  **The behaviour already exists, one call at a time — what is missing
-  is asking for N at once, and asking from the screen.** Three facts the
-  implementation does not have to re-derive:
+  **Decisions before the code, in the order the task asks them.**
 
-  1. The one-shot endpoint `POST /api/sessions/{sid}/compose` already
-     allows repeating a trio. I called it three times with the same
-     three components: three 200s, three rows, three byte-identical
-     prompts. The no-repeat rule lives in the run-level draw, not here.
-  2. The rows are stored with `seed=0`, and `backend/runner.py:117`
-     reads `shot["seed"] or random.randint(...)`, writing the drawn
-     seed back on the row. So N identical prompts DO render N different
-     photographs. Seed handling needs nothing from us.
-  3. The cell check already runs ONCE, before any insert, in the
-     existing one-shot path (`compose_shot_endpoint`, lines 936-998):
-     a dead cell is refused in both modes, an unknown cell is refused
-     in strict and drawn in exploratory. The N-rows path is the same
-     check with N INSERTs after it, and the pre-check makes "k rows
-     committed, k+1 refused" impossible.
+  **(1) Add `count: int = 1` to `ComposeIn`, queue N rows in one
+  call.** Three reasons in the proposal: `ShotIn.count` already means
+  exactly this on the written path, `_expand_shots` already loops it,
+  and the alternative — the frontend calling `/compose` N times in a
+  loop — cannot honour this repo's rule that a refused run queues
+  NOTHING (`db.run` auto-commits per INSERT; a loop that fails on the
+  seventh call leaves six rows behind). The pre-check stays where it
+  was in `compose_shot_endpoint`; the loop calls
+  `compose_and_queue_shot` N times after the check has passed, and a
+  future "let me also refuse the loop mid-way" lands here as a second
+  calculation layered on top of the first — the same door 3.3 closed
+  ("the check and the draw are the same calculation"). `count: int = 1`
+  with `Field(1, ge=1)`, not a free int, so `count=0` and negative
+  counts are rejected at the boundary by pydantic, the same way the
+  `Literal["strict", "exploratory"]` on `mode` rejects unknown modes.
+  A defensive "if c.count >= 1" in the handler would silently swallow
+  a future loosening of the bound.
 
-  **The shape I would build (one paragraph; argue if you disagree).**
-  Add `count: int = 1` to `ComposeIn` and queue N rows in one call.
-  Three reasons: `ShotIn.count` already means exactly this on the
-  written path, `_expand_shots` already loops it, and the alternative
-  — the frontend calling `/compose` N times — cannot honour this
-  repo's rule that a refused run queues NOTHING, because a frontend
-  loop that fails on the seventh call leaves six rows behind
-  (`db.run` auto-commits per INSERT). The pre-check stays where it is
-  in `compose_shot_endpoint`; the loop calls `compose_and_queue_shot`
-  N times after the check has passed, and a future "let me also
-  refuse the loop mid-way" lands here as a second calculation layered
-  on top of the first — the same door 3.3 closed ("the check and the
-  draw are the same calculation").
+  **(2) Response shape: `{"ids": [...], "count": N}`.** The
+  pre-8.5 single-shot response was `{"id": shot_id}`; the run-level
+  `compose-run` and `compose-session` endpoints already return
+  `{"ids": [...], "count": N}`. Making the single-shot and the
+  fill-cell calls return the same shape is the consistent answer:
+  the only change for a count=1 caller is that `id` becomes
+  `ids[0]`, and the same `body["ids"]` / `body["count"]` shape
+  is what the front-end picker hands the user. The two existing
+  tests that read `.json()["id"]` were updated to
+  `.json()["ids"][0]`, and the new tests pin `body["count"] == N`
+  on every call site.
 
-  **Update the docstring the existing code argues against.** The
+  **(3) Update the docstring the existing code argues against.** The
   `ComposeIn` docstring near `backend/main.py:170` was written when
-  the only case was 3.1's single shot, and it argues AGAINST a count
-  field. With 8.5 the field is added and the docstring contradicts
-  the code, which is the exact way the next reader loses an hour. The
-  fix is in scope for 8.5: rewrite the docstring to say what changed
-  and why (one shot is the count=1 case, not the only case).
+  the only case was 3.1's single shot, and it argued AGAINST a count
+  field. With 8.5 the field is added and the docstring would have
+  contradicted the code, which is the exact way the next reader
+  loses an hour. The fix is in scope for 8.5: rewrite the docstring
+  to say what changed and why — `count=1` is the case 3.1 already
+  handled, and the field is the case 8.5 adds.
 
-  **On the screen.** A control on the session view for "N photographs
-  of one trio", sitting beside the existing Compose control. The trio
-  picker reads the same catalogue slice `candidatePool(manner)`
-  already returns (`frontend/src/compose.js`) — do not build a second
-  pool. The framing is fixed (the same wording the existing Compose
-  control exposes, the one `scripts/shoot_arrangements.py:_FRAMING_CONCEPT`
-  ships), and the camera and act are `<select>`s of the catalogue
-  keys. Keep the pure logic in `compose.js` with its own vitest tests
-  the way `judge.js` and `deck.js` are laid out; the view only
-  renders. The 422 path is the existing `setError(e.message)` the
-  SessionView already uses, the way group 8's 8.3 documents it.
+  **(4) On the screen: a new "Fill cell" control beside the
+  existing "Compose" control, with a `<select>` per slot and a
+  count input.** The trio picker reads the same catalogue slice
+  `candidatePool(manner)` already returns (`frontend/src/compose.js`)
+  — no second pool, no second source of truth. The camera and act
+  selects list every entry of the slice; the framing is fixed (the
+  same wording the existing Compose control exposes, the one
+  `scripts/shoot_arrangements.py:_FRAMING_CONCEPT` ships). The
+  count input opens on 10 (the threshold `db.cell_state` reads,
+  `fillCellDefaultCount()` in `compose.js`); the mode select
+  defaults to "exploratory" for the same reason the Compose
+  control does (a strict default would make the first use of the
+  feature a 422 on a 17-row, 2-trios cell table, 8.4's reasoning).
+  Keep the pure logic in `compose.js` with its own vitest tests the
+  way `judge.js` and `deck.js` are laid out; the view only renders.
+  The 422 path is the existing `setError(e.message)` the
+  SessionView already uses, the way 8.3 documents it.
+
+  **(5) The runner rolls a fresh seed per row, no change here.**
+  Every row is stored with `seed=0` and `backend/runner.py:117`
+  reads `shot["seed"] or random.randint(...)`, writing the drawn
+  seed back on the row. N identical prompts DO render N different
+  photographs, by construction. The test that exercises this is
+  the one in `tests/test_api.py::test_compose_with_count_ten_queues_ten_rows_of_the_same_trio`
+  — it reads the rows back and asserts every row's `prompt` is
+  byte-equal (the composer owns this) and every row's `seed` is 0
+  at queue time (the runner picks it up later and writes a fresh
+  random per row).
+
+  **What was built:**
+
+  - `backend/main.py:ComposeIn` — adds `count: int = Field(1, ge=1)`,
+    rewrites the docstring to say what changed and why. Response
+    shape changes from `{"id": shot_id}` to `{"ids": [...], "count": N}`.
+  - `backend/main.py:compose_shot_endpoint` — cell check stays
+    where it is (the same pre-check the count=1 path already
+    used); the loop at the end calls
+    `compose_and_queue_shot` N times after the check has passed.
+    A `ComposeIn` with `count=0` is rejected at the boundary by
+    pydantic, before the handler runs.
+  - `tests/test_api.py` — six new tests, each verified by breaking
+    the code on purpose and confirming the test fails (notes
+    inline):
+    - `test_compose_with_count_one_queues_one_row_of_the_trio` —
+      the count=1 regression. The probe.
+    - `test_compose_with_count_ten_queues_ten_rows_of_the_same_trio` —
+      the named scenario. The pool has one verified trio; the
+      request asks for `count=10`; the response is
+      `{"ids": [10 ids], "count": 10}`; the shot table has 10
+      rows; every row's `components` is the same trio; every
+      row's `prompt` is byte-equal; every row's `seed` is 0 at
+      queue time. The 8.4 fix shape (probing with a number that
+      would fail under the old default of count=1) is exactly
+      the one used here: a pre-8.5 endpoint that ignored
+      `count` would return `count: 1`, and the assertion
+      `body["count"] == 10` would fail with `assert 1 == 10`.
+    - `test_compose_with_count_ten_refuses_a_dead_trio_before_any_insert` —
+      the loop-closed property: the pre-check runs BEFORE any
+      INSERT, and a dead cell with `count=10` is refused with
+      0 rows. Verified by breaking the code (skipping the dead
+      cell branch); the response goes from 422 to 200, n goes
+      from 0 to 10, the test fails on both assertions.
+    - `test_compose_with_count_ten_refuses_an_unknown_trio_in_strict` —
+      the same loop-closed property on the unknown branch:
+      strict refuses, exploratory draws (the next test). 0 rows
+      in strict, 10 rows in exploratory.
+    - `test_compose_with_count_ten_draws_an_unknown_trio_in_exploratory` —
+      the exploratory mode widens the draw to include `unknown`
+      cells, the same way the count=1 path does. A code change
+      that "let me also refuse unknown in exploratory for
+      count>1" lands here as a regression on the explorer's
+      intended behaviour.
+    - `test_compose_with_count_zero_is_rejected_at_the_boundary` —
+      `count=0` and `count=-1` are rejected at the pydantic
+      boundary with 422, before the handler runs. A code change
+      that drops the `ge=1` bound lets these slip into the loop
+      and the response is `count: 0` with 0 ids, and the
+      assertion `r.status_code == 422` fails.
+  - `frontend/src/compose.js` — adds `fillCellDefaultCount()` (a
+    pure function returning 10, the threshold `db.cell_state`
+    reads). The default count for the picker opens on the
+    threshold so a single press queues the batch that pushes
+    a cell to verified or dead.
+  - `frontend/src/compose.test.js` — two new tests, each
+    verified by changing the function on purpose and confirming
+    the test fails:
+    - `fillCellDefaultCount is the threshold a cell needs to
+      reach verified or dead` — pins the value at 10.
+    - `fillCellDefaultCount takes no arguments and is a constant` —
+      pins the function's no-arg shape, so a future "let me
+      also pass the manner" lands here as a new function or a
+      parameter, and the existing callers continue to read the
+      same number.
+  - `frontend/src/views/SessionView.jsx` — adds the "Fill cell"
+    control beside the existing "Compose" control. The picker
+    reads the same `candidatePool(s.manner)` the Compose
+    control reads — two `<select>`s of the catalogue slice
+    for `s.manner` (camera, act; framing is fixed and the
+    button's title carries the wording the composer will use).
+    The state is `fillCellCamera`, `fillCellAct`,
+    `fillCellMode` (default "exploratory", 8.4's reasoning),
+    and `fillCellCount` (default 10,
+    `fillCellDefaultCount()`). The disabled state is the same
+    expression the Compose control uses
+    (`!s.manner || !s.checkpoint || s.running`) so the cell
+    check on the backend matches the UI's expectations.
+  - `scripts/verify_compose_frontend.py` — adds Case 5, the
+    8.5 named scenario: pick one trio, ask for 10 photographs
+    of it on a session, the endpoint queues 10 rows on the
+    session with the same trio recorded on every row. The
+    case uses the SECOND camera / act of the slice because
+    Case 1 already seeds the (cam_keys[0], act_keys[0],
+    framing_keys[0]) cell, and a duplicate INSERT on the
+    5-column PRIMARY KEY would error.
+
+  **Branches no test runs.** (a) The runner's per-row seed
+  (the `random.randint` roll on each row at run time) is not
+  exercised by the test suite: the test reads `seed=0` from
+  the queue-time row, but the runner picks the row up later
+  and writes a fresh random per row. The runner's tests
+  already pin that property (`backend/runner.py:117`), and
+  the frontend control's `seed: 0` is what the queue-time
+  default is. (b) The `cell` row's `(judged, arrived)`
+  updates on each judgement are 6.2's responsibility, not
+  8.5's: 8.5 queues the photographs, 6.2 lands the
+  judgement on the cell. The fill-cell control's
+  relationship to 6.2 is the same as the Compose control's,
+  and the verification script (Case 5) asserts the row
+  count without going through the runner. (c) The frontend
+  test for `fillCellDefaultCount` is a unit test of the
+  pure function; the integration between the SessionView's
+  picker and the catalogue slice is not in the test surface
+  (no React rendering in the vitest suite), the same
+  reasoning 8.2 already pins on the Compose control. The
+  end-to-end proof is the verification script (Case 5)
+  against the same picker the view reads.
+
+  **Gates.** `python -m pytest` — 364 passed (358 baseline
+  + 6 new in `tests/test_api.py`), 1 warning (the
+  pre-existing pydantic `register` shadow in
+  `backend/enhance.py:119`); `npm --prefix frontend test`
+  — 44 passed in 4 files (42 baseline + 2 new in
+  `compose.test.js`); `npm --prefix frontend run build` —
+  built in 988ms, 48 modules transformed, no warnings;
+  `python -m pytest tests/test_no_personal_data.py` — 2
+  passed; `python scripts/verify_compose_frontend.py` —
+  ALL OK, 5 of 5 (Cases 1-4 unchanged, Case 5 is the 8.5
+  named scenario with `count=10`); `git status --short` —
+  clean for tracked files.
 
 ## 7. Cleanup and documentation
 
