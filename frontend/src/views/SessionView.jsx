@@ -6,7 +6,7 @@ import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
 import { BaseModelSelect, SamplerSelect } from './Models.jsx'
 import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary } from '../kinds.js'
-import { candidatePool, defaultCount, fillCellDefaultCount, FRAMING_WORDING } from '../compose.js'
+import { candidatePool, defaultCount, fillCellDefaultCount } from '../compose.js'
 import { composed } from '../enhance.js'
 
 /** A checkpoint's name for a session title: no folder, no extension. Three copies
@@ -60,8 +60,8 @@ export default function SessionView({ id }) {
   // catalogue would make this stale and it would have to move to an effect.
   const [composeCount, setComposeCount] = useState(() => defaultCount(s?.manner))
   const [composeMode, setComposeMode] = useState('exploratory')
-  // The fill-cell control: pick one trio (camera, act; framing is
-  // fixed), pick a count, queue N photographs of that trio on
+  // The fill-cell control: pick one trio (camera, act, framing),
+  // pick a count, queue N photographs of that trio on
   // THIS session. The picker reads the same catalogue slice the
   // Compose control reads (`candidatePool(manner)`) — no second
   // pool, no second source of truth. Initial state opens on the
@@ -71,8 +71,9 @@ export default function SessionView({ id }) {
   // and falls back to the `directed` slice, which is the right
   // first paint while we wait: the catalogue re-resolves on
   // every press.
-  const [fillCellCamera, setFillCellCamera] = useState(() => candidatePool(s?.manner).camera[0]?.key || '')
-  const [fillCellAct, setFillCellAct] = useState(() => candidatePool(s?.manner).act[0]?.key || '')
+  const [fillCellCamera, setFillCellCamera] = useState(() => [candidatePool(s?.manner).camera[0]?.key || 'none'])
+  const [fillCellAct, setFillCellAct] = useState(() => [candidatePool(s?.manner).act[0]?.key || 'none'])
+  const [fillCellFraming, setFillCellFraming] = useState(() => [candidatePool(s?.manner).framing[0]?.key || 'none'])
   const [fillCellMode, setFillCellMode] = useState('exploratory')
   const [fillCellCount, setFillCellCount] = useState(() => fillCellDefaultCount())
   const llm = !!config.llm_ok
@@ -144,13 +145,28 @@ export default function SessionView({ id }) {
   // each selected concept — so the payload matches the shape
   // `/compose` reads, and the operator sees no second list to
   // learn.
-  const fillCell = (camKey, actKey, n, mode) => call(async () => {
+  // The control arm: a cell shot with NO phrase for that slot, so a wording's
+  // arrival rate can be read against what the model does when nobody asks. It
+  // is not a catalogue row — the component table refuses an empty wording, and
+  // a row carrying any text at all is a treatment rather than a control. The
+  // empty text is dropped by the same `_sentences` join the writer goes
+  // through, and the cell records the slot as `none`.
+  const NONE = { key: 'none', wordings: [{ key: 'none', text: '' }] }
+  const pick = (list, key) => (key === 'none' ? NONE : list.find((c) => c.key === key) || list[0])
+
+  // Every slot goes as a LIST. The endpoint takes the cross product and
+  // checks every cell before inserting anything, so a selection whose
+  // ninth combination is dead queues nothing at all — the same rule the
+  // count already kept for one cell.
+  const fillCells = fillCellCamera.length * fillCellAct.length * fillCellFraming.length
+
+  const fillCell = (camKeys, actKeys, framingKeys, n, mode) => call(async () => {
     const pool = candidatePool(s.manner)
-    const camera = pool.camera.find((c) => c.key === camKey) || pool.camera[0]
-    const act = pool.act.find((a) => a.key === actKey) || pool.act[0]
-    const framing = pool.framing[0]
     await api.post(`/api/sessions/${id}/compose`, {
-      camera, act, framing, count: n, mode,
+      camera: camKeys.map((k) => pick(pool.camera, k)),
+      act: actKeys.map((k) => pick(pool.act, k)),
+      framing: framingKeys.map((k) => pick(pool.framing, k)),
+      count: n, mode,
     })
   })
 
@@ -438,7 +454,7 @@ export default function SessionView({ id }) {
                     onClick={() => composeRun(composeCount, composeMode)}
                     title={!s.manner || !s.checkpoint
                       ? `Compose needs manner and checkpoint (manner="${s.manner || ''}", checkpoint="${s.checkpoint || ''}")`
-                      : `Compose ${composeCount} ${composeMode} photograph${composeCount === 1 ? '' : 's'}; framing is fixed: ${FRAMING_WORDING}`}>
+                      : `Compose ${composeCount} ${composeMode} photograph${composeCount === 1 ? '' : 's'} from the catalogue`}>
               Compose
             </button>
           </span>
@@ -446,29 +462,39 @@ export default function SessionView({ id }) {
               this session so an operator can take a single cell to its
               `judged=10` threshold without a script. The camera and act
               are <select>s of the catalogue slice the Compose control also
-              reads (`candidatePool(manner)`); the framing is fixed and
-              the button's title says so. Default count is 10 — the
+              reads (`candidatePool(manner)`), one per slot. Default count is 10 — the
               threshold `db.cell_state` reads — so a single press queues
               the batch that pushes a cell to verified or dead. Strict
               mode refuses unknowns (the cell check 3.2 already pinned);
               exploratory draws them too. The 422 path is the same
               `setError(e.message)` the Compose control uses. */}
           <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <select value={fillCellCamera}
+            <select multiple size={4} value={fillCellCamera}
                     disabled={!s.manner || !s.checkpoint || s.running}
-                    onChange={(e) => setFillCellCamera(e.target.value)}
-                    title="Camera concept for the fill-cell compose">
-              {candidatePool(s.manner).camera.map((c) => (
-                <option key={c.key} value={c.key}>{c.key}</option>
+                    onChange={(e) => setFillCellCamera([...e.target.selectedOptions].map((o) => o.value))}
+                    title="Camera concepts for the fill-cell compose — pick several and every combination becomes its own cell">
+              {candidatePool(s.manner).camera.map((x) => (
+                <option key={x.key} value={x.key}>{x.key}</option>
               ))}
+              <option value="none">none (control)</option>
             </select>
-            <select value={fillCellAct}
+            <select multiple size={4} value={fillCellAct}
                     disabled={!s.manner || !s.checkpoint || s.running}
-                    onChange={(e) => setFillCellAct(e.target.value)}
-                    title="Act concept for the fill-cell compose">
-              {candidatePool(s.manner).act.map((a) => (
-                <option key={a.key} value={a.key}>{a.key}</option>
+                    onChange={(e) => setFillCellAct([...e.target.selectedOptions].map((o) => o.value))}
+                    title="Act concepts for the fill-cell compose — pick several and every combination becomes its own cell">
+              {candidatePool(s.manner).act.map((x) => (
+                <option key={x.key} value={x.key}>{x.key}</option>
               ))}
+              <option value="none">none (control)</option>
+            </select>
+            <select multiple size={4} value={fillCellFraming}
+                    disabled={!s.manner || !s.checkpoint || s.running}
+                    onChange={(e) => setFillCellFraming([...e.target.selectedOptions].map((o) => o.value))}
+                    title="Framing concepts for the fill-cell compose — pick several and every combination becomes its own cell">
+              {candidatePool(s.manner).framing.map((x) => (
+                <option key={x.key} value={x.key}>{x.key}</option>
+              ))}
+              <option value="none">none (control)</option>
             </select>
             <input type="number" min={1} max={50} value={fillCellCount}
                    disabled={!s.manner || !s.checkpoint || s.running}
@@ -482,12 +508,13 @@ export default function SessionView({ id }) {
               <option value="exploratory">exploratory</option>
               <option value="strict">strict</option>
             </select>
-            <button disabled={!s.manner || !s.checkpoint || s.running || fillCellCount < 1 || !fillCellCamera || !fillCellAct}
-                    onClick={() => fillCell(fillCellCamera, fillCellAct, fillCellCount, fillCellMode)}
+            <button disabled={!s.manner || !s.checkpoint || s.running || fillCellCount < 1
+                              || !fillCellCamera.length || !fillCellAct.length || !fillCellFraming.length}
+                    onClick={() => fillCell(fillCellCamera, fillCellAct, fillCellFraming, fillCellCount, fillCellMode)}
                     title={!s.manner || !s.checkpoint
                       ? `Fill cell needs manner and checkpoint (manner="${s.manner || ''}", checkpoint="${s.checkpoint || ''}")`
-                      : `Queue ${fillCellCount} ${fillCellMode} photograph${fillCellCount === 1 ? '' : 's'} of (${fillCellCamera}, ${fillCellAct}, framing) so the cell can be judged; framing is fixed: ${FRAMING_WORDING}`}>
-              Fill cell
+                      : `${fillCells} cell${fillCells === 1 ? '' : 's'} × ${fillCellCount} = ${fillCells * fillCellCount} ${fillCellMode} photographs. Every cell is checked before any of them is queued.`}>
+              Fill {fillCells * fillCellCount} photo{fillCells * fillCellCount === 1 ? '' : 's'}
             </button>
           </span>
           {s.status === 'running' &&
@@ -1026,6 +1053,21 @@ export default function SessionView({ id }) {
                       onClick={() => call(() => api.patch(`/api/shots/${shot.id}`, { rejected: !shot.rejected }))}>
                 {shot.rejected ? '↩' : '✕'}
               </button>
+              {/* Delete, as opposed to Reject: the row and the file go, and
+                  nothing takes their place. The cell counts are NOT touched -
+                  a judged photograph stays counted after its row is gone, so
+                  the confirm says so rather than the button quietly corrupting
+                  a measurement. Reject is the one that takes a photograph out
+                  of a judging pass and leaves the evidence where it is. */}
+              <button className="icon" title="Delete this photo"
+                      onClick={() => {
+                        const judged = !!shot.verdicts
+                        if (confirm(judged
+                          ? 'This photo has already been judged and its answer stays counted in the cell. Delete it anyway?'
+                          : 'Delete this photo?')) {
+                          call(() => api.del(`/api/shots/${shot.id}`))
+                        }
+                      }}>🗑</button>
             </div>
             <div className="muted" style={{ padding: '0 6px 6px', fontSize: 11 }} title={shot.prompt}>
               {shot.shot_label} · seed {shot.seed}

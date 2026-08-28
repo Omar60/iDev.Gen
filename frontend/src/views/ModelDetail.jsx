@@ -97,7 +97,11 @@ export default function ModelDetail({ id }) {
 
   const createSession = async () => {
     try {
-      const { id: sid } = await api.post('/api/sessions', newSession)
+      // The blank shot the editor opens with is not a shot. Dropping it here
+      // rather than refusing to create is what lets a session start empty and
+      // be filled from the composer, which is how a cell gets measured.
+      const { id: sid } = await api.post('/api/sessions', {
+        ...newSession, shots: newSession.shots.filter((s) => s.prompt.trim()) })
       go(`/session/${sid}`)
     } catch (e) { setError(e.message) }
   }
@@ -338,8 +342,7 @@ export default function ModelDetail({ id }) {
                        onChange={(shots) => setNewSession((cur) => ({ ...cur, shots }))} />
 
           <div className="row" style={{ marginTop: 12 }}>
-            <button className="primary" onClick={createSession}
-                    disabled={!newSession.shots.some((s) => s.prompt.trim())}>
+            <button className="primary" onClick={createSession}>
               Create session ({newSession.shots.reduce((n, s) => n + (s.prompt.trim() ? Math.max(1, s.count) : 0), 0)} photos)
             </button>
             <button onClick={() => setNewSession(null)}>Cancel</button>

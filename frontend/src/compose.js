@@ -11,15 +11,6 @@
 // add a checkbox for the high cameras" lands in the view, not in the
 // catalogue, and the screen still asks for the whole catalogue slice by
 // default.
-//
-// FRAMING IS FIXED. There is no framing catalogue yet (every seeded row in
-// `backend/db.py:EVIDENCE_SEED` carries `framing_wording = 'none'`), and
-// deciding which framings exist is a measurement decision of the same weight
-// as the ones that cost days of renders on this project. The wording this
-// script hands the composer is the one `scripts/shoot_arrangements.py`
-// already ships as `_FRAMING_CONCEPT` — `a three-quarter photograph from
-// the knees up` — and the constant lives in this file so the control on
-// the screen can say "framing is fixed" without re-deriving the value.
 
 import { positionsFor, arrangements, framings } from './kinds.js'
 
@@ -35,12 +26,6 @@ export function candidatePool(manner = 'directed') {
     framing: framings(manner),
   }
 }
-
-/** The single framing concept wording the compose control exposes, in case the
- *  view wants to say what it is. Exported as a constant so the control
- *  shows the wording the composer will use, not a paraphrase. */
-export const FRAMING_WORDING = 'a three-quarter photograph from the knees up'
-
 
 /** The count the control opens on: the smallest slot the no-repeat rule
  *  actually binds. A run never uses a component twice

@@ -204,10 +204,18 @@ class ComposeIn(BaseModel):
     cells in both modes — a cell measured 0 of 12 stays out of the
     pool no matter what the caller says. 6.1 is the task that
     opened the second mode.
+
+    Each slot takes ONE component or a LIST of them. A list on more
+    than one slot is the cross product: every combination is a cell
+    of its own and gets `count` photographs. That is one call and
+    not a loop of calls for the same reason `count` is a field —
+    every cell is checked before any row is inserted, so a batch
+    that would be refused on its ninth combination queues nothing
+    at all rather than leaving eight behind.
     """
-    camera: dict
-    act: dict
-    framing: dict
+    camera: dict | list[dict]
+    act: dict | list[dict]
+    framing: dict | list[dict]
     count: int = Field(1, ge=1)
     mode: Literal["strict", "exploratory"] = "strict"
 
@@ -1290,35 +1298,52 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
                 f"import the measured catalogue via /api/components/import or add components before composing",
             )
 
-    cell = db.one(
-        "SELECT judged, arrived FROM cell "
-        "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
-        "AND manner=? AND checkpoint=?",
-        c.camera["key"], c.act["key"], c.framing["key"],
-        session["manner"], session["checkpoint"],
-    )
-    if not cell:
-        # No row means the trio was never measured (the
-        # measurement did not name a component of the trio at
-        # all). In strict mode, this is a 422 — the cell is
-        # unknown. In exploratory mode, the trio is drawable
-        # if every other candidate is also unmeasured, but
-        # the `none` filter is a pool-level concern, not a
-        # one-shot one: the one-shot endpoint has no pool, it
-        # looks the trio up directly, and an absent cell is
-        # an unknown trio. Exploratory mode widens the pool
-        # to include these, so the same call with
-        # `mode=exploratory` queues the shot.
-        if c.mode == "strict":
-            raise HTTPException(
-                422,
-                f"compose refused: cell "
-                f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
-                f"{session['manner']}, {session['checkpoint']}) "
-                f"has no measurement (unknown); switch to exploratory "
-                f"mode to compose from unmeasured cells",
-            )
-    else:
+    # One component or a list of them per slot; a list on more than
+    # one slot is the cross product. Normalising here rather than in
+    # the model keeps the union in one place and leaves every branch
+    # below written against a list.
+    def as_list(v):
+        return v if isinstance(v, list) else [v]
+
+    combos = [(cam, act, fr)
+              for cam in as_list(c.camera)
+              for act in as_list(c.act)
+              for fr in as_list(c.framing)]
+
+    # Every cell is checked BEFORE any insert. A batch refused on its
+    # ninth combination queues nothing rather than leaving eight
+    # behind — the same "N rows or zero rows" rule `count` already
+    # keeps for one cell, held across the whole cross product.
+    for cam, act, fr in combos:
+        trio = (f"({cam['key']}, {act['key']}, {fr['key']}, "
+                f"{session['manner']}, {session['checkpoint']})")
+        cell = db.one(
+            "SELECT judged, arrived FROM cell "
+            "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
+            "AND manner=? AND checkpoint=?",
+            cam["key"], act["key"], fr["key"],
+            session["manner"], session["checkpoint"],
+        )
+        if not cell:
+            # No row means the trio was never measured (the
+            # measurement did not name a component of the trio at
+            # all). In strict mode, this is a 422 — the cell is
+            # unknown. In exploratory mode, the trio is drawable
+            # if every other candidate is also unmeasured, but
+            # the `none` filter is a pool-level concern, not a
+            # one-shot one: the one-shot endpoint has no pool, it
+            # looks the trio up directly, and an absent cell is
+            # an unknown trio. Exploratory mode widens the pool
+            # to include these, so the same call with
+            # `mode=exploratory` queues the shot.
+            if c.mode == "strict":
+                raise HTTPException(
+                    422,
+                    f"compose refused: cell {trio} "
+                    f"has no measurement (unknown); switch to exploratory "
+                    f"mode to compose from unmeasured cells",
+                )
+            continue
         state = db.cell_state(cell["judged"], cell["arrived"])
         if state == "dead":
             # Dead in both modes. A measured 0 of 12 is a result,
@@ -1329,9 +1354,7 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
             # carries.
             raise HTTPException(
                 422,
-                f"compose refused: cell "
-                f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
-                f"{session['manner']}, {session['checkpoint']}) "
+                f"compose refused: cell {trio} "
                 f"is {state}, not drawable in any mode",
             )
         if state != "verified" and c.mode == "strict":
@@ -1342,25 +1365,21 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
             # "no row at all" branch does.
             raise HTTPException(
                 422,
-                f"compose refused: cell "
-                f"({c.camera['key']}, {c.act['key']}, {c.framing['key']}, "
-                f"{session['manner']}, {session['checkpoint']}) "
+                f"compose refused: cell {trio} "
                 f"is {state}, not verified; switch to exploratory "
                 f"mode to compose from unmeasured cells",
             )
 
-    # All checks have passed. Queue `count` rows of the same trio.
-    # The cell check above has already refused any path that would
-    # leave a partial batch (dead in both modes, unknown in
-    # strict), so the loop is unconditional here. `db.run` commits
-    # per INSERT inside `compose_and_queue_shot`; the runner rolls
-    # a fresh `random.randint` seed per row, so the same trio
-    # renders N different photographs.
+    # All checks have passed. Queue `count` rows of every combination.
+    # `db.run` commits per INSERT inside `compose_and_queue_shot`; the
+    # runner rolls a fresh `random.randint` seed per row, so the same
+    # trio renders N different photographs.
     shot_ids = [
-        compose_and_queue_shot(sid, c.camera, c.act, c.framing)
+        compose_and_queue_shot(sid, cam, act, fr)
+        for cam, act, fr in combos
         for _ in range(c.count)
     ]
-    return {"ids": shot_ids, "count": len(shot_ids)}
+    return {"ids": shot_ids, "count": len(shot_ids), "cells": len(combos)}
 
 
 class ComposeRunIn(BaseModel):
@@ -2984,23 +3003,28 @@ def get_judge_pass(sid: int, slot: str):
     pick the answer. It opens when a manner has more than one framing
     to tell apart, which is a measurement decision nobody has taken.
     """
-    if slot == "framing":
-        n = db.one("SELECT COUNT(*) AS n FROM component "
-                   "WHERE slot='framing' AND retired_at IS NULL")["n"]
+    if slot not in ("camera", "act", "framing"):
         raise HTTPException(
             422,
-            "judge-pass refused: the framing catalogue holds "
-            f"{n} component(s) and a forced choice needs more than one per "
-            "manner to be a question; only 'camera' and 'act' are supported",
+            f"invalid slot {slot!r}; expected 'camera', 'act' or 'framing'",
         )
-    if slot not in ("camera", "act"):
-        raise HTTPException(
-            422,
-            f"invalid slot {slot!r}; expected 'camera' or 'act'",
-        )
-    session = db.one("SELECT id FROM session WHERE id=?", sid)
+    session = db.one("SELECT id, manner FROM session WHERE id=?", sid)
     if not session:
         raise HTTPException(404, "session not found")
+    if slot == "framing":
+        # Counted for THIS session's manner, which is the unit the forced
+        # choice is drawn from: the store can hold six framings across three
+        # manners and still offer a list of one to the operator.
+        n = db.one("SELECT COUNT(*) AS n FROM component "
+                   "WHERE slot='framing' AND manner=? AND retired_at IS NULL",
+                   session["manner"])["n"]
+        if n < 2:
+            raise HTTPException(
+                422,
+                "judge-pass refused: the framing catalogue holds "
+                f"{n} component(s) for manner {session['manner']!r} and a "
+                "forced choice needs more than one per manner to be a question",
+            )
 
     rows = db.q(
         "SELECT id, components, verdicts FROM shot "

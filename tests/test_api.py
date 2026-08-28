@@ -1,5 +1,6 @@
 """HTTP routes: creating models and sessions, prompt composition, rating."""
 import io
+import json
 import zipfile
 
 from PIL import Image, ImageFont
@@ -6061,3 +6062,140 @@ def test_compose_with_count_zero_is_rejected_at_the_boundary(client, seeded):
             "count": bad,
         })
         assert r.status_code == 422, f"count={bad}: {r.status_code} {r.text}"
+
+
+def test_judge_pass_opens_framing_once_a_manner_has_two(client, seeded):
+    """The framing pass refuses a list of one and opens at two.
+
+    The refusal was unconditional while every manner carried a single
+    framing. It is a count now, and the count is per MANNER: the store
+    can hold six framings across three manners and still hand this
+    operator a forced choice over one, which is not a question.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "framing pass",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    # The seed ships one framing per manner: still refused, and the
+    # message counts what is there for THIS manner.
+    r_one = client.get(f"/api/sessions/{sid}/judge-pass?slot=framing")
+    assert r_one.status_code == 422
+    assert "1 component(s) for manner 'directed'" in r_one.json()["detail"]
+
+    db.run(
+        """INSERT INTO component (concept_key, slot, manner, family, faces,
+                                  wording, judge_label, created_at)
+           VALUES ('chest-up', 'framing', 'directed', 'chest_up', '',
+                   'the frame cuts at her lower chest',
+                   'Frame ends at the lower chest', ?)""",
+        db.now(),
+    )
+    r_two = client.get(f"/api/sessions/{sid}/judge-pass?slot=framing")
+    assert r_two.status_code == 200, r_two.text
+    assert r_two.json() == {"shots": [], "controls": []}
+
+    # A second manner is untouched by directed's second framing.
+    other = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "candid pass",
+        "manner": "candid", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    r_other = client.get(f"/api/sessions/{other}/judge-pass?slot=framing")
+    assert r_other.status_code == 422
+    assert "manner 'candid'" in r_other.json()["detail"]
+
+
+def test_a_control_arm_composes_with_no_phrase_for_a_slot(client, seeded):
+    """A slot handed an empty wording drops out of the line and the
+    cell records it as `none`.
+
+    That is the control the eight camera wordings are read against:
+    without it a wording that arrives 10 of 10 cannot be told apart
+    from a model that was going to render that photograph anyway. The
+    empty text is not a catalogue row — the component table's CHECK
+    refuses `wording = ''` — so it can only arrive on the payload.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "control",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": "none", "wordings": [{"key": "none", "text": ""}]},
+        "act": {"key": "astride",
+                "wordings": [{"key": "astride", "text": "She is astride him"}]},
+        "framing": {"key": "framing",
+                    "wordings": [{"key": "framing", "text": "a three-quarter photograph"}]},
+        "mode": "exploratory",
+    })
+    assert r.status_code == 200, r.text
+
+    shot = db.one("SELECT prompt, components FROM shot WHERE session_id=?", sid)
+    comps = json.loads(shot["components"])
+    assert comps["camera"]["wording"] == "none"
+    # The empty phrase leaves no trace in the line: no stray full stop, no
+    # doubled space where the camera sentence would have been.
+    assert "She is astride him." in shot["prompt"]
+    assert "  " not in shot["prompt"]
+    assert ".." not in shot["prompt"]
+
+
+def _comp(key, text):
+    return {"key": key, "wordings": [{"key": key, "text": text}]}
+
+
+def test_compose_takes_a_list_per_slot_and_queues_every_combination(client, seeded):
+    """A list on more than one slot is the cross product, `count` each."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "cross",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": [_comp("front-direct", "from the front"),
+                   _comp("overhead-direct", "from above")],
+        "act": [_comp("astride", "astride him"), _comp("wall", "against the wall")],
+        "framing": _comp("framing", "a three-quarter photograph"),
+        "count": 2, "mode": "exploratory",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["cells"] == 4
+    assert r.json()["count"] == 8
+
+    trios = {(json.loads(s["components"])["camera"]["wording"],
+              json.loads(s["components"])["act"]["wording"])
+             for s in db.q("SELECT components FROM shot WHERE session_id=?", sid)}
+    assert trios == {("front-direct", "astride"), ("front-direct", "wall"),
+                     ("overhead-direct", "astride"), ("overhead-direct", "wall")}
+
+
+def test_a_dead_cell_anywhere_in_the_batch_queues_nothing(client, seeded):
+    """The all-or-nothing rule holds across the cross product.
+
+    `count` already guarantees N rows or zero for one cell. A batch
+    that checked each combination as it inserted would leave the
+    combinations before the bad one behind — which is the partial
+    delivery the pre-check exists to make impossible.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "all or nothing",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+
+    # The SECOND camera's cell is dead: 12 judged, 1 arrived.
+    db.run("""INSERT INTO cell (camera_wording, act_wording, framing_wording,
+                                manner, checkpoint, judged, arrived)
+              VALUES ('overhead-direct', 'astride', 'framing',
+                      'directed', 'finepornV4', 12, 1)""")
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": [_comp("front-direct", "from the front"),
+                   _comp("overhead-direct", "from above")],
+        "act": _comp("astride", "astride him"),
+        "framing": _comp("framing", "a three-quarter photograph"),
+        "count": 3, "mode": "exploratory",
+    })
+    assert r.status_code == 422, r.text
+    assert "is dead, not drawable in any mode" in r.json()["detail"]
+    # Not the three rows of the first, healthy combination either.
+    assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == 0
