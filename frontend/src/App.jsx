@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from './api'
+import { setCatalogue } from './kinds.js'
 import Models from './views/Models.jsx'
 import ModelDetail from './views/ModelDetail.jsx'
 import SessionView from './views/SessionView.jsx'
@@ -8,6 +9,7 @@ import Setup from './views/Setup.jsx'
 import Library from './views/Library.jsx'
 import Slideshow from './views/Slideshow.jsx'
 import { Judge } from './views/Judge.jsx'
+import Catalogue from './views/Catalogue.jsx'
 
 // Hash router: three views plus one detail page. react-router would be a whole
 // dependency for what `location.hash` already does. The query string is
@@ -58,6 +60,12 @@ export default function App() {
   const view = parts[0] || 'models'   // '#/' yields [''], not undefined
   const arg = parts[1]
 
+  useEffect(() => {
+    api.get('/api/components?all=1')
+      .then((data) => setCatalogue(data || []))
+      .catch(() => {})
+  }, [])
+
   return (
     <>
       <header className="topbar">
@@ -66,6 +74,7 @@ export default function App() {
           <a href="#/models">Models</a>
           <a href="#/sessions">Sessions</a>
           <a href="#/judge">Judge</a>
+          <a href="#/catalogue">Catalogue</a>
           <a href="#/library">Library</a>
           <a href="#/slideshow">Slideshow</a>
           <a href="#/workflows">Workflows</a>
@@ -78,6 +87,7 @@ export default function App() {
         {view === 'model' && <ModelDetail id={Number(arg)} />}
         {view === 'session' && <SessionView id={Number(arg)} />}
         {view === 'judge' && <Judge />}
+        {view === 'catalogue' && <Catalogue />}
         {view === 'workflows' && <Workflows />}
         {view === 'setup' && <Setup />}
         {view === 'library' && <Library />}

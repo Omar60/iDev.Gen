@@ -1,40 +1,33 @@
-import { CAMERA_POSITIONS, POSITIONS, ARRANGEMENTS } from './kinds.js'
+import { positionsFor, arrangements, framings } from './kinds.js'
 
 /** Resolve the forced-choice list for a given slot and session manner.
  *
- *  The catalogue lives client-side in kinds.js. Camera positions depend
- *  on the manner (directed, candid, selfie); arrangements are shared.
- *  Framing has no component catalogue yet and returns an empty list.
+ *  The catalogue lives in the component store. Labels are viewer descriptions
+ *  (judge_label), NEVER prompt wordings.
  *
  *  Every non-empty choice list ends with the explicit "None or cannot tell"
  *  answer (key: '').
  */
-export function slotChoices(slot, manner) {
+export function slotChoices(slot, manner = 'directed') {
+  let list = []
   if (slot === 'camera') {
-    const list = (manner && POSITIONS[manner]) ? POSITIONS[manner] : CAMERA_POSITIONS
-    return [
-      ...list.map((c) => ({
-        key: c.key,
-        label: c.key,
-        text: c.wordings?.[0]?.text || c.key,
-      })),
-      { key: '', label: 'None or cannot tell', text: 'None of the above or cannot tell' },
-    ]
+    list = positionsFor(manner)
+  } else if (slot === 'act') {
+    list = arrangements(manner)
+  } else if (slot === 'framing') {
+    list = framings(manner)
   }
 
-  if (slot === 'act') {
-    return [
-      ...ARRANGEMENTS.map((a) => ({
-        key: a.key,
-        label: a.label || a.key,
-        text: a.wordings?.[0]?.text || a.label || a.key,
-      })),
-      { key: '', label: 'None or cannot tell', text: 'None of the above or cannot tell' },
-    ]
-  }
+  if (list.length === 0) return []
 
-  // Framing has no catalogue yet.
-  return []
+  return [
+    ...list.map((c) => ({
+      key: c.key,
+      label: c.judge_label || c.key,
+      text: c.judge_label || c.key,
+    })),
+    { key: '', label: 'None or cannot tell', text: 'None of the above or cannot tell' },
+  ]
 }
 
 /** Build the judging pass deck from unjudged shots and control shots.

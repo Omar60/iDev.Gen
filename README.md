@@ -232,6 +232,16 @@ setup keeps working untouched.
   when the two seeds have parted. See
   [sessions](docs/sessions.md#cloning-a-session-onto-another-model).
 
+## Component Catalogue & Judging
+
+Prompt components are stored in the database across three slots (**camera**, **act**, **framing**) and three manners (**directed**, **candid**, **selfie**).
+
+- **Catalogue (`#/catalogue`)**: View and manage components, edit prompt wordings and blind viewer `judge_label`s, and retire/restore or delete them. Each row shows the evidence recorded against it — `arrived N of M`, the cell state, and `contradicted` counted apart from the other misses — or `not measured` when no photograph has been judged against it. A component with evidence cannot be deleted, only retired.
+- **Act components carry their cameras**: an `act` row lists the camera families it can be seen from, strongest first. An arrangement handed a camera that cannot see it renders as a different arrangement, so the camera plan moves those photographs onto one of the listed families. Left empty, the plan leaves the photograph where it was dealt.
+- **Import Measured Catalogue**: On a fresh install, the store starts empty. The "Import Measured Catalogue" button (or `POST /api/components/import`) imports the measured set from `data/catalogue-seed.json`. Composing or creating a written session on an empty catalogue is refused until components are added or imported.
+- **Judging (`#/judge`)**: Judge shots against neutral labels (`judge_label`) without seeing prompt wordings. The **Contradiction** option (key `C`) records a frame whose body and camera disagree — counted as a miss, and also counted as a contradiction so the two failures stay apart. Camera and act only: each manner carries a single framing, and a forced choice over one option is not a question.
+- **Cell Backups**: Database migrations automatically dump legacy evidence rows to `data/cell-backup-<timestamp>.json`.
+
 ## Tests
 
 ```bash

@@ -6,6 +6,7 @@ import time — hence it lives up here and not inside a fixture.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -124,7 +125,7 @@ def client():
 
     with TestClient(main.app) as c:
         yield c
-    for table in ("shot", "session", "model", "workflow", "cell"):
+    for table in ("shot", "session", "model", "workflow", "cell", "component"):
         db.run(f"DELETE FROM {table}")
 
 
@@ -146,6 +147,23 @@ def make_runner(comfy_output, tmp_path):
 @pytest.fixture
 def seeded(client):
     """A ready workflow + model; returns their ids."""
+    # The measured catalogue, from the file the app ships. NOT conditional on
+    # the file existing: a suite that seeds when the file is there and quietly
+    # does not when it is missing is two different suites, and the second one
+    # is the one a fresh clone runs. Missing file is a hard error here.
+    #
+    # Plain INSERT, never `INSERT OR IGNORE`: the component table's CHECK is
+    # what stops a wording from being its own judge label, and OR IGNORE turns
+    # every one of those rejections into a silently absent row.
+    seed_file = ROOT / "data" / "catalogue-seed.json"
+    items = json.loads(seed_file.read_text(encoding="utf-8"))
+    for item in items:
+        db.run(
+            """INSERT INTO component (concept_key, slot, manner, family, faces, wording, judge_label, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            item["concept_key"], item["slot"], item["manner"], item.get("family", ""),
+            item.get("faces", ""), item["wording"], item["judge_label"], db.now(),
+        )
     wf = client.post("/api/workflows", json={"name": "wf", "graph": GRAPH}).json()
     model = client.post("/api/models", json={
         "name": "ada", "lora_name": "characters/ada.safetensors", "trigger": "4da woman",

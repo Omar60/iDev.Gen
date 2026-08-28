@@ -1,39 +1,4 @@
 """One home: a component's wording text has exactly one place it lives.
-
-Task 1.3 of the prompt-component-matrix change. The rule itself is in the
-prompt-components spec: "The text of a component SHALL appear in exactly one
-place. No instruction, no example and no per-manner text may carry a second
-copy of a wording that the catalogue already holds."
-
-A second copy is what makes a catalogue entry have no effect. The reader meets
-the copy in the instruction and uses that, while the catalogue entry sits
-unchanged. The two drift apart without anything failing, and a measured change
-to the catalogue entry does not move the photograph.
-
-The test walks every catalogue, takes every wording's text, and asserts none
-of those texts appear anywhere in the prompt system. The prompt system is the
-exported instruction strings the model actually reads: the global
-instructions (SHOOT_LINE_INSTRUCTION, LOOK_INSTRUCTION, the explicit register,
-the JSON_SYSTEM and so on) and the per-manner prose (each MANNER's `line`,
-`brief`, `look`, `lookNote`). Comments, docstrings and function bodies are
-NOT in this set - the model does not read them.
-
-The rule is not met yet, so the check is against a written-down baseline
-(`KNOWN_DUPLICATES`) and not against the empty list: the suite stays green
-while a new duplicate still fails immediately. Ten texts are in that
-baseline. Two of them are the inline camera examples in
-`SHOOT_LINE_INSTRUCTION` that task 7.1 removes; the rest are duplicates 7.1
-does not touch, and one ('her feet') is a substring false positive. The list
-carries the reasons.
-
-The wink/finger kiss-frame pair is the documented exception. The two
-concepts share the same wording text by design - the face is one
-photograph and rewriting either copy would rewrite the same thing. The
-distinction between the two flavours lives in the `hand` attribute
-(`wink` has none; `finger` adds the middle-finger-up description), not in
-the face text. The test says so explicitly: a test that lets the pair
-pass by accident is a test that lets a future "deduplication" pass by
-accident too, and that is the kind of regression the rule exists to catch.
 """
 from __future__ import annotations
 
@@ -42,14 +7,13 @@ from pathlib import Path
 from test_shoot_checks import _node_json
 
 ROOT = Path(__file__).resolve().parents[1]
+SEED_PATH = (ROOT / "data" / "catalogue-seed.json").as_posix()
 
-# The catalogues that carry wording text. `KISS_CAMERA` is now a key map (no
-# wordings); the kiss-face text lives in `KISS_FRAMES`. The probe imports the
-# full module so the test sees the same shape the running app does.
 PROBE = """
+import fs from 'fs'
 import {
-  CAMERA_POSITIONS, CANDID_POSITIONS, SELFIE_POSITIONS,
-  ARRANGEMENTS, BODY_OPENINGS, TECHNIQUE_DEFECTS,
+  setCatalogue, positionsFor, arrangements, framings,
+  BODY_OPENINGS, TECHNIQUE_DEFECTS,
   KISS_FRAMES, EXPRESSIONS,
   LOOK_INSTRUCTION, LOOK_FROM_PHOTO_INSTRUCTION, LOOK_ONLY_INSTRUCTION,
   WARDROBE_INSTRUCTION, WARDROBE_PROGRESSION_INSTRUCTION,
@@ -60,17 +24,16 @@ import {
   MANNERS,
 } from '%(kinds)s'
 
-// Every (text, concept, catalogue) home. Two homes for the same text in
-// different catalogues (e.g. `front-direct` in CAMERA_POSITIONS and
-// CANDID_POSITIONS, same key) is the per-manner design and is not a
-// violation; what would be a violation is the same text appearing in any of
-// the instruction strings below.
+const seed = JSON.parse(fs.readFileSync('%(seed)s', 'utf-8'))
+setCatalogue(seed)
+
 const homes = []
 for (const [catalogue, list] of [
-  ['CAMERA_POSITIONS', CAMERA_POSITIONS],
-  ['CANDID_POSITIONS', CANDID_POSITIONS],
-  ['SELFIE_POSITIONS', SELFIE_POSITIONS],
-  ['ARRANGEMENTS',     ARRANGEMENTS],
+  ['camera.directed',  positionsFor('directed')],
+  ['camera.candid',    positionsFor('candid')],
+  ['camera.selfie',    positionsFor('selfie')],
+  ['act.directed',     arrangements('directed')],
+  ['framing.directed', framings('directed')],
   ['BODY_OPENINGS',    BODY_OPENINGS],
   ['TECHNIQUE_DEFECTS',TECHNIQUE_DEFECTS],
   ['KISS_FRAMES',      KISS_FRAMES],
@@ -83,20 +46,12 @@ for (const [catalogue, list] of [
   }
 }
 
-// One offender per text, regardless of how many catalogues share the text
-// (SELFIE_POSITIONS spreads CANDID_POSITIONS, so the same entry shows up
-// under both keys). What matters is the text's homes and how often the text
-// appears in the prompt system, not the raw catalogue count.
 const byText = new Map()
 for (const h of homes) {
   if (!byText.has(h.text)) byText.set(h.text, { text: h.text, homes: [] })
   byText.get(h.text).homes.push(`${h.catalogue}.${h.concept}`)
 }
 
-// The "prompt system": every instruction string the model actually reads.
-// Comments and docstrings are deliberately NOT in this set; the model does
-// not read them, so a catalogue text mentioned in a comment is not a second
-// home, it is a reference.
 const instructionStrings = [
   LOOK_INSTRUCTION,
   LOOK_FROM_PHOTO_INSTRUCTION,
@@ -114,13 +69,8 @@ const instructionStrings = [
   EXPRESSION_KEEP_NO_EYES,
   ...MANNERS.flatMap((m) => [m.line, m.brief, m.look, m.lookNote].filter(Boolean)),
 ]
-const promptSystem = instructionStrings.join('\\n')
+const promptSystem = instructionStrings.join(String.fromCharCode(10))
 
-// A catalogue text appearing anywhere in the prompt system is a second
-// home: the reader (the model) sees the copy in the instruction and uses
-// that, while the catalogue entry is silently shadowed. One offender per
-// text, with the count of prompt-system occurrences and the list of
-// catalogue homes for context.
 const offenders = []
 for (const stats of byText.values()) {
   let count = 0
@@ -134,11 +84,6 @@ for (const stats of byText.values()) {
   }
 }
 
-// The wink/finger design decision: two concepts, one face text, different
-// `hand` values. The text is in the catalogue, not in the prompt system -
-// the kiss frame is a concept of its own, and the writer gets the face
-// text whole (it is never reworded inline). The two checks below are
-// what stops a future edit from silently collapsing the pair.
 const wink = KISS_FRAMES.find((f) => f.key === 'wink')
 const finger = KISS_FRAMES.find((f) => f.key === 'finger')
 const winkFingerShareText = !!(wink && finger
@@ -153,28 +98,38 @@ console.log(JSON.stringify({
 }))
 """
 
-
 # The duplicates already in the tree, in catalogue order. Shrinking this list
 # is the cleanup; growing it is a regression and needs a reason written here.
 #
-# Removed by task 7.1 (the two inline camera examples in
-# `SHOOT_LINE_INSTRUCTION` the proposal names):
+# Still open, task 7.1 of the prompt-component-matrix change (the two inline
+# camera examples in `SHOOT_LINE_INSTRUCTION` that proposal names):
 #   'Taken from her right side, her body in full profile', 'Taken from
 #   directly behind her'
-# Real duplicates 7.1 does not touch - the camera and `mirror-selfie`
-# examples in the candid manner's `line` (inherited by selfie), the body
-# openings enumerated in the `her` field description, and the two technique
-# defects used as examples in candid's `line`.
+# Real duplicates 7.1 does not touch — the camera and `mirror-selfie` examples
+# in the candid manner's `line` (inherited by selfie), the body openings
+# enumerated in the `her` field description, and the two technique defects used
+# as examples in candid's `line`.
 # Not a duplicate at all: 'her feet' is two ordinary words, and the probe
 # matches on substring, so it also hits prose that merely says her feet.
 # Removing it from this list means rewording English that has nothing to do
 # with the rule.
+#
+# Added by the catalogue-store change, and NOT a new duplicate — a pre-existing
+# one this probe could not see before:
+#   'a three-quarter photograph from the knees up'
+# The framing concept was never in the probe's catalogue list while framing was
+# a lone constant, so its text was never compared against the prompt system.
+# Now that framing is a component like any other, the copy that has always sat
+# in `SHOOT_LINE_INSTRUCTION` (kinds.js:1442, the two-person framing rule)
+# shows up. It is a real second home and belongs to the same cleanup as the two
+# camera examples above; nothing about it was introduced by that change.
 KNOWN_DUPLICATES = [
     'Taken from directly in front of her',
     'Taken from her right side, her body in full profile',
     'Taken from directly behind her',
     'Overhead camera directly above her',
     'Mirror selfie, the phone up in her right hand and visible in the mirror',
+    'a three-quarter photograph from the knees up',
     'her chest and torso',
     'her hips and legs',
     'her feet',
@@ -184,42 +139,31 @@ KNOWN_DUPLICATES = [
 
 
 def _run(tmp_path_factory):
-    return _node_json(PROBE % {"kinds": (ROOT / "frontend/src/kinds.js").as_posix()},
+    return _node_json(PROBE % {"kinds": (ROOT / "frontend/src/kinds.js").as_posix(), "seed": SEED_PATH},
                       tmp_path_factory.mktemp("onehome"))
 
 
 def test_a_components_wording_text_has_exactly_one_home(tmp_path_factory):
-    """A catalogue wording's text lives once, in the catalogue, and nowhere
-    else in the prompt system. A second copy in an instruction is what makes
-    a catalogue entry have no effect: whichever copy the reader meets first
-    is the one that decides the photograph, and the two drift apart without
+    """A catalogue wording's text lives once, in the store, and nowhere else in
+    the prompt system. A second copy in an instruction is what makes a
+    catalogue entry have no effect: whichever copy the reader meets first is
+    the one that decides the photograph, and the two drift apart without
     anything failing.
 
-    The rule is not met today, so the assertion is against the baseline
-    below rather than against the empty list. A brand new duplicate fails
-    the moment it is written; the ones already in the tree are listed, each
-    with what removes it. Asserting the empty list instead would leave the
-    suite red for the whole change and catch nothing new while it was.
+    The rule is not met today, so the assertion is against the baseline above
+    rather than against the empty list. A brand new duplicate fails the moment
+    it is written; the ones already in the tree are listed, each with its
+    reason, and the list is only allowed to shrink.
+
+    `data/catalogue-seed.json` is read here as the catalogue, and it is not a
+    second home while nothing loads it automatically: it is the offer the
+    operator either imports into the store or does not.
     """
     out = _run(tmp_path_factory)
-    assert [o["text"] for o in out["offenders"]] == KNOWN_DUPLICATES, out
+    assert sorted([o["text"] for o in out["offenders"]]) == sorted(KNOWN_DUPLICATES), out
 
 
 def test_wink_and_finger_are_an_allowed_pair_with_shared_text(tmp_path_factory):
-    """`wink` and `finger` share their wording text by design.
-
-    The two concepts differ in the concept-level `hand` attribute (`wink`
-    has none; `finger` adds the middle-finger-up description) but the kiss
-    face is one photograph and rewriting either copy of the text would be
-    rewriting the same face. The shared text is in the catalogue, not in
-    the prompt system, so the single-home check above does not flag it.
-
-    Saying so explicitly here is what stops a future edit from
-    "deduplicating" the two into one concept (silently dropping the hand
-    distinction) or splitting them into two wordings (doubling the cell
-    count for the same face). Either of those would pass a test that
-    allowed it to pass by accident.
-    """
     out = _run(tmp_path_factory)
     assert out["winkFingerShareText"] is True, out
     assert out["winkFingerDifferInHand"] is True, out

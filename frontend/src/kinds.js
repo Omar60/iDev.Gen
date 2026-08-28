@@ -1667,132 +1667,99 @@ export const takesChunkNote = (at) =>
  *  they name furniture, so they are wrong in any shoot that is not on a bed.
  *  ponytail: no room detection, the furniture-free nine work everywhere.
  */
-export const CAMERA_POSITIONS = [
-  { key: 'front-direct',      slot: 'camera', wordings: [{ key: 'front-direct',  text: 'Taken from directly in front of her',                                       family: 'front'    }] },
-  { key: 'shoulder-left',     slot: 'camera', wordings: [{ key: 'shoulder-left',  text: 'Taken from behind her left shoulder, her back three-quarters to the camera', family: 'shoulder' }] },
-  { key: 'shoulder-right',    slot: 'camera', wordings: [{ key: 'shoulder-right',  text: 'Taken from behind her right shoulder, her back three-quarters to the camera', family: 'shoulder' }] },
-  { key: 'side-right',        slot: 'camera', wordings: [{ key: 'side-right',  text: 'Taken from her right side, her body in full profile',                       family: 'side'     }] },
-  { key: 'side-left',         slot: 'camera', wordings: [{ key: 'side-left',  text: 'Taken from her left side, her body in full profile',                        family: 'side'     }] },
-  { key: 'behind-direct',     slot: 'camera', wordings: [{ key: 'behind-direct',  text: 'Taken from directly behind her',                                             family: 'behind'   }] },
-  { key: 'overhead-direct',   slot: 'camera', wordings: [{ key: 'overhead-direct',  text: 'Overhead camera directly above her',                                          family: 'overhead' }] },
-  { key: 'overhead-high',     slot: 'camera', wordings: [{ key: 'overhead-high',  text: 'High camera looking steeply down at her',                                     family: 'overhead' }] },
-  { key: 'floor-low-angle',   slot: 'camera', wordings: [{ key: 'floor-low-angle',  text: 'Low-angle shot from the floor at her feet',                                   family: 'floor'    }] },
-]
+let _catalogue = []
 
-/** Where the PHONE was, for a shoot nobody is photographing.
- *
- *  `candid` cannot use the list above. Those are the positions of someone
- *  standing behind a camera; these are the places a phone ends up. Measured in
- *  renders 2026-08-23, sessions 245-250: nine arms and then five more, one line
- *  fixed by hand with only the camera clause swapped, three shared seeds, judged
- *  blind three passes a photograph. Only what survived that is here.
- *
- *  What it costs to be on this list, and what it cost to find out:
- *
- *  * `behind` is NOT here. `Taken from directly behind her` and both phone
- *    wordings of it came back frontal 0/6 under the candid look, with the
- *    subject block already fixed. `floor` is not here either - 0/3 every way it
- *    was asked, including the form that is 3/3 for `directed`.
- *  * a MOUNT reaches a height and never a horizontal. `Phone propped on a high
- *    shelf ... looking down at her` is 3/3 overhead with no verified height word
- *    in it at all, which the directed catalogue's grammar says should not work;
- *    hang a horizontal on the same shape - `... behind her left shoulder` - and
- *    it is 0/3. So the shoulder is asked for in the photographer's words, which
- *    is the one place candid borrows them, and it renders 3/3.
- *  * the word `phone` in the clause paints NO phone: 21/21 of the arms that
- *    should show no device showed none, the three that open with `Phone`
- *    included. The mirror is the exception and the only intended one - it is the
- *    single form that renders the device, 3/3, because there it is really in
- *    frame.
- *  * `Phone held above her in his hand` is 3/3 overhead and is deliberately NOT
- *    here: it puts a second person in a shoot that may not have one.
- *    ponytail: no `him` check, the shelf reaches the same overhead alone.
- */
-export const CANDID_POSITIONS = [
-  { key: 'front-direct',    slot: 'camera', wordings: [{ key: 'front-direct',  text: 'Taken from directly in front of her',                                         family: 'front'    }] },
-  { key: 'front-arm-length',slot: 'camera', wordings: [{ key: 'front-arm-length',  text: "Phone held out at arm's length in front of her face",                          family: 'front'    }] },
-  { key: 'overhead-direct', slot: 'camera', wordings: [{ key: 'overhead-direct',  text: 'Overhead camera directly above her',                                            family: 'overhead' }] },
-  { key: 'overhead-shelf',  slot: 'camera', wordings: [{ key: 'overhead-shelf',  text: 'Phone propped on a high shelf across the room, looking down at her',           family: 'overhead' }] },
-  // Both sides, session 251: 3/3 each, shot together so the left is its own
-  // control and it reproduced. What the judge verifies is a shoulder
-  // three-quarter view and not WHICH shoulder - left and right are one answer to
-  // it on purpose, because telling her left from her right is a harder question
-  // than the one being asked. The directed catalogue carries both on the same
-  // evidence.
-  { key: 'shoulder-left',   slot: 'camera', wordings: [{ key: 'shoulder-left',  text: 'Taken from behind her left shoulder, her back three-quarters to the camera',   family: 'shoulder' }] },
-  { key: 'shoulder-right',  slot: 'camera', wordings: [{ key: 'shoulder-right',  text: 'Taken from behind her right shoulder, her back three-quarters to the camera',  family: 'shoulder' }] },
-  { key: 'mirror-selfie',   slot: 'camera', wordings: [{ key: 'mirror-selfie',  text: 'Mirror selfie, the phone up in her right hand and visible in the mirror',       family: 'mirror'   }] },
-]
+export const setCatalogue = (rows) => {
+  _catalogue = Array.isArray(rows) ? rows : []
+}
 
-/** The catalogue a manner plans from.
- *
- *  Down here because it names both lists and they are defined above it. Every
- *  manner is in it, which is why the list of example forms `SHOOT_LINE_INSTRUCTION`
- *  used to carry - `CAMERA_FORMS`, forty lines of measured wording - is gone: it
- *  existed for a writer choosing its own position, and no writer does now. A
- *  manner added without a catalogue gets no camera guidance at all, so
- *  `tests/test_camera_plan.py` fails until it has one; git has the old list if
- *  free-writing ever comes back.
- */
-/** Where the phone was when she was holding it through the act.
- *
- *  `candid`'s seven, unchanged - they are the measured ones and a shoot she is
- *  filming is still a shoot in a room - plus the two forms sessions 155 and 161
- *  are full of and the candid catalogue has no way to ask for: the phone pointed
- *  back down her own body, and the phone held above her face while she is on her
- *  back. Both are held in her own hand, which is the shape `candid` measured as
- *  paintless (the word `phone` in the clause put a phone in 0 of 21) and as
- *  reaching a height without a verified height word.
- *
- *  Their own family, `pov`, so the spread cannot run two of them together and
- *  cannot fill a shoot with them either: they are the strongest lines in the
- *  catalogue and a shoot of nothing else is one photograph taken forty times.
- *
- *  ponytail: no `him` gate. These render alone as a woman photographing herself,
- *  which is a shoot somebody wants; what puts him in the picture is the reach.
- */
-export const SELFIE_POSITIONS = [
-  ...CANDID_POSITIONS,
-  { key: 'pov-low-chest',  slot: 'camera', wordings: [{ key: 'pov-low-chest',  text: 'Phone held low in her own hand at her chest, angled down along her own body',      family: 'pov' }] },
-  { key: 'pov-above-back', slot: 'camera', wordings: [{ key: 'pov-above-back',  text: 'Phone held above her face in her own outstretched hand as she lies on her back, looking down at her', family: 'pov' }] },
-]
+export const getCatalogue = () => _catalogue
 
-export const POSITIONS = { directed: CAMERA_POSITIONS, candid: CANDID_POSITIONS,
-                           selfie: SELFIE_POSITIONS }
+export const positionsFor = (manner = 'directed') => {
+  const m = manner || 'directed'
+  // No fallback to `directed`. A manner whose catalogue is empty has NO
+  // components, and saying so is the point: falling back shoots a candid
+  // session from directed's nine cameras — forms candid deliberately excludes —
+  // and records every cell under manner='candid'. The measurement then says
+  // something about a catalogue nobody drew from. Empty here; the caller
+  // refuses.
+  const rows = _catalogue.filter((r) => r.slot === 'camera' && r.manner === m && !r.retired_at)
+  return rows.map((r) => ({
+    key: r.concept_key,
+    slot: r.slot,
+    family: r.family || '',
+    faces: r.faces || '',
+    wordings: [{ key: r.concept_key, text: r.wording, family: r.family || '' }],
+    judge_label: r.judge_label,
+  }))
+}
+
+export const arrangements = (manner = 'directed') => {
+  const m = manner || 'directed'
+  // No fallback to `directed`. A manner whose catalogue is empty has NO
+  // components, and saying so is the point: falling back shoots a candid
+  // session from directed's nine cameras — forms candid deliberately excludes —
+  // and records every cell under manner='candid'. The measurement then says
+  // something about a catalogue nobody drew from. Empty here; the caller
+  // refuses.
+  const rows = _catalogue.filter((r) => r.slot === 'act' && r.manner === m && !r.retired_at)
+  return rows.map((r) => ({
+    key: r.concept_key,
+    slot: r.slot,
+    family: r.family || '',
+    faces: r.faces || '',
+    label: r.judge_label || r.concept_key,
+    // The store's own list, not a guess from `family`. Keyed off family in an
+    // if-chain here, every act added through the catalogue screen came back
+    // with an empty list and `fitCameras` skipped it — the screen's whole
+    // purpose, producing acts the camera plan ignored. The API serves an
+    // array; a string is accepted so a raw row read straight off the seed
+    // file works in a test without a round trip through the endpoint.
+    cameras: Array.isArray(r.cameras)
+      ? r.cameras
+      : (r.cameras || '').split(',').filter(Boolean),
+    wordings: [{ key: r.concept_key, text: r.wording }],
+    judge_label: r.judge_label,
+  }))
+}
+
+export const framings = (manner = 'directed') => {
+  const m = manner || 'directed'
+  // No fallback to `directed`. A manner whose catalogue is empty has NO
+  // components, and saying so is the point: falling back shoots a candid
+  // session from directed's nine cameras — forms candid deliberately excludes —
+  // and records every cell under manner='candid'. The measurement then says
+  // something about a catalogue nobody drew from. Empty here; the caller
+  // refuses.
+  const rows = _catalogue.filter((r) => r.slot === 'framing' && r.manner === m && !r.retired_at)
+  return rows.map((r) => ({
+    key: r.concept_key,
+    slot: r.slot,
+    family: r.family || '',
+    faces: r.faces || '',
+    wordings: [{ key: r.concept_key, text: r.wording }],
+    judge_label: r.judge_label,
+  }))
+}
 
 /** Where the camera stands in each of `n` photographs, decided here and not by
  *  the writer, the way `stagePlan` decides the arc.
- *
- *  Measured 2026-08-22, three arms of n=25 x 5 runs: the writer takes 19-20 of
- *  25 camera fields verbatim from the five examples, and no wording of the
- *  instruction moves that. Deleting the examples does move it — verbatim reuse
- *  falls to about 1 — but the shoot does not change: classified by which side of
- *  her the camera stands on, the free-writing arms had the same 5.8 position
- *  families and the same biggest family as the control. What it did lose was the
- *  field order and every verified form, inventing `at her hip height` and
- *  `at mattress level`, which come back at eye level. So the choice is made here,
- *  from the eight forms above, and the writer only has to word the framing.
- *
- *  Each step takes the least-used position whose family is not the one just
- *  used, ties broken at random. That spreads the eight evenly without any quota
- *  arithmetic and no two photographs running share a family.
  */
-export const cameraPlan = (n, rand = Math.random, positions = CAMERA_POSITIONS) => {
-  // Every position is now a concept whose first wording is the form the spread
-  // draws. Family lives on the wording — same place it always did for the
-  // plan's purpose, and the wording is the one thing the prompt eventually sees.
+export const cameraPlan = (n, rand = Math.random, positions = null) => {
+  const pool = positions || positionsFor('directed')
+  if (!pool.length) return []
   const textOf  = (p) => p.wordings[0].text
   const familyOf = (p) => p.wordings[0].family
-  const used = positions.map(() => 0)
+  const used = pool.map(() => 0)
   const plan = []
   let last = null
   for (let i = 0; i < n; i += 1) {
-    // A single family cannot fill the ban, so there is always something left.
-    const open = positions
+    const open = pool
       .map((p, at) => ({ p, at }))
       .filter(({ p }) => familyOf(p) !== last)
-    const fewest = Math.min(...open.map(({ at }) => used[at]))
-    const pick = open.filter(({ at }) => used[at] === fewest)
+    const candidates = open.length ? open : pool.map((p, at) => ({ p, at }))
+    const fewest = Math.min(...candidates.map(({ at }) => used[at]))
+    const pick = candidates.filter(({ at }) => used[at] === fewest)
     const { p, at } = pick[Math.floor(rand() * pick.length) % pick.length]
     used[at] += 1
     last = familyOf(p)
@@ -1803,62 +1770,27 @@ export const cameraPlan = (n, rand = Math.random, positions = CAMERA_POSITIONS) 
 
 /** The camera plan with the planted photographs given a camera their arrangement
  *  can be seen from.
- *
- *  Only those photographs move. Everything else keeps the spread `cameraPlan`
- *  drew, which is what stops this from quietly becoming a second camera plan:
- *  measured in session 267, an arrangement handed an incompatible camera loses,
- *  every time, and the shoot gets a photograph nobody asked for.
- *
- *  The replacement is drawn from the positions whose family the arrangement
- *  allows, preferring one whose family is not already on the photograph before
- *  or after - the same rule the plan itself holds. When the catalogue has none
- *  it can use, the camera is left alone: a manner with no compatible position is
- *  a manner that cannot take that photograph, and a wrong camera is still better
- *  than an empty one.
  */
-export const fitCameras = (cameras, poses, positions, rand = Math.random) => {
-  if (!cameras || !positions) return cameras
-  // Camera forms are now concept wordings; the lookup goes through them.
+export const fitCameras = (cameras, poses, positions = null, rand = Math.random) => {
+  const pool = positions || positionsFor('directed')
+  if (!cameras || !pool || !pool.length) return cameras
   const familyOfLine = (line) =>
-    positions.find((p) => p.wordings[0].text === line)?.wordings[0].family
+    pool.find((p) => p.wordings[0].text === line)?.wordings[0].family
   const out = [...cameras]
   for (const [key, arrangement] of Object.entries(poses || {})) {
     const at = Number(key) - 1
     if (!arrangement.cameras) continue
-    // The FIRST family the catalogue offers, not any of them: the lists are
-    // ordered by what each one scored when it was shot, and `wall` is 3/3 from
-    // a mirror and 0/3 from behind her shoulder. Drawing at random spends a
-    // third of the plantings on a form that was measured to fail.
     const family = arrangement.cameras.find(
-      (f) => positions.some((p) => p.wordings[0].family === f))
-    const open = positions.filter((p) => p.wordings[0].family === family)
-    // Nothing this manner can take it from: the camera it was dealt stays, which
-    // is wrong, and a wrong camera is still better than none.
+      (f) => pool.some((p) => p.wordings[0].family === f))
+    const open = pool.filter((p) => p.wordings[0].family === family)
     if (!open.length) continue
     if (familyOfLine(out[at]) === family) continue
-    // Inside the family the draw is free - which of its forms is a question the
-    // camera catalogue already answered.
     out[at] = open[Math.floor(rand() * open.length) % open.length].wordings[0].text
   }
   return out
 }
 
 /** The kiss frame, in four flavours, and the position it is taken from.
- *
- *  Every shoot gets at least one. It came from a photograph the user chased for
- *  several sessions and never got out of a shoot - a kiss blown at the camera
- *  with the eyes shut - and finally got from a prompt written by hand. What that
- *  prompt was doing that a shoot line does not: it named the kiss and the eyes as
- *  ONE gesture in the same clause, with the eyes stated flatly and in capitals,
- *  and it put the camera at arm's length in her own hand. A shoot line spreads
- *  those across `camera` and `face` and softens both, and the eyes come back
- *  open.
- *
- *  So it is a plan and not a suggestion, like the camera: the wording below is
- *  handed over word for word and the writer only places it.
- *
- *  `hand` is what the `act` field must carry when the flavour needs a hand in
- *  frame; it is empty for the three that do not.
  */
 export const KISS_FRAMES = [
   { key: 'closed', slot: 'kiss-face', hand: '',
@@ -1880,36 +1812,16 @@ export const KISS_FRAMES = [
                       + 'looking straight at the lens.' }] },
 ]
 
-/** Which photographs are kiss frames, and which flavour each one is.
- *
- *  One per eight photographs, capped at the four flavours and never fewer than
- *  one, so a short shoot still gets its kiss and a long one gets variety rather
- *  than the same face four times. Spread by dividing the shoot into as many
- *  bands as there are frames and placing one inside each, which keeps two of
- *  them from landing side by side without any interval arithmetic.
- *  ponytail: no per-manner count, one knob (the 8) if a shoot wants more.
- */
 export const spreadOver = (n, items, per, rand = Math.random, cap = items?.length ?? 0) => {
   if (n < 1 || !items?.length) return {}
-  // `cap` is what stops a long shoot planting more than there is to plant. The
-  // kiss frame has four flavours and a fifth kiss would be a repeated face, so
-  // it caps at its own length; the arrangements cycle instead, because the same
-  // arrangement at photograph 3 and photograph 30 is two different photographs
-  // of a shoot that moved. Without the distinction a 45-photograph shoot with
-  // three arrangements picked planted three of them - one in fifteen, which is
-  // not a pool, it is a garnish.
   const many = Math.max(1, Math.min(cap, Math.floor(n / per)))
   const band = n / many
   const plan = {}
   let last = 0
   for (let i = 0; i < many; i += 1) {
-    // 1-based photograph numbers, and photograph 1 is left alone when there is
-    // room: it is the frame the whole shoot is measured against.
     const from = Math.floor(i * band)
     const drawn = Math.max(many > 1 || n === 1 ? 1 : 2,
                            from + 1 + Math.floor(rand() * Math.max(1, band - 1)))
-    // A band's draw can land at its end and the next one's at its start, which
-    // is two planted frames running - the one thing the spread exists to prevent.
     const at = Math.min(n, Math.max(drawn, last + 2))
     plan[at] = items[i % items.length]
     last = at
@@ -1919,219 +1831,18 @@ export const spreadOver = (n, items, per, rand = Math.random, cap = items?.lengt
 
 export const kissPlan = (n, rand = Math.random) => spreadOver(n, KISS_FRAMES, 8, rand)
 
-/** The arrangements of two bodies that sessions 155 and 161 are made of.
- *
- *  Those two shoots are where the `selfie` manner came from, and copying the
- *  camera out of them left the other half behind: what the two of them are
- *  DOING. The stage plan invents its own arrangements, which is right for a
- *  shoot nobody has a picture of in their head and wrong when there is a
- *  particular photograph being chased.
- *
- *  So they are a pool and not a rule, and NOT one per photograph: nothing is
- *  planted unless a session picks it, and a picked one lands about once in five
- *  photographs, spread by `spreadOver` the way the kiss frame is. Everything
- *  between them is the shoot the stage plan wrote, which is the half that keeps
- *  a session from being one photograph shot forty times.
- *
- *  WHAT THE WORDING IS AND IS NOT. Each `act` below is handed to the writer word
- *  for word, and it names two people plainly because that is the only form this
- *  project has ever measured as rendering the act
- *  ([[idevgen-two-people-limit]]). It says where the two bodies are and nothing
- *  else: no camera, no framing, no expression, no clothes. Those are the line's
- *  own, and the camera in particular is planned separately and must not be
- *  fought.
- *
- *  `cameras` IS WHICH FAMILIES WERE MEASURED TO RENDER IT, in the order they
- *  scored, and it exists because session 267 measured the two plans fighting. Three of its five planted arrangements were
- *  handed a camera behind her shoulder, and all three came back as a DIFFERENT
- *  arrangement: asked for her on top facing him with her back to the lens, the
- *  sampler turned her around on him rather than move the camera. The one that
- *  survived was the one whose camera already agreed with it. The camera outranks
- *  the bodies, which is this project's oldest hierarchy
- *  ([[idevgen-position-collapse-is-contradiction]]) arriving in a new place.
- *
- *  So a planted arrangement takes its camera from these families and the plan
- *  fills the rest of the shoot as before. Read them as what the camera can SEE:
- *  a woman with her front to a wall cannot be photographed from in front, and a
- *  phone propped above a bed cannot see two people standing at one.
- *
- *  Every list keeps at least one family in every catalogue - a restriction that
- *  empties a manner's positions would leave the photograph with no camera at
- *  all, and `tests/test_arrangements.py` fails if one ever does.
- *
- *  ALL THREE ARE SHOT AND JUDGED, sessions 269 and 270 on the arm protocol -
- *  one line fixed by hand, the `act` taken from here word for word, three shared
- *  seeds, the camera swapped through the families each one allowed, read blind
- *  three passes with `judge_camera.py --question arrangement`:
- *
- *  * `astride` 18 of 22 photographs, and every family it lists scored: front
- *    6/6, overhead 4/4, mirror 4/6, pov 4/6. It is also 12 of 12 in sessions 265
- *    and 266 on a different fixed line.
- *  * `reverse` renders from ONE family. Behind her shoulder is 3/3; the mirror
- *    and the overhead are 1/3 each, which is why they are gone from its list.
- *  * `wall` is the mirror, 3/3, and nothing else: from behind her shoulder it is
- *    0/3. The shoulder stays second on its list only as the fallback for a
- *    manner with no mirror in its catalogue - `directed` has none - and it is
- *    known to be weak there.
- *
- *  So a list here is not a guess about what a camera can see any more. It is
- *  what was shot, strongest first, and `fitCameras` takes the first one the
- *  manner's catalogue offers.
- *
- *  WHAT IS VERIFIED, and it is all three. `astride` is the arrangement
- *  sessions 265 and 266 shot on a fixed line: 12 photographs of 12 with the arm
- *  written, the act in 11 of them. The other five are read off what 155 and 161
- *  RENDERED rather than what their prompts asked for - and those two are not the
- *  same thing, which is the whole reason this catalogue is worded from the
- *  photographs, and the numbers above are what each one is worth.
- *
- *  Three more were written and taken out again: see below the list.
- */
-export const ARRANGEMENTS = [
-  { key: 'astride', slot: 'act', label: 'She is on top, facing him',
-    cameras: ['front', 'overhead', 'mirror', 'pov'],
-    wordings: [{ key: 'astride',  text: 'She is astride him with her knees on either side of his hips and her weight down on '
-                       + 'him, the two of them joined, two people in frame.' }] },
-  { key: 'reverse', slot: 'act', label: 'She is on top, facing away',
-    cameras: ['shoulder'],
-    wordings: [{ key: 'reverse',  text: 'She is astride him facing away from him with her weight on her feet, the two of them '
-                       + 'joined, two people in frame.' }] },
-  { key: 'wall',    slot: 'act', label: 'Standing against the wall',
-    cameras: ['mirror', 'shoulder'],
-    wordings: [{ key: 'wall',  text: 'She is standing with her front to the wall and one leg raised, he is behind her, the '
-                       + 'two of them joined, two people in frame.' }] },
-  // `back` and `side` are NOT in this list. They are seeded as cells in
-  // `backend/db.py:EVIDENCE_SEED` (task 2.3 of the prompt-component-matrix
-  // change) with the verdicts the source paid for, and that cell table is
-  // the only home this change gives them: ShotsEditor.jsx paints every
-  // entry in ARRANGEMENTS as an <option> in the arrangement dropdown, and
-  // no task in the plan (3.x, 6.x, 7.x) filters that dropdown. With back
-  // and side in here, they are eligible and would plant phrases the
-  // source measured at 0 of 24. The verdict of these two lives in the
-  // cell table, not as a second home in the frontend catalogue.
-]
+export const arrangementPlan = (n, picked, rand = Math.random, manner = 'directed') =>
+  spreadOver(n, arrangements(manner).filter((a) => picked?.includes(a.key)), 5, rand, Infinity)
 
-/** WHY THERE ARE THREE AND NOT SIX.
- *
- *  `back` - her on her back with him over her - and `side` - both of them on
- *  their sides, him behind her - are the two that were shot hardest and never
- *  arrived. Sessions 269 and 271, the same fixed line and the same three seeds
- *  on TWO checkpoints, four cameras for `back` and three for `side`:
- *
- *      back   0 of 12 on finepornV4, 0 of 12 on the Krea 2 mix
- *      side   0 of  9 on finepornV4, 0 of  8 on the Krea 2 mix
- *      astride (control, same runs)  18 of 22 and 9 of 12
- *
- *  It is not the checkpoint and it is not a missing act: the same Krea 2 run
- *  reads `sex` in 29 photographs of 33 on `--question act`. Both collapse into
- *  the same photograph, her upright on top facing the lens, which is this
- *  sampler's default arrangement for two bodies - and an arrangement that
- *  reliably delivers a different photograph is worse than no option at all.
- *
- *  The entries, so nobody writes them a second time:
- *
- *      { key: 'back', label: 'She is on her back, he is over her',
- *        act: 'She is on her back with her legs open and he is over her between
- *              them, the two of them joined, two people in frame.' }
- *      { key: 'side', label: 'Both on their sides',
- *        act: 'They are both on their sides with him behind her and her upper leg
- *              lifted, the two of them joined, two people in frame.' }
- *
- *  What has NOT been tried on either of them is a different wording of the same
- *  arrangement - both were shot in exactly one form. The camera is exhausted;
- *  the sentence is not.
- *
- *  AND THE THIRD, the arrangement everyone asks for.
- *
- *  `behind` - on all fours, him kneeling behind her - failed in every context
- *  there is, on four separate occasions:
- *
- *  * sessions 155 and 161 asked for it in eight of their forty-five hand-written
- *    prompts and NEITHER shoot ever painted it. Both came back as her on top or
- *    on her back;
- *  * planted in session 267, the writer dropped it from the line entirely;
- *  * planted again in 268 with a camera fitted to it and the wording arriving
- *    word for word, the photograph came back as the two of them kneeling face to
- *    face;
- *  * and the camera side of the same shape is just as dead - `Taken from
- *    directly behind her` is 0/6 under the candid look, both wordings
- *    ([[idevgen-candid-camera-renders]]).
- *
- *  An option that reliably delivers a different photograph is worse than no
- *  option: it spends a planted frame and it lies about what the shoot will be.
- *  The wording is kept here rather than in git alone because the next person to
- *  want it will write exactly this entry again.
- *
- *  What is NOT established is why. It may be the base model, and finepornV4 is
- *  the only one it has been asked of - `judge_camera.py --question arrangement`
- *  on a fixed line across the nine checkpoints is the arm that would say.
- *
- *  The entry, so the next person to want it recognises what was already tried
- *  rather than writing it again:
- *
- *      { key: 'behind', label: 'On all fours, he is behind her',
- *        cameras: ['front', 'shoulder', 'side', 'overhead', 'mirror'],
- *        act: 'She is on all fours on the bed and he is kneeling behind her, the two of
- *              them joined, two people in frame.' }
- */
-
-export const ARRANGEMENT = Object.fromEntries(ARRANGEMENTS.map((a) => [a.key, a]))
-
-/** Which photographs carry a picked arrangement. Empty when none is picked, and
- *  that is the default: a session says which of them it wants.
- *
- *  One in five rather than the kiss frame's one in eight, because an arrangement
- *  is what the shoot is about where a kiss is a single frame - but still a
- *  minority of the photographs, which is the point of a pool.
- *  ponytail: no per-manner count, the 5 is the one knob.
- */
-export const arrangementPlan = (n, picked, rand = Math.random) =>
-  spreadOver(n, ARRANGEMENTS.filter((a) => picked?.includes(a.key)), 5, rand, Infinity)
-
-/** The kiss frame's camera, by manner.
- *
- *  Where the kiss frame is taken from: her own arm in a candid shoot, the
- *  photographer's frontal position in a directed one. Both are measured forms
- *  - the first is `CANDID_POSITIONS`' arm's-length selfie, 3/3 in session 245,
- *  the second is the frontal control that is 3/3 in every session it has
- *  ever been in.
- *
- *  The two are not the same concept even though `candid` and `selfie` happen
- *  to reach the same one - a candid shoot and a selfie shoot arrive at the same
- *  photograph from the same place for the same reason, and the per-manner
- *  evidence is what 2.3 will seed into the matrix.
- *
- *  What makes one of these a "kiss camera" and not just another `cameras` pick
- *  is the override: at every planted kiss it REPLACES the camera the spread
- *  dealt. That is what `override: 'dealt-camera'` on the resolved concept
- *  records, and it is what lets a later reading of the photograph know which
- *  concept painted it.
- *
- *  The values below are keys into that manner's OWN camera catalogue, so the
- *  wording lives there and only there. A kiss camera is a camera component
- *  with a tag on it, not a concept of its own: one concept shape in the whole
- *  catalogue is what keeps 1.3 and the cell model in 2.1 from needing a second
- *  one.
- */
 export const KISS_CAMERA = {
   directed: 'front-direct',
   candid: 'front-arm-length',
   selfie: 'front-arm-length',
 }
 
-/** The kiss camera for a manner, as the camera concept itself.
- *
- *  Looked up in `POSITIONS[manner]` - that manner's own catalogue - so a form
- *  two manners word differently resolves to the right one rather than to
- *  whichever catalogue happens to be scanned first. An unknown manner falls
- *  back to the directed catalogue and the directed key.
- *
- *  Returns `null` only when the key names nothing, which is a typo in the map
- *  above and is meant to be loud: the callers do not guard against it.
- */
-export const kissCameraFor = (manner) => {
+export const kissCameraFor = (manner = 'directed') => {
   const key = KISS_CAMERA[manner] || KISS_CAMERA.directed
-  const found = (POSITIONS[manner] || POSITIONS.directed).find((p) => p.key === key)
+  const found = positionsFor(manner).find((p) => p.key === key)
   return found ? { ...found, override: 'dealt-camera' } : null
 }
 

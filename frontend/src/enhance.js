@@ -13,7 +13,7 @@ import {
   ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES, REACH, MANNER,
   SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
-  takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, POSITIONS, arrangementPlan,
+  takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, positionsFor, arrangementPlan,
   fitCameras, BODY_OPENINGS,
   kissPlan, kissCameraFor,
 } from './kinds.js'
@@ -363,7 +363,8 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // photographer stands, `candid` from where a phone was put down — six forms
   // that survived being shot and judged blind, sessions 245-250. A manner with
   // no catalogue gets no camera guidance, and a test keeps that from happening.
-  let cameras = POSITIONS[manner] ? cameraPlan(n, Math.random, POSITIONS[manner]) : null
+  const pos = positionsFor(manner)
+  let cameras = pos.length ? cameraPlan(n, Math.random, pos) : null
   // What each photograph's `technique` field opens on, dealt from the same
   // spreader for the same reason: asked to choose, the writer keeps the subject
   // of the line before it. See TECHNIQUE_DEFECTS. It rides on the camera rows, so
@@ -387,12 +388,12 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // them are standing against a wall, and the render was a kiss blown at the
   // lens in bed. Two plans that do not know about each other is one photograph
   // carrying two instructions.
-  const poses = withoutClashing(arrangementPlan(n, arrangements), kisses, n)
+  const poses = withoutClashing(arrangementPlan(n, arrangements, Math.random, manner), kisses, n)
   // A planted arrangement takes its camera from the families that can see it.
   // Session 267: three of five were handed a camera behind her shoulder and all
   // three rendered as a different arrangement, because the camera outranks the
   // bodies. Only the planted photographs move.
-  cameras = fitCameras(cameras, poses, POSITIONS[manner])
+  cameras = fitCameras(cameras, poses, pos)
   // Which photographs got one, said out loud: a plan nobody can see is a plan
   // nobody can check, and the only way to know an arrangement ARRIVED is to
   // compare the line against the photograph it was planted in.
@@ -406,8 +407,9 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // Unguarded on purpose: a manner whose key names nothing is a typo in
   // KISS_CAMERA, and a silent skip would leave the kiss frames on their dealt
   // camera with nothing to show for it.
-  const kissCameraText = kissCameraFor(manner).wordings[0].text
-  for (const at of Object.keys(kisses)) if (cameras) cameras[Number(at) - 1] = kissCameraText
+  const kissCam = kissCameraFor(manner)
+  const kissCameraText = kissCam?.wordings?.[0]?.text || ''
+  for (const at of Object.keys(kisses)) if (cameras && kissCameraText) cameras[Number(at) - 1] = kissCameraText
   onProgress?.(0, n)
 
   const lines = await inChunks(n, (made) => onProgress?.(made, n), (at) => {

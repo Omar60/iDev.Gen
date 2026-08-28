@@ -238,6 +238,30 @@ class ShotPatch(BaseModel):
     rejected: bool | None = None
 
 
+class ComponentIn(BaseModel):
+    concept_key: str
+    slot: str
+    manner: str
+    family: str = ""
+    faces: str = ""
+    wording: str
+    judge_label: str
+    # An act's compatible camera families, strongest first. See the column
+    # comment in db.py: this is what `fitCameras` walks.
+    cameras: list[str] = Field(default_factory=list)
+
+
+class ComponentPatch(BaseModel):
+    concept_key: str | None = None
+    slot: str | None = None
+    manner: str | None = None
+    family: str | None = None
+    faces: str | None = None
+    wording: str | None = None
+    judge_label: str | None = None
+    cameras: list[str] | None = None
+
+
 class JudgeShotIn(BaseModel):
     """One judging pass's answer for one shot, per slot.
 
@@ -251,6 +275,7 @@ class JudgeShotIn(BaseModel):
       this pass. A 5.2 pass asks one question across a batch, so
       the slots the pass did not ask stay at ``None`` and the
       endpoint does not count them.
+    - ``defect``: optional defect classification (e.g. ``"contradiction"``).
 
     The endpoint translates the answers into a per-slot delta the
     cell update carries: each non-``None`` slot increments
@@ -265,6 +290,8 @@ class JudgeShotIn(BaseModel):
     camera: str | None = None
     act: str | None = None
     framing: str | None = None
+    slot: str | None = None
+    defect: str | None = None
     control: bool = False
 
 
@@ -541,6 +568,265 @@ def delete_model(mid: int):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- components
+
+# `cameras` is one comma-separated string in the column and a list everywhere
+# else. Stored flat because it is a short ordered list of single words and a
+# join table for it would be a second table nothing else ever reads; converted
+# at the boundary so no caller has to know that.
+def _cameras_text(values) -> str:
+    return ",".join(v.strip() for v in (values or []) if v and v.strip())
+
+
+def _component_out(row: dict | None) -> dict | None:
+    if row is None:
+        return None
+    out = dict(row)
+    out["cameras"] = [c for c in (out.get("cameras") or "").split(",") if c]
+    return out
+
+
+def _evidence_by_component() -> dict[tuple[str, str, str], dict]:
+    """Every component's cell counts, keyed (slot, manner, concept_key).
+
+    Three GROUP BY queries, one per slot, and not one query per component: the
+    catalogue screen lists the whole store at once.
+
+    `contradicted` is carried separately from the misses it is part of. A cell
+    that failed by contradiction and one that failed by rendering some other
+    component are two different findings with two different repairs, and a
+    screen that shows only `judged` and `arrived` tells the operator to
+    re-measure the same defect (`component-matrix` delta, "A photograph that
+    contradicts itself is its own answer").
+    """
+    out: dict[tuple[str, str, str], dict] = {}
+    for slot, column in (("camera", "camera_wording"),
+                         ("act", "act_wording"),
+                         ("framing", "framing_wording")):
+        rows = db.q(
+            f"SELECT {column} AS key, manner, SUM(judged) AS judged, "
+            "SUM(arrived) AS arrived, SUM(contradicted) AS contradicted "
+            f"FROM cell GROUP BY {column}, manner"
+        )
+        for r in rows:
+            out[(slot, r["manner"], r["key"])] = {
+                "judged": r["judged"] or 0,
+                "arrived": r["arrived"] or 0,
+                "contradicted": r["contradicted"] or 0,
+            }
+    return out
+
+
+@app.get("/api/components")
+def list_components(all: bool = False):
+    """List components from the store. Returns non-retired components by default,
+    or all components (including retired) if all=1.
+
+    Each row carries the evidence recorded against it — `judged`, `arrived`,
+    `contradicted` — summed over its cells, so the catalogue screen can show
+    what a wording is worth beside the wording itself.
+    """
+    if all:
+        rows = db.q("SELECT * FROM component ORDER BY slot, manner, id")
+    else:
+        rows = db.q("SELECT * FROM component WHERE retired_at IS NULL ORDER BY slot, manner, id")
+    evidence = _evidence_by_component()
+    out = []
+    for r in rows:
+        c = _component_out(r)
+        counts = evidence.get((c["slot"], c["manner"], c["concept_key"]),
+                              {"judged": 0, "arrived": 0, "contradicted": 0})
+        c.update(counts)
+        c["state"] = db.cell_state(counts["judged"], counts["arrived"])
+        out.append(c)
+    return out
+
+
+@app.post("/api/components")
+def create_component(c: ComponentIn):
+    """Create a new prompt component in the store."""
+    slot = c.slot.strip()
+    if slot not in ("camera", "act", "framing"):
+        raise HTTPException(422, "slot must be camera, act, or framing")
+    manner = c.manner.strip()
+    if not manner:
+        raise HTTPException(422, "manner cannot be empty")
+    wording = c.wording.strip()
+    if not wording:
+        raise HTTPException(422, "wording cannot be empty")
+    judge_label = c.judge_label.strip()
+    if not judge_label:
+        raise HTTPException(422, "judge_label cannot be empty")
+    if judge_label == wording:
+        raise HTTPException(422, "judge_label cannot equal wording")
+
+    dup = db.one("SELECT id FROM component WHERE slot=? AND manner=? AND wording=?", slot, manner, wording)
+    if dup:
+        raise HTTPException(422, f"Component already exists for slot {slot!r}, manner {manner!r}, and wording {wording!r}")
+
+    comp_id = db.run(
+        "INSERT INTO component (concept_key, slot, manner, family, faces, wording, judge_label, cameras, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        c.concept_key.strip(), slot, manner, c.family.strip(), c.faces.strip(), wording, judge_label,
+        _cameras_text(c.cameras), db.now(),
+    )
+    return _component_out(db.one("SELECT * FROM component WHERE id=?", comp_id))
+
+
+@app.patch("/api/components/{comp_id}")
+def update_component(comp_id: int, p: ComponentPatch):
+    """Update editable fields on a component."""
+    existing = db.one("SELECT * FROM component WHERE id=?", comp_id)
+    if not existing:
+        raise HTTPException(404, "component not found")
+
+    concept_key = p.concept_key.strip() if p.concept_key is not None else existing["concept_key"]
+    slot = p.slot.strip() if p.slot is not None else existing["slot"]
+    manner = p.manner.strip() if p.manner is not None else existing["manner"]
+    family = p.family.strip() if p.family is not None else existing["family"]
+    faces = p.faces.strip() if p.faces is not None else existing["faces"]
+    wording = p.wording.strip() if p.wording is not None else existing["wording"]
+    judge_label = p.judge_label.strip() if p.judge_label is not None else existing["judge_label"]
+    cameras = _cameras_text(p.cameras) if p.cameras is not None else (existing["cameras"] or "")
+
+    if slot not in ("camera", "act", "framing"):
+        raise HTTPException(422, "slot must be camera, act, or framing")
+    if not manner:
+        raise HTTPException(422, "manner cannot be empty")
+    if not wording:
+        raise HTTPException(422, "wording cannot be empty")
+    if not judge_label:
+        raise HTTPException(422, "judge_label cannot be empty")
+    if judge_label == wording:
+        raise HTTPException(422, "judge_label cannot equal wording")
+
+    dup = db.one(
+        "SELECT id FROM component WHERE slot=? AND manner=? AND wording=? AND id <> ?",
+        slot, manner, wording, comp_id,
+    )
+    if dup:
+        raise HTTPException(422, f"Component already exists for slot {slot!r}, manner {manner!r}, and wording {wording!r}")
+
+    db.run(
+        "UPDATE component SET concept_key=?, slot=?, manner=?, family=?, faces=?, wording=?, "
+        "judge_label=?, cameras=? WHERE id=?",
+        concept_key, slot, manner, family, faces, wording, judge_label, cameras, comp_id,
+    )
+    return _component_out(db.one("SELECT * FROM component WHERE id=?", comp_id))
+
+
+@app.post("/api/components/{comp_id}/retire")
+def retire_component(comp_id: int):
+    """Retire a component so it is hidden from composition without breaking historic evidence."""
+    existing = db.one("SELECT * FROM component WHERE id=?", comp_id)
+    if not existing:
+        raise HTTPException(404, "component not found")
+    db.run("UPDATE component SET retired_at=? WHERE id=?", db.now(), comp_id)
+    return _component_out(db.one("SELECT * FROM component WHERE id=?", comp_id))
+
+
+@app.post("/api/components/{comp_id}/restore")
+def restore_component(comp_id: int):
+    """Restore a retired component."""
+    existing = db.one("SELECT * FROM component WHERE id=?", comp_id)
+    if not existing:
+        raise HTTPException(404, "component not found")
+    db.run("UPDATE component SET retired_at=NULL WHERE id=?", comp_id)
+    return _component_out(db.one("SELECT * FROM component WHERE id=?", comp_id))
+
+
+@app.delete("/api/components/{comp_id}")
+def delete_component(comp_id: int):
+    """Delete a component only if no cell evidence or judged shots exist for it."""
+    existing = db.one("SELECT * FROM component WHERE id=?", comp_id)
+    if not existing:
+        raise HTTPException(404, "component not found")
+
+    # What the cell stores in its three `*_wording` columns is the CONCEPT KEY,
+    # not the wording text: `compose_shot_endpoint` keys the row on
+    # `c.camera["key"]`. Comparing against `component.wording` here matched
+    # nothing, ever, so this guard was dead from the day it was written and a
+    # measured component deleted with a 200. The column names are historical;
+    # the values in them are keys.
+    #
+    # Scoped to the component's own slot and manner, because a key is only
+    # unique within those: an act called `wall` and a camera called `wall`
+    # would otherwise shield each other from deletion.
+    key = existing["concept_key"]
+    slot_column = {"camera": "camera_wording",
+                   "act": "act_wording",
+                   "framing": "framing_wording"}[existing["slot"]]
+    cell_hit = db.one(
+        f"SELECT 1 FROM cell WHERE {slot_column}=? AND manner=? AND judged > 0",
+        key, existing["manner"],
+    )
+    if cell_hit:
+        raise HTTPException(
+            422,
+            "Component has cell evidence recorded against it; retire it instead of deleting.",
+        )
+
+    # The cell check above is the main one, but cells do not outlive a wipe and
+    # judged shots do: the migration that added `contradicted` emptied the
+    # table. A shot carries its trio as {"<slot>": {"concept": key, ...}}, so
+    # the concept key under this component's own slot is what identifies it.
+    # Two patterns because the JSON is written by more than one hand and only
+    # one of them uses `json.dumps` defaults (`": "` with the space). Matching
+    # the key alone, unscoped by slot, can only ever over-refuse — and a
+    # refusal is recoverable where a wrong delete is not.
+    shot_hit = db.one(
+        "SELECT 1 FROM shot WHERE verdicts <> '' "
+        "AND (components LIKE ? OR components LIKE ?)",
+        f'%"concept": "{key}"%', f'%"concept":"{key}"%',
+    )
+    if shot_hit:
+        raise HTTPException(
+            422,
+            "Component has judged shots recorded against it; retire it instead of deleting.",
+        )
+
+    db.run("DELETE FROM component WHERE id=?", comp_id)
+    return {"ok": True}
+
+
+@app.post("/api/components/import")
+def import_components(items: list[dict] | None = None):
+    """Import measured components from JSON or data/catalogue-seed.json."""
+    if items is None:
+        seed_path = ROOT / "data" / "catalogue-seed.json"
+        if not seed_path.exists():
+            raise HTTPException(404, "data/catalogue-seed.json not found")
+        items = json.loads(seed_path.read_text(encoding="utf-8"))
+
+    added = 0
+    skipped = 0
+    now_ts = db.now()
+    for item in items:
+        slot = item["slot"]
+        manner = item["manner"]
+        concept_key = item["concept_key"]
+        wording = item["wording"]
+        judge_label = item.get("judge_label", "")
+        family = item.get("family", "")
+        faces = item.get("faces", "")
+        cameras = _cameras_text(item.get("cameras"))
+
+        existing = db.one(
+            "SELECT id FROM component WHERE slot=? AND manner=? AND (concept_key=? OR wording=?)",
+            slot, manner, concept_key, wording,
+        )
+        if existing:
+            skipped += 1
+        else:
+            db.run(
+                "INSERT INTO component (concept_key, slot, manner, family, faces, wording, judge_label, cameras, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                concept_key, slot, manner, family, faces, wording, judge_label, cameras, now_ts,
+            )
+            added += 1
+    return {"added": added, "skipped": skipped}
+
+
 # ------------------------------------------------------------------ sessions
 
 @app.get("/api/sessions")
@@ -660,6 +946,34 @@ def create_session(s: SessionIn):
     # for why that matters.
     checkpoint = _resolve_session_checkpoint(
         s.workflow_id or model["workflow_id"], settings, s.checkpoint)
+
+    if s.manner and s.shots:
+        cam_count = db.one(
+            "SELECT COUNT(*) AS n FROM component WHERE slot='camera' AND manner=? AND retired_at IS NULL",
+            s.manner,
+        )["n"]
+        if cam_count == 0:
+            raise HTTPException(
+                422,
+                f"session creation refused: camera catalogue is empty for manner {s.manner!r}; "
+                f"import the measured catalogue via /api/components/import or add components before creating sessions",
+            )
+        kiss_map = {"directed": "front-direct", "candid": "front-arm-length", "selfie": "front-arm-length"}
+        kiss_cam_key = kiss_map.get(s.manner, "front-direct")
+        has_kiss_cam = db.one(
+            "SELECT 1 FROM component WHERE slot='camera' AND manner=? AND concept_key=? AND retired_at IS NULL",
+            s.manner, kiss_cam_key,
+        )
+        if not has_kiss_cam:
+            is_kiss_session = any(
+                "kiss" in (shot.prompt or "").lower() or "kiss" in (shot.take or "").lower()
+                for shot in s.shots
+            ) if s.shots else False
+            if is_kiss_session:
+                raise HTTPException(
+                    422,
+                    f"session creation refused: kiss frame requires camera {kiss_cam_key!r} in catalogue for manner {s.manner!r}",
+                )
 
     sid = db.run(
         """INSERT INTO session (model_id, name, look, wardrobe, workflow_id,
@@ -963,6 +1277,19 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
             f"compose refused: session is missing {', '.join(missing)}; "
             f"set them on the session before composing",
         )
+
+    for slot_name in ("camera", "act", "framing"):
+        slot_count = db.one(
+            "SELECT COUNT(*) AS n FROM component WHERE slot=? AND manner=? AND retired_at IS NULL",
+            slot_name, session["manner"],
+        )["n"]
+        if slot_count == 0:
+            raise HTTPException(
+                422,
+                f"compose refused: {slot_name} catalogue is empty for manner {session['manner']!r}; "
+                f"import the measured catalogue via /api/components/import or add components before composing",
+            )
+
     cell = db.one(
         "SELECT judged, arrived FROM cell "
         "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
@@ -1172,7 +1499,7 @@ def _spreadable_slots(pool: set[tuple[str, str, str]]) -> set[str]:
     A slot with a single value in the pool cannot be spread over, and
     holding it to "no component twice in a run" caps every run at one
     photograph. That is not hypothetical: the compose control shipped in
-    group 8 sends one fixed framing wording (framing has no catalogue),
+    group 8 sends one fixed framing wording (one framing per manner),
     so `count=4` was refused with "framing slot has 1 drawable values,
     largest fillable is 1" and nothing was queued.
 
@@ -2078,6 +2405,17 @@ def _compose(model: dict, look: str, wardrobe: str, prompt: str) -> str:
     return _sentences(model["trigger"], model["base_positive"], look, wardrobe, prompt)
 
 
+def _slot_concept_wording_text(slot_dict: dict) -> tuple[str, str, str]:
+    concept = slot_dict.get("concept_key") or slot_dict.get("key", "")
+    if "wordings" in slot_dict and slot_dict["wordings"]:
+        wording_key = slot_dict["wordings"][0].get("key", slot_dict["wordings"][0].get("text", ""))
+        text = slot_dict["wordings"][0].get("text", wording_key)
+    else:
+        wording_key = slot_dict.get("wording") or slot_dict.get("wording_key") or slot_dict.get("key", "")
+        text = slot_dict.get("wording") or slot_dict.get("text") or wording_key
+    return concept, wording_key, text
+
+
 def compose_shot(model: dict, look: str, wardrobe: str,
                  camera: dict, act: dict, framing: dict) -> str:
     """Compose a line from drawn components, no writer request.
@@ -2096,11 +2434,10 @@ def compose_shot(model: dict, look: str, wardrobe: str,
     the writer's, and the comparison is only valid if the two produce
     the same line for the same input.
     """
-    take = _sentences(
-        camera["wordings"][0]["text"],
-        act["wordings"][0]["text"],
-        framing["wordings"][0]["text"],
-    )
+    _, _, cam_text = _slot_concept_wording_text(camera)
+    _, _, act_text = _slot_concept_wording_text(act)
+    _, _, fr_text = _slot_concept_wording_text(framing)
+    take = _sentences(cam_text, act_text, fr_text)
     return _compose(model, look, wardrobe, take)
 
 
@@ -2144,10 +2481,13 @@ def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict) -> 
     # by the trio (camera, act, framing) directly. The slot is
     # the JSON key, not a value, because the cell is the trio and
     # the slot is the part of the trio this entry names.
+    cam_c, cam_w, _ = _slot_concept_wording_text(camera)
+    act_c, act_w, _ = _slot_concept_wording_text(act)
+    fr_c, fr_w, _ = _slot_concept_wording_text(framing)
     components = json.dumps({
-        "camera":  {"concept": camera["key"],  "wording": camera["wordings"][0]["key"]},
-        "act":     {"concept": act["key"],     "wording": act["wordings"][0]["key"]},
-        "framing": {"concept": framing["key"], "wording": framing["wordings"][0]["key"]},
+        "camera":  {"concept": cam_c,  "wording": cam_w},
+        "act":     {"concept": act_c,     "wording": act_w},
+        "framing": {"concept": fr_c, "wording": fr_w},
     })
     shot_index = db.one("SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id=?", sid)["m"] + 1
     shot_id = db.run(
@@ -2638,13 +2978,20 @@ def get_judge_pass(sid: int, slot: str):
     show what the photograph was composed from, because an operator
     shown the expected answer will find it (spec.md:104-107).
 
-    The framing slot has no catalogue yet and returns 422.
+    The framing slot returns 422: it is in the store like any other
+    component, but each manner carries a single framing, and a forced
+    choice over a list of one is not a question — the judge can only
+    pick the answer. It opens when a manner has more than one framing
+    to tell apart, which is a measurement decision nobody has taken.
     """
     if slot == "framing":
+        n = db.one("SELECT COUNT(*) AS n FROM component "
+                   "WHERE slot='framing' AND retired_at IS NULL")["n"]
         raise HTTPException(
             422,
-            "judge-pass refused: framing slot has no catalogue yet; "
-            "only 'camera' and 'act' are supported",
+            "judge-pass refused: the framing catalogue holds "
+            f"{n} component(s) and a forced choice needs more than one per "
+            "manner to be a question; only 'camera' and 'act' are supported",
         )
     if slot not in ("camera", "act"):
         raise HTTPException(
@@ -2818,9 +3165,34 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # "none or cannot tell" — counted but not arrived. A wrong
     # key is the same as "" — counted but not arrived, and the
     # wrong key is preserved on the row for the operator to see.
-    answers = {slot: ans for slot, ans in
-               (("camera", j.camera), ("act", j.act), ("framing", j.framing))
-               if ans is not None}
+    defect_slot = j.slot
+    if j.defect:
+        if j.defect != "contradiction":
+            raise HTTPException(422, f"unsupported defect {j.defect!r}")
+        if defect_slot:
+            if defect_slot not in ("camera", "act", "framing"):
+                raise HTTPException(422, f"invalid slot {defect_slot!r}")
+            explicit_ans = getattr(j, defect_slot)
+            if explicit_ans:
+                raise HTTPException(422, "Cannot specify both a component choice and a defect")
+            answers = {defect_slot: ""}
+        else:
+            slots_with_ans = {s: getattr(j, s) for s in ("camera", "act", "framing") if getattr(j, s) is not None}
+            if any(v != "" for v in slots_with_ans.values()):
+                raise HTTPException(422, "Cannot specify both a component choice and a defect")
+            if not slots_with_ans:
+                raise HTTPException(422, "judge refused: slot must be specified when reporting a defect")
+            defect_slot = next(iter(slots_with_ans.keys()))
+            answers = {defect_slot: ""}
+    else:
+        answers = {slot: ans for slot, ans in
+                   (("camera", j.camera), ("act", j.act), ("framing", j.framing))
+                   if ans is not None}
+        if not answers and j.slot is not None:
+            if j.slot not in ("camera", "act", "framing"):
+                raise HTTPException(422, f"invalid slot {j.slot!r}")
+            answers = {j.slot: ""}
+
     drawn = {"camera": cam_w, "act": act_w, "framing": framing_w}
 
     if not answers:
@@ -2894,6 +3266,7 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # survive its own noise; letting three answers stand in for
     # three photographs would have retired it silently.
     judged_delta = 0 if already else 1
+    contradicted_delta = 1 if j.defect else 0
 
     # `arrived` is a property of the photograph, so it is derived
     # from ALL the answers the row now carries, not from this pass
@@ -2931,19 +3304,20 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
         # row the UPDATE would produce is legal. A plain UPDATE is
         # both correct and the smaller statement.
         db.run(
-            "UPDATE cell SET arrived = arrived + ? "
+            "UPDATE cell SET arrived = arrived + ?, contradicted = contradicted + ? "
             "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
             "AND manner=? AND checkpoint=?",
-            arrived_delta, *key,
+            arrived_delta, contradicted_delta, *key,
         )
     else:
         db.run(
             "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
-            "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "manner, checkpoint, judged, arrived, contradicted) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(camera_wording, act_wording, framing_wording, manner, checkpoint) "
             "DO UPDATE SET judged = judged + excluded.judged, "
-            "arrived = arrived + excluded.arrived",
-            *key, judged_delta, arrived_delta,
+            "arrived = arrived + excluded.arrived, "
+            "contradicted = contradicted + excluded.contradicted",
+            *key, judged_delta, arrived_delta, contradicted_delta,
         )
 
     # Record the verdicts on the row. Empty default '' is the
@@ -2955,7 +3329,10 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # MERGED with what earlier passes stored, never replaced: the row
     # accumulates one answer per slot across passes, and an
     # already-answered slot never reaches this line (the 409 above).
-    verdicts_json = json.dumps({**already, **answers})
+    merged_verdicts = {**already, **answers}
+    if j.defect:
+        merged_verdicts[f"{defect_slot}_defect"] = j.defect
+    verdicts_json = json.dumps(merged_verdicts)
     db.run("UPDATE shot SET verdicts=? WHERE id=?", verdicts_json, shot_id)
 
     # The cell's new state, derived from the new counts via
@@ -2966,7 +3343,7 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # n=10 threshold is crossed (the spec scenario
     # `An exploratory draw is recorded`).
     cell = db.one(
-        "SELECT judged, arrived FROM cell "
+        "SELECT judged, arrived, contradicted FROM cell "
         "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
         "AND manner=? AND checkpoint=?",
         cam_w, act_w, framing_w, session["manner"], session["checkpoint"],
@@ -2976,6 +3353,7 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
         "cell": (cam_w, act_w, framing_w, session["manner"], session["checkpoint"]),
         "judged": cell["judged"] if cell else judged_delta,
         "arrived": cell["arrived"] if cell else arrived_delta,
+        "contradicted": cell["contradicted"] if cell else contradicted_delta,
         "state": new_state,
     }
 

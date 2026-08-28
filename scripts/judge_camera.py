@@ -535,6 +535,22 @@ def main() -> int:
         print("no finished photographs in that session")
         return 1
 
+    dynamic_camera_asked: list[tuple[str, str]] = []
+    dynamic_arrangement_asked: list[tuple[str, str]] = []
+    try:
+        comps = get(args.base, "/api/components?all=1")
+        if isinstance(comps, list):
+            for c in comps:
+                if c.get("slot") == "camera" and c.get("family") and c.get("wording"):
+                    dynamic_camera_asked.append((c["family"].lower(), c["wording"].lower()))
+                elif c.get("slot") == "act" and c.get("family") and c.get("wording"):
+                    dynamic_arrangement_asked.append((c["family"].lower(), c["wording"].lower()))
+    except Exception:
+        pass
+
+    camera_asked = sorted(dynamic_camera_asked, key=lambda x: -len(x[1])) if dynamic_camera_asked else ASKED
+    arrangement_asked = sorted(dynamic_arrangement_asked, key=lambda x: -len(x[1])) if dynamic_arrangement_asked else ARRANGEMENT_ASKED
+
     turn = args.question == "turn"
     question, words = {
         "turn": (TURN, TURN_WORDS),
@@ -581,7 +597,7 @@ def main() -> int:
             low = " ".join(shot["prompt"].split()).lower()
             want = "yes" if any(c in low for c in DEVICE_YES) else "no"
         elif args.question == "arrangement":
-            want = asked_of(shot["prompt"], ARRANGEMENT_ASKED)
+            want = asked_of(shot["prompt"], arrangement_asked)
             # `?` back means the line carries no planted arrangement at all, which
             # is most of a shoot: skipped rather than scored against nothing.
             if want == "?":
@@ -595,7 +611,7 @@ def main() -> int:
         elif args.question == "side":
             want = asked_of(shot["prompt"], SIDE_ASKED)
         else:
-            want = asked_of(shot["prompt"])
+            want = asked_of(shot["prompt"], camera_asked)
         # A clause with no horizontal in it is not scored on the horizontal.
         if want is None:
             skipped += 1

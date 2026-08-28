@@ -1205,6 +1205,27 @@ too long for its cell is trimmed from the front — the counter at the end is th
 part that tells two variations of one take apart. Like the export, it reads the
 session's photos and writes nothing into the session folder.
 
+## Component Catalogue & Judging
+
+iDev.Gen manages prompt components across three slots (**camera**, **act**, **framing**) and three manners (**directed**, **candid**, **selfie**).
+
+### Component Catalogue (`#/catalogue`)
+The Component Catalogue lists all components with their slot, manner, prompt wording, blind viewer `judge_label`, family, and `faces` orientation (`front`, `side`, `back`, or unconstrained).
+- **Managing Components**: Add new components, edit wording or judge labels, and retire/restore them. A component with evidence against it cannot be deleted — retire it instead, which keeps it readable and out of every draw.
+- **Camera families on an act**: an `act` component carries the camera families it can be seen from, strongest first (`reverse` is `shoulder` and nothing else — 3/3 from behind her shoulder, 1/3 from the mirror and the overhead). The camera plan moves a planted arrangement onto the first of those families the manner's catalogue offers; an act with no families is left with the camera it was dealt.
+- **Evidence on the row**: each component shows `arrived N of M` with the cell state (`verified`, `dead`, `unknown`), or `not measured` when nothing has been judged against it. **Contradictions are counted apart from the other misses** — a cell that failed because the body and the camera disagree and one that failed by rendering a different component are two findings with two repairs, and one merged miss count sends you back to re-measure the same defect.
+- **Import Measured Set**: On a fresh install with an empty database, press **Import Measured Catalogue** to load the default measured components from `data/catalogue-seed.json`.
+- **Empty Catalogue Refusal**: Composing or creating a written session when the catalogue for that slot/manner is empty will return an explicit 422 refusal asking you to import or create components first.
+
+### Blind Judging (`#/judge`)
+Shots can be judged blindly on their slot execution:
+- Choices are presented using neutral `judge_label` observer descriptions, never the prompt wording.
+- **Contradiction Answer**: Press **Contradiction (body & camera disagree)** (or press `C`) when the rendered body and camera contradict each other — her feet turned away from the camera while her torso and face are turned into it, which is a photograph of no real body. It records a miss like any other and *also* increments `contradicted`, so the two failures stay apart on the catalogue screen.
+- **Camera and act only**: framing is in the store like every other component, but each manner carries a single framing, and a forced choice over one option is not a question. The judge-pass endpoint refuses `slot=framing` and says how many framings the store holds.
+
+### Cell Backups
+When database migrations update cell tracking schemas, prior cell evidence is safely backed up to `data/cell-backup-<timestamp>.json`.
+
 ## Where the files are
 
 `<data folder>/sessions/<session id>/<shot id>_<shot label>.png`. They are moved out

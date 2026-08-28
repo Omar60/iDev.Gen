@@ -85,24 +85,24 @@ export function Judge() {
   }
 
   // Submit an answer for current photo
-  const submitAnswer = useCallback(async (choiceKey) => {
+  const submitAnswer = useCallback(async (choiceKey, defect = null) => {
     if (submitting || deckIndex >= deck.length) return
     const current = deck[deckIndex]
     setSubmitting(true)
     setError(null)
 
     try {
-      const payload = {
-        [slot]: choiceKey,
-        control: current.isControl,
-      }
+      const payload = defect
+        ? { defect, slot, control: current.isControl }
+        : { [slot]: choiceKey, control: current.isControl }
       const res = await api.post(`/api/shots/${current.shot_id}/judge`, payload)
       const recorded = {
         shot_id: current.shot_id,
         control: current.isControl,
         agreed: res.agreed,
         stored: res.stored,
-        answered: res.answered,
+        answered: defect ? `defect: ${defect}` : res.answered,
+        defect: defect || null,
       }
       const nextResults = [...results, recorded]
       setResults(nextResults)
@@ -132,6 +132,12 @@ export function Judge() {
 
       if (e.key === 'Escape') {
         setInPass(false)
+        return
+      }
+
+      if (e.key === 'c' || e.key === 'C') {
+        e.preventDefault()
+        submitAnswer('', 'contradiction')
         return
       }
 
@@ -285,6 +291,29 @@ export function Judge() {
                 </button>
               )
             })}
+            <button
+              disabled={submitting}
+              onClick={() => submitAnswer('', 'contradiction')}
+              style={{
+                padding: '8px 14px',
+                fontSize: 13,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                background: 'var(--panel-2)',
+                border: '1px dashed var(--accent)',
+              }}
+            >
+              <kbd style={{
+                background: 'rgba(255,255,255,0.1)',
+                padding: '1px 5px',
+                borderRadius: 3,
+                fontSize: 11,
+                fontFamily: 'monospace',
+                color: 'var(--accent)',
+              }}>c</kbd>
+              <span>Contradiction (body & camera disagree)</span>
+            </button>
           </div>
         </div>
       </div>
@@ -333,9 +362,9 @@ export function Judge() {
             <button
               className="chip"
               disabled
-              title="The framing slot has no component catalogue yet and cannot be judged as a forced choice"
+              title="Each manner carries a single framing, and a forced choice over one option is not a question"
             >
-              Framing (no catalogue)
+              Framing (one per manner)
             </button>
           </div>
         </div>

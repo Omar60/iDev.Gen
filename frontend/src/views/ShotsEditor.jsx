@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { KINDS, REACHES, REACH, MANNERS, MANNER, ARRANGEMENTS } from '../kinds.js'
+import { KINDS, REACHES, REACH, MANNERS, MANNER, arrangements } from '../kinds.js'
 import {
   guideFor, rewriteTake, takesFromBrief, lookFromBrief, rewriteWardrobe,
   wardrobeProgression, sessionFromBrief, briefFromLook, alreadySaid, spread,
@@ -281,7 +281,7 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
             <select multiple value={poses} disabled={!!busy} size={3} style={{ width: 210 }}
                     title="Arrangements the shoot may pass through, from sessions 155 and 161. Pick none and the shoot writes its own; pick several and one lands in about every fifth photograph."
                     onChange={(e) => setPoses([...e.target.selectedOptions].map((o) => o.value))}>
-              {ARRANGEMENTS.map((a) => <option key={a.key} value={a.key}>{a.label}</option>)}
+              {arrangements(manner).map((a) => <option key={a.key} value={a.key}>{a.judge_label || a.label || a.key}</option>)}
             </select>
           )}
           <button className="icon" onClick={roll} disabled={!!busy || !(look.trim() || wardrobe.trim())}

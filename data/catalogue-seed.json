@@ -1,0 +1,448 @@
+[
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "front-direct",
+    "family": "front",
+    "faces": "front",
+    "wording": "Taken from directly in front of her",
+    "judge_label": "Front view, face and body toward the camera",
+    "verdict": "verified",
+    "sample_size": "control 3/3 in every session"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "shoulder-left",
+    "family": "shoulder",
+    "faces": "back",
+    "wording": "Taken from behind her left shoulder, her back three-quarters to the camera",
+    "judge_label": "Behind her left shoulder, her back three-quarters turned",
+    "verdict": "verified",
+    "sample_size": "3/3 session 251"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "shoulder-right",
+    "family": "shoulder",
+    "faces": "back",
+    "wording": "Taken from behind her right shoulder, her back three-quarters to the camera",
+    "judge_label": "Behind her right shoulder, her back three-quarters turned",
+    "verdict": "verified",
+    "sample_size": "3/3 session 251"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "side-right",
+    "family": "side",
+    "faces": "side",
+    "wording": "Taken from her right side, her body in full profile",
+    "judge_label": "Right side view, body in full profile",
+    "verdict": "verified",
+    "sample_size": "3/3"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "side-left",
+    "family": "side",
+    "faces": "side",
+    "wording": "Taken from her left side, her body in full profile",
+    "judge_label": "Left side view, body in full profile",
+    "verdict": "verified",
+    "sample_size": "3/3"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "behind-direct",
+    "family": "behind",
+    "faces": "back",
+    "wording": "Taken from directly behind her",
+    "judge_label": "Directly behind her, facing her back",
+    "verdict": "verified",
+    "sample_size": "3/3"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "overhead-direct",
+    "family": "overhead",
+    "faces": "",
+    "wording": "Overhead camera directly above her",
+    "judge_label": "Directly overhead looking down at her",
+    "verdict": "verified",
+    "sample_size": "4/4"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "overhead-high",
+    "family": "overhead",
+    "faces": "",
+    "wording": "High camera looking steeply down at her",
+    "judge_label": "High angle looking steeply down at her",
+    "verdict": "verified",
+    "sample_size": "3/3"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "floor-low-angle",
+    "family": "floor",
+    "faces": "front",
+    "wording": "Low-angle shot from the floor at her feet",
+    "judge_label": "Low-angle shot from the floor looking up",
+    "verdict": "verified",
+    "sample_size": "3/3"
+  },
+  {
+    "slot": "camera",
+    "manner": "candid",
+    "concept_key": "front-direct",
+    "family": "front",
+    "faces": "front",
+    "wording": "Taken from directly in front of her",
+    "judge_label": "Front view, face and body toward the camera",
+    "verdict": "verified",
+    "sample_size": "3/3 session 245"
+  },
+  {
+    "slot": "camera",
+    "manner": "candid",
+    "concept_key": "front-arm-length",
+    "family": "front",
+    "faces": "front",
+    "wording": "Phone held out at arm's length in front of her face",
+    "judge_label": "Arm's-length front view with the phone in front of her face",
+    "verdict": "verified",
+    "sample_size": "3/3 session 245"
+  },
+  {
+    "slot": "camera",
+    "manner": "candid",
+    "concept_key": "overhead-direct",
+    "family": "overhead",
+    "faces": "",
+    "wording": "Overhead camera directly above her",
+    "judge_label": "Directly overhead looking down at her",
+    "verdict": "verified",
+    "sample_size": "3/3 session 245"
+  },
+  {
+    "slot": "camera",
+    "manner": "candid",
+    "concept_key": "overhead-shelf",
+    "family": "overhead",
+    "faces": "",
+    "wording": "Phone propped on a high shelf across the room, looking down at her",
+    "judge_label": "From a high shelf across the room looking down",
+    "verdict": "verified",
+    "sample_size": "3/3 session 245"
+  },
+  {
+    "slot": "camera",
+    "manner": "candid",
+    "concept_key": "shoulder-left",
+    "family": "shoulder",
+    "faces": "back",
+    "wording": "Taken from behind her left shoulder, her back three-quarters to the camera",
+    "judge_label": "Behind her left shoulder, her back three-quarters turned",
+    "verdict": "verified",
+    "sample_size": "3/3 session 251"
+  },
+  {
+    "slot": "camera",
+    "manner": "candid",
+    "concept_key": "shoulder-right",
+    "family": "shoulder",
+    "faces": "back",
+    "wording": "Taken from behind her right shoulder, her back three-quarters to the camera",
+    "judge_label": "Behind her right shoulder, her back three-quarters turned",
+    "verdict": "verified",
+    "sample_size": "3/3 session 251"
+  },
+  {
+    "slot": "camera",
+    "manner": "candid",
+    "concept_key": "mirror-selfie",
+    "family": "mirror",
+    "faces": "",
+    "wording": "Mirror selfie, the phone up in her right hand and visible in the mirror",
+    "judge_label": "Mirror selfie with the phone visible in her hand",
+    "verdict": "verified",
+    "sample_size": "3/3 session 245"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "front-direct",
+    "family": "front",
+    "faces": "front",
+    "wording": "Taken from directly in front of her",
+    "judge_label": "Front view, face and body toward the camera",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "front-arm-length",
+    "family": "front",
+    "faces": "front",
+    "wording": "Phone held out at arm's length in front of her face",
+    "judge_label": "Arm's-length front view with the phone in front of her face",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "overhead-direct",
+    "family": "overhead",
+    "faces": "",
+    "wording": "Overhead camera directly above her",
+    "judge_label": "Directly overhead looking down at her",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "overhead-shelf",
+    "family": "overhead",
+    "faces": "",
+    "wording": "Phone propped on a high shelf across the room, looking down at her",
+    "judge_label": "From a high shelf across the room looking down",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "shoulder-left",
+    "family": "shoulder",
+    "faces": "back",
+    "wording": "Taken from behind her left shoulder, her back three-quarters to the camera",
+    "judge_label": "Behind her left shoulder, her back three-quarters turned",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "shoulder-right",
+    "family": "shoulder",
+    "faces": "back",
+    "wording": "Taken from behind her right shoulder, her back three-quarters to the camera",
+    "judge_label": "Behind her right shoulder, her back three-quarters turned",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "mirror-selfie",
+    "family": "mirror",
+    "faces": "",
+    "wording": "Mirror selfie, the phone up in her right hand and visible in the mirror",
+    "judge_label": "Mirror selfie with the phone visible in her hand",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "pov-low-chest",
+    "family": "pov",
+    "faces": "",
+    "wording": "Phone held low in her own hand at her chest, angled down along her own body",
+    "judge_label": "Looking down along her own body from chest height",
+    "verdict": "measured",
+    "sample_size": "sessions 155, 161"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "pov-above-back",
+    "family": "pov",
+    "faces": "",
+    "wording": "Phone held above her face in her own outstretched hand as she lies on her back, looking down at her",
+    "judge_label": "Held above her face looking down as she lies on her back",
+    "verdict": "measured",
+    "sample_size": "sessions 155, 161"
+  },
+  {
+    "slot": "act",
+    "manner": "directed",
+    "concept_key": "astride",
+    "family": "ontop",
+    "faces": "front",
+    "wording": "She is astride him with her knees on either side of his hips and her weight down on him, the two of them joined, two people in frame.",
+    "judge_label": "She is on top of him, facing him",
+    "verdict": "verified",
+    "sample_size": "18/22 sessions 269, 270",
+    "cameras": [
+      "front",
+      "overhead",
+      "mirror",
+      "pov"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "directed",
+    "concept_key": "reverse",
+    "family": "away",
+    "faces": "back",
+    "wording": "She is astride him facing away from him with her weight on her feet, the two of them joined, two people in frame.",
+    "judge_label": "She is on top of him, facing away from him",
+    "verdict": "verified",
+    "sample_size": "3/3 sessions 269, 270",
+    "cameras": [
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "directed",
+    "concept_key": "wall",
+    "family": "standing",
+    "faces": "front",
+    "wording": "She is standing with her front to the wall and one leg raised, he is behind her, the two of them joined, two people in frame.",
+    "judge_label": "She is standing with her front to the wall, he is behind her",
+    "verdict": "verified",
+    "sample_size": "3/3 sessions 269, 270",
+    "cameras": [
+      "mirror",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "astride",
+    "family": "ontop",
+    "faces": "front",
+    "wording": "She is astride him with her knees on either side of his hips and her weight down on him, the two of them joined, two people in frame.",
+    "judge_label": "She is on top of him, facing him",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "front",
+      "overhead",
+      "mirror",
+      "pov"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "reverse",
+    "family": "away",
+    "faces": "back",
+    "wording": "She is astride him facing away from him with her weight on her feet, the two of them joined, two people in frame.",
+    "judge_label": "She is on top of him, facing away from him",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "wall",
+    "family": "standing",
+    "faces": "front",
+    "wording": "She is standing with her front to the wall and one leg raised, he is behind her, the two of them joined, two people in frame.",
+    "judge_label": "She is standing with her front to the wall, he is behind her",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "mirror",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "astride",
+    "family": "ontop",
+    "faces": "front",
+    "wording": "She is astride him with her knees on either side of his hips and her weight down on him, the two of them joined, two people in frame.",
+    "judge_label": "She is on top of him, facing him",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "front",
+      "overhead",
+      "mirror",
+      "pov"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "reverse",
+    "family": "away",
+    "faces": "back",
+    "wording": "She is astride him facing away from him with her weight on her feet, the two of them joined, two people in frame.",
+    "judge_label": "She is on top of him, facing away from him",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "wall",
+    "family": "standing",
+    "faces": "front",
+    "wording": "She is standing with her front to the wall and one leg raised, he is behind her, the two of them joined, two people in frame.",
+    "judge_label": "She is standing with her front to the wall, he is behind her",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "mirror",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "framing",
+    "manner": "directed",
+    "concept_key": "framing",
+    "family": "three-quarter",
+    "faces": "",
+    "wording": "a three-quarter photograph from the knees up",
+    "judge_label": "Three-quarter framing from the knees up",
+    "verdict": "fixed",
+    "sample_size": "fixed framing concept"
+  },
+  {
+    "slot": "framing",
+    "manner": "candid",
+    "concept_key": "framing",
+    "family": "three-quarter",
+    "faces": "",
+    "wording": "a three-quarter photograph from the knees up",
+    "judge_label": "Three-quarter framing from the knees up",
+    "verdict": "fixed",
+    "sample_size": "fixed framing concept"
+  },
+  {
+    "slot": "framing",
+    "manner": "selfie",
+    "concept_key": "framing",
+    "family": "three-quarter",
+    "faces": "",
+    "wording": "a three-quarter photograph from the knees up",
+    "judge_label": "Three-quarter framing from the knees up",
+    "verdict": "fixed",
+    "sample_size": "fixed framing concept"
+  }
+]

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { cameraPlan, shootChunkNote, MANNER, TECHNIQUE_DEFECTS, BODY_OPENINGS,
-         BRIEF_AXES } from './kinds.js'
+         BRIEF_AXES, setCatalogue, arrangements, positionsFor,
+         fitCameras } from './kinds.js'
 import { undressBy } from './enhance.js'
 
 /** The defect plan exists to stop one subject running through the tail of a long
@@ -86,5 +87,48 @@ describe('undressBy', () => {
   test('is nothing for a shoot that keeps its clothes or never had them on', () => {
     expect(undressBy(30, 'sfw', false)).toBe(0)
     expect(undressBy(30, 'explicit', true)).toBe(0)
+  })
+})
+
+/** An arrangement's compatible camera families are the store's, not a guess
+ *  made from its `family` value.
+ *
+ *  This was an if-chain over three literal families (`ontop`, `away`,
+ *  `standing`). Every act added through the catalogue screen fell off the end
+ *  of it with an empty list, so `fitCameras` skipped the photograph and the
+ *  planted arrangement kept whatever camera the spread had dealt it — the
+ *  failure the fit exists to prevent, reintroduced for exactly the acts the
+ *  screen was built to add. */
+describe('an act carries its own camera families', () => {
+  const ROW = {
+    concept_key: 'spooning', slot: 'act', manner: 'directed', family: 'spooning',
+    faces: 'back', wording: 'They are lying on their sides, he is behind her.',
+    judge_label: 'Both lying on their sides, he is behind her',
+    cameras: ['shoulder', 'overhead'],
+  }
+  const CAMERAS = [
+    { concept_key: 'front-direct', slot: 'camera', manner: 'directed', family: 'front',
+      wording: 'Taken from directly in front of her', judge_label: 'From the front' },
+    { concept_key: 'shoulder-left', slot: 'camera', manner: 'directed', family: 'shoulder',
+      wording: 'Taken from behind her left shoulder', judge_label: 'From behind her shoulder' },
+  ]
+
+  test('a store-defined act keeps the families the row gives it', () => {
+    setCatalogue([...CAMERAS, ROW])
+    expect(arrangements('directed')[0].cameras).toEqual(['shoulder', 'overhead'])
+  })
+
+  test('and fitCameras moves its photograph onto one of them', () => {
+    setCatalogue([...CAMERAS, ROW])
+    const dealt = ['Taken from directly in front of her']
+    const out = fitCameras(dealt, { 1: arrangements('directed')[0] }, positionsFor('directed'))
+    expect(out[0]).toBe('Taken from behind her left shoulder')
+  })
+
+  test('an act with no families in the row is left where it was dealt', () => {
+    setCatalogue([...CAMERAS, { ...ROW, cameras: [] }])
+    const dealt = ['Taken from directly in front of her']
+    const out = fitCameras(dealt, { 1: arrangements('directed')[0] }, positionsFor('directed'))
+    expect(out[0]).toBe('Taken from directly in front of her')
   })
 })

@@ -3335,7 +3335,7 @@ def test_judging_a_written_shot_is_refused(client, seeded):
     # ('', '', '', '', '') — a silent injection into the
     # table. The test pins the refusal.
     n = db.one("SELECT COUNT(*) AS n FROM cell")["n"]
-    assert n == len(db.EVIDENCE_SEED), (
+    assert n == 0, (
         f"judge created a cell for a written shot: cell table has {n} rows"
     )
 
@@ -3404,7 +3404,7 @@ def test_judging_a_session_missing_manner_or_checkpoint_is_refused(client, seede
 
     # No cell was created.
     n = db.one("SELECT COUNT(*) AS n FROM cell")["n"]
-    assert n == len(db.EVIDENCE_SEED), (
+    assert n == 0, (
         f"judge on a session missing dimensions created a cell: {n} rows"
     )
 
@@ -3488,7 +3488,7 @@ def test_judging_with_no_answers_is_refused(client, seeded):
     # UPSERT, and a 200 with no work is the silent
     # no-op this test refuses.
     n = db.one("SELECT COUNT(*) AS n FROM cell")["n"]
-    assert n == len(db.EVIDENCE_SEED), (
+    assert n == 0, (
         f"empty pass created a cell: cell table has {n} rows"
     )
 
@@ -3825,7 +3825,11 @@ def test_judge_pass_excludes_written_rejected_and_non_done_shots(client, seeded)
 
 
 def test_judge_pass_refuses_framing_and_invalid_slots(client, seeded):
-    """The framing slot has no catalogue yet and returns 422.
+    """The framing slot returns 422, and the refusal says why.
+
+    It used to say "no catalogue yet", which stopped being true when framing
+    moved into the component store: there IS a catalogue, it holds one framing
+    per manner, and a forced choice over a list of one is not a question.
     Unknown slots return 422. Nonexistent session returns 404.
     """
     sid = client.post("/api/sessions", json={
@@ -3836,7 +3840,11 @@ def test_judge_pass_refuses_framing_and_invalid_slots(client, seeded):
     # framing slot refusal
     r_frame = client.get(f"/api/sessions/{sid}/judge-pass?slot=framing")
     assert r_frame.status_code == 422
-    assert "framing slot has no catalogue yet" in r_frame.json()["detail"]
+    detail = r_frame.json()["detail"]
+    assert "forced choice needs more than one per manner" in detail
+    # The message counts what is actually in the store rather than asserting
+    # the catalogue is empty.
+    assert "no catalogue" not in detail
 
     # invalid slot
     r_inv = client.get(f"/api/sessions/{sid}/judge-pass?slot=nonexistent")

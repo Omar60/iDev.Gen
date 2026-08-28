@@ -1,7 +1,13 @@
-import { describe, it, expect } from 'vitest'
+import { beforeEach, describe, it, expect } from 'vitest'
+import { setCatalogue } from './kinds.js'
 import { slotChoices, buildJudgeDeck, computeAgreement } from './judge.js'
+import seedCatalogue from '../../data/catalogue-seed.json'
 
 describe('slotChoices', () => {
+  beforeEach(() => {
+    setCatalogue(seedCatalogue)
+  })
+
   it('returns camera positions with "None or cannot tell" as the final choice', () => {
     const choices = slotChoices('camera', 'directed')
     expect(choices.length).toBeGreaterThan(1)
@@ -15,6 +21,22 @@ describe('slotChoices', () => {
       expect(c.key).toBeTruthy()
       expect(c.label).toBeTruthy()
       expect(c.text).toBeTruthy()
+    }
+  })
+
+  it('points slotChoices at judge_label and never prompt wording', () => {
+    for (const manner of ['directed', 'candid', 'selfie']) {
+      for (const slot of ['camera', 'act', 'framing']) {
+        const choices = slotChoices(slot, manner)
+        for (const c of choices.slice(0, -1)) {
+          const comp = seedCatalogue.find((x) => x.concept_key === c.key && x.slot === slot && x.manner === manner)
+          if (comp) {
+            expect(c.label).toBe(comp.judge_label)
+            expect(c.text).toBe(comp.judge_label)
+            expect(c.label).not.toBe(comp.wording)
+          }
+        }
+      }
     }
   })
 
@@ -35,8 +57,9 @@ describe('slotChoices', () => {
     expect(keys[keys.length - 1]).toBe('')
   })
 
-  it('returns an empty array for framing because framing has no catalogue', () => {
-    expect(slotChoices('framing')).toEqual([])
+  it('returns framing choices when catalogue has framings', () => {
+    const choices = slotChoices('framing', 'directed')
+    expect(choices.length).toBeGreaterThan(1)
   })
 
   it('returns an empty array for unknown slots', () => {

@@ -21,46 +21,25 @@
 // the knees up` — and the constant lives in this file so the control on
 // the screen can say "framing is fixed" without re-deriving the value.
 
-import { POSITIONS, ARRANGEMENTS } from './kinds.js'
-
-/** The single framing wording the composer carries per shot, mirroring
- *  `scripts/shoot_arrangements.py:_FRAMING_CONCEPT`. A concept with one
- *  wording; the `key` is the slot-stable name the composer reads
- *  (`backend/main.py:compose_shot` reads `wordings[0]["text"]`). */
-const FRAMING_CONCEPT = {
-  key: 'framing',
-  wordings: [{ key: 'framing', text: 'a three-quarter photograph from the knees up' }],
-}
+import { positionsFor, arrangements, framings } from './kinds.js'
 
 /** The candidate pool for a session's manner, in the shape
  *  `ComposeRunIn.candidates` (`backend/main.py:ComposeRunIn`).
  *
- *  Cameras come from `POSITIONS[manner]` — the catalogue slice the spec
- *  scenario names — and the act list is the shared `ARRANGEMENTS`. The
- *  framing is a single fixed concept, not a list, so the screen has nothing
- *  to choose for it.
- *
- *  `manner` is the session's stored value: `directed`, `candid` or
- *  `selfie`. An unknown manner falls back to `POSITIONS.directed` (the
- *  same fallback `kissCameraFor` already uses), so a session that was
- *  created before the catalogue slice for its manner existed still gets a
- *  non-empty pool and the refusal is the lack of a verified cell, not
- *  the lack of a candidate.
+ *  Cameras, acts, and framings come from the component catalogue.
  */
-export function candidatePool(manner) {
-  const cameras = (POSITIONS[manner] || POSITIONS.directed).slice()
-  const acts = ARRANGEMENTS.slice()
+export function candidatePool(manner = 'directed') {
   return {
-    camera: cameras,
-    act: acts,
-    framing: [FRAMING_CONCEPT],
+    camera: positionsFor(manner),
+    act: arrangements(manner),
+    framing: framings(manner),
   }
 }
 
-/** The single framing concept the compose control exposes, in case the
+/** The single framing concept wording the compose control exposes, in case the
  *  view wants to say what it is. Exported as a constant so the control
  *  shows the wording the composer will use, not a paraphrase. */
-export const FRAMING_WORDING = FRAMING_CONCEPT.wordings[0].text
+export const FRAMING_WORDING = 'a three-quarter photograph from the knees up'
 
 
 /** The count the control opens on: the smallest slot the no-repeat rule
