@@ -1,56 +1,17 @@
-import { positionsFor, arrangements, framings } from './kinds.js'
-
-/** Resolve the forced-choice list for a given slot and session manner.
+/** Resolve the forced-choice list from the pass readings.
  *
- *  The catalogue lives in the component store. Labels are viewer descriptions
- *  (judge_label), NEVER prompt wordings.
- *
- *  Every non-empty choice list ends with the explicit "None or cannot tell"
+ *  Labels are viewer descriptions from the reading record.
+ *  Every choice list ends with the explicit "None or cannot tell"
  *  answer (key: '').
  */
-export function slotChoices(slot, manner = 'directed', families = null) {
-  let list = []
-  if (slot === 'camera') {
-    list = positionsFor(manner)
-  } else if (slot === 'act') {
-    list = arrangements(manner)
-  } else if (slot === 'framing') {
-    list = framings(manner)
-  }
-
-  // `families`, when the pass supplies it, is the families actually
-  // photographed in the deck. Without it the choices are the whole catalogue
-  // slice for the manner — so a catalogue that grew after a shoot puts
-  // families in the question the shoot never photographed, and the judge is
-  // asked to tell apart things that are not in front of them.
-  if (families && families.length) {
-    list = list.filter((c) => families.includes(c.family || c.key))
-  }
-
-  if (list.length === 0) return []
-
-  // ONE choice per FAMILY, not per wording. A shoot that varies the WORDING
-  // inside one concept produces three labels describing the same photograph
-  // ("profile shot from the side" / "side view, camera level with torso"),
-  // and nobody looking at the frame can tell which synonym produced it — the
-  // forced choice becomes a 1-in-3 guess and `arrived` measures the guess.
-  // The family is the part that IS visible. The cell stays keyed on the
-  // wording, so the wordings are still compared against each other by the
-  // counts they land on; the backend scores a family match (`judge_shot`).
-  // A slot whose catalogue collapses to one family is a yes/no question
-  // against the "None or cannot tell" answer, which is a real question when
-  // the floor is known.
-  const byFamily = new Map()
-  for (const c of list) {
-    const family = c.family || c.key
-    if (!byFamily.has(family)) byFamily.set(family, c)
-  }
+export function slotChoices(readings = []) {
+  if (!readings || readings.length === 0) return []
 
   return [
-    ...[...byFamily.values()].map((c) => ({
-      key: c.key,
-      label: c.judge_label || c.key,
-      text: c.judge_label || c.key,
+    ...readings.map((r) => ({
+      key: r.key,
+      label: r.label || r.key,
+      text: r.label || r.key,
     })),
     { key: '', label: 'None or cannot tell', text: 'None of the above or cannot tell' },
   ]

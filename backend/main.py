@@ -270,6 +270,14 @@ class ComponentPatch(BaseModel):
     cameras: list[str] | None = None
 
 
+class ReadingIn(BaseModel):
+    slot: Literal["camera", "act", "framing"]
+    manner: str
+    key: str
+    label: str
+    session_id: int | None = None
+
+
 class JudgeShotIn(BaseModel):
     """One judging pass's answer for one shot, per slot.
 
@@ -835,6 +843,138 @@ def import_components(items: list[dict] | None = None):
     return {"added": added, "skipped": skipped}
 
 
+# ------------------------------------------------------------------ readings
+
+@app.get("/api/readings")
+def list_readings(slot: str | None = None, manner: str | None = None, session_id: int | None = None):
+    """List readings from the store.
+
+    When session_id is provided, returns the union of base readings (session_id IS NULL)
+    and session readings (session_id = ?). When omitted, returns base readings only.
+    Filters by slot and manner if provided.
+    """
+    params = []
+    where = []
+    if session_id is not None:
+        where.append("(session_id IS NULL OR session_id = ?)")
+        params.append(session_id)
+    else:
+        where.append("session_id IS NULL")
+
+    if slot:
+        where.append("slot = ?")
+        params.append(slot)
+    if manner:
+        where.append("manner = ?")
+        params.append(manner)
+
+    where_clause = " WHERE " + " AND ".join(where) if where else ""
+    return db.q(f"SELECT * FROM reading{where_clause} ORDER BY slot, manner, id", *params)
+
+
+@app.post("/api/readings")
+def create_reading(r: ReadingIn):
+    """Create a new reading in the store."""
+    manner = r.manner.strip()
+    if not manner:
+        raise HTTPException(422, "manner cannot be empty")
+    key = r.key.strip()
+    if not key:
+        raise HTTPException(422, "key cannot be empty")
+    label = r.label.strip()
+    if not label:
+        raise HTTPException(422, "label cannot be empty")
+
+    slot = r.slot
+
+    if r.session_id is not None:
+        sess = db.one("SELECT id FROM session WHERE id=?", r.session_id)
+        if not sess:
+            raise HTTPException(404, "session not found")
+        # 1. Collision with base reading
+        base_dup = db.one("SELECT id FROM reading WHERE slot=? AND manner=? AND key=? AND session_id IS NULL",
+                          slot, manner, key)
+        if base_dup:
+            raise HTTPException(
+                422,
+                f"Reading key {key!r} already exists in base scope for {slot}/{manner}",
+            )
+        # 2. Collision within this session
+        sess_dup = db.one("SELECT id FROM reading WHERE slot=? AND manner=? AND key=? AND session_id=?",
+                          slot, manner, key, r.session_id)
+        if sess_dup:
+            raise HTTPException(
+                422,
+                f"Reading key {key!r} already exists for session {r.session_id}",
+            )
+    else:
+        # Base reading:
+        # 1. Collision with another base reading
+        base_dup = db.one("SELECT id FROM reading WHERE slot=? AND manner=? AND key=? AND session_id IS NULL",
+                          slot, manner, key)
+        if base_dup:
+            raise HTTPException(
+                422,
+                f"Reading key {key!r} already exists in base scope for {slot}/{manner}",
+            )
+        # 2. Collision with ANY session reading of this slot and manner (Task 1.3b)
+        sess_dup = db.one("SELECT session_id FROM reading WHERE slot=? AND manner=? AND key=? AND session_id IS NOT NULL",
+                          slot, manner, key)
+        if sess_dup:
+            raise HTTPException(
+                422,
+                f"Reading key {key!r} already exists in session {sess_dup['session_id']} for {slot}/{manner}",
+            )
+
+    reading_id = db.run(
+        "INSERT INTO reading (slot, manner, session_id, key, label, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        slot, manner, r.session_id, key, label, db.now(),
+    )
+    return db.one("SELECT * FROM reading WHERE id=?", reading_id)
+
+
+@app.delete("/api/readings/{reading_id}")
+def delete_reading(reading_id: int):
+    """Delete a reading only if no stored verdict references it."""
+    existing = db.one("SELECT * FROM reading WHERE id=?", reading_id)
+    if not existing:
+        raise HTTPException(404, "reading not found")
+
+    slot = existing["slot"]
+    key = existing["key"]
+
+    if existing["session_id"] is not None:
+        # Session reading: check shots in this session only
+        rows = db.q("SELECT verdicts FROM shot WHERE session_id=? AND verdicts <> ''", existing["session_id"])
+    else:
+        # Base reading: check shots in every session of this manner
+        rows = db.q(
+            "SELECT s.verdicts FROM shot s "
+            "JOIN session sess ON s.session_id = sess.id "
+            "WHERE sess.manner=? AND s.verdicts <> ''",
+            existing["manner"],
+        )
+
+    count = 0
+    for row in rows:
+        try:
+            verdicts = json.loads(row["verdicts"])
+            if verdicts.get(slot) == key:
+                count += 1
+        except Exception:
+            pass
+
+    if count > 0:
+        raise HTTPException(
+            422,
+            f"Reading {key!r} is referenced by {count} stored answer{'s' if count != 1 else ''}; cannot delete.",
+        )
+
+    db.run("DELETE FROM reading WHERE id=?", reading_id)
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------ sessions
 
 @app.get("/api/sessions")
@@ -1276,6 +1416,12 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
     # below would silently find zero rows, and zero rows would
     # silently read as "not verified". Refuse loudly before the
     # lookup, naming what the session is missing.
+    # The cell is keyed on (trio, manner, checkpoint). The session
+    # is the only home for the two non-trio dimensions, and a
+    # session that has neither cannot match any cell. The
+    # pre-check names what is missing rather than silently
+    # failing the cell lookup — the same shape 3.2 and 3.3
+    # already pin on their 422s.
     missing = [name for name, value in (("manner", session["manner"]),
                                         ("checkpoint", session["checkpoint"]))
                if not value]
@@ -2985,12 +3131,13 @@ def patch_shot(shot_id: int, p: ShotPatch):
 def get_judge_pass(sid: int, slot: str):
     """Photographs in this session ready for a judging pass on one slot.
 
-    Returns {"shots": [id, ...], "controls": [id, ...]} for the session.
+    Returns {"shots": [id, ...], "controls": [id, ...], "readings": [...]} for the session.
     - "shots": photographs that are done, un-rejected, composed from
       components (not '{}'), and have NO stored answer yet for this slot
       (including shots where verdicts='').
     - "controls": photographs meeting the same criteria that ALREADY have
       a stored answer for this slot.
+    - "readings": the reading union for this slot and session.
 
     Each list carries ONLY integer shot IDs — no prompt, no components,
     no wording, no reference image, and no label. The screen must not
@@ -3006,16 +3153,26 @@ def get_judge_pass(sid: int, slot: str):
     expected answer; they still measure nothing, and `judge_shot` counts
     them toward nothing.
 
-    `families` is the component families actually present among those
-    photographs, for the screen to build its forced choice from. The
-    choices came from the whole catalogue slice for the manner before,
-    so a catalogue that grew after a shoot put families in the question
-    that the shoot never photographed.
+    `readings` is the vocabulary the screen builds its forced choice
+    from: the base readings for the slot and manner plus this session's
+    own. It replaced a `families` list computed from the deck, which
+    could only ever offer the outcomes something ASKED for — a
+    photograph that came back frontal when the line asked for a side
+    view had no answer but "none or cannot tell", and the measurement
+    said the ask failed without ever saying what arrived instead.
+
+    Before serving the deck, every component family photographed in it
+    — across the unjudged shots AND the controls — must have a
+    reading. When one does not, the pass is refused at 422 naming the
+    families with none: the correct answer would not be on the list, so
+    every photograph of that family would be recorded as a miss. The
+    controls are in the check because a control re-presents a
+    photograph shot before the vocabulary existed.
 
     A slot whose catalogue is EMPTY for the session's manner returns
     422: there is nothing to offer the judge. A slot holding one
-    family is not refused — `slotChoices` offers one choice per
-    family plus "None or cannot tell", which is a yes/no question,
+    family is not refused — the screen offers one choice per
+    reading plus "None or cannot tell", which is a yes/no question,
     and it is answerable because the floor is measured. The older
     rule refused fewer than two COMPONENTS, which was the right
     refusal while the screen offered one choice per wording.
@@ -3028,17 +3185,18 @@ def get_judge_pass(sid: int, slot: str):
     session = db.one("SELECT id, manner FROM session WHERE id=?", sid)
     if not session:
         raise HTTPException(404, "session not found")
+
     # Counted for THIS session's manner, which is the unit the forced choice is
     # drawn from: the store can hold six framings across three manners and
     # still offer nothing to the operator.
     #
     # The old rule refused a slot holding fewer than two components, on the
     # grounds that a forced choice over a list of one is not a question. It is
-    # one, now that `slotChoices` offers one choice per FAMILY and not per
-    # wording: a single family plus "None or cannot tell" is a yes/no question,
-    # and it is answerable because the floor is measured (the empty prompt
-    # renders frontal 10 of 10 on this checkpoint, so "did a side view arrive?"
-    # has a real negative). Zero components is still not a question.
+    # one, now that the screen offers one choice per READING and not per
+    # wording: a single reading plus "None or cannot tell" is a yes/no
+    # question, and it is answerable because the floor is measured (the empty
+    # prompt renders frontal 10 of 10 on this checkpoint, so "did a side view
+    # arrive?" has a real negative). Zero components is still not a question.
     n = db.one("SELECT COUNT(*) AS n FROM component "
                "WHERE slot=? AND manner=? AND retired_at IS NULL",
                slot, session["manner"])["n"]
@@ -3049,6 +3207,13 @@ def get_judge_pass(sid: int, slot: str):
             f"{session['manner']!r}; there is nothing to offer the judge",
         )
 
+    readings = db.q(
+        "SELECT * FROM reading WHERE slot=? AND manner=? AND (session_id IS NULL OR session_id=?) "
+        "ORDER BY slot, manner, id",
+        slot, session["manner"], sid,
+    )
+    reading_keys = {r["key"] for r in readings}
+
     rows = db.q(
         "SELECT id, components, verdicts FROM shot "
         "WHERE session_id=? AND status='done' AND (rejected=0 OR rejected IS NULL) "
@@ -3058,13 +3223,25 @@ def get_judge_pass(sid: int, slot: str):
     shots = []
     negatives = []
     controls = []
-    families = []
+    photographed_families = set()
+
     for r in rows:
         if not r["components"] or r["components"] == "{}":
             continue
         comps = json.loads(r["components"])
-        drawn = (comps.get(slot) or {}).get("wording", "none")
+        slot_comp = comps.get(slot) or {}
+        drawn = slot_comp.get("concept") or slot_comp.get("wording", "none")
         v = json.loads(r["verdicts"]) if r["verdicts"] else {}
+
+        if drawn != "none":
+            fam_row = db.one(
+                "SELECT family FROM component WHERE concept_key=? AND manner=?",
+                drawn, session["manner"],
+            )
+            family = (fam_row["family"] if fam_row else "") or drawn
+            if family:
+                photographed_families.add(family)
+
         if v.get(slot) is not None:
             controls.append(r["id"])
         elif drawn == "none":
@@ -3074,10 +3251,14 @@ def get_judge_pass(sid: int, slot: str):
             negatives.append(r["id"])
         else:
             shots.append(r["id"])
-            family = db.one("SELECT family FROM component WHERE concept_key=? AND manner=?",
-                            drawn, session["manner"])
-            if family and family["family"] and family["family"] not in families:
-                families.append(family["family"])
+
+    missing = [f for f in sorted(photographed_families) if f not in reading_keys]
+    if missing:
+        raise HTTPException(
+            422,
+            f"judge-pass refused: no reading for family/families {', '.join(missing)} "
+            f"in {slot} catalogue for manner {session['manner']!r}; add readings before judging",
+        )
 
     # A deck of nothing but photographs that DID ask for the slot has one
     # expected answer, and an operator who notices that answers on autopilot.
@@ -3098,7 +3279,7 @@ def get_judge_pass(sid: int, slot: str):
         for shot_id in picked:
             shots.insert(rand.randrange(len(shots) + 1), shot_id)
 
-    return {"shots": shots, "controls": controls, "families": families}
+    return {"shots": shots, "controls": controls, "readings": readings}
 
 
 @app.post("/api/shots/{shot_id}/judge")
@@ -3114,6 +3295,13 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     so the row the increment lands on is fixed by the data: the
     drawn trio plus the session's two non-trio dimensions.
 
+    The answer is a READING key, not a catalogue key. A reading's key
+    is a component family, so a hit is still "the family the line
+    asked for is the family in the frame" — the change is the set of
+    answers offered, not the meaning of a hit. Answers recorded
+    before readings existed are component keys; they still reduce to
+    their family and still score the same way.
+
     The per-slot delta is what the judge's answer implies:
 
     - A non-``None`` slot the line ASKED for (its drawn wording is
@@ -3122,22 +3310,22 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
       measured against the photograph. A slot drawn as ``none``
       asked for nothing, so answering it measures nothing and
       counts nothing.
-    - A non-empty answer that equals the drawn wording also
-      increments ``arrived`` by 1. A catalogue key that matches
-      the trio is the act/camera/framing the line asked for is
-      the act/camera/framing in the frame, which is what
+    - An answer whose family is the drawn component's family also
+      increments ``arrived`` by 1. The reading the judge picked is
+      the act/camera/framing the line asked for, which is what
       ``arrived`` means.
     - An empty string ``""`` is "none or cannot tell" — the spec
       scenario `The judge cannot tell`. It counts as judged (the
       question was answered) but not arrived.
-    - A wrong catalogue key is the same as ``""``: judged+1,
+    - A reading of another family is the same as ``""``: judged+1,
       arrived unchanged. The shot was measured, the slot did not
-      arrive. The wrong key is preserved in ``shot.verdicts`` for
-      the operator to see what was picked (the spec scenario
-      `A wrong answer is kept`).
+      arrive — and the reading is preserved in ``shot.verdicts``, so
+      the row says what DID arrive and not merely that the ask
+      failed (the spec scenario `A wrong answer is kept`).
 
     The cell is keyed on the three WORDING keys, not on the
-    concept keys. ``components`` carries both per slot, and a
+    concept keys and not on the reading. ``components`` carries
+    both wording and concept per slot, and a
     future "let me add a second wording" lands here as a
     different ``wording`` value while ``concept`` stays put. The
     test that pins this distinction plants a shot whose
@@ -3206,12 +3394,6 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     if not session:
         raise HTTPException(404, "session not found")
 
-    # The cell is keyed on (trio, manner, checkpoint). The session
-    # is the only home for the two non-trio dimensions, and a
-    # session that has neither cannot match any cell. The
-    # pre-check names what is missing rather than silently
-    # failing the cell lookup — the same shape 3.2 and 3.3
-    # already pin on their 422s.
     missing = [name for name, value in (("manner", session["manner"]),
                                         ("checkpoint", session["checkpoint"]))
                if not value]
@@ -3243,11 +3425,11 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
 
     # The per-slot delta. The answers map to slots in the same
     # order the components do. A non-None answer is a counted
-    # measurement; a non-empty string that matches the drawn
-    # wording is a "the slot arrived". An empty string is
-    # "none or cannot tell" — counted but not arrived. A wrong
-    # key is the same as "" — counted but not arrived, and the
-    # wrong key is preserved on the row for the operator to see.
+    # measurement; an answer whose family is the drawn family is
+    # a "the slot arrived". An empty string is "none or cannot
+    # tell" — counted but not arrived. A reading of another
+    # family is the same — counted but not arrived, and the
+    # reading is preserved on the row as what arrived instead.
     defect_slot = j.slot
     if j.defect:
         if j.defect != "contradiction":
@@ -3277,6 +3459,16 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
             answers = {j.slot: ""}
 
     drawn = {"camera": cam_w, "act": act_w, "framing": framing_w}
+    # The cell is keyed on the wording (above); a HIT is decided on the
+    # concept's family. `drawn` and `drawn_concept` are therefore both kept:
+    # the first says which row the counts land on, the second says what the
+    # line actually asked the judge to see. A shot written before `concept`
+    # was stored falls back to its wording, which reduces to the same family
+    # for every component whose key is its family.
+    drawn_concept = {
+        slot: (comps.get(slot) or {}).get("concept") or (comps.get(slot) or {}).get("wording", "none")
+        for slot in ("camera", "act", "framing")
+    }
 
     if not answers:
         # No question was asked on this pass: every slot is
@@ -3290,6 +3482,23 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
             "judge refused: at least one slot must be answered (not None); "
             "an empty pass measures nothing",
         )
+
+    # A reading's key IS a component family, so an answer and a drawn
+    # component meet on the same ground once both are reduced. `_family_of`
+    # is the lookup for a COMPONENT key; a reading key is not a component
+    # key, so `_reduce` falls back to the value itself — which is the family,
+    # by the rule that a reading is keyed on one. The fallback is also what
+    # makes a verdict stored before readings existed still score: it is a
+    # component key, and it reduces to its family.
+    def _family_of(key: str) -> str:
+        if not key or key == "none":
+            return ""
+        row = db.one("SELECT family FROM component WHERE concept_key=? AND manner=?",
+                     key, session["manner"])
+        return (row["family"] if row else "") or ""
+
+    def _reduce(v: str) -> str:
+        return _family_of(v) or v
 
     if j.control:
         # A control photograph is re-presented to check the judge's agreement
@@ -3315,7 +3524,7 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
                 f"judge refused: control shot {shot_id} has no stored verdict for slot {slot!r}",
             )
         stored_val = already[slot]
-        agreed = bool(stored_val == answered_val)
+        agreed = bool(stored_val) and _reduce(stored_val) == _reduce(answered_val)
         return {
             "control": True,
             "slot": slot,
@@ -3364,35 +3573,28 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # from ALL the answers the row now carries, not from this pass
     # alone: the photograph arrived if every slot answered so far
     # is the one the line asked for. An empty string ("none or
-    # cannot tell") and a wrong catalogue key are both misses; the
-    # wrong key is kept on the row for the operator to read.
-    # Because a later pass can turn a hit into a miss, the delta is
-    # the difference between the two states, which is -1, 0 or +1.
-    def _family_of(key: str) -> str:
-        if not key or key == "none":
-            return ""
-        row = db.one("SELECT family FROM component WHERE concept_key=? AND manner=?",
-                     key, session["manner"])
-        return (row["family"] if row else "") or ""
-
+    # cannot tell") and a reading of another family are both misses;
+    # the reading is kept on the row for the operator to read as what
+    # arrived instead. Because a later pass can turn a hit into a miss,
+    # the delta is the difference between the two states, which is
+    # -1, 0 or +1.
     def _hit(slot: str, ans: str) -> bool:
         # A hit is the FAMILY the line asked for, not the wording key. The
         # judge sees a photograph, and a concept's wordings are synonyms:
         # three labels for one geometry make the forced choice a 1-in-3
-        # guess and `arrived` a measure of the guess, not of the line.
-        # `slotChoices` offers one choice per family for the same reason.
+        # guess and `arrived` a measure of the guess, not of the line. The
+        # screen offers one choice per reading for the same reason.
         # The cell is still keyed on the WORDING, so a wording that renders
         # and one that does not still separate — by the counts they land on.
-        # Exact-key equality stays as the first branch: it is what a
-        # component with no family (or one the store no longer holds) falls
-        # back to, and it keeps every verdict stored before this change
-        # scoring the same way.
+        # Exact-key equality stays as the first branch: it is what an answer
+        # recorded before readings existed falls back to, and it keeps every
+        # verdict stored before this change scoring the same way.
         if not ans:
             return False
-        if ans == drawn[slot]:
+        slot_comp = comps.get(slot) or {}
+        if ans == slot_comp.get("wording") or ans == slot_comp.get("concept"):
             return True
-        family = _family_of(ans)
-        return bool(family) and family == _family_of(drawn[slot])
+        return _reduce(ans) == _reduce(drawn_concept[slot])
 
     def _all_arrived(seen: dict) -> int:
         # A slot drawn as `none` asked for NOTHING, so it cannot fail. The

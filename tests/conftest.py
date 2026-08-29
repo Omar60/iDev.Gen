@@ -125,7 +125,7 @@ def client():
 
     with TestClient(main.app) as c:
         yield c
-    for table in ("shot", "session", "model", "workflow", "cell", "component"):
+    for table in ("shot", "session", "model", "workflow", "cell", "component", "reading"):
         db.run(f"DELETE FROM {table}")
 
 
@@ -157,6 +157,7 @@ def seeded(client):
     # every one of those rejections into a silently absent row.
     seed_file = ROOT / "data" / "catalogue-seed.json"
     items = json.loads(seed_file.read_text(encoding="utf-8"))
+    seen_readings = set()
     for item in items:
         db.run(
             """INSERT INTO component (concept_key, slot, manner, family, faces, wording, judge_label, created_at)
@@ -164,6 +165,14 @@ def seeded(client):
             item["concept_key"], item["slot"], item["manner"], item.get("family", ""),
             item.get("faces", ""), item["wording"], item["judge_label"], db.now(),
         )
+        fam = item.get("family", "")
+        if fam and (item["slot"], item["manner"], fam) not in seen_readings:
+            seen_readings.add((item["slot"], item["manner"], fam))
+            db.run(
+                """INSERT INTO reading (slot, manner, session_id, key, label, created_at)
+                   VALUES (?, ?, NULL, ?, ?, ?)""",
+                item["slot"], item["manner"], fam, item.get("judge_label") or fam, db.now(),
+            )
     wf = client.post("/api/workflows", json={"name": "wf", "graph": GRAPH}).json()
     model = client.post("/api/models", json={
         "name": "ada", "lora_name": "characters/ada.safetensors", "trigger": "4da woman",

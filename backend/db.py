@@ -188,6 +188,21 @@ CREATE TABLE IF NOT EXISTS cell (
            AND arrived + contradicted <= judged)
 );
 
+CREATE TABLE IF NOT EXISTS reading (
+    id         INTEGER PRIMARY KEY,
+    slot       TEXT NOT NULL CHECK (slot IN ('camera', 'act', 'framing')),
+    manner     TEXT NOT NULL,
+    session_id INTEGER REFERENCES session(id) ON DELETE CASCADE,  -- NULL = base
+    key        TEXT NOT NULL,
+    label      TEXT NOT NULL CHECK (length(trim(label)) > 0),
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS reading_base ON reading (slot, manner, key)
+    WHERE session_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS reading_session ON reading (slot, manner, session_id, key)
+    WHERE session_id IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS ix_shot_session ON shot(session_id);
 CREATE INDEX IF NOT EXISTS ix_session_model ON session(model_id);
 """
@@ -397,6 +412,26 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
             backup_file.write_text(json.dumps(existing_rows, indent=2), encoding="utf-8")
         conn.execute("DROP TABLE cell")
         conn.executescript(SCHEMA)
+
+    # Reading table: the vocabulary a judging pass offers. Created on migration
+    # if not present; starts empty.
+    reading_cols = columns("reading")
+    if not reading_cols:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS reading (
+            id         INTEGER PRIMARY KEY,
+            slot       TEXT NOT NULL CHECK (slot IN ('camera', 'act', 'framing')),
+            manner     TEXT NOT NULL,
+            session_id INTEGER REFERENCES session(id) ON DELETE CASCADE,
+            key        TEXT NOT NULL,
+            label      TEXT NOT NULL CHECK (length(trim(label)) > 0),
+            created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS reading_base ON reading (slot, manner, key)
+            WHERE session_id IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS reading_session ON reading (slot, manner, session_id, key)
+            WHERE session_id IS NOT NULL;
+        """)
 
 
 def conn() -> sqlite3.Connection:

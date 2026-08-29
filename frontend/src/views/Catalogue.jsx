@@ -27,6 +27,12 @@ export default function Catalogue() {
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState(null)
 
+  const [baseReadings, setBaseReadings] = useState([])
+  const [newReadingKey, setNewReadingKey] = useState('')
+  const [newReadingLabel, setNewReadingLabel] = useState('')
+  const [readingSaving, setReadingSaving] = useState(false)
+  const [readingError, setReadingError] = useState(null)
+
   const loadComponents = async () => {
     setLoading(true)
     setError(null)
@@ -41,9 +47,55 @@ export default function Catalogue() {
     }
   }
 
+  const loadBaseReadings = async () => {
+    setReadingError(null)
+    try {
+      const data = await api.get(`/api/readings?slot=${slotFilter}&manner=${mannerFilter}`)
+      setBaseReadings(data || [])
+    } catch (err) {
+      setReadingError(err.message || 'Failed to load readings')
+    }
+  }
+
   useEffect(() => {
     loadComponents()
   }, [])
+
+  useEffect(() => {
+    loadBaseReadings()
+  }, [slotFilter, mannerFilter])
+
+  const handleAddBaseReading = async (e) => {
+    e.preventDefault()
+    if (!newReadingKey.trim() || !newReadingLabel.trim()) return
+    setReadingSaving(true)
+    setReadingError(null)
+    try {
+      await api.post('/api/readings', {
+        slot: slotFilter,
+        manner: mannerFilter,
+        key: newReadingKey.trim(),
+        label: newReadingLabel.trim(),
+      })
+      setNewReadingKey('')
+      setNewReadingLabel('')
+      await loadBaseReadings()
+    } catch (err) {
+      setReadingError(err.message || 'Failed to add reading')
+    } finally {
+      setReadingSaving(false)
+    }
+  }
+
+  const handleDeleteBaseReading = async (readingId) => {
+    setReadingError(null)
+    try {
+      await api.delete(`/api/readings/${readingId}`)
+      await loadBaseReadings()
+    } catch (err) {
+      setReadingError(err.message || 'Failed to delete reading')
+    }
+  }
 
   const handleImport = async () => {
     setError(null)
@@ -274,6 +326,79 @@ export default function Catalogue() {
           ))}
         </div>
       )}
+
+      {/* Base Readings Management */}
+      <div className="panel" style={{ marginTop: 24, padding: 16 }}>
+        <h3 style={{ fontSize: 16, marginBottom: 6 }}>
+          Base Readings ({slotFilter} · {mannerFilter})
+        </h3>
+        <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+          The baseline vocabulary for judging passes on {slotFilter} in {mannerFilter} manner.
+        </p>
+
+        {readingError && <div className="error" style={{ marginBottom: 12 }}>{readingError}</div>}
+
+        {baseReadings.length > 0 ? (
+          <table style={{ width: '100%', marginBottom: 16, fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ width: '30%' }}>Key (family)</th>
+                <th>Label (viewer description)</th>
+                <th style={{ width: 80 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {baseReadings.map((r) => (
+                <tr key={r.id}>
+                  <td><code>{r.key}</code></td>
+                  <td>{r.label}</td>
+                  <td style={{ textAlign: 'right' }}>
+                    <button
+                      className="danger"
+                      style={{ padding: '2px 8px', fontSize: 12 }}
+                      onClick={() => handleDeleteBaseReading(r.id)}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="muted" style={{ fontSize: 12, fontStyle: 'italic', marginBottom: 16 }}>
+            No base readings defined for {slotFilter} ({mannerFilter}).
+          </p>
+        )}
+
+        <form onSubmit={handleAddBaseReading} className="row" style={{ gap: 8, alignItems: 'flex-end' }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ display: 'block', fontSize: 11, marginBottom: 2 }}>Key (family)</label>
+            <input
+              type="text"
+              placeholder="e.g. side-level"
+              value={newReadingKey}
+              onChange={(e) => setNewReadingKey(e.target.value)}
+              style={{ width: '100%', fontSize: 12 }}
+              required
+            />
+          </div>
+          <div style={{ flex: 2 }}>
+            <label style={{ display: 'block', fontSize: 11, marginBottom: 2 }}>Label (viewer description)</label>
+            <input
+              type="text"
+              placeholder="e.g. Profile shot from the side, level with torso"
+              value={newReadingLabel}
+              onChange={(e) => setNewReadingLabel(e.target.value)}
+              style={{ width: '100%', fontSize: 12 }}
+              required
+            />
+          </div>
+          <button type="submit" className="primary" disabled={readingSaving} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+            {readingSaving ? 'Adding...' : 'Add Base Reading'}
+          </button>
+        </form>
+      </div>
 
       {editing && (
         <div className="modal-backdrop" style={{

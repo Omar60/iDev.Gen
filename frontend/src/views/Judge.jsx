@@ -55,14 +55,32 @@ export function Judge() {
       .catch((err) => setError(err.message || 'Failed to load session'))
   }, [sessionId])
 
-  // The families the pass actually photographed, once a pass has been
-  // fetched. Before that the screen previews the whole catalogue slice.
-  const [passFamilies, setPassFamilies] = useState(null)
-  const choices = slotChoices(slot, session?.manner, passFamilies)
+  // All readings available for this session & manner
+  const [allReadings, setAllReadings] = useState([])
+  const [passReadings, setPassReadings] = useState([])
+  const [newReadingKey, setNewReadingKey] = useState('')
+  const [newReadingLabel, setNewReadingLabel] = useState('')
+  const [newReadingSlot, setNewReadingSlot] = useState('camera')
+  const [readingActionError, setReadingActionError] = useState(null)
 
-  // A different slot or session is a different pass, and the previous pass's
-  // families would otherwise filter the preview of the new one.
-  useEffect(() => { setPassFamilies(null) }, [slot, sessionId])
+  const loadReadings = useCallback(() => {
+    if (!sessionId || !session?.manner) {
+      setAllReadings([])
+      return
+    }
+    api.get(`/api/readings?manner=${session.manner}&session_id=${sessionId}`)
+      .then((data) => setAllReadings(data || []))
+      .catch(() => setAllReadings([]))
+  }, [sessionId, session?.manner])
+
+  useEffect(() => {
+    loadReadings()
+  }, [loadReadings])
+
+  const activeReadings = inPass
+    ? passReadings
+    : allReadings.filter((r) => r.slot === slot)
+  const choices = slotChoices(activeReadings)
 
   // Start judging pass
   const startPass = async () => {
@@ -73,7 +91,8 @@ export function Judge() {
       const passData = await api.get(`/api/sessions/${sessionId}/judge-pass?slot=${slot}`)
       const shots = passData.shots || []
       const controls = passData.controls || []
-      setPassFamilies(passData.families || null)
+      const readings = passData.readings || []
+      setPassReadings(readings)
       const newDeck = buildJudgeDeck(shots, controls)
       if (newDeck.length === 0) {
         setError(`No photographs in session #${sessionId} are waiting to be judged for ${slot}.`)
@@ -89,6 +108,36 @@ export function Judge() {
       setError(err.message || 'Failed to fetch judging pass')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleAddSessionReading = async (e) => {
+    e.preventDefault()
+    if (!sessionId || !session?.manner || !newReadingKey.trim() || !newReadingLabel.trim()) return
+    setReadingActionError(null)
+    try {
+      await api.post('/api/readings', {
+        slot: newReadingSlot,
+        manner: session.manner,
+        key: newReadingKey.trim(),
+        label: newReadingLabel.trim(),
+        session_id: parseInt(sessionId, 10),
+      })
+      setNewReadingKey('')
+      setNewReadingLabel('')
+      loadReadings()
+    } catch (err) {
+      setReadingActionError(err.message || 'Failed to add session reading')
+    }
+  }
+
+  const handleDeleteSessionReading = async (readingId) => {
+    setReadingActionError(null)
+    try {
+      await api.delete(`/api/readings/${readingId}`)
+      loadReadings()
+    } catch (err) {
+      setReadingActionError(err.message || 'Failed to delete session reading')
     }
   }
 
@@ -370,15 +419,9 @@ export function Judge() {
             <button
               className={'chip' + (slot === 'framing' ? ' on' : '')}
               onClick={() => setSlot('framing')}
-              // Disabled only when the manner has NO framing to offer. The
-              // button used to be disabled outright, on the rule that a forced
-              // choice over one option is not a question — true while the
-              // screen offered one choice per wording, and the backend gate
-              // moved with `slotChoices` to one choice per family plus
-              // "None or cannot tell", which is a yes/no question.
-              disabled={slotChoices('framing', session?.manner).length === 0}
-              title={slotChoices('framing', session?.manner).length === 0
-                ? `No framing component for manner ${session?.manner || 'none'}`
+              disabled={allReadings.filter((r) => r.slot === 'framing').length === 0}
+              title={allReadings.filter((r) => r.slot === 'framing').length === 0
+                ? `No framing readings for manner ${session?.manner || 'none'}`
                 : ''}
             >
               Framing
@@ -390,7 +433,7 @@ export function Judge() {
           <div style={{ background: 'var(--panel-2)', padding: 10, borderRadius: 6, fontSize: 13 }}>
             <div>Manner: <b>{session.manner || 'none'}</b></div>
             <div>Checkpoint: <b>{session.checkpoint || 'none'}</b></div>
-            <div>Choices available: <b>{choices.length}</b> ({choices.slice(0, 3).map(c => c.label).join(', ')}…)</div>
+            <div>Readings in this slot: <b>{choices.length > 0 ? choices.length - 1 : 0}</b> ({choices.slice(0, 3).map(c => c.label).join(', ')}…)</div>
           </div>
         )}
 
@@ -403,6 +446,92 @@ export function Judge() {
             Start Judging Pass
           </button>
         </div>
+
+        {session && (
+          <div style={{ marginTop: 24, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+            <h3 style={{ fontSize: 16, marginBottom: 8 }}>Session Readings</h3>
+            <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+              Session-scoped vocabulary additions for session #{sessionId}. These extend the base readings for this session only.
+            </p>
+
+            {readingActionError && <div className="error" style={{ marginBottom: 10 }}>{readingActionError}</div>}
+
+            {allReadings.filter((r) => r.session_id !== null).length > 0 ? (
+              <table style={{ width: '100%', marginBottom: 14, fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th>Slot</th>
+                    <th>Key</th>
+                    <th>Label</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allReadings.filter((r) => r.session_id !== null).map((r) => (
+                    <tr key={r.id}>
+                      <td>{r.slot}</td>
+                      <td><code>{r.key}</code></td>
+                      <td>{r.label}</td>
+                      <td style={{ textAlign: 'right' }}>
+                        <button
+                          className="danger"
+                          style={{ padding: '2px 8px', fontSize: 12 }}
+                          onClick={() => handleDeleteSessionReading(r.id)}
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="muted" style={{ fontSize: 12, fontStyle: 'italic', marginBottom: 14 }}>
+                No session-scoped readings yet (using base readings only).
+              </p>
+            )}
+
+            <form onSubmit={handleAddSessionReading} className="row" style={{ gap: 8, alignItems: 'flex-end' }}>
+              <div style={{ width: 110 }}>
+                <label style={{ display: 'block', fontSize: 11, marginBottom: 2 }}>Slot</label>
+                <select
+                  value={newReadingSlot}
+                  onChange={(e) => setNewReadingSlot(e.target.value)}
+                  style={{ width: '100%', fontSize: 12 }}
+                >
+                  <option value="camera">camera</option>
+                  <option value="act">act</option>
+                  <option value="framing">framing</option>
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', fontSize: 11, marginBottom: 2 }}>Key (family)</label>
+                <input
+                  type="text"
+                  placeholder="e.g. overhead"
+                  value={newReadingKey}
+                  onChange={(e) => setNewReadingKey(e.target.value)}
+                  style={{ width: '100%', fontSize: 12 }}
+                  required
+                />
+              </div>
+              <div style={{ flex: 1.5 }}>
+                <label style={{ display: 'block', fontSize: 11, marginBottom: 2 }}>Label (viewer description)</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Overhead view from above"
+                  value={newReadingLabel}
+                  onChange={(e) => setNewReadingLabel(e.target.value)}
+                  style={{ width: '100%', fontSize: 12 }}
+                  required
+                />
+              </div>
+              <button type="submit" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                Add Session Reading
+              </button>
+            </form>
+          </div>
+        )}
       </div>
     </div>
   )

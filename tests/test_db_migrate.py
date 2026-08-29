@@ -54,3 +54,50 @@ def test_the_origin_backfill_runs_on_a_database_that_predates_the_column(tmp_pat
            for n, s in sids.items()}
     assert got == {"written": "written", "composed": "composed",
                    "mixed": "mixed", "draft": ""}, got
+
+
+def test_reading_table_created_on_migration_of_older_database(tmp_path):
+    """Task 1.1: opening a database created before the reading table
+    finds the reading table created empty, with partial unique indexes,
+    and sessions and shots untouched.
+    """
+    p = Path(tmp_path) / "pre_reading.db"
+    conn = db.connect(p)
+    # Plant a session and shot
+    conn.execute("INSERT INTO model (name, trigger, created_at) VALUES ('m', 't', 'now')")
+    mid = conn.execute("SELECT id FROM model").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO session (model_id, name, manner, checkpoint, created_at) VALUES (?, 'sess', 'directed', 'ckpt', 'now')",
+        (mid,),
+    )
+    sid = conn.execute("SELECT id FROM session").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO shot (session_id, prompt, components, created_at) VALUES (?, 'a prompt', '{}', 'now')",
+        (sid,),
+    )
+    # Simulate older DB without reading table
+    conn.execute("DROP TABLE reading")
+    conn.commit()
+    conn.close()
+
+    # Re-open through db.connect (which runs SCHEMA and _migrate)
+    conn2 = db.connect(p)
+
+    # reading table exists and is empty
+    count = conn2.execute("SELECT COUNT(*) AS c FROM reading").fetchone()["c"]
+    assert count == 0
+
+    # Sessions and shots are intact
+    sess = conn2.execute("SELECT name, manner, checkpoint FROM session WHERE id=?", (sid,)).fetchone()
+    assert sess["name"] == "sess"
+    assert sess["manner"] == "directed"
+    assert sess["checkpoint"] == "ckpt"
+
+    shot = conn2.execute("SELECT prompt FROM shot WHERE session_id=?", (sid,)).fetchone()
+    assert shot["prompt"] == "a prompt"
+
+    # Partial unique indexes exist
+    indexes = {r["name"] for r in conn2.execute("PRAGMA index_list(reading)").fetchall()}
+    assert "reading_base" in indexes
+    assert "reading_session" in indexes
+

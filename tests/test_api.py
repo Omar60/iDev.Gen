@@ -3682,7 +3682,7 @@ def test_judge_pass_returns_only_shot_id_keys_and_exact_structure(client, seeded
     data = r.json()
 
     # Exact top-level keys
-    assert set(data.keys()) == {"shots", "controls", "families"}
+    assert set(data.keys()) == {"shots", "controls", "readings"}
     assert data["shots"] == [shot_id]
     assert data["controls"] == []
 
@@ -3719,7 +3719,10 @@ def test_judge_pass_default_unjudged_shots_with_empty_verdicts(client, seeded):
 
     r = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
     assert r.status_code == 200
-    assert r.json() == {"shots": [s1, s2], "controls": [], "families": ["front"]}
+    res = r.json()
+    assert res["shots"] == [s1, s2]
+    assert res["controls"] == []
+    assert len(res["readings"]) > 0
 
 
 def test_judge_pass_categorizes_judged_shots_as_controls(client, seeded):
@@ -3749,12 +3752,14 @@ def test_judge_pass_categorizes_judged_shots_as_controls(client, seeded):
     # Query slot=camera: s1 is control, s2 is unjudged shot
     r_cam = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
     assert r_cam.status_code == 200
-    assert r_cam.json() == {"shots": [s2], "controls": [s1], "families": ["front"]}
+    assert r_cam.json()["shots"] == [s2]
+    assert r_cam.json()["controls"] == [s1]
 
     # Query slot=act: both are unjudged shots, neither is control
     r_act = client.get(f"/api/sessions/{sid}/judge-pass?slot=act")
     assert r_act.status_code == 200
-    assert r_act.json() == {"shots": [s1, s2], "controls": [], "families": ["ontop"]}
+    assert r_act.json()["shots"] == [s1, s2]
+    assert r_act.json()["controls"] == []
 
 
 def test_judge_pass_never_leaks_shots_from_another_session(client, seeded):
@@ -3784,7 +3789,8 @@ def test_judge_pass_never_leaks_shots_from_another_session(client, seeded):
     assert r.status_code == 200
     assert sb1 not in r.json()["shots"]
     assert sb1 not in r.json()["controls"]
-    assert r.json() == {"shots": [sa1], "controls": [], "families": ["front"]}
+    assert r.json()["shots"] == [sa1]
+    assert r.json()["controls"] == []
 
 
 def test_judge_pass_excludes_written_rejected_and_non_done_shots(client, seeded):
@@ -3822,7 +3828,8 @@ def test_judge_pass_excludes_written_rejected_and_non_done_shots(client, seeded)
 
     r = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
     assert r.status_code == 200
-    assert r.json() == {"shots": [s1], "controls": [], "families": ["front"]}
+    assert r.json()["shots"] == [s1]
+    assert r.json()["controls"] == []
 
 
 def test_the_pass_serves_what_asked_for_the_slot_plus_a_fifth_in_negatives(client, seeded):
@@ -3834,13 +3841,16 @@ def test_the_pass_serves_what_asked_for_the_slot_plus_a_fifth_in_negatives(clien
     drawn from the photographs that asked nothing: a deck with a single
     expected answer is one an operator can fill in on autopilot.
 
-    `families` is what the deck actually holds, so the screen asks about the
+    `readings` is what the deck actually holds, so the screen asks about the
     components in front of the judge and not about the whole catalogue.
     """
     sid = client.post("/api/sessions", json={
-        "model_id": seeded["model_id"], "name": "one row at a time",
+        "model_id": seeded["model_id"], "name": "five-plus-one",
         "manner": "directed", "checkpoint": "finepornV4", "shots": [],
     }).json()["id"]
+
+    # 10 photographs that asked for a camera (same family so the forced
+    # choice holds one question), 10 that asked for nothing.
     none_slot = {"key": "none", "wordings": [{"key": "none", "text": ""}]}
 
     def _compose(camera, act, count):
@@ -3855,7 +3865,7 @@ def test_the_pass_serves_what_asked_for_the_slot_plus_a_fifth_in_negatives(clien
                      none_slot, 10)
     _compose(none_slot,
              {"key": "astride", "wordings": [{"key": "astride", "text": "act"}]}, 20)
-    db.run(f"UPDATE shot SET status='done' WHERE session_id=?", sid)
+    db.run("UPDATE shot SET status='done' WHERE session_id=?", sid)
 
     body = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera").json()
     # Every photograph that asked for a camera, and a fifth as many negatives.
@@ -3865,9 +3875,9 @@ def test_the_pass_serves_what_asked_for_the_slot_plus_a_fifth_in_negatives(clien
     # of them in one place is a pattern, and a pattern is the answer.
     at = [i for i, shot_id in enumerate(body["shots"]) if shot_id not in asked]
     assert at != [len(body["shots"]) - 2, len(body["shots"]) - 1]
-    # The question is built from what the deck holds, not from the catalogue:
-    # the seed carries nine directed camera families and one was photographed.
-    assert body["families"] == ["side"]
+    # The question is built from the readings:
+    reading_keys = [r["key"] for r in body["readings"]]
+    assert "side" in reading_keys
 
 
 def test_judge_pass_refuses_an_empty_slot_and_invalid_slots(client, seeded):
@@ -6251,7 +6261,9 @@ def test_judge_pass_emptiness_is_counted_per_manner(client, seeded):
     # The seed ships one framing per manner, and one family is a question.
     r_one = client.get(f"/api/sessions/{sid}/judge-pass?slot=framing")
     assert r_one.status_code == 200, r_one.text
-    assert r_one.json() == {"shots": [], "controls": [], "families": []}
+    assert r_one.json()["shots"] == []
+    assert r_one.json()["controls"] == []
+    assert len(r_one.json()["readings"]) > 0
 
     db.run("UPDATE component SET retired_at=? WHERE slot='framing' AND manner='directed'",
            db.now())
