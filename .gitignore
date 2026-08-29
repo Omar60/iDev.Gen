@@ -25,6 +25,7 @@ data/*
 !data/selfie-cameras-seed.json
 !data/candid-selfie-acts-seed.json
 !data/upright-act-seed.json
+!data/head-act-seed.json
 !data/camera-candidates-seed.json
 
 # Written for pasting into an outside assistant, not part of the app

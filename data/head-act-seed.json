@@ -1,0 +1,8 @@
+[
+  {"slot": "act", "manner": "directed", "concept_key": "head-only-facing", "family": "facing-camera",
+   "faces": "front",
+   "wording": "One young woman turns her face to the camera, her chin lifted, her lips together and her eyes on the lens",
+   "judge_label": "her face is turned to the camera, chin up, eyes on the lens",
+   "verdict": "UNMEASURED as a pose",
+   "sample_size": "written to name nothing below her head, so headshot and close-up have something to be drawn against; every other act names her chest or lower and refuses both"}
+]
