@@ -19,7 +19,12 @@
 - [ ] 3.1 Score a hit as "the reading picked is the family the line asked for", keeping the existing exact-key and family branches ahead of nothing, and verify with a test that an answer stored as a component key before this change still scores as it did
 - [ ] 3.2 Verify with a test that a reading that is not the family asked for counts as judged and not arrived, and that the reading key stays readable on `shot.verdicts` as what was seen
 - [ ] 3.3 Verify with a test that a slot the line asked nothing of counts toward no cell whatever reading is picked (the rule task 2 of the previous session added, re-asserted against the reading vocabulary)
-- [ ] 3.4 Compare a CONTROL answer through the same reduction `_hit` uses instead of by string equality, and verify with a test that a verdict stored as a component key agrees with the reading key of the same family. A control is a photograph already answered, re-presented to measure the judge against themselves; its stored answer is in the old vocabulary and the new answer is a reading, so `stored == answered` reports a disagreement for a judge who saw exactly the same thing. Session 308 carries 41 stored framing answers, which are the controls of its first pass under the new vocabulary: without this the agreement rate reads 0% for a perfect judge, on the very pass task 6.2 runs
+- [ ] 3.4 Compare a CONTROL answer through the same reduction `_hit` uses instead of by string equality, and verify with a test that a verdict stored as a component key agrees with the reading key of the same family. A control is a photograph already answered, re-presented to measure the judge against themselves; its stored answer is in the old vocabulary and the new answer is a reading, so `stored == answered` reports a disagreement for a judge who saw exactly the same thing. Session 308 carries 41 stored framing answers, which are the controls of its first pass under the new vocabulary: without this the agreement rate reads 0% for a perfect judge, on the very pass task 6.2 runs. Two notes on the shape: `_family_of` is defined
+  BELOW the control branch's `return` in `judge_shot` today and has to move above it, and the reduction is
+  one line rather than a truth table — `_reduce(v) = _family_of(v) or v`, then
+  `agreed = bool(stored_val) and _reduce(stored_val) == _reduce(answered_val)`. The
+  leading `bool(stored_val)` is the part a chain of or-ed equalities loses: two
+  "cannot tell" answers agree on nothing, and session 308 carries 11 of them
 
 ## 4. The screens
 
@@ -37,5 +42,5 @@
 
 ## 6. First use
 
-- [ ] 6.1 Write the base readings for `camera`, `act` and `framing` under `directed` for the current bench — labels written by LOOKING at the photographs, never copied from a component's `judge_label` (the test fixture may seed them that way to keep older tests running; the real set must not, because a label taken from the component is the contamination the reading vocabulary exists to remove) — including `front` for the camera slot, which the measured floor produces with an empty prompt — and verify the framing pass on session 308 opens with them
+- [ ] 6.1 Write the base readings for `camera`, `act` and `framing` under `directed` for the current bench — labels written by LOOKING at the photographs, never copied from a component's `judge_label` (the test fixture may seed them that way to keep older tests running; the real set must not, because a label taken from the component is the contamination the reading vocabulary exists to remove). The list must cover every family ALREADY photographed in the session or the pre-check refuses every pass, including the two already judged: `side-level` and `front` for camera, `forward-bend` for act, and `head-to-knees`, `chest-to-shins` and `waist-up` for framing — including `front` for the camera slot, which the measured floor produces with an empty prompt — and verify the framing pass on session 308 opens with them
 - [ ] 6.2 Judge the framing row of session 308 under the new vocabulary and verify each cell reaches its threshold with a recorded reading on every photograph
