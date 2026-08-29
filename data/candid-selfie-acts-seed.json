@@ -1,0 +1,116 @@
+[
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "astride",
+    "family": "ontop",
+    "faces": "front",
+    "wording": "She is astride him with her knees on either side of his hips and her weight down on him, the two of them joined, two people in frame.",
+    "judge_label": "She is on top of him, facing him",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "front",
+      "overhead",
+      "mirror",
+      "pov"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "reverse",
+    "family": "away",
+    "faces": "back",
+    "wording": "She is astride him facing away from him with her weight on her feet, the two of them joined, two people in frame.",
+    "judge_label": "She is on top of him, facing away from him",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "wall",
+    "family": "standing",
+    "faces": "front",
+    "wording": "She is standing with her front to the wall and one leg raised, he is behind her, the two of them joined, two people in frame.",
+    "judge_label": "She is standing with her front to the wall, he is behind her",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "mirror",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "astride",
+    "family": "ontop",
+    "faces": "front",
+    "wording": "She is astride him with her knees on either side of his hips and her weight down on him, the two of them joined, two people in frame.",
+    "judge_label": "She is on top of him, facing him",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "front",
+      "overhead",
+      "mirror",
+      "pov"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "reverse",
+    "family": "away",
+    "faces": "back",
+    "wording": "She is astride him facing away from him with her weight on her feet, the two of them joined, two people in frame.",
+    "judge_label": "She is on top of him, facing away from him",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "wall",
+    "family": "standing",
+    "faces": "front",
+    "wording": "She is standing with her front to the wall and one leg raised, he is behind her, the two of them joined, two people in frame.",
+    "judge_label": "She is standing with her front to the wall, he is behind her",
+    "verdict": "verified",
+    "sample_size": "shared arrangement",
+    "cameras": [
+      "mirror",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "framing",
+    "manner": "candid",
+    "concept_key": "framing",
+    "family": "three-quarter",
+    "faces": "",
+    "wording": "a three-quarter photograph from the knees up",
+    "judge_label": "Three-quarter framing from the knees up",
+    "verdict": "fixed",
+    "sample_size": "fixed framing concept"
+  },
+  {
+    "slot": "framing",
+    "manner": "selfie",
+    "concept_key": "framing",
+    "family": "three-quarter",
+    "faces": "",
+    "wording": "a three-quarter photograph from the knees up",
+    "judge_label": "Three-quarter framing from the knees up",
+    "verdict": "fixed",
+    "sample_size": "fixed framing concept"
+  }
+]
