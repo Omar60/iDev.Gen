@@ -19,6 +19,7 @@
 - [ ] 3.1 Score a hit as "the reading picked is the family the line asked for", keeping the existing exact-key and family branches ahead of nothing, and verify with a test that an answer stored as a component key before this change still scores as it did
 - [ ] 3.2 Verify with a test that a reading that is not the family asked for counts as judged and not arrived, and that the reading key stays readable on `shot.verdicts` as what was seen
 - [ ] 3.3 Verify with a test that a slot the line asked nothing of counts toward no cell whatever reading is picked (the rule task 2 of the previous session added, re-asserted against the reading vocabulary)
+- [ ] 3.4 Compare a CONTROL answer through the same reduction `_hit` uses instead of by string equality, and verify with a test that a verdict stored as a component key agrees with the reading key of the same family. A control is a photograph already answered, re-presented to measure the judge against themselves; its stored answer is in the old vocabulary and the new answer is a reading, so `stored == answered` reports a disagreement for a judge who saw exactly the same thing. Session 308 carries 41 stored framing answers, which are the controls of its first pass under the new vocabulary: without this the agreement rate reads 0% for a perfect judge, on the very pass task 6.2 runs
 
 ## 4. The screens
 

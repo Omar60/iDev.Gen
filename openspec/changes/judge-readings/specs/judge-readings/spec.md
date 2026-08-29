@@ -122,6 +122,27 @@ was seen instead.
 - **WHEN** a photograph's line asked for no component in the slot being judged
 - **THEN** answering that slot counts toward no cell, whatever reading is picked
 
+### Requirement: Agreement is measured across vocabularies
+
+A control photograph is one already answered, re-presented so the judge can be
+measured against themselves. The system SHALL decide agreement on whether the
+stored answer and the new answer name the same component family, not on whether
+the two strings are equal, so that an answer recorded before readings existed
+agrees with the reading of the same family.
+
+#### Scenario: A control answered before readings existed
+
+- **WHEN** a control's stored answer is a component key and the judge answers
+  with the reading whose key is that component's family
+- **THEN** the two agree, and neither the stored verdict nor any cell count
+  changes
+
+#### Scenario: A control answered with a different reading
+
+- **WHEN** a control's stored answer and the new answer name different families
+- **THEN** they disagree, and neither the stored verdict nor any cell count
+  changes
+
 ### Requirement: Readings are managed from the app
 
 The operator SHALL be able to list, add and remove readings for a slot and
