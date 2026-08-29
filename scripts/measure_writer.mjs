@@ -27,6 +27,7 @@
  *  `poses` is a comma-separated list of `ARRANGEMENTS` keys, or `-` for none.
  */
 import { shootLines } from '../frontend/src/enhance.js'
+import { setCatalogue } from '../frontend/src/kinds.js'
 
 const [, , nArg, mannerArg, reachArg, posesArg, baseArg] = process.argv
 const n = Number(nArg || 25)
@@ -44,6 +45,14 @@ const BASE = baseArg || 'http://127.0.0.1:8777'
 // `api` posts to a relative path, which has no meaning outside a browser.
 const real = globalThis.fetch
 globalThis.fetch = (p, o) => real(typeof p === 'string' && p.startsWith('/') ? BASE + p : p, o)
+
+// The catalogue, loaded the way the app loads it. Without this the writer is
+// dealt NO camera and NO framing - `positionsFor` returns an empty pool and every
+// plan that rides on it is skipped - so the harness measures a shoot the app does
+// not write. It cost a run to find: ten lines of twelve picked their own framing
+// under an arrangement that deals it.
+const catalogue = await real(`${BASE}/api/components?all=1`).then((r) => r.json())
+setCatalogue(catalogue || [])
 
 // One fixed session, so two arms differ by the instruction and nothing else. The
 // look names no hair colour on purpose: naming one overrides the LoRA.
