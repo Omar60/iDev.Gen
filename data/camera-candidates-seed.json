@@ -1,0 +1,46 @@
+[
+  {"slot": "camera", "manner": "directed", "concept_key": "cand-fisheye", "family": "lens",
+   "faces": "", "wording": "fisheye lens, the room curving away at the edges",
+   "judge_label": "the picture bulges outward, straight lines bent at the edges",
+   "verdict": "UNMEASURED candidate", "sample_size": "the seven lens rows moved the crop on nothing (session 317), but a fisheye is a distortion and not a focal length - it is the one lens word with a visible claim"},
+
+  {"slot": "camera", "manner": "directed", "concept_key": "cand-foreshortening", "family": "geometry",
+   "faces": "", "wording": "strong foreshortening, the nearest part of her large and the rest falling away",
+   "judge_label": "one part of her is much larger than the rest, exaggerated by the angle",
+   "verdict": "UNMEASURED candidate", "sample_size": "names a body geometry rather than a viewpoint, so it belongs to the hierarchy objects > camera > body geometry - the weakest rung"},
+
+  {"slot": "camera", "manner": "directed", "concept_key": "cand-vanishing-point", "family": "composition",
+   "faces": "", "wording": "the room running away to a vanishing point behind her",
+   "judge_label": "the room recedes to a point, deep space behind her",
+   "verdict": "UNMEASURED candidate", "sample_size": "the room's depth is the one measured framing control, so this is the composition word most likely to carry"},
+
+  {"slot": "camera", "manner": "directed", "concept_key": "cand-leading-lines", "family": "composition",
+   "faces": "", "wording": "the lines of the room leading toward her",
+   "judge_label": "edges in the room point toward her",
+   "verdict": "UNMEASURED candidate", "sample_size": ""},
+
+  {"slot": "camera", "manner": "directed", "concept_key": "cand-rule-of-thirds", "family": "composition",
+   "faces": "", "wording": "she sits on a third of the frame, not in the middle",
+   "judge_label": "she is off-centre, about a third in from one side",
+   "verdict": "UNMEASURED candidate", "sample_size": "written as what the picture looks like rather than as the rule's name: `rule of thirds` is a rule for a person and this sampler paints what a line describes"},
+
+  {"slot": "camera", "manner": "directed", "concept_key": "cand-canon-eos", "family": "register",
+   "faces": "", "wording": "shot on a Canon EOS",
+   "judge_label": "looks like a photograph made with a proper camera, not a phone",
+   "verdict": "UNMEASURED for directed, BANNED for candid", "sample_size": "the candid block bans this family by name - DSLR, 85mm, softbox, editorial - because every one is read as a paid photographer with equipment. Directed IS a photographer, so the same words are untested rather than wrong there"},
+
+  {"slot": "camera", "manner": "directed", "concept_key": "cand-ring-light", "family": "register",
+   "faces": "", "wording": "a ring light in front of her, the ring reflected in her eyes",
+   "judge_label": "flat frontal light, a ring-shaped catchlight in her eyes",
+   "verdict": "UNMEASURED for directed, BANNED for candid", "sample_size": "the attachment is the rule: a defect or a light needs somewhere to fall on her, and `the ring reflected in her eyes` is that somewhere"},
+
+  {"slot": "camera", "manner": "directed", "concept_key": "cand-raw-photo", "family": "register",
+   "faces": "", "wording": "RAW photo, unedited",
+   "judge_label": "flat, unprocessed colour, nothing graded",
+   "verdict": "UNMEASURED for directed, BANNED for candid", "sample_size": ""},
+
+  {"slot": "camera", "manner": "directed", "concept_key": "cand-beauty-shot", "family": "register",
+   "faces": "", "wording": "a beauty shot, even flattering light on her face",
+   "judge_label": "polished, flattering light with no hard shadow",
+   "verdict": "UNMEASURED for directed, BANNED for candid", "sample_size": "beauty shot is also a CROP claim in most catalogues - watch it against the crop law, it may cut at the shoulders on its own"}
+]

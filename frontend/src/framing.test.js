@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import { FRAMING, CLOSE_FRAMING, KISS_FRAMES, shootChunkNote } from './kinds.js'
+import { FRAMING, CLOSE_FRAMING, KISS_FRAMES, FRAMING_SLIPS, MANNER,
+         cameraPlan, shootChunkNote } from './kinds.js'
 import { problemsWith, withDealtFraming } from './enhance.js'
 
 /** The framing is dealt like the camera instead of chosen, because the frame
@@ -96,5 +97,36 @@ describe('the framings the deal does not touch', () => {
     expect(note).not.toContain('3 | frame:')
     expect(note).toContain('4 | frame: a full-length photograph, head to feet')
     expect(note).toContain(CLOSE_FRAMING.text)
+  })
+})
+
+/** The careless framing candid exists for. It survived being dealt a camera only
+ *  because it is dealt too: measured 2026-08-29 at n=12, four runs a side, it fell
+ *  from 10.0 lines to 2.5 when the candid cameras were imported and came back at
+ *  11.5 when it got a row of its own. */
+describe('the careless framing, dealt', () => {
+  test('candid carries the slips and directed does not', () => {
+    expect(MANNER.candid.slips).toBe(FRAMING_SLIPS)
+    expect(MANNER.directed.slips).toBeUndefined()
+  })
+
+  test('the spreader never opens two photographs running on the same slip', () => {
+    const family = (text) => FRAMING_SLIPS.find((s) => s.wordings[0].text === text).wordings[0].family
+    for (let run = 0; run < 20; run += 1) {
+      const plan = cameraPlan(24, Math.random, FRAMING_SLIPS).map(family)
+      expect(plan.slice(1).some((f, i) => f === plan[i])).toBe(false)
+    }
+  })
+
+  test('it rides on the camera row and skips the kiss frame', () => {
+    const kisses = [{ at: 2, frame: KISS_FRAMES[0], camera: 'Taken from directly in front of her' }]
+    const note = shootChunkNote({ from: 1, want: 2, total: 8, framing: FRAMING, kisses,
+                                  cameras: ['Phone propped on a high shelf across the room',
+                                            'Taken from directly in front of her'],
+                                  slips: [FRAMING_SLIPS[1].wordings[0].text,
+                                          FRAMING_SLIPS[2].wordings[0].text] })
+    expect(note).toContain('1 | careless: the horizon is tilted a few degrees')
+    expect(note).not.toContain('2 | careless:')
+    expect(note).toContain('IT GOES IN THE `camera` FIELD')
   })
 })

@@ -373,6 +373,12 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // plan their camera.
   const defects = MANNER[manner]?.defects
     ? cameraPlan(n, Math.random, MANNER[manner].defects) : null
+  // How the frame is careless, dealt on the same rows for the same reason and
+  // measured to need it more than the defect did: chosen freely it survived 9.8
+  // lines of 12 with no camera dealt and 2.5 with one, because the dealt rows make
+  // the line sixty words longer and a long line drops what nobody handed it.
+  const slips = cameras && MANNER[manner]?.slips
+    ? cameraPlan(n, Math.random, MANNER[manner].slips) : null
   // Which body region each photograph's `her` field opens on. Not per manner:
   // every shoot walks the whole body, and every shoot opened on the chest. Dealt
   // from the same spreader, and rides on the camera rows like the rest.
@@ -440,6 +446,7 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
                + `\n\n${shootChunkNote({ ...at, bare, stages: covered,
                                          cameras: cameras?.slice(at.from - 1, at.from - 1 + at.want),
                                          defects: defects?.slice(at.from - 1, at.from - 1 + at.want),
+                                         slips: slips?.slice(at.from - 1, at.from - 1 + at.want),
                                          opens: opens?.slice(at.from - 1, at.from - 1 + at.want),
                                          framing,
                                          poses: Object.entries(poses)

@@ -832,6 +832,26 @@ export const FRAMING = { text: 'a full-length photograph, head to feet' }
  */
 export const CLOSE_FRAMING = { text: 'a waist-up photograph' }
 
+/** How the frame is careless, dealt per photograph like the technique defect.
+ *
+ *  The candid block asks for a framing that is sloppy about WHERE SHE FALLS in
+ *  it, and the rule has never survived on its own: it was dead at 0.4 lines of 25
+ *  until an example put it in the `camera` field. Measured 2026-08-29, the day the
+ *  candid cameras were imported: with no camera catalogue the writer wrote the
+ *  trait into 9.8 lines of 12, and with the catalogue dealt it fell to 2.5 while
+ *  the line grew from 152 words to 213. The dealt rows do not argue with the rule
+ *  - they crowd it out, and what a long line drops is the clause nobody handed it.
+ *
+ *  So it is handed to it. One family each, so the spreader never opens two
+ *  photographs running on the same slip.
+ */
+export const FRAMING_SLIPS = [
+  { key: 'slip-off-centre', slot: 'camera', wordings: [{ key: 'slip-off-centre',  text: 'she is off to one side of the frame instead of centred', family: 'side' }] },
+  { key: 'slip-tilt',       slot: 'camera', wordings: [{ key: 'slip-tilt',  text: 'the horizon is tilted a few degrees',                    family: 'tilt' }] },
+  { key: 'slip-edge',       slot: 'camera', wordings: [{ key: 'slip-edge',  text: 'an elbow or a knee runs out of the edge of the frame',   family: 'edge' }] },
+  { key: 'slip-headroom',   slot: 'camera', wordings: [{ key: 'slip-headroom',  text: 'a stretch of empty room above her head',                 family: 'room' }] },
+]
+
 export const TECHNIQUE_DEFECTS = [
   { key: 'defect-motion-where-moved', slot: 'technique', wordings: [{ key: 'defect-motion-where-moved',  text: 'motion blur where a part of her moved', family: 'motion' }] },
   { key: 'defect-noise-shadow',       slot: 'technique', wordings: [{ key: 'defect-noise-shadow',  text: 'a shadow on her gone to noise',         family: 'noise'  }] },
@@ -898,6 +918,9 @@ const BASE_MANNERS = [
     // Dealt per photograph, like the camera. It rides on the manner and not on
     // every shoot because `directed` has no `technique` field to fill.
     defects: TECHNIQUE_DEFECTS,
+    // Dealt for the same reason the defect is, and measured to need it more:
+    // see FRAMING_SLIPS.
+    slips: FRAMING_SLIPS,
     timesOfDay: [
       'THE ROOM IS IN DAYLIGHT and the look says so: flat white light through a wide '
       + 'uncurtained window, weak grey daylight on an overcast afternoon, low sun coming in '
@@ -1941,8 +1964,10 @@ export const shootChunkNote = (at) =>
         // framing it needs, and two rows about one photograph disagreeing is the
         // shape that made session 267 render as neither of its two plans.
         const kiss = at.kisses?.some((k) => k.at === at.from + i)
+        const slip = at.slips?.[i]
         return `${at.from + i} | ${c}`
              + (at.framing && !kiss ? `\n${at.from + i} | frame: ${at.framing.text}` : '')
+             + (slip && !kiss ? `\n${at.from + i} | careless: ${slip}` : '')
              + (opens ? `\n${at.from + i} | her opens on: ${opens}` : '')
              + (defect ? `\n${at.from + i} | technique: ${defect}` : '')
              + (pose ? `\n${at.from + i} | act: ${pose.arrangement.wordings[0].text}` : '')
@@ -1962,6 +1987,18 @@ export const shootChunkNote = (at) =>
           + 'yours to pick: the frame reaches the lowest part of her that the line NAMES, '
           + 'garment or skin, so a line that walks the whole body and carries every garment '
           + 'is a full-length photograph whatever clause sits at the front of it.\n'
+        : '')
+      + (at.slips?.length
+        ? 'SOME ROWS CARRY A `careless:` LINE, AND IT GOES IN THE `camera` FIELD, in the same '
+          + 'sentence as the position and the framing: `Taken from behind her left shoulder, a '
+          + 'full-length photograph, head to feet, the horizon is tilted a few degrees`. It is '
+          + 'the one thing about this shoot that is sloppy - where she falls inside the frame, '
+          + 'never what the picture is of. Write it in your own words if they are shorter, but '
+          + 'write it.\n'
+          + 'It is dealt out because it is the first clause a long line drops. Measured 2026-08-29: '
+          + 'chosen freely it arrived in 9.8 lines of 12, and the same shoot with its camera '
+          + 'positions dealt kept only 2.5 - not because the rule got weaker, but because the '
+          + 'line got sixty words longer and this is the clause nobody had handed it.\n'
         : '')
       + (at.opens?.length
         ? 'EACH ROW ALSO CARRIES AN `her opens on:` LINE. That is the body region that '
