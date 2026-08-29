@@ -817,6 +817,21 @@ export const BODY_OPENINGS = [
  */
 export const FRAMING = { text: 'a full-length photograph, head to feet' }
 
+/** The two photographs that are NOT full-length, and both are exceptions the code
+ *  already knows about by the time the line is written.
+ *
+ *  The kiss frame: its whole point is the face, and the note tells the writer so
+ *  in the same breath as the gesture. The two-person frame: `a full-length
+ *  photograph, head to feet` does not come back at all when two bodies are on a
+ *  bed — measured thirteen times without one, five lines of a real shoot and
+ *  eight of a controlled pair, and the depth of the room does not buy it either.
+ *
+ *  They are here because the deterministic swap would otherwise write full-length
+ *  over both of them: a rule that cannot be disobeyed also cannot make an
+ *  exception it was never told about.
+ */
+export const CLOSE_FRAMING = { text: 'a waist-up photograph' }
+
 export const TECHNIQUE_DEFECTS = [
   { key: 'defect-motion-where-moved', slot: 'technique', wordings: [{ key: 'defect-motion-where-moved',  text: 'motion blur where a part of her moved', family: 'motion' }] },
   { key: 'defect-noise-shadow',       slot: 'technique', wordings: [{ key: 'defect-noise-shadow',  text: 'a shadow on her gone to noise',         family: 'noise'  }] },
@@ -1921,8 +1936,12 @@ export const shootChunkNote = (at) =>
         const pose = at.poses?.find((p) => p.at === at.from + i)
         const defect = at.defects?.[i]
         const opens = at.opens?.[i]
+        // The kiss frame gets no `frame:` row: its own paragraph below names the
+        // framing it needs, and two rows about one photograph disagreeing is the
+        // shape that made session 267 render as neither of its two plans.
+        const kiss = at.kisses?.some((k) => k.at === at.from + i)
         return `${at.from + i} | ${c}`
-             + (at.framing ? `\n${at.from + i} | frame: ${at.framing.text}` : '')
+             + (at.framing && !kiss ? `\n${at.from + i} | frame: ${at.framing.text}` : '')
              + (opens ? `\n${at.from + i} | her opens on: ${opens}` : '')
              + (defect ? `\n${at.from + i} | technique: ${defect}` : '')
              + (pose ? `\n${at.from + i} | act: ${pose.arrangement.wordings[0].text}` : '')

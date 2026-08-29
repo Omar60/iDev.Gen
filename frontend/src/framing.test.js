@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { FRAMING, shootChunkNote } from './kinds.js'
+import { FRAMING, CLOSE_FRAMING, KISS_FRAMES, shootChunkNote } from './kinds.js'
 import { problemsWith, withDealtFraming } from './enhance.js'
 
 /** The framing is dealt like the camera instead of chosen, because the frame
@@ -70,5 +70,31 @@ describe('the framing put back by the code', () => {
 
   test('and nothing is rewritten when nothing was dealt', () => {
     expect(withDealtFraming(line, null)).toBe(line)
+  })
+})
+
+/** The two photographs that are not full-length. Both are exceptions the code
+ *  knows about before the line exists, and both were being written over by the
+ *  swap until this was checked. */
+describe('the framings the deal does not touch', () => {
+  const PAIR = 'Taken from their side, a waist-up photograph, a naked man standing behind her '
+             + 'and penetrating her from behind, his penis inside her, two people in frame.'
+
+  test('a two-person line keeps the tighter framing it was told to use', () => {
+    // Full-length does not come back in a two-person frame: measured thirteen
+    // times without one. Writing it over the line is the code overruling that.
+    expect(withDealtFraming(PAIR, FRAMING)).toBe(PAIR)
+    expect(problemsWith(PAIR, '', 400, FRAMING).join(' '))
+      .not.toContain('not the one this shoot was dealt')
+  })
+
+  test('a kiss photograph is given no `frame:` row, because its own paragraph has one', () => {
+    const kisses = [{ at: 3, frame: KISS_FRAMES[0], camera: 'Taken from directly in front of her' }]
+    const note = shootChunkNote({ from: 3, want: 2, total: 8, framing: FRAMING, kisses,
+                                  cameras: ['Taken from directly in front of her',
+                                            'Taken from her right side'] })
+    expect(note).not.toContain('3 | frame:')
+    expect(note).toContain('4 | frame: a full-length photograph, head to feet')
+    expect(note).toContain(CLOSE_FRAMING.text)
   })
 })

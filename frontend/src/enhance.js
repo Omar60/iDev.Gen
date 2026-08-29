@@ -14,7 +14,7 @@ import {
   SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
   takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, positionsFor, arrangementPlan,
-  fitCameras, BODY_OPENINGS, FRAMING,
+  fitCameras, BODY_OPENINGS, FRAMING, CLOSE_FRAMING,
   kissPlan, kissCameraFor,
 } from './kinds.js'
 
@@ -491,19 +491,24 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // be flagged and spend a repair call on a defect the code removes on its own.
   // Measured, applied only at the end: check failures went from 5.0 of 12 to 7.2
   // and the repair accepted 0.4 of them.
-  const written = lines.map((l) => withDealtFraming(onlyHer(l.prompt), framing))
+  // The kiss frames are the one photograph in the shoot with a framing of its own,
+  // and the code knows which they are — so the swap and the check are told too,
+  // rather than writing full-length over the framing the kiss note just asked for.
+  const framingAt = (i) => (framing && kisses[i + 1] ? CLOSE_FRAMING : framing)
+  const written = lines.map((l, i) => withDealtFraming(onlyHer(l.prompt), framingAt(i)))
   // How long a line of this shoot is allowed: measured off this shoot, because
   // there is no length that is right for every wardrobe.
   const limit = lengthLimit(written)
   const needing = written.filter((line, i) =>
-    problemsWith(line, i === 0 ? wardrobe : written[i - 1], limit, framing).length).length
+    problemsWith(line, i === 0 ? wardrobe : written[i - 1], limit, framingAt(i)).length).length
   const { lines: repairedLines, repaired, stillWrong } =
-    await repairAll(written, wardrobe, onProgress, n, n + needing, limit, framing)
+    await repairAll(written, wardrobe, onProgress, n, n + needing, limit,
+                    Array.from({ length: n }, (_, i) => framingAt(i)))
   // After the model has had its turn and refused: cut the bare-part inventory,
   // then the garment named twice, out of any two-person line still over its cap.
   // Only there, and only that.
-  const checked = repairedLines.map((l) =>
-    withDealtFraming(dropListedGarments(trimBareClauses(l)), framing))
+  const checked = repairedLines.map((l, i) =>
+    withDealtFraming(dropListedGarments(trimBareClauses(l)), framingAt(i)))
   // The word counts are in the line because the writer's own length varies enough
   // between runs to hide what the repair did: comparing two runs compares two
   // different shoots, and only before-and-after inside one run is the repair.
@@ -868,12 +873,18 @@ const garmentNouns = (clause) => new Set(
  *  with the framing dealt, four lines of twelve chose their own and the repair
  *  accepted none of the four.
  *
- *  It only ever writes the full-length clause, which is the only framing this
- *  shoot has. Tightening a line would mean DELETING her legs, her feet and every
- *  garment on them, and a regex that deletes garments is exactly what
- *  `keepsTheFacts` exists to refuse.
+ *  It writes the dealt clause and nothing else, which is full-length everywhere
+ *  except the kiss frames. Tightening a line of its own accord would mean DELETING
+ *  her legs, her feet and every garment on them, and a regex that deletes garments
+ *  is exactly what `keepsTheFacts` exists to refuse.
+ *
+ *  A TWO-PERSON LINE KEEPS ITS OWN FRAMING. `a full-length photograph, head to
+ *  feet` does not come back at all when two bodies are on a bed - measured
+ *  thirteen times without one - and the instruction tells the writer to reach for
+ *  a tighter one there. Writing full-length over it would be the code overruling
+ *  a measurement with a default.
  */
-export const withDealtFraming = (line, framing) => (framing
+export const withDealtFraming = (line, framing) => (framing && !TWO_PEOPLE.test(line || '')
   ? (line || '').replace(/\ba (?:full-length photograph(?:, head to feet)?|three-quarter photograph(?: from the knees up)?|waist-up photograph)/i,
                          framing.text)
   : line)
@@ -1047,7 +1058,9 @@ const contentProblems = (rawLine, rawPrevious, framing = null) => {
              + 'photograph`, straight after the camera clause it opens with.')
   // A dealt framing is checked for the framing it was DEALT, not for any of the
   // three: the whole point of computing it is that the line cannot pick another.
-  } else if (framing && !line.toLowerCase().includes(framing.text)) {
+  // Same exemption as the swap, and for the same measurement: a two-person frame
+  // is written tighter on purpose.
+  } else if (framing && !TWO_PEOPLE.test(line) && !line.toLowerCase().includes(framing.text)) {
     found.push(`Its framing is not the one this shoot was dealt. It reads \`${framing.text}\``
              + ', word for word, straight after the camera clause. Every photograph of this '
              + 'shoot has that framing, and it is not a preference.')
@@ -1286,12 +1299,13 @@ export const namesWhatItSheds = (line) => {
  *  and neither can be seen from outside a shoot.
  */
 export const repairAll = async (lines, wardrobe, onProgress, done, total, limit = MAX_WORDS,
-                                framing = null) => {
+                                framings = null) => {
   const out = []
   const stillWrong = []
   let repaired = 0
   for (const [i, line] of lines.entries()) {
     const previous = i === 0 ? wardrobe : out[i - 1]
+    const framing = Array.isArray(framings) ? framings[i] : framings
     const problems = problemsWith(line, previous, limit, framing)
     if (!problems.length) {
       // Nothing wrong with the line except that the shoot already has it, which
