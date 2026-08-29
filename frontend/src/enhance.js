@@ -14,7 +14,7 @@ import {
   SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
   takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, positionsFor, arrangementPlan,
-  fitCameras, BODY_OPENINGS, framePlan, FRAMES,
+  fitCameras, BODY_OPENINGS, FRAMING,
   kissPlan, kissCameraFor,
 } from './kinds.js'
 
@@ -380,25 +380,12 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // The framing, computed and not asked for. It rides on the camera rows like the
   // rest, so a manner that plans no camera keeps the writer's own framing — which
   // is what every manner had before this.
-  const frames = cameras ? framePlan(n, stages) : null
-  // Said out loud for the same reason the arrangements are: a plan nobody can see
-  // is a plan nobody can check, and this one is computed from a column of the
-  // stage plan that the model fills in — a wrong `below: no` is a photograph
-  // framed above a garment nobody took off, and the line is where that shows.
-  if (frames) {
-    console.info('[shoot] stages ' + stages.map((s) => `${s.from}-${s.to}:`
-                                                     + (s.lower ? 'below' : 'bare')).join(' ')
-                 + ' | framing ' + frames.map((f) => f.floor[0]).join(''))
-  }
-  // A waist-up photograph has no region below the waist to open on. Dealt one
-  // anyway, the line opens on her hips under a frame that cuts at her waist, which
-  // is the contradiction this whole arrangement exists to remove — and the
-  // photograph obeys the hips.
-  if (opens && frames) {
-    for (let i = 0; i < n; i += 1) {
-      if (frames[i].floor === 'waist') opens[i] = BODY_OPENINGS[0].wordings[0].text
-    }
-  }
+  // The framing, dealt and not asked for. One value for the whole shoot: the
+  // frame reaches the lowest part of her the line names, and a line that walks
+  // the whole body names her feet. It rides on the camera rows like the rest, so
+  // a manner that plans no camera keeps the writer's own framing - which is what
+  // every manner had before this.
+  const framing = cameras ? FRAMING : null
   // The kiss frames, decided here too, and they take their photograph's camera
   // with them: the gesture only reads from in front of her, close.
   const kisses = kissPlan(n)
@@ -416,12 +403,6 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // three rendered as a different arrangement, because the camera outranks the
   // bodies. Only the planted photographs move.
   cameras = fitCameras(cameras, poses, pos)
-  // A planted arrangement is two bodies and the weight on somebody's knees: it
-  // names the lower half by construction, so the photograph carrying one is
-  // full-length whatever its stage said. Same reasoning as `fitCameras` one line
-  // up — a plan that does not know about the other plan is one photograph
-  // carrying two instructions.
-  if (frames) for (const at of Object.keys(poses)) frames[Number(at) - 1] = FRAMES.feet
   // Which photographs got one, said out loud: a plan nobody can see is a plan
   // nobody can check, and the only way to know an arrangement ARRIVED is to
   // compare the line against the photograph it was planted in.
@@ -460,7 +441,7 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
                                          cameras: cameras?.slice(at.from - 1, at.from - 1 + at.want),
                                          defects: defects?.slice(at.from - 1, at.from - 1 + at.want),
                                          opens: opens?.slice(at.from - 1, at.from - 1 + at.want),
-                                         frames: frames?.slice(at.from - 1, at.from - 1 + at.want),
+                                         framing,
                                          poses: Object.entries(poses)
                                            .filter(([k]) => Number(k) >= at.from
                                                             && Number(k) < at.from + at.want)
@@ -510,19 +491,19 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // be flagged and spend a repair call on a defect the code removes on its own.
   // Measured, applied only at the end: check failures went from 5.0 of 12 to 7.2
   // and the repair accepted 0.4 of them.
-  const written = lines.map((l, i) => withDealtFraming(onlyHer(l.prompt), frames?.[i]))
+  const written = lines.map((l) => withDealtFraming(onlyHer(l.prompt), framing))
   // How long a line of this shoot is allowed: measured off this shoot, because
   // there is no length that is right for every wardrobe.
   const limit = lengthLimit(written)
   const needing = written.filter((line, i) =>
-    problemsWith(line, i === 0 ? wardrobe : written[i - 1], limit, frames?.[i]).length).length
+    problemsWith(line, i === 0 ? wardrobe : written[i - 1], limit, framing).length).length
   const { lines: repairedLines, repaired, stillWrong } =
-    await repairAll(written, wardrobe, onProgress, n, n + needing, limit, frames)
+    await repairAll(written, wardrobe, onProgress, n, n + needing, limit, framing)
   // After the model has had its turn and refused: cut the bare-part inventory,
   // then the garment named twice, out of any two-person line still over its cap.
   // Only there, and only that.
-  const checked = repairedLines.map((l, i) =>
-    withDealtFraming(dropListedGarments(trimBareClauses(l)), frames?.[i]))
+  const checked = repairedLines.map((l) =>
+    withDealtFraming(dropListedGarments(trimBareClauses(l)), framing))
   // The word counts are in the line because the writer's own length varies enough
   // between runs to hide what the repair did: comparing two runs compares two
   // different shoots, and only before-and-after inside one run is the repair.
@@ -586,24 +567,14 @@ export const dressedThrough = (n, reach, bare) =>
  *  ways. */
 /** One row of the plan the model wrote, as a stage - or nothing.
  *
- *  The backend splits a row on its FIRST bar only, so the third column arrives on
- *  the tail of `prompt` and is cut off here. Absent, malformed, or anything but a
- *  plain `no` leaves `lower` true: see `framePlan` for why every unknown has to
- *  land on the full-length side.
- *
  *  A row whose label is not a range is a row the model formatted its own way.
  *  Dropped rather than guessed at: a wrong range silently mis-paces the shoot.
  *
- *  Exported so the column can be tested without a model behind it. */
-export const BELOW_MARKER = /\|\s*below\s*:?\s*(yes|no)\b\s*$/i
-
+ *  Exported so the parsing can be tested without a model behind it. */
 export const stageRow = (r) => {
   const span = /(\d+)\s*[-–—]\s*(\d+)/.exec(r.label || '')
-  const marker = BELOW_MARKER.exec(r.prompt || '')
-  const what = (r.prompt || '').replace(BELOW_MARKER, '').trim()
-  return span && what
-    ? [{ from: +span[1], to: +span[2], what, lower: marker?.[1].toLowerCase() !== 'no' }]
-    : []
+  const what = (r.prompt || '').trim()
+  return span && what ? [{ from: +span[1], to: +span[2], what }] : []
 }
 
 export const stagePlan = async (brief, wardrobe, n, bare = false, undressBy = 0,
@@ -699,12 +670,6 @@ const BODY = [
   { part: 'the hips and legs', re: /\b(hips?|thighs?|legs?|knees?|briefs|panties|stockings?|fishnets?|skirt|shorts)\b/i },
   { part: 'the feet', re: /\b(feet|foot|boots?|heels?|shoes?|barefoot|toes)\b/i },
 ]
-
-/** The two lower regions as one test, for a line that is not allowed to reach
- *  them. Built from the same two regexes the walk is checked with, so the
- *  vocabulary is written once: a word that counts as naming her legs when the
- *  line must name them counts as naming them when it must not. */
-const BELOW_THE_WAIST = new RegExp(`${BODY[1].re.source}|${BODY[2].re.source}`, 'i')
 
 /** A photograph with a second body in it, by the words that put it there.
  *
@@ -893,36 +858,25 @@ const garmentNouns = (clause) => new Set(
  *  needs, whatever else the clause repeats. Same guards as `trimBareClauses`:
  *  two-person lines over the cap only, and the original comes back whole if the
  *  cut would lose the act or the opening camera clause. */
-/** The framing clause, put back to the one this photograph was dealt.
+/** The framing clause, put back to the one the shoot was dealt.
  *
- *  The third deterministic lever, and the narrowest: it runs ONLY towards
- *  full-length, where the swap is a word and cannot be wrong. A line that names
- *  her denim and her socks is a full-length photograph whatever its framing
- *  clause says — the frame reaches the lowest part named — so writing
- *  `a waist-up photograph` in front of it is the line contradicting itself and
- *  nothing more. Rewriting the clause makes the prompt agree with the photograph
- *  it was always going to produce.
+ *  The third deterministic lever, after `trimBareClauses` and
+ *  `dropListedGarments`, and the one that makes the deal stick. The writer copies
+ *  the dealt clause word for word almost always - 35 times of 35 over three runs
+ *  - but a line that picks its own is not worth a repair call: the framing is a
+ *  fixed string and putting it back cannot lose a fact. Measured on the first run
+ *  with the framing dealt, four lines of twelve chose their own and the repair
+ *  accepted none of the four.
  *
- *  The other direction is left to the repair on purpose. Tightening a line to
- *  waist-up means DELETING her legs, her feet and every garment on them, and a
- *  regex that deletes garments is exactly what `keepsTheFacts` exists to refuse.
- *
- *  Measured on the first run with the framing dealt: four lines of twelve picked
- *  their own framing anyway and the repair accepted none of the four. */
-export const withDealtFraming = (line, frame) => {
-  if (!frame) return line
-  // The line's own anatomy outranks the plan, because the photograph obeys the
-  // anatomy: a waist-up clause in front of `white socks on her feet` is a
-  // contradiction the sampler resolves by rendering the feet. Measured on the
-  // first three runs with the framing dealt, the writer copied the dealt clause
-  // word for word 35 times of 35 and still named her knees or her thighs under a
-  // third of the waist-up ones — so the tight framing has to be handed back when
-  // the line did not earn it.
-  const earned = frame.floor === 'feet' || !BELOW_THE_WAIST.test(body(line))
-  const text = earned ? frame.text : FRAMES.feet.text
-  return (line || '').replace(/\ba (?:full-length photograph(?:, head to feet)?|three-quarter photograph(?: from the knees up)?|waist-up photograph)/i,
-                              text)
-}
+ *  It only ever writes the full-length clause, which is the only framing this
+ *  shoot has. Tightening a line would mean DELETING her legs, her feet and every
+ *  garment on them, and a regex that deletes garments is exactly what
+ *  `keepsTheFacts` exists to refuse.
+ */
+export const withDealtFraming = (line, framing) => (framing
+  ? (line || '').replace(/\ba (?:full-length photograph(?:, head to feet)?|three-quarter photograph(?: from the knees up)?|waist-up photograph)/i,
+                         framing.text)
+  : line)
 
 export const dropListedGarments = (line) => {
   if (!TWO_PEOPLE.test(line || '') || words(line) <= TWO_PEOPLE_WORDS) return line
@@ -1080,7 +1034,7 @@ const HEADING = /^[A-Z][A-Za-z& ]{2,24}:[ \t]*$/gm
 
 const body = (line) => (line || '').replace(HEADING, '').replace(/\s*\n\s*/g, ' ').trim()
 
-const contentProblems = (rawLine, rawPrevious, frame = null) => {
+const contentProblems = (rawLine, rawPrevious, framing = null) => {
   const line = body(rawLine)
   const previous = body(rawPrevious)
   const found = []
@@ -1093,22 +1047,10 @@ const contentProblems = (rawLine, rawPrevious, frame = null) => {
              + 'photograph`, straight after the camera clause it opens with.')
   // A dealt framing is checked for the framing it was DEALT, not for any of the
   // three: the whole point of computing it is that the line cannot pick another.
-  } else if (frame && !line.toLowerCase().includes(frame.text)) {
-    found.push(`Its framing is not the one this photograph was given. It reads \`${frame.text}\``
-             + ', word for word, straight after the camera clause. The framing was worked out '
-             + 'from what she is still wearing, and it is not a preference.')
-  }
-  // The other half of the deal, and the half that reaches the photograph: under a
-  // waist-up frame the line may not name anything below her waist, because the
-  // frame reaches the lowest part the line names whatever the framing clause
-  // says. A garment counts as the body it covers (session 318: stockings named to
-  // her feet pushed her HEAD out of the frame in six renders of six).
-  if (frame?.floor === 'waist' && BELOW_THE_WAIST.test(line)) {
-    found.push('It is a waist-up photograph and it names something below her waist — the hips, '
-             + 'the legs, the feet or a garment down there. The frame reaches the lowest part '
-             + 'of her the line names, so those words are what the photograph obeys and the '
-             + 'framing clause is not. Cut every one of them: this line is her chest and '
-             + 'torso, her arms and hands, her face and hair, and nothing else of her.')
+  } else if (framing && !line.toLowerCase().includes(framing.text)) {
+    found.push(`Its framing is not the one this shoot was dealt. It reads \`${framing.text}\``
+             + ', word for word, straight after the camera clause. Every photograph of this '
+             + 'shoot has that framing, and it is not a preference.')
   }
   // `Taken from ...` or the angle named as a camera - `Overhead camera above the bed`,
   // `Low-angle shot from the foot of the bed`. Both forms are measured to be obeyed; the
@@ -1191,15 +1133,8 @@ const contentProblems = (rawLine, rawPrevious, frame = null) => {
   // garments — while the words it costs are exactly what makes the second body
   // vanish. Measured: 180 words, she is alone in five renders of five; 70 words,
   // the act is there in three of three.
-  //
-  // A waist-up photograph is exempt from the two lower regions for the same
-  // reason a two-person line is exempt from all three: the rule exists so a
-  // garment is never left unstated, and there is nothing worn below the waist in
-  // a photograph that was given that framing — that is what the framing was
-  // computed from.
-  const walk = frame?.floor === 'waist' ? BODY.slice(0, 1) : BODY
   const missing = TWO_PEOPLE.test(line)
-    ? [] : walk.filter((b) => !b.re.test(line)).map((b) => b.part)
+    ? [] : BODY.filter((b) => !b.re.test(line)).map((b) => b.part)
   if (missing.length) {
     found.push(`It says nothing about ${missing.join(' or ')}. Every photograph names the `
              + 'chest and torso, the hips and legs, and the feet — and where there is no '
@@ -1249,8 +1184,8 @@ const contentProblems = (rawLine, rawPrevious, frame = null) => {
  *  `limit` is the shoot's own length, from `lengthLimit`. Left out — a single
  *  line, checked on its own — only the absolute wall applies, because one line
  *  has no neighbours to be long against. */
-export const problemsWith = (line, previous, limit = MAX_WORDS, frame = null) =>
-  [...tooLong(line, limit), ...contentProblems(line, previous, frame)]
+export const problemsWith = (line, previous, limit = MAX_WORDS, framing = null) =>
+  [...tooLong(line, limit), ...contentProblems(line, previous, framing)]
 
 /** Garments by family, not by word.
  *
@@ -1351,14 +1286,13 @@ export const namesWhatItSheds = (line) => {
  *  and neither can be seen from outside a shoot.
  */
 export const repairAll = async (lines, wardrobe, onProgress, done, total, limit = MAX_WORDS,
-                                frames = null) => {
+                                framing = null) => {
   const out = []
   const stillWrong = []
   let repaired = 0
   for (const [i, line] of lines.entries()) {
     const previous = i === 0 ? wardrobe : out[i - 1]
-    const frame = frames?.[i] || null
-    const problems = problemsWith(line, previous, limit, frame)
+    const problems = problemsWith(line, previous, limit, framing)
     if (!problems.length) {
       // Nothing wrong with the line except that the shoot already has it, which
       // happens when an EARLIER repair was handed back the photograph it was
@@ -1381,7 +1315,7 @@ export const repairAll = async (lines, wardrobe, onProgress, done, total, limit 
     // deletes is her nudity spelled out limb by limb, which is the one thing the
     // photograph can spare. `keepsTheFacts` refuses any repair that drops the act,
     // so the failure the branch above exists to prevent cannot happen here.
-    if (!contentProblems(line, previous, frame).length && !TWO_PEOPLE.test(line)) {
+    if (!contentProblems(line, previous, framing).length && !TWO_PEOPLE.test(line)) {
       out.push(line); stillWrong.push(i + 1)
       onProgress?.(Math.min(total, done + repaired + stillWrong.length), total)
       continue
@@ -1427,9 +1361,9 @@ export const repairAll = async (lines, wardrobe, onProgress, done, total, limit 
     // clause scored the same and was kept: the camera survived in seven lines of
     // twelve, against twelve before the repair ran. So what a shortening may not
     // do is lose any of the things shortening is not about.
-    const after = problemsWith(fixed, previous, limit, frame)
+    const after = problemsWith(fixed, previous, limit, framing)
     const shorter = tooLong(line, limit).length && words(fixed) <= words(line) * 0.9
-      && contentProblems(fixed, previous, frame).length <= contentProblems(line, previous, frame).length
+      && contentProblems(fixed, previous, framing).length <= contentProblems(line, previous, framing).length
     // And a repair that comes back as a photograph the shoot already has is the
     // model answering with its context instead of its text: `previous` is in the
     // prompt as "the photograph before this one", and handing it straight back
@@ -1445,7 +1379,7 @@ export const repairAll = async (lines, wardrobe, onProgress, done, total, limit 
     // outlining, and reporting only one of the two hides whichever it drops.
     const kept = usable ? fixed : line
     if (usable) repaired += 1
-    if (problemsWith(kept, previous, limit, frame).length
+    if (problemsWith(kept, previous, limit, framing).length
         || repeats(kept, out, SAME_PHOTOGRAPH)) stillWrong.push(i + 1)
     out.push(kept)
     onProgress?.(Math.min(total, done + repaired + stillWrong.length), total)

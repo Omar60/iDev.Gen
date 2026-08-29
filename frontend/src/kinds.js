@@ -791,42 +791,31 @@ export const BODY_OPENINGS = [
   { key: 'opens-feet',  slot: 'her', wordings: [{ key: 'opens-feet',  text: 'her feet',           family: 'feet'  }] },
 ]
 
-/** The framing, dealt from the stage's wardrobe instead of chosen by the writer.
+/** The framing of a written line. One value, dealt like the camera and never
+ *  chosen — and there is only one because the tight one is not reachable.
  *
  *  The crop law (sessions 314-318): the frame reaches the LOWEST body part named
  *  anywhere in the line, and a garment counts as the body it covers. So a line
- *  that obeys `EVERY LINE WALKS THE WHOLE BODY` and carries every garment cannot
- *  also be waist-up — the feet are in the sentence, so they are in the frame.
- *  Measured over ten runs of twelve, `contradicting` and `tight framing asked
- *  for` were the SAME NUMBER every single time: 8.6 of 12.
+ *  that obeys `EVERY LINE WALKS THE WHOLE BODY` and carries every garment IS a
+ *  full-length photograph — the feet are in the sentence, so they are in the
+ *  frame. Measured over ten runs of twelve, `contradicting` and `tight framing
+ *  asked for` were the SAME NUMBER every single time: 8.6 of 12. Dealing this
+ *  one takes that to 0.0.
  *
- *  Prose cannot break that tie — a conditional-framing paragraph moved it by 0.4
- *  lines at 0.3 sigma and was reverted. What breaks it is arithmetic: the stage
- *  plan says whether anything is worn below the waist, and the framing follows
- *  from that with nothing left to choose.
+ *  A waist-up branch was built, computed from a `below:` column in the stage
+ *  plan, and it never delivered: 31 waist-up rows dealt across ten runs, ONE
+ *  clean line. The writer copies the dealt framing word for word (35 of 35) and
+ *  then names her feet anyway — mostly in the pose field, where the stance is
+ *  written and `her weight on both feet` is how this model says standing. A
+ *  second arm putting the exception inside the walk rule itself, with a worked
+ *  waist-up line as an example, scored 0 of 13. Three arms of prose against this
+ *  now; see the conditional-framing paragraph before them.
  *
- *  Two floors, not three. `knees` is a third rung and it is not built until
- *  these two are measured — the axis is one axis and a rung nobody has shot is a
- *  guess with a wording attached.
+ *  The tight crop is not lost, it is somewhere else: session 313 rendered the six
+ *  crop terms 12/12 when NOTHING else in the line named a body part, which is a
+ *  composed line and not a written shoot. Fold it in there, not here.
  */
-export const FRAMES = {
-  feet: { floor: 'feet', text: 'a full-length photograph, head to feet' },
-  waist: { floor: 'waist', text: 'a waist-up photograph' },
-}
-
-/** The framing of each of `n` photographs, from the stages that cover them.
- *
- *  `feet` unless the stage says, in as many words, that nothing is worn below
- *  the waist. Every unknown lands on `feet` on purpose: full-length is the one
- *  framing that cannot contradict the whole-body walk, so a missing marker, a
- *  dropped column or a photograph in no stage costs nothing. The tight framing
- *  is the claim, and only a claim is worth a marker.
- */
-export const framePlan = (n, stages = []) =>
-  Array.from({ length: n }, (_, i) => {
-    const covering = stages.find((s) => s.from <= i + 1 && s.to >= i + 1)
-    return covering?.lower === false ? FRAMES.waist : FRAMES.feet
-  })
+export const FRAMING = { text: 'a full-length photograph, head to feet' }
 
 export const TECHNIQUE_DEFECTS = [
   { key: 'defect-motion-where-moved', slot: 'technique', wordings: [{ key: 'defect-motion-where-moved',  text: 'motion blur where a part of her moved', family: 'motion' }] },
@@ -1247,19 +1236,10 @@ export const BRIEF_AXES = {
 export const STAGE_PLAN_INSTRUCTION =
   'Lay out the stages of the photo session described above, before any of it is written.\n'
   + 'One line per stage, in order, each one starting with the photographs it covers, then a '
-  + 'bar, then what happens in it, then a bar and one last word:\n'
-  + '1-8 | … | below: yes\n9-14 | … | below: no\n'
+  + 'bar, then what happens in it:\n'
+  + '1-8 | …\n9-14 | …\n'
   + 'The ranges are contiguous, start at photograph 1, and the last one ends on the last '
   + 'photograph of the shoot. No gaps, no overlaps, no photograph left out.\n'
-  + '`below:` IS THE WHOLE POINT OF THE LAST COLUMN AND IT IS NOT A JUDGEMENT CALL. `yes` when '
-  + 'anything at all is still worn below her waist in that stage — trousers, jeans, a skirt, '
-  + 'shorts, briefs, panties, stockings, tights, socks, shoes, boots, heels. `no` only when '
-  + 'there is nothing on her from the waist down, bare feet included. A stage where one sock '
-  + 'is still on is `yes`. When you are unsure, write `yes`.\n'
-  + 'It is asked for because the code decides the framing of every photograph from it, and it '
-  + 'cannot read the stage the way you can: a shoot still wearing something below the waist is '
-  + 'photographed head to feet, and only a stage that is bare from the waist down can be shot '
-  + 'closer in.\n'
   + 'A stage is a state of the whole photograph — what is worn AND what she is doing, at the '
   + 'same point on the same path. `topless, harness still on, kneeling and touching herself` '
   + 'is a stage. `undressing` is not: it is the name of a whole shoot.\n'
@@ -1941,37 +1921,27 @@ export const shootChunkNote = (at) =>
         const pose = at.poses?.find((p) => p.at === at.from + i)
         const defect = at.defects?.[i]
         const opens = at.opens?.[i]
-        const frame = at.frames?.[i]
         return `${at.from + i} | ${c}`
-             + (frame ? `\n${at.from + i} | frame: ${frame.text}` : '')
+             + (at.framing ? `\n${at.from + i} | frame: ${at.framing.text}` : '')
              + (opens ? `\n${at.from + i} | her opens on: ${opens}` : '')
              + (defect ? `\n${at.from + i} | technique: ${defect}` : '')
              + (pose ? `\n${at.from + i} | act: ${pose.arrangement.wordings[0].text}` : '')
       }).join('\n') + '\n'
       + 'Open each line with the position given for its photograph, word for word, and then '
-      + (at.frames?.length ? 'the framing given for it, word for word, after it.'
-                           : 'your framing after it.')
+      + (at.framing ? 'the framing given for it, word for word, after it.'
+                    : 'your framing after it.')
       + ' Invent no other position and reword none of these: these are '
       + 'the forms this camera was measured to obey, and a reworded one comes back as a '
       + 'front view. The '
-      + (at.frames?.length ? 'pose, the act and the expression are'
-                           : 'framing, the pose, the act and the expression are')
+      + (at.framing ? 'pose, the act and the expression are'
+                    : 'framing, the pose, the act and the expression are')
       + ' still yours.\n'
-      + (at.frames?.length
+      + (at.framing
         ? 'EACH ROW ALSO CARRIES A `frame:` LINE, AND IT IS COPIED WORD FOR WORD LIKE THE '
-          + 'CAMERA. It is not yours to pick, because it is not a matter of taste: the frame '
-          + 'reaches the lowest part of her that the line NAMES, garment or skin, so the '
-          + 'framing was worked out from what she is still wearing in that photograph.\n'
-          + 'A ROW THAT SAYS `a waist-up photograph` CHANGES WHAT THE LINE MAY NAME. Write her '
-          + 'chest and torso, her arms, her hands, her face and hair, and NOTHING BELOW HER '
-          + 'WAIST — no hips, no thighs, no knees, no legs, no feet, no shoes, no garment '
-          + 'below the waist. The whole-body walk does not apply to that photograph: there is '
-          + 'nothing worn down there to leave unstated, which is the only reason that rule '
-          + 'exists. Naming her feet under a waist-up frame is the one contradiction this '
-          + 'whole arrangement exists to kill, and the photograph obeys the feet, not the '
-          + 'framing.\n'
-          + 'A row that says `a full-length photograph, head to feet` is the ordinary line: all '
-          + 'three regions, every garment, exactly as below.\n'
+          + 'CAMERA. It is the same framing in every photograph of this shoot and it is not '
+          + 'yours to pick: the frame reaches the lowest part of her that the line NAMES, '
+          + 'garment or skin, so a line that walks the whole body and carries every garment '
+          + 'is a full-length photograph whatever clause sits at the front of it.\n'
         : '')
       + (at.opens?.length
         ? 'EACH ROW ALSO CARRIES AN `her opens on:` LINE. That is the body region that '
@@ -1979,11 +1949,6 @@ export const shootChunkNote = (at) =>
           + 'of the sentence. The other two follow it, in whatever order reads best. All three '
           + 'are still written in every single line - that rule does not bend, and a region '
           + 'left out is a region the reader dresses for you.\n'
-          + (at.frames?.some((f) => f.floor === 'waist')
-            ? 'The one exception is a photograph whose `frame:` row says waist-up: there the '
-              + 'walk stops at her waist, the region dealt to it is her chest and torso, and '
-              + 'the hips, legs and feet are not written at all.\n'
-            : '')
           + 'IT IS NOT A STATEMENT ABOUT THE FRAME, and this is the mistake it invites. `her '
           + 'hips and legs lead the frame`, `her feet are visible at the bottom edge`, `her '
           + 'chest fills the upper half` - the `her` field never says where a part of her sits '
