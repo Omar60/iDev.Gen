@@ -3553,15 +3553,23 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # by the rule that a reading is keyed on one. The fallback is also what
     # makes a verdict stored before readings existed still score: it is a
     # component key, and it reduces to its family.
-    def _family_of(key: str) -> str:
+    def _family_of(key: str, slot: str) -> str:
+        # Scoped to the SLOT, and that is not defensive tidiness: the live
+        # catalogue holds a camera whose concept_key is `close-up` (one of the
+        # fifteen shot-size cameras) AND a framing whose family is `close-up`.
+        # Unscoped, a framing answer of `close-up` reduced to the CAMERA's family
+        # `close`, compared unequal to the framing's `close-up`, and a photograph
+        # that arrived was recorded as a miss. Measured on session 319: seven
+        # `close-up` and five `waist-up` answers all scored 0, including four that
+        # were exact hits.
         if not key or key == "none":
             return ""
-        row = db.one("SELECT family FROM component WHERE concept_key=? AND manner=?",
-                     key, session["manner"])
+        row = db.one("SELECT family FROM component WHERE concept_key=? AND manner=? AND slot=?",
+                     key, session["manner"], slot)
         return (row["family"] if row else "") or ""
 
-    def _reduce(v: str) -> str:
-        return _family_of(v) or v
+    def _reduce(v: str, slot: str) -> str:
+        return _family_of(v, slot) or v
 
     if j.control:
         # A control photograph is re-presented to check the judge's agreement
@@ -3587,7 +3595,7 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
                 f"judge refused: control shot {shot_id} has no stored verdict for slot {slot!r}",
             )
         stored_val = already[slot]
-        agreed = bool(stored_val) and _reduce(stored_val) == _reduce(answered_val)
+        agreed = bool(stored_val) and _reduce(stored_val, slot) == _reduce(answered_val, slot)
         return {
             "control": True,
             "slot": slot,
@@ -3657,7 +3665,7 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
         slot_comp = comps.get(slot) or {}
         if ans == slot_comp.get("wording") or ans == slot_comp.get("concept"):
             return True
-        return _reduce(ans) == _reduce(drawn_concept[slot])
+        return _reduce(ans, slot) == _reduce(drawn_concept[slot], slot)
 
     def _all_arrived(seen: dict) -> int:
         # A slot drawn as `none` asked for NOTHING, so it cannot fail. The

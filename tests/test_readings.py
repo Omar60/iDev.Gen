@@ -401,3 +401,48 @@ def test_control_agreement_across_vocabularies_and_cannot_tell(client, seeded):
     assert res2["stored"] == ""
     assert res2["answered"] == ""
 
+
+
+def test_a_component_key_in_another_slot_does_not_steal_the_reduction(client, seeded, db_conn=None):
+    """The scoring reduction is scoped to the SLOT it is scoring.
+
+    The live catalogue holds a CAMERA whose `concept_key` is `close-up` (one of
+    the fifteen shot-size camera terms) and a FRAMING whose family is `close-up`.
+    Unscoped, `_family_of("close-up")` found the camera row, reduced the framing
+    answer to the camera's family `close`, and a photograph that arrived was
+    recorded as a miss. Measured on session 319 the day it shipped: seven
+    `close-up` and five `waist-up` answers scored 0, four of them exact hits.
+    """
+    import json
+
+    import db
+
+    db.run(
+        """INSERT INTO component (concept_key, slot, manner, family, wording, judge_label, created_at)
+           VALUES ('close-up', 'camera', 'directed', 'close', 'close-up', 'Close camera', 'now')"""
+    )
+    db.run(
+        """INSERT INTO component (concept_key, slot, manner, family, wording, judge_label, created_at)
+           VALUES ('crop-close-up', 'framing', 'directed', 'close-up', 'close-up crop', 'The face fills the frame', 'now')"""
+    )
+    client.post("/api/readings", json={"slot": "framing", "manner": "directed",
+                                       "key": "close-up", "label": "Her face fills the frame."})
+
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "slot scoping",
+        "manner": "directed", "checkpoint": "ckpt1", "shots": [],
+    }).json()["id"]
+    shot_id = db.run(
+        """INSERT INTO shot (session_id, prompt, components, status, created_at)
+           VALUES (?, 'p', ?, 'done', 'now')""",
+        sid,
+        json.dumps({
+            "camera": {"wording": "none"},
+            "act": {"wording": "none"},
+            "framing": {"concept": "crop-close-up", "wording": "crop-close-up"},
+        }),
+    )
+
+    res = client.post(f"/api/shots/{shot_id}/judge", json={"framing": "close-up"}).json()
+    assert res["arrived"] == 1, "the family the line asked for is the family in the frame"
+    assert res["judged"] == 1
