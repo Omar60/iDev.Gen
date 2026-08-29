@@ -1,0 +1,8 @@
+[
+  {"slot": "act", "manner": "directed", "concept_key": "upright-chest-up", "family": "standing",
+   "faces": "front",
+   "wording": "One young woman stands upright and square to the camera, her shoulders level, her arms hanging straight, her chin lifted and her eyes on the lens",
+   "judge_label": "standing upright and facing the camera, arms down at her sides, looking at the lens",
+   "verdict": "UNMEASURED as a pose",
+   "sample_size": "written to name nothing below her chest, so a crop tighter than the feet has something to be drawn against - every other act in the catalogue names her legs and refuses every crop but full body"}
+]
