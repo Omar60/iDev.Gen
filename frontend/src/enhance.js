@@ -333,6 +333,24 @@ export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress, rea
  *  neither side is free, because a shoot of thirty has more arrangements coming
  *  and a photograph carrying two plans is worse than a photograph carrying one.
  */
+/** The framing a photograph is dealt, when it is not the shoot's own.
+ *
+ *  Two photographs are not full-length and both are known before the line exists.
+ *  A kiss frame is written for the face. An explicit photograph has two bodies in
+ *  it, and `a full-length photograph, head to feet` does not come back there at
+ *  all - thirteen renders without one, five from a real shoot and eight from a
+ *  controlled pair, and the depth of the room does not buy it either.
+ *
+ *  Measured on a selfie shoot before this existed: all twelve lines were
+ *  two-person and eleven of them copied the full-length row off the note anyway.
+ *  Exempting the code from overwriting the line was not enough - the row the
+ *  writer reads has to carry the exception. With it, the close framing arrives
+ *  12 of 12 in three runs, the act still arrives 12 of 12, and the line comes
+ *  down from 247 words to 213.
+ */
+export const framingFor = (framing, { explicit = false, kiss = false } = {}) =>
+  (framing && (explicit || kiss) ? CLOSE_FRAMING : framing)
+
 export const withoutClashing = (poses, kisses, n) => {
   const taken = (at) => kisses[at] || out[at]
   const near = (at) => out[at - 1] || out[at + 1]
@@ -438,6 +456,13 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
     // hips pressed flush against her bare hips`, no act named anywhere.
     const covered = covering(stages, at)
     const act = !bare && reachesTheAct(covered)
+    // The register's own framing exception, dealt instead of merely allowed. `a
+    // full-length photograph, head to feet` does not come back when two bodies are
+    // on a bed - thirteen renders without one - so the explicit stretch is dealt
+    // the close framing. Measured on a selfie shoot before this: every line of
+    // twelve was two-person, and eleven of them copied the full-length row off the
+    // note anyway. Exempting the code from overwriting the line was never enough;
+    // the row itself has to carry the exception.
     return ask({
     instruction: `${SHOOT_LINE_INSTRUCTION}`
                + (bare ? `\n\n${EXPLICIT_REGISTER}` : act ? `\n\n${EXPLICIT_STRETCH}` : '')
@@ -448,7 +473,7 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
                                          defects: defects?.slice(at.from - 1, at.from - 1 + at.want),
                                          slips: slips?.slice(at.from - 1, at.from - 1 + at.want),
                                          opens: opens?.slice(at.from - 1, at.from - 1 + at.want),
-                                         framing,
+                                         framing: framingFor(framing, { explicit: bare || act }),
                                          poses: Object.entries(poses)
                                            .filter(([k]) => Number(k) >= at.from
                                                             && Number(k) < at.from + at.want)
@@ -501,7 +526,11 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
   // The kiss frames are the one photograph in the shoot with a framing of its own,
   // and the code knows which they are — so the swap and the check are told too,
   // rather than writing full-length over the framing the kiss note just asked for.
-  const framingAt = (i) => (framing && kisses[i + 1] ? CLOSE_FRAMING : framing)
+  // The kiss frames and the explicit stretch are the two photographs with a
+  // framing of their own; the explicit one is decided per chunk above, and read
+  // back here off the line, which is the only place that knows whether the act
+  // arrived. `TWO_PEOPLE` is the same regex the walk and the length cap use.
+  const framingAt = (i) => framingFor(framing, { kiss: !!kisses[i + 1] })
   const written = lines.map((l, i) => withDealtFraming(onlyHer(l.prompt), framingAt(i)))
   // How long a line of this shoot is allowed: measured off this shoot, because
   // there is no length that is right for every wardrobe.

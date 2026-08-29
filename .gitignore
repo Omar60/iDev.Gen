@@ -22,6 +22,7 @@ data/*
 !data/catalogue-seed.json
 !data/crop-seed.json
 !data/candid-cameras-seed.json
+!data/selfie-cameras-seed.json
 !data/camera-candidates-seed.json
 
 # Written for pasting into an outside assistant, not part of the app

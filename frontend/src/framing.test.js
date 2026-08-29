@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { FRAMING, CLOSE_FRAMING, KISS_FRAMES, FRAMING_SLIPS, MANNER,
          cameraPlan, shootChunkNote } from './kinds.js'
-import { problemsWith, withDealtFraming } from './enhance.js'
+import { problemsWith, withDealtFraming, framingFor } from './enhance.js'
 
 /** The framing is dealt like the camera instead of chosen, because the frame
  *  reaches the lowest part of her the line NAMES and a line obeying the
@@ -78,6 +78,15 @@ describe('the framing put back by the code', () => {
  *  knows about before the line exists, and both were being written over by the
  *  swap until this was checked. */
 describe('the framings the deal does not touch', () => {
+  test('a kiss frame and an explicit photograph are dealt the close framing', () => {
+    expect(framingFor(FRAMING)).toBe(FRAMING)
+    expect(framingFor(FRAMING, { kiss: true })).toBe(CLOSE_FRAMING)
+    expect(framingFor(FRAMING, { explicit: true })).toBe(CLOSE_FRAMING)
+    // A manner with no camera catalogue is dealt no framing at all, and the
+    // exception cannot invent one.
+    expect(framingFor(null, { explicit: true })).toBe(null)
+  })
+
   const PAIR = 'Taken from their side, a waist-up photograph, a naked man standing behind her '
              + 'and penetrating her from behind, his penis inside her, two people in frame.'
 

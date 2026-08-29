@@ -1,0 +1,101 @@
+[
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "front-direct",
+    "family": "front",
+    "faces": "front",
+    "wording": "Taken from directly in front of her",
+    "judge_label": "Front view, face and body toward the camera",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "front-arm-length",
+    "family": "front",
+    "faces": "front",
+    "wording": "Phone held out at arm's length in front of her face",
+    "judge_label": "Arm's-length front view with the phone in front of her face",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "overhead-direct",
+    "family": "overhead",
+    "faces": "",
+    "wording": "Overhead camera directly above her",
+    "judge_label": "Directly overhead looking down at her",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "overhead-shelf",
+    "family": "overhead",
+    "faces": "",
+    "wording": "Phone propped on a high shelf across the room, looking down at her",
+    "judge_label": "From a high shelf across the room looking down",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "shoulder-left",
+    "family": "shoulder",
+    "faces": "back",
+    "wording": "Taken from behind her left shoulder, her back three-quarters to the camera",
+    "judge_label": "Behind her left shoulder, her back three-quarters turned",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "shoulder-right",
+    "family": "shoulder",
+    "faces": "back",
+    "wording": "Taken from behind her right shoulder, her back three-quarters to the camera",
+    "judge_label": "Behind her right shoulder, her back three-quarters turned",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "mirror-selfie",
+    "family": "mirror",
+    "faces": "",
+    "wording": "Mirror selfie, the phone up in her right hand and visible in the mirror",
+    "judge_label": "Mirror selfie with the phone visible in her hand",
+    "verdict": "verified",
+    "sample_size": "inherited from candid"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "pov-low-chest",
+    "family": "pov",
+    "faces": "",
+    "wording": "Phone held low in her own hand at her chest, angled down along her own body",
+    "judge_label": "Looking down along her own body from chest height",
+    "verdict": "measured",
+    "sample_size": "sessions 155, 161"
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "concept_key": "pov-above-back",
+    "family": "pov",
+    "faces": "",
+    "wording": "Phone held above her face in her own outstretched hand as she lies on her back, looking down at her",
+    "judge_label": "Held above her face looking down as she lies on her back",
+    "verdict": "measured",
+    "sample_size": "sessions 155, 161"
+  }
+]
