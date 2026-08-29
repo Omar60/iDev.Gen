@@ -231,3 +231,45 @@ above ("three labels of a slot describe ONE photograph") is written from this.
 Check the three wordings against each other before loading: if a reader would
 crop differently from each, they are three concepts, not three forms, and the
 row measures nothing about wording.
+
+## Asking for a reading vocabulary
+
+Before a pass can be judged, the judging screen needs a reading list — the
+vocabulary of mutually exclusive outcomes that someone looking at the finished
+photograph can choose between.
+
+The rules of a reading list:
+1. **Mutually exclusive**: A photograph must match at most one reading.
+2. **Decidable by a landmark, not by degree**: Settled by an anatomical or frame
+   landmark ("frame cuts between hips and knees", "face and chest toward
+   camera"), never by fuzzy degree ("partially turned", "upper body visible").
+3. **No terms of art**: No "close-up", "mid shot", "profile", "dutch angle".
+   Plain descriptive language only.
+4. **Include unprompted floor outcomes**: Checkpoints produce specific
+   compositions unprompted (e.g. the measured frontal camera floor produced by an
+   empty prompt). If the baseline outcomes are not in the vocabulary,
+   unprompted photographs have no valid answer and fail the pass.
+
+### The request
+
+---
+
+You are defining a forced-choice reading vocabulary for human judges evaluating
+generated photographs on one slot (camera, act, or framing).
+
+Slot: {{SLOT}}
+Manner: {{MANNER}}
+Expected outcomes / candidates: {{CANDIDATES}}
+
+Return a list of mutually exclusive readings.
+Rules:
+- Each reading must have a short alphanumeric `key` (matching the component
+  family) and a clear, plain English `label`.
+- Settle choices by visible physical landmarks, not by degree or opinion.
+- Do not use photography jargon or terms of art.
+- Always include the unasked/baseline outcomes produced by default (e.g. frontal
+  view for camera).
+
+Return a JSON array of `{"key": "...", "label": "..."}` objects and nothing else.
+
+---

@@ -293,6 +293,7 @@ MIT — see [LICENSE](LICENSE).
 [Getting started](docs/getting-started.md) ·
 [Workflows](docs/workflows.md) ·
 [Sessions](docs/sessions.md) ·
+[Judging](docs/judging.md) ·
 [Slideshow](docs/slideshow.md) ·
 [Troubleshooting](docs/troubleshooting.md) ·
 [Known limitations](docs/known-limitations.md)
