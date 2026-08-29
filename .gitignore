@@ -20,6 +20,7 @@ config.json
 # Sessions, database, generated images
 data/*
 !data/catalogue-seed.json
+!data/crop-seed.json
 
 # Written for pasting into an outside assistant, not part of the app
 writer-prompts.md

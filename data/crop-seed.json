@@ -1,0 +1,31 @@
+[
+  {"slot": "framing", "manner": "directed", "concept_key": "crop-headshot", "family": "headshot",
+   "faces": "", "wording": "headshot",
+   "judge_label": "head and shoulders only, cut at the neck or collarbone",
+   "verdict": "12/12 alone", "sample_size": "session 313, 2 seeds x 6 terms"},
+
+  {"slot": "framing", "manner": "directed", "concept_key": "crop-close-up", "family": "close",
+   "faces": "", "wording": "close-up",
+   "judge_label": "the face fills the frame",
+   "verdict": "12/12 alone", "sample_size": "session 313, 2 seeds x 6 terms"},
+
+  {"slot": "framing", "manner": "directed", "concept_key": "crop-waist-up", "family": "waist",
+   "faces": "", "wording": "waist-up",
+   "judge_label": "head down to the waist, nothing below it",
+   "verdict": "12/12 alone", "sample_size": "session 313, 2 seeds x 6 terms"},
+
+  {"slot": "framing", "manner": "directed", "concept_key": "crop-knee-up", "family": "knee",
+   "faces": "", "wording": "knee-up",
+   "judge_label": "head down to the knees, feet out of frame",
+   "verdict": "12/12 alone", "sample_size": "session 313, 2 seeds x 6 terms"},
+
+  {"slot": "framing", "manner": "directed", "concept_key": "crop-full-body", "family": "full",
+   "faces": "", "wording": "full body",
+   "judge_label": "the whole body in frame, head to feet",
+   "verdict": "12/12 alone", "sample_size": "session 313, 2 seeds x 6 terms"},
+
+  {"slot": "framing", "manner": "directed", "concept_key": "crop-extreme-wide", "family": "wide",
+   "faces": "", "wording": "extreme wide shot",
+   "judge_label": "she is small in the frame, the room around her",
+   "verdict": "12/12 alone", "sample_size": "session 313, 2 seeds x 6 terms"}
+]

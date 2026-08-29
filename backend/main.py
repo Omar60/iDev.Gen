@@ -29,6 +29,7 @@ from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
 from typing import Literal
 
+import crop
 import db
 import enhance
 from comfy import REFERENCE_SLOTS, SLOTS, Comfy, detect_map, graph_checkpoint
@@ -1460,14 +1461,33 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
     # ninth combination queues nothing rather than leaving eight
     # behind — the same "N rows or zero rows" rule `count` already
     # keeps for one cell, held across the whole cross product.
+    settings = json.loads(session["settings"] or "{}")
+    look = session["look"] if settings.get("use_look", True) else ""
     for cam, act, fr in combos:
-        trio = (f"({cam['key']}, {act['key']}, {fr['key']}, "
+        # `_slot_concept_wording_text` and not `cam["key"]`: a caller that names
+        # its components the way the catalogue does — `concept_key` — used to get
+        # a bare KeyError here, which is a 500 and a reset connection AFTER the
+        # loop had already inserted rows for the combinations before it. The
+        # helper accepts both spellings and every other line in this file already
+        # goes through it.
+        cam_key, _, cam_text = _slot_concept_wording_text(cam)
+        act_key, _, act_text = _slot_concept_wording_text(act)
+        fr_key, _, fr_text = _slot_concept_wording_text(fr)
+        trio = (f"({cam_key}, {act_key}, {fr_key}, "
                 f"{session['manner']}, {session['checkpoint']})")
+        # The crop law, before the cell lookup: a trio whose framing claims a crop
+        # above something the rest of the line names cannot measure its framing,
+        # because the photograph is cut where the anatomy is. Refused in both
+        # modes and in the pre-check, so a batch queues nothing rather than
+        # queueing the combinations before the contradiction.
+        clash = crop.conflict(fr_text, cam_text, act_text, session["wardrobe"], look)
+        if clash:
+            raise HTTPException(422, f"compose refused: cell {trio} contradicts itself — {clash}")
         cell = db.one(
             "SELECT judged, arrived FROM cell "
             "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
             "AND manner=? AND checkpoint=?",
-            cam["key"], act["key"], fr["key"],
+            cam_key, act_key, fr_key,
             session["manner"], session["checkpoint"],
         )
         if not cell:
@@ -1564,11 +1584,46 @@ def _candidate_keys(slot: str, candidates: dict) -> list[str]:
     return [c["key"] for c in candidates.get(slot, []) if isinstance(c, dict) and c.get("key")]
 
 
+def _wording_texts(candidates: dict) -> dict[str, dict[str, str]]:
+    """{slot: {key: wording text}} for the caller's candidate lists."""
+    out: dict[str, dict[str, str]] = {}
+    for slot in _SLOT_ORDER:
+        by_key = {}
+        for c in candidates.get(slot, []) or []:
+            if isinstance(c, dict) and c.get("key"):
+                by_key[c["key"]] = _slot_concept_wording_text(c)[2]
+        out[slot] = by_key
+    return out
+
+
+def _without_crop_conflicts(pool: set[tuple[str, str, str]], candidates: dict,
+                            context: str) -> set[tuple[str, str, str]]:
+    """The pool with the self-contradicting trios taken out.
+
+    A trio whose framing claims a crop above what the rest of the line names is
+    not drawable in either mode: the photograph is cut where the anatomy is, so
+    the cell measures the anatomy and not the framing. See `backend/crop.py` for
+    the sessions.
+
+    It is done INSIDE the pool and not as a check after the draw, which is the
+    lesson group 3 learned four times over: a constraint checked after the draw is
+    a constraint the draw does not have, and the run is then refused with a
+    "largest fillable" number that is not the largest fillable.
+    """
+    text = _wording_texts(candidates)
+    return {(cam, act, fr) for cam, act, fr in pool
+            if not crop.conflict(text["framing"].get(fr, ""),
+                                 text["camera"].get(cam, ""),
+                                 text["act"].get(act, ""),
+                                 context)}
+
+
 def _trio_pool(
     manner: str,
     checkpoint: str,
     candidates: dict,
     mode: Literal["strict", "exploratory"],
+    context: str = "",
 ) -> set[tuple[str, str, str]]:
     """The drawable trio pool for `mode`. The unit of evidence is
     a cell identified by the trio plus manner and checkpoint
@@ -1645,16 +1700,18 @@ def _trio_pool(
     )
     matched = {(r["camera_wording"], r["act_wording"], r["framing_wording"]) for r in rows}
     if mode == "strict":
-        return matched
+        return _without_crop_conflicts(matched, candidates, context)
     # ponytail: the full product, which is len(cam) * len(act) * len(framing)
     # trios. The candidate lists are a session's picks, tens at the very
     # most, so this is thousands of tuples at the ceiling and the draw
     # already walks the pool. If a caller ever passes whole catalogues,
     # push the `none` filter and the dead subtraction into SQL instead.
-    return {(cam, act, framing)
-            for cam in cam_keys if cam != "none"
-            for act in act_keys if act != "none"
-            for framing in framing_keys if framing != "none"} - matched
+    return _without_crop_conflicts(
+        {(cam, act, framing)
+         for cam in cam_keys if cam != "none"
+         for act in act_keys if act != "none"
+         for framing in framing_keys if framing != "none"} - matched,
+        candidates, context)
 
 
 def _spreadable_slots(pool: set[tuple[str, str, str]]) -> set[str]:
@@ -1928,7 +1985,13 @@ def _draw_n_trio_shots(
             f"set them on the session before composing",
         )
 
-    pool = _trio_pool(session["manner"], session["checkpoint"], candidates, mode)
+    settings = json.loads(session["settings"] or "{}")
+    # The wardrobe and the look are part of the composed line, so they are part of
+    # what names her lowest part: a session in stockings has no crop above the feet
+    # available to it, whatever the act says (session 318).
+    context = _sentences(session["wardrobe"] or "",
+                         session["look"] if settings.get("use_look", True) else "")
+    pool = _trio_pool(session["manner"], session["checkpoint"], candidates, mode, context)
 
     # The check and the draw are the same calculation. Greedy
     # on a shuffled pool, repeated over a handful of shuffles:
