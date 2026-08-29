@@ -40,6 +40,43 @@ describe('slotChoices', () => {
     }
   })
 
+  it('offers ONE choice per family, never two labels for one photograph', () => {
+    // The seed holds side-left and side-right (family `side`), shoulder-left
+    // and shoulder-right (family `shoulder`). Two labels describing the same
+    // geometry make the forced choice a guess: the judge sees the photograph,
+    // not the wording that asked for it.
+    const choices = slotChoices('camera', 'directed').slice(0, -1)
+    const families = choices.map((c) => {
+      const comp = seedCatalogue.find(
+        (x) => x.concept_key === c.key && x.slot === 'camera' && x.manner === 'directed')
+      return comp.family
+    })
+    expect(new Set(families).size).toBe(families.length)
+    // And every family in the catalogue is still offered.
+    const all = new Set(seedCatalogue
+      .filter((x) => x.slot === 'camera' && x.manner === 'directed' && !x.retired_at)
+      .map((x) => x.family))
+    expect(new Set(families)).toEqual(all)
+  })
+
+  it('narrows the choices to the families the pass actually photographed', () => {
+    // The catalogue holds nine directed camera families; a shoot that
+    // photographed one must not ask the judge about the other eight.
+    const choices = slotChoices('camera', 'directed', ['side'])
+    expect(choices.length).toBe(2)
+    expect(choices[1].key).toBe('')
+    const comp = seedCatalogue.find((x) => x.concept_key === choices[0].key)
+    expect(comp.family).toBe('side')
+    // No list means the whole slice, the way the screen previews it.
+    expect(slotChoices('camera', 'directed').length).toBeGreaterThan(2)
+  })
+
+  it('offers a single family as a yes/no question, not an empty list', () => {
+    const choices = slotChoices('framing', 'directed')
+    expect(choices.length).toBe(2)
+    expect(choices[1].key).toBe('')
+  })
+
   it('resolves manner-specific camera positions for selfie and candid', () => {
     const selfieChoices = slotChoices('camera', 'selfie')
     const candidChoices = slotChoices('camera', 'candid')

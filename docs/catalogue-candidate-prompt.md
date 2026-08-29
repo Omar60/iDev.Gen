@@ -54,7 +54,11 @@ For each candidate return exactly three fields:
 * `wording` — what goes in the prompt.
 * `judge_label` — what someone LOOKING at the finished photograph would say they
   see, written so they could pick it out of a list without ever having read the
-  wording. It must not be the wording restated.
+  wording. It must not be the wording restated, it must be settled by a
+  landmark rather than by a degree ("frame cuts below the knees", not "upper
+  legs visible"), and it must use no term of art (no mid shot, close-up,
+  profile). The three labels of one family describe one photograph and must be
+  interchangeable: the judging screen shows only one of them.
 * `family` — one word. Candidates asking for the same photograph share a family.
 
 Return a JSON array and nothing else. No explanation, no ranking, no
@@ -181,7 +185,21 @@ Each candidate carries exactly five fields:
 * judge_label — what someone LOOKING at a finished photograph would say they
   see, in plain spoken words, naming only what is visible, written so they could
   pick it out of a list without ever having read the wording. It must not be the
-  wording restated.
+  wording restated. Three more rules, each one written from a label that failed:
+  - **Decidable by a landmark, not by degree.** The reader must settle it by
+    seeing where an edge falls or where a limb is, with no judgement of how
+    much. "whole head visible, frame cuts below the knees" is settled by
+    looking; "torso and upper legs visible" is not — upper legs is a matter of
+    opinion.
+  - **No terms of art.** No mid shot, close-up, profile, three-quarter, medium
+    long. The reader must not need the vocabulary to answer, and a term of art
+    is the wording restated in the reader's dialect. "mid-length view of the
+    body" is the failure this rule exists for.
+  - **The three labels of a slot describe ONE photograph, so they must be
+    interchangeable.** The judging screen collapses a family to a single
+    choice and shows one of them. If you cannot write three wordings of one
+    photograph, say so in the reading rather than drifting to three
+    photographs.
 * family — one word naming the photograph, position or crop it asks for. All
   three candidates of a slot share it, since all three ask for the same thing.
 
@@ -201,3 +219,15 @@ together and makes a failure unattributable.
 
 Both are defects rather than forms. Edit them out before loading: the wordings
 are yours, and what is being measured is the form.
+
+**The second run drifted to three photographs and called them one family.** The
+framing candidates came back as `top edge cuts above head, bottom edge cuts
+below knees`, `torso and legs from chest to shins` and `the crop is a mid shot
+of her` — a crop with the head, a crop without it, and a term of art — all
+carrying `family: mid-shot`. They rendered three different photographs (feet in
+frame, headless, face close-up), and one family means the judging screen offers
+ONE label for all three, so the row could not be judged as written. The rule
+above ("three labels of a slot describe ONE photograph") is written from this.
+Check the three wordings against each other before loading: if a reader would
+crop differently from each, they are three concepts, not three forms, and the
+row measures nothing about wording.

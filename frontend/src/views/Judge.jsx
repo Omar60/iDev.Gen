@@ -55,7 +55,14 @@ export function Judge() {
       .catch((err) => setError(err.message || 'Failed to load session'))
   }, [sessionId])
 
-  const choices = slotChoices(slot, session?.manner)
+  // The families the pass actually photographed, once a pass has been
+  // fetched. Before that the screen previews the whole catalogue slice.
+  const [passFamilies, setPassFamilies] = useState(null)
+  const choices = slotChoices(slot, session?.manner, passFamilies)
+
+  // A different slot or session is a different pass, and the previous pass's
+  // families would otherwise filter the preview of the new one.
+  useEffect(() => { setPassFamilies(null) }, [slot, sessionId])
 
   // Start judging pass
   const startPass = async () => {
@@ -66,6 +73,7 @@ export function Judge() {
       const passData = await api.get(`/api/sessions/${sessionId}/judge-pass?slot=${slot}`)
       const shots = passData.shots || []
       const controls = passData.controls || []
+      setPassFamilies(passData.families || null)
       const newDeck = buildJudgeDeck(shots, controls)
       if (newDeck.length === 0) {
         setError(`No photographs in session #${sessionId} are waiting to be judged for ${slot}.`)
@@ -360,11 +368,20 @@ export function Judge() {
               Act / arrangement
             </button>
             <button
-              className="chip"
-              disabled
-              title="Each manner carries a single framing, and a forced choice over one option is not a question"
+              className={'chip' + (slot === 'framing' ? ' on' : '')}
+              onClick={() => setSlot('framing')}
+              // Disabled only when the manner has NO framing to offer. The
+              // button used to be disabled outright, on the rule that a forced
+              // choice over one option is not a question — true while the
+              // screen offered one choice per wording, and the backend gate
+              // moved with `slotChoices` to one choice per family plus
+              // "None or cannot tell", which is a yes/no question.
+              disabled={slotChoices('framing', session?.manner).length === 0}
+              title={slotChoices('framing', session?.manner).length === 0
+                ? `No framing component for manner ${session?.manner || 'none'}`
+                : ''}
             >
-              Framing (one per manner)
+              Framing
             </button>
           </div>
         </div>

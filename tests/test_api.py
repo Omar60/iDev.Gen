@@ -3682,7 +3682,7 @@ def test_judge_pass_returns_only_shot_id_keys_and_exact_structure(client, seeded
     data = r.json()
 
     # Exact top-level keys
-    assert set(data.keys()) == {"shots", "controls"}
+    assert set(data.keys()) == {"shots", "controls", "families"}
     assert data["shots"] == [shot_id]
     assert data["controls"] == []
 
@@ -3719,7 +3719,7 @@ def test_judge_pass_default_unjudged_shots_with_empty_verdicts(client, seeded):
 
     r = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
     assert r.status_code == 200
-    assert r.json() == {"shots": [s1, s2], "controls": []}
+    assert r.json() == {"shots": [s1, s2], "controls": [], "families": ["front"]}
 
 
 def test_judge_pass_categorizes_judged_shots_as_controls(client, seeded):
@@ -3749,12 +3749,12 @@ def test_judge_pass_categorizes_judged_shots_as_controls(client, seeded):
     # Query slot=camera: s1 is control, s2 is unjudged shot
     r_cam = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
     assert r_cam.status_code == 200
-    assert r_cam.json() == {"shots": [s2], "controls": [s1]}
+    assert r_cam.json() == {"shots": [s2], "controls": [s1], "families": ["front"]}
 
     # Query slot=act: both are unjudged shots, neither is control
     r_act = client.get(f"/api/sessions/{sid}/judge-pass?slot=act")
     assert r_act.status_code == 200
-    assert r_act.json() == {"shots": [s1, s2], "controls": []}
+    assert r_act.json() == {"shots": [s1, s2], "controls": [], "families": ["ontop"]}
 
 
 def test_judge_pass_never_leaks_shots_from_another_session(client, seeded):
@@ -3784,7 +3784,7 @@ def test_judge_pass_never_leaks_shots_from_another_session(client, seeded):
     assert r.status_code == 200
     assert sb1 not in r.json()["shots"]
     assert sb1 not in r.json()["controls"]
-    assert r.json() == {"shots": [sa1], "controls": []}
+    assert r.json() == {"shots": [sa1], "controls": [], "families": ["front"]}
 
 
 def test_judge_pass_excludes_written_rejected_and_non_done_shots(client, seeded):
@@ -3822,15 +3822,63 @@ def test_judge_pass_excludes_written_rejected_and_non_done_shots(client, seeded)
 
     r = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
     assert r.status_code == 200
-    assert r.json() == {"shots": [s1], "controls": []}
+    assert r.json() == {"shots": [s1], "controls": [], "families": ["front"]}
 
 
-def test_judge_pass_refuses_framing_and_invalid_slots(client, seeded):
-    """The framing slot returns 422, and the refusal says why.
+def test_the_pass_serves_what_asked_for_the_slot_plus_a_fifth_in_negatives(client, seeded):
+    """The deck is the photographs whose line ASKED for the slot.
 
-    It used to say "no catalogue yet", which stopped being true when framing
-    moved into the component store: there IS a catalogue, it holds one framing
-    per manner, and a forced choice over a list of one is not a question.
+    The pass swept every photograph in the session for every slot, so a bench
+    that isolates one slot at a time had the operator answering 70 questions
+    that measured no cell to reach 30 that did. A fifth of the deck is still
+    drawn from the photographs that asked nothing: a deck with a single
+    expected answer is one an operator can fill in on autopilot.
+
+    `families` is what the deck actually holds, so the screen asks about the
+    components in front of the judge and not about the whole catalogue.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "one row at a time",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    none_slot = {"key": "none", "wordings": [{"key": "none", "text": ""}]}
+
+    def _compose(camera, act, count):
+        r = client.post(f"/api/sessions/{sid}/compose", json={
+            "camera": camera, "act": act, "framing": none_slot,
+            "count": count, "mode": "exploratory",
+        })
+        assert r.status_code == 200, r.text
+        return r.json()["ids"]
+
+    asked = _compose({"key": "side-left", "wordings": [{"key": "side-left", "text": "cam"}]},
+                     none_slot, 10)
+    _compose(none_slot,
+             {"key": "astride", "wordings": [{"key": "astride", "text": "act"}]}, 20)
+    db.run(f"UPDATE shot SET status='done' WHERE session_id=?", sid)
+
+    body = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera").json()
+    # Every photograph that asked for a camera, and a fifth as many negatives.
+    assert set(asked) <= set(body["shots"])
+    assert len(body["shots"]) == len(asked) + 2
+    # The negatives are spread through the deck, not parked at the end: a run
+    # of them in one place is a pattern, and a pattern is the answer.
+    at = [i for i, shot_id in enumerate(body["shots"]) if shot_id not in asked]
+    assert at != [len(body["shots"]) - 2, len(body["shots"]) - 1]
+    # The question is built from what the deck holds, not from the catalogue:
+    # the seed carries nine directed camera families and one was photographed.
+    assert body["families"] == ["side"]
+
+
+def test_judge_pass_refuses_an_empty_slot_and_invalid_slots(client, seeded):
+    """An EMPTY slot catalogue returns 422; one family does not.
+
+    The refusal used to fire on framing whenever a manner held fewer than two
+    components, because the screen offered one choice per wording and a list of
+    one is not a question. `slotChoices` offers one choice per FAMILY now, so a
+    single family plus "None or cannot tell" is a yes/no question and the pass
+    opens. Zero components is still nothing to ask about.
+
     Unknown slots return 422. Nonexistent session returns 404.
     """
     sid = client.post("/api/sessions", json={
@@ -3838,14 +3886,16 @@ def test_judge_pass_refuses_framing_and_invalid_slots(client, seeded):
         "manner": "directed", "checkpoint": "finepornV4", "shots": [],
     }).json()["id"]
 
-    # framing slot refusal
+    # One framing family is a question now, not a refusal.
+    assert client.get(f"/api/sessions/{sid}/judge-pass?slot=framing").status_code == 200
+
+    # An empty slot catalogue for this manner is refused.
+    db.run("UPDATE component SET retired_at='2026-01-01' WHERE slot='framing' AND manner='directed'")
     r_frame = client.get(f"/api/sessions/{sid}/judge-pass?slot=framing")
     assert r_frame.status_code == 422
     detail = r_frame.json()["detail"]
-    assert "forced choice needs more than one per manner" in detail
-    # The message counts what is actually in the store rather than asserting
-    # the catalogue is empty.
-    assert "no catalogue" not in detail
+    assert "framing catalogue is empty" in detail
+    db.run("UPDATE component SET retired_at=NULL WHERE slot='framing' AND manner='directed'")
 
     # invalid slot
     r_inv = client.get(f"/api/sessions/{sid}/judge-pass?slot=nonexistent")
@@ -3855,6 +3905,126 @@ def test_judge_pass_refuses_framing_and_invalid_slots(client, seeded):
     # 404 for missing session
     r_404 = client.get("/api/sessions/999999/judge-pass?slot=camera")
     assert r_404.status_code == 404
+
+
+def test_a_hit_is_the_family_not_the_wording(client, seeded):
+    """`arrived` counts the FAMILY the line asked for, not the wording key.
+
+    A shoot that varies the wording inside one concept gives the judge three
+    labels for one geometry ("side view, camera level with torso" /
+    "profile shot from the side"). Nobody looking at a photograph can tell
+    which synonym produced it, so scoring on the wording key measured a
+    1-in-3 guess. `side-left` and `side-right` are one family in the store:
+    a shot composed from one and answered with the other is a hit, and a
+    different family is still a miss.
+    """
+    def _shot(cam_key, name):
+        return _composed_shot_in_session(
+            client, seeded, manner="directed", checkpoint="finepornV4",
+            camera={"key": cam_key, "wordings": [{"key": cam_key, "text": "cam text"}]},
+            act={"key": "astride", "wordings": [{"key": "astride", "text": "act text"}]},
+            framing={"key": "full-length",
+                     "wordings": [{"key": "full-length", "text": "framing text"}]},
+            session_name=name,
+        )
+
+    # Same family, different wording: a hit.
+    same = _shot("side-left", "same family")
+    r_same = client.post(f"/api/shots/{same}/judge", json={"camera": "side-right"})
+    assert r_same.status_code == 200, r_same.text
+    cell_same = db.one(
+        "SELECT judged, arrived FROM cell WHERE camera_wording='side-left' "
+        "AND manner='directed' AND checkpoint='finepornV4'")
+    assert (cell_same["judged"], cell_same["arrived"]) == (1, 1)
+
+    # A different family is still a miss.
+    other = _shot("side-left", "other family")
+    r_other = client.post(f"/api/shots/{other}/judge", json={"camera": "overhead-direct"})
+    assert r_other.status_code == 200, r_other.text
+    cell_other = db.one(
+        "SELECT judged, arrived FROM cell WHERE camera_wording='side-left' "
+        "AND manner='directed' AND checkpoint='finepornV4'")
+    assert (cell_other["judged"], cell_other["arrived"]) == (2, 1)
+
+    # "None or cannot tell" is a miss whatever the families say.
+    none_told = _shot("side-left", "cannot tell")
+    assert client.post(f"/api/shots/{none_told}/judge",
+                       json={"camera": ""}).status_code == 200
+    cell_none = db.one(
+        "SELECT judged, arrived FROM cell WHERE camera_wording='side-left' "
+        "AND manner='directed' AND checkpoint='finepornV4'")
+    assert (cell_none["judged"], cell_none["arrived"]) == (3, 1)
+
+
+def test_a_slot_nobody_asked_for_cannot_fail_the_photograph(client, seeded):
+    """A slot drawn as `none` is skipped when `arrived` is derived.
+
+    The measuring bench isolates one slot and leaves the other two at `none`.
+    A later pass over one of those slots gets the judge's correct "none or
+    cannot tell" — and counting it as a miss dropped a cell that stood at
+    10 of 10 back to 0, one pass at a time. What is measured is what the
+    line asked for.
+    """
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera={"key": "none", "wordings": [{"key": "none", "text": ""}]},
+        act={"key": "astride", "wordings": [{"key": "astride", "text": "act text"}]},
+        framing={"key": "none", "wordings": [{"key": "none", "text": ""}]},
+        session_name="one slot asked",
+    )
+
+    def _cell():
+        return db.one(
+            "SELECT judged, arrived FROM cell WHERE camera_wording='none' "
+            "AND act_wording='astride' AND framing_wording='none' "
+            "AND manner='directed' AND checkpoint='finepornV4'")
+
+    # The act pass: the slot the line asked for arrived.
+    assert client.post(f"/api/shots/{shot_id}/judge",
+                       json={"act": "astride"}).status_code == 200
+    assert (_cell()["judged"], _cell()["arrived"]) == (1, 1)
+
+    # The camera pass over the same photograph: nothing was asked for on
+    # that slot, and the correct answer does not take the hit away.
+    assert client.post(f"/api/shots/{shot_id}/judge",
+                       json={"camera": ""}).status_code == 200
+    assert (_cell()["judged"], _cell()["arrived"]) == (1, 1)
+
+
+def test_a_pass_over_a_slot_nobody_asked_for_counts_nothing(client, seeded):
+    """`judged` counts a photograph once a pass answers a slot the line ASKED.
+
+    A pass over one slot sweeps the whole session, so a framing photograph
+    gets the camera question too — and its camera is `none`. Counting that
+    answer took the framing cells to `judged=10, arrived=0`, which reads
+    `dead`, before framing had been judged at all: a measurement that failed
+    without ever being taken.
+    """
+    shot_id = _composed_shot_in_session(
+        client, seeded, manner="directed", checkpoint="finepornV4",
+        camera={"key": "none", "wordings": [{"key": "none", "text": ""}]},
+        act={"key": "none", "wordings": [{"key": "none", "text": ""}]},
+        framing={"key": "full-length",
+                 "wordings": [{"key": "full-length", "text": "framing text"}]},
+        session_name="only framing asked",
+    )
+
+    def _cell():
+        return db.one(
+            "SELECT judged, arrived FROM cell WHERE camera_wording='none' "
+            "AND act_wording='none' AND framing_wording='full-length' "
+            "AND manner='directed' AND checkpoint='finepornV4'")
+
+    # The camera pass: the slot asked for nothing, so nothing is counted and
+    # no cell row is created.
+    assert client.post(f"/api/shots/{shot_id}/judge",
+                       json={"camera": ""}).status_code == 200
+    assert _cell() is None
+
+    # The framing pass is the one this photograph carries an answer for.
+    assert client.post(f"/api/shots/{shot_id}/judge",
+                       json={"framing": "full-length"}).status_code == 200
+    assert (_cell()["judged"], _cell()["arrived"]) == (1, 1)
 
 
 def test_judge_control_shot_agreement_does_not_modify_state(client, seeded):
@@ -6064,45 +6234,37 @@ def test_compose_with_count_zero_is_rejected_at_the_boundary(client, seeded):
         assert r.status_code == 422, f"count={bad}: {r.status_code} {r.text}"
 
 
-def test_judge_pass_opens_framing_once_a_manner_has_two(client, seeded):
-    """The framing pass refuses a list of one and opens at two.
+def test_judge_pass_emptiness_is_counted_per_manner(client, seeded):
+    """The framing pass opens on one family and closes only when empty.
 
-    The refusal was unconditional while every manner carried a single
-    framing. It is a count now, and the count is per MANNER: the store
-    can hold six framings across three manners and still hand this
-    operator a forced choice over one, which is not a question.
+    The refusal used to fire at fewer than two COMPONENTS, because the screen
+    offered one choice per wording. It offers one per FAMILY now, so one family
+    plus "None or cannot tell" is a yes/no question and the pass opens. What
+    is still refused is an empty catalogue, and empty is counted per MANNER:
+    retiring directed's framing leaves candid's alone.
     """
     sid = client.post("/api/sessions", json={
         "model_id": seeded["model_id"], "name": "framing pass",
         "manner": "directed", "checkpoint": "finepornV4", "shots": [],
     }).json()["id"]
 
-    # The seed ships one framing per manner: still refused, and the
-    # message counts what is there for THIS manner.
+    # The seed ships one framing per manner, and one family is a question.
     r_one = client.get(f"/api/sessions/{sid}/judge-pass?slot=framing")
-    assert r_one.status_code == 422
-    assert "1 component(s) for manner 'directed'" in r_one.json()["detail"]
+    assert r_one.status_code == 200, r_one.text
+    assert r_one.json() == {"shots": [], "controls": [], "families": []}
 
-    db.run(
-        """INSERT INTO component (concept_key, slot, manner, family, faces,
-                                  wording, judge_label, created_at)
-           VALUES ('chest-up', 'framing', 'directed', 'chest_up', '',
-                   'the frame cuts at her lower chest',
-                   'Frame ends at the lower chest', ?)""",
-        db.now(),
-    )
-    r_two = client.get(f"/api/sessions/{sid}/judge-pass?slot=framing")
-    assert r_two.status_code == 200, r_two.text
-    assert r_two.json() == {"shots": [], "controls": []}
+    db.run("UPDATE component SET retired_at=? WHERE slot='framing' AND manner='directed'",
+           db.now())
+    r_empty = client.get(f"/api/sessions/{sid}/judge-pass?slot=framing")
+    assert r_empty.status_code == 422
+    assert "framing catalogue is empty for manner 'directed'" in r_empty.json()["detail"]
 
-    # A second manner is untouched by directed's second framing.
+    # A second manner is untouched by directed's retirement.
     other = client.post("/api/sessions", json={
         "model_id": seeded["model_id"], "name": "candid pass",
         "manner": "candid", "checkpoint": "finepornV4", "shots": [],
     }).json()["id"]
-    r_other = client.get(f"/api/sessions/{other}/judge-pass?slot=framing")
-    assert r_other.status_code == 422
-    assert "manner 'candid'" in r_other.json()["detail"]
+    assert client.get(f"/api/sessions/{other}/judge-pass?slot=framing").status_code == 200
 
 
 def test_a_control_arm_composes_with_no_phrase_for_a_slot(client, seeded):

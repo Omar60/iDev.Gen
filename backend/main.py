@@ -2997,11 +2997,28 @@ def get_judge_pass(sid: int, slot: str):
     show what the photograph was composed from, because an operator
     shown the expected answer will find it (spec.md:104-107).
 
-    The framing slot returns 422: it is in the store like any other
-    component, but each manner carries a single framing, and a forced
-    choice over a list of one is not a question — the judge can only
-    pick the answer. It opens when a manner has more than one framing
-    to tell apart, which is a measurement decision nobody has taken.
+    `shots` is the photographs whose line ASKED for this slot, plus a
+    fifth as many drawn from the ones that asked nothing. The pass used
+    to serve every photograph in the session for every slot, which on a
+    bench that isolates one slot at a time meant 70 of 100 answers
+    measured no cell at all — real work behind no measurement. The
+    negatives that remain are there to keep the deck from having a single
+    expected answer; they still measure nothing, and `judge_shot` counts
+    them toward nothing.
+
+    `families` is the component families actually present among those
+    photographs, for the screen to build its forced choice from. The
+    choices came from the whole catalogue slice for the manner before,
+    so a catalogue that grew after a shoot put families in the question
+    that the shoot never photographed.
+
+    A slot whose catalogue is EMPTY for the session's manner returns
+    422: there is nothing to offer the judge. A slot holding one
+    family is not refused — `slotChoices` offers one choice per
+    family plus "None or cannot tell", which is a yes/no question,
+    and it is answerable because the floor is measured. The older
+    rule refused fewer than two COMPONENTS, which was the right
+    refusal while the screen offered one choice per wording.
     """
     if slot not in ("camera", "act", "framing"):
         raise HTTPException(
@@ -3011,20 +3028,26 @@ def get_judge_pass(sid: int, slot: str):
     session = db.one("SELECT id, manner FROM session WHERE id=?", sid)
     if not session:
         raise HTTPException(404, "session not found")
-    if slot == "framing":
-        # Counted for THIS session's manner, which is the unit the forced
-        # choice is drawn from: the store can hold six framings across three
-        # manners and still offer a list of one to the operator.
-        n = db.one("SELECT COUNT(*) AS n FROM component "
-                   "WHERE slot='framing' AND manner=? AND retired_at IS NULL",
-                   session["manner"])["n"]
-        if n < 2:
-            raise HTTPException(
-                422,
-                "judge-pass refused: the framing catalogue holds "
-                f"{n} component(s) for manner {session['manner']!r} and a "
-                "forced choice needs more than one per manner to be a question",
-            )
+    # Counted for THIS session's manner, which is the unit the forced choice is
+    # drawn from: the store can hold six framings across three manners and
+    # still offer nothing to the operator.
+    #
+    # The old rule refused a slot holding fewer than two components, on the
+    # grounds that a forced choice over a list of one is not a question. It is
+    # one, now that `slotChoices` offers one choice per FAMILY and not per
+    # wording: a single family plus "None or cannot tell" is a yes/no question,
+    # and it is answerable because the floor is measured (the empty prompt
+    # renders frontal 10 of 10 on this checkpoint, so "did a side view arrive?"
+    # has a real negative). Zero components is still not a question.
+    n = db.one("SELECT COUNT(*) AS n FROM component "
+               "WHERE slot=? AND manner=? AND retired_at IS NULL",
+               slot, session["manner"])["n"]
+    if n == 0:
+        raise HTTPException(
+            422,
+            f"judge-pass refused: the {slot} catalogue is empty for manner "
+            f"{session['manner']!r}; there is nothing to offer the judge",
+        )
 
     rows = db.q(
         "SELECT id, components, verdicts FROM shot "
@@ -3033,16 +3056,49 @@ def get_judge_pass(sid: int, slot: str):
         sid,
     )
     shots = []
+    negatives = []
     controls = []
+    families = []
     for r in rows:
         if not r["components"] or r["components"] == "{}":
             continue
+        comps = json.loads(r["components"])
+        drawn = (comps.get(slot) or {}).get("wording", "none")
         v = json.loads(r["verdicts"]) if r["verdicts"] else {}
         if v.get(slot) is not None:
             controls.append(r["id"])
+        elif drawn == "none":
+            # The line asked nothing of this slot, so the photograph measures
+            # no cell. A few of them ride along as negatives (below); the rest
+            # are work with no measurement behind it.
+            negatives.append(r["id"])
         else:
             shots.append(r["id"])
-    return {"shots": shots, "controls": controls}
+            family = db.one("SELECT family FROM component WHERE concept_key=? AND manner=?",
+                            drawn, session["manner"])
+            if family and family["family"] and family["family"] not in families:
+                families.append(family["family"])
+
+    # A deck of nothing but photographs that DID ask for the slot has one
+    # expected answer, and an operator who notices that answers on autopilot.
+    # A fifth of the deck is drawn from the photographs that asked nothing:
+    # their correct answer is "none or cannot tell", and getting one wrong is
+    # the signal that the pass stopped being a measurement. The sample is a
+    # stride over the ids rather than a random draw so an interrupted pass
+    # resumes with the same deck.
+    wanted = -(-len(shots) // 5)
+    if wanted and negatives:
+        stride = max(1, len(negatives) // wanted)
+        picked = negatives[::stride][:wanted]
+        # Scattered through the deck, not appended and not evenly spaced: a
+        # run at the end is a pattern and so is every fifth photograph, and a
+        # pattern is the answer. Seeded on the session and the slot so an
+        # interrupted pass resumes with the deck it started with.
+        rand = random.Random(f"{sid}:{slot}")
+        for shot_id in picked:
+            shots.insert(rand.randrange(len(shots) + 1), shot_id)
+
+    return {"shots": shots, "controls": controls, "families": families}
 
 
 @app.post("/api/shots/{shot_id}/judge")
@@ -3060,9 +3116,12 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
 
     The per-slot delta is what the judge's answer implies:
 
-    - A non-``None`` slot increments ``judged`` by 1. The question
-      was asked and an answer was given — the slot was measured
-      against the photograph.
+    - A non-``None`` slot the line ASKED for (its drawn wording is
+      not ``none``) increments ``judged`` by 1, once per photograph.
+      The question was asked and an answer was given — the slot was
+      measured against the photograph. A slot drawn as ``none``
+      asked for nothing, so answering it measures nothing and
+      counts nothing.
     - A non-empty answer that equals the drawn wording also
       increments ``arrived`` by 1. A catalogue key that matches
       the trio is the act/camera/framing the line asked for is
@@ -3289,7 +3348,16 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # The threshold exists because a measurement below n=10 does not
     # survive its own noise; letting three answers stand in for
     # three photographs would have retired it silently.
-    judged_delta = 0 if already else 1
+    # ...and a photograph is counted for a cell only once a pass has answered
+    # a slot the line ASKED for. The bench isolates one slot and leaves the
+    # rest at `none`: a camera pass over a framing photograph answers a slot
+    # the trio requested nothing on, and counting it took the framing cells to
+    # `judged=10, arrived=0` — `dead` — before framing had been judged at all.
+    # A trio that asks for nothing (the floor) is never counted: there is no
+    # request to verify, and its photographs are read by eye.
+    asked_before = any(drawn[slot] != "none" for slot in already)
+    asked_now = any(drawn[slot] != "none" for slot in answers)
+    judged_delta = 1 if asked_now and not asked_before else 0
     contradicted_delta = 1 if j.defect else 0
 
     # `arrived` is a property of the photograph, so it is derived
@@ -3300,9 +3368,45 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # wrong key is kept on the row for the operator to read.
     # Because a later pass can turn a hit into a miss, the delta is
     # the difference between the two states, which is -1, 0 or +1.
+    def _family_of(key: str) -> str:
+        if not key or key == "none":
+            return ""
+        row = db.one("SELECT family FROM component WHERE concept_key=? AND manner=?",
+                     key, session["manner"])
+        return (row["family"] if row else "") or ""
+
+    def _hit(slot: str, ans: str) -> bool:
+        # A hit is the FAMILY the line asked for, not the wording key. The
+        # judge sees a photograph, and a concept's wordings are synonyms:
+        # three labels for one geometry make the forced choice a 1-in-3
+        # guess and `arrived` a measure of the guess, not of the line.
+        # `slotChoices` offers one choice per family for the same reason.
+        # The cell is still keyed on the WORDING, so a wording that renders
+        # and one that does not still separate — by the counts they land on.
+        # Exact-key equality stays as the first branch: it is what a
+        # component with no family (or one the store no longer holds) falls
+        # back to, and it keeps every verdict stored before this change
+        # scoring the same way.
+        if not ans:
+            return False
+        if ans == drawn[slot]:
+            return True
+        family = _family_of(ans)
+        return bool(family) and family == _family_of(drawn[slot])
+
     def _all_arrived(seen: dict) -> int:
-        return int(bool(seen) and all(ans and ans == drawn[slot]
-                                      for slot, ans in seen.items()))
+        # A slot drawn as `none` asked for NOTHING, so it cannot fail. The
+        # measuring bench isolates one slot at a time and leaves the other two
+        # at `none` (a camera cell is `(side-level, none, none)`), which makes
+        # "nothing was asked here" the common case, not the odd one. Counting
+        # the judge's correct "none or cannot tell" on such a slot as a miss
+        # is what a pass over one slot did to the cells another pass had
+        # already filled: the act row stood at 10 of 10, the camera pass
+        # answered `none` on a camera nobody asked for, and every act cell
+        # dropped to 0. The `none` slots are skipped; a trio that asked for
+        # nothing at all (the floor) has nothing to arrive and stays at 0.
+        asked = {slot: ans for slot, ans in seen.items() if drawn[slot] != "none"}
+        return int(bool(asked) and all(_hit(slot, ans) for slot, ans in asked.items()))
 
     arrived_delta = _all_arrived({**already, **answers}) - _all_arrived(already)
 
@@ -3318,9 +3422,16 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
     # — a slot that arrives is a slot that was judged, and
     # the loop above guarantees it.
     key = (cam_w, act_w, framing_w, session["manner"], session["checkpoint"])
-    if already:
-        # A later pass on a photograph already counted. The row
-        # exists by construction (the first pass created it), and
+    # The branch is on whether the ROW EXISTS, not on whether the photograph
+    # carries earlier answers. They stopped being the same question once a
+    # pass over a slot the line never asked for counts nothing: such a pass
+    # leaves answers on the shot and no cell row behind, and "an earlier
+    # answer means the row is there" would then UPDATE nothing and lose the
+    # measurement the NEXT pass takes.
+    row_exists = db.one(
+        "SELECT 1 AS present FROM cell WHERE camera_wording=? AND act_wording=? "
+        "AND framing_wording=? AND manner=? AND checkpoint=?", *key)
+    if row_exists:
         # `arrived_delta` can be -1 here — which an UPSERT cannot
         # carry: SQLite validates the row the INSERT proposes
         # BEFORE the conflict is resolved, so `VALUES (..., 0, -1)`
@@ -3328,12 +3439,13 @@ def judge_shot(shot_id: int, j: JudgeShotIn):
         # row the UPDATE would produce is legal. A plain UPDATE is
         # both correct and the smaller statement.
         db.run(
-            "UPDATE cell SET arrived = arrived + ?, contradicted = contradicted + ? "
+            "UPDATE cell SET judged = judged + ?, arrived = arrived + ?, "
+            "contradicted = contradicted + ? "
             "WHERE camera_wording=? AND act_wording=? AND framing_wording=? "
             "AND manner=? AND checkpoint=?",
-            arrived_delta, contradicted_delta, *key,
+            judged_delta, arrived_delta, contradicted_delta, *key,
         )
-    else:
+    elif judged_delta or arrived_delta or contradicted_delta:
         db.run(
             "INSERT INTO cell (camera_wording, act_wording, framing_wording, "
             "manner, checkpoint, judged, arrived, contradicted) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
