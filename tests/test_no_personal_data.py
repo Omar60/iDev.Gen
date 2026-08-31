@@ -4,6 +4,14 @@ Writing the forbidden values into this file would publish them, so the rules are
 patterns, not a blocklist: user-home paths, emails and API tokens. Every tracked
 file is scanned, including docs and CI config — the leak this catches in practice
 is a real path pasted into an example.
+
+The second rule is not a pattern at all: no image may be tracked. A photograph
+of a person is not a path, an email or a token, and the text scan below skips
+binaries by suffix — so six of them sat tracked under `data/depth-sources/`
+through a `.gitignore` exception, green the whole time, until a push to this
+public repo was about to publish them (2026-08-31, history rewritten to drop
+them). Nothing in this repo needs a checked-in image, so the rule is "none"
+rather than a pattern over their contents.
 """
 from __future__ import annotations
 
@@ -32,6 +40,21 @@ ALLOWED = {
 
 SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".ico", ".safetensors", ".db"}
 
+# No image is tracked, full stop. `.svg` is in here with the binaries: it is text,
+# so the scan above reads it, but a photograph base64-encoded into one is invisible
+# to every pattern. If the app ever needs a real asset — a logo, a UI icon — add its
+# path to ALLOWED_IMAGES in the same commit that adds the file, so the exception is
+# a decision somebody made rather than a suffix nobody checked.
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff",
+                  ".avif", ".heic", ".heif", ".ico", ".svg"}
+ALLOWED_IMAGES: set[str] = set()
+
+
+def image_offenders(files) -> list[str]:
+    """The tracked paths that are images and are not on the allowlist."""
+    return [f for f in files
+            if Path(f).suffix.lower() in IMAGE_SUFFIXES and f not in ALLOWED_IMAGES]
+
 
 def tracked_files() -> list[str]:
     # `--others --exclude-standard` adds files that are not staged yet: a leak in
@@ -58,6 +81,26 @@ def test_no_personal_data_in_tracked_files():
                 offenders.append(f"{rel}:{line}: {label}: {match.group(0)}")
 
     assert not offenders, "personal data in tracked files:\n" + "\n".join(offenders)
+
+
+def test_no_images_are_tracked():
+    """The rule the text scan cannot enforce: a person in a JPEG is not a pattern."""
+    offenders = image_offenders(tracked_files())
+    assert not offenders, (
+        "images are tracked in a public repo:\n" + "\n".join(offenders)
+        + "\n\nSource frames and generated photographs belong in the ignored part "
+          "of data/. If one of these is a real app asset, add it to ALLOWED_IMAGES.")
+
+
+def test_the_image_rule_actually_bites():
+    """Same reason the scanner has its own test: a guard that cannot fail is decoration."""
+    assert image_offenders(["data/depth-sources/profile_90.jpg"]) == \
+        ["data/depth-sources/profile_90.jpg"]
+    # The suffix match is case-blind, or one screenshot walks straight past it.
+    assert image_offenders(["docs/shot.PNG"]) == ["docs/shot.PNG"]
+    assert image_offenders(["backend/main.py", "data/catalogue-seed.json"]) == []
+    # The allowlist is what keeps this rule usable when a real asset arrives.
+    assert image_offenders(list(ALLOWED_IMAGES)) == []
 
 
 def test_the_scanner_actually_catches_things(tmp_path):
