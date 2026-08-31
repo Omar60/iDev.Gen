@@ -1,0 +1,239 @@
+{
+  "name": "moodyKrea2 4KHD - KG reference stack (wardrobe)",
+  "kind": "t2i",
+  "graph": {
+    "599": {
+      "inputs": {
+        "add_noise": "enable",
+        "noise_seed": [
+          "649",
+          0
+        ],
+        "steps": 12,
+        "cfg": 1,
+        "sampler_name": "euler_ancestral",
+        "scheduler": "beta",
+        "start_at_step": 0,
+        "end_at_step": 9999,
+        "return_with_leftover_noise": "disable",
+        "model": [
+          "822",
+          0
+        ],
+        "positive": [
+          "902",
+          0
+        ],
+        "negative": [
+          "763",
+          0
+        ],
+        "latent_image": [
+          "698",
+          0
+        ]
+      },
+      "class_type": "KSamplerAdvanced",
+      "_meta": {
+        "title": "KSampler (Advanced)"
+      }
+    },
+    "609": {
+      "inputs": {
+        "samples": [
+          "599",
+          0
+        ],
+        "vae": [
+          "757",
+          0
+        ]
+      },
+      "class_type": "VAEDecode",
+      "_meta": {
+        "title": "VAE Decode"
+      }
+    },
+    "649": {
+      "inputs": {
+        "seed": 616220837117311
+      },
+      "class_type": "Seed (rgthree)",
+      "_meta": {
+        "title": "Seed (1ST)"
+      }
+    },
+    "698": {
+      "inputs": {
+        "width": [
+          "848",
+          0
+        ],
+        "height": [
+          "848",
+          1
+        ],
+        "batch_size": 1
+      },
+      "class_type": "EmptyLatentImage",
+      "_meta": {
+        "title": "Empty Latent Image (Base Dimensions) 初始大小"
+      }
+    },
+    "755": {
+      "inputs": {
+        "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+        "type": "krea2",
+        "device": "default"
+      },
+      "class_type": "CLIPLoader",
+      "_meta": {
+        "title": "Load CLIP"
+      }
+    },
+    "757": {
+      "inputs": {
+        "vae_name": "qwen_image_vae.safetensors"
+      },
+      "class_type": "VAELoader",
+      "_meta": {
+        "title": "Load VAE"
+      }
+    },
+    "761": {
+      "inputs": {
+        "unet_name": "krea2TurboNSFWAIO_v10.safetensors",
+        "weight_dtype": "default"
+      },
+      "class_type": "UNETLoader",
+      "_meta": {
+        "title": "Load Diffusion Model"
+      }
+    },
+    "763": {
+      "inputs": {
+        "conditioning": [
+          "902",
+          0
+        ]
+      },
+      "class_type": "ConditioningZeroOut",
+      "_meta": {
+        "title": "Conditioning Zero Out"
+      }
+    },
+    "822": {
+      "inputs": {
+        "lora_name": "krea\\lora_zchar_jir_Krea-2-Raw_rl4_v1.safetensors",
+        "strength_model": 1,
+        "strength_clip": 1,
+        "model": [
+          "761",
+          0
+        ],
+        "clip": [
+          "755",
+          0
+        ]
+      },
+      "class_type": "LoraLoader",
+      "_meta": {
+        "title": "Main Lora Loader"
+      }
+    },
+    "848": {
+      "inputs": {
+        "aspect_ratio": "9:16 (Portrait Widescreen)",
+        "megapixels": 1.5,
+        "multiple": 32
+      },
+      "class_type": "ResolutionSelector",
+      "_meta": {
+        "title": "Resolution Selector"
+      }
+    },
+    "999": {
+      "inputs": {
+        "filename_prefix": "depth",
+        "images": [
+          "609",
+          0
+        ]
+      },
+      "class_type": "SaveImage",
+      "_meta": {
+        "title": "Save Preview"
+      }
+    },
+    "900": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "profile_90.jpg"
+      }
+    },
+    "901": {
+      "class_type": "KGKrea2ImageGuideCardV10",
+      "inputs": {
+        "Reference image": [
+          "900",
+          0
+        ],
+        "How strongly this image guides": 0.2,
+        "Use image for": "borrow the clothing style",
+        "Manual mode borrows": "overall image",
+        "Prepare image by": "use image as-is",
+        "Color kept": 1.0,
+        "Small details kept": 1.0,
+        "Study this image at": "use stack setting",
+        "Frame this reference by": "use stack setting",
+        "Subject copying": "recipe decides",
+        "Early layout guidance": 1.0,
+        "Final detail copying": 1.0,
+        "Maximum image pull": 3.0,
+        "Shape copied": 1.0,
+        "Overall style reach": 1.0,
+        "Guide direction": "toward this image",
+        "When this card guides": "whole image",
+        "Structure layers pull": 1.0,
+        "Finish layers pull": 1.0
+      }
+    },
+    "902": {
+      "class_type": "KGTextEncodeKreaImageReferencesV10",
+      "inputs": {
+        "Krea CLIP": [
+          "755",
+          0
+        ],
+        "Final image prompt": "Style & Medium:\nAmateur selfie-style explicit photograph, casual phone camera, natural lighting, raw candid feel.\n\nAngle & Framing:\nClose-up face selfie, phone held low, arm outstretched, framing her face while the phone still shows her arched back and the penetration happening behind her.\n\nPose:\nOn all fours, doggy style, being fucked hard from behind, back arched, looking straight at the camera. Lips parted, eyes half closed, brows drawn together.\n\nSubject:\nYoung woman, being penetrated from behind by a partner behind her, two people in frame.\n\nOutfit & Texture:\nNude, natural skin texture, sweat sheen.\n\nBackground & Environment:\nBedroom, blurred behind her.\n\nTechnique:\nNatural phone camera quality, shallow depth of field, focus on her face with the body and the penetration still readable behind.\n\nLight & Color:\nWarm indoor light, natural skin tones.",
+        "Written prompt strength": 1.0,
+        "Image slider feel": "literal slider values",
+        "Image detail level": "high - more exact (512)",
+        "Image framing": "keep full image shape",
+        "When images guide": "guide the whole image",
+        "Early-to-final handoff": 0.4,
+        "Text/logo guard prompt handling": "gentle guard - keep my prompt words",
+        "Balance strong cards": "off - use my values",
+        "Reuse image studies": "always re-study",
+        "Reference 1 guide card": [
+          "901",
+          0
+        ]
+      }
+    }
+  },
+  "node_map": {
+    "seed": "649.inputs.seed",
+    "steps": "599.inputs.steps",
+    "cfg": "599.inputs.cfg",
+    "sampler": "599.inputs.sampler_name",
+    "scheduler": "599.inputs.scheduler",
+    "positive": "902.inputs.Final image prompt",
+    "lora_name": "822.inputs.lora_name",
+    "lora_strength": "822.inputs.strength_model",
+    "checkpoint": "761.inputs.unet_name",
+    "filename_prefix": "999.inputs.filename_prefix",
+    "reference_strength": "901.inputs.How strongly this image guides",
+    "reference": "900.inputs.image"
+  }
+}

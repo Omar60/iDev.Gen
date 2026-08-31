@@ -41,3 +41,5 @@ rewrite-counterargument.md
 !data/krea2-rebalance-workflow.json
 !data/krea2-enhancer-workflow.json
 !data/krea2-attention-workflow.json
+!data/krea2-kgreference-workflow.json
+!data/krea2-kgwardrobe-workflow.json

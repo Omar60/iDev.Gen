@@ -60,6 +60,39 @@ REBALANCE_BODY = load("krea2-rebalance-workflow.json")
 # its own makes every other arm in the set unreadable.
 ENHANCER_BODY = load("krea2-enhancer-workflow.json")
 ATTENTION_BODY = load("krea2-attention-workflow.json")
+KGREF_BODY = load("krea2-kgreference-workflow.json")
+KGWARD_BODY = load("krea2-kgwardrobe-workflow.json")
+
+def pose_silent(line: str) -> str:
+    """The line with the written posture struck out as well.
+
+    The geometry arm left the camera unwritten but kept a Pose block naming
+    both feet, the back, the shoulders, both arms and the head — the same
+    written contradiction that beat the wardrobe card until it was removed.
+    A reference asked for a body orientation has to be asked with the body
+    unwritten.
+    """
+    out = wardrobe_silent(line)
+    pose = out.index("Pose:")
+    subject = out.index("Subject:")
+    assert pose < subject
+    return out[:pose] + "Pose:\nShe stands on the carpet.\n\n" + out[subject:]
+
+
+def wardrobe_silent(line: str) -> str:
+    """The line with every garment struck out, so nothing written contradicts
+    the reference. The wardrobe is spelled twice — once under Subject and once
+    under Outfit & Texture — and a version that strikes only one of them would
+    still be arguing with the card.
+    """
+    subject = line.index("Subject:")
+    outfit = line.index("Outfit & Texture:")
+    expression = line.index("Expression:")
+    assert subject < outfit < expression
+    return (line[:subject]
+            + "Subject:\nA young woman, her body and skin plainly visible.\n\n"
+            + line[expression:])
+
 
 # The profile clause session 231 measured as unreachable: nine wordings, five
 # LoRA strengths, 0/24. If "prompt adherence" is a real thing this node does,
@@ -104,6 +137,41 @@ SETS = {
         ("TL-A-plain", None, "", None),
         ("TL-2", ATTENTION_BODY, "", 2.0),
         ("TL-3", ATTENTION_BODY, "", 3.0),
+    ],
+    # The reference stack, asked the question EncodeRebalance failed (0/4) and
+    # the depth control answers (3/3): the profile, from a photograph of it,
+    # with no camera clause in the line. Two controls, because the pack can
+    # rewrite the prompt as well as the conditioning — A is the plain graph
+    # and B is the node with the card's own strength at zero, which subtracts
+    # the whole image delta and so encodes the text alone.
+    "kgref": [
+        ("KG-A-plain", None, "", None),
+        ("KG-B-zero", KGREF_BODY, "", 0.0),
+        ("KG-C-02", KGREF_BODY, "", 0.2),
+        ("KG-D-1", KGREF_BODY, "", 1.0),
+        ("KG-E-3", KGREF_BODY, "", 3.0),
+    ],
+    # The same stack with the card's role swapped to the wardrobe. Geometry
+    # was 0/12 here and 0/4 on EncodeRebalance; this asks whether a reference
+    # through the text encoder carries ANYTHING, using a source whose grey
+    # t-shirt and black jeans cannot be confused with black lace lingerie.
+    "kgward": [
+        ("KW-B-zero", KGWARD_BODY, "", 0.0),
+        ("KW-D-1", KGWARD_BODY, "", 1.0),
+        ("KW-E-3", KGWARD_BODY, "", 3.0),
+    ],
+    # The wardrobe question again with the line silent about clothing, the way
+    # it is silent about the camera. Removes the one excuse the KW arms had:
+    # there, the reference was contradicting a written garment.
+    "kgsilent": [
+        ("KS-B-zero", KGWARD_BODY, "", 0.0),
+        ("KS-E-3", KGWARD_BODY, "", 3.0),
+    ],
+    # Geometry with the body unwritten, which is what the wardrobe result says
+    # the earlier 0/12 was missing.
+    "kgpose": [
+        ("KP-B-zero", KGREF_BODY, "", 0.0),
+        ("KP-E-3", KGREF_BODY, "", 3.0),
     ],
     "rebalance": [
         ("RB-A-plain", None, "", None),
@@ -166,6 +234,10 @@ async def main() -> int:
         PROMPT = prompt_for(CAMERA_PROFILE)
     if args.set == "tail":
         PROMPT = prompt_for(CAMERA_TAIL)
+    if args.set == "kgsilent":
+        PROMPT = wardrobe_silent(PROMPT)
+    if args.set == "kgpose":
+        PROMPT = pose_silent(PROMPT)
 
     for label, body, suffix, budget in arms:
         print(f"  {label:<12} {(body or {}).get('name', 'plain graph'):<38} "
