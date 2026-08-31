@@ -6417,3 +6417,34 @@ def test_muting_the_wardrobe_drops_it_from_the_composed_line(client, seeded):
     other = db.one("SELECT * FROM shot WHERE id=?", plain.json()["ids"][0])
     assert "red wool coat" in other["prompt"]
     assert other["mute_wardrobe"] == 0
+
+
+def test_a_guided_take_is_composed_and_an_edit_take_is_not(client, seeded):
+    """The same conflation as the runner's model-slot drop, in the prompt path.
+
+    An EDIT take is sent bare on purpose — the anchor already carries the
+    trigger, the base prompt and the look, and restating the look is what makes
+    'remove the jacket' keep the jacket. A GUIDED take paints from noise, so
+    those three are the only thing that puts her in the room: sent bare it comes
+    back in the reference photograph's own room, which is what session 324 did.
+
+    Both halves, one session each, so the assertion is the workflow's kind and
+    not the composer.
+    """
+    def line_for(kind):
+        wf = client.post("/api/workflows", json={
+            "name": f"ref-{kind}", "kind": kind,
+            "graph": {"1": {"class_type": "KSampler", "inputs": {"seed": 0}}},
+            "node_map": {"seed": "1.inputs.seed"},
+        }).json()["id"]
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"guide {kind}",
+            "look": "in a small lived-in room", "reference_workflow_id": wf,
+            "shots": [{"label": "t", "prompt": "standing", "count": 1, "reference": True}],
+        }).json()["id"]
+        return db.one("SELECT prompt FROM shot WHERE session_id=?", sid)["prompt"]
+
+    assert line_for("edit") == "standing"
+    guided = line_for("guide")
+    assert "in a small lived-in room" in guided
+    assert guided.endswith("standing.")

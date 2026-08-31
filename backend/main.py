@@ -2550,15 +2550,27 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
 def _expand_shots(sid: int, model: dict, look: str, wardrobe: str, shots: list[ShotIn],
                   seed_mode: str, seed: int) -> int:
     """One take x N variations = N pending shot rows."""
+    ref_kind = (db.one("SELECT w.kind AS kind FROM session s "
+                       "LEFT JOIN workflow w ON w.id = s.reference_workflow_id "
+                       "WHERE s.id=?", sid) or {})["kind"] or ""
     start = db.one("SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id=?", sid)["m"] + 1
     added = 0
     for offset, take in enumerate(shots):
-        # A reference take is NOT composed, and that is the whole point: the anchor
-        # photo already carries the trigger, the base prompt and the look, so the
-        # take is an instruction ("remove the jacket"). Prepending the look again
-        # would restate the very garment the instruction removes, and a positive
-        # that both describes and denies a jacket keeps the jacket.
-        raw = take.verbatim or take.reference
+        # A take that EDITS a reference is not composed, and that is the whole
+        # point: the anchor photo already carries the trigger, the base prompt
+        # and the look, so the take is an instruction ("remove the jacket").
+        # Prepending the look again would restate the very garment the
+        # instruction removes, and a positive that both describes and denies a
+        # jacket keeps the jacket.
+        #
+        # A take that is GUIDED by a reference is the opposite case and has to
+        # be composed like any other: it paints from noise, so the trigger, the
+        # base prompt and the look are the only things that put her in the room
+        # at all. Sent bare it renders the reference photograph's own room —
+        # measured on session 324, which came back in the source's monochrome
+        # studio instead of the session's bedroom. The test is on the graph's
+        # kind for the same reason the runner's model-slot drop is.
+        raw = take.verbatim or (take.reference and ref_kind != "guide")
         worn = wardrobe if take.wardrobe is None else take.wardrobe
         prompt = take.prompt if raw else _compose(model, look, worn, take.prompt)
         negative = take.negative or model["base_negative"]
