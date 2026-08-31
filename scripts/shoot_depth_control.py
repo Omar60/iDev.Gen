@@ -101,6 +101,32 @@ PROMPT = prompt_for()
 # The source has her facing the left edge, so the camera is on her left.
 CAMERA_PROFILE = "Taken from her left side, her body in full profile"
 
+# The other half of the question: two bodies. [[idevgen-two-people-limit]]
+# measured the man missing from 17 renders of 20, and four arms written to
+# fix it all died on re-test. A depth map is the one channel that carries who
+# is above whom and how far apart they are, so this is the arrangement it
+# should reach if it reaches anything. Written the way that memory says works
+# at all: the act named plainly, two people said to be in frame, and a block
+# of his own for him.
+TWO_PROMPT = """zchar_jir.
+
+Two people are in the frame, a young woman and a man, both of them whole in the shot.
+
+Angle & Framing:
+a full-length photograph, head to feet, taken from in front of them.
+
+Act:
+She kneels upright on the carpet in front of him and gives him a blowjob, her mouth on his cock, her knees together on the floor and her back straight, her face at the height of his hips.
+
+him:
+He stands upright in front of her with his feet apart and his weight even on both of them, his legs and his bare chest and his head all inside the frame above her, his arms hanging at his sides.
+
+Subject:
+She wears the sheer black stockings on her thighs and nothing else, her hair loose and straightened down past her shoulders.
+
+Expression:
+Her eyes are closed and her face is calm."""
+
 # label -> the depth source, or None for the uncontrolled arm.
 ARMS = [
     ("B-baseline", None),
@@ -180,12 +206,16 @@ async def main() -> int:
     ap.add_argument("--source", default="profile_90.jpg", help="the depth source the sweep uses")
     ap.add_argument("--camera", action="store_true",
                     help="put the profile camera clause back into the line")
+    ap.add_argument("--two", action="store_true",
+                    help="shoot the two-person line instead of the solo one")
     args = ap.parse_args()
     seeds = SEEDS[:args.seeds]
 
     global PROMPT
     if args.camera:
         PROMPT = prompt_for(CAMERA_PROFILE)
+    if args.two:
+        PROMPT = TWO_PROMPT
 
     if args.sweep:
         # At 1.0 the depth map carries the reference body, not just its geometry:
@@ -196,10 +226,15 @@ async def main() -> int:
         # write the same filenames otherwise, and the second one silently
         # overwrites the first.
         stem = pathlib.Path(args.source).stem
-        tag = "-cam" if args.camera else ""
-        arms = [(f"{stem}{tag}-S{s}".replace(".", "_"), args.source, s) for s in strengths]
+        tag = ("-cam" if args.camera else "") + ("-two" if args.two else "")
+        # Strength 0 means the uncontrolled arm, not a control lora at zero: the
+        # chain would still push its latent through Krea2ControlApply, so the
+        # only honest baseline is the graph without the chain in it.
+        arms = [(f"{stem}{tag}-S{s}".replace(".", "_") if s else f"B-baseline{tag}",
+                 args.source if s else None, s) for s in strengths]
     else:
-        arms = [(label, source, 1.0) for label, source in ARMS]
+        tag = "-two" if args.two else ""
+        arms = [(label + tag, source, 1.0) for label, source in ARMS]
 
     missing = [s for _, s, _ in arms if s and not (SOURCES / s).exists()]
     if missing:
