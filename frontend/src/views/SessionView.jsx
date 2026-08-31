@@ -177,6 +177,16 @@ export default function SessionView({ id }) {
     })
   })
 
+  // Which photograph guides THIS take. Empty means "follow the session's 📎
+  // pick", which is what every take did before takes could choose. Only offered
+  // on a pending reference take: a finished one already ran against whatever it
+  // ran against, and the column is the record of that.
+  const guideWith = (shot, value) => call(async () => {
+    await api.patch(`/api/shots/${shot.id}`, {
+      reference_shot_ids: value ? [Number(value)] : [],
+    })
+  })
+
   const rate = (shot, rating) => call(async () => {
     await api.patch(`/api/shots/${shot.id}`, { rating: shot.rating === rating ? 0 : rating })
   })
@@ -1011,6 +1021,17 @@ export default function SessionView({ id }) {
                   {shot.status === 'running' ? '⏳ generating…'
                     : shot.status === 'pending' ? '· queued'
                       : `⚠ ${shot.error || shot.status}`}
+                  {shot.status === 'pending' && !!shot.use_reference && (
+                    <select className="guide" disabled={running}
+                            value={JSON.parse(shot.reference_shot_ids || '[]')[0] || ''}
+                            title="The photograph that guides this take. Follows the session's 📎 pick unless you name one here."
+                            onChange={(e) => guideWith(shot, e.target.value)}>
+                      <option value="">📎 session's pick</option>
+                      {s.shots.filter((x) => x.status === 'done').map((x) => (
+                        <option key={x.id} value={x.id}>{x.shot_label || `shot ${x.id}`}</option>
+                      ))}
+                    </select>
+                  )}
                 </div>}
             <div className="bar">
               <div className="stars">

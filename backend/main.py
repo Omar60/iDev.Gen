@@ -253,6 +253,13 @@ class SessionPatch(BaseModel):
 class ShotPatch(BaseModel):
     rating: int | None = None
     rejected: bool | None = None
+    # The photographs THIS take is guided by, overriding the session's 📎 pick.
+    # An empty list clears it back to "follow the session", which is why the
+    # field is `list | None` and not `list`: None is "leave it alone", `[]` is
+    # a decision. A shot that has already run keeps whatever it ran with —
+    # `runner._reference_values` stamps the column at queue time, and repainting
+    # the history would break the before/after pairing that column exists for.
+    reference_shot_ids: list[int] | None = None
 
 
 class ComponentIn(BaseModel):
@@ -2986,9 +2993,16 @@ def _require_usable_reference(session: dict) -> None:
     workflow legitimately has neither slot.
     """
     sid = session["id"]
-    pending = db.one(
-        "SELECT COUNT(*) AS n FROM shot WHERE session_id=? AND status='pending' AND use_reference=1", sid)["n"]
-    if not pending:
+    # A take that names its own reference photographs is answerable on its own,
+    # so the session-level checks below are about the takes that do NOT — the
+    # ones still following the 📎 pick. Split here rather than at each check,
+    # so a session where every take brings its own reference is not refused for
+    # having no session anchor.
+    waiting = db.q("SELECT id, reference_shot_ids FROM shot WHERE session_id=? "
+                   "AND status='pending' AND use_reference=1", sid)
+    own = [json.loads(r["reference_shot_ids"] or "[]") for r in waiting]
+    pending = sum(1 for picked in own if not picked)
+    if not waiting:
         return
     if not session["reference_workflow_id"]:
         raise HTTPException(400, (
@@ -2999,7 +3013,7 @@ def _require_usable_reference(session: dict) -> None:
     # So this only refuses the case that cannot work at all — nothing to edit, and
     # nothing queued that would produce something to edit.
     anchors = json.loads(session["anchor_shot_ids"] or "[]")
-    if not anchors:
+    if not anchors and pending:
         will_shoot = db.one(
             "SELECT COUNT(*) AS n FROM shot WHERE session_id=? AND status='pending' AND use_reference=0",
             sid)["n"]
@@ -3023,7 +3037,16 @@ def _require_usable_reference(session: dict) -> None:
     # photo, silently mixed into every take. Too many and the extra uploads and is
     # ignored. Both look like the reference simply had no effect.
     mapped = [slot for slot in REFERENCE_SLOTS if slot in wf["node_map"]]
-    if anchors and len(anchors) != len(mapped):
+    # A take's own pick answers to the same count rule as the session's: a slot
+    # left unfilled keeps whatever filename the graph was saved with, and that
+    # photograph is then mixed into the take with nothing on screen saying so.
+    for row, picked in zip(waiting, own):
+        if picked and len(picked) != len(mapped):
+            raise HTTPException(400, (
+                f"Take {row['id']} names {len(picked)} reference photo(s) but workflow "
+                f"'{wf['name']}' reads {len(mapped)}. Name {len(mapped)}, or clear the "
+                f"take's own pick to follow the session."))
+    if anchors and pending and len(anchors) != len(mapped):
         detail = (f"{len(anchors)} reference photo(s) are marked, but workflow "
                   f"'{wf['name']}' reads {len(mapped)}.")
         if len(anchors) > len(mapped):
@@ -3226,6 +3249,18 @@ def patch_shot(shot_id: int, p: ShotPatch):
         db.run("UPDATE shot SET rating=? WHERE id=?", max(0, min(5, p.rating)), shot_id)
     if p.rejected is not None:
         db.run("UPDATE shot SET rejected=? WHERE id=?", int(p.rejected), shot_id)
+    if p.reference_shot_ids is not None:
+        if len(p.reference_shot_ids) > len(REFERENCE_SLOTS):
+            raise HTTPException(400, f"at most {len(REFERENCE_SLOTS)} reference photos")
+        # Every id has to be a photograph that exists and has a file, checked
+        # here rather than at run time: a typo caught now is a red field, and
+        # caught in the runner it is a failed shot in the middle of a run.
+        for ref in p.reference_shot_ids:
+            row = db.one("SELECT filename FROM shot WHERE id=?", ref)
+            if not row or not row["filename"]:
+                raise HTTPException(400, f"shot {ref} has no photograph to guide with")
+        db.run("UPDATE shot SET reference_shot_ids=? WHERE id=?",
+               json.dumps(p.reference_shot_ids), shot_id)
     return db.one("SELECT * FROM shot WHERE id=?", shot_id)
 
 

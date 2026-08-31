@@ -156,7 +156,15 @@ class Runner:
         # not check these slots. Sending them replaces the edit LoRA with the
         # character one and nothing on screen says it was dropped, so they follow
         # the app's rule one level up: unmapped keeps the workflow's own value.
-        if shot["use_reference"]:
+        #
+        # A GUIDE graph is the exception, and the reason this test is on the
+        # graph's kind rather than on `use_reference`: it paints from noise like
+        # any other take and reads its reference as conditioning, so the
+        # character LoRA and the checkpoint are exactly what it needs. Dropping
+        # them there would shoot somebody else. Untagged graphs keep the old
+        # behaviour, because every graph imported before kinds existed is an
+        # edit graph.
+        if shot["use_reference"] and wf["kind"] != "guide":
             for slot in ("checkpoint", "lora_name", "lora_strength"):
                 values.pop(slot)
 
@@ -220,9 +228,14 @@ class Runner:
         take's prompt is an instruction and not a description: nothing re-states
         the jacket, so "remove the jacket" has nothing to fight.
         """
-        anchors = json.loads(session["anchor_shot_ids"] or "[]")
+        # The take's own pick wins over the session's, so one session can guide
+        # different shots with different photographs — which is the whole point
+        # of a reference that carries a pose or a garment. Empty means "follow
+        # the session", the same rule `reference_strength` follows one field up.
+        anchors = json.loads(shot["reference_shot_ids"] or "[]")             or json.loads(session["anchor_shot_ids"] or "[]")
         if not anchors:
-            raise RuntimeError("This take needs a reference photo, but the session has none set")
+            raise RuntimeError("This take needs a reference photo, but neither it nor the "
+                               "session has one set")
 
         # ponytail: the anchor is re-uploaded for every shot. `overwrite=true`
         # makes that idempotent and it is a local POST of a couple of MB; cache it
