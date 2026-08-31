@@ -227,6 +227,12 @@ class ComposeIn(BaseModel):
     # (the `none` control arm), and the wardrobe is the one piece of the line
     # no slot can silence.
     mute_wardrobe: bool = False
+    # Shoot this take through the session's reference graph, the same switch
+    # `ShotIn.reference` is on the written path. Separate from `mute_wardrobe`
+    # on purpose: guiding the body while the line still writes the clothes is a
+    # real take, and one flag carrying both meanings is how `use_reference`
+    # grew three of them.
+    reference: bool = False
 
 
 class SessionPatch(BaseModel):
@@ -1502,7 +1508,11 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
         # because the photograph is cut where the anatomy is. Refused in both
         # modes and in the pre-check, so a batch queues nothing rather than
         # queueing the combinations before the contradiction.
-        clash = crop.conflict(fr_text, cam_text, act_text, session["wardrobe"], look)
+        # A muted wardrobe is not on the line, so it does not name a body part
+        # for the crop law to reach: the check reads what is sent, not what the
+        # session holds. Two calculations that disagree here refuse a legal trio.
+        clash = crop.conflict(fr_text, cam_text, act_text,
+                              "" if c.mute_wardrobe else session["wardrobe"], look)
         if clash:
             raise HTTPException(422, f"compose refused: cell {trio} contradicts itself — {clash}")
         cell = db.one(
@@ -1563,7 +1573,7 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
     # runner rolls a fresh `random.randint` seed per row, so the same
     # trio renders N different photographs.
     shot_ids = [
-        compose_and_queue_shot(sid, cam, act, fr, c.mute_wardrobe)
+        compose_and_queue_shot(sid, cam, act, fr, c.mute_wardrobe, c.reference)
         for cam, act, fr in combos
         for _ in range(c.count)
     ]
@@ -1600,6 +1610,8 @@ class ComposeRunIn(BaseModel):
     # (the `none` control arm), and the wardrobe is the one piece of the line
     # no slot can silence.
     mute_wardrobe: bool = False
+    # Same switch as `ComposeIn.reference`, same reason it is its own flag.
+    reference: bool = False
 
 
 _SLOT_COLS = (
@@ -1851,12 +1863,13 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     the post-draw step (3.5 adds `_skip_for_spread` as the
     caller's skip predicate, 3.3 passes no skip).
     """
-    by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode)
+    by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode,
+                                             mute_wardrobe=c.mute_wardrobe)
     shot_ids: list[int] = []
     for cam_key, act_key, framing_key in best_chosen:
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
-            c.mute_wardrobe,
+            c.mute_wardrobe, c.reference,
         ))
     return {"ids": shot_ids, "count": len(shot_ids)}
 
@@ -1903,6 +1916,7 @@ def _draw_n_trio_shots(
     candidates: dict,
     mode: Literal["strict", "exploratory"] = "strict",
     skip: "Callable | None" = None,
+    mute_wardrobe: bool = False,
 ) -> tuple[dict, list[tuple[str, str, str]]]:
     """The shared draw used by `compose_run_endpoint` (3.3) and
     `compose_session_endpoint` (3.5). Returns `(by_key,
@@ -2020,7 +2034,7 @@ def _draw_n_trio_shots(
     # The wardrobe and the look are part of the composed line, so they are part of
     # what names her lowest part: a session in stockings has no crop above the feet
     # available to it, whatever the act says (session 318).
-    context = _sentences(session["wardrobe"] or "",
+    context = _sentences("" if mute_wardrobe else (session["wardrobe"] or ""),
                          session["look"] if settings.get("use_look", True) else "")
     pool = _trio_pool(session["manner"], session["checkpoint"], candidates, mode, context)
 
@@ -2487,6 +2501,8 @@ class ComposeSessionIn(BaseModel):
     # (the `none` control arm), and the wardrobe is the one piece of the line
     # no slot can silence.
     mute_wardrobe: bool = False
+    # Same switch as `ComposeIn.reference`, same reason it is its own flag.
+    reference: bool = False
 
 
 @app.post("/api/sessions/{sid}/compose-session")
@@ -2536,13 +2552,14 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     # skip in place, but the function keeps the assertion
     # for a future caller that drops the skip).
     by_key, best_chosen = _draw_n_trio_shots(
-        sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread)
+        sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread,
+        mute_wardrobe=c.mute_wardrobe)
     ordered = _reorder_to_spread_families(best_chosen, by_key)
     shot_ids: list[int] = []
     for cam_key, act_key, framing_key in ordered:
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
-            c.mute_wardrobe,
+            c.mute_wardrobe, c.reference,
         ))
     return {"ids": shot_ids, "count": len(shot_ids)}
 
@@ -2727,7 +2744,8 @@ def compose_shot(model: dict, look: str, wardrobe: str,
 
 
 def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict,
-                           mute_wardrobe: bool = False) -> int:
+                           mute_wardrobe: bool = False,
+                           reference: bool = False) -> int:
     """Compose a single shot from drawn components and queue it.
 
     Returns the shot id. The three drawn components are recorded on
@@ -2778,10 +2796,10 @@ def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict,
     shot_index = db.one("SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id=?", sid)["m"] + 1
     shot_id = db.run(
         """INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative,
-                              components, mute_wardrobe, created_at)
-           VALUES (?,?,?,?,?,?,?,?)""",
+                              components, mute_wardrobe, use_reference, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
         sid, shot_index, f"composed {shot_index + 1}", prompt,
-        model["base_negative"], components, int(mute_wardrobe), db.now(),
+        model["base_negative"], components, int(mute_wardrobe), int(reference), db.now(),
     )
     # The session's origin moves to `'composed'` on the first
     # compose, or to `'mixed'` if the session already has a

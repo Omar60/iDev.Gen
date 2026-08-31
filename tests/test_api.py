@@ -6419,6 +6419,45 @@ def test_muting_the_wardrobe_drops_it_from_the_composed_line(client, seeded):
     assert other["mute_wardrobe"] == 0
 
 
+def test_a_composed_take_can_be_shot_through_the_reference_graph(client, seeded):
+    """The composer's half of the reference channel.
+
+    `mute_wardrobe` takes the garments off the line so a reference can deliver
+    them; nothing on the composed row said to ATTACH one, so the runner painted
+    the muted line from noise with no reference in the graph — which is the
+    "nude 3/3" the switch's own comment warns about. The written path has had
+    this switch since the channel landed (`ShotIn.reference`); this pins the
+    composed one, and pins that it is a separate flag: the second half asserts a
+    muted take is not silently referenced.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "composed reference",
+        "wardrobe": "a red wool coat",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
+    trio = {
+        "camera": {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front text"}]},
+        "act": {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]},
+        "framing": {"key": "full-length", "wordings": [{"key": "full-length", "text": "framing text"}]},
+        "count": 1,
+    }
+
+    guided = client.post(f"/api/sessions/{sid}/compose",
+                         json=dict(trio, mute_wardrobe=True, reference=True))
+    assert guided.status_code == 200, guided.text
+    row = db.one("SELECT * FROM shot WHERE id=?", guided.json()["ids"][0])
+    assert row["use_reference"] == 1
+    assert row["mute_wardrobe"] == 1
+    assert "red wool coat" not in row["prompt"]
+
+    # Muting alone attaches nothing: two switches, two meanings.
+    muted = client.post(f"/api/sessions/{sid}/compose", json=dict(trio, mute_wardrobe=True))
+    assert db.one("SELECT * FROM shot WHERE id=?", muted.json()["ids"][0])["use_reference"] == 0
+
+
 def test_a_guided_take_is_composed_and_an_edit_take_is_not(client, seeded):
     """The same conflation as the runner's model-slot drop, in the prompt path.
 

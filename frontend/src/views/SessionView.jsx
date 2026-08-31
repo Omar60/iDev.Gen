@@ -67,6 +67,15 @@ export default function SessionView({ id }) {
   // not of which button queued it. Off by default: with no reference attached
   // a silent line renders her undressed.
   const [muteWardrobe, setMuteWardrobe] = useState(false)
+  // Shoot the composed takes through the session's reference graph. Its own
+  // switch and not a consequence of the one above: guiding the body while the
+  // line still writes the clothes is a real take, and one flag carrying two
+  // meanings is how use_reference grew three of them.
+  const [composeReference, setComposeReference] = useState(false)
+  // Read through the session, not off the checkbox alone: clearing the
+  // reference workflow after ticking it would otherwise still send the flag,
+  // and the row would record a guided take the runner painted from noise.
+  const composeGuided = composeReference && !!s?.reference_workflow_id
   // The fill-cell control: pick one trio (camera, act, framing),
   // pick a count, queue N photographs of that trio on
   // THIS session. The picker reads the same catalogue slice the
@@ -138,7 +147,9 @@ export default function SessionView({ id }) {
   // operator's eye expects them.
   const composeRun = (n, mode) => call(async () => {
     const candidates = candidatePool(s.manner)
-    await api.post(`/api/sessions/${id}/compose-run`, { count: n, candidates, mode, mute_wardrobe: muteWardrobe })
+    await api.post(`/api/sessions/${id}/compose-run`, {
+      count: n, candidates, mode, mute_wardrobe: muteWardrobe, reference: composeGuided,
+    })
   })
 
   // Fill a cell: queue N photographs of the picked trio on this
@@ -173,7 +184,7 @@ export default function SessionView({ id }) {
       camera: camKeys.map((k) => pick(pool.camera, k)),
       act: actKeys.map((k) => pick(pool.act, k)),
       framing: framingKeys.map((k) => pick(pool.framing, k)),
-      count: n, mode, mute_wardrobe: muteWardrobe,
+      count: n, mode, mute_wardrobe: muteWardrobe, reference: composeGuided,
     })
   })
 
@@ -461,6 +472,16 @@ export default function SessionView({ id }) {
                      disabled={!s.manner || !s.checkpoint || s.running}
                      onChange={(e) => setMuteWardrobe(e.target.checked)} />
               no wardrobe
+            </label>
+            {/* Only offered when the session has a reference graph to send them
+                through: without one the runner falls back to the text2image
+                workflow and the flag is a lie the row still records. */}
+            <label title="Shoot these takes through the session's reference workflow, so the anchor photograph can carry what the line leaves out."
+                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+              <input type="checkbox" checked={composeGuided}
+                     disabled={!s.reference_workflow_id || !s.manner || !s.checkpoint || s.running}
+                     onChange={(e) => setComposeReference(e.target.checked)} />
+              guided
             </label>
             <input type="number" min={1} max={50} value={composeCount}
                    disabled={!s.manner || !s.checkpoint || s.running}

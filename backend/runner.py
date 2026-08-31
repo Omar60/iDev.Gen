@@ -232,7 +232,8 @@ class Runner:
         # different shots with different photographs — which is the whole point
         # of a reference that carries a pose or a garment. Empty means "follow
         # the session", the same rule `reference_strength` follows one field up.
-        anchors = json.loads(shot["reference_shot_ids"] or "[]")             or json.loads(session["anchor_shot_ids"] or "[]")
+        anchors = (json.loads(shot["reference_shot_ids"] or "[]")
+                   or json.loads(session["anchor_shot_ids"] or "[]"))
         if not anchors:
             raise RuntimeError("This take needs a reference photo, but neither it nor the "
                                "session has one set")
