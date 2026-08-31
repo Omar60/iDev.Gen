@@ -37,3 +37,5 @@ rewrite-counterargument.md
 !data/depth-sources/
 !data/depth-sources/*.jpg
 !data/krea2-prompt-weight-workflow.json
+!data/krea2-negpip-workflow.json
+!data/krea2-rebalance-workflow.json
