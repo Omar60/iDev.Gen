@@ -32,6 +32,7 @@ import asyncio
 import json
 import sys
 import uuid
+import pathlib
 from pathlib import Path
 
 import httpx
@@ -111,7 +112,7 @@ def baseline_graph() -> tuple[dict, dict]:
 
 
 async def run_arm(comfy: Comfy, client_id: str, label: str, source: str | None,
-                  seed: int) -> Path | None:
+                  seed: int, strength: float = 1.0) -> Path | None:
     if source is None:
         graph, node_map = baseline_graph()
         values = dict(SETTINGS, positive=PROMPT, seed=seed, filename_prefix=label)
@@ -119,7 +120,7 @@ async def run_arm(comfy: Comfy, client_id: str, label: str, source: str | None,
         graph, node_map = DEPTH_BODY["graph"], DEPTH_BODY["node_map"]
         name = await comfy.upload_image(SOURCES / source, source)
         values = dict(SETTINGS, positive=PROMPT, seed=seed, filename_prefix=label,
-                      reference=name, reference_strength=1.0)
+                      reference=name, reference_strength=strength)
 
     patched = apply_map(graph, node_map, values)
     prompt_id = await comfy.queue_prompt(patched, client_id)
@@ -153,17 +154,33 @@ async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=len(SEEDS))
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--sweep", default="", metavar="A,B,C",
+                    help="control strengths to sweep on --source instead of the four arms")
+    ap.add_argument("--source", default="profile_90.jpg", help="the depth source the sweep uses")
     args = ap.parse_args()
     seeds = SEEDS[:args.seeds]
 
-    missing = [s for _, s in ARMS if s and not (SOURCES / s).exists()]
+    if args.sweep:
+        # At 1.0 the depth map carries the reference body, not just its geometry:
+        # a taller or thinner source overrides the character LoRA's proportions.
+        # This looks for a strength that keeps the geometry and gives the body back.
+        strengths = [float(s) for s in args.sweep.split(",")]
+        # The source belongs in the label: two sweeps over the same strengths
+        # write the same filenames otherwise, and the second one silently
+        # overwrites the first.
+        stem = pathlib.Path(args.source).stem
+        arms = [(f"{stem}-S{s}".replace(".", "_"), args.source, s) for s in strengths]
+    else:
+        arms = [(label, source, 1.0) for label, source in ARMS]
+
+    missing = [s for _, s, _ in arms if s and not (SOURCES / s).exists()]
     if missing:
         print(f"missing depth sources: {missing}")
         return 1
 
-    print(f"{len(ARMS)} arms x {len(seeds)} seeds = {len(ARMS) * len(seeds)} photographs")
-    for label, source in ARMS:
-        print(f"  {label:<12} {source or 'no control'}")
+    print(f"{len(arms)} arms x {len(seeds)} seeds = {len(arms) * len(seeds)} photographs")
+    for label, source, strength in arms:
+        print(f"  {label:<12} {source or 'no control':<20} strength {strength}")
     if args.dry_run:
         print("\n--- the line every arm shares ---")
         print(PROMPT)
@@ -172,14 +189,14 @@ async def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     comfy, client_id = Comfy(COMFY_URL), str(uuid.uuid4())
     made = 0
-    for label, source in ARMS:
+    for label, source, strength in arms:
         for seed in seeds:
-            dest = await run_arm(comfy, client_id, label, source, seed)
+            dest = await run_arm(comfy, client_id, label, source, seed, strength)
             if dest:
                 made += 1
                 print(f"  {dest.name}")
-    print(f"\n{made}/{len(ARMS) * len(seeds)} rendered into {OUT}")
-    return 0 if made == len(ARMS) * len(seeds) else 1
+    print(f"\n{made}/{len(arms) * len(seeds)} rendered into {OUT}")
+    return 0 if made == len(arms) * len(seeds) else 1
 
 
 if __name__ == "__main__":
