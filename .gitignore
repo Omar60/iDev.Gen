@@ -34,3 +34,5 @@ writer-prompts.md
 session-200-prompts.md
 rewrite-counterargument.md
 !data/krea2-depth-control-workflow.json
+!data/depth-sources/
+!data/depth-sources/*.jpg
