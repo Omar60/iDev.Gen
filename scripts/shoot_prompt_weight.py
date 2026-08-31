@@ -62,6 +62,7 @@ ENHANCER_BODY = load("krea2-enhancer-workflow.json")
 ATTENTION_BODY = load("krea2-attention-workflow.json")
 KGREF_BODY = load("krea2-kgreference-workflow.json")
 KGWARD_BODY = load("krea2-kgwardrobe-workflow.json")
+DEPTH_BODY = load("krea2-depth-control-workflow.json")
 
 def pose_silent(line: str) -> str:
     """The line with the written posture struck out as well.
@@ -183,6 +184,13 @@ SETS = {
         ("RP-high", REBALANCE_BODY, "", "high"),
         ("RP-max", REBALANCE_BODY, "", "max"),
     ],
+    # The two geometry channels on one line, one source and one set of seeds.
+    # RP-plain is the control: the same silent line on the plain graph.
+    "depth": [
+        ("DP-05", DEPTH_BODY, "", 0.5),
+        ("DP-085", DEPTH_BODY, "", 0.85),
+        ("DP-10", DEPTH_BODY, "", 1.0),
+    ],
     "rebalance": [
         ("RB-A-plain", None, "", None),
         ("RB-low", REBALANCE_BODY, "", "low"),
@@ -246,7 +254,7 @@ async def main() -> int:
         PROMPT = prompt_for(CAMERA_TAIL)
     if args.set == "kgsilent":
         PROMPT = wardrobe_silent(PROMPT)
-    if args.set in ("kgpose", "rbpose"):
+    if args.set in ("kgpose", "rbpose", "depth"):
         PROMPT = pose_silent(PROMPT)
 
     for label, body, suffix, budget in arms:
