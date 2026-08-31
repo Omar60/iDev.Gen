@@ -40,6 +40,8 @@ from comfy import Comfy, apply_map, output_images  # noqa: E402
 from shoot_depth_control import (CAMERA_PROFILE, PROMPT, SEEDS, SETTINGS,
                                  baseline_graph, prompt_for)  # noqa: E402
 
+CAMERA_TAIL = "Overhead camera directly above her and behind her head"
+
 COMFY_URL = "http://127.0.0.1:8188"
 OUT = ROOT / "data" / "weight-probe"
 SOURCES = ROOT / "data" / "depth-sources"
@@ -57,6 +59,7 @@ REBALANCE_BODY = load("krea2-rebalance-workflow.json")
 # Each set keeps its own inert-node arm: a node that changes the photograph on
 # its own makes every other arm in the set unreadable.
 ENHANCER_BODY = load("krea2-enhancer-workflow.json")
+ATTENTION_BODY = load("krea2-attention-workflow.json")
 
 # The profile clause session 231 measured as unreachable: nine wordings, five
 # LoRA strengths, 0/24. If "prompt adherence" is a real thing this node does,
@@ -83,6 +86,24 @@ SETS = {
         ("EN-off", ENHANCER_BODY, "", 0.0),
         ("EN-1", ENHANCER_BODY, "", 1.0),
         ("EN-2", ENHANCER_BODY, "", 2.0),
+    ],
+    # `Krea 2 attention` multiplies the text projector weight by `strength`,
+    # so 1.0 is the identity and AT-1 is an exact inert arm rather than an
+    # approximate one. 3.0 is the value its README claims balance at.
+    "attention": [
+        ("AT-A-plain", None, "", None),
+        ("AT-1", ATTENTION_BODY, "", 1.0),
+        ("AT-2", ATTENTION_BODY, "", 2.0),
+        ("AT-3", ATTENTION_BODY, "", 3.0),
+    ],
+    # The tail question. `Overhead camera directly above her and behind her
+    # head` is obeyed on the height 3/3 and ignored on the tail 0/3 — both
+    # halves are reachable, so this separates a dead node from a dead clause
+    # the way the profile cannot.
+    "tail": [
+        ("TL-A-plain", None, "", None),
+        ("TL-2", ATTENTION_BODY, "", 2.0),
+        ("TL-3", ATTENTION_BODY, "", 3.0),
     ],
     "rebalance": [
         ("RB-A-plain", None, "", None),
@@ -141,8 +162,10 @@ async def main() -> int:
     arms = SETS[args.set]
 
     global PROMPT
-    if args.set == "enhancer":
+    if args.set in ("enhancer", "attention"):
         PROMPT = prompt_for(CAMERA_PROFILE)
+    if args.set == "tail":
+        PROMPT = prompt_for(CAMERA_TAIL)
 
     for label, body, suffix, budget in arms:
         print(f"  {label:<12} {(body or {}).get('name', 'plain graph'):<38} "
