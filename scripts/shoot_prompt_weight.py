@@ -173,6 +173,16 @@ SETS = {
         ("KP-B-zero", KGREF_BODY, "", 0.0),
         ("KP-E-3", KGREF_BODY, "", 3.0),
     ],
+    # EncodeRebalance again, this time with the body unwritten. Its 0/4 was
+    # measured against a line that spelled the posture out, which the KG stack
+    # showed is enough to beat a reference at any strength.
+    "rbpose": [
+        ("RP-plain", None, "", None),
+        ("RP-low", REBALANCE_BODY, "", "low"),
+        ("RP-normal", REBALANCE_BODY, "", "normal"),
+        ("RP-high", REBALANCE_BODY, "", "high"),
+        ("RP-max", REBALANCE_BODY, "", "max"),
+    ],
     "rebalance": [
         ("RB-A-plain", None, "", None),
         ("RB-low", REBALANCE_BODY, "", "low"),
@@ -236,7 +246,7 @@ async def main() -> int:
         PROMPT = prompt_for(CAMERA_TAIL)
     if args.set == "kgsilent":
         PROMPT = wardrobe_silent(PROMPT)
-    if args.set == "kgpose":
+    if args.set in ("kgpose", "rbpose"):
         PROMPT = pose_silent(PROMPT)
 
     for label, body, suffix, budget in arms:
