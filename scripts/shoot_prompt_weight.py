@@ -37,7 +37,8 @@ sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from comfy import Comfy, apply_map, output_images  # noqa: E402
-from shoot_depth_control import PROMPT, SEEDS, SETTINGS, baseline_graph  # noqa: E402
+from shoot_depth_control import (CAMERA_PROFILE, PROMPT, SEEDS, SETTINGS,
+                                 baseline_graph, prompt_for)  # noqa: E402
 
 COMFY_URL = "http://127.0.0.1:8188"
 OUT = ROOT / "data" / "weight-probe"
@@ -55,6 +56,13 @@ REBALANCE_BODY = load("krea2-rebalance-workflow.json")
 # label -> (graph body or None for the plain graph, text suffix, image budget)
 # Each set keeps its own inert-node arm: a node that changes the photograph on
 # its own makes every other arm in the set unreadable.
+ENHANCER_BODY = load("krea2-enhancer-workflow.json")
+
+# The profile clause session 231 measured as unreachable: nine wordings, five
+# LoRA strengths, 0/24. If "prompt adherence" is a real thing this node does,
+# this is the clause it has to move.
+
+
 SETS = {
     "weight": [
         ("A-plain", None, "", None),
@@ -70,6 +78,12 @@ SETS = {
     # instead of a strength. The profile is the source because it is the one
     # geometry with a known answer: no wording reaches it, the depth control
     # does, and it costs the body to do so.
+    "enhancer": [
+        ("EN-A-plain", None, "", None),
+        ("EN-off", ENHANCER_BODY, "", 0.0),
+        ("EN-1", ENHANCER_BODY, "", 1.0),
+        ("EN-2", ENHANCER_BODY, "", 2.0),
+    ],
     "rebalance": [
         ("RB-A-plain", None, "", None),
         ("RB-low", REBALANCE_BODY, "", "low"),
@@ -85,8 +99,11 @@ async def run(comfy: Comfy, client_id: str, label: str, body: dict | None,
     graph, node_map = (body["graph"], body["node_map"]) if body else baseline_graph()
     text = f"{PROMPT}\n\n{suffix}" if suffix else PROMPT
     values = dict(SETTINGS, positive=text, seed=seed, filename_prefix=label)
-    if budget:
-        values["reference"] = await comfy.upload_image(SOURCES / source, source)
+    if budget is not None:
+        # Only graphs with a reference slot want an image; the enhancer set puts
+        # a plain float on the same slot name.
+        if "reference" in node_map:
+            values["reference"] = await comfy.upload_image(SOURCES / source, source)
         values["reference_strength"] = budget
     patched = apply_map(graph, node_map, values)
     prompt_id = await comfy.queue_prompt(patched, client_id)
@@ -122,6 +139,10 @@ async def main() -> int:
     args = ap.parse_args()
     seeds = SEEDS[:args.seeds]
     arms = SETS[args.set]
+
+    global PROMPT
+    if args.set == "enhancer":
+        PROMPT = prompt_for(CAMERA_PROFILE)
 
     for label, body, suffix, budget in arms:
         print(f"  {label:<12} {(body or {}).get('name', 'plain graph'):<38} "
