@@ -506,3 +506,33 @@ def test_a_take_naming_a_photograph_that_has_none_is_refused(client):
     r = client.patch(f"/api/shots/{guided}", json={"reference_shot_ids": [empty]})
     assert r.status_code == 400
     assert "no photograph" in r.json()["detail"]
+
+
+def test_a_take_that_has_run_keeps_the_reference_it_ran_with(client, make_runner):
+    """`ShotPatch` promised this in its docstring and nothing enforced it.
+
+    The column is stamped at queue time so the row records what the take ACTUALLY
+    ran against; repainting it afterwards leaves a before/after that compares
+    against a photograph the take never saw, which is worse than no comparison.
+    """
+    sid = _reference_session(client)
+    guided = db.one("SELECT id FROM shot WHERE session_id=? AND use_reference=1", sid)["id"]
+    r, _ = make_runner()
+    asyncio.run(r._run_session(sid))
+    ran_with = db.one("SELECT reference_shot_ids, status FROM shot WHERE id=?", guided)
+    assert ran_with["status"] == "done"
+
+    anchor = db.one("SELECT id FROM shot WHERE session_id=? AND use_reference=0", sid)["id"]
+    refused = client.patch(f"/api/shots/{guided}", json={"reference_shot_ids": [anchor]})
+    assert refused.status_code == 409
+    assert "keeps the reference it ran with" in refused.json()["detail"]
+    assert db.one("SELECT reference_shot_ids FROM shot WHERE id=?",
+                  guided)["reference_shot_ids"] == ran_with["reference_shot_ids"]
+
+    # The rating still moves: the guard is on the one field that is a record.
+    assert client.patch(f"/api/shots/{guided}", json={"rating": 5}).status_code == 200
+
+
+def test_patching_a_shot_that_does_not_exist_is_a_404(client):
+    """It answered 200 with a null body, so a typo in an id read as success."""
+    assert client.patch("/api/shots/999999", json={"rating": 3}).status_code == 404

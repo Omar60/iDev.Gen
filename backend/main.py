@@ -3275,6 +3275,9 @@ def delete_session(sid: int):
 
 @app.patch("/api/shots/{shot_id}")
 def patch_shot(shot_id: int, p: ShotPatch):
+    shot = db.one("SELECT status FROM shot WHERE id=?", shot_id)
+    if not shot:
+        raise HTTPException(404, "shot not found")
     if p.rating is not None:
         db.run("UPDATE shot SET rating=? WHERE id=?", max(0, min(5, p.rating)), shot_id)
     if p.rejected is not None:
@@ -3285,6 +3288,15 @@ def patch_shot(shot_id: int, p: ShotPatch):
         # Every id has to be a photograph that exists and has a file, checked
         # here rather than at run time: a typo caught now is a red field, and
         # caught in the runner it is a failed shot in the middle of a run.
+        # Only while it is still waiting. `runner._reference_values` stamps this
+        # column at queue time precisely so the row records what the take ACTUALLY
+        # ran against; repainting it afterwards would break the before/after pairing
+        # the column exists for, and the docstring on `ShotPatch` promises it does
+        # not happen. It said so and nothing enforced it.
+        if shot["status"] != "pending":
+            raise HTTPException(
+                409, f"shot {shot_id} is {shot['status']}, not pending — a take that has "
+                     f"run keeps the reference it ran with")
         for ref in p.reference_shot_ids:
             row = db.one("SELECT filename FROM shot WHERE id=?", ref)
             if not row or not row["filename"]:

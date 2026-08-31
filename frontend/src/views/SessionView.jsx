@@ -1044,7 +1044,7 @@ export default function SessionView({ id }) {
                       : `⚠ ${shot.error || shot.status}`}
                   {shot.status === 'pending' && !!shot.use_reference && (
                     <select className="guide" disabled={running}
-                            value={JSON.parse(shot.reference_shot_ids || '[]')[0] || ''}
+                            value={(shot.reference_shot_ids || [])[0] || ''}
                             title="The photograph that guides this take. Follows the session's 📎 pick unless you name one here."
                             onChange={(e) => guideWith(shot, e.target.value)}>
                       <option value="">📎 session's pick</option>
