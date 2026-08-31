@@ -101,6 +101,18 @@ PROMPT = prompt_for()
 # The source has her facing the left edge, so the camera is on her left.
 CAMERA_PROFILE = "Taken from her left side, her body in full profile"
 
+# One clause per depth source, so --camera asks each camera in the words the
+# catalogue already uses for it. Taken from `shoot_camera_forms.py` verbatim
+# where that batch had an arm for it, because a reworded clause would be a
+# second variable.
+CAMERAS = {
+    "profile_90": CAMERA_PROFILE,
+    "back_full": "Taken from directly behind her, her back to the camera",
+    "floor_up": "Low-angle shot from the floor at her feet",
+    "high_side": "High camera looking steeply down at her from her right side",
+    "front_control": "Taken from directly in front of her",
+}
+
 # The other half of the question: two bodies. [[idevgen-two-people-limit]]
 # measured the man missing from 17 renders of 20, and four arms written to
 # fix it all died on re-test. A depth map is the one channel that carries who
@@ -213,7 +225,11 @@ async def main() -> int:
 
     global PROMPT
     if args.camera:
-        PROMPT = prompt_for(CAMERA_PROFILE)
+        clause = CAMERAS.get(pathlib.Path(args.source).stem)
+        if not clause:
+            print(f"no camera clause for {args.source}; add one to CAMERAS")
+            return 1
+        PROMPT = prompt_for(clause)
     if args.two:
         PROMPT = TWO_PROMPT
 
@@ -230,7 +246,7 @@ async def main() -> int:
         # Strength 0 means the uncontrolled arm, not a control lora at zero: the
         # chain would still push its latent through Krea2ControlApply, so the
         # only honest baseline is the graph without the chain in it.
-        arms = [(f"{stem}{tag}-S{s}".replace(".", "_") if s else f"B-baseline{tag}",
+        arms = [(f"{stem}{tag}-S{s}".replace(".", "_") if s else f"{stem}{tag}-words",
                  args.source if s else None, s) for s in strengths]
     else:
         tag = "-two" if args.two else ""
