@@ -219,6 +219,14 @@ class ComposeIn(BaseModel):
     framing: dict | list[dict]
     count: int = Field(1, ge=1)
     mode: Literal["strict", "exploratory"] = "strict"
+    # Hand the wardrobe to a reference instead of writing it: the shot's line
+    # is composed without the session's wardrobe. Off by default, because a
+    # line that says nothing about clothing renders her undressed (measured
+    # 2026-08-31: nude 3/3 with no reference attached). There is no twin
+    # switch for the pose — an empty wording is already a catalogue component
+    # (the `none` control arm), and the wardrobe is the one piece of the line
+    # no slot can silence.
+    mute_wardrobe: bool = False
 
 
 class SessionPatch(BaseModel):
@@ -1307,8 +1315,9 @@ def clone_session(sid: int, c: SessionClone):
         new_shot = db.run(
             """INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative,
                                  use_reference, reference_strength, seed, status,
-                                 components, origin_shot_id, created_at, finished_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                 components, mute_wardrobe, origin_shot_id,
+                                 created_at, finished_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             new_id, shot["shot_index"], shot["shot_label"], shot["prompt"], shot["negative"],
             shot["use_reference"], shot["reference_strength"], shot["seed"],
             "done" if imported else "pending",
@@ -1322,6 +1331,12 @@ def clone_session(sid: int, c: SessionClone):
             # column for old clones" lands here as a
             # regression on this INSERT.
             shot["components"] or "{}",
+            # A clone of a shot that handed its wardrobe to a reference is a
+            # shot that hands its wardrobe to a reference: the line was
+            # composed without the garment and the copy carries the same line,
+            # so the flag has to travel with it or the row stops explaining
+            # its own prompt.
+            shot["mute_wardrobe"],
             # The original take, never the row copied from: a clone of a clone
             # pairs with the whole family, and the pair then survives a reshoot
             # (↺) on either side, which rolls a new seed by design.
@@ -1541,7 +1556,7 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
     # runner rolls a fresh `random.randint` seed per row, so the same
     # trio renders N different photographs.
     shot_ids = [
-        compose_and_queue_shot(sid, cam, act, fr)
+        compose_and_queue_shot(sid, cam, act, fr, c.mute_wardrobe)
         for cam, act, fr in combos
         for _ in range(c.count)
     ]
@@ -1570,6 +1585,14 @@ class ComposeRunIn(BaseModel):
     count: int = Field(..., ge=1)
     candidates: dict  # {"camera": [...], "act": [...], "framing": [...]}, each a list of {key, wordings:[{key, text}]}
     mode: Literal["strict", "exploratory"] = "strict"
+    # Hand the wardrobe to a reference instead of writing it: the shot's line
+    # is composed without the session's wardrobe. Off by default, because a
+    # line that says nothing about clothing renders her undressed (measured
+    # 2026-08-31: nude 3/3 with no reference attached). There is no twin
+    # switch for the pose — an empty wording is already a catalogue component
+    # (the `none` control arm), and the wardrobe is the one piece of the line
+    # no slot can silence.
+    mute_wardrobe: bool = False
 
 
 _SLOT_COLS = (
@@ -1826,6 +1849,7 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     for cam_key, act_key, framing_key in best_chosen:
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
+            c.mute_wardrobe,
         ))
     return {"ids": shot_ids, "count": len(shot_ids)}
 
@@ -2448,6 +2472,14 @@ class ComposeSessionIn(BaseModel):
     count: int = Field(..., ge=1)
     candidates: dict  # same shape as ComposeRunIn.candidates
     mode: Literal["strict", "exploratory"] = "strict"
+    # Hand the wardrobe to a reference instead of writing it: the shot's line
+    # is composed without the session's wardrobe. Off by default, because a
+    # line that says nothing about clothing renders her undressed (measured
+    # 2026-08-31: nude 3/3 with no reference attached). There is no twin
+    # switch for the pose — an empty wording is already a catalogue component
+    # (the `none` control arm), and the wardrobe is the one piece of the line
+    # no slot can silence.
+    mute_wardrobe: bool = False
 
 
 @app.post("/api/sessions/{sid}/compose-session")
@@ -2503,6 +2535,7 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     for cam_key, act_key, framing_key in ordered:
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
+            c.mute_wardrobe,
         ))
     return {"ids": shot_ids, "count": len(shot_ids)}
 
@@ -2645,7 +2678,8 @@ def _slot_concept_wording_text(slot_dict: dict) -> tuple[str, str, str]:
 
 
 def compose_shot(model: dict, look: str, wardrobe: str,
-                 camera: dict, act: dict, framing: dict) -> str:
+                 camera: dict, act: dict, framing: dict,
+                 mute_wardrobe: bool = False) -> str:
     """Compose a line from drawn components, no writer request.
 
     The camera, act and framing are catalogue entries with at least
@@ -2666,10 +2700,15 @@ def compose_shot(model: dict, look: str, wardrobe: str,
     _, _, act_text = _slot_concept_wording_text(act)
     _, _, fr_text = _slot_concept_wording_text(framing)
     take = _sentences(cam_text, act_text, fr_text)
-    return _compose(model, look, wardrobe, take)
+    # A reference only delivers what the line does not already write, so a take
+    # that hands the wardrobe to a reference has to stop saying it. Dropping it
+    # here rather than at queue time keeps the stored line honest — it is what
+    # was actually sent — and lets the dedup check below compare the real lines.
+    return _compose(model, look, "" if mute_wardrobe else wardrobe, take)
 
 
-def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict) -> int:
+def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict,
+                           mute_wardrobe: bool = False) -> int:
     """Compose a single shot from drawn components and queue it.
 
     Returns the shot id. The three drawn components are recorded on
@@ -2702,7 +2741,7 @@ def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict) -> 
     settings = json.loads(session["settings"] or "{}")
     look = session["look"] if settings.get("use_look", True) else ""
     wardrobe = session["wardrobe"]
-    prompt = compose_shot(model, look, wardrobe, camera, act, framing)
+    prompt = compose_shot(model, look, wardrobe, camera, act, framing, mute_wardrobe)
     # The (concept, wording) pair per slot, not just the wording.
     # Today every concept has a single wording and the two keys
     # coincide, so the cell the photograph counts toward is keyed
@@ -2720,10 +2759,10 @@ def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict) -> 
     shot_index = db.one("SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id=?", sid)["m"] + 1
     shot_id = db.run(
         """INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative,
-                              components, created_at)
-           VALUES (?,?,?,?,?,?,?)""",
+                              components, mute_wardrobe, created_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
         sid, shot_index, f"composed {shot_index + 1}", prompt,
-        model["base_negative"], components, db.now(),
+        model["base_negative"], components, int(mute_wardrobe), db.now(),
     )
     # The session's origin moves to `'composed'` on the first
     # compose, or to `'mixed'` if the session already has a

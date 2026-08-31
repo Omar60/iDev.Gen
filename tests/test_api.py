@@ -6373,3 +6373,47 @@ def test_a_dead_cell_anywhere_in_the_batch_queues_nothing(client, seeded):
     assert "is dead, not drawable in any mode" in r.json()["detail"]
     # Not the three rows of the first, healthy combination either.
     assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == 0
+
+
+def test_muting_the_wardrobe_drops_it_from_the_composed_line(client, seeded):
+    """The per-shot switch that makes room for a reference.
+
+    Measured 2026-08-31: a reference card delivers an attribute only where the
+    line does not already write it — with the garments written, a wardrobe
+    reference lands 0/9 at every strength; struck out, 3/3. So a take that
+    hands the wardrobe to a reference has to stop saying it, and the switch
+    is per shot because the session's wardrobe still belongs to every other
+    take in the same session.
+
+    Both halves are pinned: the muted line does not contain the wardrobe, and
+    the unmuted one composed from the SAME trio does. Without the second half
+    the test would pass against a composer that dropped the wardrobe always.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "mute", "wardrobe": "a red wool coat",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
+    trio = {
+        "camera": {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front text"}]},
+        "act": {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]},
+        "framing": {"key": "full-length", "wordings": [{"key": "full-length", "text": "framing text"}]},
+        "count": 1,
+    }
+
+    muted = client.post(f"/api/sessions/{sid}/compose", json=dict(trio, mute_wardrobe=True))
+    assert muted.status_code == 200, muted.text
+    row = db.one("SELECT * FROM shot WHERE id=?", muted.json()["ids"][0])
+    assert "red wool coat" not in row["prompt"]
+    assert "astride text" in row["prompt"]      # the rest of the take survives
+    assert row["mute_wardrobe"] == 1
+
+    # The same trio unmuted still carries it, so the assertion above is the
+    # switch and not the composer.
+    plain = client.post(f"/api/sessions/{sid}/compose", json=trio)
+    assert plain.status_code == 200, plain.text
+    other = db.one("SELECT * FROM shot WHERE id=?", plain.json()["ids"][0])
+    assert "red wool coat" in other["prompt"]
+    assert other["mute_wardrobe"] == 0

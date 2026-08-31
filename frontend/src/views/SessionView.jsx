@@ -60,6 +60,13 @@ export default function SessionView({ id }) {
   // catalogue would make this stale and it would have to move to an effect.
   const [composeCount, setComposeCount] = useState(() => defaultCount(s?.manner))
   const [composeMode, setComposeMode] = useState('exploratory')
+  // Compose the line WITHOUT the session's wardrobe, so a reference can deliver
+  // the clothing instead. Measured 2026-08-31: a written garment beats a
+  // reference card 0/9 at every strength, and struck out it lands 3/3. One
+  // checkbox for both compose controls — the switch is a property of the take,
+  // not of which button queued it. Off by default: with no reference attached
+  // a silent line renders her undressed.
+  const [muteWardrobe, setMuteWardrobe] = useState(false)
   // The fill-cell control: pick one trio (camera, act, framing),
   // pick a count, queue N photographs of that trio on
   // THIS session. The picker reads the same catalogue slice the
@@ -131,7 +138,7 @@ export default function SessionView({ id }) {
   // operator's eye expects them.
   const composeRun = (n, mode) => call(async () => {
     const candidates = candidatePool(s.manner)
-    await api.post(`/api/sessions/${id}/compose-run`, { count: n, candidates, mode })
+    await api.post(`/api/sessions/${id}/compose-run`, { count: n, candidates, mode, mute_wardrobe: muteWardrobe })
   })
 
   // Fill a cell: queue N photographs of the picked trio on this
@@ -166,7 +173,7 @@ export default function SessionView({ id }) {
       camera: camKeys.map((k) => pick(pool.camera, k)),
       act: actKeys.map((k) => pick(pool.act, k)),
       framing: framingKeys.map((k) => pick(pool.framing, k)),
-      count: n, mode,
+      count: n, mode, mute_wardrobe: muteWardrobe,
     })
   })
 
@@ -438,6 +445,13 @@ export default function SessionView({ id }) {
               makes the first use of this feature a 422 on a 17-row, 2-trios
               cell table, and reads as broken. */}
           <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <label title="Compose the line without the session's wardrobe, so a reference image can deliver the clothing instead. With no reference attached the line renders her undressed."
+                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+              <input type="checkbox" checked={muteWardrobe}
+                     disabled={!s.manner || !s.checkpoint || s.running}
+                     onChange={(e) => setMuteWardrobe(e.target.checked)} />
+              no wardrobe
+            </label>
             <input type="number" min={1} max={50} value={composeCount}
                    disabled={!s.manner || !s.checkpoint || s.running}
                    onChange={(e) => setComposeCount(Math.max(1, Number(e.target.value) || 1))}
