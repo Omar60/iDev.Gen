@@ -43,6 +43,9 @@ sys.path.insert(0, str(ROOT / "backend"))
 from comfy import Comfy, apply_map, output_images  # noqa: E402
 
 COMFY_URL = "http://127.0.0.1:8188"
+# Untracked on purpose: they are photographs of a real person and this repo
+# is public. Put your own source frames here — the arms below name the files
+# they expect, and a missing one fails that arm with the path on screen.
 SOURCES = ROOT / "data" / "depth-sources"
 OUT = ROOT / "data" / "depth-probe"
 DEPTH_BODY = json.loads((ROOT / "data" / "krea2-depth-control-workflow.json")

@@ -44,6 +44,9 @@ CAMERA_TAIL = "Overhead camera directly above her and behind her head"
 
 COMFY_URL = "http://127.0.0.1:8188"
 OUT = ROOT / "data" / "weight-probe"
+# Untracked on purpose: they are photographs of a real person and this repo
+# is public. Put your own source frames here — the arms below name the files
+# they expect, and a missing one fails that arm with the path on screen.
 SOURCES = ROOT / "data" / "depth-sources"
 
 
