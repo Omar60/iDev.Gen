@@ -78,7 +78,28 @@ devil-horn headband clipped into her hair, nude from the waist.
 Expression:
 Her expression is calm and self-aware and still, her lips softly closed."""
 
-PROMPT = f"zchar_jir.\n\n{LOOK}\n\nAngle & Framing:\na full-length photograph, head to feet.\n{REST}"
+FRAMING = "a full-length photograph, head to feet"
+
+
+def prompt_for(camera: str = "") -> str:
+    """The line, with a camera clause only when one is asked for.
+
+    The default says nothing about direction on purpose: with the clause in,
+    a profile render cannot be attributed to the depth map rather than to the
+    words. `--camera` puts it back to ask the opposite question — whether the
+    two channels together hold the geometry at a strength neither reaches
+    alone, which is where the body drift stops.
+    """
+    angle = f"{camera}, {FRAMING}" if camera else FRAMING
+    return f"zchar_jir.\n\n{LOOK}\n\nAngle & Framing:\n{angle}.\n{REST}"
+
+
+PROMPT = prompt_for()
+
+# The clause session 231 measured: alone on Krea 2 it renders a three-quarter
+# turn and never ninety degrees ([[idevgen-profile-is-a-base-model-limit]]).
+# The source has her facing the left edge, so the camera is on her left.
+CAMERA_PROFILE = "Taken from her left side, her body in full profile"
 
 # label -> the depth source, or None for the uncontrolled arm.
 ARMS = [
@@ -157,8 +178,14 @@ async def main() -> int:
     ap.add_argument("--sweep", default="", metavar="A,B,C",
                     help="control strengths to sweep on --source instead of the four arms")
     ap.add_argument("--source", default="profile_90.jpg", help="the depth source the sweep uses")
+    ap.add_argument("--camera", action="store_true",
+                    help="put the profile camera clause back into the line")
     args = ap.parse_args()
     seeds = SEEDS[:args.seeds]
+
+    global PROMPT
+    if args.camera:
+        PROMPT = prompt_for(CAMERA_PROFILE)
 
     if args.sweep:
         # At 1.0 the depth map carries the reference body, not just its geometry:
@@ -169,7 +196,8 @@ async def main() -> int:
         # write the same filenames otherwise, and the second one silently
         # overwrites the first.
         stem = pathlib.Path(args.source).stem
-        arms = [(f"{stem}-S{s}".replace(".", "_"), args.source, s) for s in strengths]
+        tag = "-cam" if args.camera else ""
+        arms = [(f"{stem}{tag}-S{s}".replace(".", "_"), args.source, s) for s in strengths]
     else:
         arms = [(label, source, 1.0) for label, source in ARMS]
 
