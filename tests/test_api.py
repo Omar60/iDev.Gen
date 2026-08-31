@@ -6373,3 +6373,117 @@ def test_a_dead_cell_anywhere_in_the_batch_queues_nothing(client, seeded):
     assert "is dead, not drawable in any mode" in r.json()["detail"]
     # Not the three rows of the first, healthy combination either.
     assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == 0
+
+
+def test_muting_the_wardrobe_drops_it_from_the_composed_line(client, seeded):
+    """The per-shot switch that makes room for a reference.
+
+    Measured 2026-08-31: a reference card delivers an attribute only where the
+    line does not already write it — with the garments written, a wardrobe
+    reference lands 0/9 at every strength; struck out, 3/3. So a take that
+    hands the wardrobe to a reference has to stop saying it, and the switch
+    is per shot because the session's wardrobe still belongs to every other
+    take in the same session.
+
+    Both halves are pinned: the muted line does not contain the wardrobe, and
+    the unmuted one composed from the SAME trio does. Without the second half
+    the test would pass against a composer that dropped the wardrobe always.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "mute", "wardrobe": "a red wool coat",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
+    trio = {
+        "camera": {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front text"}]},
+        "act": {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]},
+        "framing": {"key": "full-length", "wordings": [{"key": "full-length", "text": "framing text"}]},
+        "count": 1,
+    }
+
+    muted = client.post(f"/api/sessions/{sid}/compose", json=dict(trio, mute_wardrobe=True))
+    assert muted.status_code == 200, muted.text
+    row = db.one("SELECT * FROM shot WHERE id=?", muted.json()["ids"][0])
+    assert "red wool coat" not in row["prompt"]
+    assert "astride text" in row["prompt"]      # the rest of the take survives
+    assert row["mute_wardrobe"] == 1
+
+    # The same trio unmuted still carries it, so the assertion above is the
+    # switch and not the composer.
+    plain = client.post(f"/api/sessions/{sid}/compose", json=trio)
+    assert plain.status_code == 200, plain.text
+    other = db.one("SELECT * FROM shot WHERE id=?", plain.json()["ids"][0])
+    assert "red wool coat" in other["prompt"]
+    assert other["mute_wardrobe"] == 0
+
+
+def test_a_composed_take_can_be_shot_through_the_reference_graph(client, seeded):
+    """The composer's half of the reference channel.
+
+    `mute_wardrobe` takes the garments off the line so a reference can deliver
+    them; nothing on the composed row said to ATTACH one, so the runner painted
+    the muted line from noise with no reference in the graph — which is the
+    "nude 3/3" the switch's own comment warns about. The written path has had
+    this switch since the channel landed (`ShotIn.reference`); this pins the
+    composed one, and pins that it is a separate flag: the second half asserts a
+    muted take is not silently referenced.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "composed reference",
+        "wardrobe": "a red wool coat",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "finepornV4", 10, 8)
+    trio = {
+        "camera": {"key": "front-direct", "wordings": [{"key": "front-direct", "text": "front text"}]},
+        "act": {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]},
+        "framing": {"key": "full-length", "wordings": [{"key": "full-length", "text": "framing text"}]},
+        "count": 1,
+    }
+
+    guided = client.post(f"/api/sessions/{sid}/compose",
+                         json=dict(trio, mute_wardrobe=True, reference=True))
+    assert guided.status_code == 200, guided.text
+    row = db.one("SELECT * FROM shot WHERE id=?", guided.json()["ids"][0])
+    assert row["use_reference"] == 1
+    assert row["mute_wardrobe"] == 1
+    assert "red wool coat" not in row["prompt"]
+
+    # Muting alone attaches nothing: two switches, two meanings.
+    muted = client.post(f"/api/sessions/{sid}/compose", json=dict(trio, mute_wardrobe=True))
+    assert db.one("SELECT * FROM shot WHERE id=?", muted.json()["ids"][0])["use_reference"] == 0
+
+
+def test_a_guided_take_is_composed_and_an_edit_take_is_not(client, seeded):
+    """The same conflation as the runner's model-slot drop, in the prompt path.
+
+    An EDIT take is sent bare on purpose — the anchor already carries the
+    trigger, the base prompt and the look, and restating the look is what makes
+    'remove the jacket' keep the jacket. A GUIDED take paints from noise, so
+    those three are the only thing that puts her in the room: sent bare it comes
+    back in the reference photograph's own room, which is what session 324 did.
+
+    Both halves, one session each, so the assertion is the workflow's kind and
+    not the composer.
+    """
+    def line_for(kind):
+        wf = client.post("/api/workflows", json={
+            "name": f"ref-{kind}", "kind": kind,
+            "graph": {"1": {"class_type": "KSampler", "inputs": {"seed": 0}}},
+            "node_map": {"seed": "1.inputs.seed"},
+        }).json()["id"]
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"guide {kind}",
+            "look": "in a small lived-in room", "reference_workflow_id": wf,
+            "shots": [{"label": "t", "prompt": "standing", "count": 1, "reference": True}],
+        }).json()["id"]
+        return db.one("SELECT prompt FROM shot WHERE session_id=?", sid)["prompt"]
+
+    assert line_for("edit") == "standing"
+    guided = line_for("guide")
+    assert "in a small lived-in room" in guided
+    assert guided.endswith("standing.")

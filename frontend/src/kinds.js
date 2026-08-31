@@ -14,6 +14,7 @@ export const WORKFLOW_KINDS = {
   edit: 'Photo edit (instruction)',
   angles: 'Camera angles',
   scene: 'Scene + subject (2 references)',
+  guide: 'Guided paint (reference + prompt)',
 }
 
 export const KINDS = {
@@ -162,6 +163,30 @@ export const KINDS = {
           + '“the woman from the first photo wearing the dress from the second”. Slot order '
           + 'is role. Do not describe either subject beyond what tells them apart.',
       batch: 'Every line is a different combination of the two photos.',
+    },
+  },
+  guide: {
+    label: 'Guided paint',
+    blurb: 'New photos painted from the look, with a reference photograph steering one '
+         + 'thing — the body’s orientation, or the clothes. Not an edit: the character '
+         + 'and the checkpoint are still the session’s.',
+    rule: 'The line must not write what the reference carries. Measured 2026-08-31: with '
+        + 'the garments written a wardrobe reference lands 0 of 9 at every strength, and '
+        + 'struck out it lands 3 of 3 — so tick "no wardrobe" on the take, or pick the '
+        + '"none" act, depending on which one the photograph is for.',
+    refKind: 'guide',
+    refDefault: true,
+    examples: [
+      'A full-length photograph of {trigger}, head to feet, standing on the carpet',
+    ],
+    footer: 'The reference is the session’s 📎 pick unless a take names its own. Each '
+          + 'take gets a strength box: the guide dial, not a denoise.',
+    enhance: {
+      line: 'Write one take of a photo session: what the body is doing, and how the '
+          + 'photograph is framed. Say nothing about the thing the reference photograph '
+          + 'is there to carry — no clothing if it guides the wardrobe, no posture if it '
+          + 'guides the body. A written clause beats the reference every time.',
+      batch: 'Every line is a different take guided by the same photograph.',
     },
   },
 }

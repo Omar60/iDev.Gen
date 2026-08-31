@@ -219,6 +219,20 @@ class ComposeIn(BaseModel):
     framing: dict | list[dict]
     count: int = Field(1, ge=1)
     mode: Literal["strict", "exploratory"] = "strict"
+    # Hand the wardrobe to a reference instead of writing it: the shot's line
+    # is composed without the session's wardrobe. Off by default, because a
+    # line that says nothing about clothing renders her undressed (measured
+    # 2026-08-31: nude 3/3 with no reference attached). There is no twin
+    # switch for the pose — an empty wording is already a catalogue component
+    # (the `none` control arm), and the wardrobe is the one piece of the line
+    # no slot can silence.
+    mute_wardrobe: bool = False
+    # Shoot this take through the session's reference graph, the same switch
+    # `ShotIn.reference` is on the written path. Separate from `mute_wardrobe`
+    # on purpose: guiding the body while the line still writes the clothes is a
+    # real take, and one flag carrying both meanings is how `use_reference`
+    # grew three of them.
+    reference: bool = False
 
 
 class SessionPatch(BaseModel):
@@ -245,6 +259,13 @@ class SessionPatch(BaseModel):
 class ShotPatch(BaseModel):
     rating: int | None = None
     rejected: bool | None = None
+    # The photographs THIS take is guided by, overriding the session's 📎 pick.
+    # An empty list clears it back to "follow the session", which is why the
+    # field is `list | None` and not `list`: None is "leave it alone", `[]` is
+    # a decision. A shot that has already run keeps whatever it ran with —
+    # `runner._reference_values` stamps the column at queue time, and repainting
+    # the history would break the before/after pairing that column exists for.
+    reference_shot_ids: list[int] | None = None
 
 
 class ComponentIn(BaseModel):
@@ -1307,8 +1328,9 @@ def clone_session(sid: int, c: SessionClone):
         new_shot = db.run(
             """INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative,
                                  use_reference, reference_strength, seed, status,
-                                 components, origin_shot_id, created_at, finished_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                 components, mute_wardrobe, origin_shot_id,
+                                 created_at, finished_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             new_id, shot["shot_index"], shot["shot_label"], shot["prompt"], shot["negative"],
             shot["use_reference"], shot["reference_strength"], shot["seed"],
             "done" if imported else "pending",
@@ -1322,6 +1344,12 @@ def clone_session(sid: int, c: SessionClone):
             # column for old clones" lands here as a
             # regression on this INSERT.
             shot["components"] or "{}",
+            # A clone of a shot that handed its wardrobe to a reference is a
+            # shot that hands its wardrobe to a reference: the line was
+            # composed without the garment and the copy carries the same line,
+            # so the flag has to travel with it or the row stops explaining
+            # its own prompt.
+            shot["mute_wardrobe"],
             # The original take, never the row copied from: a clone of a clone
             # pairs with the whole family, and the pair then survives a reshoot
             # (↺) on either side, which rolls a new seed by design.
@@ -1480,7 +1508,11 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
         # because the photograph is cut where the anatomy is. Refused in both
         # modes and in the pre-check, so a batch queues nothing rather than
         # queueing the combinations before the contradiction.
-        clash = crop.conflict(fr_text, cam_text, act_text, session["wardrobe"], look)
+        # A muted wardrobe is not on the line, so it does not name a body part
+        # for the crop law to reach: the check reads what is sent, not what the
+        # session holds. Two calculations that disagree here refuse a legal trio.
+        clash = crop.conflict(fr_text, cam_text, act_text,
+                              "" if c.mute_wardrobe else session["wardrobe"], look)
         if clash:
             raise HTTPException(422, f"compose refused: cell {trio} contradicts itself — {clash}")
         cell = db.one(
@@ -1541,7 +1573,7 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
     # runner rolls a fresh `random.randint` seed per row, so the same
     # trio renders N different photographs.
     shot_ids = [
-        compose_and_queue_shot(sid, cam, act, fr)
+        compose_and_queue_shot(sid, cam, act, fr, c.mute_wardrobe, c.reference)
         for cam, act, fr in combos
         for _ in range(c.count)
     ]
@@ -1570,6 +1602,16 @@ class ComposeRunIn(BaseModel):
     count: int = Field(..., ge=1)
     candidates: dict  # {"camera": [...], "act": [...], "framing": [...]}, each a list of {key, wordings:[{key, text}]}
     mode: Literal["strict", "exploratory"] = "strict"
+    # Hand the wardrobe to a reference instead of writing it: the shot's line
+    # is composed without the session's wardrobe. Off by default, because a
+    # line that says nothing about clothing renders her undressed (measured
+    # 2026-08-31: nude 3/3 with no reference attached). There is no twin
+    # switch for the pose — an empty wording is already a catalogue component
+    # (the `none` control arm), and the wardrobe is the one piece of the line
+    # no slot can silence.
+    mute_wardrobe: bool = False
+    # Same switch as `ComposeIn.reference`, same reason it is its own flag.
+    reference: bool = False
 
 
 _SLOT_COLS = (
@@ -1821,11 +1863,13 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     the post-draw step (3.5 adds `_skip_for_spread` as the
     caller's skip predicate, 3.3 passes no skip).
     """
-    by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode)
+    by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode,
+                                             mute_wardrobe=c.mute_wardrobe)
     shot_ids: list[int] = []
     for cam_key, act_key, framing_key in best_chosen:
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
+            c.mute_wardrobe, c.reference,
         ))
     return {"ids": shot_ids, "count": len(shot_ids)}
 
@@ -1872,6 +1916,7 @@ def _draw_n_trio_shots(
     candidates: dict,
     mode: Literal["strict", "exploratory"] = "strict",
     skip: "Callable | None" = None,
+    mute_wardrobe: bool = False,
 ) -> tuple[dict, list[tuple[str, str, str]]]:
     """The shared draw used by `compose_run_endpoint` (3.3) and
     `compose_session_endpoint` (3.5). Returns `(by_key,
@@ -1989,7 +2034,7 @@ def _draw_n_trio_shots(
     # The wardrobe and the look are part of the composed line, so they are part of
     # what names her lowest part: a session in stockings has no crop above the feet
     # available to it, whatever the act says (session 318).
-    context = _sentences(session["wardrobe"] or "",
+    context = _sentences("" if mute_wardrobe else (session["wardrobe"] or ""),
                          session["look"] if settings.get("use_look", True) else "")
     pool = _trio_pool(session["manner"], session["checkpoint"], candidates, mode, context)
 
@@ -2448,6 +2493,16 @@ class ComposeSessionIn(BaseModel):
     count: int = Field(..., ge=1)
     candidates: dict  # same shape as ComposeRunIn.candidates
     mode: Literal["strict", "exploratory"] = "strict"
+    # Hand the wardrobe to a reference instead of writing it: the shot's line
+    # is composed without the session's wardrobe. Off by default, because a
+    # line that says nothing about clothing renders her undressed (measured
+    # 2026-08-31: nude 3/3 with no reference attached). There is no twin
+    # switch for the pose — an empty wording is already a catalogue component
+    # (the `none` control arm), and the wardrobe is the one piece of the line
+    # no slot can silence.
+    mute_wardrobe: bool = False
+    # Same switch as `ComposeIn.reference`, same reason it is its own flag.
+    reference: bool = False
 
 
 @app.post("/api/sessions/{sid}/compose-session")
@@ -2497,12 +2552,14 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     # skip in place, but the function keeps the assertion
     # for a future caller that drops the skip).
     by_key, best_chosen = _draw_n_trio_shots(
-        sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread)
+        sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread,
+        mute_wardrobe=c.mute_wardrobe)
     ordered = _reorder_to_spread_families(best_chosen, by_key)
     shot_ids: list[int] = []
     for cam_key, act_key, framing_key in ordered:
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
+            c.mute_wardrobe, c.reference,
         ))
     return {"ids": shot_ids, "count": len(shot_ids)}
 
@@ -2510,15 +2567,27 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
 def _expand_shots(sid: int, model: dict, look: str, wardrobe: str, shots: list[ShotIn],
                   seed_mode: str, seed: int) -> int:
     """One take x N variations = N pending shot rows."""
+    ref_kind = (db.one("SELECT w.kind AS kind FROM session s "
+                       "LEFT JOIN workflow w ON w.id = s.reference_workflow_id "
+                       "WHERE s.id=?", sid) or {})["kind"] or ""
     start = db.one("SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id=?", sid)["m"] + 1
     added = 0
     for offset, take in enumerate(shots):
-        # A reference take is NOT composed, and that is the whole point: the anchor
-        # photo already carries the trigger, the base prompt and the look, so the
-        # take is an instruction ("remove the jacket"). Prepending the look again
-        # would restate the very garment the instruction removes, and a positive
-        # that both describes and denies a jacket keeps the jacket.
-        raw = take.verbatim or take.reference
+        # A take that EDITS a reference is not composed, and that is the whole
+        # point: the anchor photo already carries the trigger, the base prompt
+        # and the look, so the take is an instruction ("remove the jacket").
+        # Prepending the look again would restate the very garment the
+        # instruction removes, and a positive that both describes and denies a
+        # jacket keeps the jacket.
+        #
+        # A take that is GUIDED by a reference is the opposite case and has to
+        # be composed like any other: it paints from noise, so the trigger, the
+        # base prompt and the look are the only things that put her in the room
+        # at all. Sent bare it renders the reference photograph's own room —
+        # measured on session 324, which came back in the source's monochrome
+        # studio instead of the session's bedroom. The test is on the graph's
+        # kind for the same reason the runner's model-slot drop is.
+        raw = take.verbatim or (take.reference and ref_kind != "guide")
         worn = wardrobe if take.wardrobe is None else take.wardrobe
         prompt = take.prompt if raw else _compose(model, look, worn, take.prompt)
         negative = take.negative or model["base_negative"]
@@ -2645,7 +2714,8 @@ def _slot_concept_wording_text(slot_dict: dict) -> tuple[str, str, str]:
 
 
 def compose_shot(model: dict, look: str, wardrobe: str,
-                 camera: dict, act: dict, framing: dict) -> str:
+                 camera: dict, act: dict, framing: dict,
+                 mute_wardrobe: bool = False) -> str:
     """Compose a line from drawn components, no writer request.
 
     The camera, act and framing are catalogue entries with at least
@@ -2666,10 +2736,16 @@ def compose_shot(model: dict, look: str, wardrobe: str,
     _, _, act_text = _slot_concept_wording_text(act)
     _, _, fr_text = _slot_concept_wording_text(framing)
     take = _sentences(cam_text, act_text, fr_text)
-    return _compose(model, look, wardrobe, take)
+    # A reference only delivers what the line does not already write, so a take
+    # that hands the wardrobe to a reference has to stop saying it. Dropping it
+    # here rather than at queue time keeps the stored line honest — it is what
+    # was actually sent — and lets the dedup check below compare the real lines.
+    return _compose(model, look, "" if mute_wardrobe else wardrobe, take)
 
 
-def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict) -> int:
+def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict,
+                           mute_wardrobe: bool = False,
+                           reference: bool = False) -> int:
     """Compose a single shot from drawn components and queue it.
 
     Returns the shot id. The three drawn components are recorded on
@@ -2702,7 +2778,7 @@ def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict) -> 
     settings = json.loads(session["settings"] or "{}")
     look = session["look"] if settings.get("use_look", True) else ""
     wardrobe = session["wardrobe"]
-    prompt = compose_shot(model, look, wardrobe, camera, act, framing)
+    prompt = compose_shot(model, look, wardrobe, camera, act, framing, mute_wardrobe)
     # The (concept, wording) pair per slot, not just the wording.
     # Today every concept has a single wording and the two keys
     # coincide, so the cell the photograph counts toward is keyed
@@ -2720,10 +2796,10 @@ def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict) -> 
     shot_index = db.one("SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id=?", sid)["m"] + 1
     shot_id = db.run(
         """INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative,
-                              components, created_at)
-           VALUES (?,?,?,?,?,?,?)""",
+                              components, mute_wardrobe, use_reference, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
         sid, shot_index, f"composed {shot_index + 1}", prompt,
-        model["base_negative"], components, db.now(),
+        model["base_negative"], components, int(mute_wardrobe), int(reference), db.now(),
     )
     # The session's origin moves to `'composed'` on the first
     # compose, or to `'mixed'` if the session already has a
@@ -2947,9 +3023,16 @@ def _require_usable_reference(session: dict) -> None:
     workflow legitimately has neither slot.
     """
     sid = session["id"]
-    pending = db.one(
-        "SELECT COUNT(*) AS n FROM shot WHERE session_id=? AND status='pending' AND use_reference=1", sid)["n"]
-    if not pending:
+    # A take that names its own reference photographs is answerable on its own,
+    # so the session-level checks below are about the takes that do NOT — the
+    # ones still following the 📎 pick. Split here rather than at each check,
+    # so a session where every take brings its own reference is not refused for
+    # having no session anchor.
+    waiting = db.q("SELECT id, reference_shot_ids FROM shot WHERE session_id=? "
+                   "AND status='pending' AND use_reference=1", sid)
+    own = [json.loads(r["reference_shot_ids"] or "[]") for r in waiting]
+    pending = sum(1 for picked in own if not picked)
+    if not waiting:
         return
     if not session["reference_workflow_id"]:
         raise HTTPException(400, (
@@ -2960,7 +3043,7 @@ def _require_usable_reference(session: dict) -> None:
     # So this only refuses the case that cannot work at all — nothing to edit, and
     # nothing queued that would produce something to edit.
     anchors = json.loads(session["anchor_shot_ids"] or "[]")
-    if not anchors:
+    if not anchors and pending:
         will_shoot = db.one(
             "SELECT COUNT(*) AS n FROM shot WHERE session_id=? AND status='pending' AND use_reference=0",
             sid)["n"]
@@ -2984,7 +3067,16 @@ def _require_usable_reference(session: dict) -> None:
     # photo, silently mixed into every take. Too many and the extra uploads and is
     # ignored. Both look like the reference simply had no effect.
     mapped = [slot for slot in REFERENCE_SLOTS if slot in wf["node_map"]]
-    if anchors and len(anchors) != len(mapped):
+    # A take's own pick answers to the same count rule as the session's: a slot
+    # left unfilled keeps whatever filename the graph was saved with, and that
+    # photograph is then mixed into the take with nothing on screen saying so.
+    for row, picked in zip(waiting, own):
+        if picked and len(picked) != len(mapped):
+            raise HTTPException(400, (
+                f"Take {row['id']} names {len(picked)} reference photo(s) but workflow "
+                f"'{wf['name']}' reads {len(mapped)}. Name {len(mapped)}, or clear the "
+                f"take's own pick to follow the session."))
+    if anchors and pending and len(anchors) != len(mapped):
         detail = (f"{len(anchors)} reference photo(s) are marked, but workflow "
                   f"'{wf['name']}' reads {len(mapped)}.")
         if len(anchors) > len(mapped):
@@ -3183,10 +3275,34 @@ def delete_session(sid: int):
 
 @app.patch("/api/shots/{shot_id}")
 def patch_shot(shot_id: int, p: ShotPatch):
+    shot = db.one("SELECT status FROM shot WHERE id=?", shot_id)
+    if not shot:
+        raise HTTPException(404, "shot not found")
     if p.rating is not None:
         db.run("UPDATE shot SET rating=? WHERE id=?", max(0, min(5, p.rating)), shot_id)
     if p.rejected is not None:
         db.run("UPDATE shot SET rejected=? WHERE id=?", int(p.rejected), shot_id)
+    if p.reference_shot_ids is not None:
+        if len(p.reference_shot_ids) > len(REFERENCE_SLOTS):
+            raise HTTPException(400, f"at most {len(REFERENCE_SLOTS)} reference photos")
+        # Every id has to be a photograph that exists and has a file, checked
+        # here rather than at run time: a typo caught now is a red field, and
+        # caught in the runner it is a failed shot in the middle of a run.
+        # Only while it is still waiting. `runner._reference_values` stamps this
+        # column at queue time precisely so the row records what the take ACTUALLY
+        # ran against; repainting it afterwards would break the before/after pairing
+        # the column exists for, and the docstring on `ShotPatch` promises it does
+        # not happen. It said so and nothing enforced it.
+        if shot["status"] != "pending":
+            raise HTTPException(
+                409, f"shot {shot_id} is {shot['status']}, not pending — a take that has "
+                     f"run keeps the reference it ran with")
+        for ref in p.reference_shot_ids:
+            row = db.one("SELECT filename FROM shot WHERE id=?", ref)
+            if not row or not row["filename"]:
+                raise HTTPException(400, f"shot {ref} has no photograph to guide with")
+        db.run("UPDATE shot SET reference_shot_ids=? WHERE id=?",
+               json.dumps(p.reference_shot_ids), shot_id)
     return db.one("SELECT * FROM shot WHERE id=?", shot_id)
 
 

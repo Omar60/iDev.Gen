@@ -29,7 +29,7 @@ room. Needs a second workflow (img2img, FLUX.1 Kontext, Qwen-Image-Edit); see
 [sessions](docs/sessions.md#reference-takes).
 
 A session is created with a **kind**, which is what turns those two paths into
-four jobs the app can actually guide:
+five jobs the app can actually guide:
 
 | Kind | What it shoots |
 |---|---|
@@ -37,15 +37,34 @@ four jobs the app can actually guide:
 | **Photo edit** | Instructions on one photo: wardrobe off, a new pose, another background. Four expressions come as chips, in the words they were measured in. |
 | **Camera angles** | The camera walked around one photo with an angle LoRA. The vocabulary is closed, so the takes are built from a picker instead of typed. |
 | **Scene + subject** | Two reference photos into one frame — a character and a garment, a character and a place. |
+| **Guided paint** | New photos from the look, with a photograph steering one thing — the clothes, or the body's orientation. Not an edit: the character and the checkpoint stay the session's. |
 
 The kind picks the right workflow (tag your graphs once on the *Workflows*
 screen), starts the takes with the right defaults, and prints the one rule that
 decides whether that kind works — for angles, *anchor on the widest frame you
 have*. See [sessions](docs/sessions.md#session-kinds).
 
-The four are one workflow, not four. **→** on any finished photo continues with
+A guided take only works where the line stays silent about the thing the
+photograph is there to carry: with the garments written, a wardrobe reference
+lands 0 of 9 at every strength, and struck out of the line 3 of 3. See
+[sessions](docs/sessions.md#guided-takes).
+
+The kinds are one workflow, not five. **→** on any finished photo continues with
 it — the same session switched to that kind, or a fresh session with the photo
 copied in as its reference. The photo never leaves the app.
+
+## Composing from the catalogue
+
+A take can also be **dealt** instead of written: one camera, one act and one
+framing out of the measured component catalogue, joined into a line with no
+writer request. That is what makes a photograph *evidence* — a written line is a
+new sentence every time, so a bad frame says nothing about which part was wrong,
+while a composed one is three catalogue entries and can be scored by the blind
+judge. `Compose` deals variety; `Fill` takes one cell to its threshold. Trios
+that contradict themselves are refused before anything is queued — the frame
+reaches the lowest part of the body the line names, so a `waist-up` framing in a
+line that names her feet is not a crop, it is a contradiction. See
+[sessions](docs/sessions.md#composing-from-the-catalogue).
 
 ## Library
 

@@ -33,3 +33,11 @@ data/*
 writer-prompts.md
 session-200-prompts.md
 rewrite-counterargument.md
+!data/krea2-depth-control-workflow.json
+!data/krea2-prompt-weight-workflow.json
+!data/krea2-negpip-workflow.json
+!data/krea2-rebalance-workflow.json
+!data/krea2-enhancer-workflow.json
+!data/krea2-attention-workflow.json
+!data/krea2-kgreference-workflow.json
+!data/krea2-kgwardrobe-workflow.json

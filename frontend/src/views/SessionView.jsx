@@ -60,6 +60,22 @@ export default function SessionView({ id }) {
   // catalogue would make this stale and it would have to move to an effect.
   const [composeCount, setComposeCount] = useState(() => defaultCount(s?.manner))
   const [composeMode, setComposeMode] = useState('exploratory')
+  // Compose the line WITHOUT the session's wardrobe, so a reference can deliver
+  // the clothing instead. Measured 2026-08-31: a written garment beats a
+  // reference card 0/9 at every strength, and struck out it lands 3/3. One
+  // checkbox for both compose controls — the switch is a property of the take,
+  // not of which button queued it. Off by default: with no reference attached
+  // a silent line renders her undressed.
+  const [muteWardrobe, setMuteWardrobe] = useState(false)
+  // Shoot the composed takes through the session's reference graph. Its own
+  // switch and not a consequence of the one above: guiding the body while the
+  // line still writes the clothes is a real take, and one flag carrying two
+  // meanings is how use_reference grew three of them.
+  const [composeReference, setComposeReference] = useState(false)
+  // Read through the session, not off the checkbox alone: clearing the
+  // reference workflow after ticking it would otherwise still send the flag,
+  // and the row would record a guided take the runner painted from noise.
+  const composeGuided = composeReference && !!s?.reference_workflow_id
   // The fill-cell control: pick one trio (camera, act, framing),
   // pick a count, queue N photographs of that trio on
   // THIS session. The picker reads the same catalogue slice the
@@ -131,7 +147,9 @@ export default function SessionView({ id }) {
   // operator's eye expects them.
   const composeRun = (n, mode) => call(async () => {
     const candidates = candidatePool(s.manner)
-    await api.post(`/api/sessions/${id}/compose-run`, { count: n, candidates, mode })
+    await api.post(`/api/sessions/${id}/compose-run`, {
+      count: n, candidates, mode, mute_wardrobe: muteWardrobe, reference: composeGuided,
+    })
   })
 
   // Fill a cell: queue N photographs of the picked trio on this
@@ -166,7 +184,17 @@ export default function SessionView({ id }) {
       camera: camKeys.map((k) => pick(pool.camera, k)),
       act: actKeys.map((k) => pick(pool.act, k)),
       framing: framingKeys.map((k) => pick(pool.framing, k)),
-      count: n, mode,
+      count: n, mode, mute_wardrobe: muteWardrobe, reference: composeGuided,
+    })
+  })
+
+  // Which photograph guides THIS take. Empty means "follow the session's 📎
+  // pick", which is what every take did before takes could choose. Only offered
+  // on a pending reference take: a finished one already ran against whatever it
+  // ran against, and the column is the record of that.
+  const guideWith = (shot, value) => call(async () => {
+    await api.patch(`/api/shots/${shot.id}`, {
+      reference_shot_ids: value ? [Number(value)] : [],
     })
   })
 
@@ -438,6 +466,23 @@ export default function SessionView({ id }) {
               makes the first use of this feature a 422 on a 17-row, 2-trios
               cell table, and reads as broken. */}
           <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <label title="Compose the line without the session's wardrobe, so a reference image can deliver the clothing instead. With no reference attached the line renders her undressed."
+                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+              <input type="checkbox" checked={muteWardrobe}
+                     disabled={!s.manner || !s.checkpoint || s.running}
+                     onChange={(e) => setMuteWardrobe(e.target.checked)} />
+              no wardrobe
+            </label>
+            {/* Only offered when the session has a reference graph to send them
+                through: without one the runner falls back to the text2image
+                workflow and the flag is a lie the row still records. */}
+            <label title="Shoot these takes through the session's reference workflow, so the anchor photograph can carry what the line leaves out."
+                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+              <input type="checkbox" checked={composeGuided}
+                     disabled={!s.reference_workflow_id || !s.manner || !s.checkpoint || s.running}
+                     onChange={(e) => setComposeReference(e.target.checked)} />
+              guided
+            </label>
             <input type="number" min={1} max={50} value={composeCount}
                    disabled={!s.manner || !s.checkpoint || s.running}
                    onChange={(e) => setComposeCount(Math.max(1, Number(e.target.value) || 1))}
@@ -997,6 +1042,17 @@ export default function SessionView({ id }) {
                   {shot.status === 'running' ? '⏳ generating…'
                     : shot.status === 'pending' ? '· queued'
                       : `⚠ ${shot.error || shot.status}`}
+                  {shot.status === 'pending' && !!shot.use_reference && (
+                    <select className="guide" disabled={running}
+                            value={(shot.reference_shot_ids || [])[0] || ''}
+                            title="The photograph that guides this take. Follows the session's 📎 pick unless you name one here."
+                            onChange={(e) => guideWith(shot, e.target.value)}>
+                      <option value="">📎 session's pick</option>
+                      {s.shots.filter((x) => x.status === 'done').map((x) => (
+                        <option key={x.id} value={x.id}>{x.shot_label || `shot ${x.id}`}</option>
+                      ))}
+                    </select>
+                  )}
                 </div>}
             <div className="bar">
               <div className="stars">

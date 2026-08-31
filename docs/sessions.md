@@ -7,7 +7,7 @@ and, like a real shoot, one **look**.
 ## Session kinds
 
 Under the hood there are two paths — paint from noise, or edit a photo — and
-four jobs people actually shoot. The **kind**, picked at the top of the new
+five jobs people actually shoot. The **kind**, picked at the top of the new
 session panel, says which one this is:
 
 | Kind | Shoots | Reference workflow |
@@ -16,6 +16,13 @@ session panel, says which one this is:
 | **Photo edit** | instructions on one photo: wardrobe off, new pose, new background | an instruction-editing or img2img graph |
 | **Camera angles** | the camera walked around one photo | an angle-LoRA graph |
 | **Scene + subject** | two photos into one frame | a two-image graph |
+| **Guided paint** | new photos from the look, with a photograph steering one thing | a conditioning-reference graph |
+
+**Guided paint** sits across the two paths and that is what makes it worth its
+own kind. It paints from noise like a photoshoot — the character LoRA, the
+checkpoint and the look are the session's, so it is not an edit and the photo is
+not "the same photograph, changed" — but a reference photograph steers one
+attribute the line does not write. See [guided takes](#guided-takes).
 
 The kind changes no generation rule. What it does is stop you rediscovering the
 same four things:
@@ -756,6 +763,45 @@ one prompt, one seed, four strengths — and the before/after wipe shows what ea
 one moved. A take with the box empty follows the session, and `0` is a real
 setting, not "unset".
 
+### Guided takes
+
+A reference take *edits* a photograph. A **guided** take does something else: it
+paints a new photograph from noise, with the reference wired into the
+conditioning instead of into the image. The character LoRA, the checkpoint and
+the look stay the session's, so what comes out is a new photo of the same woman
+in the same room — the reference only lends one attribute.
+
+That difference is the whole reason the kind exists, and it is also the reason
+the app tests the **graph's kind** and not the take's tick. An editing graph
+loads its own model and takes the character from the anchor, so the app drops
+the checkpoint and the LoRA before sending. A guide graph paints from noise and
+needs both — dropped, it shoots somebody else. Sent bare, without the look, it
+paints the *reference photograph's* room instead of the session's.
+
+**The rule that decides whether it works at all: the line must not write what
+the reference carries.** Measured 2026-08-31: with the garments written, a
+wardrobe reference lands 0 of 9 at every strength; struck out of the line, 3 of
+3. This is the same fact as [reference takes](#reference-takes) — a positive
+that both describes and denies a jacket keeps the jacket — arriving through a
+channel that is not words.
+
+So a guided take needs a hole in its line for the reference to fill:
+
+- **the wardrobe** — tick `no wardrobe` on the compose controls, or write a take
+  that names no clothes. Careful: a line that says nothing about clothing and
+  has *no* reference attached renders her undressed.
+- **the pose** — pick the `none` act, which is a component that contributes no
+  words.
+
+Two things the measurement is worth knowing for. The wardrobe transfers as a
+**category, not a copy**: black jeans came back black, a grey tee came back as a
+plain short-sleeved tee in the wrong colour. And a short clause is not the same
+as a strong one — a one-sentence catalogue act (`stands upright and square to
+the camera…`) did **not** hold the body against the card, though it holds it
+perfectly when no card is attached. A written `Pose:` block does. If you need
+the pose the line asks for, write it out; if you want the reference's, say
+nothing.
+
 ### Expressions
 
 An expression is the one thing a take cannot ask for. Measured across nine
@@ -1204,6 +1250,86 @@ frame can be found again among the session files without opening the app. A name
 too long for its cell is trimmed from the front — the counter at the end is the
 part that tells two variations of one take apart. Like the export, it reads the
 session's photos and writes nothing into the session folder.
+
+## Composing from the catalogue
+
+Every take so far in this page is *written* — by you, or by the assistant. A
+**composed** take is dealt instead: the app takes one camera, one act and one
+framing out of the [component catalogue](#component-catalogue--judging) and
+joins them into a line, with no writer request at all.
+
+It exists for measuring. A written line is a new sentence every time, so a
+photograph that comes back wrong tells you nothing about *which* part was wrong.
+A composed line is three catalogue entries and nothing else, joined by the same
+function a written take goes through — byte for byte the line a writer would
+produce from the same three pieces — so the photograph counts as evidence for
+that trio, and the [judge](#component-catalogue--judging) can score it.
+
+The controls sit above the gallery and need the session's **manner** and
+**checkpoint** set, because a cell is the trio plus those two: a trio verified on
+another checkpoint is not evidence for this one.
+
+| Control | Asks for |
+|---|---|
+| **Compose N** | variety — N photographs, each a different trio, no component used twice in the run |
+| **Fill N photos** | evidence — pick the components you want, every combination becomes a cell, N photographs each |
+
+`Compose` is what you press to see a spread; `Fill` is what you press to take one
+cell to the `judged = 10` threshold the catalogue screen reads. Picking several
+cameras and several acts under `Fill` shoots the whole cross product, so `2 × 3 ×
+1 cells × 10` is 60 photographs and the button says so before you press it.
+
+### Strict and exploratory
+
+- **strict** draws only `verified` cells.
+- **exploratory** also draws cells nothing has been judged on yet — never `dead`
+  ones, in either mode.
+
+Exploratory is the default, and on a young catalogue it is the only one that
+queues anything: strict on a table with two verified trios is a 422 that reads
+as the feature being broken. The refusal names the cell, its state and the mode
+that would accept it.
+
+**Every check runs before any insertion.** A request either queues all of its
+photographs or none — a loop that queued eight and refused the ninth would leave
+eight rows behind, because each insertion commits on its own. This is why the
+draw and the check are the same calculation, and why a run refused for being too
+large names the largest count that *would* have worked.
+
+### The crop law
+
+A trio is also refused when it contradicts itself: **the frame reaches the lowest
+part of the body the line names, anywhere in the line.** A `waist-up` framing in
+a line whose act names her feet is not a tight crop — it is a contradiction, and
+the photograph obeys the anatomy. A garment counts as the body it covers, so a
+session wearing stockings has no crop above the knees available to it whatever
+the act says. The refusal names the clash. See `backend/crop.py` for the sessions
+this was measured on.
+
+### Handing the wardrobe to a photograph
+
+Two checkboxes sit with the compose controls, and they are separate switches on
+purpose:
+
+- **no wardrobe** composes the line without the session's wardrobe.
+- **guided** shoots those takes through the session's reference workflow. It is
+  offered only when the session has one.
+
+Together they are a [guided take](#guided-takes) built from the catalogue: the
+line goes silent about the clothes, and the reference photograph delivers them.
+Ticking `no wardrobe` **alone** does not attach anything — the line simply says
+nothing about clothing, and that renders her undressed. That is a real control
+arm, and it is also the mistake to know about.
+
+The crop law reads the line that is actually sent, so a muted take is not refused
+over a garment its own line never names.
+
+### Which kind of session this is
+
+A session records where its shots came from: `written`, `composed`, or `mixed`
+once both paths have written a row into it. Nothing stops you mixing them — the
+per-row record is what the judge reads — but a session shot for measurement is
+cleaner when it is one or the other.
 
 ## Component Catalogue & Judging
 

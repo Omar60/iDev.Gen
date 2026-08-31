@@ -81,6 +81,14 @@ CREATE TABLE IF NOT EXISTS shot (
     prompt        TEXT NOT NULL DEFAULT '',
     negative      TEXT NOT NULL DEFAULT '',
     use_reference INTEGER NOT NULL DEFAULT 0,     -- edit the session's anchor instead of painting from noise
+    -- Drop the session's wardrobe from THIS shot's line. The reference channels
+    -- only deliver an attribute the line does not already write (measured
+    -- 2026-08-31: a written garment beats a reference card 0/9 at every
+    -- strength), so a take that hands the wardrobe to a reference has to stop
+    -- saying it. The act has no twin column: an empty wording is already a
+    -- catalogue component (the `none` control arm), and the wardrobe is the
+    -- one piece of the line no slot can silence.
+    mute_wardrobe INTEGER NOT NULL DEFAULT 0,
     -- The anchors this shot actually ran against. The session's pick can change
     -- later, so "before vs after" has to compare with what was really used.
     reference_shot_ids TEXT NOT NULL DEFAULT '[]',
@@ -292,6 +300,8 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
     if "anchor_shot_ids" not in session_cols:
         conn.execute("ALTER TABLE session ADD COLUMN anchor_shot_ids TEXT NOT NULL DEFAULT '[]'")
     shot_cols = columns("shot")
+    if "mute_wardrobe" not in shot_cols:
+        conn.execute("ALTER TABLE shot ADD COLUMN mute_wardrobe INTEGER NOT NULL DEFAULT 0")
     if "use_reference" not in shot_cols:
         conn.execute("ALTER TABLE shot ADD COLUMN use_reference INTEGER NOT NULL DEFAULT 0")
     if "reference_shot_ids" not in shot_cols:

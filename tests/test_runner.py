@@ -435,3 +435,104 @@ def test_two_sessions_at_once_are_refused(client, make_runner):
 
     asyncio.run(scenario())
     assert db.one("SELECT status FROM session WHERE id=?", sid)["status"] == "done"
+
+
+def _guide_run(client, make_runner, kind):
+    """One reference session whose reference workflow is tagged `kind`, run."""
+    sid = _reference_session(client, settings={"checkpoint": "chosen.safetensors",
+                                               "lora_strength": 0.9, "denoise": 0.55})
+    db.run("UPDATE workflow SET kind=? WHERE name='edit'", kind)
+    r, fake = make_runner()
+    asyncio.run(r._run_session(sid))
+    statuses = [x["status"] for x in db.q("SELECT status FROM shot WHERE session_id=? ORDER BY id", sid)]
+    assert statuses == ["done", "done"], statuses
+    return fake.graphs[1]
+
+
+def test_a_guide_take_keeps_the_character_model(client, make_runner):
+    """The pop that makes an edit graph work is what made a guide graph impossible.
+
+    An edit graph loads its own model and takes the character from the anchor, so
+    the checkpoint and the character LoRA are dropped for it. A GUIDE graph paints
+    from noise like any other take and reads its reference as conditioning — drop
+    them there and it shoots somebody else. The test is on the graph's KIND, which
+    is where the reason actually lives.
+
+    Its twin below is the other half: same session, same anchor, same slots, and
+    the only difference is the tag on the workflow.
+    """
+    ref_graph = _guide_run(client, make_runner, "guide")
+    assert ref_graph["1"]["inputs"]["ckpt_name"] == "chosen.safetensors"
+    assert ref_graph["2"]["inputs"]["image"].startswith("idevgen/idevgen_ref_")
+
+
+def test_an_edit_take_still_drops_it(client, make_runner):
+    """The twin of the test above: untouched behaviour for every other kind."""
+    ref_graph = _guide_run(client, make_runner, "edit")
+    assert ref_graph["1"]["inputs"]["ckpt_name"] == "edit.safetensors"
+
+
+def test_a_takes_own_reference_photo_wins_over_the_sessions(client, make_runner, tmp_path):
+    """A guide reference carries a pose or a garment, so two takes of one session
+    routinely need two different photographs. The session's pick stays the
+    default and the take overrides it, the same way `reference_strength` does."""
+    sid = _reference_session(client)
+    other = db.run(
+        """INSERT INTO shot (session_id, shot_label, prompt, status, filename, created_at)
+           VALUES (?,?,?,?,?,?)""", sid, "other", "x", "done", "other.png", db.now())
+    (tmp_path / "sessions" / str(sid)).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "sessions" / str(sid) / "other.png").write_bytes(b"\x89PNG fake")
+
+    guided = db.one("SELECT id FROM shot WHERE session_id=? AND use_reference=1", sid)["id"]
+    assert client.patch(f"/api/shots/{guided}",
+                        json={"reference_shot_ids": [other]}).status_code == 200
+
+    r, fake = make_runner()
+    asyncio.run(r._run_session(sid))
+    assert db.one("SELECT status FROM shot WHERE id=?", guided)["status"] == "done",         db.one("SELECT error FROM shot WHERE id=?", guided)["error"]
+    # The upload is the take's own photograph, not the anchor the session adopted.
+    assert fake.uploads[0][1] == f"idevgen_ref_{other}.png"
+    assert json.loads(db.one("SELECT reference_shot_ids FROM shot WHERE id=?",
+                             guided)["reference_shot_ids"]) == [other]
+
+
+def test_a_take_naming_a_photograph_that_has_none_is_refused(client):
+    """Caught at the PATCH, not in the runner: a typo is a red field now, or a
+    failed shot in the middle of a run later."""
+    sid = _reference_session(client)
+    empty = db.run("INSERT INTO shot (session_id, prompt, status, created_at) VALUES (?,?,?,?)",
+                   sid, "x", "pending", db.now())
+    guided = db.one("SELECT id FROM shot WHERE session_id=? AND use_reference=1", sid)["id"]
+    r = client.patch(f"/api/shots/{guided}", json={"reference_shot_ids": [empty]})
+    assert r.status_code == 400
+    assert "no photograph" in r.json()["detail"]
+
+
+def test_a_take_that_has_run_keeps_the_reference_it_ran_with(client, make_runner):
+    """`ShotPatch` promised this in its docstring and nothing enforced it.
+
+    The column is stamped at queue time so the row records what the take ACTUALLY
+    ran against; repainting it afterwards leaves a before/after that compares
+    against a photograph the take never saw, which is worse than no comparison.
+    """
+    sid = _reference_session(client)
+    guided = db.one("SELECT id FROM shot WHERE session_id=? AND use_reference=1", sid)["id"]
+    r, _ = make_runner()
+    asyncio.run(r._run_session(sid))
+    ran_with = db.one("SELECT reference_shot_ids, status FROM shot WHERE id=?", guided)
+    assert ran_with["status"] == "done"
+
+    anchor = db.one("SELECT id FROM shot WHERE session_id=? AND use_reference=0", sid)["id"]
+    refused = client.patch(f"/api/shots/{guided}", json={"reference_shot_ids": [anchor]})
+    assert refused.status_code == 409
+    assert "keeps the reference it ran with" in refused.json()["detail"]
+    assert db.one("SELECT reference_shot_ids FROM shot WHERE id=?",
+                  guided)["reference_shot_ids"] == ran_with["reference_shot_ids"]
+
+    # The rating still moves: the guard is on the one field that is a record.
+    assert client.patch(f"/api/shots/{guided}", json={"rating": 5}).status_code == 200
+
+
+def test_patching_a_shot_that_does_not_exist_is_a_404(client):
+    """It answered 200 with a null body, so a typo in an id read as success."""
+    assert client.patch("/api/shots/999999", json={"rating": 3}).status_code == 404
