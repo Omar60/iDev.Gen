@@ -168,6 +168,17 @@ session: the text stays where it is and can be switched back on, it just is not
 written into any prompt while it is off. A session that cares more about the pose
 than about a constant place is better off without one.
 
+**Length is not the whole story, and later measurement narrowed it.** A line
+that asks for something impossible collapses at any length: a take whose camera
+was placed where it could not see the face it declared visible rendered the
+wrong position 0/3 at 109 words and 0/3 at 113, and **3/3 at 115** once the
+camera was moved to where that face actually is — the longest arm is the one
+that worked. Length still costs, further out and in a fixed order: at 295
+composed words the same sampler rendered every object and material asked of it
+and dropped the camera and the body geometry, which had both survived at 113.
+So the ceiling above is a pressure, not a law — check the line for a clause that
+contradicts itself before spending the look on it.
+
 ## Writing the prompts
 
 Everything on this page is a rule about text, and the app can now apply them
@@ -190,7 +201,7 @@ line, and the trigger, base prompt and look are still prepended by the app.
 | **👗** | on a take | what is worn in that take, every garment described properly |
 | **↩** | on a rewritten take | what it said before |
 | **✨ Describe it precisely** | under the look, and under the wardrobe | that box again, properly |
-| **📷 Look and wardrobe from a photo…** | under the look | a photo you pick, read into both boxes |
+| **📷 Wardrobe from a photo…** | under the look | a photo you pick, read into the wardrobe box |
 | **✨ Pick** | in the angle picker | ticks chips, never a take |
 
 The expression picker writes nothing at all — its four lines are already written,
@@ -599,9 +610,11 @@ in it. That is the same split as [reference takes](#reference-takes), and the
 reason a reference take is never given the look as context: nothing prepends it,
 so nothing must restate it.
 
-**Look from a photo** copies the clothes, the hair, the makeup, the place and
-the light — the garment at the level of detail this page asks for, `white linen
-midi dress, thin straps, square neckline` rather than `white dress`.
+**Wardrobe from a photo** copies the clothes — at the level of detail this page
+asks for, `white linen midi dress, thin straps, square neckline` rather than
+`white dress`. It fills the wardrobe box and nothing else: the read still asks
+for the whole photograph, and the look half is dropped on the way in, so the
+place and the light stay yours to write.
 
 It is read **head to toe, one line per part of the body**: hair and makeup, upper
 body, lower body, feet, accessories, then the place and the light. The sections

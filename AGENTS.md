@@ -13,8 +13,12 @@ everything here is visible, so keep it free of personal data.
   commits. Test fixtures use invented models (`characters/ada.safetensors`),
   never the LoRA files on your disk. `tests/test_no_personal_data.py` scans every
   tracked *and* not-yet-staged file, but it only catches what a pattern can
-  catch: user-home paths, emails and API tokens. **Real names and IPs are on
-  you** — writing them here to forbid them would publish them.
+  catch: user-home paths, emails and API tokens. It also **refuses every tracked
+  image**, `.svg` included — a photograph base64'd into one is invisible to every
+  regex, and six real photographs once reached a public branch through
+  `.gitignore` exceptions. A genuine app asset goes in `ALLOWED_IMAGES` in the
+  same commit that adds the file. **Real names and IPs are on you** — writing
+  them here to forbid them would publish them.
 - **Never commit** `config.json` (machine paths), `data/` (database, sessions,
   generated images) or `frontend/dist/` (build output). They are gitignored;
   do not add them with `-f`.
@@ -133,6 +137,13 @@ behaviour, change the test on purpose, never delete it to get green.
   character from the photo, so demanding a LoRA slot would reject every correct
   Kontext workflow. An unmapped *reference image* is the opposite: the whole
   session comes back painted from noise with nothing on screen saying so.
+- **What a reference take drops is decided by the GRAPH's kind, never by
+  `use_reference`.** That flag turned out to carry three meanings — swap to the
+  reference graph, drop the checkpoint and the character LoRA, send the prompt
+  bare — and only the first is its own. A `guide` graph paints from noise and
+  needs the model, the LoRA and the look: dropped, it shoots somebody else in
+  the reference photograph's room. Both tests are on `wf["kind"]`, and the whole
+  suite saw neither — one real session found both.
 - **The shot row is written before the job is queued.** A crash then leaves a
   visible failed row instead of an orphan job in ComfyUI.
 - **One shot's failure is not the session's failure.** A rejected prompt, an

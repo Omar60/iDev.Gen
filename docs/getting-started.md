@@ -48,7 +48,8 @@ buttons stop being lit, which is not an error.
 
 A hosted endpoint answers in a second or two and leaves the GPU to ComfyUI, which
 a local model shares with it. Of MiniMax's models only *MiniMax-M3* reads a
-photo, so that is the one for the vision box if you want *Look from a photo…*.
+photo, so that is the one for the vision box if you want
+*📷 Wardrobe from a photo…* or the anchor read.
 An endpoint that does not list its models at all is not a problem either: the
 boxes stay typeable.
 

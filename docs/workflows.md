@@ -39,6 +39,7 @@ Next to the name, a workflow has a **kind** — what the graph is *for*:
 | *Photo edit (instruction)* | img2img or an instruction model, one reference |
 | *Camera angles* | an instruction model plus an angle LoRA |
 | *Scene + subject (2 references)* | two reference images into one frame |
+| *Guided paint (reference + prompt)* | paints from noise with the reference in the conditioning, not in the image |
 
 A session of that kind then offers that graph and no other, and picks it
 outright when there is only one — which is the whole point: five graphs in a
@@ -116,7 +117,11 @@ Two things work differently there, both on purpose:
   ignoring the choice. A reference workflow is exempt: an editing graph loads its
   own model, and the character comes from the reference photo instead of from the
   LoRA, so `FLUX.1 Kontext` and `Qwen-Image-Edit` graphs legitimately have
-  neither slot.
+  neither slot. **A graph tagged *Guided paint* is the exception to the
+  exception**: it paints from noise, so it needs its own checkpoint and LoRA,
+  and the runner keeps both for that kind and drops them for every other
+  reference graph. Leave them unmapped on a guide graph and it shoots somebody
+  else — see [sessions](sessions.md#guided-takes).
 - **Width and height usually go unmapped**, because an editing graph has no
   `EmptyLatentImage` — the size comes from the reference photo. The session's
   size is then simply not applied, which is the same rule every unmapped slot

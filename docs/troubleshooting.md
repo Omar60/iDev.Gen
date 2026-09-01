@@ -8,6 +8,17 @@ one means.
 `comfy_output_dir` is empty or points at a folder that does not exist, so
 sessions refuse to run. Open **Setup**, press *Detect from ComfyUI*, save.
 
+## "catalogue is empty for manner …"
+
+The component store ships empty. Creating a session, composing a take or
+running a judging pass all refuse with a 422 naming the slot and the manner
+until it holds something. Open **Catalogue** and press **Import Measured
+Catalogue** (or `POST /api/components/import`), which loads
+`data/catalogue-seed.json`. Adding the components by hand works too —
+the refusal is about the store being empty, not about where the rows came
+from. See [judging](judging.md) and
+[sessions](sessions.md#component-catalogue--judging).
+
 ## "ComfyUI offline"
 
 The backend cannot reach `comfy_url`. Check ComfyUI is running and that the URL

@@ -169,10 +169,9 @@ and writes it by the rules that are otherwise only in these docs:
   wrote;
 - **✨** on a take rewrites that one line, as a description for a photoshoot take
   and as an instruction for an edit, and **↩** puts back what it said;
-- **📷 Look and wardrobe from a photo…** reads a photo into both boxes — the
-  hair, the place and the light into the look, the clothes into the wardrobe —
-  and never the person, because the character comes from the LoRA and another
-  face written here fights it in every frame;
+- **📷 Wardrobe from a photo…** reads the clothes out of a photo into the
+  wardrobe box — never the look, and never the person, because the character
+  comes from the LoRA and another face written here fights it in every frame;
 - for **camera angles** it ticks the picker's chips instead of writing prose,
   because the LoRA's vocabulary is closed and prose it drops looks exactly like
   prose it read.
@@ -208,8 +207,8 @@ table. **Anything left unmapped keeps the workflow's own value** — so a workfl
 full of exotic nodes still works even if only the prompt is driven.
 
 Give each graph a **kind** while you are there (text to image, photo edit,
-camera angles, scene + subject): a session of that kind then offers it, and
-offers nothing else. Untagged graphs stay offered everywhere, so an existing
+camera angles, scene + subject, guided paint): a session of that kind then
+offers it, and offers nothing else. Untagged graphs stay offered everywhere, so an existing
 setup keeps working untouched.
 
 ## How a run works
@@ -253,13 +252,19 @@ setup keeps working untouched.
 
 ## Component Catalogue & Judging
 
-Prompt components are stored in the database across three slots (**camera**, **act**, **framing**) and three manners (**directed**, **candid**, **selfie**).
+Prompt components live in the database across three slots (**camera**, **act**,
+**framing**) and three manners (**directed**, **candid**, **selfie**). The
+**Catalogue** screen (`#/catalogue`) manages them and shows the evidence on each
+row — `arrived N of M`, the cell state, contradictions counted apart. The
+**Judge** screen (`#/judge`) scores photographs blind against neutral labels,
+never against the prompt wording.
 
-- **Catalogue (`#/catalogue`)**: View and manage components, edit prompt wordings and blind viewer `judge_label`s, and retire/restore or delete them. Each row shows the evidence recorded against it — `arrived N of M`, the cell state, and `contradicted` counted apart from the other misses — or `not measured` when no photograph has been judged against it. A component with evidence cannot be deleted, only retired.
-- **Act components carry their cameras**: an `act` row lists the camera families it can be seen from, strongest first. An arrangement handed a camera that cannot see it renders as a different arrangement, so the camera plan moves those photographs onto one of the listed families. Left empty, the plan leaves the photograph where it was dealt.
-- **Import Measured Catalogue**: On a fresh install, the store starts empty. The "Import Measured Catalogue" button (or `POST /api/components/import`) imports the measured set from `data/catalogue-seed.json`. Composing or creating a written session on an empty catalogue is refused until components are added or imported.
-- **Judging (`#/judge`)**: Judge shots against neutral labels (`judge_label`) without seeing prompt wordings. The **Contradiction** option (key `C`) records a frame whose body and camera disagree — counted as a miss, and also counted as a contradiction so the two failures stay apart. Camera and act only: each manner carries a single framing, and a forced choice over one option is not a question.
-- **Cell Backups**: Database migrations automatically dump legacy evidence rows to `data/cell-backup-<timestamp>.json`.
+The store ships **empty**: press *Import Measured Catalogue* once, or composing
+and creating sessions refuse until it holds something.
+
+The detail — the reading vocabulary, the two scopes, the pass refusal, the
+camera families an act carries — is in [judging](docs/judging.md) and
+[sessions](docs/sessions.md#component-catalogue--judging).
 
 ## Tests
 
@@ -283,6 +288,12 @@ file move are genuinely verified.
   takes going through the second workflow with the anchor uploaded, and the
   failure paths: rejected prompt, execution error, missing file, missing
   reference, cancellation, retry, two sessions at once.
+- the rest cover what was measured into the app rather than written into it:
+  the catalogue store and its seed, the cell evidence, the crop law, the camera
+  plan, the readings, the arrangements and the kiss frames, the database
+  migrations, and that no personal data or tracked image reaches the repository.
+
+The frontend has its own: `npm --prefix frontend test`.
 
 Dev dependencies: `pip install -r backend/requirements-dev.txt`.
 CI in `.github/workflows/ci.yml` runs the suite and builds the frontend.

@@ -37,7 +37,18 @@ the initial prompt component catalogue.
   - `astride`: 18/22 photographs arrived; compatible with front, overhead, mirror, and pov camera families.
   - `reverse`: 3/3 arrived from shoulder family; mirror and overhead rendered weakly.
   - `wall`: 3/3 arrived from mirror family; shoulder is second fallback.
-- Dropped arrangements:
+- Dropped arrangements, and what later moved:
   - `back` (0/12 on finepornV4, 0/12 on Krea 2 mix) and `side` (0/9 on finepornV4, 0/8 on Krea 2 mix)
-    reliably collapsed to upright front poses.
-  - `behind` (all fours) failed across multiple sessions (sessions 155, 161, 267, 268) and produced front or kneeling poses.
+    collapsed to upright front poses. Every one of those attempts swapped the camera;
+    none swapped the sentence.
+  - `behind` (all fours) failed across sessions 155, 161, 267 and 268, returning front
+    or kneeling poses.
+  - **Session 296 (2026-08-25, finepornV4) found the route, so "dropped" here means
+    dropped from the catalogue and not proved impossible.** A third object that forces
+    a height difference between the two bodies beats the collapse: `back` with a bed
+    edge and him standing landed 3/3 from the side camera against its own 0/3 plain
+    control, and a head-and-shoulder anchor on a pillow rendered all fours 8 of 9
+    without the words appearing in the line. The side camera is the only one that
+    reads a horizontal body against a vertical one — overhead is 1/18 across six arms.
+    Nothing is in the shipped catalogue yet: this was measured on finepornV4 and the
+    Krea leg is unjudged.

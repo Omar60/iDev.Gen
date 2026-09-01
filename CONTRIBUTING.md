@@ -63,7 +63,11 @@ Setup screen fills in the folders by asking ComfyUI where it was launched from.
 No GPU, no running ComfyUI, no network: a fake ComfyUI writes the PNG the real
 `SaveImage` would. A fix lands with the test that would have caught the bug.
 
-CI runs the same suite plus a frontend build on every push and pull request.
+The frontend has its own suite, `npm --prefix frontend test`, covering the
+logic that is wrong in a way review cannot see. Run it when you touch
+`frontend/`.
+
+CI runs the Python suite plus a frontend build on every push and pull request.
 
 ## Pull requests
 
