@@ -27,6 +27,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -301,6 +302,15 @@ SETS = {
         # and the reference is a passenger.
         ("PW-back0", KGREF_BODY, "", 0.0, wardrobe_from_behind),
     ],
+    # One arm on the plain graph, meant to be run twice with --checkpoint. The
+    # BlockSwap question: `krea2_turbo` ships as a 12.2 GB fp8 and a 24.5 GB
+    # bf16 of THE SAME WEIGHTS, and only the fp8 fits a 15.9 GB card. So the
+    # pack does not buy a bigger model, it buys full precision of this one —
+    # and ComfyUI already offloads a model that does not fit, so the first
+    # thing to find out is whether it buys anything but seconds.
+    "precision": [
+        ("PR", None, "", None),
+    ],
     # EncodeRebalance again, this time with the body unwritten. Its 0/4 was
     # measured against a line that spelled the posture out, which the KG stack
     # showed is enough to beat a reference at any strength.
@@ -330,13 +340,15 @@ SETS = {
 
 async def run(comfy: Comfy, client_id: str, label: str, body: dict | None,
               suffix: str, budget: str | None, seed: int, source: str,
-              pose: str | None = None) -> Path | None:
+              pose: str | None = None, checkpoint: str = "") -> Path | None:
     graph, node_map = (body["graph"], body["node_map"]) if body else baseline_graph()
     # The fifth field of an arm rewrites the line: a string replaces the Pose
     # block, a callable gets the whole line to do as it likes with.
     text = pose(PROMPT) if callable(pose) else pose_written(PROMPT, pose) if pose else PROMPT
     text = f"{text}\n\n{suffix}" if suffix else text
     values = dict(SETTINGS, positive=text, seed=seed, filename_prefix=label)
+    if checkpoint:
+        values["checkpoint"] = checkpoint
     if budget is not None:
         # Only graphs with a reference slot want an image; the enhancer set puts
         # a plain float on the same slot name.
@@ -344,6 +356,10 @@ async def run(comfy: Comfy, client_id: str, label: str, body: dict | None,
             values["reference"] = await comfy.upload_image(SOURCES / source, source)
         values["reference_strength"] = budget
     patched = apply_map(graph, node_map, values)
+    # Wall clock, because the whole point of a model that does not fit the card
+    # is that it costs seconds rather than capability. The first frame of a run
+    # carries the load off disk; the ones after it are the number to quote.
+    started = time.perf_counter()
     prompt_id = await comfy.queue_prompt(patched, client_id)
     for _ in range(600):
         history = await comfy.history(prompt_id)
@@ -365,6 +381,7 @@ async def run(comfy: Comfy, client_id: str, label: str, body: dict | None,
         r.raise_for_status()
     dest = OUT / f"{label}-s{seed}.png"
     dest.write_bytes(r.content)
+    print(f"  {dest.name}  {time.perf_counter() - started:.0f}s")
     return dest
 
 
@@ -377,6 +394,10 @@ async def main() -> int:
     # A frame is named for its arm and its seed, so re-running a whole set to add
     # one arm overwrites the frames the earlier arms were already judged on.
     ap.add_argument("--only", default="", help="run just these labels, comma separated")
+    # The model is a mapped value, not a graph, so any set can be re-run on
+    # another one. The label carries the model or the second run overwrites the
+    # first — the frames are named for their arm and their seed and nothing else.
+    ap.add_argument("--checkpoint", default="", help="run on another model")
     args = ap.parse_args()
     seeds = SEEDS[:args.seeds]
     arms = SETS[args.set]
@@ -407,15 +428,15 @@ async def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     comfy, client_id = Comfy(COMFY_URL), str(uuid.uuid4())
     made = 0
+    tag = "-" + Path(args.checkpoint).stem[:14] if args.checkpoint else ""
     for arm in arms:
         label, body, suffix, budget = arm[:4]
         pose = arm[4] if len(arm) > 4 else None
         for seed in seeds:
-            dest = await run(comfy, client_id, label, body, suffix, budget, seed,
-                             args.source, pose)
+            dest = await run(comfy, client_id, label + tag, body, suffix, budget, seed,
+                             args.source, pose, args.checkpoint)
             if dest:
                 made += 1
-                print(f"  {dest.name}")
     print(f"\n{made}/{len(arms) * len(seeds)} rendered into {OUT}")
     return 0 if made == len(arms) * len(seeds) else 1
 
