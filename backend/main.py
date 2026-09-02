@@ -963,6 +963,48 @@ def create_reading(r: ReadingIn):
     return db.one("SELECT * FROM reading WHERE id=?", reading_id)
 
 
+@app.post("/api/readings/import")
+def import_readings(items: list[dict] | None = None):
+    """Import base readings from JSON, or from data/readings-seed.json.
+
+    A judging pass refuses a slot whose photographed families have no reading —
+    the correct answer would not be on the list, so every photograph of that
+    family would be recorded as a miss. Candid had none at all, and writing the
+    twelve it needed by hand was what stood between a shot session and any
+    number about it. The vocabulary belongs in the repo for the same reason the
+    component catalogue does: it is what somebody measured with, and a fresh
+    database that cannot judge is a fresh database that cannot measure.
+
+    Idempotent on (slot, manner, key) in the base scope, like
+    `/api/components/import`: an existing key is SKIPPED and its label left
+    alone. That is deliberate — a label is the question a stored verdict was
+    answered against, and re-importing a seed must never quietly re-word the
+    question under answers already given. Editing one is a decision, not an
+    import.
+    """
+    if items is None:
+        seed_path = ROOT / "data" / "readings-seed.json"
+        if not seed_path.exists():
+            raise HTTPException(404, "data/readings-seed.json not found")
+        items = json.loads(seed_path.read_text(encoding="utf-8"))
+
+    added = skipped = 0
+    for item in items:
+        slot, manner = item["slot"], item["manner"].strip()
+        key, label = item["key"].strip(), item["label"].strip()
+        if slot not in ("camera", "act", "framing"):
+            raise HTTPException(422, f"slot must be camera, act, or framing, got {slot!r}")
+        if not (manner and key and label):
+            raise HTTPException(422, f"slot, manner, key and label are all required: {item}")
+        if db.one("SELECT id FROM reading WHERE slot=? AND manner=? AND key=?", slot, manner, key):
+            skipped += 1
+            continue
+        db.run("INSERT INTO reading (slot, manner, session_id, key, label, created_at) "
+               "VALUES (?, ?, NULL, ?, ?, ?)", slot, manner, key, label, db.now())
+        added += 1
+    return {"added": added, "skipped": skipped}
+
+
 @app.delete("/api/readings/{reading_id}")
 def delete_reading(reading_id: int):
     """Delete a reading only if no stored verdict references it."""

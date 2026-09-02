@@ -9,7 +9,7 @@ import pytest
 import db
 
 
-DN9= Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _make_session(client, name="test session", manner="directed", checkpoint="ckpt"):
@@ -446,3 +446,34 @@ def test_a_component_key_in_another_slot_does_not_steal_the_reduction(client, se
     res = client.post(f"/api/shots/{shot_id}/judge", json={"framing": "close-up"}).json()
     assert res["arrived"] == 1, "the family the line asked for is the family in the frame"
     assert res["judged"] == 1
+
+
+def test_the_readings_seed_imports_and_never_rewords_an_existing_key(client):
+    """The vocabulary belongs in the repo, and a re-import must not edit it.
+
+    A judging pass refuses a slot whose photographed families have no reading, so
+    a fresh database cannot judge anything until the readings exist — candid had
+    none at all, and writing the twelve it needed by hand was what stood between
+    a shot session and any number about it.
+
+    The second half is the one that matters after the first import: a label is
+    the question a stored verdict was answered against. Re-importing a seed whose
+    text has moved on must leave the stored question alone, or every verdict
+    recorded before the edit silently answers a question nobody asked. So an
+    existing (slot, manner, key) is SKIPPED, not updated.
+    """
+    seed = json.loads((ROOT / "data" / "readings-seed.json").read_text(encoding="utf-8"))
+    assert seed, "the seed is empty"
+
+    first = client.post("/api/readings/import", json=seed).json()
+    assert first["added"] == len(seed), first
+
+    one = seed[0]
+    stored = client.get(f"/api/readings?slot={one['slot']}&manner={one['manner']}").json()
+    assert any(r["key"] == one["key"] and r["label"] == one["label"] for r in stored), stored
+
+    reworded = [dict(one, label="something else entirely")]
+    again = client.post("/api/readings/import", json=reworded).json()
+    assert again == {"added": 0, "skipped": 1}, again
+    after = client.get(f"/api/readings?slot={one['slot']}&manner={one['manner']}").json()
+    assert any(r["key"] == one["key"] and r["label"] == one["label"] for r in after), after
