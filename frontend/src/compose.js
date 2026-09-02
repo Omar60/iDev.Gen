@@ -12,7 +12,7 @@
 // catalogue, and the screen still asks for the whole catalogue slice by
 // default.
 
-import { positionsFor, arrangements, framings } from './kinds.js'
+import { positionsFor, arrangements, framings, cameraPlan, MANNER } from './kinds.js'
 
 /** The candidate pool for a session's manner, in the shape
  *  `ComposeRunIn.candidates` (`backend/main.py:ComposeRunIn`).
@@ -63,4 +63,33 @@ export function defaultCount(manner) {
  */
 export function fillCellDefaultCount() {
   return 10
+}
+
+
+/** The part of a composed photograph no catalogue row carries: how the frame is
+ *  careless and how the photograph was taken, one string per photograph, in the
+ *  order the run queues them (`ComposeRunIn.extras`).
+ *
+ *  Dealt here from the SAME lists and the same spreader the written path deals
+ *  them with (`enhance.js:shootLines`) — `FRAMING_SLIPS` and `TECHNIQUE_DEFECTS`
+ *  through `cameraPlan`, one family each, so no two consecutive photographs open
+ *  on the same slip or the same defect. The composed line is meant to be the
+ *  written line with nobody writing it, and both clauses were measured on the
+ *  written one: chosen freely the careless framing survived 2.5 lines of 12 once
+ *  the camera rows were dealt, because the dealt rows crowd out what nobody
+ *  handed the writer. A composer hands everything or the clause is simply gone.
+ *
+ *  A manner that defines neither (directed, which has no `technique` field at
+ *  all) gets an empty array and the run posts no extras — the composed line is
+ *  then byte-for-byte what it was before this existed.
+ */
+export function extrasFor(manner, n, rand = Math.random) {
+  const deal = (rows) => (rows && n > 0 ? cameraPlan(n, rand, rows) : null)
+  const slips = deal(MANNER[manner]?.slips)
+  const defects = deal(MANNER[manner]?.defects)
+  if (!slips && !defects) return []
+  // Joined with a full stop because that is what `_sentences` puts between every
+  // other piece of the line: the two clauses are two sentences, not a list.
+  return Array.from({ length: n }, (_, i) =>
+    [slips?.[i], defects?.[i]].filter(Boolean).join('. '))
 }

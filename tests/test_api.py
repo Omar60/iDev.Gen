@@ -6487,3 +6487,93 @@ def test_a_guided_take_is_composed_and_an_edit_take_is_not(client, seeded):
     guided = line_for("guide")
     assert "in a small lived-in room" in guided
     assert guided.endswith("standing.")
+
+
+def test_a_composed_run_carries_its_dealt_extra_on_every_line(client, seeded):
+    """The clauses no catalogue row carries — how the frame is careless and how
+    the photograph was taken — reach the composed line, one per photograph, in
+    the order the run queues them.
+
+    The composer joins the trio and nothing else, so a candid composed session
+    used to lose both: the written path deals them from `FRAMING_SLIPS` and
+    `TECHNIQUE_DEFECTS` (`enhance.js:shootLines`) and the composer dealt
+    nothing. They are handed in rather than dealt here because the lists and
+    the spreader are the written path's and this repo keeps one home per fact.
+
+    Asserted per photograph and not as a set: the extra is dealt to a POSITION
+    in the queue, and a zip that drifts by one is exactly the bug the spread
+    exists to avoid.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "extras",
+        "manner": "directed", "checkpoint": "test-checkpoint",
+        "shots": [],
+    }).json()["id"]
+    trios = [("cam-a", "act-a", "frame-a"),
+             ("cam-b", "act-b", "frame-b"),
+             ("cam-c", "act-c", "frame-c")]
+    for cam, act, framing in trios:
+        _seed_verified_trio(cam, act, framing,
+                            manner="directed", checkpoint="test-checkpoint")
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k} text")  for k, _, _ in trios],
+        "act":     [_candidate(k, f"act {k} text")     for _, k, _ in trios],
+        "framing": [_candidate(k, f"framing {k} text") for _, _, k in trios],
+    }
+    extras = ["the horizon is tilted a few degrees. a shadow on her gone to noise",
+              "a stretch of empty room above her head. heavy grain in a shadow on her",
+              "she is off to one side of the frame instead of centred. the colour washed out of her skin"]
+
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 3, "candidates": candidates, "extras": extras,
+    })
+    assert r.status_code == 200, r.text
+    rows = db.q("SELECT prompt FROM shot WHERE session_id=? ORDER BY shot_index", sid)
+    assert len(rows) == 3
+    for at, (row, extra) in enumerate(zip(rows, extras)):
+        assert row["prompt"].endswith(f"{extra}."), (
+            f"photograph {at} does not end on the extra it was dealt: {row['prompt']!r}")
+
+    # And a run that deals none is the line it always was: no trailing clause,
+    # no empty sentence, no full stop of its own.
+    bare = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "no extras",
+        "manner": "directed", "checkpoint": "test-checkpoint", "shots": [],
+    }).json()["id"]
+    assert client.post(f"/api/sessions/{bare}/compose-run", json={
+        "count": 1, "candidates": candidates,
+    }).status_code == 200
+    line = db.one("SELECT prompt FROM shot WHERE session_id=?", bare)["prompt"]
+    assert line.endswith("text.") and ".." not in line, line
+
+
+def test_an_extra_that_names_a_lower_part_than_the_framing_leaves_the_pool(client, seeded):
+    """The dealt extra is part of the line, so it is part of the crop law.
+
+    `an elbow or a knee runs out of the edge of the frame` names her knees. A
+    trio whose framing claims a waist-up crop over it measures the anatomy and
+    not the framing (`backend/crop.py`), so it is not drawable — and the check
+    is IN the pool, which is what makes the refusal's "largest fillable" number
+    true. Without the extra the same trio draws fine, which is the half of this
+    test that proves the extra is what removed it.
+    """
+    _seed_verified_trio("cam-k", "act-k", "frame-k",
+                        manner="directed", checkpoint="test-checkpoint")
+
+    def run(extras):
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"crop {len(extras)}",
+            "manner": "directed", "checkpoint": "test-checkpoint", "shots": [],
+        }).json()["id"]
+        return client.post(f"/api/sessions/{sid}/compose-run", json={
+            "count": 1, "extras": extras,
+            "candidates": {
+                "camera":  [_candidate("cam-k", "taken from her left side")],
+                "act":     [_candidate("act-k", "she leans against the wall")],
+                "framing": [_candidate("frame-k", "a waist-up photograph")],
+            },
+        })
+
+    assert run([]).status_code == 200
+    refused = run(["an elbow or a knee runs out of the edge of the frame"])
+    assert refused.status_code == 422, refused.text

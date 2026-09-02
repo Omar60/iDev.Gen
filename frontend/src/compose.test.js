@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { setCatalogue, positionsFor, arrangements, framings } from './kinds.js'
-import { candidatePool, defaultCount, fillCellDefaultCount } from './compose.js'
+import { setCatalogue, positionsFor, arrangements, framings, MANNER } from './kinds.js'
+import { candidatePool, defaultCount, extrasFor, fillCellDefaultCount } from './compose.js'
 import seedCatalogue from '../../data/catalogue-seed.json'
 
 describe('candidatePool', () => {
@@ -100,5 +100,39 @@ describe('fillCellDefaultCount', () => {
 
   it('takes no arguments and is a constant', () => {
     expect(fillCellDefaultCount()).toBe(fillCellDefaultCount())
+  })
+})
+
+describe('extrasFor', () => {
+  it('deals candid one slip and one defect per photograph, never two running', () => {
+    const extras = extrasFor('candid', 12)
+    expect(extras).toHaveLength(12)
+    const slips = MANNER.candid.slips.map((r) => r.wordings[0].text)
+    const defects = MANNER.candid.defects.map((r) => r.wordings[0].text)
+    const partsOf = (line) => {
+      const slip = slips.find((t) => line.includes(t))
+      const defect = defects.find((t) => line.includes(t))
+      expect(slip, line).toBeTruthy()
+      expect(defect, line).toBeTruthy()
+      // Nothing but the two clauses and the full stop between them.
+      expect(line).toBe(`${slip}. ${defect}`)
+      return { slip, defect }
+    }
+    const seen = extras.map(partsOf)
+    // The whole reason both are dealt through `cameraPlan`: the spreader never
+    // opens two consecutive photographs on the same family.
+    const family = (rows, text) => rows.find((r) => r.wordings[0].text === text).wordings[0].family
+    for (let i = 1; i < seen.length; i += 1) {
+      expect(family(MANNER.candid.slips, seen[i].slip))
+        .not.toBe(family(MANNER.candid.slips, seen[i - 1].slip))
+      expect(family(MANNER.candid.defects, seen[i].defect))
+        .not.toBe(family(MANNER.candid.defects, seen[i - 1].defect))
+    }
+  })
+
+  it('deals nothing for a manner that defines neither', () => {
+    // `directed` has no `technique` field at all, so a composed directed line
+    // is what it was before extras existed.
+    expect(extrasFor('directed', 5)).toEqual([])
   })
 })

@@ -6,7 +6,7 @@ import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
 import { BaseModelSelect, SamplerSelect } from './Models.jsx'
 import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary } from '../kinds.js'
-import { candidatePool, defaultCount, fillCellDefaultCount } from '../compose.js'
+import { candidatePool, defaultCount, extrasFor, fillCellDefaultCount } from '../compose.js'
 import { composed } from '../enhance.js'
 
 /** A checkpoint's name for a session title: no folder, no extension. Three copies
@@ -145,10 +145,15 @@ export default function SessionView({ id }) {
   // call sites use — the slot, its verified count, the largest fillable
   // count and the word "exploratory" all reach the screen the way the
   // operator's eye expects them.
+  // The slip and the defect are dealt HERE and not on a fill-cell: a cell is
+  // measured by ten photographs that differ in nothing but the seed, and a
+  // clause that changes on every row is the noise the measurement is trying to
+  // see through. A run is a shoot, and a shoot carries them.
   const composeRun = (n, mode) => call(async () => {
     const candidates = candidatePool(s.manner)
     await api.post(`/api/sessions/${id}/compose-run`, {
       count: n, candidates, mode, mute_wardrobe: muteWardrobe, reference: composeGuided,
+      extras: extrasFor(s.manner, n),
     })
   })
 

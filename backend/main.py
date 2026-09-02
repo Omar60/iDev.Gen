@@ -1612,6 +1612,22 @@ class ComposeRunIn(BaseModel):
     mute_wardrobe: bool = False
     # Same switch as `ComposeIn.reference`, same reason it is its own flag.
     reference: bool = False
+    # The per-photograph clauses no catalogue row carries: how the frame is
+    # careless (`FRAMING_SLIPS`) and how the photograph was taken
+    # (`TECHNIQUE_DEFECTS`). Dealt by the caller, one string per photograph, in
+    # the order the shots are queued; a short list (or the empty default every
+    # directed session sends) leaves the remaining lines without one.
+    #
+    # Dealt by the CALLER and not here because the lists and the spreader are the
+    # written path's, in `frontend/src/kinds.js` — the same rows, the same
+    # no-two-running rule. A second copy of either in Python is a second answer
+    # to "what does candid deal", and this repo has one home per fact.
+    #
+    # They are part of the line, so they are part of what names her lowest part:
+    # `an elbow or a knee runs out of the edge of the frame` puts her knees in
+    # the line, and the crop law reads them out of the draw's context the same
+    # way it reads the wardrobe (`backend/crop.py`).
+    extras: list[str] = Field(default_factory=list)
 
 
 _SLOT_COLS = (
@@ -1864,12 +1880,13 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     caller's skip predicate, 3.3 passes no skip).
     """
     by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode,
-                                             mute_wardrobe=c.mute_wardrobe)
+                                             mute_wardrobe=c.mute_wardrobe,
+                                             extras=c.extras)
     shot_ids: list[int] = []
-    for cam_key, act_key, framing_key in best_chosen:
+    for at, (cam_key, act_key, framing_key) in enumerate(best_chosen):
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
-            c.mute_wardrobe, c.reference,
+            c.mute_wardrobe, c.reference, _extra_at(c.extras, at),
         ))
     return {"ids": shot_ids, "count": len(shot_ids)}
 
@@ -1917,6 +1934,7 @@ def _draw_n_trio_shots(
     mode: Literal["strict", "exploratory"] = "strict",
     skip: "Callable | None" = None,
     mute_wardrobe: bool = False,
+    extras: list[str] | None = None,
 ) -> tuple[dict, list[tuple[str, str, str]]]:
     """The shared draw used by `compose_run_endpoint` (3.3) and
     `compose_session_endpoint` (3.5). Returns `(by_key,
@@ -2034,8 +2052,14 @@ def _draw_n_trio_shots(
     # The wardrobe and the look are part of the composed line, so they are part of
     # what names her lowest part: a session in stockings has no crop above the feet
     # available to it, whatever the act says (session 318).
+    # The dealt extras go in for the same reason the wardrobe does: a slip that
+    # says a knee runs out of the frame names her knees, and a framing claiming a
+    # crop above them is a trio that measures the anatomy instead of the framing.
+    # In the pool and not after the draw — a constraint checked after the draw is
+    # a constraint the draw does not have.
     context = _sentences("" if mute_wardrobe else (session["wardrobe"] or ""),
-                         session["look"] if settings.get("use_look", True) else "")
+                         session["look"] if settings.get("use_look", True) else "",
+                         *(extras or []))
     pool = _trio_pool(session["manner"], session["checkpoint"], candidates, mode, context)
 
     # The check and the draw are the same calculation. Greedy
@@ -2503,6 +2527,22 @@ class ComposeSessionIn(BaseModel):
     mute_wardrobe: bool = False
     # Same switch as `ComposeIn.reference`, same reason it is its own flag.
     reference: bool = False
+    # The per-photograph clauses no catalogue row carries: how the frame is
+    # careless (`FRAMING_SLIPS`) and how the photograph was taken
+    # (`TECHNIQUE_DEFECTS`). Dealt by the caller, one string per photograph, in
+    # the order the shots are queued; a short list (or the empty default every
+    # directed session sends) leaves the remaining lines without one.
+    #
+    # Dealt by the CALLER and not here because the lists and the spreader are the
+    # written path's, in `frontend/src/kinds.js` — the same rows, the same
+    # no-two-running rule. A second copy of either in Python is a second answer
+    # to "what does candid deal", and this repo has one home per fact.
+    #
+    # They are part of the line, so they are part of what names her lowest part:
+    # `an elbow or a knee runs out of the edge of the frame` puts her knees in
+    # the line, and the crop law reads them out of the draw's context the same
+    # way it reads the wardrobe (`backend/crop.py`).
+    extras: list[str] = Field(default_factory=list)
 
 
 @app.post("/api/sessions/{sid}/compose-session")
@@ -2553,13 +2593,19 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     # for a future caller that drops the skip).
     by_key, best_chosen = _draw_n_trio_shots(
         sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread,
-        mute_wardrobe=c.mute_wardrobe)
+        mute_wardrobe=c.mute_wardrobe, extras=c.extras)
     ordered = _reorder_to_spread_families(best_chosen, by_key)
     shot_ids: list[int] = []
-    for cam_key, act_key, framing_key in ordered:
+    # The extra is dealt to the PHOTOGRAPH, so it follows the queue order and not
+    # the draw order: the reorder above spreads the camera families across
+    # consecutive photographs, and the slip and the defect are spread across
+    # consecutive photographs too. Zipping them before the reorder would hand
+    # photograph 1 the extra dealt to whatever trio the draw happened to put
+    # first.
+    for at, (cam_key, act_key, framing_key) in enumerate(ordered):
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
-            c.mute_wardrobe, c.reference,
+            c.mute_wardrobe, c.reference, _extra_at(c.extras, at),
         ))
     return {"ids": shot_ids, "count": len(shot_ids)}
 
@@ -2702,6 +2748,17 @@ def _compose(model: dict, look: str, wardrobe: str, prompt: str) -> str:
     return _sentences(model["trigger"], model["base_positive"], look, wardrobe, prompt)
 
 
+def _extra_at(extras: list[str], at: int) -> str:
+    """The clause dealt to photograph `at`, or nothing.
+
+    A caller that deals none (every directed session) sends an empty list, and a
+    caller that deals fewer than it queues leaves the rest bare rather than
+    wrapping round: a run whose last three photographs repeat the first three
+    slips is a run whose spread was undone by the padding.
+    """
+    return extras[at] if 0 <= at < len(extras) else ""
+
+
 def _slot_concept_wording_text(slot_dict: dict) -> tuple[str, str, str]:
     concept = slot_dict.get("concept_key") or slot_dict.get("key", "")
     if "wordings" in slot_dict and slot_dict["wordings"]:
@@ -2715,7 +2772,7 @@ def _slot_concept_wording_text(slot_dict: dict) -> tuple[str, str, str]:
 
 def compose_shot(model: dict, look: str, wardrobe: str,
                  camera: dict, act: dict, framing: dict,
-                 mute_wardrobe: bool = False) -> str:
+                 mute_wardrobe: bool = False, extra: str = "") -> str:
     """Compose a line from drawn components, no writer request.
 
     The camera, act and framing are catalogue entries with at least
@@ -2735,7 +2792,18 @@ def compose_shot(model: dict, look: str, wardrobe: str,
     _, _, cam_text = _slot_concept_wording_text(camera)
     _, _, act_text = _slot_concept_wording_text(act)
     _, _, fr_text = _slot_concept_wording_text(framing)
-    take = _sentences(cam_text, act_text, fr_text)
+    # `extra` is the part of the take no catalogue row carries: how the frame is
+    # careless and how the photograph was taken, dealt by the caller from the
+    # same lists and the same spreader the written path uses
+    # (`frontend/src/compose.js:extrasFor`). It is empty on every directed shot
+    # and on every fill-cell row, and `_sentences` drops an empty piece — so a
+    # composed line without it is byte-for-byte what it always was, which is what
+    # `test_a_composed_shot_joins_identically_to_a_written_one` still pins.
+    #
+    # It is joined LAST because both clauses it carries are trailing ones in a
+    # written line too: the slip sits behind the framing inside the `camera`
+    # field, and `technique` is the second-to-last of the seven keys.
+    take = _sentences(cam_text, act_text, fr_text, extra)
     # A reference only delivers what the line does not already write, so a take
     # that hands the wardrobe to a reference has to stop saying it. Dropping it
     # here rather than at queue time keeps the stored line honest — it is what
@@ -2745,7 +2813,7 @@ def compose_shot(model: dict, look: str, wardrobe: str,
 
 def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict,
                            mute_wardrobe: bool = False,
-                           reference: bool = False) -> int:
+                           reference: bool = False, extra: str = "") -> int:
     """Compose a single shot from drawn components and queue it.
 
     Returns the shot id. The three drawn components are recorded on
@@ -2778,7 +2846,7 @@ def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict,
     settings = json.loads(session["settings"] or "{}")
     look = session["look"] if settings.get("use_look", True) else ""
     wardrobe = session["wardrobe"]
-    prompt = compose_shot(model, look, wardrobe, camera, act, framing, mute_wardrobe)
+    prompt = compose_shot(model, look, wardrobe, camera, act, framing, mute_wardrobe, extra)
     # The (concept, wording) pair per slot, not just the wording.
     # Today every concept has a single wording and the two keys
     # coincide, so the cell the photograph counts toward is keyed
