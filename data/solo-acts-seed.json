@@ -11,6 +11,7 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "front",
+      "arm",
       "mirror",
       "shoulder"
     ]
@@ -28,7 +29,8 @@
     "cameras": [
       "shoulder",
       "mirror",
-      "front"
+      "front",
+      "arm"
     ]
   },
   {
@@ -42,8 +44,7 @@
     "verdict": "unmeasured",
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
-      "front",
-      "mirror"
+      "front"
     ]
   },
   {
@@ -73,7 +74,6 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "front",
-      "mirror",
       "overhead"
     ]
   },
@@ -89,6 +89,7 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "front",
+      "arm",
       "overhead",
       "mirror"
     ]
@@ -120,7 +121,8 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "overhead",
-      "front"
+      "front",
+      "arm"
     ]
   },
   {
@@ -135,6 +137,7 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "front",
+      "arm",
       "mirror",
       "shoulder",
       "pov"
@@ -154,6 +157,7 @@
       "shoulder",
       "mirror",
       "front",
+      "arm",
       "pov"
     ]
   },
@@ -168,8 +172,7 @@
     "verdict": "unmeasured",
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
-      "front",
-      "mirror"
+      "front"
     ]
   },
   {
@@ -199,7 +202,6 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "front",
-      "mirror",
       "overhead"
     ]
   },
@@ -215,6 +217,7 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "front",
+      "arm",
       "overhead",
       "mirror",
       "pov"
@@ -248,6 +251,7 @@
     "cameras": [
       "overhead",
       "front",
+      "arm",
       "pov"
     ]
   }

@@ -11,9 +11,9 @@
     "sample_size": "shared arrangement",
     "cameras": [
       "front",
+      "arm",
       "overhead",
-      "mirror",
-      "pov"
+      "mirror"
     ]
   },
   {
@@ -57,6 +57,7 @@
     "sample_size": "shared arrangement",
     "cameras": [
       "front",
+      "arm",
       "overhead",
       "mirror",
       "pov"

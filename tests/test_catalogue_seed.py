@@ -184,3 +184,45 @@ def test_the_solo_acts_import_and_are_offered_for_their_manner(client):
                 if c["slot"] == "act" and c["manner"] == manner]
         keys = {a["concept_key"] for a in acts}
         assert {"all-fours", "kneeling-heels", "standing-hip"} <= keys, keys
+
+
+# ------------------------------------------------- the phone is in her hand
+#
+# The composer draws a camera from a FAMILY (`_without_camera_mismatch`), so a
+# family is only as fine as the constraint it has to carry. `front` used to hold
+# both `Taken from directly in front of her` and `Phone held out at arm's length
+# in front of her face` — one hands-free and one that costs her a hand — and an
+# act with both hands flat on the floor could ask for `front` and be dealt the
+# phone. The split is what lets an act say "from the front, but not with the
+# phone in her hand".
+CAMERA_SEEDS = ("candid-cameras-seed.json", "selfie-cameras-seed.json")
+
+
+def _needs_a_hand(wording: str) -> bool:
+    """Whether this camera costs her a hand to take. The catalogue says it in
+    plain words — `in her right hand`, `in her own outstretched hand`, `at arm's
+    length` — and a phone `propped on a high shelf` costs her nothing."""
+    line = wording.lower()
+    return "hand" in line or "arm's length" in line
+
+
+def test_no_camera_family_mixes_a_held_phone_with_a_hands_free_view():
+    """Every family is uniform in what it costs her, or the constraint an act
+    writes down cannot be honoured: the composer picks any member of the family
+    the act named, and one member of `front` needs a hand she does not have.
+    """
+    for name in CAMERA_SEEDS:
+        items = json.loads((ROOT / "data" / name).read_text(encoding="utf-8"))
+        by_family: dict[str, set[bool]] = {}
+        for item in items:
+            if item["slot"] != "camera":
+                continue
+            by_family.setdefault(item["family"], set()).add(_needs_a_hand(item["wording"]))
+        for family, costs in by_family.items():
+            assert len(costs) == 1, (
+                f"{name}: family {family!r} holds both a camera she has to hold and one "
+                f"she does not — an act cannot ask for one without risking the other")
+        # And the split actually happened: the arm's-length phone is not in
+        # `front` any more, which is the whole point of the family.
+        arm = [i for i in items if i["concept_key"] == "front-arm-length"]
+        assert arm and arm[0]["family"] != "front", f"{name}: {arm}"

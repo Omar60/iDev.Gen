@@ -14,12 +14,12 @@
     "slot": "camera",
     "manner": "selfie",
     "concept_key": "front-arm-length",
-    "family": "front",
+    "family": "arm",
     "faces": "front",
     "wording": "Phone held out at arm's length in front of her face",
     "judge_label": "Arm's-length front view with the phone in front of her face",
     "verdict": "verified",
-    "sample_size": "inherited from candid"
+    "sample_size": "inherited from candid; family split 2026-09-02"
   },
   {
     "slot": "camera",
