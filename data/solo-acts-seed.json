@@ -1,0 +1,254 @@
+[
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "standing-hip",
+    "family": "standing",
+    "faces": "front",
+    "wording": "She stands with her weight on one hip, her shoulders level and her hands loose at her sides.",
+    "judge_label": "She is standing, her weight on one hip",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "mirror",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "standing-back-look",
+    "family": "standing",
+    "faces": "back",
+    "wording": "She stands with her back to the camera and turns her face over her shoulder, her chin near her shoulder.",
+    "judge_label": "She is standing away from the camera, looking back over her shoulder",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "shoulder",
+      "mirror",
+      "front"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "arms-raised",
+    "family": "standing",
+    "faces": "front",
+    "wording": "She raises both arms above her head, her hands in her hair and her elbows open.",
+    "judge_label": "She has both arms up, hands in her hair",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "mirror"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "lying-front-forearms",
+    "family": "lying",
+    "faces": "front",
+    "wording": "She lies on her front and props herself up on her forearms, her shoulders lifted and her head up.",
+    "judge_label": "She is lying on her front, propped on her forearms",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "overhead",
+      "front"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "kneeling-heels",
+    "family": "kneeling",
+    "faces": "front",
+    "wording": "She kneels upright on the floor and sits back on her heels, her hands resting on her thighs.",
+    "judge_label": "She is kneeling, sitting back on her heels",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "mirror",
+      "overhead"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "sitting-legs-folded",
+    "family": "sitting",
+    "faces": "front",
+    "wording": "She sits on the floor with her legs folded to one side and one hand flat on the floor behind her.",
+    "judge_label": "She is sitting on the floor, legs folded to one side",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "overhead",
+      "mirror"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "all-fours",
+    "family": "all-fours",
+    "faces": "back",
+    "wording": "She is on her hands and knees on the floor, her arms straight and her back level.",
+    "judge_label": "She is on her hands and knees",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "shoulder",
+      "overhead"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "lying-back-knee-up",
+    "family": "lying",
+    "faces": "front",
+    "wording": "She lies on her back with one knee drawn up and one arm above her head.",
+    "judge_label": "She is lying on her back, one knee up",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "overhead",
+      "front"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "standing-hip",
+    "family": "standing",
+    "faces": "front",
+    "wording": "She stands with her weight on one hip, her shoulders level and her hands loose at her sides.",
+    "judge_label": "She is standing, her weight on one hip",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "mirror",
+      "shoulder",
+      "pov"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "standing-back-look",
+    "family": "standing",
+    "faces": "back",
+    "wording": "She stands with her back to the camera and turns her face over her shoulder, her chin near her shoulder.",
+    "judge_label": "She is standing away from the camera, looking back over her shoulder",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "shoulder",
+      "mirror",
+      "front",
+      "pov"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "arms-raised",
+    "family": "standing",
+    "faces": "front",
+    "wording": "She raises both arms above her head, her hands in her hair and her elbows open.",
+    "judge_label": "She has both arms up, hands in her hair",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "mirror"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "lying-front-forearms",
+    "family": "lying",
+    "faces": "front",
+    "wording": "She lies on her front and props herself up on her forearms, her shoulders lifted and her head up.",
+    "judge_label": "She is lying on her front, propped on her forearms",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "overhead",
+      "front"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "kneeling-heels",
+    "family": "kneeling",
+    "faces": "front",
+    "wording": "She kneels upright on the floor and sits back on her heels, her hands resting on her thighs.",
+    "judge_label": "She is kneeling, sitting back on her heels",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "mirror",
+      "overhead"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "sitting-legs-folded",
+    "family": "sitting",
+    "faces": "front",
+    "wording": "She sits on the floor with her legs folded to one side and one hand flat on the floor behind her.",
+    "judge_label": "She is sitting on the floor, legs folded to one side",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "overhead",
+      "mirror",
+      "pov"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "all-fours",
+    "family": "all-fours",
+    "faces": "back",
+    "wording": "She is on her hands and knees on the floor, her arms straight and her back level.",
+    "judge_label": "She is on her hands and knees",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "shoulder",
+      "overhead"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "lying-back-knee-up",
+    "family": "lying",
+    "faces": "front",
+    "wording": "She lies on her back with one knee drawn up and one arm above her head.",
+    "judge_label": "She is lying on her back, one knee up",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "overhead",
+      "front",
+      "pov"
+    ]
+  }
+]

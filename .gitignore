@@ -28,6 +28,7 @@ data/*
 !data/head-act-seed.json
 !data/feet-act-seed.json
 !data/camera-candidates-seed.json
+!data/solo-acts-seed.json
 
 # Written for pasting into an outside assistant, not part of the app
 writer-prompts.md

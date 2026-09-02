@@ -87,3 +87,100 @@ def test_seed_camera_faces_rules():
                 assert faces == "front", f"expected faces='front' for family {family} on {item}"
             elif family == "side":
                 assert faces == "side", f"expected faces='side' for family {family} on {item}"
+
+
+# ---------------------------------------------------------------- solo acts
+#
+# `data/solo-acts-seed.json` is the act list candid and selfie did not have.
+# Both manners held three acts each and all six were the same explicit
+# arrangement with a second person, so a composed shoot could only ever be
+# photographed at the END of its arc: photograph 1 dealt a dressed wardrobe
+# state and `She is astride him` is a line arguing with itself.
+#
+# These eight forms are the other end. They are stage-NEUTRAL on purpose —
+# geometry and nothing else — which is what lets one row be photographed dressed,
+# half-dressed and undressed without a stage tag on the row. The wardrobe states
+# say what is on her; the act says what her body is doing; neither answers the
+# other's question.
+SOLO_PATH = ROOT / "data" / "solo-acts-seed.json"
+
+# What a stage-neutral act must never contain. A garment word pins the row to one
+# state of the arc, and a second person pins it to the end of one.
+GARMENTS = ("dress", "skirt", "jumper", "shirt", "top", "bra", "knickers",
+            "panties", "stockings", "tights", "jeans", "trousers", "shoes",
+            "boots", "coat", "jacket", "naked", "nude", "undressed", "bare")
+SECOND_PERSON = (" him", " his ", " he ", " man", "two people", "both of them")
+
+
+def test_the_solo_seed_is_valid_json_and_tracked():
+    assert SOLO_PATH.exists()
+    items = json.loads(SOLO_PATH.read_text(encoding="utf-8"))
+    assert isinstance(items, list) and items
+    out = subprocess.run(["git", "ls-files", "--", "data/solo-acts-seed.json"],
+                         cwd=ROOT, capture_output=True, text=True)
+    if out.returncode != 0:
+        pytest.skip("not a git repository")
+    assert out.stdout.strip() == "data/solo-acts-seed.json", (
+        "data/solo-acts-seed.json is not tracked; `data/*` is ignored wholesale "
+        "and .gitignore has to un-ignore this path too")
+
+
+def test_every_solo_act_is_stage_neutral():
+    """The property the rows exist for: an act that names a garment or a second
+    person cannot be walked through an arc.
+
+    A garment in the act contradicts the wardrobe state dealt to the same
+    photograph — two texts describing the same clothes, and this sampler renders
+    a contradiction as neither. A second person makes every photograph the end of
+    the shoot, which is the hole these rows fill.
+    """
+    for item in json.loads(SOLO_PATH.read_text(encoding="utf-8")):
+        line = item["wording"].lower()
+        assert item["slot"] == "act"
+        assert line.startswith("she "), (
+            f"the person is not the subject of the main verb: {line!r}")
+        for word in GARMENTS:
+            assert word not in line, f"{item['concept_key']} names a garment ({word}): {line!r}"
+        for word in SECOND_PERSON:
+            assert word not in f" {line} ", (
+                f"{item['concept_key']} names a second person ({word.strip()}): {line!r}")
+
+
+def test_the_solo_acts_leave_the_tight_framings_drawable():
+    """The frame reaches the lowest part of her the line names, so an act list
+    whose every row names her feet is an act list that can only be photographed
+    full-length — and candid's framing catalogue carries a headshot, a close-up
+    and a waist-up that would then never draw (`backend/crop.py`).
+
+    So the eight forms span the ladder on purpose. This asserts the half that is
+    easy to lose when a row is reworded: at least three of them name nothing
+    below her chest.
+    """
+    import crop
+    by_key = {}
+    for item in json.loads(SOLO_PATH.read_text(encoding="utf-8")):
+        by_key[item["concept_key"]] = crop.lowest_named(item["wording"])
+    high = [k for k, rung in by_key.items() if rung is not None and rung <= crop.CHEST]
+    assert len(high) >= 3, f"only {len(high)} of {len(by_key)} acts stay above the waist: {by_key}"
+    # And the other end: an arc of eight identical rungs is one photograph shot
+    # eight times as far as the crop law is concerned.
+    assert len(set(by_key.values())) >= 3, f"the acts sit on {set(by_key.values())}"
+
+
+def test_the_solo_acts_import_and_are_offered_for_their_manner(client):
+    """Imported through the same endpoint the rest of the catalogue goes through,
+    and offered by the API for the manner they were written for. The import is
+    idempotent on (slot, manner, concept_key or wording), so the second call adds
+    nothing — which is what makes re-importing a seed safe.
+    """
+    items = json.loads(SOLO_PATH.read_text(encoding="utf-8"))
+    first = client.post("/api/components/import", json=items).json()
+    assert first["added"] == len(items), first
+    again = client.post("/api/components/import", json=items).json()
+    assert again["added"] == 0 and again["skipped"] == len(items), again
+
+    for manner in ("candid", "selfie"):
+        acts = [c for c in client.get("/api/components").json()
+                if c["slot"] == "act" and c["manner"] == manner]
+        keys = {a["concept_key"] for a in acts}
+        assert {"all-fours", "kneeling-heels", "standing-hip"} <= keys, keys
