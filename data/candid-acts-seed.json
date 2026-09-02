@@ -1,0 +1,445 @@
+[
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "sitting-feet-flat",
+    "family": "sitting",
+    "faces": "",
+    "wording": "She sits upright with both feet flat on the floor and her hands resting beside her hips.",
+    "judge_label": "She is sitting up, feet flat on the floor",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "sitting-knees-up",
+    "family": "sitting",
+    "faces": "",
+    "wording": "She sits with her knees drawn up and both arms wrapped around her shins.",
+    "judge_label": "She is sitting with her knees pulled up to her chest",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "sitting-legs-out",
+    "family": "sitting",
+    "faces": "",
+    "wording": "She sits with her legs stretched out in front of her and her weight back on both hands.",
+    "judge_label": "She is sitting, legs out, leaning back on her hands",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "kneeling-arched",
+    "family": "kneeling",
+    "faces": "",
+    "wording": "She kneels upright with her back arched and both hands behind her head.",
+    "judge_label": "She is kneeling upright, back arched, hands behind her head",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror",
+      "shoulder",
+      "back"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "kneeling-forward",
+    "family": "kneeling",
+    "faces": "",
+    "wording": "She kneels and leans forward onto both hands, her arms straight and her hips back over her heels.",
+    "judge_label": "She is kneeling and leaning forward onto her hands",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "shoulder",
+      "back"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "forearms-hips-high",
+    "family": "all-fours",
+    "faces": "",
+    "wording": "She is down on her forearms with her hips high and her knees apart on the floor.",
+    "judge_label": "She is on her forearms with her hips raised",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "shoulder",
+      "back"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "pulling-it-off",
+    "family": "standing",
+    "faces": "",
+    "wording": "She peels what she is wearing up over her head, both arms raised and her face hidden inside it.",
+    "judge_label": "She is pulling something off over her head",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "waistband-push",
+    "family": "standing",
+    "faces": "",
+    "wording": "She hooks a thumb into her waistband and pushes it down over one hip.",
+    "judge_label": "She is pushing her waistband down over one hip",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "half-propped-up",
+    "family": "lying",
+    "faces": "",
+    "wording": "She is half sitting up with her back propped and her legs stretched out in front of her.",
+    "judge_label": "She is half sitting up, legs stretched out",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "lying-side-head-on-hand",
+    "family": "lying",
+    "faces": "",
+    "wording": "She lies on her side with her head propped on one hand and her top knee drawn forward.",
+    "judge_label": "She is lying on her side, head propped on one hand",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "stretching-up",
+    "family": "standing",
+    "faces": "",
+    "wording": "She rises onto the balls of her feet and stretches both arms up over her head.",
+    "judge_label": "She is up on her toes, stretching both arms overhead",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "looking-down-at-it",
+    "family": "standing",
+    "faces": "",
+    "wording": "She looks down into the camera she holds low in front of her, her chin tucked in.",
+    "judge_label": "She is looking down into a camera held low",
+    "needs": "",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "arm",
+      "front"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "masturbating-on-her-back",
+    "family": "lying",
+    "faces": "",
+    "wording": "She lies on her back with her knees open and two fingers between her legs, rubbing her clit.",
+    "judge_label": "She is on her back, touching herself",
+    "needs": "nude",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "overhead"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "masturbating-sitting",
+    "family": "sitting",
+    "faces": "",
+    "wording": "She sits back on one hand with her knees wide apart and her other hand between her legs, rubbing her clit.",
+    "judge_label": "She is sitting with her knees apart, touching herself",
+    "needs": "nude",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "masturbating-kneeling",
+    "family": "kneeling",
+    "faces": "",
+    "wording": "She kneels upright with her thighs apart and one hand between her legs, her fingers inside herself.",
+    "judge_label": "She is kneeling, her fingers inside herself",
+    "needs": "nude",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "all-fours-holding-open",
+    "family": "all-fours",
+    "faces": "",
+    "wording": "She is on her hands and knees with one hand reaching back between her thighs, holding herself open with two fingers.",
+    "judge_label": "She is on all fours, holding herself open from behind",
+    "needs": "nude",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "shoulder",
+      "back"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "toy-on-her-back",
+    "family": "lying",
+    "faces": "",
+    "wording": "She lies on her back with her knees open, holding a vibrator against her clit.",
+    "judge_label": "She is on her back with a vibrator against her clit",
+    "needs": "nude",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "overhead"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "toy-sitting",
+    "family": "sitting",
+    "faces": "",
+    "wording": "She sits with her knees apart, working a dildo into herself with one hand.",
+    "judge_label": "She is sitting, working a dildo into herself",
+    "needs": "nude",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "toy-all-fours",
+    "family": "all-fours",
+    "faces": "",
+    "wording": "She is on her hands and knees with a dildo inside her and one hand reaching back to hold it.",
+    "judge_label": "She is on all fours with a dildo inside her",
+    "needs": "nude",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "shoulder",
+      "back"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "oral-kneeling",
+    "family": "oral",
+    "faces": "",
+    "wording": "She kneels in front of him and takes his cock in her mouth, one hand around the base of it, two people in frame.",
+    "judge_label": "She is kneeling, his cock in her mouth",
+    "needs": "him",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "oral-him-on-her",
+    "family": "oral",
+    "faces": "",
+    "wording": "She lies back with her knees open and his mouth between her legs, his hands under her thighs, two people in frame.",
+    "judge_label": "She is on her back with his mouth between her legs",
+    "needs": "him",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "overhead"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "under-him",
+    "family": "under",
+    "faces": "",
+    "wording": "She lies on her back with her knees open and him over her on his arms, he is inside her, two people in frame.",
+    "judge_label": "She is on her back with him over her, inside her",
+    "needs": "him",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "from-behind",
+    "family": "behind",
+    "faces": "",
+    "wording": "She is on her hands and knees and he kneels behind her holding her hips, he is inside her, two people in frame.",
+    "judge_label": "She is on all fours with him behind her, inside her",
+    "needs": "him",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "shoulder",
+      "back",
+      "mirror"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "back-against-him",
+    "family": "standing-him",
+    "faces": "",
+    "wording": "She stands with her back against his chest and his hands on her breasts, two people in frame.",
+    "judge_label": "She stands with her back against him, his hands on her",
+    "needs": "him",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "mirror",
+      "shoulder"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "kissing-him",
+    "family": "kissing",
+    "faces": "",
+    "wording": "She kisses him on the mouth, both their faces in frame, two people in frame.",
+    "judge_label": "She is kissing him, both faces in frame",
+    "needs": "him",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror"
+    ]
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "his-hand-on-her",
+    "family": "touch",
+    "faces": "",
+    "wording": "She stands still while his hand moves over her body, two people in frame.",
+    "judge_label": "She stands still with his hand on her body",
+    "needs": "him",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02, never shot",
+    "cameras": [
+      "front",
+      "mirror",
+      "shoulder"
+    ]
+  }
+]

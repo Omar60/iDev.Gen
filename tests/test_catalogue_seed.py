@@ -226,3 +226,49 @@ def test_no_camera_family_mixes_a_held_phone_with_a_hands_free_view():
         # `front` any more, which is the whole point of the family.
         arm = [i for i in items if i["concept_key"] == "front-arm-length"]
         assert arm and arm[0]["family"] != "front", f"{name}: {arm}"
+
+
+# ------------------------------------------------- the rest of candid's acts
+#
+# `data/candid-acts-seed.json` is what candid was missing: five families held one
+# member each (so the spreader had nothing to alternate with), no act was the
+# undressing itself, the explicit solo acts did not exist at all, and the three
+# acts with a second person were all the same penetration.
+CANDID_ACTS = ROOT / "data" / "candid-acts-seed.json"
+NEEDS = ("", "him", "nude")
+
+
+def test_every_candid_act_declares_what_it_needs_and_says_it_in_the_wording():
+    """`needs` and the wording are two spellings of one fact, and the day they
+    disagree the draw deals a photograph the line cannot render.
+
+    So: an act that needs him has a second person IN the wording (this sampler
+    renders one body unless the line plainly says two — measured, thirty frames),
+    and an act that needs nothing has none. `nude` is not asserted against the
+    text: an act needing her bare is one whose ANATOMY is the subject, and it
+    names her body rather than the absence of clothes.
+    """
+    items = json.loads(CANDID_ACTS.read_text(encoding="utf-8"))
+    assert items
+    for item in items:
+        line = item["wording"].lower()
+        assert item["slot"] == "act" and item["manner"] == "candid"
+        assert item["needs"] in NEEDS, item
+        assert line.startswith("she "), f"the person is not the subject: {line!r}"
+        assert item["judge_label"] and item["judge_label"] != item["wording"], item
+        second = ("two people in frame" in line)
+        assert second == (item["needs"] == "him"), (
+            f"{item['concept_key']}: needs={item['needs']!r} but "
+            f"{'names' if second else 'does not name'} a second person")
+
+
+def test_the_new_candid_acts_fill_the_families_that_had_one_member():
+    """The point of the batch, asserted as the shape it was written for: the
+    spreader never opens two consecutive photographs on the same family, and a
+    family with a single act has nothing to alternate with. Sitting, kneeling and
+    all-fours each held exactly one before this file.
+    """
+    import collections
+    fam = collections.Counter(i["family"] for i in json.loads(CANDID_ACTS.read_text(encoding="utf-8")))
+    for family in ("sitting", "kneeling", "all-fours"):
+        assert fam[family] >= 2, f"{family} still has {fam[family]} in the new file"

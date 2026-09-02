@@ -1703,6 +1703,15 @@ class ComposeRunIn(BaseModel):
     # so — `candidates` is theirs to narrow, and a run that sends three acts
     # draws from three acts.
     with_him: bool = False
+    # Whether she is undressed for this run. Off by default, and off means an act
+    # that needs her bare is not drawable — the explicit solo acts (a hand between
+    # her legs, a toy, holding herself open) are photographs of a body with
+    # nothing on it, and dealing one to a stage still in a sweatshirt is the same
+    # contradiction `with_him` was added to stop.
+    #
+    # Independent of `with_him`: the acts that need him say so in their own
+    # wording and do not need this flag as well.
+    bare: bool = False
 
 
 _SLOT_COLS = (
@@ -2032,7 +2041,7 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode,
                                              mute_wardrobe=c.mute_wardrobe,
                                              extras=c.extras, wardrobes=c.wardrobes,
-                                             with_him=c.with_him)
+                                             with_him=c.with_him, bare=c.bare)
     shot_ids: list[int] = []
     for at, (cam_key, act_key, framing_key) in enumerate(best_chosen):
         shot_ids.append(compose_and_queue_shot(
@@ -2089,6 +2098,7 @@ def _draw_n_trio_shots(
     extras: list[str] | None = None,
     wardrobes: list[str] | None = None,
     with_him: bool = False,
+    bare: bool = False,
 ) -> tuple[dict, list[tuple[str, str, str]]]:
     """The shared draw used by `compose_run_endpoint` (3.3) and
     `compose_session_endpoint` (3.5). Returns `(by_key,
@@ -2207,10 +2217,18 @@ def _draw_n_trio_shots(
     # no-repeat ceiling, and the "largest fillable" the 422 names. Filtering the
     # pool instead would leave the refusal quoting a count that includes acts this
     # run was never allowed to draw.
-    if not with_him:
-        candidates = dict(candidates,
-                          act=[a for a in (candidates.get("act") or [])
-                               if not (a.get("needs") or "").strip()])
+    # What this run provides, against what each act needs. An act that needs
+    # nothing is always drawable; one that needs him, or needs her bare, is
+    # drawable only when the run says so. The run is the only thing that knows —
+    # the act carries a requirement, not a place in the arc.
+    provides = {""}
+    if with_him:
+        provides.add("him")
+    if bare:
+        provides.add("nude")
+    candidates = dict(candidates,
+                      act=[a for a in (candidates.get("act") or [])
+                           if (a.get("needs") or "").strip() in provides])
 
     settings = json.loads(session["settings"] or "{}")
     # The wardrobe and the look are part of the composed line, so they are part of
@@ -2748,6 +2766,15 @@ class ComposeSessionIn(BaseModel):
     # so — `candidates` is theirs to narrow, and a run that sends three acts
     # draws from three acts.
     with_him: bool = False
+    # Whether she is undressed for this run. Off by default, and off means an act
+    # that needs her bare is not drawable — the explicit solo acts (a hand between
+    # her legs, a toy, holding herself open) are photographs of a body with
+    # nothing on it, and dealing one to a stage still in a sweatshirt is the same
+    # contradiction `with_him` was added to stop.
+    #
+    # Independent of `with_him`: the acts that need him say so in their own
+    # wording and do not need this flag as well.
+    bare: bool = False
 
 
 @app.post("/api/sessions/{sid}/compose-session")
@@ -2799,7 +2826,7 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     by_key, best_chosen = _draw_n_trio_shots(
         sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread,
         mute_wardrobe=c.mute_wardrobe, extras=c.extras, wardrobes=c.wardrobes,
-        with_him=c.with_him)
+        with_him=c.with_him, bare=c.bare)
     ordered = _reorder_to_spread_families(best_chosen, by_key)
     shot_ids: list[int] = []
     # The extra is dealt to the PHOTOGRAPH, so it follows the queue order and not

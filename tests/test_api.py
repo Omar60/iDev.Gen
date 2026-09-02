@@ -6813,3 +6813,52 @@ def test_an_act_that_needs_him_is_not_drawn_unless_he_is_in_the_room(client, see
     assert both.status_code == 200, both.text
     lines = [r["prompt"] for r in db.q("SELECT prompt FROM shot WHERE session_id=?", other)]
     assert any("astride" in l for l in lines), lines
+
+
+def test_an_act_is_drawable_only_when_the_run_provides_what_it_needs(client, seeded):
+    """`needs` is a requirement, and the run is the only thing that knows what it
+    is providing. Three kinds of act, one call each way.
+
+    An act that needs nothing draws always. One that needs him draws only with
+    `with_him`. One that needs her bare draws only with `bare` — the explicit
+    solo acts are photographs of a body with nothing on it, and dealing one to a
+    stage still in a sweatshirt is the contradiction `with_him` was added to
+    stop, in the other direction.
+
+    The two flags are independent: a run can be undressed without him in the
+    room, which is most of the last stretch of a solo arc.
+    """
+    for cam, act, framing in (("cam-x", "act-plain", "frame-x"),
+                              ("cam-x", "act-him", "frame-x"),
+                              ("cam-x", "act-nude", "frame-x")):
+        _seed_verified_trio(cam, act, framing, manner="directed", checkpoint="test-checkpoint")
+    candidates = {
+        "camera": [_candidate("cam-x", "taken from her left side")],
+        "act": [_candidate("act-plain", "she leans against the wall"),
+                dict(_candidate("act-him", "she is astride him, two people in frame"), needs="him"),
+                dict(_candidate("act-nude", "she lies back with a hand between her legs"), needs="nude")],
+        "framing": [_candidate("frame-x", "full body")],
+    }
+
+    def drawn(**flags):
+        """The acts a run with these flags actually queues, asking for all three.
+
+        The count is what the pool allows, so a refusal is read off the ceiling
+        the 422 names rather than guessed: three acts, one drawable per flag.
+        """
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"needs {sorted(flags.items())}",
+            "manner": "directed", "checkpoint": "test-checkpoint", "shots": [],
+        }).json()["id"]
+        for count in (3, 2, 1):
+            r = client.post(f"/api/sessions/{sid}/compose-run",
+                            json={"count": count, "candidates": candidates, **flags})
+            if r.status_code == 200:
+                break
+        return {json.loads(row["components"])["act"]["concept"]
+                for row in db.q("SELECT components FROM shot WHERE session_id=?", sid)}
+
+    assert drawn() == {"act-plain"}
+    assert drawn(with_him=True) == {"act-plain", "act-him"}
+    assert drawn(bare=True) == {"act-plain", "act-nude"}
+    assert drawn(with_him=True, bare=True) == {"act-plain", "act-him", "act-nude"}

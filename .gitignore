@@ -30,6 +30,7 @@ data/*
 !data/camera-candidates-seed.json
 !data/solo-acts-seed.json
 !data/readings-seed.json
+!data/candid-acts-seed.json
 
 # Written for pasting into an outside assistant, not part of the app
 writer-prompts.md
