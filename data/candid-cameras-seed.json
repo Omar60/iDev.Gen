@@ -53,5 +53,16 @@
     "judge_label": "Mirror selfie with the phone visible in her hand",
     "verdict": "verified",
     "sample_size": "3/3 session 245"
+  },
+  {
+    "slot": "camera",
+    "manner": "candid",
+    "concept_key": "behind-direct",
+    "family": "back",
+    "faces": "back",
+    "wording": "Taken from directly behind her, her back square to the camera",
+    "judge_label": "Square behind view, her back to the lens",
+    "verdict": "unmeasured",
+    "sample_size": "written 2026-09-02: the depth channel renders this view and no row asked for it"
   }
 ]

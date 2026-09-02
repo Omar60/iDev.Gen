@@ -28,7 +28,8 @@
     "verdict": "verified",
     "sample_size": "shared arrangement",
     "cameras": [
-      "shoulder"
+      "shoulder",
+      "back"
     ],
     "needs": "him"
   },
@@ -44,7 +45,8 @@
     "sample_size": "shared arrangement",
     "cameras": [
       "mirror",
-      "shoulder"
+      "shoulder",
+      "back"
     ],
     "needs": "him"
   },

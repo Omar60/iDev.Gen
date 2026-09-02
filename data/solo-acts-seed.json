@@ -13,7 +13,8 @@
       "front",
       "arm",
       "mirror",
-      "shoulder"
+      "shoulder",
+      "back"
     ]
   },
   {
@@ -28,7 +29,8 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "shoulder",
-      "mirror"
+      "mirror",
+      "back"
     ]
   },
   {
@@ -57,7 +59,8 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "overhead",
-      "front"
+      "front",
+      "back"
     ]
   },
   {
@@ -104,7 +107,8 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "shoulder",
-      "overhead"
+      "overhead",
+      "back"
     ]
   },
   {
