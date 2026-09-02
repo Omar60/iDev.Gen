@@ -21,7 +21,7 @@
     "slot": "act",
     "manner": "candid",
     "key": "lying",
-    "label": "Her torso is horizontal along the floor or a bed, on her front or on her back."
+    "label": "Her body is down against the floor or a bed rather than up off it: her chest is at or near floor level, on her front or on her back. She may be propped on her forearms or elbows. She is not sitting up on her buttocks and not up on her hands and knees."
   },
   {
     "slot": "act",
@@ -69,7 +69,7 @@
     "slot": "camera",
     "manner": "candid",
     "key": "shoulder",
-    "label": "The camera is behind her and off to one side: her back or one buttock is toward the lens, and part of her front — a breast, a hip, or her face turned back over her shoulder — is still in frame. Where her face points does not move the camera."
+    "label": "The camera is behind her and off to one side: her back or one buttock is toward the lens, and part of her front — a breast, a hip, or her face turned back over her shoulder — is still in frame. Where her face points does not move the camera. The picture is NOT a reflection in a mirror; if it is, it is a mirror shot however she is turned."
   },
   {
     "slot": "camera",
