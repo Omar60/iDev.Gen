@@ -3,31 +3,31 @@
     "slot": "act",
     "manner": "candid",
     "key": "standing",
-    "label": "She is on her feet with her torso upright and her weight on her feet."
+    "label": "She is on her feet with her torso upright and her weight on her feet. She is the only person in the picture."
   },
   {
     "slot": "act",
     "manner": "candid",
     "key": "kneeling",
-    "label": "Her knees are on the floor with her shins along it, and her torso is upright above them."
+    "label": "Her knees are on the floor with her shins along it, and her torso is upright above them. She is the only person in the picture."
   },
   {
     "slot": "act",
     "manner": "candid",
     "key": "sitting",
-    "label": "Her weight is on her buttocks, on the floor or on furniture, and her torso is upright."
+    "label": "Her weight is on her buttocks, on the floor or on furniture, and her torso is upright. She is the only person in the picture."
   },
   {
     "slot": "act",
     "manner": "candid",
     "key": "lying",
-    "label": "Her body is down against the floor or a bed rather than up off it: her chest is at or near floor level, on her front or on her back. She may be propped on her forearms or elbows. She is not sitting up on her buttocks and not up on her hands and knees."
+    "label": "Her body is down against the floor or a bed rather than up off it: her chest is at or near floor level, on her front or on her back. She may be propped on her forearms or elbows. She is not sitting up on her buttocks and not up on her hands and knees. She is the only person in the picture."
   },
   {
     "slot": "act",
     "manner": "candid",
     "key": "all-fours",
-    "label": "Both her hands and both her knees are on the floor, with her torso horizontal above them."
+    "label": "Both her hands and both her knees are on the floor, with her torso horizontal above them. She is the only person in the picture."
   },
   {
     "slot": "act",
@@ -40,6 +40,42 @@
     "manner": "candid",
     "key": "away",
     "label": "There are two people in the picture. She is on top of him and facing away from him."
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "key": "oral",
+    "label": "There are two people, and one of them has their mouth on the other's genitals."
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "key": "under",
+    "label": "There are two people. She is on her back with him above her and his body between her legs."
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "key": "behind",
+    "label": "There are two people. She is on her hands and knees, or bent forward, and he is behind her at her hips."
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "key": "standing-him",
+    "label": "There are two people, both on their feet, her back against his chest."
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "key": "kissing",
+    "label": "There are two people and their mouths are on each other."
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "key": "touch",
+    "label": "There are two people and his hands are on her body: no mouth and no cock is on or in her, and they are not standing front to back."
   },
   {
     "slot": "camera",
