@@ -9,25 +9,25 @@
     "slot": "act",
     "manner": "candid",
     "key": "kneeling",
-    "label": "Her knees are on the floor with her shins along it, and her torso is upright above them. She is the only person in the picture."
+    "label": "Her knees are on the floor and her torso is upright above them, with no hand on the floor in front of her. She is the only person in the picture."
   },
   {
     "slot": "act",
     "manner": "candid",
     "key": "sitting",
-    "label": "Her weight is on her buttocks, on the floor or on furniture, and her torso is upright. She is the only person in the picture."
+    "label": "Her weight is on her buttocks with her torso upright, and no part of her upper back is touching the floor. She is the only person in the picture."
   },
   {
     "slot": "act",
     "manner": "candid",
     "key": "lying",
-    "label": "Her body is down against the floor or a bed rather than up off it: her chest is at or near floor level, on her front or on her back. She may be propped on her forearms or elbows. She is not sitting up on her buttocks and not up on her hands and knees. She is the only person in the picture."
+    "label": "Her shoulder blades, or the front of her body, are against the floor or the bed. She may be propped up on her forearms or elbows and her knees may be drawn up, but her upper back or her chest is touching the surface. She is the only person in the picture."
   },
   {
     "slot": "act",
     "manner": "candid",
     "key": "all-fours",
-    "label": "Both her hands and both her knees are on the floor, with her torso horizontal above them. She is the only person in the picture."
+    "label": "Her knees are on the floor and her torso is tipped forward over them, with at least one hand or forearm down on the floor in front of her. Her hips are level with her shoulders or higher. She is the only person in the picture."
   },
   {
     "slot": "act",
