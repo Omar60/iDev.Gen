@@ -20,9 +20,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 # The catalogue, by the opening words of the clause the writer was handed. Kept
 # here rather than imported from kinds.js because this reads a shoot that has
@@ -64,6 +66,19 @@ ASKED = [
     ("shoulder", "phone propped on a shelf behind her left shoulder"),
     ("shoulder", "phone propped on a shelf behind her right shoulder"),
     ("shoulder", "phone in his hand just behind her right shoulder, pointed past it"),
+    # The bare noun phrases Qwen's multiangle node emits, from
+    # `shoot_qwen_camera_words.py`. Longest first, as everywhere in this table:
+    # `front view` must not eat `front-right quarter view`. The position question
+    # has no word for a FRONT three-quarter, so `front-right` is scored `front`
+    # here and the turn table below is what actually reads that arm.
+    ("shoulder", "back-right quarter view"),
+    ("shoulder", "back-left quarter view"),
+    ("front", "front-right quarter view"),
+    ("front", "front-left quarter view"),
+    ("side", "right side view"),
+    ("side", "left side view"),
+    ("behind", "back view"),
+    ("front", "front view"),
 ]
 
 # What the same clauses ask of the HORIZONTAL alone, for `--question side`. A
@@ -87,6 +102,43 @@ SIDE_ASKED = [
     ("side", "taken from her left side"),
     ("front", "taken from her right front"),
     ("front", "taken from directly in front of her"),
+    # Qwen's bare spellings. `SIDE_WORDS` is three-way, so a front quarter and a
+    # front view are both `front` and the two back quarters are both `behind`.
+    ("behind", "back-right quarter view"),
+    ("behind", "back-left quarter view"),
+    ("front", "front-right quarter view"),
+    ("front", "front-left quarter view"),
+    ("side", "right side view"),
+    ("side", "left side view"),
+    ("behind", "back view"),
+    ("front", "front view"),
+]
+
+# What each clause asks of the TURN question, whose four words separate the two
+# things `--question position` cannot: a front three-quarter from a front view,
+# and a real ninety-degree profile from either. This table is the reason
+# `--question turn` is scorable at all - it used to fall through to the camera
+# table and compare a family word (`front`, `side`) against turn words
+# (`facing`, `profile`), which can never agree.
+#
+# Longest first. Both spellings of every arm in `shoot_qwen_camera_words.py` are
+# here, because the whole bench is one wording read against another.
+TURN_ASKED = [
+    ("threequarter", "taken from behind her right shoulder"),
+    ("threequarter", "taken from behind her left shoulder"),
+    ("threequarter", "taken from her right front"),
+    ("facing", "taken from directly in front of her"),
+    ("back", "taken from directly behind her"),
+    ("profile", "taken from her right side"),
+    ("profile", "taken from her left side"),
+    ("threequarter", "back-right quarter view"),
+    ("threequarter", "back-left quarter view"),
+    ("threequarter", "front-right quarter view"),
+    ("threequarter", "front-left quarter view"),
+    ("profile", "right side view"),
+    ("profile", "left side view"),
+    ("back", "back view"),
+    ("facing", "front view"),
 ]
 
 # One word back, from a closed list, with the list defined in terms of what is
@@ -431,6 +483,17 @@ DEVICE_YES = (
 )
 
 
+def _same(saw: str, want: str) -> bool:
+    """One answer against one expectation, with the hyphen ignored.
+
+    `TURN_WORDS` carries both `threequarter` and `three-quarter` because the
+    model writes it both ways, and the alternation returns whichever it found -
+    so a bare `==` scored half the profile bench as misses on punctuation. No
+    other answer word contains a hyphen, so this is a no-op everywhere else.
+    """
+    return saw.replace("-", "") == want.replace("-", "")
+
+
 def asked_of(prompt: str, table: list | None = None) -> str | None:
     """The answer the LINE asked for, read off the line itself.
 
@@ -445,7 +508,8 @@ def asked_of(prompt: str, table: list | None = None) -> str | None:
     return "?"
 
 
-def post(base: str, path: str, body: dict | None = None, tries: int = 8) -> dict:
+def post(base: str, path: str, body: dict | None = None, tries: int = 8,
+         timeout: int = 300) -> dict:
     """Retried with a growing wait, because a judging pass is seventy calls to a
     hosted model and the connection resets constantly — one run died on the first
     photograph, a second died on the ninth after three resets in a row, and every
@@ -461,7 +525,7 @@ def post(base: str, path: str, body: dict | None = None, tries: int = 8) -> dict
     for attempt in range(tries):
         req = urllib.request.Request(base + path, data, {"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=300) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read().decode())
         except Exception as exc:  # noqa: BLE001 - any transport failure is worth one more go
             if attempt == tries - 1:
@@ -476,6 +540,41 @@ def get(base: str, path: str) -> dict:
     # while it is running a render queue, not from the hosted judge, so a plain
     # read of the session is exactly as likely to be dropped as a judging call.
     return post(base, path, None)
+
+
+def session_shots(base: str, sid: int) -> list[dict]:
+    """The session's shots, over HTTP, or straight out of the database.
+
+    `GET /api/sessions/{id}` answers with sixty to eighty kilobytes - every shot
+    carries its whole prompt - and on this machine urllib takes a
+    ConnectionResetError on a body that size while `curl` fetches the identical
+    URL five times of five, headers matched. The server logs `200 OK` every
+    time; what is lost is on the client side of the socket.
+
+    That is a transport bug nobody needs to solve to read a bench. The four
+    fields used below - `id`, `shot_label`, `prompt`, `filename` - are columns of
+    the `shot` table, so a run that cannot fetch reads them itself and says so.
+    The judging calls are small and go on using HTTP; this is only the one big
+    read.
+    """
+    # Two tries and not `get`'s eight: the reset is instant and reproducible, so
+    # the retry ladder here only spends five minutes proving what one more
+    # attempt already showed, and the fallback below cannot fail.
+    try:
+        return post(base, f"/api/sessions/{sid}", None, tries=2, timeout=30)["shots"]
+    except Exception as exc:  # noqa: BLE001 - the fallback exists for any of them
+        db = Path(__file__).resolve().parent.parent / "data" / "idevgen.db"
+        if not db.exists():
+            raise
+        print(f"    {type(exc).__name__} on the session fetch - reading {db.name} instead",
+              file=sys.stderr)
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, shot_index, shot_label, prompt, filename FROM shot "
+            "WHERE session_id = ? ORDER BY shot_index", (sid,)).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
 
 
 def judge(base: str, shot_id: int, question: str = QUESTION, words: tuple = WORDS) -> str:
@@ -525,28 +624,40 @@ def main() -> int:
                          "does not; grain = how much grain is in the photograph at all, the "
                          "companion control that says whether the technique field adds "
                          "anything the look was not already doing")
+    ap.add_argument("--static", action="store_true",
+                    help="read the tables in this file and ignore the component "
+                         "catalogue - required for a bench shoot whose clauses "
+                         "were written by hand")
     ap.add_argument("--repeat", type=int, default=1,
                     help="judge each photograph this many times; the judge has its own "
                          "variance and one pass cannot see it")
     args = ap.parse_args()
 
-    shots = [s for s in get(args.base, f"/api/sessions/{args.session}")["shots"] if s.get("filename")]
+    shots = [s for s in session_shots(args.base, args.session) if s.get("filename")]
     if not shots:
         print("no finished photographs in that session")
         return 1
 
     dynamic_camera_asked: list[tuple[str, str]] = []
     dynamic_arrangement_asked: list[tuple[str, str]] = []
-    try:
-        comps = get(args.base, "/api/components?all=1")
-        if isinstance(comps, list):
-            for c in comps:
-                if c.get("slot") == "camera" and c.get("family") and c.get("wording"):
-                    dynamic_camera_asked.append((c["family"].lower(), c["wording"].lower()))
-                elif c.get("slot") == "act" and c.get("family") and c.get("wording"):
-                    dynamic_arrangement_asked.append((c["family"].lower(), c["wording"].lower()))
-    except Exception:
-        pass
+    # The catalogue's families are not the judge's answer words. The 49 camera
+    # rows imported on 2026-08-28 carry `side-level`, `rear`, `shoulder-level`,
+    # `lens`, `medium` - none of which is one of the six words the position
+    # question answers in, so a shoot whose clauses come from those rows scores
+    # every photograph as a miss against a `want` no answer can equal. A bench
+    # shoot writes its lines by hand anyway, which is what the tables above are
+    # for, so `--static` skips the catalogue and reads them.
+    if not args.static:
+        try:
+            comps = get(args.base, "/api/components?all=1")
+            if isinstance(comps, list):
+                for c in comps:
+                    if c.get("slot") == "camera" and c.get("family") and c.get("wording"):
+                        dynamic_camera_asked.append((c["family"].lower(), c["wording"].lower()))
+                    elif c.get("slot") == "act" and c.get("family") and c.get("wording"):
+                        dynamic_arrangement_asked.append((c["family"].lower(), c["wording"].lower()))
+        except Exception:
+            pass
 
     camera_asked = sorted(dynamic_camera_asked, key=lambda x: -len(x[1])) if dynamic_camera_asked else ASKED
     arrangement_asked = sorted(dynamic_arrangement_asked, key=lambda x: -len(x[1])) if dynamic_arrangement_asked else ARRANGEMENT_ASKED
@@ -570,10 +681,18 @@ def main() -> int:
 
     hits, rows, skipped = 0, [], 0
     for shot in shots:
-        # On the turn question every arm asks for the same thing and the label
-        # carries which wording asked for it, so the line is not what is compared.
+        # The turn question was written for a bench where every arm asks for the
+        # same thing - a profile - and the label carries which WORDING asked for
+        # it, so the line was not what was compared and `profile` was hardcoded.
+        # `shoot_qwen_camera_words.py` is the other shape: five different turns,
+        # two spellings each, and there the line is exactly what is compared. So
+        # the table is read first and the hardcoded word is what a line the table
+        # does not name falls back to, which leaves every earlier bench scoring
+        # the number it scored before.
         if turn:
-            want = "profile"
+            want = asked_of(shot["prompt"], TURN_ASKED)
+            if want == "?":
+                want = "profile"
         # Both of these are read per ARM and not per line: every shot is scored
         # against the same word, and what is compared is the rate the three arms
         # reach it. Only one arm asked for `hand` at all, and no arm asks for
@@ -610,6 +729,8 @@ def main() -> int:
             want = "sex" if any(w in low for w in ACT_ASKED) else "together"
         elif args.question == "side":
             want = asked_of(shot["prompt"], SIDE_ASKED)
+        elif args.question == "turn":
+            want = asked_of(shot["prompt"], TURN_ASKED)
         else:
             want = asked_of(shot["prompt"], camera_asked)
         # A clause with no horizontal in it is not scored on the horizontal.
@@ -619,7 +740,7 @@ def main() -> int:
         saw = [judge(args.base, shot["id"], question, words) for _ in range(args.repeat)]
         # A photograph counts as obeyed when the majority of passes agree with the
         # line. At --repeat 1 that is simply the one answer.
-        agreed = sum(1 for s in saw if s == want)
+        agreed = sum(1 for s in saw if _same(s, want))
         ok = agreed * 2 > len(saw)
         hits += ok
         rows.append((shot.get("shot_label") or shot["shot_index"] + 1, want, saw, ok))
