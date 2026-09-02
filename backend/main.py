@@ -1628,6 +1628,20 @@ class ComposeRunIn(BaseModel):
     # the line, and the crop law reads them out of the draw's context the same
     # way it reads the wardrobe (`backend/crop.py`).
     extras: list[str] = Field(default_factory=list)
+    # The wardrobe each photograph is composed with, in the order the shots are
+    # queued: the arc of a shoot that undresses. An index the list does not reach
+    # falls back to the session's wardrobe, so the default (an empty list) is
+    # every photograph in the session's clothes — what a composed run was before
+    # this existed.
+    #
+    # The states are spread over the run by the caller
+    # (`enhance.js:spread`), the same function that spreads them over written
+    # takes: K states, N photographs, and the wardrobe holds still between two
+    # photographs of one stage. A stage is a state of the whole photograph, and
+    # the catalogue's acts carry no stage of their own yet — so the arc dresses
+    # whatever body the draw dealt, and a late state can land on an early act.
+    # That is the known ceiling of a composed arc, not a bug in this field.
+    wardrobes: list[str] = Field(default_factory=list)
 
 
 _SLOT_COLS = (
@@ -1881,12 +1895,13 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     """
     by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode,
                                              mute_wardrobe=c.mute_wardrobe,
-                                             extras=c.extras)
+                                             extras=c.extras, wardrobes=c.wardrobes)
     shot_ids: list[int] = []
     for at, (cam_key, act_key, framing_key) in enumerate(best_chosen):
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
             c.mute_wardrobe, c.reference, _extra_at(c.extras, at),
+            _wardrobe_at(c.wardrobes, at),
         ))
     return {"ids": shot_ids, "count": len(shot_ids)}
 
@@ -1935,6 +1950,7 @@ def _draw_n_trio_shots(
     skip: "Callable | None" = None,
     mute_wardrobe: bool = False,
     extras: list[str] | None = None,
+    wardrobes: list[str] | None = None,
 ) -> tuple[dict, list[tuple[str, str, str]]]:
     """The shared draw used by `compose_run_endpoint` (3.3) and
     `compose_session_endpoint` (3.5). Returns `(by_key,
@@ -2057,9 +2073,16 @@ def _draw_n_trio_shots(
     # crop above them is a trio that measures the anatomy instead of the framing.
     # In the pool and not after the draw — a constraint checked after the draw is
     # a constraint the draw does not have.
+    # EVERY state the run may write, not only the session's: the pool is drawn
+    # once for the whole run, so a trio has to survive every wardrobe any of its
+    # photographs could be composed with. Stockings in the last state of the arc
+    # take the tight crops out of the pool for the whole run — conservative on
+    # purpose, and the alternative is a per-photograph pool, which is a second
+    # draw and a second answer to "what is drawable".
     context = _sentences("" if mute_wardrobe else (session["wardrobe"] or ""),
                          session["look"] if settings.get("use_look", True) else "",
-                         *(extras or []))
+                         *(extras or []),
+                         *(() if mute_wardrobe else (wardrobes or ())))
     pool = _trio_pool(session["manner"], session["checkpoint"], candidates, mode, context)
 
     # The check and the draw are the same calculation. Greedy
@@ -2543,6 +2566,20 @@ class ComposeSessionIn(BaseModel):
     # the line, and the crop law reads them out of the draw's context the same
     # way it reads the wardrobe (`backend/crop.py`).
     extras: list[str] = Field(default_factory=list)
+    # The wardrobe each photograph is composed with, in the order the shots are
+    # queued: the arc of a shoot that undresses. An index the list does not reach
+    # falls back to the session's wardrobe, so the default (an empty list) is
+    # every photograph in the session's clothes — what a composed run was before
+    # this existed.
+    #
+    # The states are spread over the run by the caller
+    # (`enhance.js:spread`), the same function that spreads them over written
+    # takes: K states, N photographs, and the wardrobe holds still between two
+    # photographs of one stage. A stage is a state of the whole photograph, and
+    # the catalogue's acts carry no stage of their own yet — so the arc dresses
+    # whatever body the draw dealt, and a late state can land on an early act.
+    # That is the known ceiling of a composed arc, not a bug in this field.
+    wardrobes: list[str] = Field(default_factory=list)
 
 
 @app.post("/api/sessions/{sid}/compose-session")
@@ -2593,7 +2630,7 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     # for a future caller that drops the skip).
     by_key, best_chosen = _draw_n_trio_shots(
         sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread,
-        mute_wardrobe=c.mute_wardrobe, extras=c.extras)
+        mute_wardrobe=c.mute_wardrobe, extras=c.extras, wardrobes=c.wardrobes)
     ordered = _reorder_to_spread_families(best_chosen, by_key)
     shot_ids: list[int] = []
     # The extra is dealt to the PHOTOGRAPH, so it follows the queue order and not
@@ -2606,6 +2643,7 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
         shot_ids.append(compose_and_queue_shot(
             sid, by_key["camera"][cam_key], by_key["act"][act_key], by_key["framing"][framing_key],
             c.mute_wardrobe, c.reference, _extra_at(c.extras, at),
+            _wardrobe_at(c.wardrobes, at),
         ))
     return {"ids": shot_ids, "count": len(shot_ids)}
 
@@ -2759,6 +2797,17 @@ def _extra_at(extras: list[str], at: int) -> str:
     return extras[at] if 0 <= at < len(extras) else ""
 
 
+def _wardrobe_at(wardrobes: list[str], at: int) -> str | None:
+    """The wardrobe dealt to photograph `at`, or None for the session's.
+
+    Not `_extra_at`: there, a missing clause and an empty clause are the same
+    photograph, and here they are not. `None` means nobody dealt this row a
+    wardrobe and the session's own is written; `""` means the arc reached a state
+    with nothing written about clothing, which renders her undressed.
+    """
+    return wardrobes[at] if 0 <= at < len(wardrobes) else None
+
+
 def _slot_concept_wording_text(slot_dict: dict) -> tuple[str, str, str]:
     concept = slot_dict.get("concept_key") or slot_dict.get("key", "")
     if "wordings" in slot_dict and slot_dict["wordings"]:
@@ -2813,7 +2862,8 @@ def compose_shot(model: dict, look: str, wardrobe: str,
 
 def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict,
                            mute_wardrobe: bool = False,
-                           reference: bool = False, extra: str = "") -> int:
+                           reference: bool = False, extra: str = "",
+                           wardrobe: str | None = None) -> int:
     """Compose a single shot from drawn components and queue it.
 
     Returns the shot id. The three drawn components are recorded on
@@ -2845,8 +2895,14 @@ def compose_and_queue_shot(sid: int, camera: dict, act: dict, framing: dict,
         raise HTTPException(404, "model not found")
     settings = json.loads(session["settings"] or "{}")
     look = session["look"] if settings.get("use_look", True) else ""
-    wardrobe = session["wardrobe"]
-    prompt = compose_shot(model, look, wardrobe, camera, act, framing, mute_wardrobe, extra)
+    # The session's wardrobe is the default and not the law: a shoot that walks
+    # somewhere is the same clothes coming off in stages, and the stage is a
+    # property of the PHOTOGRAPH. `None` is "the session's", which is what every
+    # caller before the arc existed passes; a dealt empty string is a decision
+    # (nothing written about clothing) and not a missing value, which is why the
+    # parameter is `str | None` and not `str`.
+    worn = session["wardrobe"] if wardrobe is None else wardrobe
+    prompt = compose_shot(model, look, worn, camera, act, framing, mute_wardrobe, extra)
     # The (concept, wording) pair per slot, not just the wording.
     # Today every concept has a single wording and the two keys
     # coincide, so the cell the photograph counts toward is keyed

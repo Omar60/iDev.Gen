@@ -7,7 +7,19 @@ import ExpressionPicker from './ExpressionPicker.jsx'
 import { BaseModelSelect, SamplerSelect } from './Models.jsx'
 import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary } from '../kinds.js'
 import { candidatePool, defaultCount, extrasFor, fillCellDefaultCount } from '../compose.js'
-import { composed } from '../enhance.js'
+import { composed, spread } from '../enhance.js'
+
+/** The wardrobe the shoot passes through, in order — the arc a composed run is
+ *  dealt, one state per photograph after `spread`.
+ *
+ *  It lives in the session's `settings` blob for the same reason `kind` does: it
+ *  is read by this screen and never by the runner, so it needs no column and no
+ *  route of its own. Empty (the default, and every session written before the
+ *  composer could undress) means the session's one wardrobe, in every
+ *  photograph.
+ */
+const wardrobeStates = (session) =>
+  (session?.settings?.wardrobe_states || []).filter((line) => line.trim())
 
 /** A checkpoint's name for a session title: no folder, no extension. Three copies
  *  called "shoot (copy)" are three copies you have to open to tell apart. */
@@ -154,6 +166,11 @@ export default function SessionView({ id }) {
     await api.post(`/api/sessions/${id}/compose-run`, {
       count: n, candidates, mode, mute_wardrobe: muteWardrobe, reference: composeGuided,
       extras: extrasFor(s.manner, n),
+      // The arc, spread over the run by the same function that spreads it over
+      // written takes: K states, N photographs, the wardrobe holding still
+      // between two photographs of one stage. No states is an empty array, and
+      // every photograph is then composed in the session's own wardrobe.
+      wardrobes: spread(wardrobeStates(s), n),
     })
   })
 
@@ -795,6 +812,27 @@ export default function SessionView({ id }) {
               want the session to drive it instead.
             </p>
           )}
+          {/* The arc, typed once: one wardrobe per line, in the order the shoot
+              passes through them. A composed run spreads them over its
+              photographs (`spread`), so three states over twelve photographs is
+              four photographs a state — and the wardrobe holds still inside a
+              stage, which is what makes two photographs of one stage two
+              photographs of one stage.
+              Written on blur and not on every keystroke: a PATCH per character
+              is a session row rewritten forty times while somebody types a
+              sentence. Empty is the session's one wardrobe in every
+              photograph. */}
+          <div style={{ marginTop: 10 }}>
+            <label title="One wardrobe per line, in order. A composed run spreads them over its photographs, so the shoot undresses without a writer. Empty: the session's wardrobe in every photograph.">
+              Wardrobe states ({wardrobeStates(s).length || "the session's"})
+            </label>
+            <textarea rows={4} disabled={running} defaultValue={wardrobeStates(s).join('\n')}
+                      key={wardrobeStates(s).join('\n')}
+                      placeholder="She wears a black wool coat over a grey jumper…&#10;The coat is off and hangs over the chair back…&#10;…"
+                      onBlur={(e) => call(() => api.patch(`/api/sessions/${id}`, {
+                        settings: { wardrobe_states: e.target.value.split('\n').filter((l) => l.trim()) },
+                      }))} />
+          </div>
           <p className="muted" style={{ marginBottom: 0 }}>
             Photos already shot keep the settings they were shot with. These apply to what runs next.
           </p>

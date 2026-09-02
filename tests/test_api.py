@@ -6577,3 +6577,86 @@ def test_an_extra_that_names_a_lower_part_than_the_framing_leaves_the_pool(clien
     assert run([]).status_code == 200
     refused = run(["an elbow or a knee runs out of the edge of the frame"])
     assert refused.status_code == 422, refused.text
+
+
+def test_a_composed_run_walks_its_wardrobe_states(client, seeded):
+    """The arc, dealt: photograph `i` is composed in the wardrobe state dealt to
+    `i`, and a photograph the list does not reach keeps the session's own.
+
+    A composed session used to wear one wardrobe in every photograph — the
+    session's, read off the row inside `compose_and_queue_shot`. A shoot that
+    walks somewhere is the same clothes coming off in stages, and the stage
+    belongs to the PHOTOGRAPH. The states are spread over the run by the caller
+    (`enhance.js:spread`, the same function that spreads them over written
+    takes), so this endpoint takes them already dealt, one per photograph.
+
+    The fall-back half is the half that keeps every caller from before the arc
+    working: a shorter list is not padded and not wrapped, the rest of the run
+    is simply the session's wardrobe.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "the arc",
+        "manner": "directed", "checkpoint": "test-checkpoint",
+        "wardrobe": "She wears a grey wool jumper", "shots": [],
+    }).json()["id"]
+    trios = [("cam-a", "act-a", "frame-a"),
+             ("cam-b", "act-b", "frame-b"),
+             ("cam-c", "act-c", "frame-c")]
+    for cam, act, framing in trios:
+        _seed_verified_trio(cam, act, framing,
+                            manner="directed", checkpoint="test-checkpoint")
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k} text")  for k, _, _ in trios],
+        "act":     [_candidate(k, f"act {k} text")     for _, k, _ in trios],
+        "framing": [_candidate(k, f"framing {k} text") for _, _, k in trios],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 3, "candidates": candidates,
+        "wardrobes": ["She wears a grey wool jumper",
+                      "The jumper is pushed up over her ribs"],
+    })
+    assert r.status_code == 200, r.text
+    rows = db.q("SELECT prompt FROM shot WHERE session_id=? ORDER BY shot_index", sid)
+    assert "grey wool jumper" in rows[0]["prompt"]
+    assert "pushed up over her ribs" in rows[1]["prompt"]
+    assert "grey wool jumper" not in rows[1]["prompt"], (
+        f"the state dealt to photograph 1 did not replace the session's: {rows[1]['prompt']!r}")
+    # Photograph 2 is past the end of the list: the session's wardrobe, not the
+    # last state wrapped round and not an empty line.
+    assert "grey wool jumper" in rows[2]["prompt"]
+    assert "pushed up over her ribs" not in rows[2]["prompt"]
+
+
+def test_a_wardrobe_state_the_run_may_write_is_read_by_the_crop_law(client, seeded):
+    """Every state the run may write is in the draw's context, not only the
+    session's wardrobe.
+
+    The pool is drawn ONCE for the whole run, so a trio has to survive every
+    wardrobe any of its photographs could be composed with. `stockings` is the
+    same word as `thighs` to the sampler (session 318), so a waist-up framing
+    over a state that names them is a photograph cut at the thighs whatever the
+    framing says — and the cell would measure the anatomy. The same run without
+    the state draws fine, which is what proves the state is what removed it.
+    """
+    _seed_verified_trio("cam-w", "act-w", "frame-w",
+                        manner="directed", checkpoint="test-checkpoint")
+
+    def run(wardrobes):
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"arc crop {len(wardrobes)}",
+            "manner": "directed", "checkpoint": "test-checkpoint",
+            "wardrobe": "She wears a grey wool jumper", "shots": [],
+        }).json()["id"]
+        return client.post(f"/api/sessions/{sid}/compose-run", json={
+            "count": 1, "wardrobes": wardrobes,
+            "candidates": {
+                "camera":  [_candidate("cam-w", "taken from her left side")],
+                "act":     [_candidate("act-w", "she leans against the wall")],
+                "framing": [_candidate("frame-w", "a waist-up photograph")],
+            },
+        })
+
+    assert run([]).status_code == 200
+    refused = run(["She wears white stockings and nothing else"])
+    assert refused.status_code == 422, refused.text
