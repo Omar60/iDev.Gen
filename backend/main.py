@@ -2154,7 +2154,15 @@ def _draw_n_trio_shots(
     # take the tight crops out of the pool for the whole run — conservative on
     # purpose, and the alternative is a per-photograph pool, which is a second
     # draw and a second answer to "what is drawable".
-    context = _sentences("" if mute_wardrobe else (session["wardrobe"] or ""),
+    # A run that deals a wardrobe to EVERY photograph never writes the session's,
+    # so reading it into the crop context refuses trios no line of this run could
+    # contradict — an arc whose first state names leggings would take every
+    # framing above the knee out of the pool for the whole shoot, including the
+    # photographs that are down to a vest. The context has to be what the run may
+    # WRITE, which is the same rule the draw already keeps: two calculations that
+    # disagree refuse a legal trio.
+    deals_every_row = len(wardrobes or ()) >= count
+    context = _sentences("" if (mute_wardrobe or deals_every_row) else (session["wardrobe"] or ""),
                          session["look"] if settings.get("use_look", True) else "",
                          *(extras or []),
                          *(() if mute_wardrobe else (wardrobes or ())))

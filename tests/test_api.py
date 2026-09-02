@@ -6713,3 +6713,46 @@ def test_the_draw_does_not_pair_an_act_with_a_camera_that_cannot_see_it(client, 
     line = db.one("SELECT prompt FROM shot WHERE session_id=?", sid)["prompt"]
     assert "she stands upright" in line, line
     assert "bends at the waist" not in line, line
+
+
+def test_a_run_that_deals_every_wardrobe_does_not_read_the_session_s_into_the_crop(client, seeded):
+    """The crop context is what the run may WRITE, not what the session holds.
+
+    A session whose wardrobe names stockings has no crop above her feet — unless
+    every photograph of this run is dealt a wardrobe of its own, in which case
+    the session's is never written into any line and cannot cut any frame. The
+    arc is exactly that case: the first state names leggings and the last names
+    nothing, and reading the session's row into the pool would refuse the
+    waist-up framings for the whole shoot, including the photographs that are
+    down to a vest.
+
+    The short-list half stays conservative: deal fewer wardrobes than
+    photographs and the session's is written on the rest, so it is back in the
+    context.
+    """
+    _seed_verified_trio("cam-s", "act-s", "frame-s",
+                        manner="directed", checkpoint="test-checkpoint")
+
+    def run(wardrobes, count=1):
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"crop context {len(wardrobes)}/{count}",
+            "manner": "directed", "checkpoint": "test-checkpoint",
+            "wardrobe": "She wears white stockings to the thigh", "shots": [],
+        }).json()["id"]
+        return client.post(f"/api/sessions/{sid}/compose-run", json={
+            "count": count, "wardrobes": wardrobes,
+            "candidates": {
+                "camera":  [_candidate("cam-s", "taken from her left side")],
+                "act":     [_candidate("act-s", "she leans against the wall")],
+                "framing": [_candidate("frame-s", "a waist-up photograph")],
+            },
+        })
+
+    # The session's stockings alone: a waist-up framing is cut at the thighs.
+    assert run([]).status_code == 422
+    # Every photograph dealt a chest-level state: the stockings are never
+    # written, so the waist-up framing is drawable again.
+    assert run(["She wears a grey wool jumper"]).status_code == 200
+    # One photograph short of the count: the session's wardrobe is written on
+    # the last row, so it is back in the context and the trio is refused.
+    assert run(["She wears a grey wool jumper"], count=2).status_code == 422
