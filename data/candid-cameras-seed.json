@@ -24,28 +24,6 @@
   {
     "slot": "camera",
     "manner": "candid",
-    "concept_key": "overhead-direct",
-    "family": "overhead",
-    "faces": "",
-    "wording": "Overhead camera directly above her",
-    "judge_label": "Directly overhead looking down at her",
-    "verdict": "verified",
-    "sample_size": "3/3 session 245"
-  },
-  {
-    "slot": "camera",
-    "manner": "candid",
-    "concept_key": "overhead-shelf",
-    "family": "overhead",
-    "faces": "",
-    "wording": "Phone propped on a high shelf across the room, looking down at her",
-    "judge_label": "From a high shelf across the room looking down",
-    "verdict": "verified",
-    "sample_size": "3/3 session 245"
-  },
-  {
-    "slot": "camera",
-    "manner": "candid",
     "concept_key": "shoulder-left",
     "family": "shoulder",
     "faces": "back",
