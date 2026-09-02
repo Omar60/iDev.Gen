@@ -28,9 +28,7 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "shoulder",
-      "mirror",
-      "front",
-      "arm"
+      "mirror"
     ]
   },
   {
@@ -155,10 +153,7 @@
     "sample_size": "written 2026-09-02, never shot",
     "cameras": [
       "shoulder",
-      "mirror",
-      "front",
-      "arm",
-      "pov"
+      "mirror"
     ]
   },
   {
