@@ -1690,6 +1690,81 @@ def _without_crop_conflicts(pool: set[tuple[str, str, str]], candidates: dict,
                                  context)}
 
 
+def _camera_family(candidate: dict) -> str:
+    """The family a camera candidate belongs to.
+
+    Read off the candidate and not the database: the pool is built from what the
+    caller sent, and a family looked up behind the caller's back is a second
+    answer to "what is this camera". The frontend sends it in both places the
+    catalogue holds it (`positionsFor` puts it on the row AND on the wording), so
+    both are accepted.
+    """
+    wording = (candidate.get("wordings") or [{}])[0]
+    return candidate.get("family") or wording.get("family") or ""
+
+
+def _act_camera_families(candidate: dict) -> set[str]:
+    """The camera families an act is written for, or an empty set for "any".
+
+    Empty is the same "no opinion" `fitCameras` reads it as on the written path
+    (`frontend/src/kinds.js`): an act that names no family is drawable from
+    anywhere, which is what every act in `directed` that is pure geometry wants.
+    The API serves the column as an array; a raw seed row carries it as a
+    comma-separated string, and both are accepted for the same reason
+    `arrangements()` accepts both.
+    """
+    value = candidate.get("cameras")
+    if isinstance(value, str):
+        value = [v for v in value.split(",") if v]
+    return {v for v in (value or []) if v}
+
+
+def _without_camera_mismatch(pool: set[tuple[str, str, str]],
+                             candidates: dict) -> set[tuple[str, str, str]]:
+    """The pool with the trios whose camera cannot see their act taken out.
+
+    An act carries the camera families it is written for, strongest first
+    (`component.cameras`). It was read by the written path only — `fitCameras`
+    moves a planted arrangement's camera into a family that can see it — and the
+    composer drew the camera and the act independently, so a phone held at arm's
+    length in front of her face landed on an act whose both hands are flat on the
+    floor. Two clauses of one line describing different photographs.
+
+    Empty list on the act is "any camera", not "no camera". The `none` control
+    arm carries no list either and stays drawable, which is what it is for.
+
+    The DRAW is filtered and the deliberate fill-cell pick is not. The crop law
+    is arithmetic — the photograph is cut where the anatomy is, whatever anybody
+    intended — but "this camera can see this act" is a judgement somebody wrote
+    into the catalogue, and refusing it on `/compose` would take away the only
+    way to measure whether the judgement is right.
+
+    In the pool and not after the draw, for the reason the crop filter is:
+    a constraint checked after the draw is a constraint the draw does not have,
+    and the "largest fillable" number in the 422 would be a number no compose can
+    reach.
+    """
+    families = {c["key"]: _camera_family(c)
+                for c in candidates.get("camera", []) or [] if c.get("key")}
+    wants = {c["key"]: _act_camera_families(c)
+             for c in candidates.get("act", []) or [] if c.get("key")}
+    return {(cam, act, fr) for cam, act, fr in pool
+            if not wants.get(act) or families.get(cam, "") in wants[act]}
+
+
+def _drawable(pool: set[tuple[str, str, str]], candidates: dict,
+              context: str) -> set[tuple[str, str, str]]:
+    """The pool with every trio that cannot be photographed as written removed:
+    the crop contradictions first, then the cameras that cannot see their act.
+
+    One function because both filters belong to the same question — "is this trio
+    a photograph at all" — and because a caller that runs one and forgets the
+    other is exactly the bug this repo keeps finding twice.
+    """
+    return _without_camera_mismatch(
+        _without_crop_conflicts(pool, candidates, context), candidates)
+
+
 def _trio_pool(
     manner: str,
     checkpoint: str,
@@ -1772,13 +1847,13 @@ def _trio_pool(
     )
     matched = {(r["camera_wording"], r["act_wording"], r["framing_wording"]) for r in rows}
     if mode == "strict":
-        return _without_crop_conflicts(matched, candidates, context)
+        return _drawable(matched, candidates, context)
     # ponytail: the full product, which is len(cam) * len(act) * len(framing)
     # trios. The candidate lists are a session's picks, tens at the very
     # most, so this is thousands of tuples at the ceiling and the draw
     # already walks the pool. If a caller ever passes whole catalogues,
     # push the `none` filter and the dead subtraction into SQL instead.
-    return _without_crop_conflicts(
+    return _drawable(
         {(cam, act, framing)
          for cam in cam_keys if cam != "none"
          for act in act_keys if act != "none"

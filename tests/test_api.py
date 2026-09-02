@@ -6660,3 +6660,56 @@ def test_a_wardrobe_state_the_run_may_write_is_read_by_the_crop_law(client, seed
     assert run([]).status_code == 200
     refused = run(["She wears white stockings and nothing else"])
     assert refused.status_code == 422, refused.text
+
+
+def test_the_draw_does_not_pair_an_act_with_a_camera_that_cannot_see_it(client, seeded):
+    """`component.cameras` was read by the written path only.
+
+    An act carries the camera families it is written for, and `fitCameras` moves
+    a planted arrangement's camera into one of them. The composer drew the camera
+    and the act independently, so a phone held out at arm's length in front of
+    her face landed on an act with both hands flat on the floor — one line
+    describing two photographs. Probed on a real candid run before this test
+    existed.
+
+    Both halves are asserted, because the half that is easy to break is the
+    second one: an act that names NO family is drawable from anywhere (every
+    piece of pure geometry in `directed` is one, and the `none` control arm is
+    another), and a filter that reads an empty list as "no camera" empties the
+    catalogue.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "families",
+        "manner": "directed", "checkpoint": "test-checkpoint", "shots": [],
+    }).json()["id"]
+    # Two trios, both verified cells: the act that wants a side camera paired
+    # with a front one, and the act that wants nothing paired with the same.
+    _seed_verified_trio("cam-front", "act-side", "frame-a",
+                        manner="directed", checkpoint="test-checkpoint")
+    _seed_verified_trio("cam-front", "act-any", "frame-a",
+                        manner="directed", checkpoint="test-checkpoint")
+
+    candidates = {
+        "camera": [dict(_candidate("cam-front", "front view"), family="front")],
+        "act": [
+            # Written for a side camera, offered a front one: not a photograph.
+            dict(_candidate("act-side", "she bends at the waist"), cameras=["side-level"]),
+            # No opinion: drawable from anywhere.
+            dict(_candidate("act-any", "she stands upright"), cameras=[]),
+        ],
+        "framing": [_candidate("frame-a", "full body")],
+    }
+
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 2, "candidates": candidates,
+    })
+    assert r.status_code == 422, r.text
+    assert "1" in r.json()["detail"], r.json()["detail"]
+
+    ok = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 1, "candidates": candidates,
+    })
+    assert ok.status_code == 200, ok.text
+    line = db.one("SELECT prompt FROM shot WHERE session_id=?", sid)["prompt"]
+    assert "she stands upright" in line, line
+    assert "bends at the waist" not in line, line
