@@ -101,3 +101,39 @@ def test_reading_table_created_on_migration_of_older_database(tmp_path):
     assert "reading_base" in indexes
     assert "reading_session" in indexes
 
+
+
+def test_the_needs_backfill_reads_the_second_person_out_of_the_wording(tmp_path):
+    """The `needs` back-fill, on a database written before an act could say what
+    it needs — the only shape where it runs.
+
+    Nobody types this column for the rows that already exist: the second person
+    was always in the wording (`two people in frame`, `astride him`), and asking
+    an operator to say it a second time is asking two spellings of one fact to
+    disagree on day one. So the migration reads the text.
+
+    The four shapes that matter: an act naming him, an act naming two people,
+    an act that is pure geometry, and a CAMERA whose wording happens to say
+    `he` — a camera is not staged and must come back empty whatever it says.
+    """
+    p = Path(tmp_path) / "old-acts.db"
+    conn = db.connect(p)
+    conn.execute("ALTER TABLE component DROP COLUMN needs")
+    rows = [
+        ("astride", "act", "She is astride him with her weight down on him, two people in frame.", "him"),
+        ("joined", "act", "They are joined, two people in frame.", "him"),
+        ("upright", "act", "One young woman stands upright and square to the camera.", ""),
+        ("over-his-shoulder", "camera", "Taken over his shoulder as he stands behind her", ""),
+    ]
+    for key, slot, wording, _ in rows:
+        conn.execute(
+            "INSERT INTO component (concept_key, slot, manner, wording, judge_label, created_at) "
+            "VALUES (?, ?, 'candid', ?, ?, 'now')", (key, slot, wording, f"label {key}"))
+    conn.commit()
+    conn.close()
+
+    conn = db.connect(p)
+    got = {r["concept_key"]: r["needs"]
+           for r in conn.execute("SELECT concept_key, needs FROM component")}
+    conn.close()
+    assert got == {key: expected for key, _, _, expected in rows}, got

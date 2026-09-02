@@ -279,6 +279,10 @@ class ComponentIn(BaseModel):
     # An act's compatible camera families, strongest first. See the column
     # comment in db.py: this is what `fitCameras` walks.
     cameras: list[str] = Field(default_factory=list)
+    # What the act needs before it can be photographed: '' for pure geometry,
+    # 'him' for an act with a second person in it. See the column comment in
+    # db.py — it is a requirement, not a place in the arc.
+    needs: str = ""
 
 
 class ComponentPatch(BaseModel):
@@ -290,6 +294,7 @@ class ComponentPatch(BaseModel):
     wording: str | None = None
     judge_label: str | None = None
     cameras: list[str] | None = None
+    needs: str | None = None
 
 
 class ReadingIn(BaseModel):
@@ -703,10 +708,10 @@ def create_component(c: ComponentIn):
         raise HTTPException(422, f"Component already exists for slot {slot!r}, manner {manner!r}, and wording {wording!r}")
 
     comp_id = db.run(
-        "INSERT INTO component (concept_key, slot, manner, family, faces, wording, judge_label, cameras, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO component (concept_key, slot, manner, family, faces, wording, judge_label, cameras, needs, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         c.concept_key.strip(), slot, manner, c.family.strip(), c.faces.strip(), wording, judge_label,
-        _cameras_text(c.cameras), db.now(),
+        _cameras_text(c.cameras), c.needs.strip(), db.now(),
     )
     return _component_out(db.one("SELECT * FROM component WHERE id=?", comp_id))
 
@@ -726,6 +731,7 @@ def update_component(comp_id: int, p: ComponentPatch):
     wording = p.wording.strip() if p.wording is not None else existing["wording"]
     judge_label = p.judge_label.strip() if p.judge_label is not None else existing["judge_label"]
     cameras = _cameras_text(p.cameras) if p.cameras is not None else (existing["cameras"] or "")
+    needs = p.needs.strip() if p.needs is not None else (existing["needs"] or "")
 
     if slot not in ("camera", "act", "framing"):
         raise HTTPException(422, "slot must be camera, act, or framing")
@@ -747,8 +753,8 @@ def update_component(comp_id: int, p: ComponentPatch):
 
     db.run(
         "UPDATE component SET concept_key=?, slot=?, manner=?, family=?, faces=?, wording=?, "
-        "judge_label=?, cameras=? WHERE id=?",
-        concept_key, slot, manner, family, faces, wording, judge_label, cameras, comp_id,
+        "judge_label=?, cameras=?, needs=? WHERE id=?",
+        concept_key, slot, manner, family, faces, wording, judge_label, cameras, needs, comp_id,
     )
     return _component_out(db.one("SELECT * FROM component WHERE id=?", comp_id))
 
@@ -848,6 +854,7 @@ def import_components(items: list[dict] | None = None):
         family = item.get("family", "")
         faces = item.get("faces", "")
         cameras = _cameras_text(item.get("cameras"))
+        needs = (item.get("needs") or "").strip()
 
         existing = db.one(
             "SELECT id FROM component WHERE slot=? AND manner=? AND (concept_key=? OR wording=?)",
@@ -857,9 +864,9 @@ def import_components(items: list[dict] | None = None):
             skipped += 1
         else:
             db.run(
-                "INSERT INTO component (concept_key, slot, manner, family, faces, wording, judge_label, cameras, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                concept_key, slot, manner, family, faces, wording, judge_label, cameras, now_ts,
+                "INSERT INTO component (concept_key, slot, manner, family, faces, wording, judge_label, cameras, needs, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                concept_key, slot, manner, family, faces, wording, judge_label, cameras, needs, now_ts,
             )
             added += 1
     return {"added": added, "skipped": skipped}
@@ -1642,6 +1649,18 @@ class ComposeRunIn(BaseModel):
     # whatever body the draw dealt, and a late state can land on an early act.
     # That is the known ceiling of a composed arc, not a bug in this field.
     wardrobes: list[str] = Field(default_factory=list)
+    # Whether a second person is in the room for this run. Off by default, and
+    # off means an act that needs him is not drawable: composed session 330 dealt
+    # `She is astride him ... two people in frame` to a photograph whose wardrobe
+    # state was a vest and knickers, three times in nine, because the act pool
+    # holds every act of the manner and the draw had no way to know which stage
+    # of the arc it was filling.
+    #
+    # On means "he is here", not "only him": the pool is everything again. An
+    # operator who wants nothing but the explicit acts already has a way to say
+    # so — `candidates` is theirs to narrow, and a run that sends three acts
+    # draws from three acts.
+    with_him: bool = False
 
 
 _SLOT_COLS = (
@@ -1970,7 +1989,8 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     """
     by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode,
                                              mute_wardrobe=c.mute_wardrobe,
-                                             extras=c.extras, wardrobes=c.wardrobes)
+                                             extras=c.extras, wardrobes=c.wardrobes,
+                                             with_him=c.with_him)
     shot_ids: list[int] = []
     for at, (cam_key, act_key, framing_key) in enumerate(best_chosen):
         shot_ids.append(compose_and_queue_shot(
@@ -2026,6 +2046,7 @@ def _draw_n_trio_shots(
     mute_wardrobe: bool = False,
     extras: list[str] | None = None,
     wardrobes: list[str] | None = None,
+    with_him: bool = False,
 ) -> tuple[dict, list[tuple[str, str, str]]]:
     """The shared draw used by `compose_run_endpoint` (3.3) and
     `compose_session_endpoint` (3.5). Returns `(by_key,
@@ -2138,6 +2159,16 @@ def _draw_n_trio_shots(
             f"compose refused: session is missing {', '.join(missing)}; "
             f"set them on the session before composing",
         )
+
+    # The stage, applied to the CANDIDATES and not to the pool: narrow the list
+    # first and every number downstream is honest by construction — the pool, the
+    # no-repeat ceiling, and the "largest fillable" the 422 names. Filtering the
+    # pool instead would leave the refusal quoting a count that includes acts this
+    # run was never allowed to draw.
+    if not with_him:
+        candidates = dict(candidates,
+                          act=[a for a in (candidates.get("act") or [])
+                               if not (a.get("needs") or "").strip()])
 
     settings = json.loads(session["settings"] or "{}")
     # The wardrobe and the look are part of the composed line, so they are part of
@@ -2663,6 +2694,18 @@ class ComposeSessionIn(BaseModel):
     # whatever body the draw dealt, and a late state can land on an early act.
     # That is the known ceiling of a composed arc, not a bug in this field.
     wardrobes: list[str] = Field(default_factory=list)
+    # Whether a second person is in the room for this run. Off by default, and
+    # off means an act that needs him is not drawable: composed session 330 dealt
+    # `She is astride him ... two people in frame` to a photograph whose wardrobe
+    # state was a vest and knickers, three times in nine, because the act pool
+    # holds every act of the manner and the draw had no way to know which stage
+    # of the arc it was filling.
+    #
+    # On means "he is here", not "only him": the pool is everything again. An
+    # operator who wants nothing but the explicit acts already has a way to say
+    # so — `candidates` is theirs to narrow, and a run that sends three acts
+    # draws from three acts.
+    with_him: bool = False
 
 
 @app.post("/api/sessions/{sid}/compose-session")
@@ -2713,7 +2756,8 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     # for a future caller that drops the skip).
     by_key, best_chosen = _draw_n_trio_shots(
         sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread,
-        mute_wardrobe=c.mute_wardrobe, extras=c.extras, wardrobes=c.wardrobes)
+        mute_wardrobe=c.mute_wardrobe, extras=c.extras, wardrobes=c.wardrobes,
+        with_him=c.with_him)
     ordered = _reorder_to_spread_families(best_chosen, by_key)
     shot_ids: list[int] = []
     # The extra is dealt to the PHOTOGRAPH, so it follows the queue order and not

@@ -79,6 +79,11 @@ export default function SessionView({ id }) {
   // not of which button queued it. Off by default: with no reference attached
   // a silent line renders her undressed.
   const [muteWardrobe, setMuteWardrobe] = useState(false)
+  // Whether a second person is in the room for the next composed run. Off is
+  // the arc's own default: an act that needs him is not drawn at all, so a
+  // photograph dealt a dressed wardrobe state cannot come back as penetration
+  // — measured on session 330, three photographs of nine.
+  const [withHim, setWithHim] = useState(false)
   // Shoot the composed takes through the session's reference graph. Its own
   // switch and not a consequence of the one above: guiding the body while the
   // line still writes the clothes is a real take, and one flag carrying two
@@ -165,6 +170,7 @@ export default function SessionView({ id }) {
     const candidates = candidatePool(s.manner)
     await api.post(`/api/sessions/${id}/compose-run`, {
       count: n, candidates, mode, mute_wardrobe: muteWardrobe, reference: composeGuided,
+      with_him: withHim,
       extras: extrasFor(s.manner, n),
       // The arc, spread over the run by the same function that spreads it over
       // written takes: K states, N photographs, the wardrobe holding still
@@ -494,6 +500,13 @@ export default function SessionView({ id }) {
                      disabled={!s.manner || !s.checkpoint || s.running}
                      onChange={(e) => setMuteWardrobe(e.target.checked)} />
               no wardrobe
+            </label>
+            <label title="He is in the room for this run. Off: an act with a second person in it is not drawn at all, which is what keeps a dressed photograph from coming back as penetration. On does not mean only him - the whole act list is drawable again."
+                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+              <input type="checkbox" checked={withHim}
+                     disabled={!s.manner || !s.checkpoint || s.running}
+                     onChange={(e) => setWithHim(e.target.checked)} />
+              with him
             </label>
             {/* Only offered when the session has a reference graph to send them
                 through: without one the runner falls back to the text2image

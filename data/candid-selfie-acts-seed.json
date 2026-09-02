@@ -14,7 +14,8 @@
       "arm",
       "overhead",
       "mirror"
-    ]
+    ],
+    "needs": "him"
   },
   {
     "slot": "act",
@@ -28,7 +29,8 @@
     "sample_size": "shared arrangement",
     "cameras": [
       "shoulder"
-    ]
+    ],
+    "needs": "him"
   },
   {
     "slot": "act",
@@ -43,7 +45,8 @@
     "cameras": [
       "mirror",
       "shoulder"
-    ]
+    ],
+    "needs": "him"
   },
   {
     "slot": "act",
@@ -61,7 +64,8 @@
       "overhead",
       "mirror",
       "pov"
-    ]
+    ],
+    "needs": "him"
   },
   {
     "slot": "act",
@@ -75,7 +79,8 @@
     "sample_size": "shared arrangement",
     "cameras": [
       "shoulder"
-    ]
+    ],
+    "needs": "him"
   },
   {
     "slot": "act",
@@ -90,7 +95,8 @@
     "cameras": [
       "mirror",
       "shoulder"
-    ]
+    ],
+    "needs": "him"
   },
   {
     "slot": "framing",

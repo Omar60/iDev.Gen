@@ -6756,3 +6756,60 @@ def test_a_run_that_deals_every_wardrobe_does_not_read_the_session_s_into_the_cr
     # One photograph short of the count: the session's wardrobe is written on
     # the last row, so it is back in the context and the trio is refused.
     assert run(["She wears a grey wool jumper"], count=2).status_code == 422
+
+
+def test_an_act_that_needs_him_is_not_drawn_unless_he_is_in_the_room(client, seeded):
+    """The bug composed session 330 shot three times in nine: `She is astride him
+    ... two people in frame` dealt to a photograph whose wardrobe state was a
+    vest and knickers. The act pool holds every act of the manner, and the draw
+    had no way to know which stage of the arc it was filling.
+
+    `needs` on the act row is what it knows now. Off is the default and it is
+    exclusive — an act needing him is not in the candidate list at all, so the
+    ceiling the 422 quotes counts only what this run may draw. On is permissive:
+    the whole list is back, because a caller who wants nothing but the explicit
+    acts narrows `candidates` itself.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "stage",
+        "manner": "directed", "checkpoint": "test-checkpoint", "shots": [],
+    }).json()["id"]
+    _seed_verified_trio("cam-a", "act-solo", "frame-a",
+                        manner="directed", checkpoint="test-checkpoint")
+    _seed_verified_trio("cam-a", "act-him", "frame-a",
+                        manner="directed", checkpoint="test-checkpoint")
+    candidates = {
+        "camera": [_candidate("cam-a", "taken from her left side")],
+        "act": [_candidate("act-solo", "she leans against the wall"),
+                dict(_candidate("act-him", "she is astride him, two people in frame"),
+                     needs="him")],
+        "framing": [_candidate("frame-a", "full body")],
+    }
+
+    # Two verified trios, but only one of them is at this stage.
+    refused = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 2, "candidates": candidates,
+    })
+    assert refused.status_code == 422, refused.text
+    assert "1" in refused.json()["detail"], refused.json()["detail"]
+
+    solo = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 1, "candidates": candidates,
+    })
+    assert solo.status_code == 200, solo.text
+    line = db.one("SELECT prompt FROM shot WHERE session_id=?", sid)["prompt"]
+    assert "astride" not in line, line
+
+    # He is in the room: both trios are drawable again. On a fresh session,
+    # because the 3.4 dedup refuses a trio this session has already queued and
+    # the solo one is now on the row above.
+    other = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "stage with him",
+        "manner": "directed", "checkpoint": "test-checkpoint", "shots": [],
+    }).json()["id"]
+    both = client.post(f"/api/sessions/{other}/compose-run", json={
+        "count": 2, "candidates": candidates, "with_him": True,
+    })
+    assert both.status_code == 200, both.text
+    lines = [r["prompt"] for r in db.q("SELECT prompt FROM shot WHERE session_id=?", other)]
+    assert any("astride" in l for l in lines), lines

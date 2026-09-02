@@ -1833,6 +1833,12 @@ export const arrangements = (manner = 'directed') => {
     cameras: Array.isArray(r.cameras)
       ? r.cameras
       : (r.cameras || '').split(',').filter(Boolean),
+    // What the act needs before it can be photographed at all: '' for pure
+    // geometry, 'him' for an act with a second person in it. Carried to the
+    // composer, which drops the ones that need him unless the run says he is
+    // there — session 330 dealt `astride him` to a photograph in a vest and
+    // knickers three times in nine without it.
+    needs: r.needs || '',
     wordings: [{ key: r.concept_key, text: r.wording }],
     judge_label: r.judge_label,
   }))

@@ -151,6 +151,23 @@ CREATE TABLE IF NOT EXISTS component (
     -- the catalogue screen an empty list, so the one thing the screen exists
     -- for produced acts the camera plan silently ignored.
     cameras     TEXT NOT NULL DEFAULT '',
+    -- What an `act` needs before it can be photographed at all. Empty is the
+    -- answer for every act that needs nothing: pure geometry, photographable
+    -- dressed, half-dressed or undressed, which is what makes an act walkable
+    -- through an undressing arc without a second column saying where in the arc
+    -- it sits. `him` is an act with a second person in it.
+    --
+    -- It is a REQUIREMENT and not a stage number on purpose. A stage belongs to
+    -- the photograph — the wardrobe state it was dealt, and whether he is there
+    -- — and an act that carries a stage of its own is an act that can only be
+    -- shot once. This column says what the photograph has to provide; the run
+    -- says what it is providing.
+    --
+    -- Backfilled from the wording on migration, and the wording is still the
+    -- only place the man is described: `two people in frame` in the text and
+    -- `needs='him'` in the column are the same fact, and the migration reads one
+    -- to write the other rather than asking anybody to type it twice.
+    needs       TEXT NOT NULL DEFAULT '',
     retired_at  TEXT,
     created_at  TEXT NOT NULL,
     UNIQUE(slot, manner, wording),
@@ -407,6 +424,20 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
     component_cols = columns("component")
     if component_cols and "cameras" not in component_cols:
         conn.execute("ALTER TABLE component ADD COLUMN cameras TEXT NOT NULL DEFAULT ''")
+
+    # A component store written before an act could say what it needs. The
+    # backfill reads the wording, because that is where the second person was
+    # always written: an act saying `two people in frame` or naming him is an
+    # act that cannot be photographed alone, and every other act needs nothing.
+    # Reading it rather than asking for it keeps the two spellings of one fact
+    # from disagreeing on day one.
+    if component_cols and "needs" not in component_cols:
+        conn.execute("ALTER TABLE component ADD COLUMN needs TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "UPDATE component SET needs='him' WHERE slot='act' AND ("
+            "  wording LIKE '%two people%'"
+            "  OR wording LIKE '% him %' OR wording LIKE '% him.%'"
+            "  OR wording LIKE '% his %' OR wording LIKE '% he %')")
 
     # Cell table migration: add contradicted column if not present.
     # If an older database holds rows, dump them to cell-backup-<timestamp>.json
