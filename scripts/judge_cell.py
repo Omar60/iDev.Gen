@@ -24,6 +24,29 @@ writes to a cell is not a control.
 
 Run it with controls or do not quote the number.
 
+## One slot can ask more than one question
+
+`--axis` picks which. Directed's camera vocabulary holds where the camera stood
+AND how high it was, and both are true of every photograph: asked as one menu it
+came back `hip-level` 6 against `side-level` 1 on photographs whose camera is
+side-on in all ten. The endpoint serves one axis at a time and drops the
+photographs whose drawn family belongs to another question, so what comes back
+is a menu with one true answer in it. A slot with a single question -- every act
+and framing vocabulary, and candid's cameras -- leaves it empty.
+
+## The judge samples, so it is asked more than once
+
+`backend/enhance.py` calls the model at `temperature: 0.8`, which is right for
+the writer and wrong for a judge: **the same photograph asked twice gives
+different answers.** It cost this script its first camera result -- a rehearsal
+read `side-level` 7 / `over-shoulder` 3 and the recording run of the same deck,
+same seed, same photographs read `side-level` 10.
+
+So `--repeat` asks each photograph N times and takes the majority, which is what
+`judge_camera.py` has always done (three passes a photograph). Default 3. A
+photograph with no majority -- three different answers -- is recorded as
+`unreadable` and posted for nothing, because a coin toss is not a verdict.
+
 ## Two things held on purpose
 
 The reading order is SHUFFLED per photograph on a fixed seed. A model that
@@ -95,6 +118,23 @@ def ask(base: str, shot_id: int, readings: list[dict], rng: random.Random) -> st
     return f"unreadable:{said[:40]!r}"
 
 
+def majority(passes: list[str]) -> str:
+    """The answer more than half the passes agree on, or `unreadable`.
+
+    A strict majority and not a plurality: two answers out of three is a judge
+    that read the photograph, one-one-one is a coin toss, and recording a coin
+    toss as a verdict is how a run comes back with numbers that look like
+    results ([[idevgen-judge-question-design]]).
+    """
+    counts: dict[str, int] = {}
+    for p in passes:
+        counts[p] = counts.get(p, 0) + 1
+    best, n = max(counts.items(), key=lambda kv: kv[1])
+    if n * 2 <= len(passes):
+        return f"unreadable:no majority in {passes}"
+    return best
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("session", type=int)
@@ -104,17 +144,24 @@ def main() -> int:
                     help="shot ids from other sessions whose answer should DIFFER; asked, never posted")
     ap.add_argument("--expect", default="",
                     help="the reading key the controls should return, if they all share one")
+    ap.add_argument("--axis", default="",
+                    help="which question to ask, when the slot asks more than one "
+                         "(directed camera: position | height | picture)")
+    ap.add_argument("--repeat", type=int, default=3,
+                    help="passes per photograph; the majority is the answer (the model samples at 0.8)")
     ap.add_argument("--seed", type=int, default=903)
     ap.add_argument("--post", action="store_true",
                     help="record the answers; without it the run is a read-only rehearsal")
     args = ap.parse_args()
 
-    deck = call(args.base, "GET", f"/api/sessions/{args.session}/judge-pass?slot={args.slot}")
+    query = f"slot={args.slot}" + (f"&axis={args.axis}" if args.axis else "")
+    deck = call(args.base, "GET", f"/api/sessions/{args.session}/judge-pass?{query}")
     if "shots" not in deck:
         print("judge-pass refused:", json.dumps(deck)[:300])
         return 1
     shots, readings = deck["shots"], deck["readings"]
-    print(f"session {args.session}, slot {args.slot}: {len(shots)} photographs, "
+    print(f"session {args.session}, slot {args.slot}"
+          f"{', axis ' + args.axis if args.axis else ''}: {len(shots)} photographs, "
           f"{len(readings)} readings, {len(args.control)} controls")
     for r in readings:
         print(f"  {r['key']:18} {r['label'][:78]}")
@@ -132,9 +179,12 @@ def main() -> int:
 
     answers: dict[int, str] = {}
     for sid, is_control in order:
-        key = ask(args.base, sid, readings, rng)
+        passes = [ask(args.base, sid, readings, rng) for _ in range(args.repeat)]
+        key = majority(passes)
         answers[sid] = key
-        print(f"  shot {sid}{' (control)' if is_control else '':10} -> {key or '(none)'}")
+        spread = "" if len(set(passes)) == 1 else f"   from {passes}"
+        print(f"  shot {sid}{' (control)' if is_control else '':10} -> "
+              f"{key or '(none)'}{spread}")
 
     real = [answers[s] for s in shots]
     tally: dict[str, int] = {}

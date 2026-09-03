@@ -303,6 +303,13 @@ class ReadingIn(BaseModel):
     key: str
     label: str
     session_id: int | None = None
+    # Which question this reading answers. Empty is the default and the whole
+    # vocabulary is one question, which is what candid's six cameras and every
+    # act and framing vocabulary are. Directed's camera is not: it holds where
+    # the camera stood AND how high it was, both true at once, and a pass that
+    # offers them together measures which one the judge noticed. See the column
+    # comment in db.py for the run that found it.
+    axis: str = ""
 
 
 class JudgeShotIn(BaseModel):
@@ -1065,9 +1072,9 @@ def create_reading(r: ReadingIn):
             )
 
     reading_id = db.run(
-        "INSERT INTO reading (slot, manner, session_id, key, label, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        slot, manner, r.session_id, key, label, db.now(),
+        "INSERT INTO reading (slot, manner, session_id, key, label, axis, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        slot, manner, r.session_id, key, label, r.axis.strip(), db.now(),
     )
     return db.one("SELECT * FROM reading WHERE id=?", reading_id)
 
@@ -1108,8 +1115,9 @@ def import_readings(items: list[dict] | None = None):
         if db.one("SELECT id FROM reading WHERE slot=? AND manner=? AND key=?", slot, manner, key):
             skipped += 1
             continue
-        db.run("INSERT INTO reading (slot, manner, session_id, key, label, created_at) "
-               "VALUES (?, ?, NULL, ?, ?, ?)", slot, manner, key, label, db.now())
+        db.run("INSERT INTO reading (slot, manner, session_id, key, label, axis, created_at) "
+               "VALUES (?, ?, NULL, ?, ?, ?, ?)", slot, manner, key, label,
+               (item.get("axis") or "").strip(), db.now())
         added += 1
     return {"added": added, "skipped": skipped}
 
@@ -3879,7 +3887,7 @@ def patch_shot(shot_id: int, p: ShotPatch):
 
 
 @app.get("/api/sessions/{sid}/judge-pass")
-def get_judge_pass(sid: int, slot: str):
+def get_judge_pass(sid: int, slot: str, axis: str = ""):
     """Photographs in this session ready for a judging pass on one slot.
 
     Returns {"shots": [id, ...], "controls": [id, ...], "readings": [...]} for the session.
@@ -3963,7 +3971,35 @@ def get_judge_pass(sid: int, slot: str):
         "ORDER BY slot, manner, id",
         slot, session["manner"], sid,
     )
+    # Every reading this slot has, whatever question it answers. The refusal
+    # below is about a family with NO reading anywhere, and narrowing that set
+    # to one axis would turn "nobody wrote a reading for `lens`" into a silent
+    # skip -- which is the safety net, not a nuisance.
     reading_keys = {r["key"] for r in readings}
+    axes = sorted({r["axis"] for r in readings if r["axis"]})
+    if axes and not axis:
+        # The vocabulary asks more than one question and the caller did not say
+        # which. Answering it would hand the judge a menu where several answers are
+        # true at once, which is not a refusal case invented here: session 382
+        # measured a camera side-on in 10 of 10 coming back `hip-level` 6 and
+        # `side-level` 1 through exactly this door.
+        raise HTTPException(
+            422,
+            f"judge-pass refused: the {slot} vocabulary for manner "
+            f"{session['manner']!r} asks more than one question "
+            f"({', '.join(axes)}); name one with ?axis=",
+        )
+    if axis:
+        readings = [r for r in readings if r["axis"] == axis]
+        if not readings:
+            raise HTTPException(
+                422,
+                f"judge-pass refused: no {slot} reading on axis {axis!r} for manner "
+                f"{session['manner']!r}",
+            )
+    # The menu the judge will actually see. A photograph whose drawn family is
+    # not on it belongs to a different question and is not in this deck.
+    axis_keys = {r["key"] for r in readings}
 
     rows = db.q(
         "SELECT id, components, verdicts FROM shot "
@@ -3984,6 +4020,7 @@ def get_judge_pass(sid: int, slot: str):
         drawn = slot_comp.get("concept") or slot_comp.get("wording", "none")
         v = json.loads(r["verdicts"]) if r["verdicts"] else {}
 
+        family = ""
         if drawn != "none":
             fam_row = db.one(
                 "SELECT family FROM component WHERE concept_key=? AND manner=?",
@@ -3993,6 +4030,10 @@ def get_judge_pass(sid: int, slot: str):
             if family:
                 photographed_families.add(family)
 
+        if axis and drawn != "none" and family not in axis_keys:
+            # Asked on another axis. Not a miss, not a negative: this pass is
+            # not the question this photograph can answer.
+            continue
         if v.get(slot) is not None:
             controls.append(r["id"])
         elif drawn == "none":

@@ -7,6 +7,11 @@ export function Judge() {
   const [sessionId, setSessionId] = useState('')
   const [session, setSession] = useState(null)
   const [slot, setSlot] = useState('camera')
+  // Which question of the slot to ask. A vocabulary whose readings carry an
+  // `axis` asks more than one thing at once -- directed's cameras hold where the
+  // camera stood AND how high it was, both true of every photograph -- and the
+  // endpoint refuses a pass that does not name one.
+  const [axis, setAxis] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -77,18 +82,22 @@ export function Judge() {
     loadReadings()
   }, [loadReadings])
 
+  const slotReadings = allReadings.filter((r) => r.slot === slot)
+  const axes = [...new Set(slotReadings.map((r) => r.axis).filter(Boolean))].sort()
   const activeReadings = inPass
     ? passReadings
-    : allReadings.filter((r) => r.slot === slot)
+    : (axis ? slotReadings.filter((r) => r.axis === axis) : slotReadings)
   const choices = slotChoices(activeReadings)
 
   // Start judging pass
   const startPass = async () => {
     if (!sessionId || !slot) return
+    if (axes.length && !axis) return
     setError(null)
     setLoading(true)
     try {
-      const passData = await api.get(`/api/sessions/${sessionId}/judge-pass?slot=${slot}`)
+      const passData = await api.get(
+        `/api/sessions/${sessionId}/judge-pass?slot=${slot}` + (axis ? `&axis=${axis}` : ''))
       const shots = passData.shots || []
       const controls = passData.controls || []
       const readings = passData.readings || []
@@ -406,19 +415,19 @@ export function Judge() {
           <div className="row" style={{ gap: 8 }}>
             <button
               className={'chip' + (slot === 'camera' ? ' on' : '')}
-              onClick={() => setSlot('camera')}
+              onClick={() => { setSlot('camera'); setAxis('') }}
             >
               Camera position
             </button>
             <button
               className={'chip' + (slot === 'act' ? ' on' : '')}
-              onClick={() => setSlot('act')}
+              onClick={() => { setSlot('act'); setAxis('') }}
             >
               Act / arrangement
             </button>
             <button
               className={'chip' + (slot === 'framing' ? ' on' : '')}
-              onClick={() => setSlot('framing')}
+              onClick={() => { setSlot('framing'); setAxis('') }}
               disabled={allReadings.filter((r) => r.slot === 'framing').length === 0}
               title={allReadings.filter((r) => r.slot === 'framing').length === 0
                 ? `No framing readings for manner ${session?.manner || 'none'}`
@@ -428,6 +437,30 @@ export function Judge() {
             </button>
           </div>
         </div>
+
+        {/* Only a vocabulary that asks more than one question shows this, which
+            today is directed's cameras alone. Asking both at once is what made a
+            camera side-on in 10 of 10 read `hip-level` 6 (session 382), so the
+            endpoint refuses the pass until one is named and the button stays
+            disabled until it is. */}
+        {axes.length > 0 && (
+          <div>
+            <label>Question</label>
+            <div className="row" style={{ gap: 8 }}>
+              {axes.map((a) => (
+                <button key={a}
+                        className={'chip' + (axis === a ? ' on' : '')}
+                        onClick={() => setAxis(a)}>
+                  {a}
+                </button>
+              ))}
+            </div>
+            <p className="muted" style={{ margin: '4px 0 0' }}>
+              This slot asks more than one thing about a photograph, and both are
+              true at once. Pick the one this pass is asking.
+            </p>
+          </div>
+        )}
 
         {session && (
           <div style={{ background: 'var(--panel-2)', padding: 10, borderRadius: 6, fontSize: 13 }}>
@@ -440,7 +473,10 @@ export function Judge() {
         <div style={{ marginTop: 10 }}>
           <button
             className="primary"
-            disabled={!sessionId || !slot || loading}
+            disabled={!sessionId || !slot || loading || (axes.length > 0 && !axis)}
+            title={axes.length > 0 && !axis
+              ? 'Pick which question this pass is asking'
+              : ''}
             onClick={startPass}
           >
             Start Judging Pass

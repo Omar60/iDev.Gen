@@ -220,6 +220,15 @@ CREATE TABLE IF NOT EXISTS reading (
     session_id INTEGER REFERENCES session(id) ON DELETE CASCADE,  -- NULL = base
     key        TEXT NOT NULL,
     label      TEXT NOT NULL CHECK (length(trim(label)) > 0),
+    -- Which QUESTION this reading answers, '' when the slot only asks one.
+    -- Directed's camera vocabulary asks two independent things at once -- where
+    -- the camera stood around her, and how high it was -- and both are true of
+    -- every photograph, so a pass that offers them in one menu measures which
+    -- of the two the judge happened to notice. Measured 2026-09-03, session
+    -- 382: a camera side-on in 10 of 10 came back `hip-level` 6 and
+    -- `side-level` 1. A pass names the axis it is asking and gets a menu with
+    -- one true answer in it.
+    axis       TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 
@@ -520,6 +529,7 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
             session_id INTEGER REFERENCES session(id) ON DELETE CASCADE,
             key        TEXT NOT NULL,
             label      TEXT NOT NULL CHECK (length(trim(label)) > 0),
+            axis       TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS reading_base ON reading (slot, manner, key)
@@ -527,6 +537,8 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS reading_session ON reading (slot, manner, session_id, key)
             WHERE session_id IS NOT NULL;
         """)
+    elif "axis" not in reading_cols:
+        conn.execute("ALTER TABLE reading ADD COLUMN axis TEXT NOT NULL DEFAULT ''")
 
 
 def conn() -> sqlite3.Connection:

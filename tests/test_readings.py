@@ -618,3 +618,65 @@ def test_no_two_person_act_sits_in_a_family_whose_reading_says_she_is_alone():
         assert "only person" not in label.lower(), (
             f"{manner}/{act['concept_key']} needs {act['needs']!r} but sits in family "
             f"{family!r}, whose reading says she is alone: {label!r}")
+
+
+def test_a_vocabulary_that_asks_two_questions_refuses_a_pass_that_names_neither(client, seeded):
+    """One menu, one answer -- so the readings on it have to be mutually
+    exclusive, and directed's cameras were not: they hold where the camera stood
+    AND how high it was, and both are true of every photograph. Session 382
+    measured what that costs, a camera side-on in 10 of 10 read `hip-level` 6
+    and `side-level` 1.
+
+    So an axis-tagged vocabulary refuses a pass that does not name one, rather
+    than serving the menu that produced that number. A pass that names an axis
+    gets only those readings, and only the photographs whose drawn family is on
+    that axis: the rest asked a different question and are not misses.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "two questions",
+        "manner": "directed", "checkpoint": "ckpt1", "shots": [],
+    }).json()["id"]
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride"}]}
+    framing = {"key": "full-length", "wordings": [{"key": "full-length", "text": "full"}]}
+    shot = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": "side-level", "wordings": [{"key": "side-level", "text": "side"}]},
+        "act": act, "framing": framing, "mode": "exploratory",
+    }).json()["ids"][0]
+    db.run("UPDATE shot SET status='done' WHERE id=?", shot)
+    db.run("DELETE FROM reading WHERE slot='camera' AND manner='directed'")
+    client.post("/api/readings", json={
+        "slot": "camera", "manner": "directed", "key": "side-level",
+        "label": "The camera is to one side of her.",
+    })
+
+    # Untagged, the pass serves as it always has.
+    base = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
+    assert base.status_code == 200, base.json()
+
+    db.run("UPDATE reading SET axis='position' WHERE slot='camera' AND manner='directed' AND key='side-level'")
+    client.post("/api/readings", json={
+        "slot": "camera", "manner": "directed", "key": "hip-level",
+        "label": "The lens is level with her hips.", "axis": "height",
+    })
+
+    refused = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
+    assert refused.status_code == 422, refused.json()
+    detail = refused.json()["detail"]
+    assert "position" in detail and "height" in detail
+    assert "shots" not in refused.json()
+
+    on_axis = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera&axis=position").json()
+    assert [r["key"] for r in on_axis["readings"]] == ["side-level"]
+    assert on_axis["shots"] == [shot]
+
+    # The same photograph is not a miss on the other question, it is not asked.
+    off_axis = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera&axis=height").json()
+    assert [r["key"] for r in off_axis["readings"]] == ["hip-level"]
+    assert off_axis["shots"] == []
+
+    # A family with NO reading anywhere still refuses, axis or not: that is the
+    # safety net, and narrowing it to one axis would turn it into a silent skip.
+    db.run("DELETE FROM reading WHERE slot='camera' AND manner='directed' AND key='side-level'")
+    missing = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera&axis=height")
+    assert missing.status_code == 422
+    assert "side-level" in missing.json()["detail"]

@@ -450,3 +450,73 @@ def test_the_directed_looks_seed_is_tracked_by_git():
     assert out.stdout.strip() == "data/directed-looks-seed.json", (
         "data/directed-looks-seed.json is not tracked; .gitignore has to un-ignore "
         "it and somebody has to `git add` it")
+
+
+# ------------------------------------------------------- reading axes
+#
+# A judging pass offers one menu and asks for one answer, so the readings on
+# that menu have to be mutually exclusive. Directed's camera vocabulary was not:
+# it held where the camera stood AND how high it was, both true of every
+# photograph, and session 382 measured what that costs -- a camera side-on in 10
+# of 10 came back `hip-level` 6 and `side-level` 1. `axis` is what splits one
+# slot into the questions it actually asks.
+READINGS = ROOT / "data" / "readings-seed.json"
+
+
+def test_a_slot_either_asks_one_question_or_names_every_axis():
+    """A half-tagged vocabulary is the worst of both: the pass filters to an
+    axis and silently drops the readings nobody labelled, so the menu loses
+    answers that are true and the deck records them as misses.
+
+    So within one (slot, manner) either NO reading carries an axis -- the whole
+    vocabulary is one question, which is what candid's cameras and every act and
+    framing vocabulary are -- or EVERY one does.
+    """
+    rows = json.loads(READINGS.read_text(encoding="utf-8"))
+    by_slot: dict[tuple[str, str], list[dict]] = {}
+    for r in rows:
+        by_slot.setdefault((r["slot"], r["manner"]), []).append(r)
+    for key, group in sorted(by_slot.items()):
+        tagged = [r for r in group if r.get("axis")]
+        assert len(tagged) in (0, len(group)), (
+            f"{key}: {len(tagged)} of {len(group)} readings carry an axis; "
+            "tag all of them or none")
+
+
+# Directed's cameras are described twice, once per seed file: `catalogue-seed.json`
+# holds the nine furniture-free forms as sentences and `directed-cameras-seed.json`
+# holds the 49 terms, and the same camera carries a different `family` in each.
+# Both families need a reading, so both readings say the same thing.
+#
+# This is real debt and it is a judge hazard: two identical sentences on one
+# menu is a coin toss that `arrived` then scores. It is listed rather than fixed
+# because the fix is a catalogue rename, and re-filing these six components onto
+# one family each breaks `test_the_plan_holds_its_three_properties` and
+# `test_a_planted_arrangement_gets_a_camera_that_can_see_it` -- the family names
+# are load-bearing in the arrangement/camera compatibility data. That is its own
+# change, not a side effect of splitting the axes.
+SYNONYM_READING_PAIRS = {
+    ("camera", "directed"): {("side", "side-level"), ("shoulder", "over-shoulder"),
+                             ("behind", "rear"), ("floor", "ground-level")},
+}
+
+
+def test_two_readings_share_a_label_only_where_the_catalogue_names_one_camera_twice():
+    """Two identical sentences under different keys is a menu where the judge
+    picks whichever copy it happened to land on. Four such pairs survive
+    because two seed files name the same camera with two families; every other
+    duplicate was a family NO component used, and those readings are deleted --
+    `back`, `three-quarter-front` and `three-quarter-back`.
+    """
+    rows = json.loads(READINGS.read_text(encoding="utf-8"))
+    seen: dict[tuple[str, str, str, str], str] = {}
+    for r in rows:
+        k = (r["slot"], r["manner"], r.get("axis", ""), r["label"].strip().lower())
+        if k in seen:
+            pair = frozenset((seen[k], r["key"]))
+            allowed = {frozenset(p) for p in SYNONYM_READING_PAIRS.get((r["slot"], r["manner"]), ())}
+            assert pair in allowed, (
+                f"{r['slot']}/{r['manner']}: {r['key']!r} and {seen[k]!r} are the same "
+                "sentence on the same menu and are not a known synonym pair")
+            continue
+        seen[k] = r["key"]

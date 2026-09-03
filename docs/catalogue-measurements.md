@@ -279,3 +279,71 @@ Nothing was recorded for the camera slot. This is the same defect already
 suspected in `shoulder-level` against `eye-level`, and it is now measured rather
 than suspected: the vocabulary needs splitting into two questions before any
 directed camera cell means anything.
+
+## Splitting the Camera Question, and Re-judging the Cell
+
+Two defects came out of session 382's camera pass, one in the vocabulary and one
+in the method. Both are fixed here and the cell was re-judged from scratch.
+
+### One menu has to have one true answer on it
+
+Directed's 21 camera readings asked two independent things at once -- where the
+camera stood around her (front, side, rear, over-shoulder, pov) and how high it
+was (eye-, shoulder-, hip-, low-, ground-level, high-angle, overhead) -- and both
+are true of every photograph. Asked as one menu, a camera that is side-on in 10
+of 10 came back `hip-level` 6 and `side-level` 1.
+
+`reading.axis` names the question a reading answers. A pass gives one axis and
+gets that menu, plus only the photographs whose drawn family is on it; the rest
+asked a different question and are not misses. **A vocabulary that carries axes
+now refuses a pass that names none**, so the menu that produced that number
+cannot be served again -- and the judging screen grows a "Question" chip row for
+exactly the slots that need it. Every other vocabulary -- candid's cameras,
+every act, every framing -- carries no axis and is untouched.
+
+Three readings were deleted outright: `back`, `three-quarter-front` and
+`three-quarter-back` were families no component uses, and their labels were
+word-for-word copies of families that are used.
+
+Four synonym pairs survive and are listed in `tests/test_catalogue_seed.py`:
+`catalogue-seed.json` holds the nine furniture-free cameras as sentences and
+`directed-cameras-seed.json` holds the 49 terms, and the same camera carries a
+different family in each -- `side`/`side-level`, `shoulder`/`over-shoulder`,
+`behind`/`rear`, `floor`/`ground-level`. Both families need a reading so both
+readings say the same thing. **Re-filing them onto one family each was tried and
+reverted**: it breaks `test_the_plan_holds_its_three_properties` and
+`test_a_planted_arrangement_gets_a_camera_that_can_see_it`, because the family
+names are load-bearing in the arrangement-to-camera compatibility data. That is
+its own change.
+
+### The judge samples, so it is asked three times
+
+`backend/enhance.py` calls the model at `temperature: 0.8`. **The same
+photograph asked twice gives different answers**, and it cost the first camera
+result: a rehearsal read `side-level` 7 / `over-shoulder` 3 and the recording
+run -- same deck, same seed, same photographs -- read `side-level` 10. Neither
+number was more true than the other.
+
+`judge_cell.py --repeat` now asks each photograph three times and takes a strict
+majority; three different answers is recorded as unreadable and posted for
+nothing. This is what `judge_camera.py` has always done and what this script
+should have done from the start.
+
+### The cell, re-judged
+
+All ten photographs were cleared and every slot re-run at three passes:
+
+| slot | result | controls |
+|---|---|---|
+| act | `leaning` 10/10 | lying photographs read `lying` 2/2 |
+| framing | `whole-body` 9/10, `extreme-wide` 1 | thigh-cropped read `head-to-thigh` 2/2 |
+| camera (position) | `side-level` 7/10, `over-shoulder` 2, no majority 1 | rear-three-quarter read `over-shoulder` 2/2 |
+
+**judged 10, arrived 7 -- `dead`**, one photograph below the 8-in-10 bar. The
+first recording of this cell said 10/10 and was a single noisy pass; this is the
+honest number.
+
+Read it as a verdict on the CAMERA and not on the pose. The act arrives 10 of 10
+and the framing 9; what costs the trio is `side view`, directed's deliberately
+weak two-word camera term. The obvious next arm is the same act and framing with
+a camera clause that is a sentence instead of a term.
