@@ -79,6 +79,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import sys
 import urllib.request
 
@@ -135,7 +136,9 @@ GLAMOUR = [
     "bed-side-hand-on-hip",
     "bed-edge-folded-forward",
     "bed-back-arched",
-    "wall-hips-forward",
+    # `wall-hips-forward` was retired after 366: it rendered her FACING the
+    # wall, which is `wall-facing-forearms`, and a symmetric pair of palms is
+    # what did it. Its geometry lives on as Grok's `wall-casual-arch`.
     "wall-facing-forearms",
     "table-edge-gripped",
     "arm-across-chest",
@@ -183,15 +186,51 @@ GROK = {
         "one hip, her chest carried forward and one hand sliding up the side of her torso.",
 }
 
-SCREENS = {"floor": SCREEN, "glamour": GLAMOUR, "grok": GROK}
+# Candid is a DIFFERENT BENCH, not a different act list. Its look describes the
+# room (directed's does not exist at all), its wardrobe writes her undressed in
+# so many words, its cameras are sentences rather than two-word terms, and its
+# rows say "She" where directed names the subject. Screening candid lines on
+# directed's bench would measure directed with couches in it.
+#
+# Taken verbatim off session 357, the most recent real candid shoot.
+CANDID_LOOK = (
+    "Small sensor, everything at every distance equally in focus and nothing "
+    "softened, sensor noise in the shadows, washed-out colour, slight motion blur, "
+    "off-center and slightly tilted framing, no studio lighting and no colour "
+    "grading. She wears her hair loose, with a few strands pushed behind one ear. "
+    "A bare ceiling bulb lights the room from overhead and the window is black "
+    "against it. Bare floorboards run away underfoot, a low table stands between "
+    "her and the camera with a mug on it, and the far wall carries a half-open "
+    "wardrobe door.")
+
+BENCH = {
+    "directed": {"manner": "directed", "look": "", "wardrobe": WARDROBE,
+                 "camera": CAMERA, "framing": FRAMING},
+    # The room in the look is the point of interest here: a row that names a
+    # couch has to build one over floorboards, a low table and a wardrobe door
+    # that the look already put in the frame.
+    "candid":   {"manner": "candid", "look": CANDID_LOOK,
+                 "wardrobe": "She wears nothing at all.",
+                 "camera": "Taken from directly in front of her",
+                 "framing": "full body"},
+}
+
+def _candid_lines():
+    """Grok's 25, kept beside the script until a frame earns them a row."""
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "candidates"))
+    from candid_lines import LINES
+    return {k: w for k, (w, _needs) in LINES.items()}
+
+
+SCREENS = {"floor": SCREEN, "glamour": GLAMOUR, "grok": GROK,
+           "candid": _candid_lines}
 
 # One seed per photograph, fixed so the run is repeatable as a LIST even though
 # the pipeline is not deterministic per frame ([[idevgen-block-format-beats-framing]]:
 # same seed is not the same photograph). They are here to be written down, not
 # to make two runs comparable frame by frame.
-SEEDS = [811224001, 811224002, 811224003, 811224004, 811224005, 811224006,
-         811224007, 811224008, 811224009, 811224010, 811224011, 811224012,
-         811224013, 811224014]
+SEEDS = [811224000 + i for i in range(1, 31)]
 
 
 def acts_from_seed(path: str = "data/directed-acts-seed.json") -> dict[str, dict]:
@@ -199,19 +238,24 @@ def acts_from_seed(path: str = "data/directed-acts-seed.json") -> dict[str, dict
         return {a["concept_key"]: a for a in json.load(fh)}
 
 
-def prompt_for(act_wording: str, wardrobe: str = WARDROBE) -> str:
+def prompt_for(act_wording: str, bench: dict, wardrobe: str | None = None) -> str:
     """The line directed actually composes: trigger, wardrobe, camera, act, framing.
 
     Read off a real composed shot rather than from the composer, so the bench is
     the shape that ships. The take goes last, where `_compose` documents that it
     has to stay.
     """
-    worn = f"{wardrobe} " if wardrobe else ""
-    return f"{TRIGGER}. {worn}{CAMERA}. {act_wording} {FRAMING}."
+    worn = wardrobe if wardrobe is not None else bench["wardrobe"]
+    parts = [f"{TRIGGER}."]
+    for piece in (bench["look"], worn, f'{bench["camera"]}.'):
+        if piece:
+            parts.append(piece)
+    parts.append(f'{act_wording} {bench["framing"]}.')
+    return " ".join(parts)
 
 
-def create_session(base: str, name: str, shots: list) -> dict:
-    body = {"model_id": 1, "workflow_id": 8, "name": name, "manner": "directed",
+def create_session(base: str, name: str, shots: list, manner: str = "directed") -> dict:
+    body = {"model_id": 1, "workflow_id": 8, "name": name, "manner": manner,
             "checkpoint": SETTINGS["checkpoint"], "look": "", "wardrobe": "",
             "settings": SETTINGS, "shots": shots}
     req = urllib.request.Request(base + "/api/sessions",
@@ -232,7 +276,10 @@ def main() -> int:
                     help="write no clothing at all: the only honest bench for a row that needs access")
     args = ap.parse_args()
 
+    bench = BENCH["candid" if args.screen == "candid" else "directed"]
     screen = SCREENS[args.screen]
+    if callable(screen):
+        screen = screen()
     if isinstance(screen, dict):
         # inline wordings: a candidate gets a photograph before it gets a row
         acts = {k: {"wording": w, "family": "?", "needs": "?", "judge_label": "(untried candidate)"}
@@ -244,10 +291,10 @@ def main() -> int:
         if missing:
             raise SystemExit(f"not in the seed file: {missing}")
     assert len(keys) <= len(SEEDS), f"{len(keys)} rows, {len(SEEDS)} seeds"
-    wardrobe = "" if args.no_wardrobe else WARDROBE
+    wardrobe = "" if args.no_wardrobe else None
 
     shots = [
-        {"label": key, "prompt": prompt_for(acts[key]["wording"], wardrobe),
+        {"label": key, "prompt": prompt_for(acts[key]["wording"], bench, wardrobe),
          "verbatim": True, "seed": seed, "count": 1}
         for key, seed in zip(keys, SEEDS)
     ]
@@ -255,7 +302,8 @@ def main() -> int:
     for key in keys:
         a = acts[key]
         print(f"{key:26} {a['family']:10} needs={a['needs'] or '-':9} {a['judge_label']}")
-    print(f"\n{len(shots)} photographs, one per row, camera {CAMERA!r} framing {FRAMING!r}")
+    print(f"\n{len(shots)} photographs, one per row, manner {bench['manner']}, "
+          f"camera {bench['camera']!r} framing {bench['framing']!r}")
 
     if args.dry_run:
         print("\n--- the first line, in full ---")
@@ -264,8 +312,8 @@ def main() -> int:
 
     out = create_session(
         args.base,
-        f"DIRECTED POSES {args.screen} - screen of {len(shots)} rows, n=1 each",
-        shots)
+        f"POSE SCREEN {args.screen} - {len(shots)} rows, n=1 each",
+        shots, manner=bench["manner"])
     sid = out["id"]
     print(f"\nsession {sid} created as a draft, {len(shots)} pending")
     if not args.run:
