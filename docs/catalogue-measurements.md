@@ -108,3 +108,50 @@ they are verbatim written lines, so `shot.components` is `{}` and
 `POST /api/shots/{id}/judge` refuses them by design; and the cell is keyed on
 the trio, which does not include the wardrobe -- the dimension this experiment
 moved. Recording them would have meant seven arms landing on one key.
+
+## The Wardrobe Against a Second Geometry
+
+Measured 2026-09-03, sessions 378 and 379, 40 photographs on
+`Moody-Krea-Mix-premium`, directed's bench (empty look, `side view`, `full
+body`, workflow 8), ten shared seeds per arm, judged by looking at one thing: is
+her far shoulder hidden behind the near one.
+
+The act is `wall-facing-forearms`, taken verbatim from
+`data/directed-acts-seed.json`. It is the row that delivered a clean ninety-degree
+profile in session 366 -- the geometry filed as a base-model limit after nine
+wordings at 0/24 -- and 366 wrote no wardrobe at all. Only the wardrobe sentence
+moves between arms.
+
+| arm | the wardrobe sentence | words | profile |
+|---|---|---|---|
+| `unwritten` | none | 0 | **9/10** |
+| `camisole` | directed's, chest and knickers | 19 | 0/10 |
+| `long-knickers` | below the hip, matched length | 20 | 0/10 |
+| `top-only` | the camisole with its knickers clause removed | 15 | 0/10 |
+
+**The chest-garment rule does not generalise.** On `on her back` the same words
+written below the waist cost nothing (10/10); here they cost the geometry
+outright. `top-only` was shot to ask whether the black knickers common to both
+dead arms were the cause, and it says they were not: a camisole alone dies too.
+
+What replicates across the two geometries is weaker and simpler than the rule it
+replaces: **a written wardrobe can cost a hard geometry, and where the garment
+sits is a property of the pose rather than a law.** The waist split holds for
+`on her back` and for nothing else yet measured.
+
+Two things settled on the way:
+
+- **Session 366's profile was not a lucky single frame.** The control arm is
+  9/10 -- the one miss is a rear view, not a three-quarter -- so this row is the
+  first reliable route to the ninety-degree profile that costs neither a depth
+  map nor a second body. It has earned an anchor cell.
+- **A written garment closes the crop.** All thirty dressed frames are cropped
+  at the thigh with no feet, on a line ending `full body`, against ten full-body
+  frames in the control. The dressed arms also turn her back to the lens and
+  make her buttocks the subject. Consistent with the wardrobe clause selecting a
+  different genre altogether, which is what session 366 said from the other
+  side.
+
+Length is ruled out by the control rather than by argument: zero words renders
+9/10 and fifteen, nineteen and twenty words all render 0/10, so the arms are not
+ordered by length.

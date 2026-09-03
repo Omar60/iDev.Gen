@@ -839,8 +839,8 @@
     "faces": "back",
     "wording": "The young woman stands facing a wall with both forearms flat on it at the height of her head and her forehead resting on her hands, her back arched and her hips carried back.",
     "judge_label": "She is facing a wall with both forearms on it, her forehead on her hands, hips back",
-    "verdict": "unmeasured",
-    "sample_size": "written 2026-09-03, never shot",
+    "verdict": "alive",
+    "sample_size": "session 378, 10 seeds, no wardrobe written: a ninety-degree profile 9/10. Any written garment takes it to 0/10 -- see docs/catalogue-measurements.md",
     "cameras": [],
     "needs": "furniture"
   },
