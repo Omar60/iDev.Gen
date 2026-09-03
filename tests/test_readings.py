@@ -507,3 +507,43 @@ def test_candid_framing_can_be_judged_from_the_seeds_alone():
     assert not missing, (
         f"candid framing families with no reading: {missing}; a judging pass over "
         f"them records every photograph as a miss")
+
+
+def test_no_two_person_act_sits_in_a_family_whose_reading_says_she_is_alone():
+    """An act that needs a second person cannot be scored in a solo family.
+
+    `wall` ("she is standing with her front to the wall ... he is behind her")
+    sat in family `standing`, whose reading ends "She is the only person in the
+    picture." A judge answering that reading correctly can never agree with the
+    line, so every photograph of `wall` was a recorded miss no matter what came
+    back — the same shape as two framing families with one picture, and just as
+    invisible: the number looks like a measurement.
+
+    Scoped to manners that HAVE a vocabulary for the slot. Selfie has no
+    readings at all yet, and a manner with nothing to judge with is a gap
+    somebody knows about, not a contradiction.
+    """
+    acts, readings = [], {}
+    for path in (ROOT / "data").glob("*-seed.json"):
+        for item in json.loads(path.read_text(encoding="utf-8")):
+            if not isinstance(item, dict):
+                continue
+            # `needs` also carries 'nude', which is a solo act with a wardrobe
+            # requirement. Only 'him' puts a second person in the frame.
+            if item.get("slot") == "act" and (item.get("needs") or "").strip() == "him":
+                acts.append(item)
+    for item in json.loads((ROOT / "data" / "readings-seed.json").read_text(encoding="utf-8")):
+        if item["slot"] == "act":
+            readings[(item["manner"], item["key"])] = item["label"]
+
+    manners_with_a_vocabulary = {m for m, _ in readings}
+    for act in acts:
+        manner, family = act["manner"], act["family"]
+        if manner not in manners_with_a_vocabulary:
+            continue
+        label = readings.get((manner, family))
+        if label is None:
+            continue
+        assert "only person" not in label.lower(), (
+            f"{manner}/{act['concept_key']} needs {act['needs']!r} but sits in family "
+            f"{family!r}, whose reading says she is alone: {label!r}")
