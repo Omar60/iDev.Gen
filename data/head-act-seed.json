@@ -1,8 +1,47 @@
 [
-  {"slot": "act", "manner": "directed", "concept_key": "head-only-facing", "family": "facing-camera",
-   "faces": "front",
-   "wording": "One young woman turns her face to the camera, her chin lifted, her lips together and her eyes on the lens",
-   "judge_label": "her face is turned to the camera, chin up, eyes on the lens",
-   "verdict": "UNMEASURED as a pose",
-   "sample_size": "written to name nothing below her head, so headshot and close-up have something to be drawn against; every other act names her chest or lower and refuses both"}
+  {
+    "slot": "act",
+    "manner": "directed",
+    "concept_key": "head-only-facing",
+    "family": "facing-camera",
+    "faces": "front",
+    "wording": "One young woman turns her face to the camera, her chin lifted, her lips together and her eyes on the lens",
+    "judge_label": "her face is turned to the camera, chin up, eyes on the lens",
+    "verdict": "UNMEASURED as a pose",
+    "sample_size": "written to name nothing below her head, so headshot and close-up have something to be drawn against; every other act names her chest or lower and refuses both"
+  },
+  {
+    "slot": "act",
+    "manner": "candid",
+    "concept_key": "head-only-facing",
+    "family": "facing-camera",
+    "faces": "front",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror"
+    ],
+    "needs": "",
+    "wording": "She turns her face to the camera, her chin lifted, her lips together and her eyes on the lens",
+    "judge_label": "her face is turned to the camera, chin up, eyes on the lens",
+    "verdict": "UNMEASURED as a pose",
+    "sample_size": "candid's twin of the directed row: every other candid act names her chest or lower, so crop-headshot and crop-close-up were drawable on 0 of 37 acts. The act is only one of three conditions - the look must also stop naming her shoulders and the wardrobe must name nothing below her head"
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "concept_key": "head-only-facing",
+    "family": "facing-camera",
+    "faces": "front",
+    "cameras": [
+      "front",
+      "arm",
+      "mirror"
+    ],
+    "needs": "",
+    "wording": "She turns her face to the camera, her chin lifted, her lips together and her eyes on the lens",
+    "judge_label": "her face is turned to the camera, chin up, eyes on the lens",
+    "verdict": "UNMEASURED as a pose",
+    "sample_size": "selfie's twin of the candid row, and the same hole: every selfie act names her chest or lower, so crop-headshot and crop-close-up could not be drawn. Selfie has no reading vocabulary yet, so the act is composable but not judgeable"
+  }
 ]

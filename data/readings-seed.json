@@ -78,6 +78,12 @@
     "label": "There are two people and his hands are on her body: no mouth and no cock is on or in her, and they are not standing front to back."
   },
   {
+    "slot": "act",
+    "manner": "candid",
+    "key": "facing-camera",
+    "label": "Her face is turned toward the camera with her chin level or lifted and her eyes on the lens. Nothing below her head is being asked about."
+  },
+  {
     "slot": "camera",
     "manner": "candid",
     "key": "front",

@@ -148,3 +148,50 @@ class TestTheComposerRefuses:
         r = client.post(f"/api/sessions/{sid}/compose-run", json=body)
         assert r.status_code == 422
         assert "largest fillable is 1" in r.json()["detail"]
+
+
+def test_every_manner_has_an_act_a_crop_at_her_head_can_be_drawn_against():
+    """The tightest framing needs an act that names nothing below her head.
+
+    The frame reaches the lowest part of her the line names, so `headshot` and
+    `close-up` are refused against any act that mentions her chest, her arms or
+    her legs — which was every candid act there was: both were drawable on 0 of
+    37, and a framing pass could only ever have scored five of candid's seven
+    values. `head-only-facing` is the row each manner needs, and this is what it
+    is for.
+
+    The act is checked ALONE, with no look and no wardrobe, because those are
+    the operator's words and vary per session. They are the other two conditions
+    in a real line — candid's own look says her hair falls "around her
+    shoulders", which reaches her chest and refuses a headshot however the act
+    is written — but a catalogue that cannot offer one at all is a catalogue
+    problem, and that is what this pins.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    root = _Path(__file__).resolve().parents[1]
+    acts, framings = [], []
+    for path in (root / "data").glob("*-seed.json"):
+        # The readings seed carries `slot` too, and a reading is a question
+        # rather than a component: it has no wording for the crop law to read.
+        if path.name == "readings-seed.json":
+            continue
+        for item in _json.loads(path.read_text(encoding="utf-8")):
+            if not isinstance(item, dict):
+                continue
+            if item.get("slot") == "act":
+                acts.append(item)
+            elif item.get("slot") == "framing":
+                framings.append(item)
+
+    for manner in sorted({f["manner"] for f in framings}):
+        tight = [f for f in framings
+                 if f["manner"] == manner and f["concept_key"] in ("crop-headshot", "crop-close-up")]
+        if not tight:
+            continue
+        for framing in tight:
+            drawable = [a["concept_key"] for a in acts if a["manner"] == manner
+                        and not crop.conflict(framing["wording"], "", a["wording"], "", "")]
+            assert drawable, (
+                f"{manner}: no act can be drawn against {framing['concept_key']!r} — every one "
+                f"names something below her head, so the framing is unmeasurable for this manner")
