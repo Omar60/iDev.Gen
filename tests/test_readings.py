@@ -477,3 +477,33 @@ def test_the_readings_seed_imports_and_never_rewords_an_existing_key(client):
     assert again == {"added": 0, "skipped": 1}, again
     after = client.get(f"/api/readings?slot={one['slot']}&manner={one['manner']}").json()
     assert any(r["key"] == one["key"] and r["label"] == one["label"] for r in after), after
+
+
+def test_candid_framing_can_be_judged_from_the_seeds_alone():
+    """Every framing family candid can photograph has a candid framing reading.
+
+    `judge-pass` refuses a slot whose photographed families have no reading —
+    the right answer would not be on the list, so every photograph of that
+    family would be recorded as a miss. Candid had NINE framing components and
+    ZERO framing readings, which is why 33 candid cells were judged on camera
+    and act only and the framing slot was never scored at all.
+
+    Read from the files and not from a live store on purpose: this is what a
+    fresh clone can do, and the store had been ahead of the files for a day.
+    """
+    families = set()
+    for name in ("catalogue-seed.json", "crop-seed.json", "candid-selfie-acts-seed.json"):
+        path = ROOT / "data" / name
+        if not path.exists():
+            continue
+        for item in json.loads(path.read_text(encoding="utf-8")):
+            if item["slot"] == "framing" and item["manner"] == "candid":
+                families.add(item["family"])
+    assert families, "no candid framing components in the seeds"
+
+    seed = json.loads((ROOT / "data" / "readings-seed.json").read_text(encoding="utf-8"))
+    keys = {r["key"] for r in seed if r["slot"] == "framing" and r["manner"] == "candid"}
+    missing = sorted(families - keys)
+    assert not missing, (
+        f"candid framing families with no reading: {missing}; a judging pass over "
+        f"them records every photograph as a miss")

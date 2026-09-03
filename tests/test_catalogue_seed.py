@@ -228,6 +228,75 @@ def test_no_camera_family_mixes_a_held_phone_with_a_hands_free_view():
         assert arm and arm[0]["family"] != "front", f"{name}: {arm}"
 
 
+# ------------------------------------------------------ the seeds must agree
+#
+# The catalogue ships as several files and the import walks them all, skipping a
+# row whose (slot, manner, concept_key) already exists. So when two files
+# disagree about a row, whichever imports FIRST wins and the other is silently
+# dropped — on a fresh database, and only there. That is how `front-arm-length`
+# came to sit in family `arm` in the live store and `front` in
+# `catalogue-seed.json` for a whole day: the split was applied to the store and
+# to `candid-cameras-seed.json`, the older file was never touched, and every
+# check passed because no check read two files at once.
+SEED_FILES = ("catalogue-seed.json", "crop-seed.json", "candid-acts-seed.json",
+              "candid-cameras-seed.json", "candid-selfie-acts-seed.json",
+              "selfie-cameras-seed.json", "solo-acts-seed.json",
+              "feet-act-seed.json", "head-act-seed.json", "upright-act-seed.json")
+
+
+def test_the_seed_files_agree_about_every_row_they_share():
+    """One (slot, manner, concept_key) is one component, whichever file it is in.
+
+    Compared on the three fields the import writes and a judging pass reads back:
+    `family` is the reading key a verdict reduces to, `wording` is the line that
+    gets queued, and `judge_label` is the question. A disagreement on any of
+    them means a fresh clone measures something the store never measured.
+    """
+    seen: dict[tuple[str, str, str], tuple[str, dict]] = {}
+    for name in SEED_FILES:
+        path = ROOT / "data" / name
+        if not path.exists():
+            continue
+        for item in json.loads(path.read_text(encoding="utf-8")):
+            key = (item["slot"], item["manner"], item["concept_key"])
+            fields = {f: item.get(f, "") for f in ("family", "wording", "judge_label")}
+            if key in seen:
+                first_name, first_fields = seen[key]
+                assert fields == first_fields, (
+                    f"{key} disagrees between {first_name} and {name}: "
+                    f"{first_fields} vs {fields}")
+            else:
+                seen[key] = (name, fields)
+
+
+def test_no_two_framing_families_in_one_manner_describe_the_same_crop():
+    """A judge cannot separate two families whose pictures look alike, so a
+    framing pass over them is a coin flip recorded as a measurement.
+
+    `framing` ("a three-quarter photograph from the knees up") and
+    `crop-knee-up` ("knee-up") were two FAMILIES with one visual outcome for
+    candid and selfie, which is why candid's framing slot went unjudged. They
+    are one family with two wordings now — the shape directed already had for
+    `mid-shot-edges` and `crop-knee-up` — and the cell keys on the wording, so
+    both stay separately measurable.
+    """
+    rows = []
+    for name in SEED_FILES:
+        path = ROOT / "data" / name
+        if path.exists():
+            rows += [i for i in json.loads(path.read_text(encoding="utf-8"))
+                     if i["slot"] == "framing"]
+    knees = {(i["manner"], i["family"]) for i in rows
+             if "knee" in i["judge_label"].lower()}
+    by_manner: dict[str, set[str]] = {}
+    for manner, family in knees:
+        by_manner.setdefault(manner, set()).add(family)
+    for manner, families in by_manner.items():
+        assert len(families) == 1, (
+            f"{manner}: the knees-up crop is spread over families {sorted(families)}; "
+            f"a judge offered both cannot tell them apart")
+
+
 # ------------------------------------------------- the rest of candid's acts
 #
 # `data/candid-acts-seed.json` is what candid was missing: five families held one

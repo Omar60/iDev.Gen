@@ -220,5 +220,59 @@
     "manner": "directed",
     "key": "extreme-wide",
     "label": "Her whole body is in frame and she is small in it: most of the picture is the room around her."
+  },
+  {
+    "slot": "framing",
+    "manner": "candid",
+    "key": "waist-up",
+    "label": "Her face is in frame, and the bottom edge of the picture cuts at or above her hips. No thigh is showing."
+  },
+  {
+    "slot": "framing",
+    "manner": "candid",
+    "key": "head-to-thigh",
+    "label": "Her face is in frame, and the bottom edge cuts across her thighs, above the knees."
+  },
+  {
+    "slot": "framing",
+    "manner": "candid",
+    "key": "head-to-knees",
+    "label": "Her face is in frame and her knees are in frame. Her feet are not."
+  },
+  {
+    "slot": "framing",
+    "manner": "candid",
+    "key": "whole-body",
+    "label": "Her face and her feet are both in frame."
+  },
+  {
+    "slot": "framing",
+    "manner": "candid",
+    "key": "torso-only",
+    "label": "Her face is not in frame at all. The picture starts at her neck or lower, and cuts above the knees."
+  },
+  {
+    "slot": "framing",
+    "manner": "candid",
+    "key": "chest-to-shins",
+    "label": "Her face is not in frame. The picture starts around her chest, and her knees are in frame."
+  },
+  {
+    "slot": "framing",
+    "manner": "candid",
+    "key": "headshot",
+    "label": "Her head and shoulders fill the frame. The bottom edge cuts at her neck or her collarbone, and none of her chest is in view."
+  },
+  {
+    "slot": "framing",
+    "manner": "candid",
+    "key": "close-up",
+    "label": "Her face fills the frame edge to edge. The top of her head or her chin may be cut off by an edge."
+  },
+  {
+    "slot": "framing",
+    "manner": "candid",
+    "key": "extreme-wide",
+    "label": "Her whole body is in frame and she is small in it: most of the picture is the room around her."
   }
 ]

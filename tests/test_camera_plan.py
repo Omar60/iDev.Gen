@@ -104,7 +104,13 @@ def test_the_candid_catalogue_is_what_was_measured(tmp_path_factory):
 
     assert out["unplanned"] == [], out
     assert out["lines"] == CANDID_LINES, out
-    assert out["families"] == ["front", "mirror", "overhead", "shoulder"], out
+    # Five families, not four: the arm's-length phone left `front` on 2026-09-02
+    # (a family is only as fine as the constraint it carries, and an act with
+    # both hands on the floor has no hand for a phone). The store and
+    # `candid-cameras-seed.json` moved that day; `catalogue-seed.json` did not,
+    # and this line went on pinning the shape the older file still had — green
+    # against data the app had already stopped using.
+    assert out["families"] == ["arm", "front", "mirror", "overhead", "shoulder"], out
     assert out["consecutive"] == 0, out
     assert out["unknown"] == 0, out
     assert out["biggest"] <= 1 / 3, out
