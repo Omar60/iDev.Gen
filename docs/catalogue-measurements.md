@@ -399,3 +399,66 @@ renaming directed's out from under them breaks the camera fitting. The
 duplication belongs to the catalogue; what the judge is shown does not have to
 carry it. A first attempt also re-filed candid and selfie rows by matching on
 slot alone, which the suite caught.
+
+## RETRACTION: the `dead` cell was the judge, and the third camera has no target
+
+The section above records `side view` as a dead cell at 7 of 10 and treats
+`over-shoulder` as the honest residue a third camera wording would have to
+attack. **Both readings are withdrawn.** The residue is judge noise.
+
+### What the photographs said
+
+The two frames the judge called `over-shoulder` in session 383 were put beside
+two it called `side`. They are the same photograph: one breast in outline
+against the background, both torso edges showing, the far shoulder hidden, feet
+in frame. Nothing distinguishes a miss from a hit by looking.
+
+### What a second judging said
+
+The same ten photographs, judged again at three passes with a different seed and
+nothing recorded:
+
+| deck | first run | second run | which frames missed |
+|---|---|---|---|
+| 383 `side-right` | `side` 8/10 | `side` 9/10 | **different frames each time** |
+| 382 `side-view` | `side-level` 7/10 | `side-level` 9/10 | different frames each time |
+
+A defect that moves to a different photograph when you ask again is not in the
+photograph.
+
+### The measurement that matters
+
+**At n=10, the verified/dead boundary is inside the judge's own noise.** Four
+three-pass runs over two decks that are really the same camera gave 7, 8, 9 and
+9. The bar is 8. So a cell judged at three passes anywhere near the bar is not a
+verdict, and `side view` was filed dead on the low end of a spread whose high end
+is `verified`.
+
+Re-judged at **five** passes, both cells, same controls, method fixed in advance
+and applied to both whatever it said:
+
+| cell | camera | judged / arrived | state |
+|---|---|---|---|
+| `side view` (382) | `side-level` 10/10 | 10 / 9 | **verified** |
+| `side-right` (383) | `side` 9/10, 1 lost to an API error | 10 / 10 | **verified** |
+
+Both cameras work. Neither cell is dead. The sentence and the term are the same
+measurement, which was the reading of the previous section and is the only part
+of it that survives.
+
+### Rules this leaves
+
+- **Five passes, not three,** for any discrimination as fine as side against
+  over-shoulder. Three is enough for act and framing, where the controls never
+  wavered.
+- **Do not call a cell dead within one frame of the bar at n=10.** Either shoot
+  ten more photographs or judge more passes; the boundary is narrower than the
+  method.
+- A cell's counts should come from one method. These two mix five-pass camera
+  answers with three-pass act and framing answers, which is flagged here rather
+  than hidden: the act and framing controls were unambiguous and re-judging them
+  would not move a number.
+- Deleting a `cell` row while leaving `shot.verdicts` in place makes the counts
+  unrecoverable through the endpoint -- it sees a photograph already asked, adds
+  nothing, and creates no row. Both cells here were rebuilt from `shot.verdicts`,
+  which is how this repo repaired the same shape once before.

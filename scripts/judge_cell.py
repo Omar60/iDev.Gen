@@ -43,9 +43,16 @@ read `side-level` 7 / `over-shoulder` 3 and the recording run of the same deck,
 same seed, same photographs read `side-level` 10.
 
 So `--repeat` asks each photograph N times and takes the majority, which is what
-`judge_camera.py` has always done (three passes a photograph). Default 3. A
-photograph with no majority -- three different answers -- is recorded as
-`unreadable` and posted for nothing, because a coin toss is not a verdict.
+`judge_camera.py` has always done (three passes a photograph). A photograph with
+no majority is recorded as `unreadable` and posted for nothing, because a coin
+toss is not a verdict.
+
+**Three passes is not enough for a fine discrimination.** Four three-pass runs
+over two decks of the same camera gave 7, 8, 9 and 9 of 10, with a DIFFERENT
+photograph missing each time -- and the verified/dead bar is 8. A cell judged at
+three passes near that bar is not a verdict; one of these was filed `dead` on
+the low end of that spread and came back 10/10 at five. Default is 5. Three is
+still fine where the controls never waver, which so far means act and framing.
 
 ## Two things held on purpose
 
@@ -147,8 +154,8 @@ def main() -> int:
     ap.add_argument("--axis", default="",
                     help="which question to ask, when the slot asks more than one "
                          "(directed camera: position | height | picture)")
-    ap.add_argument("--repeat", type=int, default=3,
-                    help="passes per photograph; the majority is the answer (the model samples at 0.8)")
+    ap.add_argument("--repeat", type=int, default=5,
+                    help="passes per photograph; the strict majority is the answer (the model samples at 0.8)")
     ap.add_argument("--seed", type=int, default=903)
     ap.add_argument("--post", action="store_true",
                     help="record the answers; without it the run is a read-only rehearsal")
@@ -174,7 +181,12 @@ def main() -> int:
     # Controls are asked in the same run and in the same shuffle stream as the
     # real deck, not in a tidy block afterwards: a model whose answers drift over
     # a long run should drift across both.
-    order = [(sid, False) for sid in shots] + [(sid, True) for sid in args.control]
+    # A shot the deck already serves is not also a control. Passing the whole
+    # deck as `--control` is how a cell gets asked a second time without being
+    # recorded, and any photograph the pass left unjudged would otherwise be
+    # asked twice in one run.
+    controls = [sid for sid in args.control if sid not in set(shots)]
+    order = [(sid, False) for sid in shots] + [(sid, True) for sid in controls]
     rng.shuffle(order)
 
     answers: dict[int, str] = {}
@@ -191,8 +203,8 @@ def main() -> int:
     for key in real:
         tally[key or "(none)"] = tally.get(key or "(none)", 0) + 1
     print("\ndeck:", ", ".join(f"{k} {v}" for k, v in sorted(tally.items())))
-    if args.control:
-        ctl = [answers[s] for s in args.control]
+    if controls:
+        ctl = [answers[s] for s in controls]
         print("controls:", ", ".join(c or "(none)" for c in ctl))
         if args.expect:
             hits = sum(c == args.expect for c in ctl)
