@@ -280,5 +280,185 @@
     "manner": "candid",
     "key": "extreme-wide",
     "label": "Her whole body is in frame and she is small in it: most of the picture is the room around her."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "standing",
+    "label": "She is on her feet with her torso upright and her weight on her feet. She is the only person in the picture."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "kneeling",
+    "label": "Her knees are on the floor and her torso is upright above them, with no hand on the floor in front of her. She is the only person in the picture."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "sitting",
+    "label": "Her weight is on her buttocks with her torso upright, and no part of her upper back is touching the floor. She is the only person in the picture."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "lying",
+    "label": "Her shoulder blades, or the front of her body, are against the floor or the bed. She may be propped up on her forearms or elbows and her knees may be drawn up, but her upper back or her chest is touching the surface. She is the only person in the picture."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "all-fours",
+    "label": "Her knees are on the floor and her torso is tipped forward over them, with at least one hand or forearm down on the floor in front of her. Her hips are level with her shoulders or higher. She is the only person in the picture."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "ontop",
+    "label": "There are two people in the picture. She is on top of him and facing him."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "away",
+    "label": "There are two people in the picture. She is on top of him and facing away from him."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "oral",
+    "label": "There are two people, and one of them has their mouth on the other's genitals."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "under",
+    "label": "There are two people. She is on her back with him above her and his body between her legs."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "behind",
+    "label": "There are two people. She is on her hands and knees, or bent forward, and he is behind her at her hips."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "standing-him",
+    "label": "There are two people, both on their feet, her back against his chest."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "kissing",
+    "label": "There are two people and their mouths are on each other."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "touch",
+    "label": "There are two people and his hands are on her body: no mouth and no cock is on or in her, and they are not standing front to back."
+  },
+  {
+    "slot": "act",
+    "manner": "selfie",
+    "key": "facing-camera",
+    "label": "Her face is turned toward the camera with her chin level or lifted and her eyes on the lens. Nothing below her head is being asked about."
+  },
+  {
+    "slot": "framing",
+    "manner": "selfie",
+    "key": "waist-up",
+    "label": "Her face is in frame, and the bottom edge of the picture cuts at or above her hips. No thigh is showing."
+  },
+  {
+    "slot": "framing",
+    "manner": "selfie",
+    "key": "head-to-thigh",
+    "label": "Her face is in frame, and the bottom edge cuts across her thighs, above the knees."
+  },
+  {
+    "slot": "framing",
+    "manner": "selfie",
+    "key": "head-to-knees",
+    "label": "Her face is in frame and her knees are in frame. Her feet are not."
+  },
+  {
+    "slot": "framing",
+    "manner": "selfie",
+    "key": "whole-body",
+    "label": "Her face and her feet are both in frame."
+  },
+  {
+    "slot": "framing",
+    "manner": "selfie",
+    "key": "torso-only",
+    "label": "Her face is not in frame at all. The picture starts at her neck or lower, and cuts above the knees."
+  },
+  {
+    "slot": "framing",
+    "manner": "selfie",
+    "key": "chest-to-shins",
+    "label": "Her face is not in frame. The picture starts around her chest, and her knees are in frame."
+  },
+  {
+    "slot": "framing",
+    "manner": "selfie",
+    "key": "headshot",
+    "label": "Her head and shoulders fill the frame. The bottom edge cuts at her neck or her collarbone, and none of her chest is in view."
+  },
+  {
+    "slot": "framing",
+    "manner": "selfie",
+    "key": "close-up",
+    "label": "Her face fills the frame edge to edge. The top of her head or her chin may be cut off by an edge."
+  },
+  {
+    "slot": "framing",
+    "manner": "selfie",
+    "key": "extreme-wide",
+    "label": "Her whole body is in frame and she is small in it: most of the picture is the room around her."
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "key": "front",
+    "label": "She faces the lens and the camera is at about her own height. There is no mirror in the picture, and no arm of hers reaches out toward the lens."
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "key": "arm",
+    "label": "She is holding the camera herself with the phone in that hand: one arm leaves her shoulder in the direction of the lens and its hand is out of frame behind the camera. The lens is out IN FRONT of her face and roughly level with it, and her body is in normal proportion. An arm resting on the floor, lying along her body, or reaching toward something that is itself visible in the picture is NOT this. There is no mirror."
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "key": "pov",
+    "label": "She is holding the camera herself and the lens is on the axis of her own body, looking ALONG her rather than at her from in front: her torso and legs run away from the lens and are foreshortened, the near part of her much larger than the far. Her face may be missing from the frame, or seen from directly above it. There is no mirror."
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "key": "mirror",
+    "label": "The picture is a reflection in a mirror: a mirror edge, a frame, or the room doubled is visible. She and the phone she holds up both appear as reflections."
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "key": "overhead",
+    "label": "The camera is above her looking down, and it is NOT in her hand: no arm of hers reaches toward the lens. What lies behind her in the picture is the floor or the bed rather than the far wall of the room."
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "key": "shoulder",
+    "label": "The camera is behind her and off to one side: her back or one buttock is toward the lens, and part of her front - a breast, a hip, or her face turned back over her shoulder - is still in frame. Where her face points does not move the camera. The picture is NOT a reflection in a mirror; if it is, it is a mirror shot however she is turned."
+  },
+  {
+    "slot": "camera",
+    "manner": "selfie",
+    "key": "back",
+    "label": "The camera is squarely behind her: her back and both buttocks are toward the lens, and no part of her front is in frame."
   }
 ]
