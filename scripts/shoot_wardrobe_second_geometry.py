@@ -110,6 +110,30 @@ ARMS = [
 TOP_ONLY = ("She wears a cream cotton jersey camisole with narrow straps and a "
             "softly rounded neckline.")
 
+# `--identity`: the identity drift has had a lever named for a day and nobody has
+# pulled it. Session 373 counted blondes against candid's look -- 10/10 with the
+# full look, 7/10 with its room deleted, 2/10 with no look at all -- so the look
+# is what holds the character. Directed's look is EMPTY, and directed is where
+# the drift has been loudest all week.
+#
+# This arm costs ten photographs because the CONTROL IS ALREADY SHOT: session
+# 378's `unwritten` arm is this same act, these same ten seeds and an empty look,
+# and it came back blonde 7 of 10. So: paste candid's look in, change nothing
+# else, count blondes again.
+#
+# Two things to say out loud before reading it. The look also writes a room and
+# an amateur-technique register, so a difference is attributable to THE LOOK and
+# not to any one sentence in it -- session 373 already split those and this arm
+# does not. And the look says `She wears her hair loose` where the control frames
+# mostly carry a ponytail, so the hairSTYLE moves too; the question is the
+# COLOUR.
+#
+# The answer, session 380: blonde 10/10 against the control's 7/10, and the
+# profile 10/10 -- full body with her feet in frame, against 9/10 and a tighter
+# frame with no look. The look costs the geometry nothing and buys the
+# character. See `docs/catalogue-measurements.md` for the four-arm table and for
+# why 7/10 against 10/10 is not a separation on its own.
+
 # Fresh seeds, shared across the three arms. Shared seeds do not make the same
 # photograph here ([[idevgen-block-format-beats-framing]]), they only hold the
 # sampler's starting point constant across the pair.
@@ -123,6 +147,8 @@ def main() -> int:
     ap.add_argument("--run", action="store_true")
     ap.add_argument("--top-only", action="store_true",
                     help="one arm of ten: the camisole with the knickers clause removed")
+    ap.add_argument("--identity", action="store_true",
+                    help="one arm of ten: candid's look on directed's bench, against 378's unwritten control")
     args = ap.parse_args()
 
     act = acts_from_seed()[ACT_KEY]
@@ -138,7 +164,14 @@ def main() -> int:
         assert word not in LONG_KNICKERS.lower(), word
     assert "camisole" in WARDROBE and "neckline" in WARDROBE
 
-    if args.top_only:
+    if args.identity:
+        # The control is session 378's `unwritten` arm, so this arm must carry
+        # the same empty wardrobe: the look is the only thing that moves.
+        bench = {**bench, "look": BENCH["candid"]["look"]}
+        arms = [("candid-look", "")]
+        print(f"look  {bench['look'][:72]!r}...")
+        print("wardrobe, camera, framing, act and seeds are session 378's\n")
+    elif args.top_only:
         # The arm is only worth shooting if it is directed's own camisole clause
         # with the knickers gone and NOTHING else reworded.
         assert WARDROBE.startswith(TOP_ONLY[:-1]), TOP_ONLY
@@ -167,9 +200,12 @@ def main() -> int:
             print(shots[i * len(SEEDS)]["prompt"])
         return 0
 
-    name = ("THE PROFILE vs THE WARDROBE - the camisole without its knickers, 10 seeds"
-            if args.top_only else
-            "THE PROFILE vs THE WARDROBE - unwritten, camisole, long-knickers, 10 seeds each")
+    if args.identity:
+        name = "IDENTITY - candid's look on directed's bench, 10 seeds, control is 378 unwritten"
+    elif args.top_only:
+        name = "THE PROFILE vs THE WARDROBE - the camisole without its knickers, 10 seeds"
+    else:
+        name = "THE PROFILE vs THE WARDROBE - unwritten, camisole, long-knickers, 10 seeds each"
     out = create_session(args.base, name, shots, manner=bench["manner"])
     sid = out["id"]
     print(f"\nsession {sid} created as a draft, {len(shots)} pending")

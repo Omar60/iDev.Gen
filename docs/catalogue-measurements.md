@@ -155,3 +155,40 @@ Two things settled on the way:
 Length is ruled out by the control rather than by argument: zero words renders
 9/10 and fifteen, nineteen and twenty words all render 0/10, so the arms are not
 ordered by length.
+
+## The Look Against the Identity Drift
+
+Session 380, ten photographs, 2026-09-03. The control was already shot: session
+378's `unwritten` arm is the same act, the same ten seeds and the same empty
+wardrobe, so this arm moves ONE key -- candid's look pasted onto directed's
+otherwise empty one.
+
+Counted off a head-crop sheet of all forty frames, blonde against the character:
+
+| arm | look | wardrobe | blonde | profile |
+|---|---|---|---|---|
+| `unwritten` (378) | empty | none | 7/10 | 9/10 |
+| `camisole` (378) | empty | 19 words | 4/10 | 0/10 |
+| `top-only` (379) | empty | 15 words | 2/10 | 0/10 |
+| `candid-look` (380) | candid's | none | **10/10** | **10/10** |
+
+**Directed's empty look is a real cause of the drift, and pasting candid's look
+in is the fix.** Session 373 found the same thing from the other side on a
+different pose -- 10/10 with the full look, 2/10 with none -- so this is a
+replication and not a first sighting.
+
+Read the single-key pair honestly: 7/10 against 10/10 at n=10 does not separate
+on its own. What the arm is worth is the perfect cell plus 373's independent
+perfect cell, not the three-frame difference.
+
+**The look costs the geometry nothing.** All ten frames are clean ninety-degree
+profiles, full body with her feet in frame, in a furnished room -- against 9/10
+and a tighter frame in the control. So candid's look on directed's bench buys
+the character AND the profile at the same time, and it is the configuration to
+reach for when a hard geometry is wanted.
+
+The wardrobe moves identity in the same direction it moves the geometry: 7/10
+blonde undressed, 4/10 and 2/10 with a garment written, on an otherwise
+identical line. That is one more sign that the wardrobe clause selects a whole
+photograph -- woman, angle and crop together -- rather than dressing the one the
+rest of the line describes. It is not decisive at n=10 by itself.
