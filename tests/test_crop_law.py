@@ -235,3 +235,30 @@ def test_a_second_crop_term_in_another_clause_is_refused_both_ways():
     # under a full-body framing is legal, because the frame reaches the lowest
     # part the line names and her chest is above her feet.
     assert crop.conflict("full body", "", "her shoulders level", "", "") is None
+
+
+def test_the_body_ladder_knows_the_garments_the_wardrobe_catalogue_holds():
+    """A garment the ladder cannot see is a garment the crop law does not read.
+
+    Found by deriving each seeded garment's rung for `/api/wardrobe`: three of ten
+    came back None, and one of them was `sweatshirt` — the most-worn wardrobe in
+    this database. `shirt` is in the ladder and the word boundary around `shirt` does not match inside
+    `sweatshirt`, so every line whose only garment was the sweatshirt claimed no
+    part of her at all, and a headshot over it was never refused.
+
+    This pins the words the catalogue actually uses. A new garment whose wording
+    the ladder cannot place belongs here before it belongs in a seed.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    seed = _Path(__file__).resolve().parents[1] / "data" / "wardrobe-seed.json"
+    for garment in _json.loads(seed.read_text(encoding="utf-8"))["garments"]:
+        assert crop.lowest_named(garment["wording"]) is not None, (
+            f"the crop law cannot see {garment['key']!r} ({garment['wording']!r}) — "
+            f"a line wearing only this claims no part of her, and every crop above "
+            f"it is allowed")
+
+    # The rungs themselves, for the three the ladder used to miss.
+    assert crop.lowest_named("an oversized grey sweatshirt") == crop.CHEST
+    assert crop.lowest_named("charcoal lounge joggers") == crop.FEET
+    assert crop.lowest_named("a red satin slip dress") == crop.KNEES

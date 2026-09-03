@@ -41,13 +41,13 @@ PART_NAME = {HEAD: "her head", CHEST: "her chest", WAIST: "her waist",
 _BODY = (
     (HEAD,  re.compile(r"\b(head|face|hair|eyes?|eyelids?|mouth|lips|chin|jaw|ears?)\b", re.I)),
     (CHEST, re.compile(r"\b(chest|breasts?|bust|torso|midriff|shoulders?|collarbones?|"
-                       r"ribs|stomach|navel|belly|arms?|elbows?|hands?|wrists?|"
-                       r"bra|bralette|top|shirt|sweater|jersey|blouse|corset|harness)\b", re.I)),
+                       r"ribs|stomach|navel|belly|arms?|forearms?|elbows?|hands?|wrists?|"
+                       r"bra|bralette|top|shirt|sweater|sweatshirt|hoodie|jumper|pullover|cardigan|camisole|vest|jersey|blouse|corset|harness)\b", re.I)),
     (WAIST, re.compile(r"\b(waist|waistband|hips?|belt|buttocks|backside)\b", re.I)),
-    (KNEES, re.compile(r"\b(thighs?|knees?|skirt|shorts|briefs|panties|knickers|thong)\b", re.I)),
+    (KNEES, re.compile(r"\b(thighs?|knees?|skirt|dress|shorts|briefs|panties|knickers|thong)\b", re.I)),
     (FEET,  re.compile(r"\b(shins?|calves|calf|ankles?|feet|foot|toes|barefoot|legs?|"
                        r"boots?|heels?|shoes?|socks?|stockings?|fishnets?|tights|"
-                       r"trousers|pants|jeans|denim|leggings)\b", re.I)),
+                       r"trousers|pants|jeans|denim|leggings|joggers|sweatpants)\b", re.I)),
 )
 
 # The crop a framing CLAIMS, by the term it uses. These are the six that rendered
