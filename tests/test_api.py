@@ -1,6 +1,8 @@
 """HTTP routes: creating models and sessions, prompt composition, rating."""
 import io
 import json
+import re
+from collections import Counter
 import zipfile
 
 from PIL import Image, ImageFont
@@ -4274,11 +4276,26 @@ def test_a_slot_with_one_value_does_not_cap_the_run_at_one_photograph(client, se
     assert {d["framing"]["wording"] for d in drawn} == {"only-framing"}, drawn
 
 
-def test_a_slot_with_a_choice_still_refuses_a_run_that_would_repeat_it(client, seeded):
-    """The other half: exempting one-value slots must not exempt the rest.
-    Three cameras, THREE acts, one framing, and a run of 4 — one more than
-    the act list can fill without repeating. Refused, nothing queued, and
-    the message names the act slot rather than the exempt framing.
+def test_a_slot_shorter_than_the_run_no_longer_refuses_it(client, seeded):
+    """A slot with fewer values than the run is long no longer refuses it.
+
+    Four cameras, THREE acts, one framing, and a run of 4. The old rule was "no
+    component twice, ever", and the act slot capped the run at 3 — a 422 over a
+    pool of twelve drawable trios. The rule it was written for is "do not repeat
+    when you had somewhere else to go", and the cap is that rule generalised:
+    `ceil(count / distinct values)` uses of any one value.
+
+    The cap BOUNDS repetition; it does not schedule it. The greedy walks a
+    shuffled pool, so a run of four over three acts may come back {a: 2, b: 2}
+    and never reach c. Asserting "all three appear" is a test that fails on
+    roughly a third of the shuffles, which is how this one was written first.
+
+    It is what a candid session in knickers hit for real: the crop law takes the
+    three framings above her knees out of the pool for the whole run, four are
+    left, and a run of ten was refused while the pool held 228 distinct trios.
+
+    The property the matrix needs is unchanged and asserted here: the four
+    photographs are four DISTINCT trios, so a run of N still fills N cells.
     """
     sid = client.post("/api/sessions", json={
         "model_id": seeded["model_id"], "name": "act runs out",
@@ -4292,10 +4309,79 @@ def test_a_slot_with_a_choice_still_refuses_a_run_that_would_repeat_it(client, s
     r = client.post(f"/api/sessions/{sid}/compose-run", json={
         "count": 4, "candidates": candidates, "mode": "exploratory",
     })
+    assert r.status_code == 200, r.text
+    rows = db.q("SELECT components FROM shot WHERE session_id=? ORDER BY shot_index", sid)
+    trios = [tuple(json.loads(x["components"])[slot]["concept"]
+                   for slot in ("camera", "act", "framing")) for x in rows]
+    assert len(trios) == 4, trios
+    assert len(set(trios)) == 4, f"a run drew the same trio twice: {trios}"
+    acts = Counter(t[1] for t in trios)
+    assert max(acts.values()) <= 2, f"an act was used more than ceil(4/3) times: {acts}"
+
+
+def test_the_largest_fillable_the_refusal_names_can_actually_be_drawn(client, seeded):
+    """The number in the 422 has to be a number the operator can ask for.
+
+    The first round-robin read its cap off the request — `ceil(count / values)`
+    — so a smaller request tightened the cap that produced the answer: `directed`
+    asked for 50 came back "largest fillable is 31", asked for 31 came back
+    "largest fillable is 20", and so on down. The operator followed the message
+    and was refused every time.
+
+    Passes over the shuffled pool fix it by construction: the picks are a prefix
+    that does not depend on `count`, only where it stops. This test is the
+    property, not the implementation — refuse once, read the number, ask for it
+    on a fresh session (3.4's dedup refuses the same trios twice on one), and it
+    must be queued.
+    """
+    def session(name):
+        return client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": name,
+            "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+        }).json()["id"]
+
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k}") for k in ("cam-a", "cam-b", "cam-c")],
+        "act":     [_candidate(k, f"act {k}") for k in ("act-a", "act-b")],
+        "framing": [_candidate(k, f"framing {k}") for k in ("fr-a", "fr-b")],
+    }
+    r = client.post(f"/api/sessions/{session('asked too many')}/compose-run", json={
+        "count": 50, "candidates": candidates, "mode": "exploratory",
+    })
+    assert r.status_code == 422, r.text
+    fillable = int(re.search(r"largest fillable is (\d+)", r.json()["detail"]).group(1))
+    assert fillable > 2, f"the pass draw did not get past the smallest slot: {r.json()['detail']}"
+
+    sid = session("asked what it was told")
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": fillable, "candidates": candidates, "mode": "exploratory",
+    })
+    assert r.status_code == 200, f"the refusal named {fillable} and then refused it: {r.text}"
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == fillable, f"asked for {fillable}, queued {n}"
+
+
+def test_a_run_larger_than_the_whole_pool_is_still_refused(client, seeded):
+    """The caps raise the ceiling; they do not remove it. Two trios in the pool
+    and a run of 4: refused, nothing queued, and the message names the slot and
+    the largest fillable the way it always did.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "pool too small",
+        "manner": "directed", "checkpoint": "finepornV4", "shots": [],
+    }).json()["id"]
+    candidates = {
+        "camera":  [_candidate(k, f"camera {k}") for k in ("cam-a", "cam-b")],
+        "act":     [_candidate("only-act", "the one act")],
+        "framing": [_candidate("only-framing", "the one framing")],
+    }
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 4, "candidates": candidates, "mode": "exploratory",
+    })
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
-    assert "act slot has 3" in detail, detail
-    assert "framing" not in detail, f"the exempt slot was named as the shortfall: {detail!r}"
+    assert "camera slot has 2" in detail, detail
+    assert "largest fillable is 2" in detail, detail
     n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
     assert n == 0, f"a refused run queued {n} shots"
 
@@ -6910,3 +6996,5 @@ def test_an_act_is_drawable_only_when_the_run_provides_what_it_needs(client, see
     assert drawn(with_him=True) == {"act-plain", "act-him"}
     assert drawn(bare=True) == {"act-plain", "act-nude"}
     assert drawn(with_him=True, bare=True) == {"act-plain", "act-him", "act-nude"}
+
+

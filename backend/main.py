@@ -2231,13 +2231,13 @@ def _draw_n_trio_shots(
         )
 
     # The stage, applied to the CANDIDATES and not to the pool: narrow the list
-    # first and every number downstream is honest by construction — the pool, the
+    # first and every number downstream is honest by construction â€” the pool, the
     # no-repeat ceiling, and the "largest fillable" the 422 names. Filtering the
     # pool instead would leave the refusal quoting a count that includes acts this
     # run was never allowed to draw.
     # What this run provides, against what each act needs. An act that needs
     # nothing is always drawable; one that needs him, or needs her bare, is
-    # drawable only when the run says so. The run is the only thing that knows —
+    # drawable only when the run says so. The run is the only thing that knows â€”
     # the act carries a requirement, not a place in the arc.
     provides = {""}
     if with_him:
@@ -2315,10 +2315,33 @@ def _draw_n_trio_shots(
         slot: {x["key"]: x for x in candidates.get(slot, []) if isinstance(x, dict) and x.get("key")}
         for slot in _SLOT_ORDER
     }
-    # The slots the "no component twice" rule applies to: the ones the
-    # pool offers more than one value for. Computed off the POOL and not
-    # off the candidates, because a candidate whose trios are all dead is
-    # not a road the draw can take.
+    # The rule 3.4 wrote is "do not repeat when you had somewhere else to go",
+    # and the ceiling it produced was the smallest slot: `directed` has six acts,
+    # so no run of that manner could ever be longer than six photographs, over a
+    # pool of two thousand drawable trios. The generalisation is round-robin, and
+    # it is done as PASSES over the shuffled pool rather than as a cap computed
+    # from `count`: pass 1 repeats nothing (the old rule exactly), pass 2 allows
+    # a second use of each value, and so on until the run is full or a pass adds
+    # nothing.
+    #
+    # Passes and not `ceil(count / values)`, because a cap read off the request
+    # makes the answer move when the request does: asked for 50 the draw filled
+    # 31, and asked for 31 it filled 20, because the smaller request tightened
+    # the cap that produced the number. Under passes the picks are a PREFIX that
+    # does not depend on `count` at all — only where it stops — so a request for
+    # the largest fillable the 422 names always succeeds.
+    #
+    # The one-value exemption `_spreadable_slots` bought is still needed and is
+    # still its own thing. A slot the pool offers one value for is exempt from
+    # the cap entirely rather than being spent in pass 1: letting the pass raise
+    # it would raise every other slot with it, and three cameras, three acts and
+    # ONE framing would come back as three photographs sharing two cameras. The
+    # rule is unchanged — "a one-value slot is not a repeat, it is the only
+    # road" — and only the slots that HAVE a choice are held to the pass.
+    #
+    # The trio is still drawn at most once — `taken` — so a run of N fills N
+    # DISTINCT cells however many passes it took. That is the property the matrix
+    # needs; "no framing twice" never was one.
     spreadable = _spreadable_slots(pool)
     # `max_per_family` is the bound the family-spread skip
     # keys on. `ceil(count/2)` is the classical "reorganize
@@ -2335,16 +2358,8 @@ def _draw_n_trio_shots(
         shuffled = list(pool)
         random.shuffle(shuffled)
         chosen: list[tuple[str, str, str]] = []
-        used = {"camera": set(), "act": set(), "framing": set()}
-        # Only slots that HAVE a choice are held to "no component
-        # twice in a run". A slot the pool offers one value for
-        # cannot be spread over, and demanding it anyway caps every
-        # run at one photograph — which is what the app's own
-        # compose button hit on its first click: the framing is a
-        # single fixed wording (there is no framing catalogue yet),
-        # so the second trio always repeated it. The rule 3.4 wrote
-        # is "do not repeat when you had somewhere else to go";
-        # a one-value slot is not a repeat, it is the only road.
+        taken: set[tuple[str, str, str]] = set()
+        used: dict[str, dict[str, int]] = {"camera": {}, "act": {}, "framing": {}}
         # The family-skip needs the family counts updated as
         # the greedy picks, so a 3rd front is skipped on a
         # 4-trio draw before it would otherwise enter the
@@ -2352,26 +2367,37 @@ def _draw_n_trio_shots(
         # is the value the spread slot's non-camera trios
         # get, and they are exempt).
         family_counts: dict[object, int] = {}
-        for cam, act, framing in shuffled:
-            if any(value in used[slot]
-                   for slot, value in (("camera", cam), ("act", act), ("framing", framing))
-                   if slot in spreadable):
-                continue
-            trio = (cam, act, framing)
-            if skip is not None and skip(trio, by_key, family_counts, max_per_family):
-                continue
-            chosen.append(trio)
-            used["camera"].add(cam)
-            used["act"].add(act)
-            used["framing"].add(framing)
-            # Update the family counts only on a non-None
-            # family, so a None trio does not enter the dict
-            # and the count stays the same for the rest of
-            # the shuffle.
-            fam = _spread_family_of(trio, by_key)
-            if fam is not None:
-                family_counts[fam] = family_counts.get(fam, 0) + 1
-            if len(chosen) == count:
+        cap = 0
+        while len(chosen) < count:
+            cap += 1
+            grew = False
+            for cam, act, framing in shuffled:
+                if len(chosen) == count:
+                    break
+                trio = (cam, act, framing)
+                if trio in taken:
+                    continue
+                if any(used[slot].get(value, 0) >= cap
+                       for slot, value in (("camera", cam), ("act", act), ("framing", framing))
+                       if slot in spreadable):
+                    continue
+                if skip is not None and skip(trio, by_key, family_counts, max_per_family):
+                    continue
+                chosen.append(trio)
+                taken.add(trio)
+                grew = True
+                for slot, value in (("camera", cam), ("act", act), ("framing", framing)):
+                    used[slot][value] = used[slot].get(value, 0) + 1
+                # Update the family counts only on a non-None
+                # family, so a None trio does not enter the dict
+                # and the count stays the same for the rest of
+                # the shuffle.
+                fam = _spread_family_of(trio, by_key)
+                if fam is not None:
+                    family_counts[fam] = family_counts.get(fam, 0) + 1
+            # A pass that adds nothing is the end of the road: the next one
+            # raises the cap on values the pool has no fresh trio for either.
+            if not grew:
                 break
         if len(chosen) > len(best_chosen):
             best_chosen = chosen
@@ -2403,10 +2429,14 @@ def _draw_n_trio_shots(
             tail = "; use exploratory mode to compose with unmeasured cells"
         else:
             tail = "; every candidate trio is either dead or outside the catalogue, no further draw is possible"
+        # The pool size is in the message because the slot count on its own reads
+        # as the ceiling and is not one: `directed` has six acts and two thousand
+        # drawable trios, and "act slot has 6" over a refusal to draw 31 sent the
+        # operator looking for a catalogue hole that was not there.
         raise HTTPException(
             422,
             f"compose refused: {min_slot} slot has {min_count} drawable "
-            f"values within the trio pool, largest fillable is "
+            f"values within the trio pool of {len(pool)}, largest fillable is "
             f"{len(best_chosen)} (of {count} requested){tail}",
         )
 
