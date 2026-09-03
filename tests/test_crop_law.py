@@ -172,12 +172,19 @@ def test_every_manner_has_an_act_a_crop_at_her_head_can_be_drawn_against():
     root = _Path(__file__).resolve().parents[1]
     acts, framings = [], []
     for path in (root / "data").glob("*-seed.json"):
-        # The readings seed carries `slot` too, and a reading is a question
-        # rather than a component: it has no wording for the crop law to read.
-        if path.name == "readings-seed.json":
+        rows = _json.loads(path.read_text(encoding="utf-8"))
+        # A seed file is a list of components, or it is something else: the
+        # wardrobe seed is an object of garments and outfits, and neither has a
+        # slot. Skipping by SHAPE and not by filename, because the filename rule
+        # this once had (`readings-seed.json`) only knew about the one sibling
+        # that existed when it was written, and the next reading seed to be
+        # added walked straight past it into a KeyError.
+        if not isinstance(rows, list):
             continue
-        for item in _json.loads(path.read_text(encoding="utf-8")):
-            if not isinstance(item, dict):
+        for item in rows:
+            # A reading carries `slot` too, and a reading is a question rather
+            # than a component: it has no wording for the crop law to read.
+            if not isinstance(item, dict) or "wording" not in item:
                 continue
             if item.get("slot") == "act":
                 acts.append(item)
