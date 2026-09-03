@@ -195,3 +195,36 @@ def test_every_manner_has_an_act_a_crop_at_her_head_can_be_drawn_against():
             assert drawable, (
                 f"{manner}: no act can be drawn against {framing['concept_key']!r} — every one "
                 f"names something below her head, so the framing is unmeasurable for this manner")
+
+
+def test_a_second_crop_term_in_another_clause_is_refused_both_ways():
+    """Two crop words in one line is a coin flip, not a framing.
+
+    The anatomy rule cannot see this one: `headshot` and `extreme wide shot`
+    name no part of her, so `lowest_named` reads both as None and the trio
+    composed happily while the line said both at once. It is not hypothetical —
+    directed's camera catalogue carries fifteen crop terms in the CAMERA slot
+    (`close-up`, `medium shot`, `full body`, `long shot` and their kin), so the
+    pairing is one draw away.
+
+    Refused in BOTH directions, unlike the anatomy rule. A looser second term
+    contradicts the framing exactly as a tighter one does: either way the cell
+    measures which of two crop words won, and not the framing.
+    """
+    act = "One young woman stands upright and square to the camera"
+
+    # Tighter camera under a looser framing, and the reverse.
+    assert crop.conflict("full body", "close-up", act, "", "")
+    assert crop.conflict("headshot", "extreme wide shot", act, "", "")
+    assert crop.conflict("extreme wide shot", "headshot", act, "", "")
+
+    # The same rung twice is redundant, not contradictory: both claim her head.
+    assert crop.conflict("headshot", "close-up", act, "", "") is None
+
+    # A camera that claims no crop at all is what the slot is for.
+    assert crop.conflict("full body", "front view", act, "", "") is None
+
+    # And the anatomy rule still only bites downwards: an act naming her chest
+    # under a full-body framing is legal, because the frame reaches the lowest
+    # part the line names and her chest is above her feet.
+    assert crop.conflict("full body", "", "her shoulders level", "", "") is None

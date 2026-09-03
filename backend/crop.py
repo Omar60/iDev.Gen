@@ -78,6 +78,21 @@ def lowest_named(*texts: str) -> int | None:
     return found
 
 
+def crop_term(text: str) -> int | None:
+    """The crop a wording claims by NAMING a crop term, ignoring the anatomy.
+
+    Separate from `crop_claimed` because the two are used for opposite jobs. The
+    anatomy fallback is what makes a framing out of a clause that walks the body;
+    it must NOT be used to compare two clauses, because an act naming her chest
+    under a `full body` framing is legal (the frame reaches the lowest part, and
+    her chest is above her feet) while a second crop TERM at another rung is not.
+    """
+    for rank, pattern in _CROP_TERMS:
+        if pattern.search(text or ""):
+            return rank
+    return None
+
+
 def crop_claimed(text: str) -> int | None:
     """The crop a framing wording asks for, or None if it asks for no crop.
 
@@ -86,10 +101,8 @@ def crop_claimed(text: str) -> int | None:
     below knees` claims the knees through the anatomy alone. A wording with
     neither is not a crop at all and constrains nothing.
     """
-    for rank, pattern in _CROP_TERMS:
-        if pattern.search(text or ""):
-            return rank
-    return lowest_named(text)
+    term = crop_term(text)
+    return term if term is not None else lowest_named(text)
 
 
 def conflict(framing_text: str, *rest: str) -> str | None:
@@ -102,6 +115,25 @@ def conflict(framing_text: str, *rest: str) -> str | None:
     claimed = crop_claimed(framing_text)
     if claimed is None:
         return None
+
+    # A SECOND crop term, in any other clause, at another rung. The anatomy rule
+    # below cannot see this one: `headshot` and `extreme wide shot` name no part
+    # of her, so `lowest_named` reads both as None and the line composes saying
+    # both at once. Directed's camera catalogue carries fifteen crop terms
+    # (`close-up`, `medium shot`, `full body`, `long shot` and their kin) in the
+    # CAMERA slot, so the pairing is not hypothetical: it is one draw away.
+    # Refused in both directions, unlike the anatomy rule — a looser second term
+    # contradicts the framing just as a tighter one does, and either way the cell
+    # measures which of two crop words won rather than the framing.
+    for text in rest:
+        other = crop_term(text)
+        if other is not None and other != claimed:
+            return (f"the framing asks for a crop at {PART_NAME[claimed]}, and another clause "
+                    f"asks for a crop at {PART_NAME[other]}. Two crop terms in one line is not "
+                    f"a framing, it is a coin flip between them, and the cell would measure "
+                    f"which word won. Draw a camera that claims no crop, or a framing at "
+                    f"{PART_NAME[other]}")
+
     named = lowest_named(*rest)
     if named is None or named <= claimed:
         return None
