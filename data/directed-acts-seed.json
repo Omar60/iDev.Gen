@@ -462,8 +462,8 @@
     "faces": "front",
     "wording": "The young woman lies on her back on the floor with both legs lifted straight up above her and her arms flat at her sides.",
     "judge_label": "She is on her back with both legs pointing straight up",
-    "verdict": "unmeasured",
-    "sample_size": "written 2026-09-03, never shot",
+    "verdict": "alive",
+    "sample_size": "sessions 384-386, 40 photographs, judged by looking: 10/10 with no wardrobe, 10/10 with a chest camisole and 10/10 with knickers, so the wardrobe is inert here -- but 6/10 with the camisole on an EMPTY look, so directed's look is what carries it. Session 365's n=1 miss was the empty look, not the pose",
     "cameras": [],
     "needs": ""
   },
@@ -501,8 +501,8 @@
     "faces": "front",
     "wording": "The young woman rests her shoulders and both feet on the floor and lifts her hips clear of it, her body a straight slant from her knees to her shoulders.",
     "judge_label": "Her shoulders and feet are on the floor and her hips are lifted off it",
-    "verdict": "unmeasured",
-    "sample_size": "written 2026-09-03, never shot",
+    "verdict": "dead",
+    "sample_size": "session 384, 10 photographs on directed's bench with no wardrobe: 0/10. Eight of ten put her on her feet operating the tripod the look names -- with an act the sampler cannot parse, the props in the look become the act. The wording is the suspect, not the geometry",
     "cameras": [],
     "needs": ""
   },

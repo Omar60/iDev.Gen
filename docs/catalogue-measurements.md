@@ -156,6 +156,77 @@ Length is ruled out by the control rather than by argument: zero words renders
 9/10 and fifteen, nineteen and twenty words all render 0/10, so the arms are not
 ordered by length.
 
+## The Wardrobe Against a Third Geometry
+
+Measured 2026-09-03, sessions 384, 385 and 386, 50 photographs on
+`Moody-Krea-Mix-premium`, directed's bench with the look that shipped in session
+381 (`data/directed-looks-seed.json`), `side view`, `full body`, workflow 8, ten
+shared seeds per arm, judged by looking at one thing: are her shoulders on the
+floor AND both legs pointing up.
+
+Two geometries disagreed about the wardrobe. `on her back` splits at the waist
+-- a chest garment is 2/10 and the same twenty words below the hip are 10/10.
+The ninety-degree profile does not split at all -- every written garment is
+0/10. The common half is "a written garment costs a hard geometry"; the waist
+split is `on her back` only. A third geometry says which half is the law.
+
+### The screen: one candidate was never a geometry
+
+Both candidates were shot with NO wardrobe first, ten seeds each, and only the
+survivor was worth dressing. Session 378 could not buy off a dead control in
+advance; here it costs ten frames instead of thirty.
+
+| candidate | control, no wardrobe |
+|---|---|
+| `lying-legs-vertical` | **10/10** |
+| `shoulders-down-hips-up` | **0/10** |
+
+`shoulders-down-hips-up` fails in a way worth keeping: eight of its ten
+photographs put her ON HER FEET OPERATING THE TRIPOD the look describes. With
+an act the sampler cannot parse, the props named in the look become the act.
+The row is dead as written and its wording is the suspect, not the pose.
+
+### The wardrobe is inert on this geometry
+
+| arm | the wardrobe sentence | words | legs vertical |
+|---|---|---|---|
+| `unwritten` (384) | none | 0 | 10/10 |
+| `camisole` (385) | directed's, chest and knickers | 19 | **10/10** |
+| `long-knickers` (385) | below the hip, matched length | 20 | **10/10** |
+
+**Neither half of the rule is a law.** A camisole that takes the profile to 0/10
+and `on her back` to 2/10 costs this geometry nothing at all. What replicates
+across three geometries is only this: a written wardrobe costs SOME body
+geometries and nothing on others, and both which garment and whether any garment
+matters are properties of the pose. There is no wardrobe rule to carry to an
+unmeasured row.
+
+### The look, not the wardrobe, is what this geometry is priced in
+
+The premise was that `lying-legs-vertical` is hard, and that rests on session
+365, where it came back sitting up at n=1 -- with the camisole AND with the
+empty look directed had before session 381. Every arm above carries the look, so
+one more arm was owed: 365's exact condition, the camisole with an empty look,
+nothing else moved.
+
+| arm | look | legs vertical |
+|---|---|---|
+| `camisole` (385) | directed's, 90 words | 10/10 |
+| `empty-look` (386) | none | **6/10** |
+
+So the geometry is not free. It is held up by the look, and on this bench the
+wardrobe cannot be seen to cost anything because the look is already paying.
+The four misses are the frontal attractor, not a sitting torso: knees bent and
+splayed at the lens, the crop centred between them -- the same photograph
+session 368 produced across 25 frames. One miss is outright sat up, which is
+365's failure mode.
+
+Two rendered consequences ride on that one written key, and this arm does not
+separate them: with no room written the camera goes overhead and the floor
+becomes a bed, which is exactly what session 373 measured when it deleted
+candid's room. So "the look" here means the register, the hair, the light and
+the room together.
+
 ## The Look Decides Which Hair Colour a Session Is
 
 Sessions 380 and 381, thirty photographs, 2026-09-03. The control was already
