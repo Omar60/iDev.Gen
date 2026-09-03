@@ -52,3 +52,59 @@ the initial prompt component catalogue.
     reads a horizontal body against a vertical one — overhead is 1/18 across six arms.
     Nothing is in the shipped catalogue yet: this was measured on finepornV4 and the
     Krea leg is unjudged.
+
+## The Wardrobe Against Body Geometry
+
+Measured 2026-09-03, sessions 369 and 372-377, 110 photographs on
+`Moody-Krea-Mix-premium`, candid's bench, ten shared seeds per arm, judged by
+looking at one thing: are her shoulder blades against the mattress.
+
+`on her back` had failed eight wordings on directed's bench and then rendered
+20/20 on candid's. Four things differed between the two benches. Each was
+substituted back one at a time, everything else held:
+
+| session | what was substituted | on her back |
+|---|---|---|
+| 369 | the phone removed from her hand (control) | 20/20 |
+| 372 | camera -> `side view`, directed's two-word term | 9/10 |
+| 373 | look -> room deleted / look deleted entirely | 10/10, 10/10 |
+| 374 | wardrobe -> directed's camisole / no clothing sentence | **2/10**, 10/10 |
+| 375 | voice -> `The young woman lies` for `She lies` | 10/10 |
+| 376 | camisole without its straps and neckline / knickers alone | 4/10, 10/10 |
+| 377 | knickers written to the camisole's length, 20 words | 10/10 |
+
+**A written garment on her chest is the only thing in the bench that moved the
+geometry.** The camisole arm came back propped against pillows or sitting
+upright seven times in ten, which is the failure mode of the original eight. It
+also moved the camera to a low POV from her feet on the same frontal camera
+clause every other arm carried.
+
+Three things this rules out, each with its own arm rather than by argument:
+
+- **Not the length of the wardrobe sentence.** 20 words below the waist render
+  10/10; 19 words including a camisole render 2/10.
+- **Not the descriptive detail.** Deleting `with narrow straps and a softly
+  rounded neckline` moved 2/10 to 4/10, which is no separation at n=10.
+- **Not the camera, the room, the look or the subject phrase.**
+
+The surviving reading is that a written garment has to be SEEN and a chest
+garment is only visible on a raised torso. It is a hypothesis, not a
+measurement: knickers are equally visible on a body lying flat, so the "must be
+seen" account and a plain "clothing above the waist" account have not been
+pulled apart.
+
+Two side results from the same runs:
+
+- **The look holds the character.** Blonde 10/10 with candid's full look, 7/10
+  with its room deleted, 2/10 with no look at all, and two of the no-look frames
+  added glasses. This is the first lever measured on the identity drift.
+- **Deleting the room sends the camera overhead** and overrides `full body`: all
+  twenty frames of session 373 are top-down and cropped head-to-thigh, on a line
+  whose camera clause says `Taken from directly in front of her`. Consistent
+  with the room being the framing control.
+
+None of these 110 photographs is recorded in the `cell` table, and none can be:
+they are verbatim written lines, so `shot.components` is `{}` and
+`POST /api/shots/{id}/judge` refuses them by design; and the cell is keyed on
+the trio, which does not include the wardrobe -- the dimension this experiment
+moved. Recording them would have meant seven arms landing on one key.
