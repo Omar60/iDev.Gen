@@ -16,5 +16,11 @@
     "manner": "directed",
     "key": "all-fours",
     "label": "Her knees are on the floor and her torso is tipped forward over them, with at least one hand or forearm down on the floor in front of her. Her hips are level with her shoulders or higher. She is the only person in the picture."
+  },
+  {
+    "slot": "act",
+    "manner": "directed",
+    "key": "crouching",
+    "label": "Her weight is on her feet and her hips are folded down so her seat is close to the floor. Her knees are off the floor and her buttocks rest on nothing. She is the only person in the picture."
   }
 ]

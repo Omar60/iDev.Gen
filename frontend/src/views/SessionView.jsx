@@ -101,6 +101,11 @@ export default function SessionView({ id }) {
   // photograph dealt a dressed wardrobe state cannot come back as penetration
   // — measured on session 330, three photographs of nine.
   const [withHim, setWithHim] = useState(false)
+  // Whether the room has furniture in it. Same shape as `withHim`: a property of
+  // the run, so it narrows the pool once. No field of the prompt describes the
+  // room at all — the sampler invents one — so an act that names a chair or a bed
+  // BUILDS it, and off is the honest default for a look that has no such piece.
+  const [withFurniture, setWithFurniture] = useState(false)
   // Whether she is undressed for the next composed run. Same shape as `withHim`
   // and the same reason: an act that needs her bare (a toy, a hand between her
   // legs) is not drawn at all unless the run says so, because dealing one to a
@@ -196,7 +201,7 @@ export default function SessionView({ id }) {
     const dealt = spread(wardrobeArc(s), n)
     await api.post(`/api/sessions/${id}/compose-run`, {
       count: n, candidates, mode, mute_wardrobe: muteWardrobe, reference: composeGuided,
-      with_him: withHim, bare,
+      with_him: withHim, with_furniture: withFurniture, bare,
       extras: extrasFor(s.manner, n),
       // The arc, spread over the run by the same function that spreads it over
       // written takes: K states, N photographs, the wardrobe holding still
@@ -538,6 +543,13 @@ export default function SessionView({ id }) {
                      disabled={!s.manner || !s.checkpoint || s.running}
                      onChange={(e) => setWithHim(e.target.checked)} />
               with him
+            </label>
+            <label title="The room has furniture in it for this run. Off: an act that sits her on a chair, a bed, a counter or a stair is not drawn at all, because nothing in the prompt describes the room and naming a piece builds it - measured seven times in eight. On does not mean only furniture - the whole act list is drawable again."
+                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+              <input type="checkbox" checked={withFurniture}
+                     disabled={!s.manner || !s.checkpoint || s.running}
+                     onChange={(e) => setWithFurniture(e.target.checked)} />
+              furniture
             </label>
             <label title="The fallback answer for a photograph the arc says nothing about. An act that needs access - a toy, a hand between her legs - is drawn where the dealt wardrobe gives access: nothing covering her below the waist, or the garment pulled aside. This decides the photographs an outfit does not: a hand-typed arc, or a session with no arc at all."
                    style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>

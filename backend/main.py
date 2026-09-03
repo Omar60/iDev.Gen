@@ -1293,9 +1293,15 @@ def create_session(s: SessionIn):
             s.manner, kiss_cam_key,
         )
         if not has_kiss_cam:
+            # `shot.prompt` and nothing else: `ShotIn` has no `take` field, so the
+            # second half of this test used to raise AttributeError on every shot
+            # whose prompt did NOT say "kiss" — the `or` short-circuits, so the
+            # only sessions that survived were the ones this guard exists to
+            # refuse. It made every shoot script a 500 while the app, which
+            # creates sessions with an empty shot list and composes after, never
+            # saw it.
             is_kiss_session = any(
-                "kiss" in (shot.prompt or "").lower() or "kiss" in (shot.take or "").lower()
-                for shot in s.shots
+                "kiss" in (shot.prompt or "").lower() for shot in s.shots
             ) if s.shots else False
             if is_kiss_session:
                 raise HTTPException(
@@ -1830,6 +1836,17 @@ class ComposeRunIn(BaseModel):
     # so — `candidates` is theirs to narrow, and a run that sends three acts
     # draws from three acts.
     with_him: bool = False
+    # Whether the room this run is shot in has furniture in it. Same shape as
+    # `with_him` and for the same reason: it is a property of the RUN, so it
+    # narrows the pool once and every number downstream counts acts this run
+    # could actually draw.
+    #
+    # It exists because no field of the prompt describes the room - the
+    # sampler invents one from the checkpoint - and an act that NAMES a chair
+    # or a bed builds it, measured 7/8. Off, the whole catalogue is a floor,
+    # which is what made a directed shoot read as posed in a void. On, the
+    # operator is saying the piece the act names may be built.
+    with_furniture: bool = False
     # The FALLBACK answer for access, used only where `access` below has none.
     # It was the whole answer once, and being a property of the run was wrong in
     # both directions: off, the toy acts were undrawable for the entire shoot;
@@ -2182,7 +2199,9 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode,
                                              mute_wardrobe=c.mute_wardrobe,
                                              extras=c.extras, wardrobes=c.wardrobes,
-                                             with_him=c.with_him, bare=c.bare,
+                                             with_him=c.with_him,
+                                             with_furniture=c.with_furniture,
+                                             bare=c.bare,
                                              access=c.access)
     shot_ids: list[int] = []
     for at, (cam_key, act_key, framing_key) in enumerate(best_chosen):
@@ -2240,6 +2259,7 @@ def _draw_n_trio_shots(
     extras: list[str] | None = None,
     wardrobes: list[str] | None = None,
     with_him: bool = False,
+    with_furniture: bool = False,
     bare: bool = False,
     access: list[bool | None] | None = None,
 ) -> tuple[dict, list[tuple[str, str, str]]]:
@@ -2355,11 +2375,12 @@ def _draw_n_trio_shots(
             f"set them on the session before composing",
         )
 
-    # `him` is a property of the RUN — he is in the room or he is not — so it
-    # narrows the candidate list once, before the pool is built. Every number
-    # downstream is then honest by construction: the pool, the no-repeat ceiling,
-    # and the "largest fillable" the 422 names all count acts this run could
-    # actually draw.
+    # `him` and `furniture` are properties of the RUN — he is in the room or he
+    # is not, the room has somewhere to sit or it does not — so they narrow the
+    # candidate list once, before the pool is built. Every number downstream is
+    # then honest by construction: the pool, the no-repeat ceiling, and the
+    # "largest fillable" the 422 names all count acts this run could actually
+    # draw.
     #
     # `access` is NOT a property of the run. An act with a toy or a hand in it
     # does not need her undressed, which is what the old `nude` token said; it
@@ -2369,9 +2390,14 @@ def _draw_n_trio_shots(
     # (`_provides_at` in the greedy) rather than filtered here. Filtering it here
     # is what made a run either refuse the toy acts entirely or hand one to
     # photograph 1 in a sweatshirt.
+    runs_with = {"", "access"}
+    if with_him:
+        runs_with.add("him")
+    if with_furniture:
+        runs_with.add("furniture")
     candidates = dict(candidates,
                       act=[a for a in (candidates.get("act") or [])
-                           if (a.get("needs") or "").strip() != "him" or with_him])
+                           if (a.get("needs") or "").strip() in runs_with])
 
     access = list(access or [])
 
@@ -2384,7 +2410,13 @@ def _draw_n_trio_shots(
         predates the wardrobe catalogue working exactly as it did.
         """
         granted = access[at] if at < len(access) and access[at] is not None else bare
-        return {"", "him"} | ({"access"} if granted else set())
+        # `him` and `furniture` are already settled: the run-level filter above
+        # took them out of the pool when the run does not provide them, so every
+        # act still here has its requirement met and only `access` — which is a
+        # property of the PHOTOGRAPH — is left to answer per position. Leaving
+        # either out here is a second calculation disagreeing with the first,
+        # which refuses a legal trio and reads as the act simply never drawing.
+        return {"", "him", "furniture"} | ({"access"} if granted else set())
 
     settings = json.loads(session["settings"] or "{}")
     # The wardrobe and the look are part of the composed line, so they are part of
@@ -2960,6 +2992,17 @@ class ComposeSessionIn(BaseModel):
     # so — `candidates` is theirs to narrow, and a run that sends three acts
     # draws from three acts.
     with_him: bool = False
+    # Whether the room this run is shot in has furniture in it. Same shape as
+    # `with_him` and for the same reason: it is a property of the RUN, so it
+    # narrows the pool once and every number downstream counts acts this run
+    # could actually draw.
+    #
+    # It exists because no field of the prompt describes the room - the
+    # sampler invents one from the checkpoint - and an act that NAMES a chair
+    # or a bed builds it, measured 7/8. Off, the whole catalogue is a floor,
+    # which is what made a directed shoot read as posed in a void. On, the
+    # operator is saying the piece the act names may be built.
+    with_furniture: bool = False
     # The FALLBACK answer for access, used only where `access` below has none.
     # It was the whole answer once, and being a property of the run was wrong in
     # both directions: off, the toy acts were undrawable for the entire shoot;
@@ -3034,7 +3077,8 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     by_key, best_chosen = _draw_n_trio_shots(
         sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread,
         mute_wardrobe=c.mute_wardrobe, extras=c.extras, wardrobes=c.wardrobes,
-        with_him=c.with_him, bare=c.bare, access=c.access)
+        with_him=c.with_him, with_furniture=c.with_furniture,
+        bare=c.bare, access=c.access)
     ordered = _reorder_to_spread_families(best_chosen, by_key)
     shot_ids: list[int] = []
     # The extra is dealt to the PHOTOGRAPH, so it follows the queue order and not

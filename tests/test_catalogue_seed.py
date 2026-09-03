@@ -304,7 +304,7 @@ def test_no_two_framing_families_in_one_manner_describe_the_same_crop():
 # undressing itself, the explicit solo acts did not exist at all, and the three
 # acts with a second person were all the same penetration.
 CANDID_ACTS = ROOT / "data" / "candid-acts-seed.json"
-NEEDS = ("", "him", "access")
+NEEDS = ("", "him", "access", "furniture")
 
 
 def test_every_candid_act_declares_what_it_needs_and_says_it_in_the_wording():

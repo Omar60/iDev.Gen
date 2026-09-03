@@ -6964,13 +6964,16 @@ def test_an_act_is_drawable_only_when_the_run_provides_what_it_needs(client, see
     """
     for cam, act, framing in (("cam-x", "act-plain", "frame-x"),
                               ("cam-x", "act-him", "frame-x"),
-                              ("cam-x", "act-nude", "frame-x")):
+                              ("cam-x", "act-nude", "frame-x"),
+                              ("cam-x", "act-chair", "frame-x")):
         _seed_verified_trio(cam, act, framing, manner="directed", checkpoint="test-checkpoint")
     candidates = {
         "camera": [_candidate("cam-x", "taken from her left side")],
         "act": [_candidate("act-plain", "she leans against the wall"),
                 dict(_candidate("act-him", "she is astride him, two people in frame"), needs="him"),
-                dict(_candidate("act-nude", "she lies back with a hand between her legs"), needs="access")],
+                dict(_candidate("act-nude", "she lies back with a hand between her legs"), needs="access"),
+                dict(_candidate("act-chair", "she sits on the front edge of a chair"),
+                     needs="furniture")],
         "framing": [_candidate("frame-x", "full body")],
     }
 
@@ -6984,7 +6987,7 @@ def test_an_act_is_drawable_only_when_the_run_provides_what_it_needs(client, see
             "model_id": seeded["model_id"], "name": f"needs {sorted(flags.items())}",
             "manner": "directed", "checkpoint": "test-checkpoint", "shots": [],
         }).json()["id"]
-        for count in (3, 2, 1):
+        for count in (4, 3, 2, 1):
             r = client.post(f"/api/sessions/{sid}/compose-run",
                             json={"count": count, "candidates": candidates, **flags})
             if r.status_code == 200:
@@ -6996,6 +6999,56 @@ def test_an_act_is_drawable_only_when_the_run_provides_what_it_needs(client, see
     assert drawn(with_him=True) == {"act-plain", "act-him"}
     assert drawn(bare=True) == {"act-plain", "act-nude"}
     assert drawn(with_him=True, bare=True) == {"act-plain", "act-him", "act-nude"}
+    # `furniture` is the third of the same shape. Off, an act that sits her on a
+    # chair is undrawable, because nothing in the prompt describes the room and
+    # naming a piece builds it. Independent of the other two: a dressed solo run
+    # in a room with a chair is the commonest directed shoot there is.
+    assert drawn(with_furniture=True) == {"act-plain", "act-chair"}
+    assert drawn(with_him=True, bare=True, with_furniture=True) == {
+        "act-plain", "act-him", "act-nude", "act-chair"}
+
+
+def test_a_session_of_written_shots_is_created_when_no_shot_mentions_a_kiss(client, seeded):
+    """The branch no test executed, and it raised on every input but one.
+
+    `create_session`'s kiss guard reads each shot as `shot.prompt or shot.take`,
+    and `ShotIn` has no `take`. The `or` short-circuits, so a prompt saying
+    "kiss" returned the 422 the guard is for and EVERY other prompt raised
+    AttributeError -> 500. It survived because the app creates sessions with an
+    empty shot list and composes afterwards, and because every test that posts
+    shots omits `manner` — and the guard needs `manner` and a catalogue without
+    the kiss camera to run at all. Every shoot script in `scripts/` was a 500.
+
+    So: both directions, on a catalogue seeded WITHOUT `front-direct`.
+    """
+    _seed_verified_trio("cam-x", "act-x", "frame-x",
+                        manner="directed", checkpoint="test-checkpoint")
+    # The guard only runs when the kiss camera is absent, and the fixture ships
+    # it — which is the other half of why this branch was never executed. Retire
+    # it, the way the live catalogue lost it when it was reset to 49 cameras.
+    db.run("UPDATE component SET retired_at=? WHERE slot='camera' AND manner='directed' "
+           "AND concept_key='front-direct'", db.now())
+    assert not db.one(
+        "SELECT 1 FROM component WHERE slot='camera' AND manner='directed' "
+        "AND concept_key='front-direct' AND retired_at IS NULL"
+    )
+    assert db.one("SELECT COUNT(*) AS n FROM component WHERE slot='camera' "
+                  "AND manner='directed' AND retired_at IS NULL")["n"] > 0, \
+        "an empty camera catalogue is refused earlier, by a different guard"
+
+    def create(prompt):
+        return client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"written {prompt[:12]}",
+            "manner": "directed", "checkpoint": "test-checkpoint",
+            "shots": [{"prompt": prompt, "count": 1}],
+        })
+
+    ordinary = create("The young woman crouches down on the balls of both feet.")
+    assert ordinary.status_code == 200, ordinary.text
+
+    asks_for_a_kiss = create("Her lips are pushed forward in a kiss blown at the camera.")
+    assert asks_for_a_kiss.status_code == 422, asks_for_a_kiss.text
+    assert "front-direct" in asks_for_a_kiss.text
 
 
 # ------------------------------------------------------------------ wardrobe
