@@ -7,6 +7,10 @@ import AnglePicker from './AnglePicker.jsx'
 import CanvasSize from './CanvasSize.jsx'
 import { KINDS, WORKFLOW_KINDS, forKind, checkpointProfile, profileSummary } from '../kinds.js'
 import { composed, lookFromPhoto, photoDataUri, rewriteLook, rewriteWardrobe } from '../enhance.js'
+// The measured rooms, read straight from the seed file the way `compose.test.js`
+// reads the component seed. No endpoint and no table: a room is a starting text
+// for `session.look`, not a row the draw deals.
+import candidRooms from '../../../data/candid-rooms-seed.json'
 
 export default function ModelDetail({ id }) {
   const [model, setModel] = useState(null)
@@ -255,6 +259,25 @@ export default function ModelDetail({ id }) {
             Hair, makeup, the place and the light — identical in every photo of the session.
             Change the look and it is a different session.
           </p>
+          {/* The rooms are a starting point, not a catalogue row: picking one
+              fills the textarea and the text is yours to edit afterwards. They
+              live in a seed file rather than in `component` because that table's
+              slot is the closed vocabulary of the trio (camera, act, framing),
+              and a fourth slot in the same namespace would reach the draw.
+              Measured in sessions 370 and 371: every one of these builds its
+              room, and where the sentence puts the furniture does not matter —
+              the act naming a piece is what puts her on it. */}
+          <select value=""
+                  title="Fill the look with a measured room. Every one of these was rendered; the text stays editable."
+                  onChange={(e) => {
+                    const room = candidRooms.find((r) => r.key === e.target.value)
+                    if (room) setNewSession({ ...newSession, look: room.look })
+                  }}>
+            <option value="">Start from a measured room…</option>
+            {candidRooms.map((r) => (
+              <option key={r.key} value={r.key}>{r.label} — offers {r.offers}</option>
+            ))}
+          </select>
           <textarea rows={2} value={newSession.look}
                     placeholder="hair down with a centre part, soft natural makeup, on a beach at golden hour"
                     onChange={(e) => setNewSession({ ...newSession, look: e.target.value })} />

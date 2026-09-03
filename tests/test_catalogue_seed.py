@@ -345,3 +345,62 @@ def test_the_new_candid_acts_fill_the_families_that_had_one_member():
     fam = collections.Counter(i["family"] for i in json.loads(CANDID_ACTS.read_text(encoding="utf-8")))
     for family in ("sitting", "kneeling", "all-fours"):
         assert fam[family] >= 2, f"{family} still has {fam[family]} in the new file"
+
+
+# ------------------------------------------------------- candid's rooms
+#
+# `data/candid-rooms-seed.json` is not a catalogue: a room is a starting text for
+# `session.look`, and the picker in ModelDetail fills the textarea from it. It
+# lives in a seed file rather than in `component` because that table's `slot` is
+# the closed vocabulary of the trio, and a fourth slot would reach the draw.
+ROOMS = ROOT / "data" / "candid-rooms-seed.json"
+
+
+def test_every_room_names_the_furniture_it_offers():
+    """`offers` is a data field and the look is prose, and the day they disagree
+    the picker promises a piece no photograph can contain.
+
+    It caught one: `shower` offered a bench its sentence never mentioned, from
+    the outside model that wrote it. Compared with spaces and hyphens stripped so
+    the field can be a key (`backseat`, `sink-edge`) while the prose stays prose.
+    """
+    rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
+    assert len(rooms) >= 9
+    for room in rooms:
+        flat = room["look"].lower().replace(" ", "").replace("-", "")
+        head = room["offers"].replace("-", "").replace("edge", "")
+        assert head, room["key"]
+        assert head in flat, f"{room['key']}: offers {room['offers']!r} is not in its look"
+
+
+def test_every_room_carries_the_constant_half_of_the_look():
+    """The capture clause and the hair are what make twenty frames one shoot, so
+    a room that drops them is not a look, it is half of one. Sessions 370 and 371
+    spliced every candidate behind exactly this text.
+    """
+    rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
+    keys = [r["key"] for r in rooms]
+    assert len(keys) == len(set(keys)), keys
+    for room in rooms:
+        assert room["manner"] == "candid", room["key"]
+        assert room["look"].startswith("Small sensor,"), room["key"]
+        assert "She wears her hair loose" in room["look"], room["key"]
+        # the room half sits behind the constant half, and both are present
+        assert 60 <= len(room["look"].split()) <= 110, (room["key"], len(room["look"].split()))
+
+
+def test_the_rooms_seed_is_tracked_by_git():
+    """`data/*` is ignored wholesale and every seed has to un-ignore its own path.
+
+    This one matters more than the others: `ModelDetail.jsx` imports it at build
+    time, so an untracked rooms seed is a fresh clone whose FRONTEND DOES NOT
+    BUILD — a strictly worse version of the failure
+    `test_the_seed_file_is_tracked_by_git` was written for.
+    """
+    out = subprocess.run(["git", "ls-files", "--", "data/candid-rooms-seed.json"],
+                         cwd=ROOT, capture_output=True, text=True)
+    if out.returncode != 0:
+        pytest.skip("not a git repository")
+    assert out.stdout.strip() == "data/candid-rooms-seed.json", (
+        "data/candid-rooms-seed.json is not tracked; .gitignore has to un-ignore "
+        "it and somebody has to `git add` it")

@@ -1,0 +1,74 @@
+[
+  {
+    "key": "bedroom-night",
+    "label": "Bedroom, bare bulb (shipped)",
+    "manner": "candid",
+    "look": "Small sensor, everything at every distance equally in focus and nothing softened, sensor noise in the shadows, washed-out colour, slight motion blur, off-center and slightly tilted framing, no studio lighting and no colour grading. She wears her hair loose, with a few strands pushed behind one ear. A bare ceiling bulb lights the room from overhead and the window is black against it. Bare floorboards run away underfoot, a low table stands between her and the camera with a mug on it, and the far wall carries a half-open wardrobe door.",
+    "offers": "bed",
+    "verdict": "in use since session 351"
+  },
+  {
+    "key": "living-room",
+    "label": "Living room",
+    "manner": "candid",
+    "look": "Small sensor, everything at every distance equally in focus and nothing softened, sensor noise in the shadows, washed-out colour, slight motion blur, off-center and slightly tilted framing, no studio lighting and no colour grading. She wears her hair loose, with a few strands pushed behind one ear. Daylight enters through the side window and leaves the far wall in shadow. A low coffee table sits between her and the camera while the long sofa stretches behind her and a rug covers the floor.",
+    "offers": "sofa",
+    "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
+  },
+  {
+    "key": "kitchen",
+    "label": "Kitchen",
+    "manner": "candid",
+    "look": "Small sensor, everything at every distance equally in focus and nothing softened, sensor noise in the shadows, washed-out colour, slight motion blur, off-center and slightly tilted framing, no studio lighting and no colour grading. She wears her hair loose, with a few strands pushed behind one ear. Overhead fixtures light the counter from above and leave the lower cabinets in shadow. The stone countertop runs between her and the camera with open shelves behind her and a stool standing on the tiled floor.",
+    "offers": "stool",
+    "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
+  },
+  {
+    "key": "bathroom",
+    "label": "Bathroom",
+    "manner": "candid",
+    "look": "Small sensor, everything at every distance equally in focus and nothing softened, sensor noise in the shadows, washed-out colour, slight motion blur, off-center and slightly tilted framing, no studio lighting and no colour grading. She wears her hair loose, with a few strands pushed behind one ear. A wall sconce beside the mirror throws light across the sink and leaves the far corner dark. The porcelain sink stands between her and the camera with the framed mirror behind her and a towel resting on the floor.",
+    "offers": "sink-edge",
+    "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
+  },
+  {
+    "key": "shower",
+    "label": "Shower",
+    "manner": "candid",
+    "look": "Small sensor, everything at every distance equally in focus and nothing softened, sensor noise in the shadows, washed-out colour, slight motion blur, off-center and slightly tilted framing, no studio lighting and no colour grading. She wears her hair loose, with a few strands pushed behind one ear. A single overhead fixture lights the stall from above and leaves the outer corners in shadow. The glass door stands between her and the camera while the tiled wall rises behind her and the drain sits on the wet floor.",
+    "offers": "tiled-wall",
+    "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371; offers corrected from bench, which its sentence never names"
+  },
+  {
+    "key": "hallway",
+    "label": "Hallway",
+    "manner": "candid",
+    "look": "Small sensor, everything at every distance equally in focus and nothing softened, sensor noise in the shadows, washed-out colour, slight motion blur, off-center and slightly tilted framing, no studio lighting and no colour grading. She wears her hair loose, with a few strands pushed behind one ear. A ceiling bulb near the entrance lights the passage and leaves the far end in shadow. A narrow console table sits between her and the camera with the closed door behind her and a runner stretching along the floor.",
+    "offers": "console",
+    "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
+  },
+  {
+    "key": "bedroom-day",
+    "label": "Bedroom day",
+    "manner": "candid",
+    "look": "Small sensor, everything at every distance equally in focus and nothing softened, sensor noise in the shadows, washed-out colour, slight motion blur, off-center and slightly tilted framing, no studio lighting and no colour grading. She wears her hair loose, with a few strands pushed behind one ear. Morning light enters through the open window and leaves the opposite wall in shadow. The unmade bed lies between her and the camera with a nightstand behind her and clothes scattered across the floor.",
+    "offers": "bed",
+    "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
+  },
+  {
+    "key": "car-backseat",
+    "label": "Car backseat",
+    "manner": "candid",
+    "look": "Small sensor, everything at every distance equally in focus and nothing softened, sensor noise in the shadows, washed-out colour, slight motion blur, off-center and slightly tilted framing, no studio lighting and no colour grading. She wears her hair loose, with a few strands pushed behind one ear. Streetlight filters through the rear window and leaves the front seats in shadow. The wide back seat sits between her and the camera with the front headrests rising behind her and the floor mats covering the footwell.",
+    "offers": "backseat",
+    "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
+  },
+  {
+    "key": "balcony",
+    "label": "Balcony",
+    "manner": "candid",
+    "look": "Small sensor, everything at every distance equally in focus and nothing softened, sensor noise in the shadows, washed-out colour, slight motion blur, off-center and slightly tilted framing, no studio lighting and no colour grading. She wears her hair loose, with a few strands pushed behind one ear. Late daylight reaches the railing from the open side and leaves the inner wall in shadow. A narrow metal railing stands between her and the camera with the glass door behind her and potted plants lining the floor.",
+    "offers": "railing",
+    "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
+  }
+]
