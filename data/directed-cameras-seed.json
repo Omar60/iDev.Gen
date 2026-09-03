@@ -1,0 +1,443 @@
+[
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "close-up",
+    "family": "close",
+    "faces": "",
+    "wording": "close-up",
+    "judge_label": "head and shoulders fill the frame"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "extreme-close-up",
+    "family": "close",
+    "faces": "",
+    "wording": "extreme close-up",
+    "judge_label": "one feature fills the frame, face cropped on all sides"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "headshot",
+    "family": "close",
+    "faces": "",
+    "wording": "headshot",
+    "judge_label": "head and a little neck only"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "shoulder-up",
+    "family": "close",
+    "faces": "",
+    "wording": "shoulder-up",
+    "judge_label": "frame cuts at the shoulders"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "dutch-angle",
+    "family": "dutch",
+    "faces": "",
+    "wording": "Dutch angle",
+    "judge_label": "the horizon tilted off level"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "eye-level",
+    "family": "eye-level",
+    "faces": "",
+    "wording": "eye level",
+    "judge_label": "lens is at the height of her eyes, horizon behind her at eye height"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "front-view",
+    "family": "front",
+    "faces": "",
+    "wording": "front view",
+    "judge_label": "facing the lens square on"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "full-body",
+    "family": "full",
+    "faces": "",
+    "wording": "full body",
+    "judge_label": "head to feet, nothing cropped"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "three-quarter-shot",
+    "family": "full",
+    "faces": "",
+    "wording": "three-quarter shot",
+    "judge_label": "head down to mid-calf or knees"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "ground-level",
+    "family": "ground-level",
+    "faces": "",
+    "wording": "ground-level",
+    "judge_label": "lens on the floor, looking across it"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "worms-eye",
+    "family": "ground-level",
+    "faces": "",
+    "wording": "worm's-eye view",
+    "judge_label": "looking steeply up from floor height, ceiling visible"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "high-angle",
+    "family": "high-angle",
+    "faces": "",
+    "wording": "high angle",
+    "judge_label": "looking down at her from above her head"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "hip-level",
+    "family": "hip-level",
+    "faces": "",
+    "wording": "hip-level",
+    "judge_label": "lens at the height of her hips"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "35mm",
+    "family": "lens",
+    "faces": "",
+    "wording": "35mm",
+    "judge_label": "a little of the room around her, mild perspective"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "50mm",
+    "family": "lens",
+    "faces": "",
+    "wording": "50mm",
+    "judge_label": "natural perspective, no visible distortion"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "85mm",
+    "family": "lens",
+    "faces": "",
+    "wording": "85mm",
+    "judge_label": "tight on her with a soft blurred background"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "macro",
+    "family": "lens",
+    "faces": "",
+    "wording": "macro",
+    "judge_label": "extreme detail of a small area, very shallow focus"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "telephoto",
+    "family": "lens",
+    "faces": "",
+    "wording": "telephoto",
+    "judge_label": "flattened depth, background compressed close behind her"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "three-point-perspective",
+    "family": "lens",
+    "faces": "",
+    "wording": "three-point perspective",
+    "judge_label": "verticals converging, strong up or down perspective"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "wide-angle",
+    "family": "lens",
+    "faces": "",
+    "wording": "wide-angle",
+    "judge_label": "edges stretched, near things large and far things small"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "low-angle",
+    "family": "low-angle",
+    "faces": "",
+    "wording": "low angle",
+    "judge_label": "looking up at her from below her chin"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "knee-up",
+    "family": "medium",
+    "faces": "",
+    "wording": "knee-up",
+    "judge_label": "frame cuts at the knees"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "medium-close-up",
+    "family": "medium",
+    "faces": "",
+    "wording": "medium close-up",
+    "judge_label": "chest up, head fully in frame"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "medium-long-shot",
+    "family": "medium",
+    "faces": "",
+    "wording": "medium long shot",
+    "judge_label": "knees up"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "medium-shot",
+    "family": "medium",
+    "faces": "",
+    "wording": "medium shot",
+    "judge_label": "waist up"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "waist-up",
+    "family": "medium",
+    "faces": "",
+    "wording": "waist-up",
+    "judge_label": "frame cuts at the waist"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "mirror-shot",
+    "family": "mirror",
+    "faces": "",
+    "wording": "mirror shot",
+    "judge_label": "she appears in a mirror, frame edges visible"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "reflection-shot",
+    "family": "mirror",
+    "faces": "",
+    "wording": "reflection shot",
+    "judge_label": "her image caught on a reflective surface"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "pan-shot",
+    "family": "movement",
+    "faces": "",
+    "wording": "pan shot",
+    "judge_label": "swept sideways, horizontal motion blur"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "tilt-shot",
+    "family": "movement",
+    "faces": "",
+    "wording": "tilt shot",
+    "judge_label": "swept vertically, vertical motion blur"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "tracking-shot",
+    "family": "movement",
+    "faces": "",
+    "wording": "tracking shot",
+    "judge_label": "following alongside her, background blurred by motion"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "over-the-shoulder",
+    "family": "over-shoulder",
+    "faces": "",
+    "wording": "over-the-shoulder",
+    "judge_label": "a near shoulder in the foreground, her beyond it"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "aerial",
+    "family": "overhead",
+    "faces": "",
+    "wording": "aerial view",
+    "judge_label": "seen from high above, ground plane dominant"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "aerial-panorama",
+    "family": "overhead",
+    "faces": "",
+    "wording": "aerial panorama",
+    "judge_label": "wide view from high above, whole space visible"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "birds-eye",
+    "family": "overhead",
+    "faces": "",
+    "wording": "bird's-eye view",
+    "judge_label": "seen from far above, floor fills the frame behind her"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "overhead-term",
+    "family": "overhead",
+    "faces": "",
+    "wording": "overhead",
+    "judge_label": "camera above her, angled down onto her"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "overtop",
+    "family": "overhead",
+    "faces": "",
+    "wording": "overtop",
+    "judge_label": "from above and slightly across her"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "tabletop",
+    "family": "overhead",
+    "faces": "",
+    "wording": "tabletop",
+    "judge_label": "looking down onto a flat surface"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "top-down",
+    "family": "overhead",
+    "faces": "",
+    "wording": "top-down",
+    "judge_label": "straight down from directly above her"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "first-person",
+    "family": "pov",
+    "faces": "",
+    "wording": "first-person",
+    "judge_label": "the viewer's own arms or hands enter the frame"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "pov",
+    "family": "pov",
+    "faces": "",
+    "wording": "POV",
+    "judge_label": "seen through the eyes of someone present, no photographer visible"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "rear-view",
+    "family": "rear",
+    "faces": "",
+    "wording": "rear view",
+    "judge_label": "seen from behind, back of her head toward the lens"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "shoulder-level",
+    "family": "shoulder-level",
+    "faces": "",
+    "wording": "shoulder-level",
+    "judge_label": "lens at the height of her shoulders"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "profile-view",
+    "family": "side-level",
+    "faces": "",
+    "wording": "profile view",
+    "judge_label": "her face and torso seen edge-on, one eye visible"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "side-view",
+    "family": "side-level",
+    "faces": "",
+    "wording": "side view",
+    "judge_label": "seen from her side"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "establishing-shot",
+    "family": "wide",
+    "faces": "",
+    "wording": "establishing shot",
+    "judge_label": "the room read first, her small inside it"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "extreme-wide-shot",
+    "family": "wide",
+    "faces": "",
+    "wording": "extreme wide shot",
+    "judge_label": "figure tiny, the space is the subject"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "long-shot",
+    "family": "wide",
+    "faces": "",
+    "wording": "long shot",
+    "judge_label": "whole body small in the frame, room around her"
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "concept_key": "wide-shot",
+    "family": "wide",
+    "faces": "",
+    "wording": "wide shot",
+    "judge_label": "whole body with room visible on both sides"
+  }
+]

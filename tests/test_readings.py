@@ -492,6 +492,65 @@ COMPLETE_VOCABULARIES = (
 )
 
 
+# Directed's camera slot is the one vocabulary that is complete ON PURPOSE only
+# in part. Six of its twenty families get no reading, and each for a reason that
+# writing one would make worse rather than better.
+CAMERA_FAMILIES_WITH_NO_READING = {
+    # Crop terms sitting in the camera slot: `close-up`, `medium shot`,
+    # `full body`, `long shot` and their kin, fifteen rows of them. They are the
+    # FRAMING slot's question. A camera reading for them would let a camera cell
+    # be scored on a crop, which is the confusion and not the cure — and the
+    # dangerous half, a camera and a framing claiming different crops in one
+    # line, is refused by the crop law now.
+    "close", "medium", "full", "wide",
+    # 35mm against 85mm is not answerable from the photograph by anybody.
+    "lens",
+    # A pan, a tilt and a tracking shot cannot exist in a still image at all.
+    "movement",
+    # The three from the older `camera-candidates` vocabulary that are not camera
+    # positions either: where she sits in the frame, how hard the optics
+    # foreshorten her, and the register of the file. All observable, none of them
+    # the question this slot asks — a camera cell scored on the rule of thirds
+    # measures the composition. `register` cannot have one honest reading at all:
+    # it holds `a ring light reflected in her eyes`, which a judge can see, next
+    # to `shot on a Canon EOS`, which nobody can.
+    "composition", "geometry", "register",
+}
+
+
+def test_directed_cameras_without_a_reading_are_exactly_the_ones_that_cannot_have_one():
+    """Every directed camera family has a reading except the six that cannot.
+
+    Pins both halves. A new position family arriving with no reading is a real
+    gap and fails here; somebody "completing" the vocabulary by writing a camera
+    reading for `close` or `movement` also fails here, with the reason on the
+    line. The 49 cameras were in the live store and in NO seed file until
+    2026-09-03 — the store and the repo held two disjoint directed camera
+    vocabularies, overlap zero — so this reads the seeds.
+    """
+    families, keys = set(), set()
+    for path in (ROOT / "data").glob("*-seed.json"):
+        items = json.loads(path.read_text(encoding="utf-8"))
+        if path.name == "readings-seed.json":
+            keys |= {i["key"] for i in items
+                     if i["slot"] == "camera" and i["manner"] == "directed"}
+        else:
+            families |= {i["family"] for i in items if isinstance(i, dict)
+                         and i.get("slot") == "camera" and i.get("manner") == "directed"
+                         and i.get("family")}
+    assert families, "no directed camera components in the seeds"
+
+    unreadable = sorted(families - keys)
+    assert set(unreadable) <= CAMERA_FAMILIES_WITH_NO_READING, (
+        f"directed camera families with no reading that are not on the exempt list: "
+        f"{sorted(set(unreadable) - CAMERA_FAMILIES_WITH_NO_READING)}")
+    written = sorted(CAMERA_FAMILIES_WITH_NO_READING & keys)
+    assert not written, (
+        f"a reading was written for {written}, which the camera slot cannot answer: "
+        f"a crop term belongs to the framing slot, a focal length is not visible, "
+        f"and a camera movement does not exist in a still photograph")
+
+
 @pytest.mark.parametrize("manner,slot", COMPLETE_VOCABULARIES)
 def test_a_complete_vocabulary_has_a_reading_for_every_family_it_can_compose(manner, slot):
     """Every family this manner can photograph in this slot has a reading.

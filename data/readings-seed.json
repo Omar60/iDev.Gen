@@ -460,5 +460,101 @@
     "manner": "selfie",
     "key": "back",
     "label": "The camera is squarely behind her: her back and both buttocks are toward the lens, and no part of her front is in frame."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "rear",
+    "label": "Her back and both buttocks are toward the lens. No breast is in frame."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "over-shoulder",
+    "label": "Her back is toward the lens and one buttock is in frame. At most the outer curve of one breast shows."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "mirror",
+    "label": "The picture is a reflection in a mirror: a mirror edge, a frame, or the room doubled is visible."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "pov",
+    "label": "The lens is on the axis of her own body, looking ALONG her rather than at her from in front: her torso and legs run away from the lens and are foreshortened, the near part of her much larger than the far."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "dutch",
+    "label": "The horizon, the wall line or the floor line runs at a slant across the frame. She is not upright in the picture even where she is standing straight."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "overhead",
+    "label": "The camera is above her looking down. What lies behind her in the picture is the floor or the bed rather than the far wall of the room."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "high-angle",
+    "label": "The camera is above her eye line and tilted down at her, but the far wall is still behind her rather than the floor. The top of her head and her shoulders are foreshortened."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "eye-level",
+    "label": "The lens is level with her eyes: she meets it without lifting or dropping her chin, and neither the underside of her jaw nor the top of her head is showing."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "shoulder-level",
+    "label": "The lens is level with her shoulders, just below her eye line: she looks very slightly down into it and the top of her head is in view."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "hip-level",
+    "label": "The lens is level with her hips: her hips sit across the middle of the frame, she is looked at slightly from below, and the underside of her jaw is not yet showing."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "low-angle",
+    "label": "The lens is below her waist and tilted up at her: the underside of her jaw or her chin is in view and she is taller at the bottom of the frame than at the top."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "ground-level",
+    "label": "The lens is on the floor: her feet or her knees are the nearest thing to the camera and large in the frame, and the ceiling or the top of the far wall is in view behind her."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "behind",
+    "label": "Her back and both buttocks are toward the lens. No breast is in frame."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "shoulder",
+    "label": "Her back is toward the lens and one buttock is in frame. At most the outer curve of one breast shows."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "side",
+    "label": "Only one nipple is in frame, in outline against the background. The camera is to one side of her, and the front and the back edges of her torso both show as outlines."
+  },
+  {
+    "slot": "camera",
+    "manner": "directed",
+    "key": "floor",
+    "label": "The lens is on the floor: her feet or her knees are the nearest thing to the camera and large in the frame, and the ceiling or the top of the far wall is in view behind her."
   }
 ]
