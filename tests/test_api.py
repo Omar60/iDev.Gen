@@ -2550,6 +2550,54 @@ def test_an_unknown_cell_is_drawable_in_exploratory_mode(client, seeded):
     assert n == 1, f"exploratory call did not queue a shot: {n} rows for session {sid}"
 
 
+def test_a_slot_named_without_its_wording_is_refused(client, seeded):
+    """A caller that names a component but sends no wording text used
+    to get ten photographs with that slot MISSING from the line, filed
+    under a cell keyed on the component it never said. The empty text
+    is dropped by the same `_sentences` join the writer goes through,
+    so nothing failed and nothing looked wrong: the line simply had no
+    camera in it and the cell row said `front-direct`.
+
+    That is a corrupted measurement, and it is silent. The refusal is
+    a 422 that names the slot and the key. The `none` control arm is
+    the one legitimate empty wording and still draws — a cell shot with
+    no phrase for a slot is how a wording's arrival rate is read against
+    what the model does when nobody asks.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "no wording",
+        "manner": "directed", "checkpoint": "finepornV4",
+        "shots": [],
+    }).json()["id"]
+    _seed_unknown_trio("front-direct", "astride", "full-length",
+                       manner="directed", checkpoint="finepornV4")
+    _seed_unknown_trio("none", "astride", "full-length",
+                       manner="directed", checkpoint="finepornV4")
+
+    act = {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]}
+    framing = {"key": "full-length",
+               "wordings": [{"key": "full-length", "text": "full-length text"}]}
+
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"concept_key": "front-direct"}, "act": act, "framing": framing,
+        "mode": "exploratory",
+    })
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "camera" in detail and "front-direct" in detail, f"slot not named in 422: {detail!r}"
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 0, f"refused call queued a shot: {n} rows for session {sid}"
+
+    # The control arm is the legitimate empty: keyed `none`, and it draws.
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": "none", "wordings": [{"key": "none", "text": ""}]},
+        "act": act, "framing": framing, "mode": "exploratory",
+    })
+    assert r.status_code == 200, r.text
+    n = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert n == 1, f"the none control arm was refused: {n} rows for session {sid}"
+
+
 def test_a_dead_cell_is_undrawable_in_both_modes(client, seeded):
     """The named 2.5 / 6.1 scenario: a dead wording is never
     drawn, in either mode. The 0/12 measurement is a result, not

@@ -1552,6 +1552,24 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
         fr_key, _, fr_text = _slot_concept_wording_text(fr)
         trio = (f"({cam_key}, {act_key}, {fr_key}, "
                 f"{session['manner']}, {session['checkpoint']})")
+        # A named slot with no wording text is a corrupted measurement, not a
+        # control. `_slot_concept_wording_text` falls back to "" when the caller
+        # sends `{"concept_key": "front-direct"}` and no wording, and the empty
+        # text is then dropped by the `_sentences` join — so the queued line has
+        # no camera in it while the cell row is keyed `front-direct`. Ten
+        # photographs of nothing, filed under a trio. The `none` control arm is
+        # the one legitimate empty: it is keyed `none` and the cell records it
+        # as such.
+        for slot_name, key, text in (("camera", cam_key, cam_text),
+                                     ("act", act_key, act_text),
+                                     ("framing", fr_key, fr_text)):
+            if not text.strip() and key != "none":
+                raise HTTPException(
+                    422,
+                    f"compose refused: cell {trio} names {slot_name} {key!r} with no wording text; "
+                    f"send the wording (e.g. {{'key': {key!r}, 'wordings': [{{'key': {key!r}, "
+                    f"'text': '...'}}]}}) or use the 'none' control arm",
+                )
         # The crop law, before the cell lookup: a trio whose framing claims a crop
         # above something the rest of the line names cannot measure its framing,
         # because the photograph is cut where the anatomy is. Refused in both
