@@ -404,3 +404,49 @@ def test_the_rooms_seed_is_tracked_by_git():
     assert out.stdout.strip() == "data/candid-rooms-seed.json", (
         "data/candid-rooms-seed.json is not tracked; .gitignore has to un-ignore "
         "it and somebody has to `git add` it")
+
+
+# ------------------------------------------------------- directed's look
+#
+# `data/directed-looks-seed.json` is the same kind of file as the rooms above and
+# for the same reason, but it could not be a row IN that file: the tests there
+# assert `manner == "candid"` and candid's amateur-technique opening, which is
+# exactly what directed's look must not carry.
+DIRECTED_LOOKS = ROOT / "data" / "directed-looks-seed.json"
+
+
+def test_directed_looks_are_directed_and_not_candid_in_disguise():
+    """The whole point of the file is that directed's look is written in
+    directed's voice. A row that opens with candid's capture clause would put an
+    amateur register on a directed shoot, which is the mistake the file exists to
+    prevent -- and it would do it silently, because the picker only shows the
+    label.
+
+    The hair sentence is the one thing both manners share: session 381 measured
+    it as what makes the ten frames of a session agree on her hair.
+    """
+    looks = json.loads(DIRECTED_LOOKS.read_text(encoding="utf-8"))
+    assert looks
+    keys = [r["key"] for r in looks]
+    assert len(keys) == len(set(keys)), keys
+    for row in looks:
+        assert row["manner"] == "directed", row["key"]
+        assert "She wears her hair loose" in row["look"], row["key"]
+        for candid_only in ("small sensor", "sensor noise", "washed-out",
+                            "no studio lighting"):
+            assert candid_only not in row["look"].lower(), (row["key"], candid_only)
+        assert 60 <= len(row["look"].split()) <= 110, (row["key"], len(row["look"].split()))
+
+
+def test_the_directed_looks_seed_is_tracked_by_git():
+    """`ModelDetail.jsx` imports it at build time, so an untracked seed is a
+    fresh clone whose frontend does not build. Same failure the rooms seed has
+    its own test for.
+    """
+    out = subprocess.run(["git", "ls-files", "--", "data/directed-looks-seed.json"],
+                         cwd=ROOT, capture_output=True, text=True)
+    if out.returncode != 0:
+        pytest.skip("not a git repository")
+    assert out.stdout.strip() == "data/directed-looks-seed.json", (
+        "data/directed-looks-seed.json is not tracked; .gitignore has to un-ignore "
+        "it and somebody has to `git add` it")

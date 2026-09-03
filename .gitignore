@@ -33,6 +33,7 @@ data/*
 !data/candid-acts-seed.json
 !data/directed-cameras-seed.json
 !data/candid-rooms-seed.json
+!data/directed-looks-seed.json
 
 # Written for pasting into an outside assistant, not part of the app
 writer-prompts.md

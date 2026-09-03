@@ -130,9 +130,58 @@ TOP_ONLY = ("She wears a cream cotton jersey camisole with narrow straps and a "
 #
 # The answer, session 380: blonde 10/10 against the control's 7/10, and the
 # profile 10/10 -- full body with her feet in frame, against 9/10 and a tighter
-# frame with no look. The look costs the geometry nothing and buys the
-# character. See `docs/catalogue-measurements.md` for the four-arm table and for
-# why 7/10 against 10/10 is not a separation on its own.
+# frame with no look. The look costs the geometry nothing.
+#
+# RETRACTION, same day, from the person who trained the LoRA: Jiroko is blonde
+# AND can be brunette, both are in the character, so a brunette frame is not
+# drift and this arm never measured identity. What the counts measure is whether
+# the ten frames of a session AGREE -- which is the requirement a session
+# actually has, one look held constant or it is not one shoot. Read every number
+# in this file as colour agreement, not as the right woman.
+
+# `--directed-look`: session 380 says the fix for the drift is a look, but the
+# look it used is CANDID'S, and candid's first sentence is an amateur-technique
+# register -- small sensor, sensor noise, washed-out colour, no studio lighting.
+# Shipping that text to directed would not give directed a look, it would turn
+# directed into candid. So the shipped text has to be written, and this arm is
+# what decides which one.
+#
+# Session 373 split candid's look once: full look 10/10 blonde, room deleted
+# 7/10, no look 2/10. Room deleted is the technique register PLUS the hair
+# sentence, so most of the effect is in those two and the room is worth the last
+# three points. What that split cannot say is which of the two carries it, and
+# the answer decides how much prose directed needs:
+#
+#     hair-only at 10/10   ->  ship one sentence, invent no register
+#     hair-only low and
+#     directed-look high   ->  the register is doing the work and directed needs
+#                              its own, written in its own voice
+#
+# The answer, session 381: `hair-only` agrees 9/10 -- on BRUNETTE -- and crops at
+# the knee; `directed-look` agrees 10/10 on blonde, renders the profile 10/10
+# full body, and builds the softbox, tripod, paper roll and reflector it names.
+# One sentence is enough to make a session one session; the register and the room
+# are what buy the framing and the studio. `directed-look` is the text shipped in
+# `data/directed-looks-seed.json`.
+#
+# Both arms carry the same hair sentence, taken verbatim from candid's look, so
+# the pair differs by the register and the room and by nothing else.
+HAIR = "She wears her hair loose, with a few strands pushed behind one ear."
+
+# Candid's look in structure -- register, hair, light, room -- and directed's in
+# every word: a tripod instead of a phone, shaped light instead of a bare bulb,
+# and a room that is a working studio rather than a bedroom at night. The room is
+# there because 373 priced it at three points and because directed's own code
+# comment says a directed shoot with no room reads as posed in a void.
+DIRECTED_LOOK = (
+    "Full-frame camera on a tripod, sharp where it is focused and softly out of "
+    "focus behind, deep clean shadows, true colour and no grain, the frame "
+    "square and level. " + HAIR + " A single large softbox stands close to one "
+    "side of her and a white fill card faces it from the other. Bare studio "
+    "floor runs away underfoot, a roll of seamless paper is clamped to a stand "
+    "behind her, and a folded reflector leans against the far wall.")
+
+DIRECTED_LOOK_ARMS = [("hair-only", HAIR), ("directed-look", DIRECTED_LOOK)]
 
 # Fresh seeds, shared across the three arms. Shared seeds do not make the same
 # photograph here ([[idevgen-block-format-beats-framing]]), they only hold the
@@ -149,6 +198,8 @@ def main() -> int:
                     help="one arm of ten: the camisole with the knickers clause removed")
     ap.add_argument("--identity", action="store_true",
                     help="one arm of ten: candid's look on directed's bench, against 378's unwritten control")
+    ap.add_argument("--directed-look", action="store_true",
+                    help="two arms of ten: the hair sentence alone, and a look written in directed's own voice")
     args = ap.parse_args()
 
     act = acts_from_seed()[ACT_KEY]
@@ -164,31 +215,46 @@ def main() -> int:
         assert word not in LONG_KNICKERS.lower(), word
     assert "camisole" in WARDROBE and "neckline" in WARDROBE
 
-    if args.identity:
+    if args.directed_look:
+        # Both arms must carry candid's hair sentence verbatim and an empty
+        # wardrobe, so the pair differs by the register and the room alone and
+        # the control stays session 378's `unwritten` arm.
+        assert HAIR in BENCH["candid"]["look"], HAIR
+        assert HAIR in DIRECTED_LOOK
+        for word in ("small sensor", "sensor noise", "washed-out", "motion blur",
+                     "no studio lighting"):
+            assert word not in DIRECTED_LOOK.lower(), word
+        arms = [(label, "", {**bench, "look": look})
+                for label, look in DIRECTED_LOOK_ARMS]
+    elif args.identity:
         # The control is session 378's `unwritten` arm, so this arm must carry
         # the same empty wardrobe: the look is the only thing that moves.
-        bench = {**bench, "look": BENCH["candid"]["look"]}
-        arms = [("candid-look", "")]
-        print(f"look  {bench['look'][:72]!r}...")
-        print("wardrobe, camera, framing, act and seeds are session 378's\n")
+        arms = [("candid-look", "", {**bench, "look": BENCH["candid"]["look"]})]
     elif args.top_only:
         # The arm is only worth shooting if it is directed's own camisole clause
         # with the knickers gone and NOTHING else reworded.
         assert WARDROBE.startswith(TOP_ONLY[:-1]), TOP_ONLY
         assert "knickers" in WARDROBE and "knickers" not in TOP_ONLY
-        arms = [("top-only", TOP_ONLY)]
+        arms = [("top-only", TOP_ONLY, bench)]
     else:
-        arms = ARMS
+        arms = [(label, worn, bench) for label, worn in ARMS]
+
+    # An arm may differ from directed's bench in ONE key. A second difference is
+    # two experiments in one session and there is no reading that separates them.
+    for label, _worn, b in arms:
+        differs = [k for k, v in b.items() if BENCH["directed"][k] != v]
+        assert len(differs) <= 1, (label, differs)
 
     print(f"act  {ACT_KEY}: {wording}\n")
-    for label, worn in arms:
-        print(f"{label:14} {len(worn.split()):2} words  {worn!r}")
+    for label, worn, b in arms:
+        print(f"{label:14} wardrobe {len(worn.split()):2} words, "
+              f"look {len(b['look'].split()):3} words  {(b['look'] or worn)[:56]!r}")
 
     shots = [
         {"label": f"{label}-s{i + 1}",
-         "prompt": prompt_for(wording, bench, wardrobe=worn),
+         "prompt": prompt_for(wording, arm_bench, wardrobe=worn),
          "verbatim": True, "seed": seed, "count": 1}
-        for label, worn in arms
+        for label, worn, arm_bench in arms
         for i, seed in enumerate(SEEDS)
     ]
     print(f"\n{len(arms)} arms x {len(SEEDS)} shared seeds = {len(shots)} photographs")
@@ -200,7 +266,9 @@ def main() -> int:
             print(shots[i * len(SEEDS)]["prompt"])
         return 0
 
-    if args.identity:
+    if args.directed_look:
+        name = "DIRECTED'S LOOK - the hair sentence alone, and a look in directed's voice, 10 seeds each"
+    elif args.identity:
         name = "IDENTITY - candid's look on directed's bench, 10 seeds, control is 378 unwritten"
     elif args.top_only:
         name = "THE PROFILE vs THE WARDROBE - the camisole without its knickers, 10 seeds"

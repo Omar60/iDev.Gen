@@ -156,39 +156,64 @@ Length is ruled out by the control rather than by argument: zero words renders
 9/10 and fifteen, nineteen and twenty words all render 0/10, so the arms are not
 ordered by length.
 
-## The Look Against the Identity Drift
+## The Look Decides Which Hair Colour a Session Is
 
-Session 380, ten photographs, 2026-09-03. The control was already shot: session
-378's `unwritten` arm is the same act, the same ten seeds and the same empty
-wardrobe, so this arm moves ONE key -- candid's look pasted onto directed's
-otherwise empty one.
+Sessions 380 and 381, thirty photographs, 2026-09-03. The control was already
+shot: session 378's `unwritten` arm is the same act, the same ten seeds and the
+same empty wardrobe, so each arm moves ONE key -- the look.
 
-Counted off a head-crop sheet of all forty frames, blonde against the character:
+**Read the first version of this section as retracted.** It counted blondes and
+called every brunette frame identity drift. The LoRA was trained on both: Jiroko
+is blonde and can be brunette, and neither is the wrong woman. What the counts
+actually measure is whether the ten frames of a session agree with each other,
+which is the requirement a session has -- one look, held constant, or it is not
+one shoot.
 
-| arm | look | wardrobe | blonde | profile |
-|---|---|---|---|---|
-| `unwritten` (378) | empty | none | 7/10 | 9/10 |
-| `camisole` (378) | empty | 19 words | 4/10 | 0/10 |
-| `top-only` (379) | empty | 15 words | 2/10 | 0/10 |
-| `candid-look` (380) | candid's | none | **10/10** | **10/10** |
+| arm | look | wardrobe | blonde | brunette | agree | profile |
+|---|---|---|---|---|---|---|
+| `unwritten` (378) | empty | none | 7 | 3 | 7/10 | 9/10 |
+| `camisole` (378) | empty | 19 words | 4 | 6 | 6/10 | 0/10 |
+| `top-only` (379) | empty | 15 words | 2 | 8 | 8/10 | 0/10 |
+| `hair-only` (381) | one sentence | none | 1 | 9 | **9/10** | 10/10 |
+| `candid-look` (380) | candid's | none | 10 | 0 | **10/10** | 10/10 |
+| `directed-look` (381) | directed's | none | 10 | 0 | **10/10** | 10/10 |
 
-**Directed's empty look is a real cause of the drift, and pasting candid's look
-in is the fix.** Session 373 found the same thing from the other side on a
-different pose -- 10/10 with the full look, 2/10 with none -- so this is a
-replication and not a first sighting.
+**A look of any length pins the colour; an empty look leaves the session
+undecided.** Three frames in ten disagreeing is not a wrong character, it is a
+shoot that is not one shoot, and that is the defect worth fixing. Which colour
+you land on is a property of the look's text, not of its length: one sentence
+about her hair lands on brunette 9 times in 10, and either of the two full looks
+lands on blonde 10 times in 10.
 
-Read the single-key pair honestly: 7/10 against 10/10 at n=10 does not separate
-on its own. What the arm is worth is the perfect cell plus 373's independent
-perfect cell, not the three-frame difference.
+Session 373 found the same shape from the other side on a different pose and
+called it identity too; re-read it as colour agreement.
 
-**The look costs the geometry nothing.** All ten frames are clean ninety-degree
-profiles, full body with her feet in frame, in a furnished room -- against 9/10
-and a tighter frame in the control. So candid's look on directed's bench buys
-the character AND the profile at the same time, and it is the configuration to
-reach for when a hard geometry is wanted.
+## What directed's look should say
 
-The wardrobe moves identity in the same direction it moves the geometry: 7/10
-blonde undressed, 4/10 and 2/10 with a garment written, on an otherwise
-identical line. That is one more sign that the wardrobe clause selects a whole
+`directed-look` is the text this session shipped, written to candid's structure
+-- register, hair, light, room -- and in directed's own voice: a tripod instead
+of a phone, shaped light instead of a bare bulb, a working studio instead of a
+bedroom at night. Candid's own text was never a candidate: its first sentence is
+an amateur-technique register, and pasting it into directed would not give
+directed a look, it would turn directed into candid.
+
+It wins on every count that was measured:
+
+- **colour agreement 10/10**, level with candid's look and above `hair-only`;
+- **the profile 10/10**, full body with her feet in frame, against 9/10 and a
+  frame cropped at the knee with the hair sentence alone;
+- **the room it names is built** -- softbox, tripod, seamless paper roll and
+  reflector arrive, which is [[idevgen-room-ban-foreign-only]] behaving as
+  measured, and it answers the code's own complaint that a directed shoot with
+  no room reads as posed in a void.
+
+`hair-only` is not a failure and is worth keeping in mind: one sentence buys
+9/10 agreement. It costs the framing, which is the reason it is not the default.
+
+## The wardrobe moves agreement the same way it moves geometry
+
+On the empty-look bench, writing a garment takes agreement from 7/10 to 6/10 and
+8/10 while taking the profile from 9/10 to 0/10. Not decisive at n=10 by itself,
+but it points where the geometry pointed: the wardrobe clause selects a whole
 photograph -- woman, angle and crop together -- rather than dressing the one the
-rest of the line describes. It is not decisive at n=10 by itself.
+rest of the line describes.

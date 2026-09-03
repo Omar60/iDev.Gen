@@ -11,6 +11,15 @@ import { composed, lookFromPhoto, photoDataUri, rewriteLook, rewriteWardrobe } f
 // reads the component seed. No endpoint and no table: a room is a starting text
 // for `session.look`, not a row the draw deals.
 import candidRooms from '../../../data/candid-rooms-seed.json'
+// Directed's own, added session 381. Candid's text could never serve here: its
+// first sentence is an amateur-technique register, so offering it on a directed
+// session would not give directed a look, it would turn directed into candid.
+import directedLooks from '../../../data/directed-looks-seed.json'
+
+// Every row carries the manner it was measured on, and the picker owes the
+// operator only the ones that belong to the session being written. Before this
+// it offered candid's bedrooms on a directed shoot.
+const LOOKS = [...candidRooms, ...directedLooks]
 
 export default function ModelDetail({ id }) {
   const [model, setModel] = useState(null)
@@ -270,12 +279,14 @@ export default function ModelDetail({ id }) {
           <select value=""
                   title="Fill the look with a measured room. Every one of these was rendered; the text stays editable."
                   onChange={(e) => {
-                    const room = candidRooms.find((r) => r.key === e.target.value)
+                    const room = LOOKS.find((r) => r.key === e.target.value)
                     if (room) setNewSession({ ...newSession, look: room.look })
                   }}>
             <option value="">Start from a measured room…</option>
-            {candidRooms.map((r) => (
-              <option key={r.key} value={r.key}>{r.label} — offers {r.offers}</option>
+            {LOOKS.filter((r) => r.manner === newSession.manner).map((r) => (
+              <option key={r.key} value={r.key}>
+                {r.label}{r.offers ? ` — offers ${r.offers}` : ''}
+              </option>
             ))}
           </select>
           <textarea rows={2} value={newSession.look}
