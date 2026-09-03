@@ -680,3 +680,46 @@ def test_a_vocabulary_that_asks_two_questions_refuses_a_pass_that_names_neither(
     missing = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera&axis=height")
     assert missing.status_code == 422
     assert "side-level" in missing.json()["detail"]
+
+
+def test_a_menu_never_offers_the_same_sentence_twice(client, seeded):
+    """Directed's cameras are described in two seed files -- nine as sentences,
+    49 as terms -- so the same camera carries a different `family` in each and
+    both families need a reading, word for word the same. On one menu that is a
+    coin toss, and `arrived` scores the toss: session 383 had three photographs
+    of ten come back with no majority in three passes because the votes split
+    between `shoulder` and `over-shoulder`, which are one sentence.
+
+    Merging the families is not the fix -- they are shared vocabulary between
+    manners, and renaming directed's out from under the arrangement rows breaks
+    the camera fitting. So the duplication stays in the catalogue and the menu
+    drops it, keeping the key THIS deck asked for.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "one sentence once",
+        "manner": "directed", "checkpoint": "ckpt1", "shots": [],
+    }).json()["id"]
+    shot = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": "side-level", "wordings": [{"key": "side-level", "text": "side"}]},
+        "act": {"key": "astride", "wordings": [{"key": "astride", "text": "astride"}]},
+        "framing": {"key": "full-length", "wordings": [{"key": "full-length", "text": "full"}]},
+        "mode": "exploratory",
+    }).json()["ids"][0]
+    db.run("UPDATE shot SET status='done' WHERE id=?", shot)
+
+    db.run("DELETE FROM reading WHERE slot='camera' AND manner='directed'")
+    same = "The camera is to one side of her."
+    for key in ("side-level", "side"):
+        client.post("/api/readings", json={
+            "slot": "camera", "manner": "directed", "key": key, "label": same})
+    client.post("/api/readings", json={
+        "slot": "camera", "manner": "directed", "key": "front",
+        "label": "Her navel faces the lens."})
+
+    body = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera").json()
+    keys = sorted(r["key"] for r in body["readings"])
+    # One option per sentence, and the survivor is the family the deck drew --
+    # recording a correct reading under a spelling nobody drew would score it a
+    # miss.
+    assert keys == ["front", "side-level"], keys
+    assert len({r["label"] for r in body["readings"]}) == len(body["readings"])

@@ -4044,6 +4044,37 @@ def get_judge_pass(sid: int, slot: str, axis: str = ""):
         else:
             shots.append(r["id"])
 
+    # A menu never offers the same sentence twice. Directed's cameras are
+    # described in two seed files -- the nine furniture-free forms as sentences
+    # in one, the 49 terms in the other -- so the same camera carries a
+    # different `family` in each and both families need a reading, word for
+    # word the same. On one menu that is a coin toss, and `arrived` then scores
+    # the toss: session 383 had three photographs of ten come back with no
+    # majority in three passes because the votes split between `shoulder` and
+    # `over-shoulder`, which are one sentence.
+    #
+    # Merging the families is not the fix. They are shared vocabulary BETWEEN
+    # manners -- an arrangement row names the camera families that can see it,
+    # one list for all three manners -- so renaming directed's out from under
+    # them breaks the camera fitting (`test_a_planted_arrangement_gets_a_camera_
+    # that_can_see_it`). The duplication belongs to the catalogue; what the
+    # judge sees does not have to carry it.
+    #
+    # When one sentence has several keys, the survivor is the key THIS DECK
+    # asked for. That is not the expected answer leaking into the menu: every
+    # key in the group is the same sentence, so the judge's choice is unchanged
+    # either way -- it only decides which of two spellings a hit is recorded
+    # under, and recording it under a spelling the deck never drew would score a
+    # correct reading as a miss.
+    by_label: dict[str, list[dict]] = {}
+    for r in readings:
+        by_label.setdefault(r["label"].strip().lower(), []).append(r)
+    keep = set()
+    for group in by_label.values():
+        drawn_here = [r for r in group if r["key"] in photographed_families]
+        keep.add((drawn_here or group)[0]["id"])
+    readings = [r for r in readings if r["id"] in keep]
+
     missing = [f for f in sorted(photographed_families) if f not in reading_keys]
     if missing:
         raise HTTPException(

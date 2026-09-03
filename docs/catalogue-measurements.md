@@ -347,3 +347,55 @@ Read it as a verdict on the CAMERA and not on the pose. The act arrives 10 of 10
 and the framing 9; what costs the trio is `side view`, directed's deliberately
 weak two-word camera term. The obvious next arm is the same act and framing with
 a camera clause that is a sentence instead of a term.
+
+## The Camera as a Sentence, Against the Same Term
+
+Session 383, ten photographs, 2026-09-03. Same act, same framing, same look,
+same wardrobe muting, same checkpoint as session 382; the only clause that moves
+is the camera.
+
+    382   `side view`                                       the two-word term
+    383   `Taken from her right side, her body in full profile`   the sentence
+
+The sentence is `side-right` from `catalogue-seed.json`, added to the store for
+this run rather than reworded, so the arm measures the catalogue's own form.
+
+| cell | act | framing | camera | judged / arrived | state |
+|---|---|---|---|---|---|
+| `side view` (382) | `leaning` 10/10 | `whole-body` 9/10 | `side-level` 7/10 | 10 / 7 | dead |
+| `side-right` (383) | `leaning` 10/10 | `whole-body` 10/10 | `side` 8/10 | 10 / **8** | **verified** |
+
+**Read this as a threshold crossing and not as a measured difference.** Eight
+against seven at n=10 separates nothing; the two cells land on opposite sides of
+the 8-in-10 bar by one photograph. What the arm does show is that the sentence
+is not WORSE, and that the camera is the limiting slot in both -- the act
+arrives 10 of 10 either way and the framing 9 or 10.
+
+Two things the arm changes at once, said out loud: the sentence is longer than
+the term AND it names which side she is seen from, where `side view` left the
+sampler to choose. Every sentence form in this catalogue names a side, so the
+two cannot be separated without writing a form the catalogue does not hold.
+
+The misses in both arms are `over-shoulder`: the judge reads a few frames as
+more behind her than beside her. That is the honest residue, and it is what a
+third arm would have to attack.
+
+### The first run of this arm was unreadable, and the reason is worth keeping
+
+Judged against the vocabulary as it stood, session 383 came back `side-level` 5,
+with **three photographs of ten having no majority in three passes**. The votes
+were splitting between `shoulder` and `over-shoulder`, and between `behind` and
+`rear` -- pairs that are one sentence under two keys, so two passes could agree
+on the answer and still fail to agree on a key.
+
+`judge-pass` now drops a reading whose sentence is already on the menu, keeping
+the key the deck actually drew. Re-run against the deduped menu, the same
+photographs came back `side` 8, `over-shoulder` 2, no ties at all.
+
+**Merging the families was tried first and reverted.** Camera family names are
+shared vocabulary BETWEEN manners -- an arrangement row names the camera
+families that can see it, in one list serving directed, candid and selfie -- so
+renaming directed's out from under them breaks the camera fitting. The
+duplication belongs to the catalogue; what the judge is shown does not have to
+carry it. A first attempt also re-filed candid and selfie rows by matching on
+slot alone, which the suite caught.
