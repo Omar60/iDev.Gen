@@ -1,0 +1,100 @@
+{
+  "garments": [
+    {
+      "key": "grey-sweatshirt",
+      "wording": "an oversized grey sweatshirt with the sleeves pushed up her forearms",
+      "aside": ""
+    },
+    {
+      "key": "navy-tshirt",
+      "wording": "a faded navy cotton t-shirt with a wide rounded neckline, the hem hanging loose",
+      "aside": ""
+    },
+    {
+      "key": "cream-camisole",
+      "wording": "a cream cotton jersey camisole with narrow straps and a softly rounded neckline",
+      "aside": ""
+    },
+    {
+      "key": "white-blouse",
+      "wording": "a white cotton blouse with a ruffled collar and puffed short sleeves",
+      "aside": ""
+    },
+    {
+      "key": "red-slip-dress",
+      "wording": "a red satin slip dress",
+      "aside": "a red satin slip dress, the hem pushed up over her hips"
+    },
+    {
+      "key": "black-leggings",
+      "wording": "black leggings",
+      "aside": ""
+    },
+    {
+      "key": "charcoal-joggers",
+      "wording": "charcoal lounge joggers",
+      "aside": ""
+    },
+    {
+      "key": "black-satin-skirt",
+      "wording": "a black satin skirt",
+      "aside": "a black satin skirt, pushed up over her hips"
+    },
+    {
+      "key": "black-knickers",
+      "wording": "black cotton knickers",
+      "aside": "black cotton knickers, pulled aside"
+    },
+    {
+      "key": "black-lace-bralette",
+      "wording": "a black lace bralette with thin straps and scalloped edges",
+      "aside": ""
+    }
+  ],
+  "outfits": [
+    {
+      "key": "sweatshirt-and-leggings",
+      "label": "Sweatshirt and leggings",
+      "garments": [
+        "black-leggings",
+        "grey-sweatshirt",
+        "black-knickers"
+      ]
+    },
+    {
+      "key": "tshirt-and-joggers",
+      "label": "T-shirt and joggers",
+      "garments": [
+        "charcoal-joggers",
+        "navy-tshirt",
+        "black-knickers"
+      ]
+    },
+    {
+      "key": "camisole-and-knickers",
+      "label": "Camisole and knickers",
+      "garments": [
+        "cream-camisole",
+        "black-knickers"
+      ]
+    },
+    {
+      "key": "blouse-and-skirt",
+      "label": "Blouse and skirt",
+      "garments": [
+        "black-satin-skirt",
+        "white-blouse",
+        "black-lace-bralette",
+        "black-knickers"
+      ]
+    },
+    {
+      "key": "slip-dress",
+      "label": "Slip dress",
+      "garments": [
+        "red-slip-dress",
+        "black-knickers"
+      ]
+    }
+  ]
+}

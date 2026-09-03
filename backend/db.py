@@ -228,6 +228,56 @@ CREATE UNIQUE INDEX IF NOT EXISTS reading_base ON reading (slot, manner, key)
 CREATE UNIQUE INDEX IF NOT EXISTS reading_session ON reading (slot, manner, session_id, key)
     WHERE session_id IS NOT NULL;
 
+-- The wardrobe catalogue. Its own tables and NOT a fourth `component` slot:
+-- the component CHECK is the three dimensions of a cell, and a garment is not
+-- one of them. A cell keyed on four slots would multiply the matrix by the
+-- wardrobe and leave every measurement in it unreachable.
+--
+-- A garment is ONE piece of clothing, written the way it goes in the line. An
+-- outfit is an ordered list of them, and the order is the order they COME OFF —
+-- which is the whole reason the catalogue exists: N garments derive N+1 wardrobe
+-- states, and each state is composed by naming only what she is still WEARING.
+-- A state written as what came off ("The leggings are off") puts the garment's
+-- word in the line, the crop law reads it as her feet, and every framing above
+-- the knee leaves the pool for the whole run. That was a note somebody had to
+-- remember; here it cannot be written.
+--
+-- No `rung` column. Which part of her a garment reaches is `crop.lowest_named`
+-- over its own wording, and that is the same calculation the crop law runs on
+-- the composed line. A second copy of it here is a second answer to "how low
+-- does this go", and this repo has found that bug four times.
+CREATE TABLE IF NOT EXISTS garment (
+    id         INTEGER PRIMARY KEY,
+    key        TEXT NOT NULL,
+    wording    TEXT NOT NULL,
+    -- The same garment, moved out of the way instead of taken off: "black cotton
+    -- knickers, pulled aside". Empty for a garment that cannot be moved — leggings
+    -- and jeans come off or they do not, and there is no third state of them.
+    --
+    -- It buys a stage the arc could not otherwise reach. An act with a toy in it
+    -- does NOT need her undressed, which is what `needs: nude` says; it needs
+    -- access, and a garment that can be moved gives access while she is still
+    -- wearing it. Without this the arc jumps from `knickers` straight to
+    -- `nothing at all` and every such act is a photograph of a naked woman.
+    aside      TEXT NOT NULL DEFAULT '',
+    retired_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS garment_key ON garment (key);
+
+CREATE TABLE IF NOT EXISTS outfit (
+    id         INTEGER PRIMARY KEY,
+    key        TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    -- Garment keys, comma-separated, in the order they come off.
+    garments   TEXT NOT NULL,
+    retired_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS outfit_key ON outfit (key);
+
 CREATE INDEX IF NOT EXISTS ix_shot_session ON shot(session_id);
 CREATE INDEX IF NOT EXISTS ix_session_model ON session(model_id);
 """
@@ -296,6 +346,10 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
     for old, new in (("look_index", "shot_index"), ("look_label", "shot_label")):
         if old in shot_cols and new not in shot_cols:
             conn.execute(f"ALTER TABLE shot RENAME COLUMN {old} TO {new}")
+
+    if "garment" in {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}             and "aside" not in columns("garment"):
+        conn.execute("ALTER TABLE garment ADD COLUMN aside TEXT NOT NULL DEFAULT ''")
 
     if "look" not in columns("session"):
         conn.execute("ALTER TABLE session ADD COLUMN look TEXT NOT NULL DEFAULT ''")

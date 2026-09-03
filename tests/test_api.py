@@ -6970,7 +6970,7 @@ def test_an_act_is_drawable_only_when_the_run_provides_what_it_needs(client, see
         "camera": [_candidate("cam-x", "taken from her left side")],
         "act": [_candidate("act-plain", "she leans against the wall"),
                 dict(_candidate("act-him", "she is astride him, two people in frame"), needs="him"),
-                dict(_candidate("act-nude", "she lies back with a hand between her legs"), needs="nude")],
+                dict(_candidate("act-nude", "she lies back with a hand between her legs"), needs="access")],
         "framing": [_candidate("frame-x", "full body")],
     }
 
@@ -6998,3 +6998,130 @@ def test_an_act_is_drawable_only_when_the_run_provides_what_it_needs(client, see
     assert drawn(with_him=True, bare=True) == {"act-plain", "act-him", "act-nude"}
 
 
+# ------------------------------------------------------------------ wardrobe
+
+WARDROBE = {
+    "garments": [
+        {"key": "jumper", "wording": "a grey jumper"},
+        {"key": "jeans", "wording": "blue jeans"},
+    ],
+    "outfits": [{"key": "everyday", "label": "Everyday", "garments": ["jeans", "jumper"]}],
+}
+
+
+def test_the_wardrobe_catalogue_imports_and_reads_back(client, seeded):
+    """Garments and outfits go in together and come back together: an outfit is
+    a list of garment keys and is unreadable without them.
+    """
+    assert client.post("/api/wardrobe/import", json=WARDROBE).json() == {"added": 3, "skipped": 0}
+    got = client.get("/api/wardrobe").json()
+    assert [g["key"] for g in got["garments"]] == ["jeans", "jumper"]
+    assert got["outfits"][0]["garments"] == "jeans,jumper", got["outfits"]
+
+
+def test_importing_the_wardrobe_twice_rewords_nothing(client, seeded):
+    """Idempotent on `key`, the rule the component and reading imports keep. A
+    garment's wording is the text of every state that carries it, and a
+    re-import must never re-word a session already shot.
+    """
+    client.post("/api/wardrobe/import", json=WARDROBE)
+    reworded = {"garments": [{"key": "jumper", "wording": "A COMPLETELY DIFFERENT JUMPER"}],
+                "outfits": []}
+    assert client.post("/api/wardrobe/import", json=reworded).json() == {"added": 0, "skipped": 1}
+    got = client.get("/api/wardrobe").json()
+    assert [g["wording"] for g in got["garments"] if g["key"] == "jumper"] == ["a grey jumper"]
+
+
+def test_an_outfit_naming_a_garment_nobody_has_is_refused_before_any_insert(client, seeded):
+    """A half-imported wardrobe is an arc with a hole in the middle, and the
+    operator would meet it as a missing stage rather than as an error. The check
+    runs over the whole payload first: a refusal stores nothing, including the
+    garments listed alongside the bad outfit.
+    """
+    r = client.post("/api/wardrobe/import", json={
+        "garments": [{"key": "scarf", "wording": "a wool scarf"}],
+        "outfits": [{"key": "winter", "label": "Winter", "garments": ["scarf", "ghost-coat"]}],
+    })
+    assert r.status_code == 422, r.text
+    assert "ghost-coat" in r.json()["detail"], r.json()["detail"]
+    got = client.get("/api/wardrobe").json()
+    assert got["garments"] == [] and got["outfits"] == [], got
+
+
+def test_an_act_that_needs_access_lands_only_on_a_photograph_whose_wardrobe_gives_it(client, seeded):
+    """The correction that made `needs` per-photograph.
+
+    `bare` is a property of the RUN — it said "she is undressed for this shoot" —
+    so a run with it on could hand a toy to photograph 1 in a sweatshirt, and a
+    run with it off could not draw the act at all. But a toy or a hand does not
+    need her undressed: it needs ACCESS, and the arc reaches a stage that gives it
+    while she is still wearing something (`black cotton knickers, pulled aside`).
+
+    So the caller deals `access` alongside `wardrobes`, one answer per photograph,
+    and the draw checks the act against the position the trio would take. Here:
+    four photographs, access on the last two only, and the act that needs it must
+    appear in neither of the first two.
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "access by photograph",
+        "manner": "directed", "checkpoint": "test-checkpoint", "shots": [],
+    }).json()["id"]
+    # Two cameras, because a run of four needs four DISTINCT trios in the pool:
+    # the draw repeats a slot's value when it has to, never a whole trio.
+    r = client.post(f"/api/sessions/{sid}/compose-run", json={
+        "count": 4, "mode": "exploratory",
+        "candidates": {
+            "camera": [_candidate("cam-a", "taken from her left side"),
+                       _candidate("cam-b", "taken from behind her")],
+            "act": [_candidate("act-plain", "she leans against the wall"),
+                    dict(_candidate("act-access", "she lies back with a hand between her legs"),
+                         needs="access")],
+            "framing": [_candidate("frame-x", "full body")],
+        },
+        "wardrobes": ["She wears blue jeans.", "She wears blue jeans.",
+                      "She wears black cotton knickers, pulled aside.",
+                      "She wears nothing at all."],
+        "access": [False, False, True, True],
+        # Off, and it must not matter: the arc answers for every photograph here,
+        # and the arc is the more specific answer.
+        "bare": False,
+    })
+    assert r.status_code == 200, r.text
+    rows = db.q("SELECT components, prompt FROM shot WHERE session_id=? ORDER BY shot_index", sid)
+    acts = [json.loads(x["components"])["act"]["concept"] for x in rows]
+    assert len(acts) == 4, acts
+    assert "act-access" not in acts[:2], (
+        f"an act needing access was dealt to a photograph in jeans: {acts}")
+    # And it is reachable at all — the point of the change is that `bare: False`
+    # no longer takes the act off the table for the whole run.
+    assert "act-access" in acts[2:], acts
+    assert "pulled aside" in rows[2]["prompt"], rows[2]["prompt"]
+
+
+def test_bare_still_answers_for_a_photograph_the_arc_says_nothing_about(client, seeded):
+    """A hand-typed arc is prose with no garment list behind it, and a session
+    with no arc has nothing at all. Both send no answer for the photograph, and
+    `bare` decides it the way it did before the wardrobe catalogue existed — so
+    every session that predates it composes exactly as it did.
+    """
+    candidates = {
+        "camera": [_candidate("cam-x", "taken from her left side")],
+        "act": [dict(_candidate("act-access", "she lies back with a hand between her legs"),
+                     needs="access")],
+        "framing": [_candidate("frame-x", "full body")],
+    }
+
+    def queued(**flags):
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"fallback {sorted(flags.items())}",
+            "manner": "directed", "checkpoint": "test-checkpoint", "shots": [],
+        }).json()["id"]
+        r = client.post(f"/api/sessions/{sid}/compose-run",
+                        json={"count": 1, "candidates": candidates, "mode": "exploratory", **flags})
+        return r.status_code
+
+    assert queued(bare=True) == 200
+    assert queued(bare=False) == 422
+    # An arc shorter than the run leaves the photographs past its end to `bare`.
+    assert queued(bare=True, access=[]) == 200
+    assert queued(bare=False, access=[None]) == 422

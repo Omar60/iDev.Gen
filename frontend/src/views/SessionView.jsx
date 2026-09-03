@@ -8,6 +8,7 @@ import { BaseModelSelect, SamplerSelect } from './Models.jsx'
 import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary } from '../kinds.js'
 import { candidatePool, defaultCount, extrasFor, fillCellDefaultCount } from '../compose.js'
 import { composed, spread } from '../enhance.js'
+import { arcFor, outfits, statesFor } from '../wardrobe.js'
 
 /** The wardrobe the shoot passes through, in order — the arc a composed run is
  *  dealt, one state per photograph after `spread`.
@@ -18,8 +19,24 @@ import { composed, spread } from '../enhance.js'
  *  composer could undress) means the session's one wardrobe, in every
  *  photograph.
  */
-const wardrobeStates = (session) =>
-  (session?.settings?.wardrobe_states || []).filter((line) => line.trim())
+/*  Two sources, one of them derived. `settings.outfit` names an outfit in the
+ *  wardrobe catalogue and the arc comes out of its garment order — N garments,
+ *  N+1 states, each naming only what she is still wearing. `wardrobe_states` is
+ *  the hand-typed override, and it wins when it has anything in it: a shoot that
+ *  needs a state the catalogue cannot derive should not have to leave the
+ *  catalogue to get one.
+ */
+const wardrobeArc = (session) => {
+  const typed = (session?.settings?.wardrobe_states || []).filter((line) => line.trim())
+  // A typed state is prose and has no garment list behind it, so it carries no
+  // answer about access: `null`, and the run's `bare` checkbox decides it the way
+  // it did before the catalogue existed. Guessing from the words would be a
+  // second answer to a question `crop.lowest_named` already answers for the
+  // stages that come from an outfit.
+  return typed.length ? typed.map((text) => ({ text, access: null })) : arcFor(session?.settings?.outfit)
+}
+
+const wardrobeStates = (session) => wardrobeArc(session).map((s) => s.text)
 
 /** A checkpoint's name for a session title: no folder, no extension. Three copies
  *  called "shoot (copy)" are three copies you have to open to tell apart. */
@@ -84,6 +101,14 @@ export default function SessionView({ id }) {
   // photograph dealt a dressed wardrobe state cannot come back as penetration
   // — measured on session 330, three photographs of nine.
   const [withHim, setWithHim] = useState(false)
+  // Whether she is undressed for the next composed run. Same shape as `withHim`
+  // and the same reason: an act that needs her bare (a toy, a hand between her
+  // legs) is not drawn at all unless the run says so, because dealing one to a
+  // stage still in a sweatshirt is the contradiction `with him` exists to stop.
+  // It was on the payload from the day the flag shipped and on no screen, so
+  // the seven solo acts of the candid catalogue were undrawable from this
+  // button while the endpoint was happy to draw them.
+  const [bare, setBare] = useState(false)
   // Shoot the composed takes through the session's reference graph. Its own
   // switch and not a consequence of the one above: guiding the body while the
   // line still writes the clothes is a real take, and one flag carrying two
@@ -168,15 +193,21 @@ export default function SessionView({ id }) {
   // see through. A run is a shoot, and a shoot carries them.
   const composeRun = (n, mode) => call(async () => {
     const candidates = candidatePool(s.manner)
+    const dealt = spread(wardrobeArc(s), n)
     await api.post(`/api/sessions/${id}/compose-run`, {
       count: n, candidates, mode, mute_wardrobe: muteWardrobe, reference: composeGuided,
-      with_him: withHim,
+      with_him: withHim, bare,
       extras: extrasFor(s.manner, n),
       // The arc, spread over the run by the same function that spreads it over
       // written takes: K states, N photographs, the wardrobe holding still
       // between two photographs of one stage. No states is an empty array, and
       // every photograph is then composed in the session's own wardrobe.
-      wardrobes: spread(wardrobeStates(s), n),
+      // The arc is spread ONCE and then split, so the sentence a photograph is
+      // composed with and the access answer it is judged drawable by come from
+      // the same stage. Spreading the two lists separately is two calculations
+      // that agree until somebody changes one of them.
+      wardrobes: dealt.map((x) => x.text),
+      access: dealt.map((x) => x.access),
     })
   })
 
@@ -508,6 +539,13 @@ export default function SessionView({ id }) {
                      onChange={(e) => setWithHim(e.target.checked)} />
               with him
             </label>
+            <label title="The fallback answer for a photograph the arc says nothing about. An act that needs access - a toy, a hand between her legs - is drawn where the dealt wardrobe gives access: nothing covering her below the waist, or the garment pulled aside. This decides the photographs an outfit does not: a hand-typed arc, or a session with no arc at all."
+                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+              <input type="checkbox" checked={bare}
+                     disabled={!s.manner || !s.checkpoint || s.running}
+                     onChange={(e) => setBare(e.target.checked)} />
+              access
+            </label>
             {/* Only offered when the session has a reference graph to send them
                 through: without one the runner falls back to the text2image
                 workflow and the flag is a lie the row still records. */}
@@ -835,13 +873,33 @@ export default function SessionView({ id }) {
               is a session row rewritten forty times while somebody types a
               sentence. Empty is the session's one wardrobe in every
               photograph. */}
+          {/* The outfit, and the arc it derives. Picking one writes the session's
+              own wardrobe too: a fill-cell sends no states and composes in
+              `session.wardrobe`, so leaving that pointing at an older outfit
+              would put two shoots in one session and file them under one cell. */}
+          <div style={{ marginTop: 10 }}>
+            <label title="An outfit from the wardrobe catalogue. Its garments come off in the order the outfit lists them, one per state, and the last state is bare.">
+              Outfit
+            </label>
+            <select value={s.settings?.outfit || ''} disabled={running}
+                    onChange={(e) => call(() => api.patch(`/api/sessions/${id}`, {
+                      settings: { outfit: e.target.value },
+                      wardrobe: statesFor(e.target.value)[0] || s.wardrobe,
+                    }))}>
+              <option value="">the session's own wardrobe</option>
+              {outfits().map((o) => (
+                <option key={o.key} value={o.key}>{o.label || o.key}</option>
+              ))}
+            </select>
+          </div>
           <div style={{ marginTop: 10 }}>
             <label title="One wardrobe per line, in order. A composed run spreads them over its photographs, so the shoot undresses without a writer. Empty: the session's wardrobe in every photograph.">
-              Wardrobe states ({wardrobeStates(s).length || "the session's"})
+              Wardrobe states ({wardrobeStates(s).length || "the session's"}
+              {!s.settings?.wardrobe_states?.length && s.settings?.outfit ? ', from the outfit' : ''})
             </label>
             <textarea rows={4} disabled={running} defaultValue={wardrobeStates(s).join('\n')}
                       key={wardrobeStates(s).join('\n')}
-                      placeholder="She wears a black wool coat over a grey jumper…&#10;The coat is off and hangs over the chair back…&#10;…"
+                      placeholder="She wears a black wool coat, and a grey jumper.&#10;She wears a grey jumper.&#10;She wears nothing at all."
                       onBlur={(e) => call(() => api.patch(`/api/sessions/${id}`, {
                         settings: { wardrobe_states: e.target.value.split('\n').filter((l) => l.trim()) },
                       }))} />

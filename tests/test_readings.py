@@ -599,7 +599,7 @@ def test_no_two_person_act_sits_in_a_family_whose_reading_says_she_is_alone():
         for item in json.loads(path.read_text(encoding="utf-8")):
             if not isinstance(item, dict):
                 continue
-            # `needs` also carries 'nude', which is a solo act with a wardrobe
+            # `needs` also carries 'access', which is a solo act with a wardrobe
             # requirement. Only 'him' puts a second person in the frame.
             if item.get("slot") == "act" and (item.get("needs") or "").strip() == "him":
                 acts.append(item)

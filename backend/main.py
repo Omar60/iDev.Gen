@@ -872,6 +872,115 @@ def import_components(items: list[dict] | None = None):
     return {"added": added, "skipped": skipped}
 
 
+# ------------------------------------------------------------------ wardrobe
+
+@app.get("/api/wardrobe")
+def list_wardrobe(all: bool = False):
+    """The wardrobe catalogue: the garments and the outfits made of them.
+
+    One endpoint for both because they are read together and never apart — an
+    outfit is a list of garment keys and is unreadable without them, and the
+    screen that shows one shows the other.
+
+    The undressing is NOT stored. It is derived from the outfit's order
+    (`frontend/src/wardrobe.js:statesFor`), because a stored list of states is a
+    second copy of the same fact and would drift from the garments the moment
+    one is reworded.
+    """
+    where = "" if all else " WHERE retired_at IS NULL"
+    # `reaches` is DERIVED and served rather than stored: how far down a garment
+    # goes is `crop.lowest_named` over its own wording, the same call the crop law
+    # makes on the composed line. Computing it again in the browser would be a
+    # second answer to "how low does this go", which is the bug shape this repo
+    # keeps re-finding; storing it in a column would be a third.
+    def described(g):
+        rung = crop.lowest_named(g["wording"])
+        # `covers` is the question the arc actually asks: is she covered where a
+        # hand or a toy would go. Answered here, next to the ladder, so the
+        # browser reads a boolean instead of comparing rung names it would have
+        # to know the order of.
+        return dict(g, reaches=crop.PART_NAME.get(rung),
+                    covers=rung is not None and rung >= crop.WAIST)
+
+    garments = [described(g)
+                for g in db.q(f"SELECT * FROM garment{where} ORDER BY key")]
+    return {
+        "garments": garments,
+        "outfits": db.q(f"SELECT * FROM outfit{where} ORDER BY key"),
+    }
+
+
+@app.post("/api/wardrobe/import")
+def import_wardrobe(items: dict | None = None):
+    """Import garments and outfits from JSON, or from data/wardrobe-seed.json.
+
+    Idempotent on `key`, the same rule `/api/components/import` and
+    `/api/readings/import` keep: an existing key is SKIPPED and its wording left
+    alone. A garment's wording is the text of every state that carries it, and
+    re-importing a seed must never re-word a session already shot.
+
+    An outfit naming a garment that is not in the store is refused, and refused
+    BEFORE any insert — a half-imported outfit is an outfit whose arc has a hole
+    in the middle, and the operator would meet it as a missing stage rather than
+    as an error.
+    """
+    if items is None:
+        seed_path = ROOT / "data" / "wardrobe-seed.json"
+        if not seed_path.exists():
+            raise HTTPException(404, "data/wardrobe-seed.json not found")
+        items = json.loads(seed_path.read_text(encoding="utf-8"))
+
+    garments = items.get("garments") or []
+    outfits = items.get("outfits") or []
+    known = {r["key"] for r in db.q("SELECT key FROM garment")} | {
+        (g.get("key") or "").strip() for g in garments}
+    for o in outfits:
+        missing = [k for k in _garment_keys(o.get("garments")) if k not in known]
+        if missing:
+            raise HTTPException(
+                422,
+                f"outfit {o.get('key')!r} names garments that are not in the catalogue: "
+                f"{', '.join(missing)}",
+            )
+
+    added = skipped = 0
+    now_ts = db.now()
+    for g in garments:
+        key, wording = (g.get("key") or "").strip(), (g.get("wording") or "").strip()
+        if not (key and wording):
+            raise HTTPException(422, f"a garment needs a key and a wording: {g}")
+        if db.one("SELECT id FROM garment WHERE key=?", key):
+            skipped += 1
+            continue
+        db.run("INSERT INTO garment (key, wording, aside, created_at) VALUES (?,?,?,?)",
+               key, wording, (g.get("aside") or "").strip(), now_ts)
+        added += 1
+    for o in outfits:
+        key, label = (o.get("key") or "").strip(), (o.get("label") or "").strip()
+        keys = _garment_keys(o.get("garments"))
+        if not (key and keys):
+            raise HTTPException(422, f"an outfit needs a key and at least one garment: {o}")
+        if db.one("SELECT id FROM outfit WHERE key=?", key):
+            skipped += 1
+            continue
+        db.run("INSERT INTO outfit (key, label, garments, created_at) VALUES (?,?,?,?)",
+               key, label or key, ",".join(keys), now_ts)
+        added += 1
+    return {"added": added, "skipped": skipped}
+
+
+def _garment_keys(value) -> list[str]:
+    """An outfit's garment keys, from a list or from the comma-separated column.
+
+    Both spellings for the reason `_act_camera_families` takes both: the API
+    serves a list, a raw seed row carries a string, and a test that reads the
+    seed file straight off disk works without a round trip through the endpoint.
+    """
+    if isinstance(value, str):
+        value = value.split(",")
+    return [k.strip() for k in (value or []) if str(k).strip()]
+
+
 # ------------------------------------------------------------------ readings
 
 @app.get("/api/readings")
@@ -1721,15 +1830,29 @@ class ComposeRunIn(BaseModel):
     # so — `candidates` is theirs to narrow, and a run that sends three acts
     # draws from three acts.
     with_him: bool = False
-    # Whether she is undressed for this run. Off by default, and off means an act
-    # that needs her bare is not drawable — the explicit solo acts (a hand between
-    # her legs, a toy, holding herself open) are photographs of a body with
-    # nothing on it, and dealing one to a stage still in a sweatshirt is the same
-    # contradiction `with_him` was added to stop.
+    # The FALLBACK answer for access, used only where `access` below has none.
+    # It was the whole answer once, and being a property of the run was wrong in
+    # both directions: off, the toy acts were undrawable for the entire shoot;
+    # on, one could be dealt to photograph 1 in a sweatshirt. A photograph is what
+    # has a wardrobe, so a photograph is what answers — see `access`.
     #
     # Independent of `with_him`: the acts that need him say so in their own
     # wording and do not need this flag as well.
     bare: bool = False
+    # Whether each photograph's dealt wardrobe gives access, in the order the
+    # shots are queued — the per-photograph answer `bare` can only give per run.
+    # `True` is a stage she can be photographed with a hand or a toy in: nothing
+    # covering her below the waist, or the one garment that is moved aside rather
+    # than taken off. `None` (and an index the list does not reach) means the
+    # caller has no answer for that photograph, and `bare` decides it as before —
+    # which is every hand-typed arc, and every session with no arc at all.
+    #
+    # Dealt by the CALLER for the reason `extras` and `wardrobes` are: the
+    # garments of a stage live in the wardrobe catalogue the browser holds, and
+    # the server has only the composed sentence. A regex over that sentence here
+    # would be a second answer to "is she covered", and the first one is
+    # `crop.lowest_named` — the same call `/api/wardrobe` serves `covers` from.
+    access: list[bool | None] = Field(default_factory=list)
 
 
 _SLOT_COLS = (
@@ -2059,7 +2182,8 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode,
                                              mute_wardrobe=c.mute_wardrobe,
                                              extras=c.extras, wardrobes=c.wardrobes,
-                                             with_him=c.with_him, bare=c.bare)
+                                             with_him=c.with_him, bare=c.bare,
+                                             access=c.access)
     shot_ids: list[int] = []
     for at, (cam_key, act_key, framing_key) in enumerate(best_chosen):
         shot_ids.append(compose_and_queue_shot(
@@ -2117,6 +2241,7 @@ def _draw_n_trio_shots(
     wardrobes: list[str] | None = None,
     with_him: bool = False,
     bare: bool = False,
+    access: list[bool | None] | None = None,
 ) -> tuple[dict, list[tuple[str, str, str]]]:
     """The shared draw used by `compose_run_endpoint` (3.3) and
     `compose_session_endpoint` (3.5). Returns `(by_key,
@@ -2230,23 +2355,36 @@ def _draw_n_trio_shots(
             f"set them on the session before composing",
         )
 
-    # The stage, applied to the CANDIDATES and not to the pool: narrow the list
-    # first and every number downstream is honest by construction â€” the pool, the
-    # no-repeat ceiling, and the "largest fillable" the 422 names. Filtering the
-    # pool instead would leave the refusal quoting a count that includes acts this
-    # run was never allowed to draw.
-    # What this run provides, against what each act needs. An act that needs
-    # nothing is always drawable; one that needs him, or needs her bare, is
-    # drawable only when the run says so. The run is the only thing that knows â€”
-    # the act carries a requirement, not a place in the arc.
-    provides = {""}
-    if with_him:
-        provides.add("him")
-    if bare:
-        provides.add("nude")
+    # `him` is a property of the RUN — he is in the room or he is not — so it
+    # narrows the candidate list once, before the pool is built. Every number
+    # downstream is then honest by construction: the pool, the no-repeat ceiling,
+    # and the "largest fillable" the 422 names all count acts this run could
+    # actually draw.
+    #
+    # `access` is NOT a property of the run. An act with a toy or a hand in it
+    # does not need her undressed, which is what the old `nude` token said; it
+    # needs access, and the arc reaches a stage that gives it — a garment pulled
+    # aside gives access while she still has it on. So it is a property of the
+    # PHOTOGRAPH, checked at the position the trio would take
+    # (`_provides_at` in the greedy) rather than filtered here. Filtering it here
+    # is what made a run either refuse the toy acts entirely or hand one to
+    # photograph 1 in a sweatshirt.
     candidates = dict(candidates,
                       act=[a for a in (candidates.get("act") or [])
-                           if (a.get("needs") or "").strip() in provides])
+                           if (a.get("needs") or "").strip() != "him" or with_him])
+
+    access = list(access or [])
+
+    def _provides_at(at: int) -> set[str]:
+        """What the photograph at position `at` offers an act that needs something.
+
+        The dealt stage answers when it has an answer, and `bare` answers when it
+        does not: a hand-typed arc is prose, and prose has no garment list to read
+        `covers` off. Falling back rather than refusing keeps every session that
+        predates the wardrobe catalogue working exactly as it did.
+        """
+        granted = access[at] if at < len(access) and access[at] is not None else bare
+        return {"", "him"} | ({"access"} if granted else set())
 
     settings = json.loads(session["settings"] or "{}")
     # The wardrobe and the look are part of the composed line, so they are part of
@@ -2382,6 +2520,14 @@ def _draw_n_trio_shots(
                        if slot in spreadable):
                     continue
                 if skip is not None and skip(trio, by_key, family_counts, max_per_family):
+                    continue
+                # The position this trio would take, and what that photograph's
+                # wardrobe offers. In the draw and not after it, the rule this
+                # file keeps everywhere: a constraint checked after the draw is a
+                # constraint the draw does not have, and the "largest fillable"
+                # in the 422 would be a number no compose can reach.
+                if ((by_key["act"].get(act, {}).get("needs") or "").strip()
+                        not in _provides_at(len(chosen))):
                     continue
                 chosen.append(trio)
                 taken.add(trio)
@@ -2814,15 +2960,29 @@ class ComposeSessionIn(BaseModel):
     # so — `candidates` is theirs to narrow, and a run that sends three acts
     # draws from three acts.
     with_him: bool = False
-    # Whether she is undressed for this run. Off by default, and off means an act
-    # that needs her bare is not drawable — the explicit solo acts (a hand between
-    # her legs, a toy, holding herself open) are photographs of a body with
-    # nothing on it, and dealing one to a stage still in a sweatshirt is the same
-    # contradiction `with_him` was added to stop.
+    # The FALLBACK answer for access, used only where `access` below has none.
+    # It was the whole answer once, and being a property of the run was wrong in
+    # both directions: off, the toy acts were undrawable for the entire shoot;
+    # on, one could be dealt to photograph 1 in a sweatshirt. A photograph is what
+    # has a wardrobe, so a photograph is what answers — see `access`.
     #
     # Independent of `with_him`: the acts that need him say so in their own
     # wording and do not need this flag as well.
     bare: bool = False
+    # Whether each photograph's dealt wardrobe gives access, in the order the
+    # shots are queued — the per-photograph answer `bare` can only give per run.
+    # `True` is a stage she can be photographed with a hand or a toy in: nothing
+    # covering her below the waist, or the one garment that is moved aside rather
+    # than taken off. `None` (and an index the list does not reach) means the
+    # caller has no answer for that photograph, and `bare` decides it as before —
+    # which is every hand-typed arc, and every session with no arc at all.
+    #
+    # Dealt by the CALLER for the reason `extras` and `wardrobes` are: the
+    # garments of a stage live in the wardrobe catalogue the browser holds, and
+    # the server has only the composed sentence. A regex over that sentence here
+    # would be a second answer to "is she covered", and the first one is
+    # `crop.lowest_named` — the same call `/api/wardrobe` serves `covers` from.
+    access: list[bool | None] = Field(default_factory=list)
 
 
 @app.post("/api/sessions/{sid}/compose-session")
@@ -2874,7 +3034,7 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     by_key, best_chosen = _draw_n_trio_shots(
         sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread,
         mute_wardrobe=c.mute_wardrobe, extras=c.extras, wardrobes=c.wardrobes,
-        with_him=c.with_him, bare=c.bare)
+        with_him=c.with_him, bare=c.bare, access=c.access)
     ordered = _reorder_to_spread_families(best_chosen, by_key)
     shot_ids: list[int] = []
     # The extra is dealt to the PHOTOGRAPH, so it follows the queue order and not

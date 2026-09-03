@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from './api'
 import { setCatalogue } from './kinds.js'
+import { setWardrobe } from './wardrobe.js'
 import Models from './views/Models.jsx'
 import ModelDetail from './views/ModelDetail.jsx'
 import SessionView from './views/SessionView.jsx'
@@ -63,6 +64,9 @@ export default function App() {
   useEffect(() => {
     api.get('/api/components?all=1')
       .then((data) => setCatalogue(data || []))
+      .catch(() => {})
+    api.get('/api/wardrobe')
+      .then((data) => setWardrobe(data))
       .catch(() => {})
   }, [])
 

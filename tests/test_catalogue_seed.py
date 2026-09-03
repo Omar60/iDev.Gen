@@ -304,7 +304,7 @@ def test_no_two_framing_families_in_one_manner_describe_the_same_crop():
 # undressing itself, the explicit solo acts did not exist at all, and the three
 # acts with a second person were all the same penetration.
 CANDID_ACTS = ROOT / "data" / "candid-acts-seed.json"
-NEEDS = ("", "him", "nude")
+NEEDS = ("", "him", "access")
 
 
 def test_every_candid_act_declares_what_it_needs_and_says_it_in_the_wording():
@@ -313,9 +313,13 @@ def test_every_candid_act_declares_what_it_needs_and_says_it_in_the_wording():
 
     So: an act that needs him has a second person IN the wording (this sampler
     renders one body unless the line plainly says two — measured, thirty frames),
-    and an act that needs nothing has none. `nude` is not asserted against the
+    and an act that needs nothing has none. `access` is not asserted against the
     text: an act needing her bare is one whose ANATOMY is the subject, and it
     names her body rather than the absence of clothes.
+
+    The token was `nude` until it was measured against the shoot it describes: a
+    toy or a hand needs ACCESS, not an undressed woman, and a garment pulled
+    aside gives access while she is still wearing it.
     """
     items = json.loads(CANDID_ACTS.read_text(encoding="utf-8"))
     assert items
