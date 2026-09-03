@@ -36,7 +36,7 @@ import json
 import sys
 import urllib.request
 
-from candidates.candid_rooms import ROOMS
+from candidates.candid_rooms import ROOMS, ROOMS_FIXED, USE_ACTS
 from shoot_directed_poses import CANDID_LOOK, TRIGGER, create_session
 
 # The constant half of candid's look: the capture clause and the hair. Every
@@ -64,8 +64,8 @@ SETTINGS = {
 SEED = 660903001
 
 
-def prompt_for(room: str) -> str:
-    return f"{TRIGGER}. {CAPTURE} {room} {WARDROBE} {CAMERA}. {ACT} {FRAMING}."
+def prompt_for(room: str, act: str = ACT) -> str:
+    return f"{TRIGGER}. {CAPTURE} {room} {WARDROBE} {CAMERA}. {act} {FRAMING}."
 
 
 def main() -> int:
@@ -73,24 +73,44 @@ def main() -> int:
     ap.add_argument("--base", default="http://127.0.0.1:8777")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--run", action="store_true")
+    ap.add_argument("--pairs", action="store_true",
+                    help="second pass: each room in both versions, with an act that "
+                         "USES its furniture, so the pair differs by the room sentence alone")
     args = ap.parse_args()
 
-    arms = [("shipped", SHIPPED_ROOM)] + [(k, t) for k, (t, _o) in ROOMS.items()]
-    shots = [{"label": key, "prompt": prompt_for(room), "verbatim": True,
-              "seed": SEED + i, "count": 1}
-             for i, (key, room) in enumerate(arms)]
+    if args.pairs:
+        # Session 370 built all eight rooms and put every offered piece out of the
+        # body's reach. The pair holds the ACT -- one that sits on, leans against
+        # or lies across that room's furniture -- and moves only the room
+        # sentence, so a difference is the placement and nothing else. The seed is
+        # shared inside a pair for the same reason.
+        arms = []
+        for key in ROOMS:
+            arms.append((f"{key}-before", ROOMS[key][0], USE_ACTS[key]))
+            arms.append((f"{key}-after", ROOMS_FIXED[key][0], USE_ACTS[key]))
+        shots = [{"label": key, "prompt": prompt_for(room, act), "verbatim": True,
+                  "seed": SEED + (i // 2), "count": 1}
+                 for i, (key, room, act) in enumerate(arms)]
+    else:
+        arms = ([("shipped", SHIPPED_ROOM, ACT)]
+                + [(k, t, ACT) for k, (t, _o) in ROOMS.items()])
+        shots = [{"label": key, "prompt": prompt_for(room, act), "verbatim": True,
+                  "seed": SEED + i, "count": 1}
+                 for i, (key, room, act) in enumerate(arms)]
 
-    for (key, room), shot in zip(arms, shots):
-        print(f"{key:14} {len(shot['prompt'].split()):3}w composed   {room[:58]}...")
-    print(f"\n{len(shots)} photographs, one per room, act and everything else held")
+    for (key, room, _act), shot in zip(arms, shots):
+        print(f"{key:22} {len(shot['prompt'].split()):3}w composed   {room[:50]}...")
+    held = "per room and held across each pair" if args.pairs else "held across all arms"
+    print(f"\n{len(shots)} photographs; the act is {held}")
 
     if args.dry_run:
         print("\n--- the shipped arm, in full ---")
         print(shots[0]["prompt"])
         return 0
 
-    out = create_session(args.base, "CANDID ROOMS - 8 candidates against the shipped room",
-                         shots, manner="candid")
+    name = ("CANDID ROOMS pairs - furniture placement, before vs after" if args.pairs
+            else "CANDID ROOMS - 8 candidates against the shipped room")
+    out = create_session(args.base, name, shots, manner="candid")
     sid = out["id"]
     print(f"\nsession {sid} created as a draft, {len(shots)} pending")
     if not args.run:
