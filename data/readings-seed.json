@@ -144,6 +144,12 @@
     "label": "Her face is turned toward the camera with her chin level or lifted and her eyes on the lens. Nothing below her head is being asked about."
   },
   {
+    "slot": "act",
+    "manner": "directed",
+    "key": "leaning",
+    "label": "She is on her feet with her legs straight, her hands or her forearms resting on a surface in front of her, and her shoulders carried forward of her hips."
+  },
+  {
     "slot": "camera",
     "manner": "directed",
     "key": "front",

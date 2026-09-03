@@ -217,3 +217,65 @@ On the empty-look bench, writing a garment takes agreement from 7/10 to 6/10 and
 but it points where the geometry pointed: the wardrobe clause selects a whole
 photograph -- woman, angle and crop together -- rather than dressing the one the
 rest of the line describes.
+
+## The First Anchor Cell for the Profile
+
+Session 382, ten photographs, 2026-09-03. Everything before this on the profile
+was a verbatim written line, which leaves `shot.components` empty and makes a
+cell impossible by design. This one went through the composer:
+
+    camera   side-view            act  wall-facing-forearms
+    framing  crop-full-body       look directed's, from data/directed-looks-seed.json
+    wardrobe muted -- `mute_wardrobe: true`, because any written garment takes
+             this geometry to 0/10
+
+The composed line came back byte-for-byte identical to session 381's
+`directed-look` arm, and the ten photographs reproduce it on fresh random seeds:
+the ninety-degree profile 10/10, full body, the studio built, the hair agreeing
+10/10. **`cell` now holds `side-view / wall-facing-forearms / crop-full-body`
+at judged 10, arrived 10.**
+
+Judged blind by the vision model through the app's own `/api/enhance`, with the
+user's explicit go-ahead to send the photographs, using the new
+`scripts/judge_cell.py`: the model gets one photograph and the slot's readings
+as a lettered menu, shuffled per photograph, and nothing else. Control shots
+from other sessions were interleaved in the same run and answered correctly
+every time -- lying photographs read `lying` 2/2, thigh-cropped photographs read
+`head-to-thigh` 2/2 against a deck that read `whole-body`.
+
+### The first pass found a vocabulary hole, not a dead cell
+
+Run against the catalogue as it stood, the act pass came back **5
+`forward-bend`, 5 nothing, 0 `standing`** -- and `wall-facing-forearms` was filed
+`standing`, so the cell would have been written `arrived 0/10`: a dead verdict on
+a pose that renders perfectly.
+
+The component was mis-filed and the vocabulary had no word for it.
+`standing` reads "torso upright, hips not folded"; the three `forward-bend` rows
+are all a deep fold with the torso parallel to the ground and the hands at the
+shins. A woman leaning onto a wall with her shoulders forward of her hips is
+neither. Two directed acts sat in that gap -- `wall-facing-forearms` and
+`table-hands-flat` -- so the fix is a family and not a re-filing of one row:
+
+    leaning   She is on her feet with her legs straight, her hands or her
+              forearms resting on a surface in front of her, and her shoulders
+              carried forward of her hips.
+
+Written from the ten photographs, not from either component's `judge_label`,
+which is the contamination path the readings feature exists to remove. Re-run
+against it, the same deck reads `leaning` 9/10 and then 10/10, controls 2/2.
+
+### The camera slot cannot be judged this way and was not written
+
+The same pass on the camera came back `hip-level` 6, and `side-level` -- what the
+line asked for -- once. That is not a miss: **directed's 21 camera readings mix
+two independent axes**, the horizontal position (front, side, back,
+over-shoulder) and the height (eye-, shoulder-, hip-, ground-level), and both are
+true of every photograph at once. A single-pick question cannot measure that, and
+posting it would have marked a camera that is side-on in all ten as arriving in
+one.
+
+Nothing was recorded for the camera slot. This is the same defect already
+suspected in `shoulder-level` against `eye-level`, and it is now measured rather
+than suspected: the vocabulary needs splitting into two questions before any
+directed camera cell means anything.
