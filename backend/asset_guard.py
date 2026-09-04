@@ -5,7 +5,11 @@ no tracked file carries a non-English glyph. All strings here are pure ASCII.
 """
 from __future__ import annotations
 
+import re
+from typing import Any
+
 # Terms that mark an entry as school-set, in English.
+# Removed: campus, dormitory, playground, gymnasium, academy (not minors-only).
 SCHOOL_MARKERS_EN: tuple[str, ...] = (
     "school",
     "schoolgirl",
@@ -14,20 +18,15 @@ SCHOOL_MARKERS_EN: tuple[str, ...] = (
     "classroom",
     "classmate",
     "student",
-    "campus",
     "high school",
     "middle school",
     "junior high",
     "elementary school",
     "kindergarten",
-    "academy",
     "locker room",
     "blackboard",
     "chalkboard",
     "school desk",
-    "gymnasium",
-    "playground",
-    "dormitory",
     "sailor suit",
     "sailor uniform",
     "homework",
@@ -36,11 +35,13 @@ SCHOOL_MARKERS_EN: tuple[str, ...] = (
 )
 
 # Terms that mark an entry as school-set, in Simplified Chinese (escaped).
+# Removed: \u5bbf\u820d (dormitory) and \u64cd\u573a (playground / sports field).
 SCHOOL_MARKERS_ZH: tuple[str, ...] = (
     "\u5b66\u6821",  # school
     "\u6559\u5ba4",  # classroom
     "\u5b66\u751f",  # student
     "\u6821\u670d",  # school uniform
+    # Retained because U+6821 explicitly denotes school, unlike their English counterparts.
     "\u6821\u56ed",  # campus
     "\u4e2d\u5b66",  # middle / high school
     "\u9ad8\u4e2d",  # high school
@@ -59,8 +60,6 @@ SCHOOL_MARKERS_ZH: tuple[str, ...] = (
     "\u8bfe\u684c",  # school desk
     "\u9ed1\u677f",  # blackboard
     "\u8bb2\u53f0",  # podium / teacher platform
-    "\u64cd\u573a",  # playground / sports field
-    "\u5bbf\u820d",  # dormitory
     "\u540c\u5b66",  # classmate
     "\u6c34\u624b\u670d",  # sailor uniform
     "\u8bfe\u5ba4",  # classroom
@@ -76,12 +75,29 @@ SCHOOL_MARKERS_ZH: tuple[str, ...] = (
 # Combined school markers across languages.
 SCHOOL_MARKERS: tuple[str, ...] = SCHOOL_MARKERS_EN + SCHOOL_MARKERS_ZH
 
+# Terms that represent adult university material accepted by the project.
+ALLOW_LIST_EN: tuple[str, ...] = (
+    "college student",
+    "university student",
+    "graduate student",
+    "postgraduate",
+)
+
+# Escaped Chinese terms for adult university material accepted by the project.
+ALLOW_LIST_ZH: tuple[str, ...] = (
+    "\u5927\u5b66\u751f",  # university student
+    "\u5927\u5b66",  # university
+    "\u7814\u7a76\u751f",  # graduate student
+)
+
+# Combined allow-list terms.
+ALLOW_LIST: tuple[str, ...] = ALLOW_LIST_EN + ALLOW_LIST_ZH
+
 # Minor-coded body-profile keys, in English / alphanumeric.
+# Removed "jc-" and "jk-" as redundant after token splitting.
 MINOR_PROFILE_KEYS_EN: tuple[str, ...] = (
     "jc",
     "jk",
-    "jc-",
-    "jk-",
     "schoolgirl",
     "middle-school",
     "high-school",
@@ -115,5 +131,146 @@ MINOR_PROFILE_KEYS_ZH: tuple[str, ...] = (
 # Combined minor-coded body-profile keys across languages.
 MINOR_PROFILE_KEYS: tuple[str, ...] = MINOR_PROFILE_KEYS_EN + MINOR_PROFILE_KEYS_ZH
 
-# Task 1.2 fills the refused source-library names.
+# Deny-list of refused source-library names. The operator fills this.
 REFUSED_LIBRARIES: tuple[str, ...] = ()
+
+# Refusal signal constants.
+SIGNAL_LIBRARY: str = "library"
+SIGNAL_IDENTIFIER: str = "identifier"
+SIGNAL_TAGS: str = "tags"
+SIGNAL_THEME_TEXT: str = "theme_text"
+SIGNAL_MINOR_PROFILE_KEY: str = "minor_profile_key"
+
+# Aliases for compatibility.
+SIGNAL_SOURCE_LIBRARY: str = SIGNAL_LIBRARY
+SIGNAL_PROFILE_KEY: str = SIGNAL_MINOR_PROFILE_KEY
+
+
+def _mask_allow_list(text: str) -> str:
+    """Mask allow-list phrases with spaces so nested school markers do not match."""
+    # Mask Chinese allow-list terms (longest first)
+    for phrase in sorted(ALLOW_LIST_ZH, key=len, reverse=True):
+        if phrase in text:
+            text = text.replace(phrase, " " * len(phrase))
+    # Mask English allow-list terms on word boundaries (longest first)
+    for phrase in sorted(ALLOW_LIST_EN, key=len, reverse=True):
+        words = phrase.split()
+        pattern = (
+            r"(?<![a-zA-Z0-9])"
+            + r"\s+".join(re.escape(w) for w in words)
+            + r"s?(?![a-zA-Z0-9])"
+        )
+        text = re.sub(pattern, lambda m: " " * len(m.group(0)), text, flags=re.IGNORECASE)
+    return text
+
+
+def _match_tokens(text: str, markers: tuple[str, ...]) -> bool:
+    """Match English markers on whole words/tokens after splitting on non-alphanumerics."""
+    tokens = [t for t in re.split(r"[^a-zA-Z0-9]+", text.lower()) if t]
+    if not tokens:
+        return False
+    for marker in markers:
+        m_tokens = [t for t in re.split(r"[^a-zA-Z0-9]+", marker.lower()) if t]
+        if not m_tokens:
+            continue
+        m_len = len(m_tokens)
+        if any(tokens[i:i + m_len] == m_tokens for i in range(len(tokens) - m_len + 1)):
+            return True
+    return False
+
+
+def _matches_school_markers(text: str) -> bool:
+    """Check if text matches any school marker, respecting allow-list."""
+    if not text:
+        return False
+    masked = _mask_allow_list(text)
+    masked_lower = masked.lower()
+    if any(m.lower() in masked_lower for m in SCHOOL_MARKERS_ZH):
+        return True
+    return _match_tokens(masked, SCHOOL_MARKERS_EN)
+
+
+def _matches_profile_keys(key: str) -> bool:
+    """Check if profile key matches any minor-coded profile key."""
+    if not key:
+        return False
+    key_lower = key.lower()
+    if any(m.lower() in key_lower for m in MINOR_PROFILE_KEYS_ZH):
+        return True
+    return _match_tokens(key, MINOR_PROFILE_KEYS_EN)
+
+
+def guard_entry(
+    entry: dict[str, Any] | None = None,
+    *,
+    refused_libraries: tuple[str, ...] | set[str] | list[str] = REFUSED_LIBRARIES,
+    **kwargs: Any,
+) -> tuple[str, str] | None:
+    """Determine whether an asset import entry is refused and on which signal.
+
+    Returns a tuple of (signal_name, identifier) if refused, or None if accepted.
+    Never returns, embeds, or carries the entry's text.
+    """
+    data: dict[str, Any] = {}
+    if entry is not None:
+        data.update(entry)
+    data.update(kwargs)
+
+    refused_libs = data.pop("refused_libraries", None)
+    if refused_libs is None:
+        refused_libs = refused_libraries
+
+    identifier = str(data.get("identifier") or data.get("id") or data.get("key") or "")
+
+    # Signal 1: source library
+    library = str(data.get("library") or data.get("source_library") or data.get("lib") or "")
+    if library:
+        refused_set = {lib.lower() for lib in refused_libs}
+        if library.lower() in refused_set:
+            return (SIGNAL_LIBRARY, identifier)
+
+    # Signal 2: minor-coded profile key
+    profile_key = str(
+        data.get("profile_key")
+        or data.get("profile")
+        or data.get("body_profile")
+        or ""
+    )
+    if not profile_key and data.get("kind") in ("profile", "body_profile"):
+        profile_key = identifier
+    if profile_key and _matches_profile_keys(profile_key):
+        return (SIGNAL_MINOR_PROFILE_KEY, identifier)
+
+    # Signal 3: identifier
+    if identifier and _matches_school_markers(identifier):
+        return (SIGNAL_IDENTIFIER, identifier)
+
+    # Signal 4: tags
+    tags_val = data.get("tags") if "tags" in data else data.get("tag")
+    if tags_val is not None:
+        if isinstance(tags_val, str):
+            if _matches_school_markers(tags_val):
+                return (SIGNAL_TAGS, identifier)
+        elif hasattr(tags_val, "__iter__"):
+            for tag in tags_val:
+                if isinstance(tag, str) and _matches_school_markers(tag):
+                    return (SIGNAL_TAGS, identifier)
+
+    # Signal 5: theme text / label
+    theme_text = str(
+        data.get("theme_text")
+        or data.get("theme")
+        or data.get("label")
+        or data.get("text")
+        or data.get("description")
+        or data.get("notes")
+        or data.get("prompt")
+        or ""
+    )
+    if theme_text and _matches_school_markers(theme_text):
+        return (SIGNAL_THEME_TEXT, identifier)
+
+    return None
+
+
+check_entry = guard_entry

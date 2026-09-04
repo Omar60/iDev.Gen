@@ -13,6 +13,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from backend.asset_guard import (
+    ALLOW_LIST,
+    ALLOW_LIST_EN,
+    ALLOW_LIST_ZH,
     MINOR_PROFILE_KEYS,
     MINOR_PROFILE_KEYS_EN,
     MINOR_PROFILE_KEYS_ZH,
@@ -27,13 +30,14 @@ LEGAL_CONTROLS = {0x09, 0x0A, 0x0D}  # tab, newline, carriage return
 
 
 def test_both_files_are_pure_ascii_and_contain_no_control_bytes():
-    """Both backend/asset_guard.py and this test file must be strictly ASCII
+    """All asset guard files must be strictly ASCII
 
     with no C0 control bytes except tab, newline, carriage return.
     """
     targets = [
         ROOT / "backend" / "asset_guard.py",
         ROOT / "tests" / "test_asset_guard_markers.py",
+        ROOT / "tests" / "test_asset_guard.py",
     ]
     for path in targets:
         assert path.exists(), f"missing required file: {path}"
@@ -56,6 +60,7 @@ def test_neither_file_contains_trailing_whitespace():
     targets = [
         ROOT / "backend" / "asset_guard.py",
         ROOT / "tests" / "test_asset_guard_markers.py",
+        ROOT / "tests" / "test_asset_guard.py",
     ]
     for path in targets:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -113,8 +118,6 @@ def test_escaped_school_markers_match_intended_text():
         "\u8bfe\u684c": [0x8BFE, 0x684C],  # school desk
         "\u9ed1\u677f": [0x9ED1, 0x677F],  # blackboard
         "\u8bb2\u53f0": [0x8BB2, 0x53F0],  # podium / teacher platform
-        "\u64cd\u573a": [0x64CD, 0x573A],  # playground / sports field
-        "\u5bbf\u820d": [0x5BBF, 0x820D],  # dormitory
         "\u540c\u5b66": [0x540C, 0x5B66],  # classmate
         "\u6c34\u624b\u670d": [0x6C34, 0x624B, 0x670D],  # sailor uniform
         "\u8bfe\u5ba4": [0x8BFE, 0x5BA4],  # classroom
@@ -158,6 +161,22 @@ def test_escaped_minor_profile_keys_match_intended_text():
         assert key == expected_str, f"key {repr(key)} did not match expected {repr(expected_str)}"
 
     assert len(MINOR_PROFILE_KEYS_ZH) == len(expected_codepoints)
+
+
+def test_escaped_allow_list_matches_intended_text():
+    """Every escaped Chinese allow-list term matches intended text."""
+    expected_codepoints = {
+        "\u5927\u5b66\u751f": [0x5927, 0x5B66, 0x751F],  # university student
+        "\u5927\u5b66": [0x5927, 0x5B66],  # university
+        "\u7814\u7a76\u751f": [0x7814, 0x7A76, 0x751F],  # graduate student
+    }
+
+    for item in ALLOW_LIST_ZH:
+        assert item in expected_codepoints, f"unexpected item in ALLOW_LIST_ZH: {repr(item)}"
+        expected_str = "".join(chr(cp) for cp in expected_codepoints[item])
+        assert item == expected_str, f"item {repr(item)} did not match expected {repr(expected_str)}"
+
+    assert len(ALLOW_LIST_ZH) == len(expected_codepoints)
 
 
 def test_incorrectly_escaped_marker_fails_matching():
