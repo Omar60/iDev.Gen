@@ -12,7 +12,7 @@
 - [x] 2.1 Define the translation map keyed by source string, at an untracked path beside the source material, with the source string, the English translation and the fields it covers, and verify a test rejects a map entry whose translation is empty or still contains non-English characters
 - [x] 2.2 Write the extractor that lists every non-English string in the accepted entries of a source directory given as a required argument, running the guard first so refused entries are never listed, and verify a test asserts a refused fixture's strings are absent from its output
 - [x] 2.3 Translate the highest-value tier first — the `notes` and the four `*_anchor` fields on accepted entries — and verify every translated string is present in the map and no source string in that tier is left uncovered
-- [ ] 2.4 Translate the room labels for every accepted entry, and verify the map covers each accepted room's label with no gaps
+- [x] 2.4 Translate the room labels for every accepted entry, and verify the map covers each accepted room's label with no gaps
 - [ ] 2.5 Translate the remaining accepted fields — shot variants, non-English pose hints, and the profile display names, descriptions and identity names — and verify the extractor reports zero uncovered strings across the accepted corpus
 - [ ] 2.6 Make the map the only source of translations: the importer reads it and never translates during a run, and verify a test asserts an import stops and names the entry and field when a string is missing from the map
 - [ ] 2.7 Assert one source string yields one English string everywhere, and verify a test imports a string that appears in two libraries and asserts both rows carry the same translation
