@@ -37,6 +37,9 @@ data/*
 !data/directed-cameras-seed.json
 !data/candid-rooms-seed.json
 !data/directed-looks-seed.json
+!data/directed-acts-seed.json
+!data/directed-act-readings-seed.json
+!data/wardrobe-seed.json
 
 # Written for pasting into an outside assistant, not part of the app
 writer-prompts.md
