@@ -483,40 +483,30 @@ def test_a_slot_either_asks_one_question_or_names_every_axis():
             "tag all of them or none")
 
 
-# Directed's cameras are described twice, once per seed file: `catalogue-seed.json`
+# Directed's cameras were described twice, once per seed file: `catalogue-seed.json`
 # holds the nine furniture-free forms as sentences and `directed-cameras-seed.json`
-# holds the 49 terms, and the same camera carries a different `family` in each.
-# Both families need a reading, so both readings say the same thing.
+# holds the terms, and four cameras carried a different `family` in each -- so
+# both families needed a reading and both readings said the same thing. Two
+# identical sentences on one menu is a coin toss that `arrived` then scores.
 #
-# This is real debt and it is a judge hazard: two identical sentences on one
-# menu is a coin toss that `arrived` then scores. It is listed rather than fixed
-# because the fix is a catalogue rename, and re-filing these six components onto
-# one family each breaks `test_the_plan_holds_its_three_properties` and
-# `test_a_planted_arrangement_gets_a_camera_that_can_see_it` -- the family names
-# are load-bearing in the arrangement/camera compatibility data. That is its own
-# change, not a side effect of splitting the axes.
-SYNONYM_READING_PAIRS = {
-    ("camera", "directed"): {("side", "side-level"), ("shoulder", "over-shoulder"),
-                             ("behind", "rear"), ("floor", "ground-level")},
-}
+# Merged on 2026-09-03 onto the sentence vocabulary, which is the one the
+# written path plans with and the one the arrangement rows name:
+# `side-level` -> `side`, `over-shoulder` -> `shoulder`, `rear` -> `behind`,
+# `ground-level` -> `floor`. `scripts/merge_camera_families.py` moved the store,
+# the arrangement lists and the verdicts already recorded under the old spelling
+# together, which is what the first, reverted attempt did not do.
 
 
-def test_two_readings_share_a_label_only_where_the_catalogue_names_one_camera_twice():
-    """Two identical sentences under different keys is a menu where the judge
-    picks whichever copy it happened to land on. Four such pairs survive
-    because two seed files name the same camera with two families; every other
-    duplicate was a family NO component used, and those readings are deleted --
-    `back`, `three-quarter-front` and `three-quarter-back`.
+def test_no_two_readings_are_the_same_sentence_on_the_same_menu():
+    """A menu that offers one sentence twice records a correct reading under
+    whichever spelling the judge happened to land on, and the other copy scores
+    it a miss.
     """
     rows = json.loads(READINGS.read_text(encoding="utf-8"))
     seen: dict[tuple[str, str, str, str], str] = {}
     for r in rows:
         k = (r["slot"], r["manner"], r.get("axis", ""), r["label"].strip().lower())
-        if k in seen:
-            pair = frozenset((seen[k], r["key"]))
-            allowed = {frozenset(p) for p in SYNONYM_READING_PAIRS.get((r["slot"], r["manner"]), ())}
-            assert pair in allowed, (
-                f"{r['slot']}/{r['manner']}: {r['key']!r} and {seen[k]!r} are the same "
-                "sentence on the same menu and are not a known synonym pair")
-            continue
+        assert k not in seen, (
+            f"{r['slot']}/{r['manner']}: {r['key']!r} and {seen[k]!r} are the same "
+            "sentence on the same menu")
         seen[k] = r["key"]

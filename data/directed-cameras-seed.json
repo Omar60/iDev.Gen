@@ -52,7 +52,7 @@
     "slot": "camera",
     "manner": "directed",
     "concept_key": "ground-level",
-    "family": "ground-level",
+    "family": "floor",
     "faces": "",
     "wording": "ground-level",
     "judge_label": "lens on the floor, looking across it"
@@ -61,7 +61,7 @@
     "slot": "camera",
     "manner": "directed",
     "concept_key": "worms-eye",
-    "family": "ground-level",
+    "family": "floor",
     "faces": "",
     "wording": "worm's-eye view",
     "judge_label": "looking steeply up from floor height, ceiling visible"
@@ -148,7 +148,7 @@
     "slot": "camera",
     "manner": "directed",
     "concept_key": "over-the-shoulder",
-    "family": "over-shoulder",
+    "family": "shoulder",
     "faces": "",
     "wording": "over-the-shoulder",
     "judge_label": "a near shoulder in the foreground, her beyond it"
@@ -238,7 +238,7 @@
     "slot": "camera",
     "manner": "directed",
     "concept_key": "rear-view",
-    "family": "rear",
+    "family": "behind",
     "faces": "",
     "wording": "rear view",
     "judge_label": "seen from behind, back of her head toward the lens"
@@ -256,7 +256,7 @@
     "slot": "camera",
     "manner": "directed",
     "concept_key": "profile-view",
-    "family": "side-level",
+    "family": "side",
     "faces": "",
     "wording": "profile view",
     "judge_label": "her face and torso seen edge-on, one eye visible"
@@ -265,7 +265,7 @@
     "slot": "camera",
     "manner": "directed",
     "concept_key": "side-view",
-    "family": "side-level",
+    "family": "side",
     "faces": "",
     "wording": "side view",
     "judge_label": "seen from her side"

@@ -690,10 +690,13 @@ def test_a_menu_never_offers_the_same_sentence_twice(client, seeded):
     of ten come back with no majority in three passes because the votes split
     between `shoulder` and `over-shoulder`, which are one sentence.
 
-    Merging the families is not the fix -- they are shared vocabulary between
-    manners, and renaming directed's out from under the arrangement rows breaks
-    the camera fitting. So the duplication stays in the catalogue and the menu
-    drops it, keeping the key THIS deck asked for.
+    The four pairs were merged onto the sentence vocabulary on 2026-09-03
+    (`scripts/merge_camera_families.py`, which moves the arrangement lists and
+    the recorded verdicts with the components -- renaming the components alone
+    is what broke the camera fitting the first time). The menu keeps dropping
+    duplicates anyway: it is what stops the next pair somebody types into the
+    catalogue from being scored as a coin toss, and it keeps the key THIS deck
+    asked for.
     """
     sid = client.post("/api/sessions", json={
         "model_id": seeded["model_id"], "name": "one sentence once",

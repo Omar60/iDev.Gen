@@ -376,7 +376,7 @@ export default function Catalogue() {
             <label style={{ display: 'block', fontSize: 11, marginBottom: 2 }}>Key (family)</label>
             <input
               type="text"
-              placeholder="e.g. side-level"
+              placeholder="e.g. side"
               value={newReadingKey}
               onChange={(e) => setNewReadingKey(e.target.value)}
               style={{ width: '100%', fontSize: 12 }}

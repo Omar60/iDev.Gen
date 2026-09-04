@@ -157,13 +157,6 @@
     "axis": "position"
   },
   {
-    "slot": "camera",
-    "manner": "directed",
-    "key": "side-level",
-    "label": "Only one nipple is in frame, in outline against the background. The camera is to one side of her, and the front and the back edges of her torso both show as outlines.",
-    "axis": "position"
-  },
-  {
     "slot": "framing",
     "manner": "directed",
     "key": "waist-up",
@@ -454,20 +447,6 @@
   {
     "slot": "camera",
     "manner": "directed",
-    "key": "rear",
-    "label": "Her back and both buttocks are toward the lens. No breast is in frame.",
-    "axis": "position"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "key": "over-shoulder",
-    "label": "Her back is toward the lens and one buttock is in frame. At most the outer curve of one breast shows.",
-    "axis": "position"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
     "key": "mirror",
     "label": "The picture is a reflection in a mirror: a mirror edge, a frame, or the room doubled is visible.",
     "axis": "picture"
@@ -526,13 +505,6 @@
     "manner": "directed",
     "key": "low-angle",
     "label": "The lens is below her waist and tilted up at her: the underside of her jaw or her chin is in view and she is taller at the bottom of the frame than at the top.",
-    "axis": "height"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "key": "ground-level",
-    "label": "The lens is on the floor: her feet or her knees are the nearest thing to the camera and large in the frame, and the ceiling or the top of the far wall is in view behind her.",
     "axis": "height"
   },
   {
