@@ -669,3 +669,41 @@ def test_file_is_pure_ascii_and_no_control_bytes():
         lines = target.read_text(encoding="utf-8").splitlines()
         for line_num, line in enumerate(lines, 1):
             assert line == line.rstrip(), f"{rel_path}: line {line_num} has trailing whitespace"
+
+
+def test_school_prose_is_refused_in_any_field_and_inside_lists():
+    """A school marker is refused wherever it sits, not only in TEXT_FIELDS.
+
+    The source libraries keep their prose in fields this project did not name.
+    An entry whose only school marker is in `scene_theme`, or inside the
+    `uniform_fit` list, is refused on the theme-text signal.
+    """
+    # Only school prose is the scene_theme field, which TEXT_FIELDS never named.
+    scene_theme_only = {
+        "identifier": "general-home-visit",
+        "scene_theme": "private lesson at home, student room desk, quiet corner",
+    }
+    assert guard_entry(scene_theme_only) == (SIGNAL_THEME_TEXT, "general-home-visit")
+
+    # Only school prose is one item of a list-valued field.
+    list_field_only = {
+        "identifier": "general-fitting-room",
+        "uniform_fit": ["silk slip", "school uniform"],
+    }
+    assert guard_entry(list_field_only) == (SIGNAL_THEME_TEXT, "general-fitting-room")
+
+    # Chinese school prose in an unnamed field is refused too.
+    zh_unnamed_field = {
+        "identifier": "zh-unnamed",
+        "pose_hint": ["\u6559\u5ba4\u5185\u5750\u4e0b"],  # sitting in a classroom
+    }
+    assert guard_entry(zh_unnamed_field) == (SIGNAL_THEME_TEXT, "zh-unnamed")
+
+    # An entry carrying no school marker anywhere is still accepted.
+    accepted = {
+        "identifier": "general-bakery-cooling-rack",
+        "scene_theme": "bakery at dawn, cooling racks and flour dust",
+        "uniform_fit": ["apron over a summer dress"],
+        "keywords": ["bakery", "dawn light"],
+    }
+    assert guard_entry(accepted) is None

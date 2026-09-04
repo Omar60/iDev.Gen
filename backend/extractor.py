@@ -30,6 +30,33 @@ METADATA_FIELDS: frozenset[str] = frozenset(
 )
 
 
+# Keys whose presence marks a dict as an asset entry rather than a container
+# holding entries. A container is descended into so that every entry inside it
+# reaches the guard on its own. Collapsing a file into a single entry is what
+# lets a refused entry ride through as a nested field of an accepted one:
+# amateurs.json carries its minor-coded profiles under a "profiles" key, and
+# read as one entry the guard never sees a single profile key.
+ENTRY_MARKER_KEYS: frozenset[str] = frozenset(
+    (
+        "identifier",
+        "id",
+        "key",
+        "label",
+        "name",
+        "display_name",
+        "title",
+        "scene_theme",
+        "theme",
+        "theme_text",
+        "text",
+        "description",
+    )
+)
+
+# The keys an entry may carry its own identifier in.
+IDENTIFIER_KEYS: tuple[str, ...] = ("identifier", "id", "key")
+
+
 def _extract_strings_from_value(
     val: Any,
     field_name: str,
@@ -66,48 +93,105 @@ def _extract_strings_from_value(
     return results
 
 
+def _holds_a_collection(node: dict[str, Any]) -> bool:
+    """True when a dict carries a list of dicts or a dict of dicts."""
+    for val in node.values():
+        if isinstance(val, list) and any(isinstance(x, dict) for x in val):
+            return True
+        if isinstance(val, dict) and val and all(isinstance(x, dict) for x in val.values()):
+            return True
+    return False
+
+
+def _collect_entries(
+    node: Any,
+    path: list[str],
+    entries: list[dict[str, Any]],
+    is_root: bool = False,
+) -> None:
+    """Split a JSON node into entries, descending containers until an entry.
+
+    A dict carrying one of ENTRY_MARKER_KEYS is an entry and is taken whole:
+    its own nested dicts and lists stay fields on it, so a field path like
+    'anchors.camera' survives. A dict carrying none of them is a container and
+    is descended into, one entry per key, so each entry is guarded on its own.
+    Scalar values sitting on a container become entries of their own rather
+    than being dropped, one per string, so the guard reads each on its own.
+
+    A file's root dict is never an entry when it holds a collection: the
+    libraries here write a file-level 'description' and 'library' beside the
+    'items' list, and the marker rule alone would read the whole file - items
+    and all - as one entry, which is the bypass this function exists to close.
+    """
+    if isinstance(node, dict):
+        if is_root and _holds_a_collection(node):
+            pass
+        elif any(k in node for k in ENTRY_MARKER_KEYS):
+            entry = dict(node)
+            if not any(k in entry for k in IDENTIFIER_KEYS):
+                entry["identifier"] = path[-1] if path else ""
+            entries.append(entry)
+            return
+        leftovers: dict[str, Any] = {}
+        for key in sorted(node.keys()):
+            val = node[key]
+            if isinstance(val, (dict, list)):
+                _collect_entries(val, path + [key], entries)
+            else:
+                leftovers[key] = val
+        if leftovers:
+            leftovers["identifier"] = path[-1] if path else ""
+            entries.append(leftovers)
+        return
+
+    if isinstance(node, list):
+        own_name = path[-1] if path else "values"
+        for index, item in enumerate(node):
+            if isinstance(item, (dict, list)):
+                _collect_entries(item, path, entries)
+            else:
+                # One entry per item, not one entry per list: a pool of role
+                # names holds refused roles beside accepted ones, and a single
+                # entry carrying the whole list is refused or accepted whole.
+                entries.append({
+                    "identifier": f"{own_name}[{index}]",
+                    own_name: item,
+                })
+        return
+
+    raise ValueError(
+        f"Unsupported JSON node at {'.'.join(path) or 'root'}: "
+        f"{type(node).__name__}"
+    )
+
+
 def _load_entries_from_file(json_file: Path) -> list[dict[str, Any]]:
-    """Load asset entries from a JSON file in a source directory."""
+    """Load asset entries from a JSON file in a source directory.
+
+    A file whose shape cannot be split into entries raises rather than being
+    read as one entry: accept-as-one is a guard bypass, since the guard reads
+    an entry's own identifier and text and cannot see either through a
+    wrapper it was never handed.
+    """
     raw_text = json_file.read_text(encoding="utf-8")
     try:
         data = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid JSON in {json_file}: {exc}") from exc
 
+    if not isinstance(data, (dict, list)):
+        raise ValueError(
+            f"Unsupported JSON shape in {json_file}: {type(data).__name__}"
+        )
+
     file_library = json_file.stem
+    if isinstance(data, dict) and isinstance(data.get("library"), str):
+        file_library = data["library"]
+
     entries: list[dict[str, Any]] = []
-
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict):
-                entry = dict(item)
-                entry.setdefault("library", file_library)
-                entries.append(entry)
-    elif isinstance(data, dict):
-        if data and all(isinstance(v, dict) for v in data.values()):
-            for key in sorted(data.keys()):
-                val = data[key]
-                entry = dict(val)
-                if "identifier" not in entry and "id" not in entry and "key" not in entry:
-                    entry["identifier"] = key
-                entry.setdefault("library", file_library)
-                entries.append(entry)
-        else:
-            found_list = False
-            for key in sorted(data.keys()):
-                v = data[key]
-                if isinstance(v, list) and any(isinstance(x, dict) for x in v):
-                    found_list = True
-                    for item in v:
-                        if isinstance(item, dict):
-                            entry = dict(item)
-                            entry.setdefault("library", file_library)
-                            entries.append(entry)
-            if not found_list:
-                entry = dict(data)
-                entry.setdefault("library", file_library)
-                entries.append(entry)
-
+    _collect_entries(data, [json_file.stem], entries, is_root=True)
+    for entry in entries:
+        entry.setdefault("library", file_library)
     return entries
 
 

@@ -350,3 +350,127 @@ def test_extractor_suite_reaches_no_source_library():
             elif isinstance(node, ast.ImportFrom):
                 imported.add((node.module or "").split(".")[0])
         assert imported <= allowed, f"{filename} imports {sorted(imported - allowed)}"
+
+
+def test_nested_entries_reach_the_guard_one_by_one(tmp_path):
+    """A file wrapping its entries is split, so each entry is guarded on its own.
+
+    The source libraries write a file-level 'library', 'version' and
+    'description' beside the collection they carry. Read as one entry, the
+    guard sees one identifier and one set of fields, and every refused entry
+    nested inside rides through as a field of an accepted whole.
+    """
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+
+    planted_profile = "\u690d\u7269\u005f\u006e\u0065\u0073\u0074\u0065\u0064\u005f\u0072\u0065\u0066\u0075\u0073\u0065\u0064\u005f\u0070\u0072\u006f\u0066\u0069\u006c\u0065\u005f\u0037\u0037\u0037"
+    accepted_scene = "\u5ba2\u5385\u005f\u006e\u0065\u0073\u0074\u0065\u0064\u005f\u0061\u0063\u0063\u0065\u0070\u0074\u0065\u0064\u005f\u0038\u0038\u0038"
+
+    payload = {
+        "library": "amateur_profiles",
+        "version": 3,
+        "description": "a file-level description sitting beside the collection",
+        "profiles": {
+            "jc-asymmetric": {"display_name": planted_profile},
+        },
+        "items": [
+            {"id": "general-bakery-cooling-rack", "label": accepted_scene},
+        ],
+    }
+    (source_dir / "amateurs.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    results = extract_non_english_strings(source_dir)
+    extracted = [item["string"] for item in results]
+
+    assert planted_profile not in extracted
+    assert accepted_scene in extracted
+
+    # The accepted entry is reported under its own identifier, not under a
+    # wrapper the whole file collapsed into.
+    assert any(
+        item["string"] == accepted_scene
+        and item["identifier"] == "general-bakery-cooling-rack"
+        and item["field"] == "label"
+        for item in results
+    )
+
+
+def test_list_items_are_guarded_one_by_one(tmp_path):
+    """A pool of bare strings is one entry per item, not one entry per list.
+
+    A role pool holds refused roles beside accepted ones. Carried as a single
+    entry, the list is refused or accepted whole.
+    """
+    source_dir = tmp_path / "pool"
+    source_dir.mkdir()
+
+    refused_role = "\u5973\u521d\u4e2d\u751f"  # female junior high student
+    accepted_role = "\u5973\u79d8\u4e66"  # female secretary
+
+    (source_dir / "amateurs.json").write_text(
+        json.dumps({"identity_pool": [refused_role, accepted_role]}),
+        encoding="utf-8",
+    )
+
+    results = extract_non_english_strings(source_dir)
+    extracted = [item["string"] for item in results]
+
+    assert refused_role not in extracted
+    assert accepted_role in extracted
+    assert any(
+        item["string"] == accepted_role and item["identifier"] == "identity_pool[1]"
+        for item in results
+    )
+
+
+def test_every_reported_string_names_its_entry(tmp_path):
+    """No reported string carries an empty identifier.
+
+    A string reported without an identifier cannot be named when an upload is
+    refused for translation, which is what the report is for.
+    """
+    source_dir = tmp_path / "mixed"
+    source_dir.mkdir()
+
+    (source_dir / "wrapped.json").write_text(
+        json.dumps({
+            "library": "general_scenes",
+            "items": [{"id": "scene-01", "label": "\u5ba2\u5385"}],
+        }),
+        encoding="utf-8",
+    )
+    (source_dir / "triggers.json").write_text(
+        json.dumps({"z": {"trigger_one": ["\u97e9\u4f73\u4eba"]}}),
+        encoding="utf-8",
+    )
+    (source_dir / "pool.json").write_text(
+        json.dumps({"identity_pool": ["\u5973\u79d8\u4e66"]}),
+        encoding="utf-8",
+    )
+    # A container carrying a scalar of its own beside the collection it holds:
+    # the scalar is an entry named after the container, not a nameless string.
+    (source_dir / "meta.json").write_text(
+        json.dumps({
+            "meta": {
+                "caption": "\u5ba2\u5385",
+                "groups": {"g1": {"label": "\u6c99\u53d1"}},
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    results = extract_non_english_strings(source_dir)
+
+    assert results
+    for item in results:
+        assert item["identifier"], f"string reported with no identifier: {item['field']}"
+
+
+def test_unsupported_json_shape_raises(tmp_path):
+    """A JSON file that is neither a list nor an object refuses rather than collapses."""
+    source_dir = tmp_path / "odd"
+    source_dir.mkdir()
+    (source_dir / "bare.json").write_text(json.dumps("just a string"), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unsupported JSON shape"):
+        extract_non_english_strings(source_dir)

@@ -303,13 +303,25 @@ def guard_entry(
                 if isinstance(tag, str) and _matches_school_markers(tag):
                     return (SIGNAL_TAGS, identifier)
 
-    # Signal 5: theme text and label. Every text field an entry carries is
-    # checked. Reading only the first one present accepts a school-set label
-    # whenever a harmless theme sits in front of it.
-    for field in TEXT_FIELDS:
+    # Signal 5: theme text and label. Every string an entry carries is checked,
+    # in any field and inside any list, not only the fields named in
+    # TEXT_FIELDS. The source libraries keep their prose in fields this project
+    # did not name - `scene_theme`, `keywords`, `uniform_fit`, `prop_hint`,
+    # `pose_hint` - and a fixed list of field names is a list that drifts from
+    # whatever the next library calls its prose. Reading only the first field
+    # present would accept a school-set label whenever a harmless theme sits in
+    # front of it, so all of them are read.
+    checked_first = [f for f in TEXT_FIELDS if f in data]
+    rest = [k for k in sorted(data.keys()) if k not in TEXT_FIELDS]
+    for field in checked_first + rest:
         value = data.get(field)
-        if isinstance(value, str) and _matches_school_markers(value):
-            return (SIGNAL_THEME_TEXT, identifier)
+        if isinstance(value, str):
+            if _matches_school_markers(value):
+                return (SIGNAL_THEME_TEXT, identifier)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, str) and _matches_school_markers(item):
+                    return (SIGNAL_THEME_TEXT, identifier)
 
     return None
 
