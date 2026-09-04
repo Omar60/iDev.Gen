@@ -75,7 +75,6 @@ SCHOOL_MARKERS_ZH: tuple[str, ...] = (
 
 # Combined school markers across languages.
 SCHOOL_MARKERS: tuple[str, ...] = SCHOOL_MARKERS_EN + SCHOOL_MARKERS_ZH
-SCHOOL_MARKERS_SET: frozenset[str] = frozenset(SCHOOL_MARKERS)
 
 # Minor-coded body-profile keys, in English / alphanumeric.
 MINOR_PROFILE_KEYS_EN: tuple[str, ...] = (
@@ -115,8 +114,6 @@ MINOR_PROFILE_KEYS_ZH: tuple[str, ...] = (
 
 # Combined minor-coded body-profile keys across languages.
 MINOR_PROFILE_KEYS: tuple[str, ...] = MINOR_PROFILE_KEYS_EN + MINOR_PROFILE_KEYS_ZH
-MINOR_PROFILE_KEYS_SET: frozenset[str] = frozenset(MINOR_PROFILE_KEYS)
 
 # Task 1.2 fills the refused source-library names.
 REFUSED_LIBRARIES: tuple[str, ...] = ()
-REFUSED_LIBRARY_NAMES: tuple[str, ...] = REFUSED_LIBRARIES

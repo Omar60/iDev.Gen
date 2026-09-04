@@ -11,18 +11,14 @@ Asserts that:
 from __future__ import annotations
 
 from pathlib import Path
-import pytest
 
 from backend.asset_guard import (
     MINOR_PROFILE_KEYS,
     MINOR_PROFILE_KEYS_EN,
-    MINOR_PROFILE_KEYS_SET,
     MINOR_PROFILE_KEYS_ZH,
     REFUSED_LIBRARIES,
-    REFUSED_LIBRARY_NAMES,
     SCHOOL_MARKERS,
     SCHOOL_MARKERS_EN,
-    SCHOOL_MARKERS_SET,
     SCHOOL_MARKERS_ZH,
 )
 
@@ -87,7 +83,6 @@ def test_marker_collections_non_empty_and_no_marker_empty():
 
     # Task 1.2 fills refused source-library names; must be present and empty now.
     assert len(REFUSED_LIBRARIES) == 0, "REFUSED_LIBRARIES must be empty until task 1.2"
-    assert len(REFUSED_LIBRARY_NAMES) == 0
 
 
 def test_escaped_school_markers_match_intended_text():
