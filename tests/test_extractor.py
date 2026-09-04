@@ -18,7 +18,10 @@ from pathlib import Path
 
 import pytest
 
-from backend.extractor import extract_non_english_strings
+from backend.extractor import (
+    extract_non_english_strings,
+    find_uncovered_strings,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 LEGAL_CONTROLS = {0x09, 0x0A, 0x0D}  # tab, newline, carriage return
@@ -508,3 +511,178 @@ def test_option_field_strings_are_pruned_before_extraction(tmp_path):
     assert dropped_garment not in extracted
     assert room_label in extracted
     assert kept_garment in extracted
+
+
+def test_find_uncovered_strings_requires_arguments(tmp_path):
+    """Verify source_dir and translation_map argument requirements."""
+    with pytest.raises(ValueError, match="source_dir is required"):
+        find_uncovered_strings("", {})
+    with pytest.raises(ValueError, match="source_dir is required"):
+        find_uncovered_strings(None, {})
+    with pytest.raises(TypeError, match="translation_map must be a dict or a path"):
+        find_uncovered_strings(tmp_path, 12345)
+
+
+def test_find_uncovered_strings_reports_uncovered_and_covered(tmp_path):
+    """Verify coverage reporting for covered, uncovered, and partial maps."""
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+
+    s_action = "\u62fd\u4f4f\u6905\u5b50"
+    s_notes = "\u6ce8\u610f\u5149\u7ebf"
+    s_label = "\u5ba2\u5385"
+
+    entry = {
+        "identifier": "scene-alpha",
+        "action_anchor": s_action,
+        "notes": s_notes,
+        "label": s_label,
+    }
+    (source_dir / "scenes.json").write_text(json.dumps([entry]), encoding="utf-8")
+
+    tier_fields = {"action_anchor", "notes"}
+
+    # 1. Empty map reports all strings in tier as uncovered
+    uncovered_empty = find_uncovered_strings(source_dir, {}, tier_fields)
+    assert len(uncovered_empty) == 2
+    assert any(
+        u["identifier"] == "scene-alpha" and u["field"] == "action_anchor" and u["string"] == s_action
+        for u in uncovered_empty
+    )
+    assert any(
+        u["identifier"] == "scene-alpha" and u["field"] == "notes" and u["string"] == s_notes
+        for u in uncovered_empty
+    )
+    # label is not in tier_fields, so it is not reported
+    assert not any(u["field"] == "label" for u in uncovered_empty)
+
+    # 2. Partial map covers s_action only
+    partial_map = {
+        s_action: {
+            "source": s_action,
+            "translation": "grip the chair",
+            "fields": ["action_anchor"],
+        }
+    }
+    uncovered_partial = find_uncovered_strings(source_dir, partial_map, tier_fields)
+    assert len(uncovered_partial) == 1
+    assert uncovered_partial[0]["identifier"] == "scene-alpha"
+    assert uncovered_partial[0]["field"] == "notes"
+    assert uncovered_partial[0]["string"] == s_notes
+
+    # 3. Complete map covers both strings
+    full_map = {
+        **partial_map,
+        s_notes: {
+            "source": s_notes,
+            "translation": "lighting notes",
+            "fields": ["notes"],
+        },
+    }
+    uncovered_full = find_uncovered_strings(source_dir, full_map, tier_fields)
+    assert uncovered_full == []
+
+
+def test_refused_entry_strings_are_never_reported_as_uncovered(tmp_path):
+    """The coverage check runs the guard, so refused entries never appear as uncovered."""
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+
+    s_accepted = "\u5ba2\u5385"
+    s_refused_school = "\u6821\u56ed\u8d70\u5eca"
+
+    entries = [
+        {
+            "identifier": "acc-room-01",
+            "notes": s_accepted,
+        },
+        {
+            "identifier": "school_corridor_01",
+            "notes": s_refused_school,
+        },
+    ]
+    (source_dir / "entries.json").write_text(json.dumps(entries), encoding="utf-8")
+
+    # With empty map, only the accepted entry's string is reported as uncovered
+    uncovered = find_uncovered_strings(source_dir, {}, {"notes"})
+    assert len(uncovered) == 1
+    assert uncovered[0]["identifier"] == "acc-room-01"
+    assert uncovered[0]["string"] == s_accepted
+
+    # Assert refused entry string and identifier are completely absent
+    extracted_strings = [u["string"] for u in uncovered]
+    extracted_ids = [u["identifier"] for u in uncovered]
+    assert s_refused_school not in extracted_strings
+    assert "school_corridor_01" not in extracted_ids
+
+
+def test_find_uncovered_strings_field_filter(tmp_path):
+    """None checks every field, and a bare string is refused rather than wrapped."""
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+
+    s_anchor = "\u62fd\u4f4f\u6905\u5b50"
+    s_notes = "\u6ce8\u610f\u5149\u7ebf"
+    s_label = "\u5ba2\u5385"
+
+    entry = {
+        "identifier": "item-01",
+        "action_anchor": s_anchor,
+        "notes": s_notes,
+        "label": s_label,
+    }
+    (source_dir / "items.json").write_text(json.dumps([entry]), encoding="utf-8")
+
+    # None filter checks all non-English fields
+    res_all = find_uncovered_strings(source_dir, {}, None)
+    assert len(res_all) == 3
+    assert {r["field"] for r in res_all} == {"action_anchor", "notes", "label"}
+
+    # A bare string is one field written two ways, so it raises
+    with pytest.raises(TypeError, match="fields must be a collection of strings"):
+        find_uncovered_strings(source_dir, {}, "notes")
+
+
+def test_find_uncovered_strings_treats_empty_or_non_english_translation_as_uncovered(tmp_path):
+    """An entry with an empty or non-English translation in the map is reported as uncovered."""
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+
+    s1 = "\u6ce8\u610f\u5149\u7ebf"
+    s2 = "\u62fd\u4f4f\u6905\u5b50"
+
+    (source_dir / "data.json").write_text(
+        json.dumps([{"identifier": "e1", "notes": s1, "action_anchor": s2}]),
+        encoding="utf-8",
+    )
+
+    bad_map = {
+        s1: {"source": s1, "translation": "", "fields": ["notes"]},
+        s2: {"source": s2, "translation": "\u62fd\u4f4f", "fields": ["action_anchor"]},
+    }
+    uncovered = find_uncovered_strings(source_dir, bad_map, {"notes", "action_anchor"})
+    assert len(uncovered) == 2
+
+
+def test_find_uncovered_strings_with_file_path(tmp_path):
+    """A map file path is loaded and validated on the way in."""
+    from backend.translation_map import save_translation_map
+
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+
+    s = "\u6ce8\u610f\u5149\u7ebf"
+    (source_dir / "items.json").write_text(
+        json.dumps([{"identifier": "e1", "notes": s}]),
+        encoding="utf-8",
+    )
+
+    map_path = tmp_path / "untracked_map.json"
+    save_translation_map(
+        {s: {"source": s, "translation": "lighting notes", "fields": ["notes"]}},
+        map_path,
+    )
+
+    # Passing path to find_uncovered_strings
+    assert find_uncovered_strings(source_dir, map_path, {"notes"}) == []
+

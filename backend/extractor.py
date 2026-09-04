@@ -242,3 +242,67 @@ def extract_non_english_strings(
                     results.append(item)
 
     return results
+
+
+def find_uncovered_strings(
+    source_dir: Path | str,
+    translation_map: dict[str, Any] | Path | str,
+    fields: tuple[str, ...] | set[str] | list[str] | frozenset[str] | None = None,
+    *,
+    refused_libraries: tuple[str, ...] | set[str] | list[str] = (),
+) -> list[dict[str, str]]:
+    """Report non-English strings of a named field set not covered by translation_map.
+
+    Given a source directory and a loaded map (or path to a map file), reports
+    which strings of a named field set are not covered by the map. It runs the
+    guard by going through the extractor, so a refused entry's strings are never
+    reported as uncovered and never reach the map.
+
+    Returns a list of dicts for each uncovered string, containing:
+    - 'identifier': the entry identifier
+    - 'field': the field name
+    - 'string': the uncovered source string
+    """
+    if source_dir is None or not str(source_dir).strip():
+        raise ValueError("source_dir is required and cannot be empty")
+
+    if isinstance(translation_map, (str, Path)):
+        from backend.translation_map import load_translation_map
+        loaded_map = load_translation_map(translation_map)
+    elif isinstance(translation_map, dict):
+        loaded_map = translation_map
+    else:
+        raise TypeError(
+            f"translation_map must be a dict or a path, got {type(translation_map).__name__}"
+        )
+
+    # A bare string is refused the way validate_translation_entry refuses one for
+    # 'fields': "notes" and ["notes"] reaching the same call is one field
+    # written two ways. None means every field, which is what 2.5 asks for.
+    if fields is None:
+        field_set = None
+    elif isinstance(fields, str) or not hasattr(fields, "__iter__"):
+        raise TypeError(
+            f"fields must be a collection of strings or None, got {type(fields).__name__}"
+        )
+    else:
+        field_set = set(fields)
+
+    extracted = extract_non_english_strings(
+        source_dir,
+        refused_libraries=refused_libraries,
+    )
+
+    uncovered: list[dict[str, str]] = []
+    for item in extracted:
+        if field_set is not None and item["field"] not in field_set:
+            continue
+        source_str = item["string"]
+        # An entry is a dict by construction: validate_translation_entry is the
+        # only way one is written, and load_translation_map runs it on the way in.
+        map_entry = loaded_map.get(source_str)
+        trans = map_entry.get("translation") if isinstance(map_entry, dict) else None
+        if not isinstance(trans, str) or not trans.strip() or contains_non_english(trans):
+            uncovered.append(dict(item))
+
+    return uncovered
