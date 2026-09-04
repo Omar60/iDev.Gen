@@ -32,7 +32,7 @@
 ## 4. The refresh pipeline
 
 - [ ] 4.1 Declare each source library with the kind of material it carries and every destination its entries reach, and verify a test asserts an undeclared file is refused and writes nothing
-- [ ] 4.2 Declare the body-profile source as material this project does not adopt, and verify a test asserts it is refused with that reason and that the reason is distinct from a deny-list refusal
+- [x] 4.2 Declare the body-profile source as material this project does not adopt, and verify a test asserts it is refused with that reason and that the reason is distinct from a deny-list refusal. Taken out of order, ahead of 4.1, because 2.5 could not be answered without it: one reading translates four strings and the other translates 363 including 256 real people's names. It needed none of 4.1's manifest - `NOT_ADOPTED_LIBRARIES` is its own list with its own signal, checked after the deny-list so a library on both reports the licence refusal. `amateurs` and `celebrities` are on it
 - [ ] 4.3a Add the test that fails when an import path writes seed rows without consulting the guard, and verify it fails against a deliberately unguarded stub before it passes - this is 1.6, landed here because 4.3 builds the first import path for it to name
 - [ ] 4.3 Implement the import once - refusal, translation lookup, merge, report - and verify a test asserts the app operation and the command-line entry produce identical seed content for one fixture source
 - [ ] 4.4 Run the refusal rule and the translation lookup over the whole upload before writing anything, and verify a test asserts a source with one uncovered string leaves every destination byte-identical

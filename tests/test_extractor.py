@@ -380,7 +380,7 @@ def test_nested_entries_reach_the_guard_one_by_one(tmp_path):
             {"id": "general-bakery-cooling-rack", "label": accepted_scene},
         ],
     }
-    (source_dir / "amateurs.json").write_text(json.dumps(payload), encoding="utf-8")
+    (source_dir / "role_pool.json").write_text(json.dumps(payload), encoding="utf-8")
 
     results = extract_non_english_strings(source_dir)
     extracted = [item["string"] for item in results]
@@ -410,7 +410,7 @@ def test_list_items_are_guarded_one_by_one(tmp_path):
     refused_role = "\u5973\u521d\u4e2d\u751f"  # female junior high student
     accepted_role = "\u5973\u79d8\u4e66"  # female secretary
 
-    (source_dir / "amateurs.json").write_text(
+    (source_dir / "role_pool.json").write_text(
         json.dumps({"identity_pool": [refused_role, accepted_role]}),
         encoding="utf-8",
     )

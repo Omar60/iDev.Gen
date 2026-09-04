@@ -147,15 +147,32 @@ MINOR_PROFILE_KEYS: tuple[str, ...] = MINOR_PROFILE_KEYS_EN + MINOR_PROFILE_KEYS
 # Deny-list of refused source-library names. The operator fills this.
 REFUSED_LIBRARIES: tuple[str, ...] = ()
 
+# Source libraries this project does not adopt. This is not the deny-list and
+# does not mean the material is forbidden - it means it is not what this app
+# is for, so its entries reach no destination and none of its strings are ever
+# translated.
+#
+# `amateurs` and `celebrities` are body and identity profiles. A written body
+# beats the LoRA, so importing them is a way to stop photographing the
+# character this app exists to photograph. `celebrities` is also 256 real
+# people's names: there is no English for one, only a transliteration, and the
+# result is still the person.
+#
+# There is no caller argument that adds to or removes from this, for the same
+# reason the deny-list has none.
+NOT_ADOPTED_LIBRARIES: tuple[str, ...] = ("amateurs", "celebrities")
+
 # Refusal signal constants.
 SIGNAL_LIBRARY: str = "library"
 SIGNAL_IDENTIFIER: str = "identifier"
 SIGNAL_TAGS: str = "tags"
 SIGNAL_THEME_TEXT: str = "theme_text"
 SIGNAL_MINOR_PROFILE_KEY: str = "minor_profile_key"
+SIGNAL_NOT_ADOPTED: str = "not_adopted"
 
 ALL_SIGNALS: tuple[str, ...] = (
     SIGNAL_LIBRARY,
+    SIGNAL_NOT_ADOPTED,
     SIGNAL_MINOR_PROFILE_KEY,
     SIGNAL_IDENTIFIER,
     SIGNAL_TAGS,
@@ -294,6 +311,11 @@ def guard_entry(
         refused_set = {lib.lower() for lib in refused_libs}
         if library.lower() in refused_set:
             return (SIGNAL_LIBRARY, identifier)
+
+        # Checked after the deny-list, so a library on both is reported as the
+        # deny-list refusal: "we may not" outranks "we do not want to".
+        if library.lower() in {lib.lower() for lib in NOT_ADOPTED_LIBRARIES}:
+            return (SIGNAL_NOT_ADOPTED, identifier)
 
     # Signal 2: minor-coded profile key
     profile_key = str(

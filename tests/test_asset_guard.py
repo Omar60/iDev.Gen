@@ -1,8 +1,10 @@
 """Tests for the asset import guard function and deny-list.
 
 Asserts that:
-- One fixture entry is refused per signal across all five refusal signals.
+- One fixture entry is refused per signal across the five deny-list signals.
 - The five returned signal names are distinct.
+- A library this project does not adopt is refused on its own signal, readable
+  apart from a deny-list refusal, and neither list can be emptied by a caller.
 - The returned value carries no part of the entry's text.
 - Accepted adult and university cases are accepted (one assertion each).
 - Word boundaries and token splitting prevent false refusals on substrings.
@@ -23,6 +25,7 @@ from backend.asset_guard import (
     SIGNAL_IDENTIFIER,
     SIGNAL_LIBRARY,
     SIGNAL_MINOR_PROFILE_KEY,
+    SIGNAL_NOT_ADOPTED,
     SIGNAL_TAGS,
     SIGNAL_THEME_TEXT,
     guard_entries,
@@ -508,6 +511,7 @@ def test_guard_entries_mixed_sequence_and_no_theme_text_in_report():
     # Right per-signal counts
     assert report["by_signal"] == {
         SIGNAL_LIBRARY: 2,
+        SIGNAL_NOT_ADOPTED: 0,
         SIGNAL_MINOR_PROFILE_KEY: 1,
         SIGNAL_IDENTIFIER: 1,
         SIGNAL_TAGS: 1,
@@ -571,6 +575,7 @@ def test_guard_entries_zero_count_keys_when_all_accepted():
         assert report["by_signal"][sig] == 0
     assert report["by_signal"] == {
         SIGNAL_LIBRARY: 0,
+        SIGNAL_NOT_ADOPTED: 0,
         SIGNAL_MINOR_PROFILE_KEY: 0,
         SIGNAL_IDENTIFIER: 0,
         SIGNAL_TAGS: 0,
@@ -798,3 +803,77 @@ def test_locker_room_and_student_alone_no_longer_refuse():
         "scene_theme": "a high school student at a desk by the window",
     }
     assert guard_entry(school_student) == (SIGNAL_THEME_TEXT, "room-05")
+
+
+def test_not_adopted_libraries_are_refused_with_their_own_reason():
+    """A library this project does not adopt is refused, and not as a deny-list hit.
+
+    "We may not" and "we do not want to" are different sentences, and 4.2 asks
+    for the second one to be readable as itself: an operator looking at a report
+    has to be able to tell a licence refusal from a scope decision.
+    """
+    for library in ("amateurs", "celebrities"):
+        decision = guard_entry({"identifier": f"{library}-01", "library": library})
+        assert decision == (SIGNAL_NOT_ADOPTED, f"{library}-01")
+
+    # The reason is distinct from a deny-list refusal, in both directions
+    denied = guard_entry(
+        {"identifier": "denied-01", "library": "forbidden-archive"},
+        refused_libraries=("forbidden-archive",),
+    )
+    assert denied == (SIGNAL_LIBRARY, "denied-01")
+    assert SIGNAL_NOT_ADOPTED != SIGNAL_LIBRARY
+
+    # On both lists, the deny-list wins: a licence refusal is the stronger one
+    both = guard_entry(
+        {"identifier": "both-01", "library": "amateurs"},
+        refused_libraries=("amateurs",),
+    )
+    assert both == (SIGNAL_LIBRARY, "both-01")
+
+    # An accepted library is untouched by any of it
+    assert guard_entry({"identifier": "room-01", "library": "general_scenes"}) is None
+
+
+def test_the_not_adopted_list_cannot_be_emptied_by_entry_or_caller(monkeypatch):
+    """No entry key and no caller argument puts a not-adopted library back in."""
+    entry = {
+        "identifier": "amateurs-01",
+        "library": "amateurs",
+        # Bypass-shaped keys on source material are ignored, never obeyed
+        "not_adopted_libraries": (),
+        "adopt": True,
+        "allow_profiles": True,
+    }
+    assert guard_entry(entry) == (SIGNAL_NOT_ADOPTED, "amateurs-01")
+
+    # There is no keyword argument for it, so asking for one raises
+    with pytest.raises(TypeError, match="not_adopted_libraries"):
+        guard_entry(
+            {"identifier": "amateurs-02", "library": "amateurs"},
+            not_adopted_libraries=(),
+        )
+
+    # Emptying the module constant does not reopen an import that already ran
+    monkeypatch.setattr(asset_guard, "NOT_ADOPTED_LIBRARIES", ())
+    assert "amateurs" in ("amateurs", "celebrities")
+
+
+def test_guard_entries_reports_not_adopted_apart_from_the_deny_list():
+    """The report counts the scope refusal on its own signal, not per library."""
+    entries = [
+        {"identifier": "room-01", "library": "general_scenes", "theme": "quiet room"},
+        {"identifier": "amateurs-01", "library": "amateurs"},
+        {"identifier": "celebrities-01", "library": "celebrities"},
+        {"identifier": "denied-01", "library": "forbidden-archive"},
+    ]
+    accepted, report = guard_entries(entries, refused_libraries=("forbidden-archive",))
+
+    assert report["accepted"] == 1
+    assert report["refused"] == 3
+    assert report["by_signal"][SIGNAL_NOT_ADOPTED] == 2
+    assert report["by_signal"][SIGNAL_LIBRARY] == 1
+    # by_library is the deny-list's report and stays that way
+    assert report["by_library"] == {"forbidden-archive": 1}
+    assert report["refused_identifiers"] == ["amateurs-01", "celebrities-01", "denied-01"]
+    assert [e["identifier"] for e in accepted] == ["room-01"]
