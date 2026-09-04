@@ -364,3 +364,78 @@ def test_translation_map_reaches_no_source_library():
             elif isinstance(node, ast.ImportFrom):
                 imported.add((node.module or "").split(".")[0])
         assert imported <= allowed, f"{filename} imports {sorted(imported - allowed)}"
+
+
+def refused_strings_in_map(entries, translation_map) -> list[str]:
+    """Map keys that came from an entry the guard refuses, named by their entry.
+
+    The guard never returns a refused entry's text - that is the whole point of
+    it - so the strings are collected here, from the entries this caller already
+    holds, and only their identifiers are ever reported.
+    """
+    from backend.asset_guard import guard_entries
+
+    entries = list(entries)
+    _, report = guard_entries(entries)
+    refused_ids = set(report["refused_identifiers"])
+
+    offenders = []
+    for entry in entries:
+        identifier = str(entry.get("identifier") or entry.get("id") or entry.get("key") or "")
+        if identifier not in refused_ids:
+            continue
+        for field in sorted(entry):
+            value = entry[field]
+            values = value if isinstance(value, (list, tuple)) else [value]
+            for item in values:
+                if isinstance(item, str) and item in translation_map:
+                    offenders.append(f"{identifier}:{field}")
+    return offenders
+
+
+def test_no_string_from_a_refused_entry_reaches_the_map():
+    """A refused entry's prose is not translated, so it is never a map key.
+
+    The entry is named when it fails and its text never is: a report that
+    quoted the string to prove the string is there would publish it to say so.
+    """
+    accepted_room = "\u5ba2\u5385"
+    refused_room = "\u6821\u56ed\u8d70\u5eca"
+
+    entries = [
+        {"identifier": "acc-room-01", "library": "general_scenes", "label": accepted_room},
+        {"identifier": "school_corridor_01", "label": refused_room},
+    ]
+
+    clean_map = {
+        accepted_room: {
+            "source": accepted_room,
+            "translation": "living room",
+            "fields": ["label"],
+        },
+    }
+    assert refused_strings_in_map(entries, clean_map) == []
+
+    # The same map with the refused room's string added is what this forbids
+    dirty_map = dict(clean_map)
+    dirty_map[refused_room] = {
+        "source": refused_room,
+        "translation": "school corridor",
+        "fields": ["label"],
+    }
+    offenders = refused_strings_in_map(entries, dirty_map)
+    assert offenders == ["school_corridor_01:label"]
+
+    # It names the entry, and carries neither the source string nor its
+    # translation, which is what a report of this is allowed to say
+    assert "school_corridor_01" in offenders[0]
+    assert refused_room not in offenders[0]
+    assert "school corridor" not in offenders[0]
+
+    # A not-adopted library is refused for its own reason and lands here too
+    profile_name = "\u7f8e\u5948"
+    profile_entries = [{"identifier": "amateurs-01", "library": "amateurs",
+                        "display_name": profile_name}]
+    profile_map = {profile_name: {"source": profile_name, "translation": "Haruna",
+                                  "fields": ["display_name"]}}
+    assert refused_strings_in_map(profile_entries, profile_map) == ["amateurs-01:display_name"]
