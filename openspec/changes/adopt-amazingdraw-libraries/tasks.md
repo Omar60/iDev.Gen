@@ -23,11 +23,11 @@
 
 ## 3. The registry
 
-- [ ] 3.1 Define the room registry shape in config (library name, seed file, enabled, weight) with a documented default, and verify the app starts with the default and lists the existing nine rooms
-- [ ] 3.2 Replace the hard-coded room seed filename with a registry read, and verify the existing room picker still shows the same nine rooms
-- [ ] 3.3 Honour the enabled flag so a disabled library contributes no rooms to the picker or a draw while remaining readable, and verify a test toggles a fixture library and asserts both directions
-- [ ] 3.4 Add the test that the registry and the seed files on disk agree in both directions, and verify it fails for a registry entry naming a missing file and for a seed file no entry names
-- [ ] 3.5 Update README.md and the matching page under `docs/` for the registry setting, and verify the documented default matches the shipped one
+- [x] 3.1 Define the room registry shape in config (library name, seed file, enabled, weight) with a documented default, and verify the app starts with the default and lists the existing nine rooms
+- [x] 3.2 Replace the hard-coded room seed filename with a registry read, and verify the existing room picker still shows the same nine rooms
+- [x] 3.3 Honour the enabled flag so a disabled library contributes no rooms to the picker or a draw while remaining readable, and verify a test toggles a fixture library and asserts both directions
+- [x] 3.4 Add the test that the registry and the seed files on disk agree in both directions, and verify it fails for a registry entry naming a missing file and for a seed file no entry names
+- [x] 3.5 Update README.md and the matching page under `docs/` for the registry setting, and verify the documented default matches the shipped one
 
 ## 4. The refresh pipeline
 

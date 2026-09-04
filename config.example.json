@@ -7,5 +7,13 @@
   "llm_model": "",
   "llm_vision_model": "",
   "llm_key": "",
-  "checkpoints": {}
+  "checkpoints": {},
+  "room_libraries": [
+    {
+      "name": "candid",
+      "seed_file": "candid-rooms-seed.json",
+      "enabled": true,
+      "weight": 1.0
+    }
+  ]
 }

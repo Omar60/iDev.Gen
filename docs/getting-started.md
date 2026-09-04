@@ -54,7 +54,11 @@ An endpoint that does not list its models at all is not a problem either: the
 boxes stay typeable.
 
 Settings are written to `config.json`, which stays out of git because it holds
-paths specific to your machine.
+paths specific to your machine. Advanced settings can also be edited there:
+
+| Setting | Notes |
+|---|---|
+| `room_libraries` | List of room libraries (each with `name`, `seed_file`, `enabled`, and `weight`). Defaults to `candid-rooms-seed.json` (the shipped nine candid rooms). |
 
 ## Reaching the app from a phone
 

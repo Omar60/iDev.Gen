@@ -32,6 +32,7 @@ from typing import Literal
 import crop
 import db
 import enhance
+import room_registry
 from comfy import REFERENCE_SLOTS, SLOTS, Comfy, detect_map, graph_checkpoint
 from runner import Runner, slug
 

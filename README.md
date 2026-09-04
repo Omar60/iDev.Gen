@@ -141,6 +141,7 @@ Editing that file by hand is still fine; restart afterwards.
 | `llm_model` | The model that writes. Setup lists what the endpoint has, biggest first. |
 | `llm_vision_model` | Optional. Used when a photo is sent; falls back to `llm_model`. Setup lists only the models that can actually read one. |
 | `llm_key` | Optional. Only a hosted endpoint needs one. |
+| `room_libraries` | Optional. List of room libraries for session looks (each entry has `name`, `seed_file`, `enabled`, and `weight`). Defaults to `candid-rooms-seed.json` (the shipped nine rooms). |
 
 ## Writing the prompts
 
