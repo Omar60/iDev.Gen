@@ -12,17 +12,20 @@ Asserts that:
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
 
 import backend.asset_guard as asset_guard
 from backend.asset_guard import (
+    ALL_SIGNALS,
     SIGNAL_IDENTIFIER,
     SIGNAL_LIBRARY,
     SIGNAL_MINOR_PROFILE_KEY,
     SIGNAL_TAGS,
     SIGNAL_THEME_TEXT,
+    guard_entries,
     guard_entry,
 )
 
@@ -392,15 +395,18 @@ def test_guard_module_imports_nothing_that_can_be_configured():
             imported.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             imported.add((node.module or "").split(".")[0])
+    assert "logging" not in imported, "guard must not import logging"
     assert imported <= allowed_imports, f"guard imports {sorted(imported - allowed_imports)}"
 
-    # No file is opened, so no file can turn the guard off.
+    # No file is opened and nothing is printed, so no file can turn the guard off
+    # and nothing is written to stdout.
     called = {
         node.func.id
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    assert "open" not in called
+    assert "open" not in called, "guard must not call open()"
+    assert "print" not in called, "guard must not call print()"
     attrs = {
         node.func.attr
         for node in ast.walk(tree)
@@ -408,6 +414,222 @@ def test_guard_module_imports_nothing_that_can_be_configured():
     }
     for reader in ("read_text", "read_bytes", "load", "loads", "getenv"):
         assert reader not in attrs, f"guard calls {reader}"
+
+
+def test_guard_entries_mixed_sequence_and_no_theme_text_in_report():
+    """A mixed sequence produces correct counts, per-signal counts, per-library counts,
+
+    refused identifiers in input order, unchanged accepted entries in order,
+    and no fixture text reaches the report.
+    """
+    planted_token = "TEST_PLANTED_TOKEN_ABSENCE_PROOF_XYZ991"
+
+    ref_lib_1 = {
+        "identifier": "ref-lib-01",
+        "library": "forbidden-archive",
+        "theme": f"modern living room with {planted_token}",
+        "label": f"archive room {planted_token}",
+        "notes": f"lighting notes {planted_token}",
+    }
+    ref_prof_1 = {
+        "identifier": "ref-prof-01",
+        "profile_key": "jc",
+        "theme": f"standing near window with {planted_token}",
+        "label": f"profile {planted_token}",
+        "notes": f"pose notes {planted_token}",
+    }
+    ref_lib_2 = {
+        "identifier": "ref-lib-02",
+        "library": "forbidden-archive",
+        "theme": f"hallway view with {planted_token}",
+        "label": f"archive hall {planted_token}",
+        "notes": f"hallway notes {planted_token}",
+    }
+    ref_id_1 = {
+        "identifier": "school_hallway_01",
+        "theme": f"sunlight through large windows with {planted_token}",
+        "label": f"hallway {planted_token}",
+        "notes": f"window notes {planted_token}",
+    }
+    ref_tag_1 = {
+        "identifier": "ref-tag-01",
+        "tags": ["classroom", "indoor"],
+        "theme": f"wooden desks and chairs with {planted_token}",
+        "label": f"classroom {planted_token}",
+        "notes": f"desk notes {planted_token}",
+    }
+    ref_theme_1 = {
+        "identifier": "ref-theme-01",
+        "theme": f"afternoon sunlight in a high school corridor with {planted_token}",
+        "label": f"corridor {planted_token}",
+        "notes": f"corridor notes {planted_token}",
+    }
+
+    acc_1 = {
+        "identifier": "acc-room-01",
+        "library": "standard_interiors",
+        "theme": "modern penthouse living room with beige couch",
+        "label": "penthouse lounge",
+    }
+    acc_2 = {
+        "identifier": "acc-room-02",
+        "library": "standard_interiors",
+        "theme": "industrial kitchen with marble island counter",
+        "label": "kitchen island",
+    }
+
+    # Interleave accepted and refused entries
+    sequence = [
+        acc_1,
+        ref_lib_1,
+        ref_prof_1,
+        acc_2,
+        ref_lib_2,
+        ref_id_1,
+        ref_tag_1,
+        ref_theme_1,
+    ]
+
+    accepted, report = guard_entries(sequence, refused_libraries=("forbidden-archive",))
+
+    # Right counts
+    assert report["accepted"] == 2
+    assert report["refused"] == 6
+
+    # Right per-signal counts
+    assert report["by_signal"] == {
+        SIGNAL_LIBRARY: 2,
+        SIGNAL_MINOR_PROFILE_KEY: 1,
+        SIGNAL_IDENTIFIER: 1,
+        SIGNAL_TAGS: 1,
+        SIGNAL_THEME_TEXT: 1,
+    }
+
+    # Right per-library count (2 from forbidden-archive)
+    assert report["by_library"] == {
+        "forbidden-archive": 2,
+    }
+
+    # Refused identifiers in input order
+    expected_refused_ids = [
+        "ref-lib-01",
+        "ref-prof-01",
+        "ref-lib-02",
+        "school_hallway_01",
+        "ref-tag-01",
+        "ref-theme-01",
+    ]
+    assert report["refused_identifiers"] == expected_refused_ids
+
+    # Accepted entries unchanged and in order
+    assert len(accepted) == 2
+    assert accepted[0] is acc_1
+    assert accepted[1] is acc_2
+    assert accepted == [acc_1, acc_2]
+
+    # No text reaches the report
+    serialized_report = json.dumps(report, sort_keys=True)
+    assert planted_token not in serialized_report
+    for field_text in (
+        "modern living room",
+        "archive room",
+        "standing near window",
+        "hallway view",
+        "sunlight through large windows",
+        "wooden desks and chairs",
+        "afternoon sunlight in a high school corridor",
+        "modern penthouse",
+        "industrial kitchen",
+    ):
+        assert field_text not in serialized_report
+
+
+def test_guard_entries_zero_count_keys_when_all_accepted():
+    """Zero-count keys are present in a report over entries that were all accepted."""
+    entries = [
+        {"identifier": "acc-01", "theme": "mountain cabin with wood fireplace"},
+        {"identifier": "acc-02", "theme": "lakeside deck at twilight"},
+    ]
+    accepted, report = guard_entries(entries, refused_libraries=("denied-lib",))
+
+    assert accepted == entries
+    assert report["accepted"] == 2
+    assert report["refused"] == 0
+
+    # All signals present with count 0
+    for sig in ALL_SIGNALS:
+        assert sig in report["by_signal"]
+        assert report["by_signal"][sig] == 0
+    assert report["by_signal"] == {
+        SIGNAL_LIBRARY: 0,
+        SIGNAL_MINOR_PROFILE_KEY: 0,
+        SIGNAL_IDENTIFIER: 0,
+        SIGNAL_TAGS: 0,
+        SIGNAL_THEME_TEXT: 0,
+    }
+
+    # Configured refused library present with count 0
+    assert "denied-lib" in report["by_library"]
+    assert report["by_library"]["denied-lib"] == 0
+
+    # No refused identifiers
+    assert report["refused_identifiers"] == []
+
+
+def test_guard_entries_empty_sequence():
+    """An empty sequence produces an empty accepted list and zero counts."""
+    accepted, report = guard_entries([])
+    assert accepted == []
+    assert report["accepted"] == 0
+    assert report["refused"] == 0
+    for sig in ALL_SIGNALS:
+        assert report["by_signal"][sig] == 0
+    assert report["by_library"] == {}
+    assert report["refused_identifiers"] == []
+
+
+def test_guard_entries_refused_library_with_zero_entries():
+    """A configured refused library with zero matching entries has count 0 in report."""
+    entries = [
+        {"identifier": "item-01", "library": "used-denied", "theme": "studio apartment"},
+        {"identifier": "item-02", "library": "clean-lib", "theme": "quiet library hall"},
+    ]
+    accepted, report = guard_entries(
+        entries,
+        refused_libraries=("used-denied", "unused-denied"),
+    )
+    assert len(accepted) == 1
+    assert accepted[0] is entries[1]
+    assert report["accepted"] == 1
+    assert report["refused"] == 1
+    assert report["by_library"]["used-denied"] == 1
+    assert report["by_library"]["unused-denied"] == 0
+    assert report["refused_identifiers"] == ["item-01"]
+
+
+def test_guard_entries_unexpected_keyword_arguments_raise():
+    """Any caller keyword argument outside known entry fields raises TypeError naming it."""
+    bypass_args = ("allow_school", "force", "include_refused", "skip_guard", "strict")
+    for arg in bypass_args:
+        with pytest.raises(TypeError) as exc_info:
+            guard_entries([], **{arg: True})
+        assert arg in str(exc_info.value), f"expected '{arg}' in {exc_info.value}"
+
+
+def test_guard_entries_source_library_and_lib_aliases_and_duplicate_refused_libs():
+    """guard_entries handles source_library, lib, and deduplicates refused_libraries."""
+    entries = [
+        {"identifier": "ref-01", "source_library": "denied-a", "theme": "hallway"},
+        {"identifier": "ref-02", "lib": "denied-b", "theme": "lounge"},
+    ]
+    accepted, report = guard_entries(
+        entries,
+        refused_libraries=("denied-a", "denied-a", "denied-b"),
+    )
+    assert report["accepted"] == 0
+    assert report["refused"] == 2
+    assert report["by_library"] == {"denied-a": 1, "denied-b": 1}
+    assert report["refused_identifiers"] == ["ref-01", "ref-02"]
 
 
 def test_file_is_pure_ascii_and_no_control_bytes():

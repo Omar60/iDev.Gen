@@ -6,7 +6,7 @@ no tracked file carries a non-English glyph. All strings here are pure ASCII.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Iterable
 
 # Terms that mark an entry as school-set, in English.
 # Removed: campus, dormitory, playground, gymnasium, academy (not minors-only).
@@ -141,6 +141,14 @@ SIGNAL_IDENTIFIER: str = "identifier"
 SIGNAL_TAGS: str = "tags"
 SIGNAL_THEME_TEXT: str = "theme_text"
 SIGNAL_MINOR_PROFILE_KEY: str = "minor_profile_key"
+
+ALL_SIGNALS: tuple[str, ...] = (
+    SIGNAL_LIBRARY,
+    SIGNAL_MINOR_PROFILE_KEY,
+    SIGNAL_IDENTIFIER,
+    SIGNAL_TAGS,
+    SIGNAL_THEME_TEXT,
+)
 
 # Every field an entry may carry prose in. All of them are checked.
 TEXT_FIELDS: tuple[str, ...] = (
@@ -304,4 +312,65 @@ def guard_entry(
             return (SIGNAL_THEME_TEXT, identifier)
 
     return None
+
+
+def guard_entries(
+    entries: Iterable[dict[str, Any]],
+    *,
+    refused_libraries: tuple[str, ...] | set[str] | list[str] = (),
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Filter an iterable of asset entries and report counts and refused identifiers.
+
+    Returns a tuple of (accepted_entries, report_dict).
+    The report contains:
+    - "accepted": count of accepted entries
+    - "refused": count of refused entries
+    - "by_signal": count per refusal signal (keyed by SIGNAL_* constants)
+    - "by_library": count per refused source library
+    - "refused_identifiers": list of refused identifiers in input order
+
+    Never prints, logs, or includes any entry text in the report.
+    """
+    refused_libs = REFUSED_LIBRARIES + tuple(refused_libraries)
+    seen_libs: set[str] = set()
+    unique_refused_libs: list[str] = []
+    for lib in refused_libs:
+        if lib not in seen_libs:
+            seen_libs.add(lib)
+            unique_refused_libs.append(lib)
+
+    by_library: dict[str, int] = {lib: 0 for lib in unique_refused_libs}
+    lib_lookup: dict[str, str] = {lib.lower(): lib for lib in unique_refused_libs}
+
+    by_signal: dict[str, int] = {sig: 0 for sig in ALL_SIGNALS}
+
+    accepted: list[dict[str, Any]] = []
+    refused_identifiers: list[str] = []
+
+    for entry in entries:
+        decision = guard_entry(entry, refused_libraries=refused_libraries)
+        if decision is None:
+            accepted.append(entry)
+        else:
+            signal, identifier = decision
+            refused_identifiers.append(identifier)
+            by_signal[signal] = by_signal.get(signal, 0) + 1
+            if signal == SIGNAL_LIBRARY:
+                raw_lib = str(
+                    entry.get("library")
+                    or entry.get("source_library")
+                    or entry.get("lib")
+                    or ""
+                )
+                canonical_lib = lib_lookup.get(raw_lib.lower(), raw_lib)
+                by_library[canonical_lib] = by_library.get(canonical_lib, 0) + 1
+
+    report: dict[str, Any] = {
+        "accepted": len(accepted),
+        "refused": len(refused_identifiers),
+        "by_signal": by_signal,
+        "by_library": by_library,
+        "refused_identifiers": refused_identifiers,
+    }
+    return accepted, report
 
