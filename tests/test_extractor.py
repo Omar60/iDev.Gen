@@ -686,3 +686,54 @@ def test_find_uncovered_strings_with_file_path(tmp_path):
     # Passing path to find_uncovered_strings
     assert find_uncovered_strings(source_dir, map_path, {"notes"}) == []
 
+
+
+def test_translation_map_inside_source_dir_is_not_read_as_source(tmp_path):
+    """The map sits inside the source directory, and the walk must not read it back.
+
+    `resolve_translation_map_path` puts it there on purpose, so a map planted
+    with a source string the corpus does not contain proves the walk skips it:
+    read as source material that string comes back as a row of its own, and the
+    corpus reports clean because the map answered its own question.
+    """
+    from backend.translation_map import (
+        resolve_translation_map_path,
+        save_translation_map,
+    )
+
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+
+    in_corpus = "\u6ce8\u610f\u5149\u7ebf"
+    not_in_corpus = "\u62fd\u4f4f\u6905\u5b50"
+
+    (source_dir / "items.json").write_text(
+        json.dumps([{"identifier": "e1", "notes": in_corpus}]),
+        encoding="utf-8",
+    )
+
+    map_path = resolve_translation_map_path(source_dir, "translation_map.json")
+    save_translation_map(
+        {
+            in_corpus: {
+                "source": in_corpus,
+                "translation": "lighting notes",
+                "fields": ["notes"],
+            },
+            not_in_corpus: {
+                "source": not_in_corpus,
+                "translation": "grip the chair",
+                "fields": ["action_anchor"],
+            },
+        },
+        map_path,
+    )
+    assert map_path.parent == source_dir
+
+    results = extract_non_english_strings(source_dir)
+
+    assert [(r["identifier"], r["field"], r["string"]) for r in results] == [
+        ("e1", "notes", in_corpus)
+    ]
+    assert not any(r["field"] == "source" for r in results)
+    assert not any(r["string"] == not_in_corpus for r in results)

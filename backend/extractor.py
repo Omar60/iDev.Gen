@@ -165,6 +165,28 @@ def _collect_entries(
     )
 
 
+def _is_translation_map(data: Any) -> bool:
+    """True when `data` is a translation map rather than source material.
+
+    `resolve_translation_map_path` puts the map inside the source directory on
+    purpose, and this walk is an `rglob("*.json")` over that directory, so the
+    map is handed back to the extractor as source material unless it is named
+    here. Read as source it yields one row per entry from the map's own
+    `source` key, with an empty identifier and nothing for the guard to read -
+    strings that cover themselves and would report a corpus clean because the
+    answer was already in the file.
+
+    Recognised by the shape `save_translation_map` writes and nothing else
+    does: every value carrying all three of source, translation and fields.
+    """
+    if not isinstance(data, dict) or not data:
+        return False
+    return all(
+        isinstance(v, dict) and {"source", "translation", "fields"} <= v.keys()
+        for v in data.values()
+    )
+
+
 def _load_entries_from_file(json_file: Path) -> list[dict[str, Any]]:
     """Load asset entries from a JSON file in a source directory.
 
@@ -178,6 +200,9 @@ def _load_entries_from_file(json_file: Path) -> list[dict[str, Any]]:
         data = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid JSON in {json_file}: {exc}") from exc
+
+    if _is_translation_map(data):
+        return []
 
     if not isinstance(data, (dict, list)):
         raise ValueError(
