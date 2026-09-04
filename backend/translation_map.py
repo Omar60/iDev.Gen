@@ -7,9 +7,12 @@ its authored English translation, and the fields it covers.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import re
-from typing import Any, Iterable
+import subprocess
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
 
 # Regex matching CJK ideographs, syllabaries, symbols, fullwidth forms,
 # and non-Latin scripts.
@@ -40,6 +43,8 @@ NON_ENGLISH_PATTERN: re.Pattern = re.compile(
 )
 
 # Allowed English typographical punctuation characters (beyond standard ASCII).
+# This repository writes 2052 em dashes and its own curly quotes on purpose, so
+# a rule that refused them would refuse the house style along with the source.
 ALLOWED_TYPOGRAPHY: frozenset[str] = frozenset(
     (
         "\u2018",  # left single quotation mark
@@ -108,8 +113,6 @@ def validate_translation_entry(
         )
 
     translation = entry.get("translation")
-    if translation is None and "english" in entry:
-        translation = entry.get("english")
     if translation is None or not isinstance(translation, str) or not translation.strip():
         raise ValueError(f"Translation for source string {source!r} is empty")
     if contains_non_english(translation):
@@ -120,14 +123,13 @@ def validate_translation_entry(
     fields_raw = entry.get("fields")
     if fields_raw is None:
         raise ValueError(f"Translation entry for {source!r} missing 'fields'")
-    if isinstance(fields_raw, str):
-        fields_list = [fields_raw]
-    elif hasattr(fields_raw, "__iter__"):
-        fields_list = list(fields_raw)
-    else:
+    # A bare string is refused rather than wrapped: "label" and ["label"]
+    # reaching the same entry is one field written two ways.
+    if isinstance(fields_raw, str) or not hasattr(fields_raw, "__iter__"):
         raise ValueError(
             f"Translation entry 'fields' must be a collection of strings, got {type(fields_raw).__name__}"
         )
+    fields_list = list(fields_raw)
     if not fields_list:
         raise ValueError(f"Translation entry for {source!r} must cover at least one field")
     for f in fields_list:
@@ -140,20 +142,6 @@ def validate_translation_entry(
         "translation": translation.strip(),
         "fields": normalized_fields,
     }
-
-
-def make_translation_entry(
-    source: str,
-    translation: str,
-    fields: Iterable[str] | str,
-) -> dict[str, Any]:
-    """Helper to construct and validate a single translation entry."""
-    entry = {
-        "source": source,
-        "translation": translation,
-        "fields": fields if not isinstance(fields, str) else [fields],
-    }
-    return validate_translation_entry(entry, source_key=source)
 
 
 def validate_translation_map(
@@ -181,9 +169,15 @@ def resolve_translation_map_path(
 ) -> Path:
     """Resolve the path to the translation map beside the source material.
 
-    Both source_dir and relative_path are required arguments. The source
-    directory belongs to the operator and is never hardcoded, guessed, or
-    given a default.
+    Both arguments are required. The source directory belongs to the operator
+    and is never hardcoded, guessed, or given a default.
+
+    `source_dir` has to BE a directory, and is asked of the filesystem rather
+    than of the name. Reading "there is a dot in it, so it is a file, so the map
+    goes in the parent" put the map one level ABOVE a source directory called
+    anything like `AmazingDraw v1.2` - outside the material it is supposed to
+    sit beside, and silently, since both paths exist. An absolute
+    `relative_path` is refused for the same reason: it is beside nothing.
     """
     if source_dir is None or not str(source_dir).strip():
         raise ValueError("source_dir is required and cannot be empty")
@@ -191,34 +185,49 @@ def resolve_translation_map_path(
         raise ValueError("relative_path is required and cannot be empty")
 
     base = Path(source_dir)
+    if not base.is_dir():
+        raise NotADirectoryError(
+            f"source_dir must be an existing directory, got {base}"
+        )
     rel = Path(relative_path)
     if rel.is_absolute():
-        return rel
-    if base.is_file() or (base.suffix and not base.is_dir()):
-        return base.parent / rel
+        raise ValueError(
+            f"relative_path must be relative to the source directory, got {rel}"
+        )
     return base / rel
 
 
-def load_translation_map(
-    path: Path | str | None = None,
-    *,
-    source_dir: Path | str | None = None,
-    relative_path: Path | str | None = None,
-) -> dict[str, dict[str, Any]]:
+def _is_tracked_location(path: Path) -> bool:
+    """True when `path` sits inside this repository and git does not ignore it.
+
+    The map carries the source libraries' own prose, which the operator's
+    licence decision keeps out of this public repo. Asked of `git check-ignore`
+    so the answer comes from the same .gitignore a commit would consult, rather
+    than from a second list kept here that would drift from it.
+    """
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(ROOT)
+    except ValueError:
+        return False  # outside the repository entirely: nothing here tracks it
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", str(resolved)],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    if ignored.returncode == 0:
+        return False  # git ignores it
+    if ignored.returncode != 1:
+        return False  # not a git repository, or git is unavailable
+    return True
+
+
+def load_translation_map(path: Path | str) -> dict[str, dict[str, Any]]:
     """Load and validate the translation map from an untracked JSON file.
 
-    Requires either 'path' or both 'source_dir' and 'relative_path'.
-    Never guesses a default path or source directory.
+    Takes a path `resolve_translation_map_path` built. One way in, so the
+    required source directory cannot be walked around by passing a path instead.
     """
-    if path is not None:
-        target_path = Path(path)
-    elif source_dir is not None and relative_path is not None:
-        target_path = resolve_translation_map_path(source_dir, relative_path)
-    else:
-        raise ValueError(
-            "load_translation_map requires either 'path' or both 'source_dir' and 'relative_path'"
-        )
-
+    target_path = Path(path)
     if not target_path.is_file():
         raise FileNotFoundError(f"Translation map file not found: {target_path}")
 
@@ -233,23 +242,20 @@ def load_translation_map(
 
 def save_translation_map(
     translation_map: dict[str, Any],
-    path: Path | str | None = None,
-    *,
-    source_dir: Path | str | None = None,
-    relative_path: Path | str | None = None,
+    path: Path | str,
 ) -> Path:
     """Validate and write the translation map to an untracked JSON file.
 
-    Non-ASCII characters in source strings are escaped as \\uXXXX to ensure
-    the file contains only ASCII characters.
+    Non-ASCII characters in source strings are escaped as \\uXXXX so the file
+    contains only ASCII. Refuses a destination this repository would track:
+    the map carries source prose, and "untracked" has to be something the code
+    checks rather than something a docstring says.
     """
-    if path is not None:
-        target_path = Path(path)
-    elif source_dir is not None and relative_path is not None:
-        target_path = resolve_translation_map_path(source_dir, relative_path)
-    else:
+    target_path = Path(path)
+    if _is_tracked_location(target_path):
         raise ValueError(
-            "save_translation_map requires either 'path' or both 'source_dir' and 'relative_path'"
+            f"Translation map would be tracked by git at {target_path}: it carries "
+            f"source prose and must live at an untracked path beside the source material"
         )
 
     validated = validate_translation_map(translation_map)

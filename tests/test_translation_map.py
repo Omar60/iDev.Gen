@@ -23,7 +23,6 @@ import pytest
 from backend.translation_map import (
     contains_non_english,
     load_translation_map,
-    make_translation_entry,
     resolve_translation_map_path,
     save_translation_map,
     validate_translation_entry,
@@ -115,24 +114,10 @@ def test_accepts_valid_translation_entry():
     val_typo = validate_translation_entry(typo_entry)
     assert val_typo["translation"] == "artist\u2019s studio \u2014 high ceiling"
 
-    # Derived source from source_key, 'english' alias, and single string field
-    alias_entry = {
-        "english": "dormitory",
-        "fields": "label",
-    }
-    val_alias = validate_translation_entry(alias_entry, source_key="\u5bbf\u820d")
-    assert val_alias["source"] == "\u5bbf\u820d"
-    assert val_alias["translation"] == "dormitory"
-    assert val_alias["fields"] == ["label"]
-
-    # make_translation_entry helper with single string and list fields
-    helper_res = make_translation_entry("\u6559\u5ba4", "classroom", "label")
-    assert helper_res["source"] == "\u6559\u5ba4"
-    assert helper_res["translation"] == "classroom"
-    assert helper_res["fields"] == ["label"]
-
-    helper_list = make_translation_entry("\u6559\u5ba4", "classroom", ["label", "notes"])
-    assert helper_list["fields"] == ["label", "notes"]
+    # A source string omitted from the entry is taken from the map key
+    keyed_entry = {"translation": "dormitory", "fields": ["label"]}
+    val_keyed = validate_translation_entry(keyed_entry, source_key="\u5bbf\u820d")
+    assert val_keyed["source"] == "\u5bbf\u820d"
 
     # Empty text, Latin-1 loanword characters, and script outside NON_ENGLISH_PATTERN
     assert not contains_non_english("")
@@ -159,6 +144,10 @@ def test_rejects_missing_or_invalid_fields():
     # Invalid fields type
     with pytest.raises(ValueError, match="must be a collection of strings"):
         validate_translation_entry({**base, "fields": 123})
+    # A bare string is refused rather than wrapped: "label" and ["label"]
+    # reaching the same entry is one field written two ways.
+    with pytest.raises(ValueError, match="must be a collection of strings"):
+        validate_translation_entry({**base, "fields": "label"})
 
 
 def test_rejects_source_mismatch_or_empty_source():
@@ -214,27 +203,48 @@ def test_validate_translation_map_entire_map():
 
 def test_resolve_translation_map_path_requires_arguments(tmp_path):
     """Verify that resolving the map path requires source_dir and relative_path."""
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+
     with pytest.raises(ValueError, match="source_dir is required"):
         resolve_translation_map_path("", "map.json")
     with pytest.raises(ValueError, match="relative_path is required"):
-        resolve_translation_map_path("some/source/dir", "")
+        resolve_translation_map_path(source_dir, "")
 
-    # Relative path resolved against source directory
-    res_dir = resolve_translation_map_path("sources", "translations.json")
-    assert res_dir == Path("sources") / "translations.json"
+    # Relative path resolved against the source directory
+    assert resolve_translation_map_path(source_dir, "translations.json") == (
+        source_dir / "translations.json"
+    )
 
-    # Relative path resolved beside a fictitious source file path with suffix
-    res_file = resolve_translation_map_path("sources/amateurs.json", "translations.json")
-    assert res_file == Path("sources") / "translations.json"
 
-    # Relative path resolved beside a real existing file on disk
-    real_source_file = tmp_path / "actual_source.json"
-    real_source_file.write_text("{}", encoding="utf-8")
-    assert resolve_translation_map_path(real_source_file, "map.json") == tmp_path / "map.json"
+def test_resolve_translation_map_path_keeps_a_dotted_directory_beside_itself(tmp_path):
+    """A source directory whose NAME carries a dot still gets the map inside it.
 
-    # Absolute path preserved
-    abs_path = Path("/absolute/path/to/translations.json")
-    assert resolve_translation_map_path("sources", abs_path) == abs_path
+    Deciding file-or-directory from the name put the map in the PARENT of any
+    source directory called `AmazingDraw v1.2` - out of the material it is meant
+    to sit beside, and silently, since both paths exist and neither is wrong to
+    look at. The filesystem is asked instead.
+    """
+    dotted = tmp_path / "AmazingDraw v1.2"
+    dotted.mkdir()
+    assert resolve_translation_map_path(dotted, "map.json") == dotted / "map.json"
+
+
+def test_resolve_translation_map_path_refuses_a_non_directory_and_an_absolute_path(tmp_path):
+    """A source_dir that is not a directory, and an absolute relative_path, are refused."""
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+
+    a_file = tmp_path / "amateurs.json"
+    a_file.write_text("{}", encoding="utf-8")
+    with pytest.raises(NotADirectoryError, match="must be an existing directory"):
+        resolve_translation_map_path(a_file, "map.json")
+    with pytest.raises(NotADirectoryError, match="must be an existing directory"):
+        resolve_translation_map_path(tmp_path / "no-such-dir", "map.json")
+
+    # An absolute destination is beside nothing, so it is not a resolution.
+    with pytest.raises(ValueError, match="must be relative to the source directory"):
+        resolve_translation_map_path(source_dir, tmp_path / "elsewhere.json")
 
 
 def test_load_and_save_translation_map_roundtrip(tmp_path):
@@ -248,11 +258,8 @@ def test_load_and_save_translation_map_roundtrip(tmp_path):
             "fields": ["label"],
         },
     }
-    saved_path = save_translation_map(
-        map_data,
-        source_dir=source_dir,
-        relative_path="translation_map.json",
-    )
+    map_path = resolve_translation_map_path(source_dir, "translation_map.json")
+    saved_path = save_translation_map(map_data, map_path)
     assert saved_path.is_file()
 
     # Verify written file is strictly ASCII
@@ -263,25 +270,8 @@ def test_load_and_save_translation_map_roundtrip(tmp_path):
     assert escape_str.encode("ascii") in raw_bytes
 
     # Load map back
-    loaded = load_translation_map(
-        source_dir=source_dir,
-        relative_path="translation_map.json",
-    )
+    loaded = load_translation_map(map_path)
     assert loaded["\u5bbf\u820d"]["translation"] == "dormitory"
-
-    # Saving with direct path
-    direct_path = tmp_path / "direct.json"
-    save_translation_map(map_data, path=direct_path)
-    assert direct_path.is_file()
-    assert load_translation_map(direct_path)["\u5bbf\u820d"]["translation"] == "dormitory"
-
-    # Loading requires path or source_dir + relative_path
-    with pytest.raises(ValueError, match="requires either 'path' or both"):
-        load_translation_map()
-
-    # Saving requires path or source_dir + relative_path
-    with pytest.raises(ValueError, match="requires either 'path' or both"):
-        save_translation_map(map_data)
 
     # Missing file raises FileNotFoundError
     with pytest.raises(FileNotFoundError):
@@ -301,6 +291,37 @@ def test_load_and_save_translation_map_roundtrip(tmp_path):
     )
     with pytest.raises(ValueError, match="contains non-English characters"):
         load_translation_map(bad_file)
+
+
+def test_saving_refuses_a_destination_this_repository_would_track(tmp_path):
+    """3.1 / 2.1: the map holds source prose, so a tracked destination is refused.
+
+    "Untracked" was a word in a docstring until this ran: nothing stopped a
+    caller handing a repo path and committing 428 rooms of somebody else's
+    wording. Asked of `git check-ignore`, so the answer comes from the same
+    .gitignore a commit would consult rather than from a second list here.
+    """
+    map_data = {
+        "\u5bbf\u820d": {"source": "\u5bbf\u820d", "translation": "dormitory", "fields": ["label"]},
+    }
+
+    tracked = ROOT / "backend" / "would-be-committed.json"
+    with pytest.raises(ValueError, match="would be tracked by git"):
+        save_translation_map(map_data, tracked)
+    assert not tracked.exists(), "a refused save must write nothing"
+
+    # The .gitignore pattern covers the map's own name under the repo.
+    ignored = ROOT / "translation_map.json"
+    assert not ignored.exists(), "probe name is taken by a real file"
+    save_translation_map(map_data, ignored)
+    try:
+        assert ignored.is_file()
+    finally:
+        ignored.unlink()
+
+    # Outside the repository there is nothing to track it, so it is allowed.
+    outside = tmp_path / "operator" / "anything.json"
+    assert save_translation_map(map_data, outside).is_file()
 
 
 def test_translation_map_files_are_pure_ascii_and_contain_no_control_bytes():
@@ -325,7 +346,14 @@ def test_translation_map_files_are_pure_ascii_and_contain_no_control_bytes():
 
 
 def test_translation_map_reaches_no_source_library():
-    """Verify translation map module and its tests do not import config or file-search tools."""
+    """This suite's own tests run on a checkout where the source libraries are absent.
+
+    Only the test files are read, and deliberately: the module under test needs
+    `subprocess` to ask git whether a destination is tracked, while a FIXTURE
+    that started reading a real library would need exactly that kind of import.
+    Asserting the suite's import list catches it; running the suite on this
+    machine never would, because the libraries are here.
+    """
     allowed = {"__future__", "ast", "json", "pathlib", "pytest", "re", "typing", "backend"}
     for filename in ("test_translation_map.py",):
         tree = ast.parse((ROOT / "tests" / filename).read_text(encoding="utf-8"))

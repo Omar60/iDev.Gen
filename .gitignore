@@ -50,3 +50,12 @@ rewrite-counterargument.md
 !data/krea2-attention-workflow.json
 !data/krea2-kgreference-workflow.json
 !data/krea2-kgwardrobe-workflow.json
+
+# The translation map is derived from the source libraries' own prose, which the
+# operator's licence decision keeps out of this public repo. It normally lives
+# beside the source material and never under this tree at all - the pattern is
+# here so that a map written under the repo by mistake is still not committable,
+# and `save_translation_map` refuses any destination this file does not cover.
+translation_map*.json
+translation-map*.json
+*-translation-map*.json
