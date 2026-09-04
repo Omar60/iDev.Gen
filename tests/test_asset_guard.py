@@ -632,6 +632,27 @@ def test_guard_entries_source_library_and_lib_aliases_and_duplicate_refused_libs
     assert report["refused_identifiers"] == ["ref-01", "ref-02"]
 
 
+def test_the_guard_suite_reaches_no_source_library():
+    """The guard's own tests run on a checkout where the source libraries are absent.
+
+    Every fixture in this suite is invented, and the property that keeps it that
+    way is the import list: reading a real library needs `os`, `glob`, `shutil`
+    or the app's config to find one. Asserting the imports catches a fixture that
+    starts reading from disk, which running the suite on this machine never
+    would - the libraries are here.
+    """
+    allowed = {"__future__", "ast", "json", "pathlib", "pytest", "backend"}
+    for name in ("test_asset_guard.py", "test_asset_guard_markers.py"):
+        tree = ast.parse((ROOT / "tests" / name).read_text(encoding="utf-8"))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add((node.module or "").split(".")[0])
+        assert imported <= allowed, f"{name} imports {sorted(imported - allowed)}"
+
+
 def test_file_is_pure_ascii_and_no_control_bytes():
     """This test file and the guard module must be pure ASCII with no C0 control bytes except legal whitespace."""
     for rel_path in ("tests/test_asset_guard.py", "backend/asset_guard.py"):

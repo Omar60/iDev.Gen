@@ -4,8 +4,8 @@
 - [x] 1.2 Add the deny-list and the guard function in backend code, covering the four refusal signals (source library, identifier, tags, theme text) and the minor-coded profile keys, and verify a unit test refuses one fixture entry per signal
 - [x] 1.3 Make the guard un-overridable: no flag, env var, config key or caller argument may include a refused entry, and verify a test asserts that passing any such argument raises rather than imports
 - [x] 1.4 Add the reporting path so a refused entry is counted and named by identifier but never has its text written or logged, and verify a test captures the report and asserts no theme text appears in it
-- [ ] 1.5 Add invented fixture entries under `tests/` so the guard's tests run with the external libraries absent, and verify the guard suite passes on a checkout with no source directory present
-- [ ] 1.6 Add the test that fails when an import path writes seed rows without consulting the guard, and verify it fails against a deliberately unguarded stub before it passes
+- [x] 1.5 Add invented fixture entries under `tests/` so the guard's tests run with the external libraries absent, and verify the guard suite passes on a checkout with no source directory present - satisfied by construction across 1.1 to 1.4: every fixture is invented and no guard test reads a directory. What shipped for it is the assertion that keeps it true, on the guard suite's own import list
+- [ ] 1.6 moved to 4.3, below. Written here it has nothing to watch: no import path exists until phase 4, so the test would iterate an empty registry and pass forever
 
 ## 2. The translation pass
 
@@ -33,6 +33,7 @@
 
 - [ ] 4.1 Declare each source library with the kind of material it carries and every destination its entries reach, and verify a test asserts an undeclared file is refused and writes nothing
 - [ ] 4.2 Declare the body-profile source as material this project does not adopt, and verify a test asserts it is refused with that reason and that the reason is distinct from a deny-list refusal
+- [ ] 4.3a Add the test that fails when an import path writes seed rows without consulting the guard, and verify it fails against a deliberately unguarded stub before it passes - this is 1.6, landed here because 4.3 builds the first import path for it to name
 - [ ] 4.3 Implement the import once - refusal, translation lookup, merge, report - and verify a test asserts the app operation and the command-line entry produce identical seed content for one fixture source
 - [ ] 4.4 Run the refusal rule and the translation lookup over the whole upload before writing anything, and verify a test asserts a source with one uncovered string leaves every destination byte-identical
 - [ ] 4.5 List every uncovered string with the field it came from when an upload is refused for translation, and verify a test asserts a refused entry's strings are absent from that list
