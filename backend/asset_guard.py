@@ -16,6 +16,11 @@ from typing import Any, Iterable
 # petplay scenes. The school-set cases they were carrying are still refused by
 # a narrower marker: "school", "high school", "middle school", "schoolgirl",
 # "classroom", and their Chinese counterparts.
+# Not added back as narrower markers: "private lesson", "tutoring". The one
+# entry they would refuse is a home tutoring room naming no school and no
+# age, and the operator accepted it after reading it. Three accepted entries
+# in the source name a lesson or a student at all, and that is the only one
+# of them that is about a lesson.
 SCHOOL_MARKERS_EN: tuple[str, ...] = (
     "school",
     "schoolgirl",
