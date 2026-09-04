@@ -129,12 +129,40 @@ Nothing in `data/directed-acts-seed.json` names any of these 25 in its `cameras`
 list, so retiring them breaks no camera fitting -- which is what made the
 family merge unsafe on 2026-09-03 and does not apply here.
 
-* **Nine rows measured inert twice** (`wide` 4, `lens` 7 minus the ones not
-  re-shot, `movement` 3): the control 3/3 on both acts. They are wordings this
-  sampler does not read.
-* **Six rows bite** and deliver one frame between them. Worth one row, not six,
-  and worth a `judge_label` that says "the frame closes to the hip or thigh".
-* **`full body`** is the one term whose job the default already does.
+### Done: 20 of the 25 are retired
+
+`POST /api/components/{id}/retire`, not delete -- the rows stay for historic
+evidence and leave composition. Backup first:
+`data/backup-before-camera-retire-20260903.db` with its `-wal` and `-shm`.
+
+* **15 measured inert** and retired: `knee-up` and the four `wide` rows (the
+  control 3/3 on BOTH acts), the seven `lens` rows and the three `movement` rows
+  (the control 3/3 on the act that could show them, and not crop terms, so not
+  re-shot).
+* **Five of the six that bite** retired as duplicates: `close-up`,
+  `extreme close-up`, `headshot`, `shoulder-up`, `medium close-up`. They deliver
+  the same photograph as the survivor.
+* **`waist-up` is the survivor**, kept over the 3/3 `extreme close-up` because at
+  three seeds 3/3 and 2/3 are the same measurement and this is the name that
+  misleads a writer least. Its `judge_label` now says what arrives -- *her feet
+  are out of the frame and the crop lands at her hip or thigh* -- rather than
+  "frame cuts at the waist".
+* **Left alone**: `full body`, which asks for what the default already gives, and
+  `medium shot`, `medium long shot` and `three-quarter shot` at 1/3, which is
+  inside a three-seed screen's noise. An inconclusive row is not a dead one.
+
+The 20 retired rows were also dropped from `data/directed-cameras-seed.json`, so
+a fresh install does not import them live again -- the import only inserts what
+is missing and would have resurrected every one of them
+([[idevgen-seed-files-drift]]).
+
+### A drifted row found on the way out
+
+Diffing the seed against the store after the retire turned up `side-right`
+(*"Taken from her right side, her body in full profile"*), live in the store and
+missing from the seed since the 2026-09-03 export. It is now in the file, marked
+unmeasured. Store and seed are 30 and 30 with an empty symmetric difference,
+checked rather than assumed.
 
 ## The Wardrobe Against Body Geometry
 

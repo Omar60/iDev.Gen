@@ -2,50 +2,6 @@
   {
     "slot": "camera",
     "manner": "directed",
-    "concept_key": "close-up",
-    "family": "close",
-    "faces": "",
-    "wording": "close-up",
-    "judge_label": "head and shoulders fill the frame",
-    "verdict": "alive",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on an act naming her feet, and 2/3 tighter than the control on `arms-raised`, which names nothing below her chest. It closes the frame to the HIP OR THIGH, not to what this row's judge_label claims, and the six rows that bite all deliver the same frame"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "extreme-close-up",
-    "family": "close",
-    "faces": "",
-    "wording": "extreme close-up",
-    "judge_label": "one feature fills the frame, face cropped on all sides",
-    "verdict": "alive",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on an act naming her feet, and 3/3 tighter than the control on `arms-raised`, which names nothing below her chest. It closes the frame to the HIP OR THIGH, not to what this row's judge_label claims, and the six rows that bite all deliver the same frame"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "headshot",
-    "family": "close",
-    "faces": "",
-    "wording": "headshot",
-    "judge_label": "head and a little neck only",
-    "verdict": "alive",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on an act naming her feet, and 2/3 tighter than the control on `arms-raised`, which names nothing below her chest. It closes the frame to the HIP OR THIGH, not to what this row's judge_label claims, and the six rows that bite all deliver the same frame"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "shoulder-up",
-    "family": "close",
-    "faces": "",
-    "wording": "shoulder-up",
-    "judge_label": "frame cuts at the shoulders",
-    "verdict": "alive",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on an act naming her feet, and 2/3 tighter than the control on `arms-raised`, which names nothing below her chest. It closes the frame to the HIP OR THIGH, not to what this row's judge_label claims, and the six rows that bite all deliver the same frame"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
     "concept_key": "dutch-angle",
     "family": "dutch",
     "faces": "",
@@ -131,110 +87,11 @@
   {
     "slot": "camera",
     "manner": "directed",
-    "concept_key": "35mm",
-    "family": "lens",
-    "faces": "",
-    "wording": "35mm",
-    "judge_label": "a little of the room around her, mild perspective",
-    "verdict": "dead",
-    "sample_size": "session 387, 3 photographs: the control 3/3. Not re-shot on the second act because it is not a crop term -- 85mm compressed no background, macro came no closer, and pan, tilt and tracking carried no motion blur"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "50mm",
-    "family": "lens",
-    "faces": "",
-    "wording": "50mm",
-    "judge_label": "natural perspective, no visible distortion",
-    "verdict": "dead",
-    "sample_size": "session 387, 3 photographs: the control 3/3. Not re-shot on the second act because it is not a crop term -- 85mm compressed no background, macro came no closer, and pan, tilt and tracking carried no motion blur"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "85mm",
-    "family": "lens",
-    "faces": "",
-    "wording": "85mm",
-    "judge_label": "tight on her with a soft blurred background",
-    "verdict": "dead",
-    "sample_size": "session 387, 3 photographs: the control 3/3. Not re-shot on the second act because it is not a crop term -- 85mm compressed no background, macro came no closer, and pan, tilt and tracking carried no motion blur"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "macro",
-    "family": "lens",
-    "faces": "",
-    "wording": "macro",
-    "judge_label": "extreme detail of a small area, very shallow focus",
-    "verdict": "dead",
-    "sample_size": "session 387, 3 photographs: the control 3/3. Not re-shot on the second act because it is not a crop term -- 85mm compressed no background, macro came no closer, and pan, tilt and tracking carried no motion blur"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "telephoto",
-    "family": "lens",
-    "faces": "",
-    "wording": "telephoto",
-    "judge_label": "flattened depth, background compressed close behind her",
-    "verdict": "dead",
-    "sample_size": "session 387, 3 photographs: the control 3/3. Not re-shot on the second act because it is not a crop term -- 85mm compressed no background, macro came no closer, and pan, tilt and tracking carried no motion blur"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "three-point-perspective",
-    "family": "lens",
-    "faces": "",
-    "wording": "three-point perspective",
-    "judge_label": "verticals converging, strong up or down perspective",
-    "verdict": "dead",
-    "sample_size": "session 387, 3 photographs: the control 3/3. Not re-shot on the second act because it is not a crop term -- 85mm compressed no background, macro came no closer, and pan, tilt and tracking carried no motion blur"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "wide-angle",
-    "family": "lens",
-    "faces": "",
-    "wording": "wide-angle",
-    "judge_label": "edges stretched, near things large and far things small",
-    "verdict": "dead",
-    "sample_size": "session 387, 3 photographs: the control 3/3. Not re-shot on the second act because it is not a crop term -- 85mm compressed no background, macro came no closer, and pan, tilt and tracking carried no motion blur"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
     "concept_key": "low-angle",
     "family": "low-angle",
     "faces": "",
     "wording": "low angle",
     "judge_label": "looking up at her from below her chin"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "knee-up",
-    "family": "medium",
-    "faces": "",
-    "wording": "knee-up",
-    "judge_label": "frame cuts at the knees",
-    "verdict": "dead",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on both acts, including one that names nothing below her chest. This sampler does not read a term asking for more room, and `knee-up` names a part below the frame it wants"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "medium-close-up",
-    "family": "medium",
-    "faces": "",
-    "wording": "medium close-up",
-    "judge_label": "chest up, head fully in frame",
-    "verdict": "alive",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on an act naming her feet, and 2/3 tighter than the control on `arms-raised`, which names nothing below her chest. It closes the frame to the HIP OR THIGH, not to what this row's judge_label claims, and the six rows that bite all deliver the same frame"
   },
   {
     "slot": "camera",
@@ -265,9 +122,9 @@
     "family": "medium",
     "faces": "",
     "wording": "waist-up",
-    "judge_label": "frame cuts at the waist",
+    "judge_label": "her feet are out of the frame and the crop lands at her hip or thigh",
     "verdict": "alive",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on an act naming her feet, and 2/3 tighter than the control on `arms-raised`, which names nothing below her chest. It closes the frame to the HIP OR THIGH, not to what this row's judge_label claims, and the six rows that bite all deliver the same frame"
+    "sample_size": "sessions 387-388, 6 photographs. THE ONE SURVIVOR of six wordings that all delivered the same frame -- close-up, extreme close-up, headshot, shoulder-up and medium close-up were retired as duplicates of it. Kept over the 3/3 `extreme close-up` because at three seeds 3/3 and 2/3 are the same measurement and this is the name that misleads a writer least: what arrives is a crop at the hip or thigh. It only bites when the ACT names nothing lower"
   },
   {
     "slot": "camera",
@@ -286,39 +143,6 @@
     "faces": "",
     "wording": "reflection shot",
     "judge_label": "her image caught on a reflective surface"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "pan-shot",
-    "family": "movement",
-    "faces": "",
-    "wording": "pan shot",
-    "judge_label": "swept sideways, horizontal motion blur",
-    "verdict": "dead",
-    "sample_size": "session 387, 3 photographs: the control 3/3. Not re-shot on the second act because it is not a crop term -- 85mm compressed no background, macro came no closer, and pan, tilt and tracking carried no motion blur"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "tilt-shot",
-    "family": "movement",
-    "faces": "",
-    "wording": "tilt shot",
-    "judge_label": "swept vertically, vertical motion blur",
-    "verdict": "dead",
-    "sample_size": "session 387, 3 photographs: the control 3/3. Not re-shot on the second act because it is not a crop term -- 85mm compressed no background, macro came no closer, and pan, tilt and tracking carried no motion blur"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "tracking-shot",
-    "family": "movement",
-    "faces": "",
-    "wording": "tracking shot",
-    "judge_label": "following alongside her, background blurred by motion",
-    "verdict": "dead",
-    "sample_size": "session 387, 3 photographs: the control 3/3. Not re-shot on the second act because it is not a crop term -- 85mm compressed no background, macro came no closer, and pan, tilt and tracking carried no motion blur"
   },
   {
     "slot": "camera",
@@ -449,45 +273,12 @@
   {
     "slot": "camera",
     "manner": "directed",
-    "concept_key": "establishing-shot",
-    "family": "wide",
-    "faces": "",
-    "wording": "establishing shot",
-    "judge_label": "the room read first, her small inside it",
-    "verdict": "dead",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on both acts, including one that names nothing below her chest. This sampler does not read a term asking for more room, and `knee-up` names a part below the frame it wants"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "extreme-wide-shot",
-    "family": "wide",
-    "faces": "",
-    "wording": "extreme wide shot",
-    "judge_label": "figure tiny, the space is the subject",
-    "verdict": "dead",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on both acts, including one that names nothing below her chest. This sampler does not read a term asking for more room, and `knee-up` names a part below the frame it wants"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "long-shot",
-    "family": "wide",
-    "faces": "",
-    "wording": "long shot",
-    "judge_label": "whole body small in the frame, room around her",
-    "verdict": "dead",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on both acts, including one that names nothing below her chest. This sampler does not read a term asking for more room, and `knee-up` names a part below the frame it wants"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "wide-shot",
-    "family": "wide",
-    "faces": "",
-    "wording": "wide shot",
-    "judge_label": "whole body with room visible on both sides",
-    "verdict": "dead",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on both acts, including one that names nothing below her chest. This sampler does not read a term asking for more room, and `knee-up` names a part below the frame it wants"
+    "concept_key": "side-right",
+    "family": "side",
+    "faces": "side",
+    "wording": "Taken from her right side, her body in full profile",
+    "judge_label": "Right side view, body in full profile",
+    "verdict": "unmeasured",
+    "sample_size": "in the store since before the 2026-09-03 export and missing from this file until now -- found by diffing the seed against the store after the camera retire, never shot"
   }
 ]
