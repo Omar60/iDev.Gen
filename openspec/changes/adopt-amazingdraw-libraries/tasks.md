@@ -9,7 +9,7 @@
 
 ## 2. The translation pass
 
-- [ ] 2.1 Define the translation map keyed by source string, at an untracked path beside the source material, with the source string, the English translation and the fields it covers, and verify a test rejects a map entry whose translation is empty or still contains non-English characters
+- [x] 2.1 Define the translation map keyed by source string, at an untracked path beside the source material, with the source string, the English translation and the fields it covers, and verify a test rejects a map entry whose translation is empty or still contains non-English characters
 - [ ] 2.2 Write the extractor that lists every non-English string in the accepted entries of a source directory given as a required argument, running the guard first so refused entries are never listed, and verify a test asserts a refused fixture's strings are absent from its output
 - [ ] 2.3 Translate the highest-value tier first — the `notes` and the four `*_anchor` fields on accepted entries — and verify every translated string is present in the map and no source string in that tier is left uncovered
 - [ ] 2.4 Translate the room labels for every accepted entry, and verify the map covers each accepted room's label with no gaps

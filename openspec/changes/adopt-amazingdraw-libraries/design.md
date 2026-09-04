@@ -326,7 +326,7 @@ descriptions, 36 identity names, 36 anchors over 16 entries, 24 profile display
 names, 15 shot variants, 42 notes, 5 pose hints. Refused entries are not counted
 and not translated.
 
-*Determinism.* Translations live in a tracked map keyed by the source string, so
+*Determinism.* Translations live in an untracked map keyed by the source string, so
 one source string always yields one English string. A re-import reads the map
 and does not re-translate; a string missing from the map stops the import rather
 than being filled in on the fly. This is what keeps a second import from
