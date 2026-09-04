@@ -23,22 +23,6 @@ DEFAULT_ROOM_LIBRARIES: list[dict] = [
     }
 ]
 
-CONFIG_PATH = Path(os.environ.get("IDEVGEN_CONFIG") or ROOT / "config.json")
-
-
-def load_app_config() -> dict:
-    """Load configuration from IDEVGEN_CONFIG or config.json.
-
-    If missing, falls back to config.example.json if available, or empty dict.
-    """
-    if not CONFIG_PATH.exists():
-        example_path = ROOT / "config.example.json"
-        if example_path.exists():
-            return json.loads(example_path.read_text(encoding="utf-8"))
-        return {}
-    return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-
-
 def resolve_data_dir(
     data_dir: Path | str | None = None,
     config: dict | None = None,
@@ -47,6 +31,12 @@ def resolve_data_dir(
 
     Never hardcode 'data/': honors explicit argument, IDEVGEN_DATA_DIR env var,
     or config['data_dir'], relative to ROOT if not absolute.
+
+    This module does not read config.json. `main` already loads it once at
+    import, caches it in `CONFIG`, and rewrites it from `/setup` - a second
+    reader here would answer from the file while the app answers from the
+    cache, which is the whole gap `restart_required` exists to cover. The
+    caller passes `main.CONFIG` and `main.DATA_DIR` in.
     """
     if data_dir is not None:
         p = Path(data_dir)
@@ -55,8 +45,7 @@ def resolve_data_dir(
     if env:
         p = Path(env)
         return p if p.is_absolute() else ROOT / p
-    cfg = config if config is not None else load_app_config()
-    p = Path(cfg.get("data_dir", "data"))
+    p = Path((config or {}).get("data_dir", "data"))
     return p if p.is_absolute() else ROOT / p
 
 
@@ -66,7 +55,7 @@ def get_room_libraries_config(config: dict | None = None) -> list[dict]:
     If 'room_libraries' key is explicitly present in config, its value is used
     (even if empty). If the key is omitted, DEFAULT_ROOM_LIBRARIES is used.
     """
-    cfg = config if config is not None else load_app_config()
+    cfg = config or {}
     if "room_libraries" in cfg:
         raw = cfg["room_libraries"]
         if isinstance(raw, list):

@@ -24,8 +24,8 @@
 ## 3. The registry
 
 - [x] 3.1 Define the room registry shape in config (library name, seed file, enabled, weight) with a documented default, and verify the app starts with the default and lists the existing nine rooms
-- [x] 3.2 Replace the hard-coded room seed filename with a registry read, and verify the existing room picker still shows the same nine rooms
-- [x] 3.3 Honour the enabled flag so a disabled library contributes no rooms to the picker or a draw while remaining readable, and verify a test toggles a fixture library and asserts both directions
+- [ ] 3.2 Replace the hard-coded room seed filename with a registry read, and verify the existing room picker still shows the same nine rooms - moved to 6.4. The only hard-coded room seed filename in the app is the build-time import at `frontend/src/views/ModelDetail.jsx:13`, which 6.1 requires stays exactly where it is, and no runtime path carries the registry to the picker until 6.4 serves one. What phase 3 landed is the registry the read will come from; the read itself has nowhere to live yet
+- [ ] 3.3 Honour the enabled flag so a disabled library contributes no rooms to the picker or a draw while remaining readable, and verify a test toggles a fixture library and asserts both directions - half done, and the half that ships is the half nobody sees. The loader honours the flag and a test toggles a fixture library in both directions, but the picker is still the build-time import and no draw exists until 6.15, so setting `enabled: false` today removes a library's rooms from a return value nothing reads. Closes with 3.2 in 6.4
 - [x] 3.4 Add the test that the registry and the seed files on disk agree in both directions, and verify it fails for a registry entry naming a missing file and for a seed file no entry names
 - [x] 3.5 Update README.md and the matching page under `docs/` for the registry setting, and verify the documented default matches the shipped one
 

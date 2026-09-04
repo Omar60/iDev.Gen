@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -124,9 +125,33 @@ def test_toggling_enabled_removes_and_restores_rooms_and_stays_readable(tmp_path
 
 def test_shipped_registry_and_disk_agree_both_directions():
     """3.4: On the shipped checkout, every registered library exists in data/,
-    and every room seed file in data/ is registered.
+    and every room seed file the repository TRACKS in data/ is registered.
+
+    Direction 2 is asked of `git ls-files`, not of the directory: 6.1 writes
+    imported rooms to an untracked path, and the operator's own `data/` is
+    where they land. Swept off the disk this test would go red on any machine
+    that has run an import — the property that matters is that nothing SHIPS
+    a room seed the registry does not name.
     """
-    verify_registry_disk_agreement(config={}, data_dir=REPO_DATA)
+    registered = {lib["seed_file"] for lib in DEFAULT_ROOM_LIBRARIES}
+
+    # Direction 1: every registered library exists on disk.
+    for seed_file in registered:
+        assert (REPO_DATA / seed_file).is_file(), (
+            f"Registry names {seed_file!r}, which is not in {REPO_DATA}"
+        )
+
+    out = subprocess.run(["git", "ls-files", "--", "data"],
+                         cwd=ROOT, capture_output=True, text=True)
+    if out.returncode != 0:
+        pytest.skip("not a git repository")
+    tracked = [Path(line).name for line in out.stdout.splitlines() if line.strip()]
+
+    # Direction 2: every tracked room seed is named by the registry.
+    unregistered = [n for n in tracked if is_room_seed_file(Path(n)) and n not in registered]
+    assert unregistered == [], (
+        f"Tracked room seed files no registry entry names: {unregistered}"
+    )
 
 
 def test_disk_agreement_fails_when_registry_names_missing_file(tmp_path: Path):
@@ -164,16 +189,26 @@ def test_disk_agreement_fails_when_room_seed_file_is_unregistered(tmp_path: Path
 
 
 def test_room_seed_sweep_rule_selects_exact_room_files():
-    """3.4: The sweep rule (files ending with '-seed.json' containing 'room')
-    must select candid-rooms-seed.json and none of the other 17 seed files in data/.
-    """
-    all_seeds = list(REPO_DATA.glob("*-seed.json"))
-    assert len(all_seeds) == 18, f"Expected 18 seed files in {REPO_DATA}, found {len(all_seeds)}"
+    """3.4: The sweep rule - ends with '-seed.json' and carries 'room' - selects
+    room seed files and nothing else.
 
-    selected = [p.name for p in all_seeds if is_room_seed_file(p)]
-    assert selected == [SHIPPED_ROOM_FILE], (
-        f"Room seed sweep rule selected unexpected files: {selected}. "
-        f"Only {SHIPPED_ROOM_FILE} should be selected."
+    Asserted over named cases rather than over a count of what happens to be in
+    `data/` today: phase 5.12 imports one library per seed file, and a count is
+    a test that goes red for every one of them without a room being involved.
+    """
+    selected = [n for n in (
+        SHIPPED_ROOM_FILE,
+        "bathroom-rooms-seed.json",
+        "catalogue-seed.json",
+        "camera-candidates-seed.json",
+        "candid-acts-seed.json",
+        "wardrobe-seed.json",
+        "directed-looks-seed.json",
+        "rooms.json",
+        "candid-rooms-seed.json.bak",
+    ) if is_room_seed_file(Path(n))]
+    assert selected == [SHIPPED_ROOM_FILE, "bathroom-rooms-seed.json"], (
+        f"Room seed sweep rule selected {selected}"
     )
 
 
