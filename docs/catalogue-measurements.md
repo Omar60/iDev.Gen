@@ -53,6 +53,89 @@ the initial prompt component catalogue.
     Nothing is in the shipped catalogue yet: this was measured on finepornV4 and the
     Krea leg is unjudged.
 
+## The 25 Cameras That Are Not Positions
+
+Measured 2026-09-03, sessions 387 and 388, 126 photographs on
+`Moody-Krea-Mix-premium`, directed's bench with the look shipped in session 381,
+three shared seeds an arm, read by looking at one thing: is this frame different
+from the control's.
+
+25 of directed's 49 camera rows are shot sizes, lens terms and camera moves
+rather than positions, and the standing proposal was to retire them unmeasured
+because no position cell can ask them anything. None had ever been shot. They
+were shot before being discarded, against a control that is the same line with
+no camera term at all.
+
+The line carries no framing term and no wardrobe: both are crop instructions
+and the crop is the question ([[idevgen-framing-follows-words]]).
+
+### Session 387: all 25 are the control
+
+The act is `stretching-up`, which names the balls of her feet.
+
+| family | rows | frames different from the control |
+|---|---|---|
+| `close` | close-up, extreme close-up, headshot, shoulder-up | 0 of 12 |
+| `medium` | medium shot, medium close-up, medium long shot, waist-up, knee-up | 0 of 15 |
+| `full` | full body, three-quarter shot | 0 of 6 |
+| `wide` | wide shot, long shot, extreme wide shot, establishing shot | 0 of 12 |
+| `lens` | 35mm, 50mm, 85mm, macro, telephoto, wide-angle, three-point perspective | 0 of 21 |
+| `movement` | pan shot, tilt shot, tracking shot | 0 of 9 |
+
+Every one of the 75 term frames is the control's photograph: head to feet,
+standing, frontal. `85mm` compresses nothing, `macro` comes no closer,
+`establishing shot` does not make the room read first, and pan, tilt and
+tracking carry no motion blur whatsoever.
+
+### Session 388: they are not dead, the ACT was overruling them
+
+The crop law says the frame reaches the lowest body part THE LINE NAMES
+([[idevgen-crop-terms-as-cameras]]), and 387's act names her feet -- so
+`close-up` was being asked to overrule a named foot, not to crop a free frame.
+The 15 crop rows were re-shot against `arms-raised`, the same standing
+photograph with both arms over her head, whose lowest named part is HER CHEST.
+Nothing else moved.
+
+| term | frames tighter than the control |
+|---|---|
+| extreme close-up | **3/3** |
+| close-up, headshot, shoulder-up | **2/3** each |
+| medium close-up, waist-up | **2/3** each |
+| medium shot, medium long shot, three-quarter shot | 1/3 each |
+| knee-up, full body | 0/3 |
+| wide shot, long shot, extreme wide shot, establishing shot | 0/3 |
+
+Three things fall out of it.
+
+**The terms work, and the act was the reason they looked dead.** A framing term
+cannot lift the frame above the lowest body part the act names. That is a
+catalogue rule about how a trio is chosen, not a reason to delete a row.
+
+**This sampler only hears "come closer".** Every term that asks for MORE room is
+the control 12/12; every term that bites names a high body part or contains
+`close`. `full body` cannot be scored either way here, because the control is
+already head to feet.
+
+**No term reaches its own `judge_label`, and the six that bite are one concept.**
+`headshot` reads "head and a little neck only" and delivers a frame cut at the
+thigh; so do `close-up`, `extreme close-up`, `shoulder-up`, `medium close-up`
+and `waist-up`. They are six wordings of one photograph. Their readings are
+wrong as written and a judge menu built from them would be asking a question
+with six identical answers ([[idevgen-judge-menu-one-question]]).
+
+### What this leaves for the catalogue
+
+Nothing in `data/directed-acts-seed.json` names any of these 25 in its `cameras`
+list, so retiring them breaks no camera fitting -- which is what made the
+family merge unsafe on 2026-09-03 and does not apply here.
+
+* **Nine rows measured inert twice** (`wide` 4, `lens` 7 minus the ones not
+  re-shot, `movement` 3): the control 3/3 on both acts. They are wordings this
+  sampler does not read.
+* **Six rows bite** and deliver one frame between them. Worth one row, not six,
+  and worth a `judge_label` that says "the frame closes to the hip or thigh".
+* **`full body`** is the one term whose job the default already does.
+
 ## The Wardrobe Against Body Geometry
 
 Measured 2026-09-03, sessions 369 and 372-377, 110 photographs on

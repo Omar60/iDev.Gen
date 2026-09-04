@@ -9,6 +9,9 @@ and it cannot do this: it reads shots out of the database and flows them four to
 a row by rating. A probe writes straight to disk with no session, and a ladder is
 only readable when each arm keeps its own row.
 
+The prefix is matched anywhere in the label, so a session folder can be sliced
+one family at a time: `contact_sheet.py close --dir data/sessions/387`.
+
 Usage: python scripts/contact_sheet.py PS- [--dir data/weight-probe] [--cell 420]
 """
 from __future__ import annotations
@@ -25,15 +28,22 @@ GUTTER = 4
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("prefix", help="label prefix, e.g. PS-")
+    ap.add_argument("prefix", help="matched anywhere in the label, e.g. PS- or close")
     ap.add_argument("--dir", default="data/weight-probe")
     ap.add_argument("--cell", type=int, default=420, help="cell width in pixels")
     args = ap.parse_args()
 
     folder = ROOT / args.dir
     rows: dict[str, list[Path]] = defaultdict(list)
-    for png in sorted(folder.glob(f"{args.prefix}*.png")):
-        rows[png.stem.rsplit("-s", 1)[0]].append(png)
+    for png in sorted(folder.glob("*.png")):
+        # A session writes `09298_label-s1.png`; a probe writes `LABEL-s1.png`.
+        # Dropping a leading shot id is what lets one sheet lay a session's arms
+        # out one per row, which the app's own contact sheet cannot do -- it
+        # flows shots four to a row by rating.
+        stem = png.stem.split("_", 1)[-1]
+        if args.prefix not in stem:
+            continue
+        rows[stem.rsplit("-s", 1)[0]].append(png)
     if not rows:
         print(f"nothing matching {args.prefix}*.png in {folder}")
         return 1
