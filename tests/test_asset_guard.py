@@ -11,6 +11,7 @@ Asserts that:
 """
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -373,16 +374,40 @@ def test_environment_variables_cannot_bypass_guard(monkeypatch):
         assert guard_entry(accepted) is None, f"failed for {var}={val}"
 
 
-def test_guard_module_reads_no_env_or_config_and_avoids_main():
-    """backend/asset_guard.py must not read environment variables, config, or import main."""
-    target = ROOT / "backend" / "asset_guard.py"
-    assert target.exists()
-    source = target.read_text(encoding="utf-8")
-    assert "os.environ" not in source
-    assert "getenv" not in source
-    assert "load_config" not in source
-    assert "backend.main" not in source
-    assert "import main" not in source
+def test_guard_module_imports_nothing_that_can_be_configured():
+    """The guard decides from its own constants and from nothing else.
+
+    Grepping for "os.environ" and "getenv" passed a module that said
+    `from os import environ`, and passed a module that read a JSON file to decide.
+    The property is the import list, so assert on the import list: anything the
+    guard could be told what to do by has to appear there first.
+    """
+    allowed_imports = {"__future__", "re", "typing"}
+    source = (ROOT / "backend" / "asset_guard.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add((node.module or "").split(".")[0])
+    assert imported <= allowed_imports, f"guard imports {sorted(imported - allowed_imports)}"
+
+    # No file is opened, so no file can turn the guard off.
+    called = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "open" not in called
+    attrs = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    for reader in ("read_text", "read_bytes", "load", "loads", "getenv"):
+        assert reader not in attrs, f"guard calls {reader}"
 
 
 def test_file_is_pure_ascii_and_no_control_bytes():
