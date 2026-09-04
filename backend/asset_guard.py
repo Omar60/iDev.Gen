@@ -78,6 +78,7 @@ SCHOOL_MARKERS: tuple[str, ...] = SCHOOL_MARKERS_EN + SCHOOL_MARKERS_ZH
 # Terms that represent adult university material accepted by the project.
 ALLOW_LIST_EN: tuple[str, ...] = (
     "college student",
+    "undergraduate student",
     "university student",
     "graduate student",
     "postgraduate",
@@ -141,9 +142,16 @@ SIGNAL_TAGS: str = "tags"
 SIGNAL_THEME_TEXT: str = "theme_text"
 SIGNAL_MINOR_PROFILE_KEY: str = "minor_profile_key"
 
-# Aliases for compatibility.
-SIGNAL_SOURCE_LIBRARY: str = SIGNAL_LIBRARY
-SIGNAL_PROFILE_KEY: str = SIGNAL_MINOR_PROFILE_KEY
+# Every field an entry may carry prose in. All of them are checked.
+TEXT_FIELDS: tuple[str, ...] = (
+    "theme_text",
+    "theme",
+    "label",
+    "text",
+    "description",
+    "notes",
+    "prompt",
+)
 
 
 def _mask_allow_list(text: str) -> str:
@@ -203,7 +211,7 @@ def _matches_profile_keys(key: str) -> bool:
 def guard_entry(
     entry: dict[str, Any] | None = None,
     *,
-    refused_libraries: tuple[str, ...] | set[str] | list[str] = REFUSED_LIBRARIES,
+    refused_libraries: tuple[str, ...] | set[str] | list[str] = (),
     **kwargs: Any,
 ) -> tuple[str, str] | None:
     """Determine whether an asset import entry is refused and on which signal.
@@ -216,9 +224,10 @@ def guard_entry(
         data.update(entry)
     data.update(kwargs)
 
-    refused_libs = data.pop("refused_libraries", None)
-    if refused_libs is None:
-        refused_libs = refused_libraries
+    # The entry is source material and never sets the deny-list. A caller may
+    # add libraries for a test; it can never remove one.
+    data.pop("refused_libraries", None)
+    refused_libs = REFUSED_LIBRARIES + tuple(refused_libraries)
 
     identifier = str(data.get("identifier") or data.get("id") or data.get("key") or "")
 
@@ -256,21 +265,13 @@ def guard_entry(
                 if isinstance(tag, str) and _matches_school_markers(tag):
                     return (SIGNAL_TAGS, identifier)
 
-    # Signal 5: theme text / label
-    theme_text = str(
-        data.get("theme_text")
-        or data.get("theme")
-        or data.get("label")
-        or data.get("text")
-        or data.get("description")
-        or data.get("notes")
-        or data.get("prompt")
-        or ""
-    )
-    if theme_text and _matches_school_markers(theme_text):
-        return (SIGNAL_THEME_TEXT, identifier)
+    # Signal 5: theme text and label. Every text field an entry carries is
+    # checked. Reading only the first one present accepts a school-set label
+    # whenever a harmless theme sits in front of it.
+    for field in TEXT_FIELDS:
+        value = data.get(field)
+        if isinstance(value, str) and _matches_school_markers(value):
+            return (SIGNAL_THEME_TEXT, identifier)
 
     return None
 
-
-check_entry = guard_entry

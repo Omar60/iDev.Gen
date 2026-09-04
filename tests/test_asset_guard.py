@@ -13,13 +13,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import backend.asset_guard as asset_guard
 from backend.asset_guard import (
     SIGNAL_IDENTIFIER,
     SIGNAL_LIBRARY,
     SIGNAL_MINOR_PROFILE_KEY,
     SIGNAL_TAGS,
     SIGNAL_THEME_TEXT,
-    check_entry,
     guard_entry,
 )
 
@@ -223,18 +223,65 @@ def test_chinese_school_markers_and_allow_list():
     assert guard_entry({"identifier": "zh-play-01", "theme": f"running on {zh_play}"}) is None
 
 
-def test_keyword_arguments_and_check_entry_alias():
-    """The guard function supports explicit keyword arguments and the check_entry alias."""
-    # Keyword arguments directly
+def test_keyword_arguments():
+    """The guard function supports explicit keyword arguments."""
     res_kw = guard_entry(identifier="kw_01", theme_text="high school classroom")
     assert res_kw == (SIGNAL_THEME_TEXT, "kw_01")
+    assert guard_entry(identifier="kw_acc", theme_text="modern art studio") is None
 
-    # check_entry alias
-    res_alias = check_entry(identifier="alias_01", theme_text="middle school desk")
-    assert res_alias == (SIGNAL_THEME_TEXT, "alias_01")
 
-    # Accepted via keyword arguments
-    assert check_entry(identifier="alias_acc", theme_text="modern art studio") is None
+def test_every_text_field_is_checked_not_only_the_first():
+    """A school-set label behind a harmless theme is still refused.
+
+    Reading one field of an `or` chain accepted a school-set label whenever any
+    earlier field held text, which is every real entry.
+    """
+    school_glyph = "".join(chr(cp) for cp in [0x5B66, 0x6821])
+    lounge_glyph = "".join(chr(cp) for cp in [0x5BA2, 0x5385])
+    for field, text in (
+        ("label", "after school in the classroom"),
+        ("notes", "schoolgirl in uniform"),
+        ("description", "the blackboard behind her"),
+        ("label", school_glyph),
+    ):
+        entry = {"identifier": "multi_01", "theme": "a quiet living room at dusk"}
+        entry[field] = text
+        assert guard_entry(entry) == (SIGNAL_THEME_TEXT, "multi_01"), field
+
+    accepted = {
+        "identifier": "multi_acc",
+        "theme": "executive office at night",
+        "label": "glass desk",
+        "notes": "leather sofa",
+        "description": lounge_glyph,
+    }
+    assert guard_entry(accepted) is None
+
+
+def test_the_deny_list_cannot_be_emptied_by_entry_or_caller(monkeypatch):
+    """An entry is source material and a caller is not an override.
+
+    The entry carried its own `refused_libraries` key straight into the decision,
+    which let the material being judged decide what the deny-list was.
+    """
+    monkeypatch.setattr(asset_guard, "REFUSED_LIBRARIES", ("denied_source",))
+    entry = {"identifier": "ovr_01", "library": "denied_source"}
+    assert guard_entry(dict(entry)) is not None
+    assert guard_entry(dict(entry), refused_libraries=()) is not None
+    assert guard_entry({**entry, "refused_libraries": ()}) is not None
+    # A caller may still add a library for a test.
+    assert guard_entry(
+        {"identifier": "ovr_02", "library": "extra_source"},
+        refused_libraries=("extra_source",),
+    ) is not None
+
+
+def test_undergraduate_is_adult_university_material():
+    """Removed from the school markers by operator decision, with college."""
+    assert guard_entry(
+        identifier="uni_01",
+        theme="portrait of an undergraduate student in a library",
+    ) is None
 
 
 def test_file_is_pure_ascii_and_no_control_bytes():
