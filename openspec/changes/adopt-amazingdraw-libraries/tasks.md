@@ -17,7 +17,7 @@
 - [ ] 2.6 Make the map the only source of translations: the importer reads it and never translates during a run, and verify a test asserts an import stops and names the entry and field when a string is missing from the map
 - [ ] 2.7 Assert one source string yields one English string everywhere, and verify a test imports a string that appears in two libraries and asserts both rows carry the same translation
 - [ ] 2.8 Assert re-running an import rewords nothing, and verify a test runs the import twice and compares every stored translation
-- [ ] 2.9 Add the repository-wide test that no tracked file contains a non-English character, and verify it fails against a deliberately planted fixture before it passes
+- [ ] 2.9 Add the repository-wide test that no tracked file contains CJK - the Han, Hiragana, Katakana and Hangul ranges - and verify it fails against a deliberately planted fixture before it passes. Operator's decision, taken after measuring: 119 of 210 tracked files already carry non-ASCII, all of it typographic punctuation this project wrote on purpose (2052 em dashes, curly quotes, arrows) plus UI emoji in `frontend/src/kinds.js`, and zero CJK. Written as "non-ASCII" the test is born failing against half the repo and gets "fixed" with an allow-list of 119 paths, which is a test that cannot fail with extra steps. The property that matters is the one the guard spec is about: no source prose in its own script
 - [ ] 2.10 Add the test that no tracked file carries imported source prose, and verify it fails against a fixture room text planted in a tracked seed before it passes
 - [ ] 2.11 Add the test that no string from a refused entry appears in the translation map, and verify it names the entry when it fails
 
