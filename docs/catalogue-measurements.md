@@ -644,3 +644,66 @@ of it that survives.
   unrecoverable through the endpoint -- it sees a photograph already asked, adds
   nothing, and creates no row. Both cells here were rebuilt from `shot.verdicts`,
   which is how this repo repaired the same shape once before.
+
+## The Second Anchor Cell, and a Position Vocabulary Written for a Standing Body
+
+Session 389, 2026-09-03. Ten photographs composed through the app on the trio
+`side-view` / `lying-legs-vertical` / `crop-full-body`, directed's look,
+`mute_wardrobe`, `Moody-Krea-Mix-premium`, workflow 8. The composed line came
+back **byte-for-byte identical** to session 384's control arm, the one that
+rendered 10/10 with the look -- the same check the first anchor cell passed.
+
+| slot | passes | answer | controls |
+|---|---|---|---|
+| act | 3 | `lying` 10/10 | `leaning` 2/2 (382) |
+| framing | 3 | `whole-body` 9/10, 1 unreadable | `close-up` 2/2 (319) |
+| camera | 5 | **not recorded** -- see below | `front` 2/2 (387) |
+
+`cell(side-view, lying-legs-vertical, crop-full-body, directed, premium)` stands
+at **judged 10, arrived 10 -- verified**. The one unreadable framing answer was
+a MiniMax API error inside the three passes, not a miss; a photograph with no
+majority is recorded as `unreadable` and posted for nothing.
+
+### The camera slot has no true answer on this pose, and it is the vocabulary
+
+Judged at five passes with controls that answer `front` 2/2, the ten
+photographs came back `front` 2, `pov` 2, `side` 2 and **four with no majority
+at all** -- every one of them splitting its five votes across those same three
+readings.
+
+The photographs are not ambiguous. The camera is at her flank in all ten. The
+READINGS are:
+
+- `side` -- "Only one nipple is in frame, in outline against the background."
+- `front` -- "Both of her nipples are in frame and her navel faces the lens."
+- `pov` -- "The lens is on the axis of her own body, looking ALONG her."
+
+A woman on her back with her legs vertical, photographed from her side, shows
+**both** nipples. So `side` is literally false, `front` is two clauses of three
+true, and legs running away from the lens make `pov` tempting. The judge is
+answering the menu correctly; the menu was written for a body on its feet.
+
+This is the same shape as the `leaning` hole session 382 found in the act
+vocabulary, and it was found the same way: by looking at the photographs after
+the numbers refused to settle. Nothing was recorded for the camera slot, which
+is what 382 did with the same finding.
+
+### A control can be broken without the API being broken
+
+The first two runs of this pass used sessions 308's photographs as controls and
+both returned NOTHING, five passes each, twice -- while the deck in the same run
+was answering normally. That is not the flakiness this project has logged before:
+those two photographs are refused, deterministically, and a run whose controls
+are silent measures nothing. Replaced with 387's control arm (standing, arms
+raised, no camera term in the line), which answers `front` 2/2.
+
+**A control that returns nothing is not a passing control.** Both void runs were
+discarded; the first had already posted, and the cell was repaired from
+`shot.verdicts` (`data/backup-before-void-camera-pass-20260903.db`).
+
+### What this leaves open
+
+Rewriting `side` so it describes where the camera stands in any posture would
+make the pose measurable -- and would invalidate the profile cells of 382 and
+383, which were judged against the current sentence. That is a decision about
+the evidence, not a fix, and it is not taken here.

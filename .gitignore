@@ -17,6 +17,9 @@ config.json
 .claude/
 .agent/
 
+# Canvas state for the nodeterm session tool: machine paths, one per checkout.
+.nodeterm/
+
 # Sessions, database, generated images
 data/*
 !data/catalogue-seed.json
