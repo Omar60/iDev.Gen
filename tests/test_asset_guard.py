@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import backend.asset_guard as asset_guard
 from backend.asset_guard import (
     SIGNAL_IDENTIFIER,
@@ -224,10 +226,25 @@ def test_chinese_school_markers_and_allow_list():
 
 
 def test_keyword_arguments():
-    """The guard function supports explicit keyword arguments."""
+    """The guard function supports explicit keyword arguments across accepted fields."""
     res_kw = guard_entry(identifier="kw_01", theme_text="high school classroom")
     assert res_kw == (SIGNAL_THEME_TEXT, "kw_01")
     assert guard_entry(identifier="kw_acc", theme_text="modern art studio") is None
+
+    # Various accepted field names passed as kwargs
+    assert guard_entry(id="prof_01", kind="profile", profile="jc") == (
+        SIGNAL_MINOR_PROFILE_KEY,
+        "prof_01",
+    )
+    assert guard_entry(key="tag_01", tag="classroom") == (
+        SIGNAL_TAGS,
+        "tag_01",
+    )
+    assert guard_entry(
+        source_library="custom_lib",
+        description="clean studio",
+        tags=["art", "indoor"],
+    ) is None
 
 
 def test_every_text_field_is_checked_not_only_the_first():
@@ -274,6 +291,11 @@ def test_the_deny_list_cannot_be_emptied_by_entry_or_caller(monkeypatch):
         {"identifier": "ovr_02", "library": "extra_source"},
         refused_libraries=("extra_source",),
     ) is not None
+    # A caller passing a different library still leaves the original refusing.
+    assert guard_entry(
+        {"identifier": "ovr_03", "library": "denied_source"},
+        refused_libraries=("different_source",),
+    ) is not None
 
 
 def test_undergraduate_is_adult_university_material():
@@ -284,18 +306,98 @@ def test_undergraduate_is_adult_university_material():
     ) is None
 
 
-def test_file_is_pure_ascii_and_no_control_bytes():
-    """This test file must be pure ASCII with no C0 control bytes except legal whitespace."""
-    target = ROOT / "tests" / "test_asset_guard.py"
-    assert target.exists()
-    raw_bytes = target.read_bytes()
-    assert len(raw_bytes) > 0
-    for idx, b in enumerate(raw_bytes):
-        assert b <= 0x7F, f"byte {hex(b)} at {idx} exceeds ASCII range"
-        if b < 0x20:
-            assert b in LEGAL_CONTROLS, f"illegal control byte {hex(b)} at {idx}"
-    assert 0x08 not in raw_bytes, "contains literal backspace byte"
+def test_unknown_keyword_arguments_raise_naming_the_argument():
+    """Any caller keyword argument outside known entry fields raises TypeError naming it."""
+    bypass_args = ("allow_school", "force", "include_refused", "skip_guard", "strict")
+    for arg in bypass_args:
+        with pytest.raises(TypeError) as exc_info:
+            guard_entry(**{arg: True})
+        assert arg in str(exc_info.value), f"expected '{arg}' in {exc_info.value}"
 
-    lines = target.read_text(encoding="utf-8").splitlines()
-    for line_num, line in enumerate(lines, 1):
-        assert line == line.rstrip(), f"line {line_num} has trailing whitespace"
+        with pytest.raises(TypeError) as exc_info_entry:
+            guard_entry({"identifier": "item_01"}, **{arg: True})
+        assert arg in str(exc_info_entry.value), f"expected '{arg}' in {exc_info_entry.value}"
+
+
+def test_bypass_shaped_keys_on_entry_dict_do_not_raise_and_are_ignored():
+    """A bypass-shaped key on the entry dict is ignored: it does not raise and does not bypass."""
+    bypass_keys = ("allow_school", "force", "include_refused", "skip_guard", "strict")
+    for idx, key in enumerate(bypass_keys, 1):
+        refused = {"identifier": f"ref_item_{idx}", "theme": "high school classroom", key: True}
+        assert guard_entry(refused) == (SIGNAL_THEME_TEXT, f"ref_item_{idx}")
+
+        accepted = {"identifier": f"acc_item_{idx}", "theme": "modern art studio", key: True}
+        assert guard_entry(accepted) is None
+
+    refused_all = {
+        "identifier": "ref_all_bypass",
+        "theme": "junior high hallway",
+        "allow_school": True,
+        "force": True,
+        "include_refused": True,
+        "skip_guard": True,
+        "strict": False,
+    }
+    assert guard_entry(refused_all) == (SIGNAL_THEME_TEXT, "ref_all_bypass")
+
+    accepted_all = {
+        "identifier": "acc_all_bypass",
+        "theme": "downtown coffee shop",
+        "allow_school": True,
+        "force": True,
+        "include_refused": True,
+        "skip_guard": True,
+        "strict": False,
+    }
+    assert guard_entry(accepted_all) is None
+
+
+def test_environment_variables_cannot_bypass_guard(monkeypatch):
+    """No environment variable can disable the guard or include refused entries."""
+    bypass_envs = [
+        ("IDEVGEN_ALLOW_SCHOOL", "1"),
+        ("IDEVGEN_GUARD", "0"),
+        ("IDEVGEN_GUARD", "false"),
+        ("IDEVGEN_IMPORT_FORCE", "true"),
+        ("IDEVGEN_FORCE", "1"),
+        ("IDEVGEN_SKIP_GUARD", "1"),
+        ("IDEVGEN_INCLUDE_REFUSED", "true"),
+        ("IDEVGEN_STRICT", "0"),
+    ]
+    refused = {"identifier": "ref_env", "theme": "high school corridor"}
+    accepted = {"identifier": "acc_env", "theme": "mountain cabin"}
+
+    for var, val in bypass_envs:
+        monkeypatch.setenv(var, val)
+        assert guard_entry(refused) == (SIGNAL_THEME_TEXT, "ref_env"), f"failed for {var}={val}"
+        assert guard_entry(accepted) is None, f"failed for {var}={val}"
+
+
+def test_guard_module_reads_no_env_or_config_and_avoids_main():
+    """backend/asset_guard.py must not read environment variables, config, or import main."""
+    target = ROOT / "backend" / "asset_guard.py"
+    assert target.exists()
+    source = target.read_text(encoding="utf-8")
+    assert "os.environ" not in source
+    assert "getenv" not in source
+    assert "load_config" not in source
+    assert "backend.main" not in source
+    assert "import main" not in source
+
+
+def test_file_is_pure_ascii_and_no_control_bytes():
+    """This test file and the guard module must be pure ASCII with no C0 control bytes except legal whitespace."""
+    for rel_path in ("tests/test_asset_guard.py", "backend/asset_guard.py"):
+        target = ROOT / rel_path
+        assert target.exists()
+        raw_bytes = target.read_bytes()
+        assert len(raw_bytes) > 0
+        for idx, b in enumerate(raw_bytes):
+            assert b <= 0x7F, f"{rel_path}: byte {hex(b)} at {idx} exceeds ASCII range"
+            if b < 0x20:
+                assert b in LEGAL_CONTROLS, f"{rel_path}: illegal control byte {hex(b)} at {idx}"
+        assert 0x08 not in raw_bytes, f"{rel_path}: contains literal backspace byte"
+
+        lines = target.read_text(encoding="utf-8").splitlines()
+        for line_num, line in enumerate(lines, 1):
+            assert line == line.rstrip(), f"{rel_path}: line {line_num} has trailing whitespace"

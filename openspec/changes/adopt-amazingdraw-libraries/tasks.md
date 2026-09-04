@@ -2,7 +2,7 @@
 
 - [x] 1.1 Write every refusal marker and every fixture in escape sequences so no tracked file carries a non-English glyph, and verify a test asserts each escaped marker still matches the text it was written for
 - [x] 1.2 Add the deny-list and the guard function in backend code, covering the four refusal signals (source library, identifier, tags, theme text) and the minor-coded profile keys, and verify a unit test refuses one fixture entry per signal
-- [ ] 1.3 Make the guard un-overridable: no flag, env var, config key or caller argument may include a refused entry, and verify a test asserts that passing any such argument raises rather than imports
+- [x] 1.3 Make the guard un-overridable: no flag, env var, config key or caller argument may include a refused entry, and verify a test asserts that passing any such argument raises rather than imports
 - [ ] 1.4 Add the reporting path so a refused entry is counted and named by identifier but never has its text written or logged, and verify a test captures the report and asserts no theme text appears in it
 - [ ] 1.5 Add invented fixture entries under `tests/` so the guard's tests run with the external libraries absent, and verify the guard suite passes on a checkout with no source directory present
 - [ ] 1.6 Add the test that fails when an import path writes seed rows without consulting the guard, and verify it fails against a deliberately unguarded stub before it passes

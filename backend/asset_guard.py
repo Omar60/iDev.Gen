@@ -153,6 +153,26 @@ TEXT_FIELDS: tuple[str, ...] = (
     "prompt",
 )
 
+# Every entry field name accepted as a keyword argument. A caller cannot pass
+# bypass flags like allow_school=True expecting them to take effect.
+ENTRY_FIELD_NAMES: frozenset[str] = frozenset(
+    (
+        "identifier",
+        "id",
+        "key",
+        "library",
+        "source_library",
+        "lib",
+        "profile_key",
+        "profile",
+        "body_profile",
+        "kind",
+        "tags",
+        "tag",
+    )
+    + TEXT_FIELDS
+)
+
 
 def _mask_allow_list(text: str) -> str:
     """Mask allow-list phrases with spaces so nested school markers do not match."""
@@ -219,6 +239,16 @@ def guard_entry(
     Returns a tuple of (signal_name, identifier) if refused, or None if accepted.
     Never returns, embeds, or carries the entry's text.
     """
+    # A caller argument is a person asking for the bypass, so unknown keyword
+    # arguments raise rather than being silently ignored. By contrast, a bypass-
+    # shaped key on the entry dict does not raise -- the entry is source material
+    # this project did not write, and a single source file carrying
+    # allow_school: true must not abort an import of five hundred rooms.
+    unknown_kwargs = set(kwargs) - ENTRY_FIELD_NAMES
+    if unknown_kwargs:
+        unexpected = sorted(unknown_kwargs)[0]
+        raise TypeError(f"guard_entry() got an unexpected keyword argument '{unexpected}'")
+
     data: dict[str, Any] = {}
     if entry is not None:
         data.update(entry)
