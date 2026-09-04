@@ -10,6 +10,13 @@ from typing import Any, Iterable
 
 # Terms that mark an entry as school-set, in English.
 # Removed: campus, dormitory, playground, gymnasium, academy (not minors-only).
+# Removed: locker room and student, for the same reason, measured. A hospital
+# staff locker room, an office one and a bathroom-mirror room were refused for
+# a room every workplace has, and bare "student" refused a nurse and three
+# petplay scenes. The school-set cases they were carrying are still refused by
+# a narrower marker: "school", "high school", "middle school", "schoolgirl",
+# "classroom", and the Chinese \u5b66\u751f, which the allow-list masks
+# "college student" and \u5927\u5b66\u751f out of before matching.
 SCHOOL_MARKERS_EN: tuple[str, ...] = (
     "school",
     "schoolgirl",
@@ -17,13 +24,11 @@ SCHOOL_MARKERS_EN: tuple[str, ...] = (
     "school uniform",
     "classroom",
     "classmate",
-    "student",
     "high school",
     "middle school",
     "junior high",
     "elementary school",
     "kindergarten",
-    "locker room",
     "blackboard",
     "chalkboard",
     "school desk",

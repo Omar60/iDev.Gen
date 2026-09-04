@@ -680,10 +680,10 @@ def test_school_prose_is_refused_in_any_field_and_inside_lists():
     """
     # Only school prose is the scene_theme field, which TEXT_FIELDS never named.
     scene_theme_only = {
-        "identifier": "general-home-visit",
-        "scene_theme": "private lesson at home, student room desk, quiet corner",
+        "identifier": "room-01",
+        "scene_theme": "warm dusk through the curtains of a classroom, empty desks",
     }
-    assert guard_entry(scene_theme_only) == (SIGNAL_THEME_TEXT, "general-home-visit")
+    assert guard_entry(scene_theme_only) == (SIGNAL_THEME_TEXT, "room-01")
 
     # Only school prose is one item of a list-valued field.
     list_field_only = {
@@ -756,3 +756,36 @@ def test_option_field_is_pruned_item_by_item_not_refused_whole():
     assert report["refused"] == 0
     assert report["pruned_options"] == 1
     assert report["pruned_option_identifiers"] == ["general-fitting-room"]
+
+
+def test_locker_room_and_student_alone_no_longer_refuse():
+    """The two removed markers refused rooms every workplace has.
+
+    Removing them narrows the deny-list, so the school-set cases they were
+    carrying have to be shown still refused by a narrower marker.
+    """
+    workplace_locker_room = {
+        "identifier": "medical-changing-room",
+        "scene_theme": "hospital staff locker room, scrubs and white coats hanging",
+    }
+    assert guard_entry(workplace_locker_room) is None
+
+    adult_student = {
+        "identifier": "nurse-night-shift",
+        "scene_theme": "a nurse and a student nurse on a night shift",
+    }
+    assert guard_entry(adult_student) is None
+
+    # A school locker room is still refused: the narrower marker is "school".
+    school_locker_room = {
+        "identifier": "room-04",
+        "scene_theme": "locker room off the gym, uniforms hung after school hours",
+    }
+    assert guard_entry(school_locker_room) == (SIGNAL_THEME_TEXT, "room-04")
+
+    # A school-age student is still refused on the age-bearing phrase.
+    school_student = {
+        "identifier": "room-05",
+        "scene_theme": "a high school student at a desk by the window",
+    }
+    assert guard_entry(school_student) == (SIGNAL_THEME_TEXT, "room-05")
