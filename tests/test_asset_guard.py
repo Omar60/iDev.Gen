@@ -687,10 +687,10 @@ def test_school_prose_is_refused_in_any_field_and_inside_lists():
 
     # Only school prose is one item of a list-valued field.
     list_field_only = {
-        "identifier": "general-fitting-room",
-        "uniform_fit": ["silk slip", "school uniform"],
+        "identifier": "desk-lean-01",
+        "pose_hint": ["leaning forward", "sitting at a school desk"],
     }
-    assert guard_entry(list_field_only) == (SIGNAL_THEME_TEXT, "general-fitting-room")
+    assert guard_entry(list_field_only) == (SIGNAL_THEME_TEXT, "desk-lean-01")
 
     # Chinese school prose in an unnamed field is refused too.
     zh_unnamed_field = {
@@ -707,3 +707,52 @@ def test_school_prose_is_refused_in_any_field_and_inside_lists():
         "keywords": ["bakery", "dawn light"],
     }
     assert guard_entry(accepted) is None
+
+
+def test_option_field_is_pruned_item_by_item_not_refused_whole():
+    """A school-coded garment among a room's wardrobe options drops the option.
+
+    `uniform_fit` offers interchangeable garments. One of them being
+    school-coded does not make the room school-set, so the room stands with
+    that garment removed. Written as a string the field is describing the
+    entry rather than offering choices, and refuses it like any prose.
+    """
+    room = {
+        "identifier": "general-fitting-room",
+        "scene_theme": "fitting room with a long mirror and a velvet stool",
+        "uniform_fit": ["silk slip", "school uniform", "summer dress"],
+    }
+    assert guard_entry(room) is None
+
+    kept, touched = asset_guard.prune_options(room)
+    assert kept["uniform_fit"] == ["silk slip", "summer dress"]
+    assert touched == ["uniform_fit"]
+    # The caller's own entry is never edited in place.
+    assert room["uniform_fit"] == ["silk slip", "school uniform", "summer dress"]
+
+    # An entry with nothing to drop comes back as the object it went in as.
+    clean = {"identifier": "general-bakery", "uniform_fit": ["apron"]}
+    same, none_touched = asset_guard.prune_options(clean)
+    assert same is clean
+    assert none_touched == []
+
+    # The option rule does not rescue an entry that is school-set elsewhere.
+    school_room = {
+        "identifier": "room-02",
+        "scene_theme": "after-school classroom, empty desks at dusk",
+        "uniform_fit": ["silk slip"],
+    }
+    assert guard_entry(school_room) == (SIGNAL_THEME_TEXT, "room-02")
+
+    # The same field written as a string is prose, and refuses the entry.
+    described = {"identifier": "room-03", "uniform_fit": "a school uniform, worn loose"}
+    assert guard_entry(described) == (SIGNAL_THEME_TEXT, "room-03")
+
+    # guard_entries accepts the pruned entry and names it in the report.
+    accepted, report = guard_entries([room])
+    assert len(accepted) == 1
+    assert accepted[0]["uniform_fit"] == ["silk slip", "summer dress"]
+    assert report["accepted"] == 1
+    assert report["refused"] == 0
+    assert report["pruned_options"] == 1
+    assert report["pruned_option_identifiers"] == ["general-fitting-room"]

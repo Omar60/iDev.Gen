@@ -474,3 +474,37 @@ def test_unsupported_json_shape_raises(tmp_path):
 
     with pytest.raises(ValueError, match="Unsupported JSON shape"):
         extract_non_english_strings(source_dir)
+
+
+def test_option_field_strings_are_pruned_before_extraction(tmp_path):
+    """A school-coded garment is not listed, and its room still is.
+
+    The room is accepted, so its own strings are extracted. The one garment
+    the guard drops from `uniform_fit` is not among them.
+    """
+    source_dir = tmp_path / "rooms"
+    source_dir.mkdir()
+
+    room_label = "\u4f53\u9762\u8bd5\u8863\u95f4"
+    kept_garment = "\u4e1d\u7ef8\u540a\u5e26\u88d9"
+    dropped_garment = "\u6821\u670d"  # school uniform
+
+    payload = {
+        "library": "general_scenes",
+        "items": [
+            {
+                "id": "general-fitting-room",
+                "label": room_label,
+                "scene_theme": "fitting room with a long mirror and a velvet stool",
+                "uniform_fit": [kept_garment, dropped_garment],
+            }
+        ],
+    }
+    (source_dir / "general_scenes.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    results = extract_non_english_strings(source_dir)
+    extracted = [item["string"] for item in results]
+
+    assert dropped_garment not in extracted
+    assert room_label in extracted
+    assert kept_garment in extracted

@@ -161,6 +161,13 @@ TEXT_FIELDS: tuple[str, ...] = (
     "prompt",
 )
 
+# Fields holding a list of interchangeable options rather than a description
+# of the entry itself. A school-coded garment among a room's wardrobe options
+# does not make the room school-set: the option is dropped and the entry
+# stands. Only a list is treated this way. Written as a string the field is
+# describing the entry, not offering choices, and refuses it like any prose.
+OPTION_FIELDS: tuple[str, ...] = ("uniform_fit",)
+
 # Every entry field name accepted as a keyword argument. A caller cannot pass
 # bypass flags like allow_school=True expecting them to take effect.
 ENTRY_FIELD_NAMES: frozenset[str] = frozenset(
@@ -318,12 +325,43 @@ def guard_entry(
         if isinstance(value, str):
             if _matches_school_markers(value):
                 return (SIGNAL_THEME_TEXT, identifier)
+        elif field in OPTION_FIELDS and isinstance(value, (list, tuple)):
+            continue  # pruned item by item by prune_options, not refused whole
         elif isinstance(value, (list, tuple)):
             for item in value:
                 if isinstance(item, str) and _matches_school_markers(item):
                     return (SIGNAL_THEME_TEXT, identifier)
 
     return None
+
+
+def prune_options(entry: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Drop school-coded items from an entry's option fields.
+
+    Returns the entry and the names of the fields an item was dropped from.
+    The entry is copied, never edited in place: the caller's source data is
+    read-only material. Carries no dropped text back to the caller.
+    """
+    touched: list[str] = []
+    keeps: dict[str, list[Any]] = {}
+    for field in OPTION_FIELDS:
+        value = entry.get(field)
+        if not isinstance(value, (list, tuple)):
+            continue
+        kept = [
+            item for item in value
+            if not (isinstance(item, str) and _matches_school_markers(item))
+        ]
+        if len(kept) != len(value):
+            keeps[field] = kept
+            touched.append(field)
+    if not touched:
+        # Nothing to drop: the caller's own entry object is handed back, so an
+        # untouched entry stays the same object it went in as.
+        return entry, []
+    pruned = dict(entry)
+    pruned.update(keeps)
+    return pruned, touched
 
 
 def guard_entries(
@@ -340,6 +378,8 @@ def guard_entries(
     - "by_signal": count per refusal signal (keyed by SIGNAL_* constants)
     - "by_library": count per refused source library
     - "refused_identifiers": list of refused identifiers in input order
+    - "pruned_options": count of accepted entries an option was dropped from
+    - "pruned_option_identifiers": their identifiers, in input order
 
     Never prints, logs, or includes any entry text in the report.
     """
@@ -358,11 +398,21 @@ def guard_entries(
 
     accepted: list[dict[str, Any]] = []
     refused_identifiers: list[str] = []
+    pruned_identifiers: list[str] = []
 
     for entry in entries:
         decision = guard_entry(entry, refused_libraries=refused_libraries)
         if decision is None:
-            accepted.append(entry)
+            kept, touched = prune_options(entry)
+            accepted.append(kept)
+            if touched:
+                identifier = str(
+                    entry.get("identifier")
+                    or entry.get("id")
+                    or entry.get("key")
+                    or ""
+                )
+                pruned_identifiers.append(identifier)
         else:
             signal, identifier = decision
             refused_identifiers.append(identifier)
@@ -383,6 +433,8 @@ def guard_entries(
         "by_signal": by_signal,
         "by_library": by_library,
         "refused_identifiers": refused_identifiers,
+        "pruned_options": len(pruned_identifiers),
+        "pruned_option_identifiers": pruned_identifiers,
     }
     return accepted, report
 
