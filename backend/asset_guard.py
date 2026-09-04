@@ -15,8 +15,7 @@ from typing import Any, Iterable
 # a room every workplace has, and bare "student" refused a nurse and three
 # petplay scenes. The school-set cases they were carrying are still refused by
 # a narrower marker: "school", "high school", "middle school", "schoolgirl",
-# "classroom", and the Chinese \u5b66\u751f, which the allow-list masks
-# "college student" and \u5927\u5b66\u751f out of before matching.
+# "classroom", and their Chinese counterparts.
 SCHOOL_MARKERS_EN: tuple[str, ...] = (
     "school",
     "schoolgirl",
@@ -41,10 +40,13 @@ SCHOOL_MARKERS_EN: tuple[str, ...] = (
 
 # Terms that mark an entry as school-set, in Simplified Chinese (escaped).
 # Removed: \u5bbf\u820d (dormitory) and \u64cd\u573a (playground / sports field).
+# Removed: \u5b66\u751f (student) with the English "student", and for the
+# same reason. The age-bearing compounds stay markers in their own right -
+# \u4e2d\u5b66\u751f, \u5c0f\u5b66\u751f, \u9ad8\u4e2d\u751f, \u521d\u4e2d\u751f, \u5973\u5b66\u751f - and each is matched as a
+# substring, so nothing that names a school-age student stops being refused.
 SCHOOL_MARKERS_ZH: tuple[str, ...] = (
     "\u5b66\u6821",  # school
     "\u6559\u5ba4",  # classroom
-    "\u5b66\u751f",  # student
     "\u6821\u670d",  # school uniform
     # Retained because U+6821 explicitly denotes school, unlike their English counterparts.
     "\u6821\u56ed",  # campus

@@ -190,10 +190,19 @@ def test_chinese_school_markers_and_allow_list():
     res_school = guard_entry({"identifier": "zh-scene-01", "theme": f"hallway in {zh_school}"})
     assert res_school == (SIGNAL_THEME_TEXT, "zh-scene-01")
 
-    # Escaped Chinese student glyph (U+5B66 U+751F)
+    # Escaped Chinese student glyph (U+5B66 U+751F). Bare, it names no age and
+    # is accepted, the same way bare "student" is in English.
     zh_student = "".join(chr(cp) for cp in [0x5B66, 0x751F])
     res_student = guard_entry({"identifier": "zh-scene-02", "theme": f"portrait of {zh_student}"})
-    assert res_student == (SIGNAL_THEME_TEXT, "zh-scene-02")
+    assert res_student is None
+
+    # The age-bearing compound around it is still refused (U+4E2D U+5B66 U+751F).
+    zh_middle_school_student = "".join(chr(cp) for cp in [0x4E2D, 0x5B66, 0x751F])
+    res_compound = guard_entry({
+        "identifier": "zh-scene-03",
+        "theme": f"portrait of {zh_middle_school_student}",
+    })
+    assert res_compound == (SIGNAL_THEME_TEXT, "zh-scene-03")
 
     # Escaped Chinese university glyphs: \u5927\u5b66 and \u5927\u5b66\u751f are accepted
     zh_uni = "".join(chr(cp) for cp in [0x5927, 0x5B66])

@@ -98,7 +98,6 @@ def test_escaped_school_markers_match_intended_text():
     expected_codepoints = {
         "\u5b66\u6821": [0x5B66, 0x6821],  # school
         "\u6559\u5ba4": [0x6559, 0x5BA4],  # classroom
-        "\u5b66\u751f": [0x5B66, 0x751F],  # student
         "\u6821\u670d": [0x6821, 0x670D],  # school uniform
         "\u6821\u56ed": [0x6821, 0x56ED],  # campus
         "\u4e2d\u5b66": [0x4E2D, 0x5B66],  # middle / high school
