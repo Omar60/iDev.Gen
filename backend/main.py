@@ -35,6 +35,13 @@ import enhance
 from comfy import REFERENCE_SLOTS, SLOTS, Comfy, detect_map, graph_checkpoint
 from runner import Runner, slug
 
+# The import pipeline and the registry it writes into. These are `backend.*`
+# imports and not bare ones because that is how the package refers to itself;
+# `--app-dir backend` puts `backend/` on the path and `python -m uvicorn` puts
+# the repo root there, so both spellings resolve.
+from backend.importer import TranslationMissingError, import_source
+from backend.room_registry import DEFAULT_ROOM_LIBRARIES
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -364,6 +371,15 @@ class ConfigIn(BaseModel):
     # purpose — an unknown key inside a profile is ignored, not rejected, so the
     # file can be edited by hand ahead of the app.
     checkpoints: dict[str, dict] = Field(default_factory=dict)
+    # The room library registry. Here for exactly the reason stated above: an
+    # import registers each seed file it writes in this key, and without the
+    # field the first Setup save after an import deletes every registered
+    # library — leaving seed files on disk that no entry names, which is the
+    # state `room_registry.verify_registry_disk_agreement` exists to refuse.
+    # The default is the shipped one, so a save from a config that never
+    # carried the key writes what the app was already using.
+    room_libraries: list[dict] = Field(
+        default_factory=lambda: [dict(lib) for lib in DEFAULT_ROOM_LIBRARIES])
 
 
 # ------------------------------------------------------------------ setup
@@ -1120,6 +1136,70 @@ def import_readings(items: list[dict] | None = None):
                (item.get("axis") or "").strip(), db.now())
         added += 1
     return {"added": added, "skipped": skipped}
+
+
+class RoomImportIn(BaseModel):
+    """Where the source material and its translation map are on this machine.
+
+    Both are required with no default, the same rule the CLI keeps: a machine
+    path is the operator's to type and there is no sensible one to guess.
+    """
+    source_dir: str
+    map_path: str
+    data_dir: str | None = None
+
+
+def _adopt_config(cfg: dict) -> None:
+    """Take a config the import mutated live and persist it to `CONFIG_PATH`.
+
+    Silent when nothing changed, so a refusal raised before any write does
+    not rewrite the operator's config.json for nothing.
+    """
+    global CONFIG
+    if cfg == CONFIG:
+        return
+    CONFIG = cfg
+    CONFIG_PATH.write_text(json.dumps(CONFIG, indent=2) + "\n", encoding="utf-8")
+
+
+@app.post("/api/rooms/import")
+def import_rooms(p: RoomImportIn):
+    """Import a source asset directory into room seed files, and register them.
+
+    Writing a seed file and registering its library are one operation:
+    `import_source` appends to `config['room_libraries']`, and this route
+    persists that config in the same call. A seed on disk whose registry entry
+    was never written is precisely the state
+    `room_registry.verify_registry_disk_agreement` exists to refuse — so the
+    config is written from a copy that is adopted on both paths out of the
+    import, a refusal included, because that check runs after the seeds are
+    already on disk.
+
+    A missing translation comes back as 422 carrying the WHOLE uncovered list,
+    not just the first item: the screen's job is to show the translator every
+    string still to cover. That list is source prose. It crosses the wire to
+    the operator and is never logged — hence `from None`, which keeps it out of
+    any traceback a handler above might print.
+    """
+    cfg = dict(CONFIG)
+    try:
+        report = import_source(p.source_dir, p.map_path, p.data_dir or DATA_DIR, config=cfg)
+    except TranslationMissingError as exc:
+        raise HTTPException(422, {"error": "translation_missing",
+                                  "uncovered": exc.uncovered}) from None
+    except (ValueError, OSError) as exc:
+        # A refusal must not widen the disagreement it reports.
+        # `verify_registry_disk_agreement` runs at the END of `import_source`,
+        # after the seeds are on disk, and its direction-2 failure arrives here
+        # as a ValueError. Dropping `cfg` on that path would leave the seed
+        # written and the registry entry naming it thrown away - the exact
+        # state this route exists to avoid, and one that gets worse on every
+        # retry. A library is registered only once its seed is written, so the
+        # registry half is adopted whether or not the call went on to raise.
+        _adopt_config(cfg)
+        raise HTTPException(422, str(exc)) from None
+    _adopt_config(cfg)
+    return report
 
 
 @app.delete("/api/readings/{reading_id}")

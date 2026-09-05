@@ -154,6 +154,11 @@ export default function Setup() {
         // Nothing on this screen edits the per-checkpoint profiles; carried
         // through untouched so saving a path does not wipe them.
         checkpoints: cfg.checkpoints ?? {},
+        // Same reason, for the room library registry the import screen writes.
+        // Left undefined when the config never carried it, so the key is
+        // omitted from the body and the schema's own default applies rather
+        // than an empty list wiping the shipped library.
+        room_libraries: cfg.room_libraries,
       })
       setMsg(r.restart_required ? 'Saved. Restart the app for the new data folder.' : 'Saved.')
       api.get('/api/config').then(setCfg)

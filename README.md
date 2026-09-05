@@ -143,6 +143,21 @@ Editing that file by hand is still fine; restart afterwards.
 | `llm_key` | Optional. Only a hosted endpoint needs one. |
 | `room_libraries` | Optional. List of room libraries for session looks (each entry has `name`, `seed_file`, `enabled`, and `weight`). Defaults to `candid-rooms-seed.json` (the shipped nine rooms). |
 
+## Rooms
+
+**Rooms** imports an external asset library into room seed files. Give it the
+folder holding the source JSON and the path to the translation map beside it;
+nothing is guessed and no example path is shipped, because both are paths on
+your own machine.
+
+The import is all or nothing. Refused libraries, refused entries and the
+translation lookup all run over the whole upload before a single seed file is
+touched, so an upload carrying one string the map does not cover writes
+nothing and comes back with every uncovered string listed by entry and field -
+a worklist for the translation map, not a warning. A successful import writes
+each seed file and registers it in `room_libraries` in the same operation:
+either half alone is the state the registry check refuses.
+
 ## Writing the prompts
 
 With an endpoint set, the app writes the text it has always asked you to write —

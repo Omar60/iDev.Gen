@@ -60,6 +60,14 @@ paths specific to your machine. Advanced settings can also be edited there:
 |---|---|
 | `room_libraries` | List of room libraries (each with `name`, `seed_file`, `enabled`, and `weight`). Defaults to `candid-rooms-seed.json` (the shipped nine candid rooms). |
 
+The **Rooms** screen fills this list in for you: it takes a source directory
+and a translation map, writes one room seed file per library and registers each
+one here in the same operation. It writes nothing at all if any string in the
+upload is missing from the map, and lists the uncovered strings with the entry
+and the field each came from. The Setup screen carries `room_libraries` back
+untouched when you save, so a saved path does not delete what an import
+registered.
+
 ## Reaching the app from a phone
 
 The default `start.bat` binds loopback only — a public repository should not,
