@@ -16,11 +16,15 @@ directory present.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from backend.cut_map import CutMissingError, validate_cut_map
 from backend.mining import (
     ActRequirementUndeterminedError,
+    MINED_COMBINATIONS_FILE,
     MANNER_CANDID,
     NEEDS_NOTHING,
     NEEDS_SECOND_BODY,
@@ -30,10 +34,12 @@ from backend.mining import (
     family_for,
     identifier_for,
     manner_for_family,
+    load_mined_combinations,
     needs_for_act,
     normalise_family,
     second_body_families,
     split_fused_entries,
+    validate_combination,
     split_fused_entry,
 )
 
@@ -424,3 +430,81 @@ def test_a_floored_family_does_not_rescue_an_unreadable_act():
         needs_for_act(", ", "facial POV", "invented_fused_10")
     with pytest.raises(ActRequirementUndeterminedError):
         needs_for_act("", "fisheye POV", "invented_fused_11")
+
+
+# ── 8.10 The recorded combination is keys, in a tracked file ──────────────
+
+TRACKED_COMBINATIONS = Path(__file__).resolve().parents[1] / "data" / MINED_COMBINATIONS_FILE
+
+
+def test_the_tracked_combination_file_carries_no_prose():
+    """Keys, and nothing that could be a wording.
+
+    The file is TRACKED and the wording it would otherwise carry is source
+    prose that may not be committed - the same split the room verdicts already
+    live under. Every entry is put through the validator the loader uses, so a
+    combination pasted in by hand with a clause where the key goes fails here
+    rather than at the first compose.
+
+    The falsifiable half is the fixture below, not this scan: today the file is
+    empty on purpose, and a scan of an empty file is a test that cannot fail on
+    its own.
+    """
+    loaded = json.loads(TRACKED_COMBINATIONS.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    for identifier, entry in loaded.items():
+        validate_combination(entry, identifier)
+
+
+def test_a_wording_where_a_row_key_belongs_is_refused():
+    """The failure the tracked file is written against.
+
+    A combination built out of words instead of rows goes on reproducing the
+    old photograph the day one of its rows is reworded, and nothing says the row
+    moved - which is the whole reason the combination is stored as references.
+    """
+    with pytest.raises(ValueError, match="not a row key"):
+        validate_combination({"camera": "cam-01", "act": ACT, "room": "room-01"})
+    with pytest.raises(ValueError, match="does not cut"):
+        validate_combination({"camera": "cam-01", "wardrobe": "worn-01"})
+    with pytest.raises(ValueError, match="records no rows"):
+        validate_combination({})
+    assert validate_combination({"camera": "cam-01", "room": "room-01"}) == {
+        "camera": "cam-01",
+        "room": "room-01",
+    }
+
+
+def test_a_combination_survives_its_rows_being_absent(tmp_path):
+    """A reference, not a foreign key.
+
+    The keys here name rows nothing in the catalogue carries, and the
+    combination comes back whole. A loader that checked its rows and dropped
+    what it could not find would delete the only record of what the source entry
+    was - and it would do it silently, on the day somebody retired one row.
+    """
+    (tmp_path / MINED_COMBINATIONS_FILE).write_text(
+        json.dumps(
+            {
+                "invented_fused_01": {
+                    "camera": "mined-cam-01",
+                    "act": "mined-act-01",
+                    "room": "mined-room-01",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_mined_combinations(data_dir=tmp_path)
+    assert loaded == {
+        "invented_fused_01": {
+            "camera": "mined-cam-01",
+            "act": "mined-act-01",
+            "room": "mined-room-01",
+        }
+    }
+
+
+def test_no_combination_file_reads_as_no_combinations(tmp_path):
+    """A fresh checkout has mined nothing, which is a real state and not an error."""
+    assert load_mined_combinations(data_dir=tmp_path) == {}

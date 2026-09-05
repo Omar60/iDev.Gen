@@ -15,6 +15,7 @@ measurement run on a fragment nobody wrote.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Iterable
 
@@ -27,6 +28,7 @@ from backend.cut_map import (
 )
 from backend.extractor import IDENTIFIER_KEYS
 from backend.importer import derive_multi_body
+from backend.room_registry import resolve_data_dir
 
 
 def identifier_for(entry: Any) -> str:
@@ -353,3 +355,105 @@ def split_fused_entries(
     if undetermined:
         raise ActRequirementUndeterminedError(undetermined)
     return rows
+
+
+# The combinations a mined source entry was split into, kept beside the parts.
+#
+# Mining separates a camera, an act and a room that ONE AUTHOR wrote to agree
+# with each other, and the agreement is what made the entry render - session 392
+# shot four of these and got the camera right in every family. Keeping the parts
+# without keeping the combination trades a working photograph for three rows
+# that have never been seen together.
+#
+# Row KEYS and nothing else. The file is tracked, and the wording it would
+# otherwise carry is source prose that may not be committed - the same split the
+# room verdicts already live under, for the same reason: keeping our own record
+# in one file with somebody else's text loses the record to a licensing
+# decision. It also makes the record survive its rows: a combination is a
+# reference, not a foreign key, and a row retired or reworded leaves the
+# combination standing to be reported broken (8.13) rather than silently
+# deleted.
+MINED_COMBINATIONS_FILE: str = "mined-combinations-seed.json"
+
+_KEY_SHAPED = re.compile("^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def validate_combination(
+    entry: Any,
+    identifier: str = "",
+) -> dict[str, str]:
+    """One recorded combination, checked to be keys and not prose.
+
+    A value with a space in it is a wording somebody pasted where the key
+    belongs, and it is refused rather than stored: stored, it would put source
+    text into a tracked file, and it would compose a combination out of words
+    instead of out of rows - so the day a row is reworded, the combination would
+    go on reproducing the old photograph and nothing would say the row moved.
+
+    A slot outside `CUT_SLOTS` is refused for the cut map's reason: a misspelt
+    `camera` is a part of the combination nothing downstream ever asks for.
+    """
+    where = f" for {identifier!r}" if identifier else ""
+    if not isinstance(entry, dict):
+        raise TypeError(
+            f"Combination{where} must be a dict, got {type(entry).__name__}"
+        )
+    unknown = sorted(k for k in entry if k not in CUT_SLOTS)
+    if unknown:
+        raise ValueError(
+            f"Combination{where} names slots this importer does not cut: "
+            f"{unknown!r}. The slots are {list(CUT_SLOTS)!r}"
+        )
+    out: dict[str, str] = {}
+    for slot in CUT_SLOTS:
+        if slot not in entry or entry[slot] is None:
+            continue
+        value = entry[slot]
+        if not isinstance(value, str):
+            raise ValueError(
+                f"Combination{where} slot {slot!r} must be a row key or absent, "
+                f"got {type(value).__name__}"
+            )
+        if not _KEY_SHAPED.match(value.strip()):
+            raise ValueError(
+                f"Combination{where} slot {slot!r} is not a row key: {value!r}. "
+                f"A combination records the KEYS of the rows it was split into, "
+                f"never their wording"
+            )
+        out[slot] = value.strip()
+    if not out:
+        raise ValueError(
+            f"Combination{where} records no rows. An entry that names nothing "
+            f"reproduces nothing"
+        )
+    return out
+
+
+def load_mined_combinations(
+    data_dir: Any = None,
+    config: dict | None = None,
+) -> dict[str, dict[str, str]]:
+    """Every recorded combination, keyed by the source identifier it came from.
+
+    An absent or unreadable file reads as no combinations at all, the way the
+    room verdicts do: nothing has been mined yet is a real state, and it is the
+    state of a fresh checkout.
+
+    The rows a combination names are NOT looked up here. A combination whose
+    rows are absent comes back whole - it is a reference to be reported broken,
+    and a loader that dropped it would delete the only record of what the source
+    entry was.
+    """
+    path = resolve_data_dir(data_dir=data_dir, config=config) / MINED_COMBINATIONS_FILE
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return {
+        str(key): validate_combination(value, str(key))
+        for key, value in loaded.items()
+    }
