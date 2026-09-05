@@ -56,6 +56,73 @@ THEME_FIELDS: tuple[str, ...] = (
 PROP_FIELDS: tuple[str, ...] = ("props", "objects", "furniture")
 
 
+# Words that put somebody OTHER than the subject in the frame.
+#
+# This is a one-character studio: every photograph is of her. So a word earns a
+# place on this list only when it cannot be about her. Plurals qualify however
+# they are gendered - she is one person, so `women` and `girls` are other
+# people the same way `men` is - and so do the male terms and the role nouns,
+# which name somebody doing a job in the scene while she is photographed.
+#
+# What is deliberately NOT here is the ambiguous female singular: `woman`,
+# `girl`, `lady`, `she`, `her`. A room's own prose describes the place she is
+# in and frequently describes her standing in it, so those words are as likely
+# to be the subject as a second body, and a rule that is wrong half the time is
+# worse for the operator than one that says nothing - it would mark most of the
+# corpus and train them to turn the gate off.
+#
+# The bias that is left is deliberate and it points at over-marking. A missed
+# room is silent: a crowd composes into a single-subject run and nobody learns
+# until the frame comes back. A wrongly marked room is visible, names the word
+# that did it, and the operator turns the second body on or picks another room.
+# ponytail: a word list, not a parser. It cannot see "an empty hall with no
+# people in it", which marks. If that shows up in the corpus, the upgrade is a
+# negation check on the words immediately before the match, not a grammar.
+OTHER_BODY_WORDS: tuple[str, ...] = (
+    # plurals and collectives - she is one person
+    "people", "persons", "crowd", "crowds", "others", "onlookers", "bystanders",
+    "audience", "spectators", "guests", "customers", "patrons", "shoppers",
+    "passengers", "students", "colleagues", "coworkers", "friends", "strangers",
+    "couple", "couples", "men", "women", "boys", "girls", "ladies", "staff",
+    # a second body that is not her
+    "man", "him", "boyfriend", "husband", "gentleman", "guy", "guys",
+    # somebody doing a job in the scene
+    "bridesmaid", "bridesmaids", "nurse", "nurses", "doctor", "doctors",
+    "waiter", "waitress", "bartender", "photographer", "assistant", "attendant",
+    "guard", "guards", "officer", "receptionist", "stylist", "technician",
+    "therapist", "masseur", "masseuse", "teacher", "cameraman",
+)
+
+_OTHER_BODY_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in OTHER_BODY_WORDS) + r")\b"
+)
+
+
+def derive_multi_body(prose: str) -> list[str]:
+    """The words in a room's own text that put other people in the frame.
+
+    Empty means the room is a single-subject place. Non-empty is the marking
+    AND the reason: the gate that refuses this room in a run with no second
+    body has to name the words responsible, or the operator is told no without
+    being told what to do about it.
+
+    One field, holding the words, rather than a boolean beside a list. The
+    boolean is `bool(...)` of the list and cannot drift from it; stored
+    separately they are two calculations of one fact, which is the bug this
+    repo has now found several times.
+
+    Computed here, at import, and never again. Recomputing at compose time
+    would read a look the operator is expected to have edited, and would answer
+    a question about words that may no longer be in the line.
+    """
+    found: list[str] = []
+    for match in _OTHER_BODY_PATTERN.finditer((prose or "").lower()):
+        word = match.group(1)
+        if word not in found:
+            found.append(word)
+    return found
+
+
 def derive_offers(entry: dict[str, Any], prose: str) -> list[str]:
     """The pieces this room offers: its source prop list, minus what the prose
     does not name.
@@ -505,6 +572,9 @@ def import_source(
                 "source_library": entry.get("library"),
             }
             new_row["offers"] = derive_offers(entry, theme_text)
+            # Read off the room's own text, at import, and stored. The gate
+            # resolves against this and never re-reads the composed look.
+            new_row["multi_body"] = derive_multi_body(theme_text)
             if "notes" in entry:
                 new_row["notes"] = _translate_field(
                     entry["notes"], translation_map, identifier, "notes", authored

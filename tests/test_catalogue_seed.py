@@ -362,6 +362,7 @@ ROOMS = ROOT / "data" / "candid-rooms-seed.json"
 # exists once the two are joined - the same join the picker does. Read from the
 # repo's own data dir explicitly: `conftest` points `IDEVGEN_DATA_DIR` at a tmp
 # directory for the whole suite, and these tests are about the shipped seeds.
+from backend.importer import derive_multi_body  # noqa: E402
 from backend.room_registry import (  # noqa: E402
     compose_look,
     load_manner_registers,
@@ -439,6 +440,22 @@ def test_composing_the_nine_rooms_yields_the_text_they_yielded_before_the_split(
     assert len(rooms) == len(before) == 10
     for room in rooms:
         assert composed_look(room["manner"], room["place"]) == before[room["key"]], room["key"]
+
+
+def test_every_room_stores_the_marking_its_own_prose_earns():
+    """A room's multi-body marking is computed at import and read at compose,
+    so nothing recomputes it in between - which is exactly why it can go stale.
+
+    Editing one of these nine by hand to add a second person into the place is
+    a one-line change that would leave `multi_body` empty and the room composing
+    into a single-subject run with somebody else in the frame. This is the only
+    thing that would notice.
+    """
+    rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
+    rooms += json.loads(DIRECTED_LOOKS.read_text(encoding="utf-8"))
+    for room in rooms:
+        assert "multi_body" in room, room["key"]
+        assert room["multi_body"] == derive_multi_body(room["place"]), room["key"]
 
 
 def test_the_rooms_seed_is_tracked_by_git():

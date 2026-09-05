@@ -7,6 +7,7 @@
     "offers": [
       "bed"
     ],
+    "multi_body": [],
     "verdict": "in use since session 351"
   },
   {
@@ -17,6 +18,7 @@
     "offers": [
       "sofa"
     ],
+    "multi_body": [],
     "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
   },
   {
@@ -27,6 +29,7 @@
     "offers": [
       "stool"
     ],
+    "multi_body": [],
     "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
   },
   {
@@ -37,6 +40,7 @@
     "offers": [
       "sink-edge"
     ],
+    "multi_body": [],
     "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
   },
   {
@@ -47,6 +51,7 @@
     "offers": [
       "tiled-wall"
     ],
+    "multi_body": [],
     "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371; offers corrected from bench, which its sentence never names"
   },
   {
@@ -57,6 +62,7 @@
     "offers": [
       "console"
     ],
+    "multi_body": [],
     "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
   },
   {
@@ -67,6 +73,7 @@
     "offers": [
       "bed"
     ],
+    "multi_body": [],
     "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
   },
   {
@@ -77,6 +84,7 @@
     "offers": [
       "backseat"
     ],
+    "multi_body": [],
     "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
   },
   {
@@ -87,6 +95,7 @@
     "offers": [
       "railing"
     ],
+    "multi_body": [],
     "verdict": "built 1/1 in session 370, furniture used 1/1 in session 371"
   }
 ]

@@ -42,6 +42,7 @@ from backend.room_registry import (
 )
 from backend.importer import (
     TranslationMissingError,
+    derive_multi_body,
     derive_room_key,
     import_source,
 )
@@ -510,6 +511,94 @@ def test_translation_lookup_stops_when_string_missing_naming_entry_and_field(tmp
 
     # Validate-everything-then-write: nothing was written to data_dir
     assert list(data_dir.iterdir()) == []
+
+
+def test_a_room_naming_other_people_is_marked_and_a_single_subject_room_is_not(tmp_path: Path):
+    """5.8: the marking is computed once, at import, off the room's own text.
+
+    This app photographs one person. A room whose prose puts somebody else in
+    the frame composes into a single-subject run and nobody finds out until the
+    frame comes back, so the marking exists to refuse that - and it carries the
+    WORDS, because a gate that says no without saying which words did it leaves
+    the operator with nothing to act on.
+
+    It is one field holding those words rather than a boolean beside a list:
+    the boolean is the list's own truthiness and cannot drift from it, where
+    two stored fields are two calculations of one fact.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text("{}", encoding="utf-8")
+
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps({"library": "general_scenes", "items": [
+            {
+                "identifier": "gs_lobby",
+                "label": "Hotel lobby",
+                "theme": "busy hotel lobby, guests crossing the marble floor and a man "
+                         "waiting at the front desk",
+            },
+            {
+                "identifier": "gs_dressing_room",
+                "label": "Dressing room",
+                "theme": "dim wedding dressing room in front of a vanity mirror, a "
+                         "bridesmaid standing behind adjusting the lace straps",
+            },
+            {
+                "identifier": "gs_stockroom",
+                "label": "Stockroom",
+                "theme": "narrow stockroom aisle, supply shelves rising on both sides "
+                         "with a manhole cover on the street visible through the door",
+            },
+        ]}),
+        encoding="utf-8",
+    )
+
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+    rows = {
+        r["identifier"]: r
+        for r in json.loads(
+            (data_dir / "general-scenes-rooms-seed.json").read_text(encoding="utf-8")
+        )
+    }
+
+    # Marked, and the words are the ones a refusal would name.
+    assert rows["gs_lobby"]["multi_body"] == ["guests", "man"]
+    assert rows["gs_dressing_room"]["multi_body"] == ["bridesmaid"]
+
+    # Unmarked, and `manhole` is why the match is on whole words: a substring
+    # rule marks this room for a hole in the road.
+    assert rows["gs_stockroom"]["multi_body"] == []
+
+    # The words are stored, not merely detected: they survive the seed round trip.
+    for word in rows["gs_lobby"]["multi_body"]:
+        assert word in rows["gs_lobby"]["place"].lower()
+
+
+def test_the_ambiguous_female_singular_does_not_mark_a_room():
+    """5.8: what is deliberately NOT on the list, and why it is a decision.
+
+    A room's prose describes the place she is in and frequently describes her
+    standing in it. `woman`, `girl`, `lady`, `she`, `her` are therefore as
+    likely to be the subject as a second body, and marking on them would mark
+    most of the corpus - which teaches the operator to turn the gate off, which
+    costs more than the rooms it would have caught.
+
+    Plurals are not ambiguous in the same way and do mark: she is one person.
+    """
+    for subject in ("a young woman standing by the window in a bare bedroom",
+                    "a girl's bedroom with posters on the wall",
+                    "her coat is over the back of the chair"):
+        assert derive_multi_body(subject) == [], subject
+
+    for others in ("two women talking by the counter",
+                   "a group of girls on the far side of the hall",
+                   "ladies waiting on the bench"):
+        assert derive_multi_body(others), others
 
 
 def test_offers_is_the_source_props_the_prose_actually_names(tmp_path: Path):
