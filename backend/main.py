@@ -365,7 +365,21 @@ class JudgeShotIn(BaseModel):
 # Named once and read by both the schema below and the compose gate: a default
 # spelled twice is two numbers free to disagree, and the one the app enforces
 # would not be the one Setup writes.
-ROOM_WORD_BUDGET: int = 120
+#
+# 200, set from session 395-400 (task 7.9) and not from a guess. That arm held
+# the anchor cell - side-view / wall-facing-forearms / crop-full-body - and
+# moved the room alone up a ladder cut from one room by whole clauses. Judged
+# blind at five passes with frontal controls answering `front` 2/2 every time,
+# the camera arrived: 7/10 with no room, 8/10 at 18 words, 9/10 at 53, 10/10 at
+# 84, 10/10 at 176. The trend runs UPWARD with length and the studio control is
+# the worst arm of the six, which is the opposite of a length cost. 200 sits
+# above the longest length measured good (176), which is itself twice the
+# longest room in the corpus (89).
+#
+# So this gate refuses nothing anybody has, and it is kept as a tripwire for an
+# absurd input rather than as a constraint - the difference that matters is a
+# refusal instead of a silent truncation.
+ROOM_WORD_BUDGET: int = 200
 
 
 class ConfigIn(BaseModel):

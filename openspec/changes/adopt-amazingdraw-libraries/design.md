@@ -553,13 +553,38 @@ together, which the test that binds them will insist on.
   deleted, same seed, everything else byte-identical — 9/16 against 9/16. What
   391 really found was the open-garment reading, not a word count.
 
-  So the budget may be guarding nothing, and the honest default is one that
-  refuses nothing until 7.9 varies room length alone against a fixed camera row.
-  If that arm also comes back flat, the requirement stands but the gate becomes
-  a tripwire for absurd inputs rather than a real constraint — which is still
-  worth having, because it is the difference between a refusal and a silent
-  truncation. The answer changes the default and the framing of the risk, not
-  the specs.
+  **Answered, sessions 395-400 (task 7.9). There is no length effect, and the
+  budget is a tripwire.** The arm held the project's one calibrated cell — the
+  session 382 anchor, side-view / wall-facing-forearms / crop-full-body,
+  composed through the app so the shots carry components and can be judged —
+  and moved the room alone up a ladder cut from `general-rooftop-laundry` by
+  whole clauses, wardrobe muted, ten photographs per rung. Judged blind at five
+  passes on the camera slot's `position` axis, with two frontal controls in
+  every run answering `front` 2/2:
+
+  | room | 0w | 18w | 53w | 84w | 176w | studio control, 48w |
+  |------|----|-----|-----|-----|------|---------------------|
+  | camera arrives `side` | 7/10 | 8/10 | 9/10 | 10/10 | 10/10 | 5/10 |
+
+  The trend runs UPWARD with length, and the studio control is the worst arm of
+  the six. That is not "length does not matter" — it is the opposite of a
+  length cost, and it is the third session in a row to look for the effect and
+  find something else. The likely mechanism is content, not word count: the
+  rooftop room's own furniture (a laundry line at arm height, a parapet) gives
+  the act something to stand at, while the studio's softbox is a thing to face.
+
+  So `ROOM_WORD_BUDGET` is **200**, above the longest length measured good
+  (176), which is itself twice the longest room in the corpus (89). It refuses
+  nothing anybody has. The requirement stands as a tripwire for an absurd input
+  rather than as a constraint, which is still worth having: it is the difference
+  between a refusal and a silent truncation. The answer changed the default and
+  the framing of the risk, not the specs.
+
+  One caveat recorded with it: the numbers above are the JUDGE's. Read by eye
+  off the contact sheet the same six arms all looked side-on 10/10, and they are
+  not — several frames are three-quarters from behind and read `shoulder`. The
+  eye was wrong in the direction that would have hidden the control arm's own
+  weakness.
 * **Should a mined act carry its source's wardrobe clause?** The source fuses
   them. Deferring: the act rows enter unverified either way, and the question is
   answerable when the first mined act is judged.
