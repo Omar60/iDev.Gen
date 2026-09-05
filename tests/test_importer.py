@@ -946,6 +946,90 @@ def test_an_imported_room_is_a_place_that_composes_under_either_manner(tmp_path:
     assert directed[len(registers["directed"]) + 1:] == place
 
 
+def test_tags_are_stored_for_the_filter_and_mood_words_are_guidance(tmp_path: Path):
+    """6.13 and 6.14: two source fields, two different homes, one reason each.
+
+    TAGS earn a filter. 239 unique over 2088 uses in this corpus and the
+    frequent ones are structural - indoor 184, private 170, public 92 - so a
+    tag narrows a 428-room list to something a person can read. They are taken
+    whole, including the ones used once, and they are NOT intersected with the
+    prose the way `offers` is: a tag is the entry author saying what kind of
+    place this is, and "private" is true of a bedroom whose sentence never uses
+    the word.
+
+    MOOD WORDS do not. 220 unique and 165 used exactly once, so a filter over
+    them is 165 filters returning one room each - noise shaped like a feature.
+    They are the same material as the notes and the anchors: something a human
+    reads while writing a line. So they drop into `guidance` as one more key
+    rather than becoming one more rule, which is what 5.9 built that field for.
+
+    Neither reaches a prompt, and neither reaches it structurally rather than
+    by a filter somebody has to remember: `compose_look` joins the register to
+    the place and reads nothing else.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_tag = _zh(["5ba4", "5185"])
+    zh_mood = _zh(["6e29", "67d4"])
+    place = "stockroom with steel shelving and a bare bulb overhead"
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text(json.dumps({
+        zh_tag: {"translation": "indoor", "fields": ["tags"]},
+        zh_mood: {"translation": "tender", "fields": ["mood"]},
+    }), encoding="utf-8")
+    (source_dir / "general_scenes.json").write_text(json.dumps({
+        "library": "general_scenes",
+        "items": [{
+            "identifier": "gs_stockroom_01",
+            "label": "Stockroom",
+            "theme": place,
+            # Both spellings the guard reads, and both shapes the corpus
+            # writes: a list here, a comma-separated string on the next room.
+            "tags": [zh_tag, "private", "private"],
+            "mood": [zh_mood, "hushed"],
+        }, {
+            "identifier": "gs_corridor_02",
+            "label": "Corridor",
+            "theme": "a service corridor with a strip light and a mop bucket",
+            "tag": "indoor, working",
+            "mood_hint": "utilitarian",
+        }],
+    }, ensure_ascii=True), encoding="utf-8")
+
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+    rows = {r["identifier"]: r
+            for r in json.loads((data_dir / "general-scenes-rooms-seed.json")
+                                .read_text(encoding="utf-8"))}
+
+    stockroom = rows["gs_stockroom_01"]
+    # Translated, deduplicated, and in the entry's own order.
+    assert stockroom["tags"] == ["indoor", "private"]
+    assert "tags" in stockroom["authored"], "the map wrote one of them"
+    # Not intersected with the prose: the sentence never says "private".
+    assert "private" not in stockroom["place"]
+    assert rows["gs_corridor_02"]["tags"] == ["indoor", "working"]
+
+    # The mood words are guidance, under the source's own field name, and the
+    # picker shows them the way it shows the notes - with no filter over them.
+    assert stockroom["guidance"]["mood"] == ["tender", "hushed"]
+    assert "guidance.mood" in stockroom["authored"]
+    assert rows["gs_corridor_02"]["guidance"]["mood_hint"] == "utilitarian"
+    assert "mood" not in stockroom, "a second top-level key is a second rule"
+
+    # And none of it reaches a line, in either manner, in either language.
+    registers = load_manner_registers(data_dir=ROOT / "data")
+    for manner in ("candid", "directed"):
+        for room in rows.values():
+            line = compose_look(manner, room["place"], registers)
+            for word in ("indoor", "private", "working", "tender", "hushed",
+                         "utilitarian", zh_tag, zh_mood):
+                assert word not in line, (manner, room["key"], word)
+
+
 def test_authoring_guidance_is_stored_translated_and_never_composed(tmp_path: Path):
     """5.9: the entry author's reasons are kept for the operator, not for the line.
 

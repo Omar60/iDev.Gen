@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  composeLook, lookFromRoom, pickerRooms, refillLook, registerFor, roomAllows,
-  roomOption, verdictFor, verdictLabel,
+  allTags, composeLook, hasTag, lookFromRoom, pickerRooms, refillLook, registerFor,
+  roomAllows, roomOption, verdictFor, verdictLabel,
 } from './rooms.js'
 import candidRooms from '../../data/candid-rooms-seed.json'
 import directedLooks from '../../data/directed-looks-seed.json'
@@ -249,5 +249,38 @@ describe('what the picker says a room measured', () => {
     expect(roomOption(studio, 'candid'))
       .toBe('Studio, one softbox (shipped) - not measured yet')
     expect(roomOption(studio, 'candid')).not.toBe(roomOption(studio, 'directed'))
+  })
+})
+
+// 6.13: the tag filter's options are the tags the rooms carry. The vocabulary
+// is 239 tags long and belongs to the source, so nothing here writes it down.
+describe('the tag filter', () => {
+  const IMPORTED = [
+    { key: 'gs-stockroom-01', label: 'Stockroom', tags: ['indoor', 'private'] },
+    { key: 'gs-alley-02', label: 'Alley', tags: ['outdoor', 'public'] },
+    { key: 'gs-corridor-03', label: 'Corridor', tags: ['indoor', 'working'] },
+  ]
+
+  it('offers every tag the rooms carry, once each', () => {
+    expect(allTags(IMPORTED)).toEqual(['indoor', 'outdoor', 'private', 'public', 'working'])
+    // A clone where nobody ran the import lists the nine tracked rooms, which
+    // carry no tags: no options, and the picker simply has no filter.
+    expect(allTags(candidRooms)).toEqual([])
+    expect(allTags([])).toEqual([])
+    expect(allTags(undefined)).toEqual([])
+  })
+
+  it('narrows the list to the rooms whose source entry carried the tag', () => {
+    const listed = (tag) => IMPORTED.filter((r) => hasTag(r, tag)).map((r) => r.key)
+    expect(listed('indoor')).toEqual(['gs-stockroom-01', 'gs-corridor-03'])
+    expect(listed('public')).toEqual(['gs-alley-02'])
+    // A tag used once still finds its room, which is why nothing is
+    // thresholded away.
+    expect(listed('working')).toEqual(['gs-corridor-03'])
+    // No tag chosen is where the filter starts, and it hides nothing - a
+    // tagless tracked room included.
+    expect(listed('')).toEqual(IMPORTED.map((r) => r.key))
+    expect(hasTag(candidRooms[0], '')).toBe(true)
+    expect(hasTag(candidRooms[0], 'indoor')).toBe(false)
   })
 })

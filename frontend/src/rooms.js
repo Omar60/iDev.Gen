@@ -126,6 +126,26 @@ export function roomOption(room, manner) {
   return `${room?.label ?? ''}${offers} - ${verdictLabel(room, manner)}`
 }
 
+/** Every tag the listed rooms carry, once each, in alphabetical order.
+ *
+ *  The filter's options are read off the rooms rather than written down here:
+ *  the vocabulary is 239 tags long, it belongs to the source, and a list in the
+ *  frontend would be a second copy of it that goes stale on the next import.
+ *  A library nobody imported contributes no tags, which is why an empty result
+ *  is the ordinary state of a fresh clone and not a fault.
+ */
+export function allTags(rooms) {
+  const seen = new Set()
+  for (const room of rooms ?? []) for (const tag of room?.tags ?? []) seen.add(tag)
+  return [...seen].sort()
+}
+
+/** Does this room carry this tag. No tag selected matches every room - the
+ *  filter is a narrowing, and "all" is where it starts. */
+export function hasTag(room, tag) {
+  return !tag || (room?.tags ?? []).includes(tag)
+}
+
 /** The rooms the picker lists: the tracked ones the build carries, then every
  *  room the route served that the build does not already have.
  *

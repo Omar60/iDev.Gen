@@ -56,6 +56,13 @@ THEME_FIELDS: tuple[str, ...] = (
 # the next library.
 PROP_FIELDS: tuple[str, ...] = ("props", "objects", "furniture")
 
+# Where a source entry lists what KIND of place it is. 239 unique tags over
+# 2088 uses in this corpus, and the frequent ones are structural rather than
+# decorative - indoor 184, private 170, public 92, outdoor 60 - which is what
+# makes them worth a filter where the mood words are not. Both spellings, the
+# way the guard reads them.
+TAG_FIELDS: tuple[str, ...] = ("tags", "tag")
+
 
 # Words that put somebody OTHER than the subject in the frame.
 #
@@ -156,6 +163,38 @@ def derive_offers(entry: dict[str, Any], prose: str) -> list[str]:
     return kept
 
 
+def derive_tags(entry: dict[str, Any]) -> list[str]:
+    """The tags the source entry carries, deduplicated and in its own order.
+
+    Taken whole, including the ones used once: a tag matching a single room
+    still finds that room, and a frequency threshold buys nothing but a room
+    nobody can filter to. Unlike `offers`, a tag is NOT intersected with the
+    prose - it is the entry author saying what kind of place this is, and
+    "private" is true of a bedroom whose sentence never uses the word.
+
+    Read before translation only in the sense that this reads the source's own
+    values; the caller passes each through the map, because a tag in the
+    source's language is a filter nobody here can type.
+    """
+    raw: Any = None
+    for field in TAG_FIELDS:
+        if field in entry:
+            raw = entry[field]
+            break
+    if isinstance(raw, str):
+        values = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        values = list(raw)
+    else:
+        return []
+    tags: list[str] = []
+    for value in values:
+        tag = str(value).strip()
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
 def is_guidance_field(name: str) -> bool:
     """Is this source field the entry author writing down how the shot works.
 
@@ -170,11 +209,18 @@ def is_guidance_field(name: str) -> bool:
     reads nothing else, so keeping guidance out of a prompt is a property of
     where it is stored, not a filter somebody has to remember to apply.
 
+    The mood words join them here rather than becoming a second filter. 220
+    unique in this corpus and 165 used exactly once - three quarters of the
+    vocabulary is a one-off, so as a filter it is 165 filters returning one
+    room each, which is noise shaped like a feature. As something a human
+    reads while writing a line it is the same material as the notes.
+
     ponytail: a name rule, not a per-library map. A library that calls the
     same material something else stores it as an ordinary field and the picker
     does not show it; the upgrade is another name here, not a schema.
     """
-    return name == "notes" or name == "anchors" or name.endswith("_anchor")
+    return (name == "notes" or name == "anchors" or name.endswith("_anchor")
+            or name == "mood" or name.startswith("mood_"))
 
 
 class TranslationMissingError(ValueError):
@@ -600,6 +646,15 @@ def import_source(
                 "source_library": entry.get("library"),
             }
             new_row["offers"] = derive_offers(entry, theme_text)
+            # What kind of place the entry says this is. Stored translated,
+            # because a tag in the source's language is a filter nobody here
+            # can type, and stored whole - no threshold, no intersection with
+            # the prose: "private" is true of a bedroom whose sentence never
+            # says it.
+            new_row["tags"] = [
+                _translate_field(tag, translation_map, identifier, "tags", authored)
+                for tag in derive_tags(entry)
+            ]
             # Read off the room's own text, at import, and stored. The gate
             # resolves against this and never re-reads the composed look.
             new_row["multi_body"] = derive_multi_body(theme_text)

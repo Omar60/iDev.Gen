@@ -17,7 +17,9 @@ import candidRooms from '../../../data/candid-rooms-seed.json'
 import directedLooks from '../../../data/directed-looks-seed.json'
 // The register is the manner's, not the room's, so composing is what turns a
 // place into a look. `rooms.js` holds both halves and the join.
-import { lookFromRoom, pickerRooms, refillLook, roomAllows, roomOption } from '../rooms.js'
+import {
+  allTags, hasTag, lookFromRoom, pickerRooms, refillLook, roomAllows, roomOption,
+} from '../rooms.js'
 
 // A row says which manners its PLACE makes sense under, and most say "any" -
 // the register left the text in the split, so candid's bedroom is a bedroom and
@@ -41,6 +43,10 @@ export default function ModelDetail({ id }) {
   // Empty until the route answers, and empty forever if it cannot: an
   // absent library is a reason, not an error, and the picker still opens.
   const [servedRooms, setServedRooms] = useState([])
+  // The tag the room list is narrowed to, empty for all of them. The
+  // options come from the rooms themselves - 239 tags belong to the
+  // source, and a list written here would go stale on the next import.
+  const [roomTag, setRoomTag] = useState('')
   const llm = !!config.llm_ok
   const [writing, setWriting] = useState('')
   const [error, setError] = useState('')
@@ -292,6 +298,18 @@ export default function ModelDetail({ id }) {
               Measured in sessions 370 and 371: every one of these builds its
               room, and where the sentence puts the furniture does not matter —
               the act naming a piece is what puts her on it. */}
+          {/* The tag filter, and it is only shown when the rooms carry tags:
+              nobody has imported a library on a fresh clone, and an empty
+              select is a control that promises a filter it cannot apply. */}
+          {allTags(ROOMS).length > 0 && (
+            <select value={roomTag} onChange={(e) => setRoomTag(e.target.value)}
+                    title="Narrow the rooms to one kind of place. The tags come from the library the room was imported from.">
+              <option value="">Every kind of place</option>
+              {allTags(ROOMS).map((tag) => (
+                <option key={tag} value={tag}>{tag}</option>
+              ))}
+            </select>
+          )}
           <select value=""
                   title="Fill the look with a measured room. Every one of these was rendered; the text stays editable."
                   onChange={(e) => {
@@ -299,7 +317,7 @@ export default function ModelDetail({ id }) {
                     if (filled !== null) setNewSession({ ...newSession, look: filled })
                   }}>
             <option value="">Start from a measured room…</option>
-            {ROOMS.filter((r) => roomAllows(r, newSession.manner)).map((r) => (
+            {ROOMS.filter((r) => roomAllows(r, newSession.manner) && hasTag(r, roomTag)).map((r) => (
               <option key={r.key} value={r.key}>
                 {roomOption(r, newSession.manner)}
               </option>
