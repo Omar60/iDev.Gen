@@ -35,8 +35,11 @@ from backend.asset_guard import (
     guard_entry,
 )
 from backend.room_registry import (
+    ROOM_VERDICTS_FILE,
+    available_rooms,
     compose_look,
     load_manner_registers,
+    load_room_verdicts,
     prose_names_piece,
     verify_registry_disk_agreement,
 )
@@ -1322,6 +1325,92 @@ def test_reimport_updates_the_room_and_leaves_its_measurement_alone(tmp_path: Pa
     assert again["updated"] == 0 and again["created"] == 0
     assert again["destinations"]["general-scenes-rooms-seed.json"]["unchanged"] == 1
     assert seed_file.read_bytes() == before
+
+
+def test_a_verdict_whose_room_is_absent_is_reported_and_never_deleted(tmp_path: Path):
+    """6.6: an import writes rooms. It never writes the verdict store, in
+    either direction, and it says which measurements now point at no room.
+
+    The two halves of the store were split in 6.5 because the measurements are
+    ours and the room text may be an import nobody may commit. That split is
+    what makes an orphan ordinary rather than exceptional: the store is tracked
+    and the seeds are not, so a clone, a second machine, a library switched off
+    and a seed file somebody moved all leave verdicts pointing at rooms that
+    are not here. Deleting on any of those throws away frames that were shot.
+
+    Two kinds of absence are told apart on purpose. A row the upstream dropped
+    is RETAINED by the merge, so its verdict is not orphaned - the room is
+    still here, it is just no longer upstream. A verdict for a room no
+    registered library carries at all is the orphan.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    map_file = source_dir / "translation_map.json"
+    source_file = source_dir / "general_scenes.json"
+    map_file.write_text(json.dumps({}), encoding="utf-8")
+
+    def write_source(*identifiers: str) -> None:
+        source_file.write_text(json.dumps({
+            "library": "general_scenes",
+            "items": [{
+                "identifier": ident,
+                "label": ident,
+                "theme": f"a storeroom with steel shelving, {ident}",
+                "props": "steel shelving",
+            } for ident in identifiers],
+        }, ensure_ascii=True), encoding="utf-8")
+
+    kept_key = derive_room_key("gs_kept_01")
+    dropped_key = derive_room_key("gs_dropped_01")
+    write_source("gs_kept_01", "gs_dropped_01")
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+
+    # Three measurements: one on a room that stays upstream, one on a room the
+    # next import drops, and one on a room this machine has never held - a
+    # verdict measured elsewhere, or on a library nobody registered here.
+    store = data_dir / ROOM_VERDICTS_FILE
+    store.write_text(json.dumps({
+        kept_key: {"candid": {"verdict": "verified", "sample_size": 10}},
+        dropped_key: {"candid": {"verdict": "verified", "sample_size": 10}},
+        "a-room-from-another-machine": {"candid": {"verdict": "dead", "sample_size": 10}},
+    }, indent=2) + chr(10), encoding="utf-8")
+    before = store.read_bytes()
+
+    # The upstream drops one entry.
+    write_source("gs_kept_01")
+    config = _fresh_config()
+    report = import_source(source_dir=source_dir, map_path=map_file,
+                           data_dir=data_dir, config=config)
+
+    # Nothing wrote the store. Not a key removed, not a key added, not a
+    # re-indentation: an import has no business in this file at all.
+    assert store.read_bytes() == before
+    assert set(load_room_verdicts(data_dir=data_dir)) == {
+        kept_key, dropped_key, "a-room-from-another-machine"}
+
+    # The dropped row survives the merge, so its verdict still has a room.
+    assert report["orphaned"] == 1 and dropped_key in (
+        report["destinations"]["general-scenes-rooms-seed.json"]["orphaned_keys"])
+    assert report["orphaned_verdicts"] == ["a-room-from-another-machine"]
+
+    # And the picker's own reader says the same thing, with the same verdicts
+    # still readable on the rooms that do exist.
+    served = available_rooms(config=config, data_dir=data_dir)
+    assert served["orphaned_verdicts"] == ["a-room-from-another-machine"]
+    by_key = {r["key"]: r for r in served["rooms"]}
+    assert by_key[kept_key]["verdicts"]["candid"]["sample_size"] == 10
+    assert by_key[dropped_key]["verdicts"]["candid"]["sample_size"] == 10
+
+    # Switching the library off is the other everyday absence: every verdict is
+    # then an orphan, and the store still holds all three.
+    config["room_libraries"][0]["enabled"] = False
+    off = available_rooms(config=config, data_dir=data_dir)
+    assert off["orphaned_verdicts"] == sorted(
+        [kept_key, dropped_key, "a-room-from-another-machine"])
+    assert store.read_bytes() == before
 
 
 def test_empty_header_entries_skipped_and_reported(tmp_path: Path):

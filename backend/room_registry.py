@@ -272,7 +272,15 @@ def available_rooms(
             "reason": reason,
         })
         rooms.extend(loaded)
-    return {"rooms": rooms, "libraries": libraries}
+    # A verdict whose room no library offers right now. Reported, never
+    # deleted: the store is tracked and the rooms it measures may not be, so
+    # "the room is not here" is the ordinary state of a clone where nobody ran
+    # the import, of a library switched off, and of a seed file somebody moved.
+    # Deleting on any of those throws away frames that were actually shot, and
+    # the room usually comes back.
+    present = {r.get("key") for r in rooms}
+    orphaned = sorted(k for k in verdicts if k not in present)
+    return {"rooms": rooms, "libraries": libraries, "orphaned_verdicts": orphaned}
 
 
 def is_room_seed_file(path: Path) -> bool:

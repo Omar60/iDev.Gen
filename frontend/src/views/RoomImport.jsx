@@ -94,6 +94,15 @@ export default function RoomImport() {
               Refused entries: {report.refused_identifiers.join(', ')}
             </p>
           )}
+
+          {/* Said, not done. A measurement stays whatever the import found:
+              the room usually comes back - another machine, another library,
+              a seed nobody has imported here yet. */}
+          {(report.orphaned_verdicts || []).length > 0 && (
+            <p className="muted">
+              Verdicts with no room here, kept: {report.orphaned_verdicts.join(', ')}
+            </p>
+          )}
         </div>
       )}
 

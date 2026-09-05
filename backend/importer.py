@@ -24,6 +24,7 @@ from backend.extractor import (
     _load_entries_from_file,
 )
 from backend.room_registry import (
+    available_rooms,
     get_room_libraries_config,
     prose_names_piece,
     resolve_data_dir,
@@ -707,6 +708,15 @@ def import_source(
 
     verify_registry_disk_agreement(config=config, data_dir=target_data_dir)
 
+    # A verdict this project measured against a room the import no longer
+    # carries. Named here rather than acted on: the store is never written by
+    # an import, in either direction, so an upstream that drops a room costs
+    # nothing but a line in the report. Asked of the whole registry and not of
+    # this run's destinations, because a verdict is orphaned by the rooms that
+    # ARE here and not by the ones this run happened to touch.
+    orphaned_verdicts = available_rooms(
+        config=config, data_dir=target_data_dir)["orphaned_verdicts"]
+
     return {
         "accepted": guard_report["accepted"],
         "refused": guard_report["refused"],
@@ -723,4 +733,5 @@ def import_source(
         "by_signal": guard_report["by_signal"],
         "by_library": guard_report["by_library"],
         "destinations": dest_reports,
+        "orphaned_verdicts": orphaned_verdicts,
     }

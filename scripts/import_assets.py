@@ -95,6 +95,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Refused library: {refusal['library']} ({refusal['reason']})")
     if report["refused_identifiers"]:
         print(f"  Refused identifiers: {', '.join(report['refused_identifiers'])}")
+    # Named, never acted on: an import does not write the verdict store.
+    if report.get("orphaned_verdicts"):
+        print(f"  Verdicts with no room here: {', '.join(report['orphaned_verdicts'])}")
 
     for dest, info in report.get("destinations", {}).items():
         print(
