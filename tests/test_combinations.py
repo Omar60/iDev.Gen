@@ -24,6 +24,7 @@ from backend.mining import (
     record_combinations,
     save_mined_combinations,
     split_fused_entry,
+    wording_digest,
 )
 
 IDENTIFIER = "invented_fused_combo_01"
@@ -32,6 +33,22 @@ ACT_KEY = "mined-act-01"
 ROOM_KEY = "mined-room-01"
 CAMERA_TEXT = "low angle from the foot of the bed"
 ACT_TEXT = "kneeling upright with both hands behind her head"
+ROOM_TEXT = "A narrow attic room with a sloped ceiling."
+
+
+def _record(camera_text: str = CAMERA_TEXT, act_text: str = ACT_TEXT) -> dict:
+    """The record as the split would have written it, keys and fingerprints.
+
+    The digests are taken from the same constants the catalogue rows are
+    inserted from, so a test that reaches this fixture is a test whose rows are
+    still the rows the entry was split into. A test about a row that has moved
+    changes one of the two ends on purpose.
+    """
+    return {
+        "camera": {"key": CAMERA_KEY, "digest": wording_digest(camera_text)},
+        "act": {"key": ACT_KEY, "digest": wording_digest(act_text)},
+        "room": {"key": ROOM_KEY, "digest": wording_digest(ROOM_TEXT)},
+    }
 
 
 @pytest.fixture
@@ -45,7 +62,7 @@ def combination_on_disk():
     path = main.DATA_DIR / MINED_COMBINATIONS_FILE
     main.DATA_DIR.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({IDENTIFIER: {"camera": CAMERA_KEY, "act": ACT_KEY, "room": ROOM_KEY}}),
+        json.dumps({IDENTIFIER: _record()}),
         encoding="utf-8",
     )
     yield
@@ -65,7 +82,7 @@ def _rows(manner: str = "directed") -> None:
 def _session(client, seeded, room_key: str = ROOM_KEY, manner: str = "directed") -> int:
     return client.post("/api/sessions", json={
         "model_id": seeded["model_id"], "name": "combination",
-        "look": "A narrow attic room with a sloped ceiling.", "room_key": room_key,
+        "look": ROOM_TEXT, "room_key": room_key,
         "manner": manner, "checkpoint": "test-checkpoint", "shots": [],
     }).json()["id"]
 
@@ -262,3 +279,108 @@ def test_a_recorded_combination_reproduces_the_source_entry(client, seeded):
         assert SOURCE_ROOM in prompt, prompt
     finally:
         (main.DATA_DIR / MINED_COMBINATIONS_FILE).unlink(missing_ok=True)
+
+
+# ── 8.13 A combination whose rows moved is reported broken ────────────────
+
+
+def _one_row(concept: str, slot: str, wording: str, manner: str = "directed") -> None:
+    db.run(
+        "INSERT INTO component (concept_key, slot, manner, family, faces, wording, "
+        "judge_label, cameras, needs, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        concept, slot, manner, "", "", wording, f"{concept} judge", "", "", db.now(),
+    )
+
+
+def test_a_combination_whose_row_was_reworded_is_reported_broken(
+    client, seeded, combination_on_disk
+):
+    """The failure the digest exists for, and the one a key alone cannot see.
+
+    Both rows are present, neither is retired, and the act now says something
+    else. Composed, it would queue a photograph under the source entry's
+    identifier that the source entry never was - and the record would go on
+    claiming the entry renders, which is the one thing the combination is kept
+    to answer.
+
+    The refusal names the ROW and the word "reworded", because the operator's
+    next move is to look at that row's history and decide whether to restore the
+    wording or re-cut the entry. Nothing is queued, asserted apart: a refusal
+    that has already written a shot is not a refusal.
+    """
+    _one_row(CAMERA_KEY, "camera", CAMERA_TEXT)
+    _one_row(ACT_KEY, "act", "kneeling upright with one hand on the headboard")
+    sid = _session(client, seeded)
+
+    r = client.post(f"/api/sessions/{sid}/compose-combination", json={"identifier": IDENTIFIER})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert ACT_KEY in detail, detail
+    assert "reworded" in detail, detail
+    assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == 0
+
+
+def test_a_combination_whose_row_was_retired_is_reported_broken(
+    client, seeded, combination_on_disk
+):
+    """Retired is its own report, and not the same one as gone.
+
+    A retired row is still on disk and the operator's next move is to restore
+    it; an absent one is gone and their next move is to re-run the import. The
+    route therefore resolves WITHOUT filtering on `retired_at` - a query that
+    hid the row would report it missing and send them looking for an import
+    that would not bring it back.
+    """
+    _rows()
+    db.run(
+        "UPDATE component SET retired_at=? WHERE concept_key=?", db.now(), CAMERA_KEY
+    )
+    sid = _session(client, seeded)
+
+    r = client.post(f"/api/sessions/{sid}/compose-combination", json={"identifier": IDENTIFIER})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert CAMERA_KEY in detail, detail
+    assert "retired" in detail, detail
+    assert "not in the catalogue" not in detail, detail
+    assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == 0
+
+
+def test_a_broken_combination_reports_every_row_that_moved(
+    client, seeded, combination_on_disk
+):
+    """The whole shortfall in one refusal, not one row per re-run.
+
+    The camera is gone and the act has been reworded. A report that stopped at
+    the first fault would hand the operator one name, they would fix it, and the
+    next attempt would hand them the second - which is the same failure the cut
+    map and the family declaration are already collected against.
+    """
+    _one_row(ACT_KEY, "act", "kneeling upright with one hand on the headboard")
+    sid = _session(client, seeded)
+
+    r = client.post(f"/api/sessions/{sid}/compose-combination", json={"identifier": IDENTIFIER})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert CAMERA_KEY in detail, detail
+    assert ACT_KEY in detail, detail
+    assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == 0
+
+
+def test_a_row_reworded_to_the_same_words_is_not_broken(client, seeded, combination_on_disk):
+    """The fingerprint is of the words, not of when they were written.
+
+    An edit that puts the wording back, or a re-import that writes the same
+    text, leaves the combination whole. A staleness check keyed on a timestamp
+    would report this one broken and cost the operator the photograph for
+    nothing.
+    """
+    _rows()
+    db.run(
+        "UPDATE component SET wording=? WHERE concept_key=?",
+        f"  {ACT_TEXT}  ", ACT_KEY,
+    )
+    sid = _session(client, seeded)
+
+    r = client.post(f"/api/sessions/{sid}/compose-combination", json={"identifier": IDENTIFIER})
+    assert r.status_code == 200, r.text

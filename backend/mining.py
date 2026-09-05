@@ -15,6 +15,7 @@ measurement run on a fragment nobody wrote.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -282,15 +283,39 @@ def row_key(identifier: str, slot: str) -> str:
     return f"{MINED_KEY_PREFIX}-{stem}-{slot}"
 
 
-def combination_for(rows: Iterable[dict[str, str]]) -> dict[str, str]:
+DIGEST_LENGTH: int = 16
+
+
+def wording_digest(wording: str) -> str:
+    """A fingerprint of a row's wording, and not the wording.
+
+    The combination stores keys and no prose (8.10), so it cannot notice on its
+    own that a row it names now says something else. This is what it stores
+    instead: a hash is not text, it reproduces nothing, and it is exactly enough
+    to answer the one question 8.13 asks - is this still the row the entry was
+    split into.
+
+    Whitespace-trimmed before hashing because every writer of a wording trims
+    it: the catalogue PATCH strips, the seed import strips, and a digest that
+    moved on a trailing space would report a row broken that nobody touched.
+    """
+    return hashlib.sha256(wording.strip().encode("utf-8")).hexdigest()[:DIGEST_LENGTH]
+
+
+def combination_for(rows: Iterable[dict[str, str]]) -> dict[str, dict[str, str]]:
     """The combination a set of rows from ONE entry composes back into.
 
-    Keys only, which is the storage rule 8.10 sets. Built from the rows the
-    split actually produced, so a part the entry never carried is absent here
-    too - the combination records what was mined, not what a full entry would
-    have had.
+    A key and a fingerprint per slot, which is the storage rule 8.10 sets: still
+    no prose, and now enough to tell a row that was reworded from the row the
+    entry was actually split into. Built from the rows the split produced, so a
+    part the entry never carried is absent here too - the combination records
+    what was mined, not what a full entry would have had.
     """
-    return {row["slot"]: row["key"] for row in rows if row.get("key")}
+    return {
+        row["slot"]: {"key": row["key"], "digest": wording_digest(row["wording"])}
+        for row in rows
+        if row.get("key")
+    }
 
 
 def split_fused_entry(
@@ -424,12 +449,13 @@ def split_fused_entries(
 MINED_COMBINATIONS_FILE: str = "mined-combinations-seed.json"
 
 _KEY_SHAPED = re.compile("^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_DIGEST_SHAPED = re.compile(f"^[0-9a-f]{{{DIGEST_LENGTH}}}$")
 
 
 def validate_combination(
     entry: Any,
     identifier: str = "",
-) -> dict[str, str]:
+) -> dict[str, dict[str, str]]:
     """One recorded combination, checked to be keys and not prose.
 
     A value with a space in it is a wording somebody pasted where the key
@@ -440,6 +466,12 @@ def validate_combination(
 
     A slot outside `CUT_SLOTS` is refused for the cut map's reason: a misspelt
     `camera` is a part of the combination nothing downstream ever asks for.
+
+    Each slot holds a key AND a wording digest, and both are required. The
+    digest is not prose - it reproduces nothing and reads as nothing - and it is
+    the only thing that lets a stored reference tell the row it was split into
+    from a row somebody has since reworded. A reference without one composes a
+    photograph under the identifier of a different one.
     """
     where = f" for {identifier!r}" if identifier else ""
     if not isinstance(entry, dict):
@@ -452,23 +484,37 @@ def validate_combination(
             f"Combination{where} names slots this importer does not cut: "
             f"{unknown!r}. The slots are {list(CUT_SLOTS)!r}"
         )
-    out: dict[str, str] = {}
+    out: dict[str, dict[str, str]] = {}
     for slot in CUT_SLOTS:
         if slot not in entry or entry[slot] is None:
             continue
         value = entry[slot]
-        if not isinstance(value, str):
+        if not isinstance(value, dict):
             raise ValueError(
-                f"Combination{where} slot {slot!r} must be a row key or absent, "
-                f"got {type(value).__name__}"
+                f"Combination{where} slot {slot!r} must be a row reference or "
+                f"absent, got {type(value).__name__}"
             )
-        if not _KEY_SHAPED.match(value.strip()):
+        unknown_fields = sorted(k for k in value if k not in ("key", "digest"))
+        if unknown_fields:
             raise ValueError(
-                f"Combination{where} slot {slot!r} is not a row key: {value!r}. "
+                f"Combination{where} slot {slot!r} names {unknown_fields!r}. A row "
+                f"reference is a key and a digest, and nothing else is stored here"
+            )
+        key = value.get("key")
+        digest = value.get("digest")
+        if not isinstance(key, str) or not _KEY_SHAPED.match(key.strip()):
+            raise ValueError(
+                f"Combination{where} slot {slot!r} is not a row key: {key!r}. "
                 f"A combination records the KEYS of the rows it was split into, "
                 f"never their wording"
             )
-        out[slot] = value.strip()
+        if not isinstance(digest, str) or not _DIGEST_SHAPED.match(digest.strip()):
+            raise ValueError(
+                f"Combination{where} slot {slot!r} carries no wording digest: "
+                f"{digest!r}. Without one the combination cannot tell the row it "
+                f"was split into from a row somebody has since reworded"
+            )
+        out[slot] = {"key": key.strip(), "digest": digest.strip()}
     if not out:
         raise ValueError(
             f"Combination{where} records no rows. An entry that names nothing "
@@ -480,7 +526,7 @@ def validate_combination(
 def load_mined_combinations(
     data_dir: Any = None,
     config: dict | None = None,
-) -> dict[str, dict[str, str]]:
+) -> dict[str, dict[str, dict[str, str]]]:
     """Every recorded combination, keyed by the source identifier it came from.
 
     An absent or unreadable file reads as no combinations at all, the way the
@@ -507,7 +553,9 @@ def load_mined_combinations(
     }
 
 
-def record_combinations(rows: Iterable[dict[str, str]]) -> dict[str, dict[str, str]]:
+def record_combinations(
+    rows: Iterable[dict[str, str]],
+) -> dict[str, dict[str, dict[str, str]]]:
     """The combination each source entry was split into, keyed by identifier.
 
     Grouped from the rows themselves rather than recomputed from the entries: a
@@ -522,7 +570,7 @@ def record_combinations(rows: Iterable[dict[str, str]]) -> dict[str, dict[str, s
 
 
 def save_mined_combinations(
-    combinations: dict[str, dict[str, str]],
+    combinations: dict[str, dict[str, dict[str, str]]],
     data_dir: Any = None,
     config: dict | None = None,
 ) -> Path:
@@ -548,3 +596,56 @@ def save_mined_combinations(
         encoding="utf-8",
     )
     return path
+
+
+def combination_breakage(
+    combination: dict[str, dict[str, str]],
+    rows: dict[str, Any],
+) -> list[str]:
+    """Why this recorded combination can no longer reproduce its source entry.
+
+    Empty is whole. Anything else is the list of reasons, one per slot, and the
+    caller composes NOTHING when it is non-empty: a combination is the record of
+    three parts one author wrote to agree, and two of them plus a substitute is
+    a photograph nobody measured wearing the identifier of one somebody did.
+
+    Pure, and reported per slot rather than at the first fault, so the operator
+    sees the whole shortfall in one refusal - the same rule the cut map and the
+    family declaration already answer under. `rows` maps a slot to the catalogue
+    row it resolves to today, or to None where nothing carries the key; a slot
+    the caller left out of `rows` is one it cannot resolve, and it is not
+    judged.
+
+    Retired and absent are reported apart although both refuse: a retired row is
+    still on disk and the operator's next move is to restore it, and an absent
+    one is gone and their next move is to re-run the import. One message for
+    both leaves them guessing which.
+    """
+    reasons: list[str] = []
+    for slot in CUT_SLOTS:
+        reference = combination.get(slot)
+        if not reference:
+            continue
+        if slot not in rows:
+            # Not handed a row for this slot means not judged here, which is
+            # not the same as handed None. The caller decides which slots it
+            # can resolve - the room is not a component and the compose route
+            # cannot look one up - and a slot missing from `rows` reported as
+            # absent would refuse every combination that names a room.
+            continue
+        key = reference["key"]
+        row = rows[slot]
+        if row is None:
+            reasons.append(
+                f"the {slot} row {key!r} is not in the catalogue any more"
+            )
+            continue
+        if row.get("retired_at"):
+            reasons.append(f"the {slot} row {key!r} has been retired")
+            continue
+        if wording_digest(row.get("wording") or "") != reference["digest"]:
+            reasons.append(
+                f"the {slot} row {key!r} has been reworded since the entry was "
+                f"split, so it no longer says what the source entry said"
+            )
+    return reasons

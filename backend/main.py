@@ -41,7 +41,7 @@ from runner import Runner, slug
 # the repo root there, so both spellings resolve.
 from backend.importer import TranslationMissingError, import_source
 from backend.room_registry import DEFAULT_ROOM_LIBRARIES, available_rooms
-from backend.mining import load_mined_combinations
+from backend.mining import combination_breakage, load_mined_combinations
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -2460,10 +2460,12 @@ def compose_combination_endpoint(sid: int, c: ComposeCombinationIn):
 
     Mining separates a camera, an act and a room that ONE author wrote to agree,
     and the agreement is what made the entry render. This is the route that
-    spends the record: the keys are resolved to catalogue rows here, so a
-    combination composes out of the CURRENT wording of its rows - a row
-    reworded composes its new words, and a row that is gone refuses rather than
-    composing the two that are left.
+    spends the record: the keys are resolved to catalogue rows here, and the
+    combination is composed only while every row it names is still the row it
+    was split into. A row that is gone, retired or reworded refuses rather than
+    composing the two that are left - the agreement is the thing being
+    reproduced, and two parts of it plus a substitute is a photograph nobody
+    measured wearing the identifier of one somebody did.
 
     It is never dealt. The combination store is not a source of candidates and
     `_draw_n_trio_shots` does not read it: a recorded combination reaches a
@@ -2495,7 +2497,7 @@ def compose_combination_endpoint(sid: int, c: ComposeCombinationIn):
     if not combination:
         raise HTTPException(404, f"no recorded combination named {key!r}")
 
-    room_key = combination.get("room", "")
+    room_key = (combination.get("room") or {}).get("key", "")
     session_room = (session["room_key"] or "").strip()
     if room_key and session_room != room_key:
         raise HTTPException(
@@ -2505,31 +2507,53 @@ def compose_combination_endpoint(sid: int, c: ComposeCombinationIn):
             f"{session_room or 'no room'}; fill the look from that room first",
         )
 
-    drawn: dict[str, dict] = {}
+    # Resolved before anything is judged broken, and NOT filtered on
+    # `retired_at`: a retired row is found here so the refusal can say it was
+    # retired. A query that hid it would report the row absent, and the
+    # operator's next move for the two is not the same one.
+    resolved: dict[str, dict | None] = {}
     for slot in ("camera", "act"):
-        concept = combination.get(slot, "")
-        if not concept:
+        reference = combination.get(slot)
+        if not reference:
             raise HTTPException(
                 422,
                 f"compose refused: the combination {key!r} records no {slot}; "
                 f"a photograph cannot be reproduced from the parts that are left",
             )
         row = db.one(
-            "SELECT * FROM component WHERE concept_key=? AND slot=? AND retired_at IS NULL",
-            concept, slot,
+            "SELECT * FROM component WHERE concept_key=? AND slot=?",
+            reference["key"], slot,
         )
-        if not row:
-            raise HTTPException(
-                422,
-                f"compose refused: the combination {key!r} names the {slot} row "
-                f"{concept!r}, which the catalogue does not carry",
-            )
+        resolved[slot] = dict(row) if row else None
+    # The ROOM slot is checked for identity above and not for wording here. It
+    # is not a component: it cannot be retired and the catalogue screen cannot
+    # reword it, and its text in this session is the look, which the operator
+    # owns and may legitimately edit. Reporting a look edit as a broken row
+    # would refuse a photograph nothing happened to.
+    # ponytail: the day mined room rows are imported into a room library they
+    # resolve like the other two, and they get the same digest check by being
+    # added to `resolved`.
+
+    broken = combination_breakage(combination, resolved)
+    if broken:
+        raise HTTPException(
+            422,
+            f"compose refused: the combination {key!r} is broken - "
+            + "; ".join(broken)
+            + ". A combination is the record of parts one author wrote to agree, "
+            "and it is not composed from the ones that are left",
+        )
+
+    drawn: dict[str, dict] = {}
+    for slot in ("camera", "act"):
+        row = resolved[slot]
         if row["manner"] != session["manner"]:
             raise HTTPException(
                 422,
-                f"compose refused: the {slot} row {concept!r} belongs to the manner "
-                f"{row['manner']!r} and this session is {session['manner']!r}; the "
-                f"same words in another manner are another measurement",
+                f"compose refused: the {slot} row {row['concept_key']!r} belongs to "
+                f"the manner {row['manner']!r} and this session is "
+                f"{session['manner']!r}; the same words in another manner are "
+                f"another measurement",
             )
         drawn[slot] = {
             "key": row["concept_key"],

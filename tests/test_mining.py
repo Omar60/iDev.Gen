@@ -34,6 +34,7 @@ from backend.mining import (
     family_for,
     identifier_for,
     manner_for_family,
+    combination_breakage,
     combination_for,
     load_mined_combinations,
     needs_for_act,
@@ -44,6 +45,7 @@ from backend.mining import (
     second_body_families,
     split_fused_entries,
     validate_combination,
+    wording_digest,
     split_fused_entry,
 )
 
@@ -440,6 +442,16 @@ def test_a_floored_family_does_not_rescue_an_unreadable_act():
 
 TRACKED_COMBINATIONS = Path(__file__).resolve().parents[1] / "data" / MINED_COMBINATIONS_FILE
 
+# A well-formed digest for a row this test file never writes. The loader does
+# not look its row up - that is the property below - so what it is a digest OF
+# is exactly the point: nothing.
+ABSENT_DIGEST = wording_digest("a row nothing in the catalogue carries")
+
+
+def _ref(key: str, wording: str = "some wording") -> dict[str, str]:
+    """A row reference the validator accepts, for the tests that type keys."""
+    return {"key": key, "digest": wording_digest(wording)}
+
 
 def test_the_tracked_combination_file_carries_no_prose():
     """Keys, and nothing that could be a wording.
@@ -467,16 +479,29 @@ def test_a_wording_where_a_row_key_belongs_is_refused():
     old photograph the day one of its rows is reworded, and nothing says the row
     moved - which is the whole reason the combination is stored as references.
     """
+    digest = wording_digest(ACT)
     with pytest.raises(ValueError, match="not a row key"):
-        validate_combination({"camera": "cam-01", "act": ACT, "room": "room-01"})
+        validate_combination({"camera": {"key": ACT, "digest": digest}})
+    with pytest.raises(ValueError, match="must be a row reference"):
+        validate_combination({"camera": "cam-01"})
     with pytest.raises(ValueError, match="does not cut"):
-        validate_combination({"camera": "cam-01", "wardrobe": "worn-01"})
+        validate_combination({"wardrobe": {"key": "worn-01", "digest": digest}})
     with pytest.raises(ValueError, match="records no rows"):
         validate_combination({})
-    assert validate_combination({"camera": "cam-01", "room": "room-01"}) == {
-        "camera": "cam-01",
-        "room": "room-01",
-    }
+    # The digest is required, and it is required to BE a digest: a slot
+    # carrying the wording where the fingerprint goes is the prose the storage
+    # rule exists to keep out, one field along.
+    with pytest.raises(ValueError, match="no wording digest"):
+        validate_combination({"camera": {"key": "cam-01"}})
+    with pytest.raises(ValueError, match="no wording digest"):
+        validate_combination({"camera": {"key": "cam-01", "digest": ACT}})
+    with pytest.raises(ValueError, match="A row reference is a key and a digest"):
+        validate_combination(
+            {"camera": {"key": "cam-01", "digest": digest, "wording": ACT}}
+        )
+    assert validate_combination(
+        {"camera": {"key": "cam-01", "digest": digest}}
+    ) == {"camera": {"key": "cam-01", "digest": digest}}
 
 
 def test_a_combination_survives_its_rows_being_absent(tmp_path):
@@ -491,9 +516,9 @@ def test_a_combination_survives_its_rows_being_absent(tmp_path):
         json.dumps(
             {
                 "invented_fused_01": {
-                    "camera": "mined-cam-01",
-                    "act": "mined-act-01",
-                    "room": "mined-room-01",
+                    "camera": {"key": "mined-cam-01", "digest": ABSENT_DIGEST},
+                    "act": {"key": "mined-act-01", "digest": ABSENT_DIGEST},
+                    "room": {"key": "mined-room-01", "digest": ABSENT_DIGEST},
                 }
             }
         ),
@@ -502,9 +527,9 @@ def test_a_combination_survives_its_rows_being_absent(tmp_path):
     loaded = load_mined_combinations(data_dir=tmp_path)
     assert loaded == {
         "invented_fused_01": {
-            "camera": "mined-cam-01",
-            "act": "mined-act-01",
-            "room": "mined-room-01",
+            "camera": {"key": "mined-cam-01", "digest": ABSENT_DIGEST},
+            "act": {"key": "mined-act-01", "digest": ABSENT_DIGEST},
+            "room": {"key": "mined-room-01", "digest": ABSENT_DIGEST},
         }
     }
 
@@ -542,9 +567,16 @@ def test_the_combination_records_only_the_parts_the_entry_carried():
     ever wrote, and 8.13 would report the combination broken forever.
     """
     rows = split_fused_entry(CAMERA_AND_ROOM_ENTRY, CAMERA_AND_ROOM_CUT)
+    by_slot = {row["slot"]: row for row in rows}
     assert combination_for(rows) == {
-        "camera": "mined-invented_fused_02-camera",
-        "room": "mined-invented_fused_02-room",
+        "camera": {
+            "key": "mined-invented_fused_02-camera",
+            "digest": wording_digest(by_slot["camera"]["wording"]),
+        },
+        "room": {
+            "key": "mined-invented_fused_02-room",
+            "digest": wording_digest(by_slot["room"]["wording"]),
+        },
     }
 
 
@@ -562,7 +594,7 @@ def test_the_record_is_grouped_from_the_rows_the_split_produced(tmp_path):
     rows = split_fused_entries([FUSED_ENTRY, CAMERA_AND_ROOM_ENTRY], cut_map)
     recorded = record_combinations(rows)
     assert set(recorded) == {"invented_fused_01", "invented_fused_02"}
-    assert recorded["invented_fused_01"]["act"] == "mined-invented_fused_01-act"
+    assert recorded["invented_fused_01"]["act"]["key"] == "mined-invented_fused_01-act"
 
     save_mined_combinations(recorded, data_dir=tmp_path)
     assert load_mined_combinations(data_dir=tmp_path) == recorded
@@ -596,14 +628,8 @@ def test_writing_the_record_replaces_the_file_rather_than_merging_it(tmp_path):
     which cut the frames came from. The break that merges passed every other
     test in this file, which is why this one exists.
     """
-    save_mined_combinations(
-        {"invented_fused_01": {"camera": "mined-a-camera", "act": "mined-a-act"}},
-        data_dir=tmp_path,
-    )
-    save_mined_combinations(
-        {"invented_fused_02": {"camera": "mined-b-camera", "room": "mined-b-room"}},
-        data_dir=tmp_path,
-    )
-    assert load_mined_combinations(data_dir=tmp_path) == {
-        "invented_fused_02": {"camera": "mined-b-camera", "room": "mined-b-room"}
-    }
+    first = {"camera": _ref("mined-a-camera"), "act": _ref("mined-a-act")}
+    second = {"camera": _ref("mined-b-camera"), "room": _ref("mined-b-room")}
+    save_mined_combinations({"invented_fused_01": first}, data_dir=tmp_path)
+    save_mined_combinations({"invented_fused_02": second}, data_dir=tmp_path)
+    assert load_mined_combinations(data_dir=tmp_path) == {"invented_fused_02": second}
