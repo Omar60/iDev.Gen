@@ -172,6 +172,36 @@ _UNCERTAIN_PATTERN = re.compile(
 )
 
 
+
+class ActRequirementUndeterminedError(ValueError):
+    """Raised when a mined act's requirement cannot be read at all.
+
+    Carries the whole shortfall for `CutMissingError`'s reason: one identifier
+    per re-run over a library of 55 is not a report.
+    """
+
+    def __init__(self, shortfall: Iterable[tuple[str, str]]) -> None:
+        self.shortfall = [(str(i), str(w)) for i, w in shortfall]
+        self.identifiers = [i for i, _ in self.shortfall]
+        listed = ", ".join(f"{i!r} (act {w!r})" for i, w in self.shortfall)
+        count = len(self.shortfall)
+        super().__init__(
+            f"The second-body requirement cannot be determined for {count} mined "
+            f"{'act' if count == 1 else 'acts'}: {listed}. Nothing was written. "
+            f"An act with no word in it has no reading to floor, and a guessed "
+            f"requirement is a two-body act dealt into a single-body photograph."
+        )
+
+
+# A wording the reading can work on holds at least one run of letters. A cut of
+# punctuation - ", " typed into the map where the clause was meant to go - is a
+# substring of the entry and passes every check the cut map makes, and it
+# reaches this module as an act nobody wrote.
+# ponytail: a letters check, not a grammar. If a real act ever arrives written
+# only in digits, the upgrade is to read the source's own language field.
+_HAS_A_WORD = re.compile("[A-Za-z]{2,}")
+
+
 def second_body_families() -> frozenset[str]:
     """The families whose acts always involve a second body.
 
@@ -188,7 +218,11 @@ def second_body_families() -> frozenset[str]:
     )
 
 
-def needs_for_act(wording: str, source_family: str = "") -> str:
+def needs_for_act(
+    wording: str,
+    source_family: str = "",
+    identifier: str = "",
+) -> str:
     """What a photograph must provide before this mined act can be drawn.
 
     Three readings, in the order that matters, and any one of them is enough:
@@ -202,10 +236,18 @@ def needs_for_act(wording: str, source_family: str = "") -> str:
 
     '' is returned only when the family does not floor it, the catalogue's
     reading finds nobody, and nothing in the wording is ambiguous.
+
+    A wording with no word in it is refused before any of the three run,
+    INCLUDING for a floored family: the floor says what a family always needs,
+    not what a row needs, and there is no row here to need it. Reported and not
+    written, because a guessed requirement is the error that deals a two-body
+    act into a single-body photograph.
     """
+    text = wording or ""
+    if not _HAS_A_WORD.search(text):
+        raise ActRequirementUndeterminedError([(identifier, text)])
     if normalise_family(source_family) in second_body_families():
         return NEEDS_SECOND_BODY
-    text = wording or ""
     if derive_multi_body(text):
         return NEEDS_SECOND_BODY
     if _UNCERTAIN_PATTERN.search(text.lower()):
@@ -253,7 +295,7 @@ def split_fused_entry(
         # room carrying `needs` would narrow a pool for a requirement nothing
         # about it asks for.
         if slot == "act":
-            row["needs"] = needs_for_act(row["wording"], family)
+            row["needs"] = needs_for_act(row["wording"], family, key)
         rows.append(row)
     return rows
 
@@ -274,7 +316,9 @@ def split_fused_entries(
 
     The family shortfall is collected the same way and for the same reason: an
     entry whose family declares no manner stops the upload, and every such
-    entry is named at once.
+    entry is named at once. So is the act whose requirement cannot be read -
+    the rows of the entries around it are built in memory and then dropped,
+    which is what "reported and not written" means here.
     """
     listed = list(entries)
     identifiers = [identifier_for(entry) for entry in listed]
@@ -293,10 +337,19 @@ def split_fused_entries(
         raise FamilyUndeclaredError(undeclared)
 
     rows: list[dict[str, str]] = []
+    undetermined: list[tuple[str, str]] = []
     for entry, key, family in zip(listed, identifiers, families):
-        rows.extend(
-            split_fused_entry(
-                entry, cut_for(cut_map, key), identifier=key, source_family=family
+        try:
+            rows.extend(
+                split_fused_entry(
+                    entry, cut_for(cut_map, key), identifier=key, source_family=family
+                )
             )
-        )
+        except ActRequirementUndeterminedError as exc:
+            # Collected, not re-raised here: the loop is the only place the act
+            # wording exists, and stopping on the first one hands the operator
+            # a library of 55 one identifier at a time.
+            undetermined.extend(exc.shortfall)
+    if undetermined:
+        raise ActRequirementUndeterminedError(undetermined)
     return rows

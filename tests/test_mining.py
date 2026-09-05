@@ -20,6 +20,7 @@ import pytest
 
 from backend.cut_map import CutMissingError, validate_cut_map
 from backend.mining import (
+    ActRequirementUndeterminedError,
     MANNER_CANDID,
     NEEDS_NOTHING,
     NEEDS_SECOND_BODY,
@@ -351,3 +352,75 @@ def test_an_unfloored_family_leaves_a_single_body_act_drawable():
     act = [row for row in rows if row["slot"] == "act"][0]
     assert act["manner"] == MANNER_CANDID
     assert act["needs"] == NEEDS_NOTHING
+
+
+# ── 8.8 An act whose requirement cannot be read is reported, not written ──
+
+
+def test_an_act_with_no_word_in_it_is_reported_and_nothing_is_written():
+    """Nothing written, and the entry named.
+
+    The reachable case is a cut of punctuation: `", "` typed into the map where
+    the clause was meant to go is a substring of the entry, non-empty, and
+    passes every check the cut map makes. It arrives here as an act nobody
+    wrote, and a requirement guessed for it is the error that deals a two-body
+    act into a single-body photograph.
+
+    Asserted over TWO entries and on BOTH names, for the missing-cut shortfall's
+    reason: stopping at the first one raises the same exception type, and a
+    test that read only the type would pass on a report that hands the operator
+    one identifier per re-run.
+    """
+    punctuation = ", "
+    first = {
+        "identifier": "invented_fused_07",
+        "family": "fisheye POV",
+        "prompt": f"{CAMERA}{punctuation}{ROOM}",
+    }
+    second = dict(first, identifier="invented_fused_08")
+    cut = {"camera": CAMERA, "act": punctuation, "room": ROOM}
+    cut_map = validate_cut_map({"invented_fused_07": cut, "invented_fused_08": cut})
+
+    with pytest.raises(ActRequirementUndeterminedError) as excinfo:
+        split_fused_entries([first, second], cut_map)
+    assert excinfo.value.identifiers == ["invented_fused_07", "invented_fused_08"]
+    assert "invented_fused_07" in str(excinfo.value)
+    assert "invented_fused_08" in str(excinfo.value)
+
+
+def test_the_unreadable_act_takes_the_whole_upload_with_it():
+    """No rows come back - not even the readable entry's.
+
+    A partial mining is a catalogue that half describes a library, which is the
+    rule the missing-cut shortfall already sets. The failure this is written
+    against is a report that skips the bad entry and returns the rest, leaving
+    a source entry mined into two rows of three with nothing saying so.
+    """
+    bad = {
+        "identifier": "invented_fused_09",
+        "family": "fisheye POV",
+        "prompt": f"{CAMERA}, {ROOM}",
+    }
+    cut_map = validate_cut_map(
+        {
+            "invented_fused_01": FULL_CUT,
+            "invented_fused_09": {"camera": CAMERA, "act": ", ", "room": ROOM},
+        }
+    )
+    with pytest.raises(ActRequirementUndeterminedError) as excinfo:
+        split_fused_entries([FUSED_ENTRY, bad], cut_map)
+    assert excinfo.value.identifiers == ["invented_fused_09"]
+
+
+def test_a_floored_family_does_not_rescue_an_unreadable_act():
+    """The floor says what a family always needs, not what a row needs.
+
+    A participant family floors every act it carries, so a check written after
+    the floor never runs for three families of the four - and those are exactly
+    the ones whose acts matter most, because they are the ones that carry the
+    second body.
+    """
+    with pytest.raises(ActRequirementUndeterminedError):
+        needs_for_act(", ", "facial POV", "invented_fused_10")
+    with pytest.raises(ActRequirementUndeterminedError):
+        needs_for_act("", "fisheye POV", "invented_fused_11")
