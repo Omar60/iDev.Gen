@@ -91,12 +91,28 @@ def _session(client, seeded, room_key: str, look: str) -> int:
     }).json()["id"]
 
 
+def _seed_trios(n: int = 1, at: int = 0) -> dict:
+    """`n` verified trios and the candidate list that names them.
+
+    `n` matters: a run asks for a count, and a pool smaller than the count is
+    refused by the draw itself with a 422 of its own. A room-gate test whose
+    pool is too small asserts 422 and passes on a refusal that never reached
+    the gate - which is exactly what the first version of the 7.7 test did.
+    """
+    keys = [(f"cam-{at}-{i}", f"act-{at}-{i}", f"frame-{at}-{i}") for i in range(n)]
+    for cam, act, framing in keys:
+        db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+               "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+               cam, act, framing, "directed", "finepornV4", 10, 8)
+    return {
+        "camera":  [{"key": k, "wordings": [{"key": k, "text": f"camera {k}"}]} for k, _, _ in keys],
+        "act":     [{"key": k, "wordings": [{"key": k, "text": f"act {k}"}]} for _, k, _ in keys],
+        "framing": [{"key": k, "wordings": [{"key": k, "text": f"framing {k}"}]} for _, _, k in keys],
+    }
+
+
 def _seed_one_trio() -> dict:
-    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
-           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
-           "cam-a", "act-a", "frame-a", "directed", "finepornV4", 10, 8)
-    return {slot: [{"key": key, "wordings": [{"key": key, "text": f"{slot} text"}]}]
-            for slot, key in (("camera", "cam-a"), ("act", "act-a"), ("framing", "frame-a"))}
+    return _seed_trios(1)
 
 
 def test_a_crowded_room_refuses_a_run_with_nobody_else_in_it(client, seeded, rooms_on_disk):
@@ -252,3 +268,54 @@ def test_every_seeded_room_composes_its_own_text_byte_for_byte(client, seeded):
     finally:
         main.CONFIG = saved
         seed.unlink(missing_ok=True)
+
+
+def test_a_refused_run_leaves_the_shots_that_were_already_there(client, seeded, rooms_on_disk):
+    """7.7. Unchanged, not zero.
+
+    `db.run` commits per INSERT, so the way this breaks is a gate that runs
+    inside the queueing loop: k shots land, the k+1th is refused, and the
+    operator is handed a 422 over a run that half happened. Asserting `== 0`
+    on an empty session would pass on exactly that code, because the first
+    photograph is the one that fires the gate. So the session already has
+    shots, and the number after the refusal has to be the number before it.
+
+    Both gates are checked from the same session, one after the other, because
+    "refuse before queueing" is a property of the check's POSITION and not of
+    either rule - a second gate added below the loop would pass a test that
+    only exercised the first.
+    """
+    # Five trios for a run of five: a pool smaller than the count is refused by
+    # the draw before the room is ever looked at, and this test would then be
+    # asserting a 422 it did not mean.
+    candidates = _seed_trios(5)
+    look = f"Photographed plainly. {CROWDED['place']}"
+    sid = _session(client, seeded, CROWDED["key"], look)
+
+    # Two photographs the operator already has: one written, one composed with
+    # the second body declared.
+    client.post(f"/api/sessions/{sid}/shots", json={"shots": [{"prompt": "a written take"}]})
+    client.post(f"/api/sessions/{sid}/compose-run",
+                json={"count": 1, "candidates": candidates, "with_him": True})
+    before = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"]
+    assert before == 2, before
+
+    # The multi-body gate, over a run of five.
+    r = client.post(f"/api/sessions/{sid}/compose-run",
+                    json={"count": 5, "candidates": candidates, "with_him": False})
+    assert r.status_code == 422, r.text
+    # Named, so this is known to be the room's refusal and not the draw's.
+    assert CROWDED["label"] in r.json()["detail"], r.json()["detail"]
+    assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == before
+
+    # And the budget gate, over the same session and the same run.
+    saved = main.CONFIG
+    main.CONFIG = {**main.CONFIG, "room_word_budget": 3}
+    try:
+        r = client.post(f"/api/sessions/{sid}/compose-run",
+                        json={"count": 5, "candidates": candidates, "with_him": True})
+        assert r.status_code == 422, r.text
+        assert "budget" in r.json()["detail"], r.json()["detail"]
+        assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == before
+    finally:
+        main.CONFIG = saved
