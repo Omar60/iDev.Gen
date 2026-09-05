@@ -80,13 +80,6 @@ def test_refused_fixture_strings_are_absent_from_output(tmp_path):
             "label": accepted_str,
             "theme": "luxurious living room with couch",
         },
-        # Signal 1: refused library
-        {
-            "identifier": "ref-lib-01",
-            "library": "forbidden-archive",
-            "label": planted_lib,
-            "theme": "quiet room with table",
-        },
         # Signal 2: minor-coded profile key
         {
             "identifier": "ref-prof-01",
@@ -117,6 +110,19 @@ def test_refused_fixture_strings_are_absent_from_output(tmp_path):
 
     fixture_file = source_dir / "fixtures.json"
     fixture_file.write_text(json.dumps(entries), encoding="utf-8")
+
+    # Signal 1 refuses a LIBRARY, and a library is a file: the entry's own
+    # "library" key stopped deciding when material naming itself turned out to
+    # be material choosing whether it may be refused. So this fixture is a file
+    # named for the library it belongs to, the way a real one is.
+    (source_dir / "forbidden-archive.json").write_text(
+        json.dumps([{
+            "identifier": "ref-lib-01",
+            "label": planted_lib,
+            "theme": "quiet room with table",
+        }]),
+        encoding="utf-8",
+    )
 
     results = extract_non_english_strings(
         source_dir,
@@ -737,3 +743,47 @@ def test_translation_map_inside_source_dir_is_not_read_as_source(tmp_path):
     ]
     assert not any(r["field"] == "source" for r in results)
     assert not any(r["string"] == not_in_corpus for r in results)
+
+
+def test_a_file_cannot_rename_its_library_to_escape_a_refusal(tmp_path):
+    """The file name decides which library a file is, and nothing inside it does.
+
+    Both the deny-list and NOT_ADOPTED_LIBRARIES key on the library name, so a
+    file that names itself is material choosing whether it may be refused. A
+    root dict reading "library": "general_scenes" on top of the profile library
+    turned 343 not-adopted refusals into acceptances when this was measured.
+    """
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir()
+
+    planted = "\u7f8e\u5948"
+
+    # A not-adopted library, claiming in its own text to be a room library
+    (source_dir / "amateurs.json").write_text(
+        json.dumps({
+            "library": "general_scenes",
+            "items": [{"identifier": "prof-01", "display_name": planted}],
+        }),
+        encoding="utf-8",
+    )
+    assert planted not in [i["string"] for i in extract_non_english_strings(source_dir)]
+
+    # An entry claiming it one by one, rather than the file claiming it once
+    (source_dir / "amateurs.json").write_text(
+        json.dumps([{
+            "identifier": "prof-02",
+            "library": "general_scenes",
+            "display_name": planted,
+        }]),
+        encoding="utf-8",
+    )
+    assert planted not in [i["string"] for i in extract_non_english_strings(source_dir)]
+
+    # And the same content under a name nothing refuses is carried, so the rule
+    # is the name and not the shape
+    (source_dir / "amateurs.json").unlink()
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps([{"identifier": "room-01", "display_name": planted}]),
+        encoding="utf-8",
+    )
+    assert planted in [i["string"] for i in extract_non_english_strings(source_dir)]

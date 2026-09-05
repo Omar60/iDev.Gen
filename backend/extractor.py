@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.asset_guard import guard_entries
+from backend.source_manifest import library_name_for_file
 from backend.translation_map import contains_non_english
 
 # Metadata fields on asset entries that identify or configure the entry
@@ -209,14 +210,19 @@ def _load_entries_from_file(json_file: Path) -> list[dict[str, Any]]:
             f"Unsupported JSON shape in {json_file}: {type(data).__name__}"
         )
 
-    file_library = json_file.stem
-    if isinstance(data, dict) and isinstance(data.get("library"), str):
-        file_library = data["library"]
+    # The file NAME decides which library this is, and nothing inside the file
+    # does - not its root "library" key, not an entry's own. Both the deny-list
+    # and NOT_ADOPTED_LIBRARIES key on that name, so material that names itself
+    # is material choosing whether it may be refused: a root dict reading
+    # "library": "general_scenes" turned 343 not-adopted refusals into
+    # acceptances, measured. Same rule the manifest reads a file under, from the
+    # same function, so the two cannot drift into disagreeing about one file.
+    file_library = library_name_for_file(json_file)
 
     entries: list[dict[str, Any]] = []
     _collect_entries(data, [json_file.stem], entries, is_root=True)
     for entry in entries:
-        entry.setdefault("library", file_library)
+        entry["library"] = file_library
     return entries
 
 
