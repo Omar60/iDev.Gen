@@ -41,6 +41,7 @@ from runner import Runner, slug
 # the repo root there, so both spellings resolve.
 from backend.importer import TranslationMissingError, import_source
 from backend.room_registry import DEFAULT_ROOM_LIBRARIES, available_rooms
+from backend.mining import load_mined_combinations
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -2439,6 +2440,104 @@ def _skip_for_spread(
     if fam is None:
         return False
     return family_counts.get(fam, 0) >= max_per_family
+
+
+
+class ComposeCombinationIn(BaseModel):
+    """The recorded combination to compose, named by the source entry it came from.
+
+    One field, and no components: the point of the record is that the operator
+    does not reassemble the photograph by hand. A payload that carried the rows
+    would be hand assembly with a lookup in front of it, and it would compose
+    whatever was typed rather than what the entry was.
+    """
+    identifier: str
+
+
+@app.post("/api/sessions/{sid}/compose-combination")
+def compose_combination_endpoint(sid: int, c: ComposeCombinationIn):
+    """Queue the photograph a mined source entry was, from its record alone.
+
+    Mining separates a camera, an act and a room that ONE author wrote to agree,
+    and the agreement is what made the entry render. This is the route that
+    spends the record: the keys are resolved to catalogue rows here, so a
+    combination composes out of the CURRENT wording of its rows - a row
+    reworded composes its new words, and a row that is gone refuses rather than
+    composing the two that are left.
+
+    It is never dealt. The combination store is not a source of candidates and
+    `_draw_n_trio_shots` does not read it: a recorded combination reaches a
+    session because somebody asked for it by name, which is what keeps it out
+    of the matrix - the parts are measured separately, and a combination that
+    could be drawn would put an unmeasurable trio into a run.
+
+    **The room is the session's and this route does not write it.** The look is
+    the one thing a session holds constant and `SessionPatch` deliberately
+    cannot reach it (7.2), so the combination is refused when the session was
+    not filled from the room it names. Composing it anyway would put the entry's
+    camera and act into somebody else's place and call the result the source's
+    photograph.
+
+    **No framing, on purpose.** The source library has no crop field at all -
+    that is what session 391 measured, at 6 of 6 knee-up crops - so the
+    combination names three parts and not four. `_sentences` drops an empty
+    piece, so the composed line carries the camera and the act exactly as the
+    entry did. Inventing a framing here would compose a photograph the entry
+    never was, and the crop is one of the two fields this project adds to that
+    library rather than one it mines from it.
+    """
+    session = db.one("SELECT * FROM session WHERE id=?", sid)
+    if not session:
+        raise HTTPException(404, "session not found")
+
+    key = (c.identifier or "").strip()
+    combination = load_mined_combinations(config=CONFIG, data_dir=DATA_DIR).get(key)
+    if not combination:
+        raise HTTPException(404, f"no recorded combination named {key!r}")
+
+    room_key = combination.get("room", "")
+    session_room = (session["room_key"] or "").strip()
+    if room_key and session_room != room_key:
+        raise HTTPException(
+            422,
+            f"compose refused: the combination {key!r} was shot in the room "
+            f"{room_key!r} and this session's look was filled from "
+            f"{session_room or 'no room'}; fill the look from that room first",
+        )
+
+    drawn: dict[str, dict] = {}
+    for slot in ("camera", "act"):
+        concept = combination.get(slot, "")
+        if not concept:
+            raise HTTPException(
+                422,
+                f"compose refused: the combination {key!r} records no {slot}; "
+                f"a photograph cannot be reproduced from the parts that are left",
+            )
+        row = db.one(
+            "SELECT * FROM component WHERE concept_key=? AND slot=? AND retired_at IS NULL",
+            concept, slot,
+        )
+        if not row:
+            raise HTTPException(
+                422,
+                f"compose refused: the combination {key!r} names the {slot} row "
+                f"{concept!r}, which the catalogue does not carry",
+            )
+        if row["manner"] != session["manner"]:
+            raise HTTPException(
+                422,
+                f"compose refused: the {slot} row {concept!r} belongs to the manner "
+                f"{row['manner']!r} and this session is {session['manner']!r}; the "
+                f"same words in another manner are another measurement",
+            )
+        drawn[slot] = {
+            "key": row["concept_key"],
+            "wordings": [{"key": row["concept_key"], "text": row["wording"]}],
+        }
+
+    shot_id = compose_and_queue_shot(sid, drawn["camera"], drawn["act"], {})
+    return {"shot_id": shot_id, "identifier": key, "combination": combination}
 
 
 def _room_for_session(session) -> dict | None:
