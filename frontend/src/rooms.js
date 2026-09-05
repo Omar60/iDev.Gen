@@ -34,3 +34,23 @@ export function lookFromRoom(manner, rooms, key) {
   const room = (rooms ?? []).find((r) => r.key === key)
   return room ? composeLook(manner, room.place) : null
 }
+
+/** The register a look opens with when it is not the session's own, and the
+ *  same look wearing the session's instead. Null when the look opens with the
+ *  right register, or with none at all - a look somebody typed is not wrong,
+ *  it is theirs, and there is nothing to offer them.
+ *
+ *  Nothing here rewrites anything. It returns the offer and the caller writes
+ *  it only if the operator asks, because a manner change that silently rewrote
+ *  the look would throw away an edit made after the room was picked - and the
+ *  place is the half we are told never to edit. What is swapped is the
+ *  register alone: everything after it survives character for character,
+ *  including whatever was typed into it since.
+ */
+export function refillLook(manner, look) {
+  const text = look ?? ''
+  const carries = Object.keys(registers).find(
+    (m) => m !== manner && registers[m] && text.startsWith(registers[m]))
+  if (!carries) return null
+  return { carries, look: composeLook(manner, text.slice(registers[carries].length)) }
+}

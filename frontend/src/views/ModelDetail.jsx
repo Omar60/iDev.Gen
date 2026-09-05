@@ -17,7 +17,7 @@ import candidRooms from '../../../data/candid-rooms-seed.json'
 import directedLooks from '../../../data/directed-looks-seed.json'
 // The register is the manner's, not the room's, so composing is what turns a
 // place into a look. `rooms.js` holds both halves and the join.
-import { lookFromRoom } from '../rooms.js'
+import { lookFromRoom, refillLook } from '../rooms.js'
 
 // Every row carries the manner it was measured on, and the picker owes the
 // operator only the ones that belong to the session being written. Before this
@@ -295,6 +295,22 @@ export default function ModelDetail({ id }) {
           <textarea rows={2} value={newSession.look}
                     placeholder="hair down with a centre part, soft natural makeup, on a beach at golden hour"
                     onChange={(e) => setNewSession({ ...newSession, look: e.target.value })} />
+          {/* The manner can be changed after the look was filled, and the
+              register in the text is then the other manner's. Said, not fixed:
+              the swap is one click and nothing happens without it, because a
+              look edited after the room was picked is the operator's text and
+              a silent rewrite is how an edit disappears. */}
+          {(() => {
+            const offer = refillLook(newSession.manner, newSession.look)
+            return offer && (
+              <p className="muted" style={{ marginTop: 4 }}>
+                This look opens with {offer.carries}'s register, not {newSession.manner}'s.{' '}
+                <button onClick={() => setNewSession({ ...newSession, look: offer.look })}>
+                  Use {newSession.manner}'s register
+                </button>
+              </p>
+            )
+          })()}
           {llm && (
             <div className="row" style={{ marginTop: 6 }}>
               <button disabled={!newSession.look.trim() || !!writing}
