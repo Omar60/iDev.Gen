@@ -11,8 +11,10 @@ Implements the single asset import pipeline with:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -75,10 +77,38 @@ class TranslationMissingError(ValueError):
 
 
 def derive_room_key(identifier: str) -> str:
-    """Derive an ASCII normalized room key from source identifier."""
-    raw = str(identifier).strip().lower()
+    """Derive an ASCII room key from the source's own identifier, and nothing else.
+
+    The identifier is what the source called the entry, and it is the only
+    input here: not the label, not the theme text, and not a translation of
+    any of them. A translation is a thing a person corrects - that is what the
+    map is for - and a key that moved when somebody fixed an English wording
+    would take the room's verdict, its sample size and any session pointing at
+    it with it.
+
+    Normalisation is NFKD first, then the ASCII characters that survive.
+    Dropping the non-ASCII bytes on their own is not a normalisation, it is a
+    truncation that collides: `salon_01` and the same word with an acute
+    accent on its o both reduce to `sal-n-01` under a bare character class,
+    and two rooms sharing one key is one room. NFKD separates the accent from
+    the letter it sits on, so the letter survives and only the mark is dropped.
+
+    An identifier with no ASCII in it at all - a script NFKD does not decompose
+    to Latin - has nothing left to normalise, and the old fallback named every
+    one of them `room`. That is the same collision with a friendlier name, so
+    those fall back to a digest of the identifier instead: unreadable, but
+    stable across re-imports and distinct per entry, which is what a key is for.
+    """
+    decomposed = unicodedata.normalize("NFKD", str(identifier).strip().lower())
+    # The combining marks NFKD split off are dropped rather than replaced: a
+    # replacement puts a separator where the accent was and gives `salo-n-01`,
+    # which is a third spelling rather than the `salon-01` the split was for.
+    raw = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     normalized = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
-    return normalized or "room"
+    if normalized:
+        return normalized
+    digest = hashlib.sha1(str(identifier).encode("utf-8")).hexdigest()[:12]
+    return f"room-{digest}"
 
 
 def _extract_theme_text(entry: dict[str, Any]) -> str:
@@ -381,7 +411,13 @@ def import_source(
                 "key": room_key,
                 "label": label,
                 "manner": "candid",
-                "look": theme_text,
+                # The place, and only the place. No register is written into an
+                # imported room's text: the register belongs to the manner and
+                # is joined on at compose time, so one place reads in whichever
+                # voice the session is being shot in. Writing candid's capture
+                # clause in here would make every one of these a candid room by
+                # its first sentence, which is exactly what the split undid.
+                "place": theme_text,
                 "identifier": identifier,
                 "source_library": entry.get("library"),
             }

@@ -19,6 +19,7 @@ Asserts that:
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -33,7 +34,11 @@ from backend.asset_guard import (
     SIGNAL_THEME_TEXT,
     guard_entry,
 )
-from backend.room_registry import verify_registry_disk_agreement
+from backend.room_registry import (
+    compose_look,
+    load_manner_registers,
+    verify_registry_disk_agreement,
+)
 from backend.importer import (
     TranslationMissingError,
     derive_room_key,
@@ -138,7 +143,7 @@ def _unguarded_import_stub(entries: list[dict], seed_path: Path) -> None:
             "key": derive_room_key(str(entry.get("identifier") or "")),
             "identifier": entry.get("identifier"),
             "label": entry.get("label", ""),
-            "look": entry.get("theme", ""),
+            "place": entry.get("theme", ""),
         }
         for entry in entries
     ]
@@ -505,6 +510,141 @@ def test_translation_lookup_stops_when_string_missing_naming_entry_and_field(tmp
     assert list(data_dir.iterdir()) == []
 
 
+def test_an_imported_room_is_a_place_that_composes_under_either_manner(tmp_path: Path):
+    """5.4: the stored row is the place alone, and the register is joined on.
+
+    The nine rooms this repo wrote each carried candid's capture clause fused
+    into their text, which is why `ModelDetail.jsx` could only offer them on a
+    candid session: the first sentence, not the bedroom, was what made them
+    candid. An imported room storing its own register would inherit that, 428
+    times over.
+
+    So the same stored place is composed under both manners and the two are
+    compared: each carries its own register, and the place text is byte for
+    byte the same in both - it is the source's own words, and nothing here
+    edits them.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text("{}", encoding="utf-8")
+
+    place = "quiet tea room with tatami mats and a low table"
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps({
+            "library": "general_scenes",
+            "items": [{"identifier": "gs_tea_room_01", "label": "Tea room", "theme": place}],
+        }),
+        encoding="utf-8",
+    )
+
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+    row = json.loads(
+        (data_dir / "general-scenes-rooms-seed.json").read_text(encoding="utf-8")
+    )[0]
+
+    # Stored as the place, with no register of its own in the text.
+    assert row["place"] == place
+    assert "look" not in row
+
+    # The shipped registers, read from the repo's own data dir: `conftest`
+    # points IDEVGEN_DATA_DIR at a tmp directory for the whole suite.
+    registers = load_manner_registers(data_dir=ROOT / "data")
+    candid = compose_look("candid", row["place"], registers)
+    directed = compose_look("directed", row["place"], registers)
+
+    assert candid != directed
+    assert candid == registers["candid"] + " " + place
+    assert directed == registers["directed"] + " " + place
+    # The same place text, byte for byte, under both.
+    assert candid[len(registers["candid"]) + 1:] == place
+    assert directed[len(registers["directed"]) + 1:] == place
+
+
+def test_the_key_survives_a_corrected_translation(tmp_path: Path):
+    """5.3: the key comes from the source identifier and from nothing else.
+
+    A translation is a thing a person corrects - that is the whole reason the
+    map is a reviewable file - and every correction lands on the label or the
+    theme, which are exactly the fields a key must not read. If it did, fixing
+    one English wording would rename the room, and a rename is not cosmetic
+    here: the verdict, the sample size and every session pointing at the old
+    key are attached to it.
+
+    So the same source is imported twice with the label's translation changed
+    between the runs, and the row is found by the key it had the first time.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_label = _zh(["8302", "5ba4"])
+    map_file = source_dir / "translation_map.json"
+
+    def write_map(translation: str) -> None:
+        map_file.write_text(
+            json.dumps({zh_label: {"translation": translation, "fields": ["label"]}}),
+            encoding="utf-8",
+        )
+
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps({
+            "library": "general_scenes",
+            "items": [{
+                "identifier": "gs_tea_room_01",
+                "label": zh_label,
+                "theme": "quiet tea room with tatami mats and a low table",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    seed_file = data_dir / "general-scenes-rooms-seed.json"
+
+    write_map("Tearoom")
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+    first = json.loads(seed_file.read_text(encoding="utf-8"))[0]
+    assert first["key"] == derive_room_key("gs_tea_room_01") == "gs-tea-room-01"
+    assert first["label"] == "Tearoom"
+
+    # The correction. Same source, same identifier, a different English label.
+    write_map("Tea room")
+    report = import_source(source_dir=source_dir, map_path=map_file,
+                           data_dir=data_dir, config=_fresh_config())
+    rows = json.loads(seed_file.read_text(encoding="utf-8"))
+
+    assert len(rows) == 1, "a moved key would have left the first row behind as an orphan"
+    assert rows[0]["key"] == first["key"]
+    assert rows[0]["label"] == "Tea room"
+    assert report["updated"] == 1 and report["created"] == 0 and report["orphaned"] == 0
+
+
+def test_a_key_is_ascii_and_two_identifiers_never_share_one(tmp_path: Path):
+    """5.3: normalised to ASCII, and normalised is not the same as truncated.
+
+    Dropping the bytes that are not ASCII collides - `salon_01` and the same
+    word with an accent both reduce to one key under a bare character class,
+    and two rooms sharing a key is one room. So an accent decomposes and its
+    letter survives, and an identifier with no Latin in it at all falls back to
+    a digest rather than to a shared constant.
+    """
+    plain = derive_room_key("gs_salon_01")
+    accented = derive_room_key("gs_sal" + _zh(["00f3"]) + "n_01")
+    assert plain == "gs-salon-01" == accented
+
+    cjk_one = derive_room_key(_zh(["4f11", "606f", "5ba4"]))
+    cjk_two = derive_room_key(_zh(["5ba2", "5385"]))
+    for key in (plain, accented, cjk_one, cjk_two):
+        assert key.isascii() and re.fullmatch(r"[a-z0-9-]+", key), key
+    assert cjk_one != cjk_two
+    # Stable, not merely distinct: a re-import has to land on the same row.
+    assert cjk_one == derive_room_key(_zh(["4f11", "606f", "5ba4"]))
+
+
 def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Path):
     """Verify that merge updates room text while preserving verdicts and sample sizes,
     and keeps orphaned rows when an upstream entry disappears.
@@ -542,7 +682,7 @@ def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Pa
             "identifier": "sm_chamber_01",
             "label": "Old Chamber Label",
             "manner": "candid",
-            "look": "old theme text",
+            "place": "old theme text",
             "verdict": "verified: 12/12",
             "sample_size": 12,
         },
@@ -551,7 +691,7 @@ def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Pa
             "identifier": "sm_vanished_row",
             "label": "Vanished Room",
             "manner": "candid",
-            "look": "vanished room text",
+            "place": "vanished room text",
             "verdict": "verified: 5/5",
             "sample_size": 5,
         },
@@ -602,7 +742,7 @@ def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Pa
     # 1. sm_chamber_01 updated its text and label but preserved verdict and sample size
     ch = rows_by_id["sm_chamber_01"]
     assert ch["label"] == "Updated Chamber Label"
-    assert ch["look"] == "updated theme text with stone walls"
+    assert ch["place"] == "updated theme text with stone walls"
     assert ch["verdict"] == "verified: 12/12"
     assert ch["sample_size"] == 12
     # 4.6: matched by identifier, so the derived key moved off the stale one
@@ -777,8 +917,8 @@ def test_room_text_is_stored_in_english_from_the_map(tmp_path: Path):
 
     raw = (data_dir / "general-scenes-rooms-seed.json").read_text(encoding="utf-8")
     rows = json.loads(raw)
-    assert rows[0]["look"] == "living room, oak floor, low table"
-    assert zh_theme not in rows[0]["look"]
+    assert rows[0]["place"] == "living room, oak floor, low table"
+    assert zh_theme not in rows[0]["place"]
 
     # And the source script is not in the file under an escape either
     assert (chr(92) + "u") not in raw
@@ -852,6 +992,28 @@ def test_cli_refuses_to_run_without_a_config(tmp_path: Path, capsys):
         )
 
 
+def test_cli_refuses_to_run_without_a_source_directory(tmp_path: Path, capsys):
+    """5.1: the source directory is a required argument and has no default.
+
+    A default would be a path the script reaches for when nobody named one,
+    which is how an import runs against the wrong corpus and writes seeds
+    nobody asked for. So absence exits with an error, and nothing is written.
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps(_fresh_config()), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main(["--config", str(cfg_path), "--data-dir", str(data_dir)])
+    assert exc_info.value.code != 0
+    assert "source_dir" in capsys.readouterr().err
+
+    # No default corpus was reached for: nothing was written or registered.
+    assert list(data_dir.iterdir()) == []
+    assert json.loads(cfg_path.read_text(encoding="utf-8")) == _fresh_config()
+
+
 def test_source_with_uncovered_string_leaves_destinations_byte_identical(tmp_path: Path):
     """4.4: Verify that a source upload with an uncovered string leaves every
     destination file byte-for-byte identical.
@@ -873,7 +1035,7 @@ def test_source_with_uncovered_string_leaves_destinations_byte_identical(tmp_pat
             "identifier": "med_exam_01",
             "label": "Exam Room",
             "manner": "candid",
-            "look": "clinical white exam room with table",
+            "place": "clinical white exam room with table",
             "verdict": "verified: 10/10",
             "sample_size": 10,
         }
@@ -884,7 +1046,7 @@ def test_source_with_uncovered_string_leaves_destinations_byte_identical(tmp_pat
             "identifier": "gen_lounge_01",
             "label": "Lounge",
             "manner": "candid",
-            "look": "warm lounge with leather armchair",
+            "place": "warm lounge with leather armchair",
             "verdict": "unverified",
         }
     ]
@@ -1322,8 +1484,8 @@ def test_identical_source_string_in_two_libraries_yields_same_translation_everyw
 
     # The second shared field answers the same way. Asserting only on the label
     # would pass a translation that diverged by library on any other field.
-    assert gen_row["look"] == work_row["look"]
-    assert gen_row["look"] == "spacious quiet lounge with low table and sofa"
+    assert gen_row["place"] == work_row["place"]
+    assert gen_row["place"] == "spacious quiet lounge with low table and sofa"
 
     # Source non-English strings do not leak into either seed file
     for seed in (gen_seed, work_seed):
@@ -1488,11 +1650,11 @@ def test_rerunning_import_rewords_nothing(tmp_path: Path):
     """4.3e (Task 2.8): Assert re-running an import rewords nothing.
 
     Runs import_source twice over one fixture source directory into the SAME
-    data directory, and compares every stored translation (label, look, notes)
+    data directory, and compares every stored translation (label, place, notes)
     between the two runs.
 
     Rules:
-    1. Compare every translated field: label, look (theme prose), notes.
+    1. Compare every translated field: label, place (theme prose), notes.
        The fixture carries non-English strings in all three, covered by the map.
     2. Compare translations, not whole rows (phase 5 owns the row shape).
     3. Absence assertion covers both raw and unicode_escape representations.
@@ -1521,7 +1683,7 @@ def test_rerunning_import_rewords_nothing(tmp_path: Path):
 
     expected = {
         "label": "Japanese Tea Room",
-        "look": "peaceful traditional tea room with tatami mats and low wooden table",
+        "place": "peaceful traditional tea room with tatami mats and low wooden table",
         "notes": "soft diffused morning sunlight through paper screens",
     }
 
@@ -1533,7 +1695,7 @@ def test_rerunning_import_rewords_nothing(tmp_path: Path):
         },
         zh_theme: {
             "source": zh_theme,
-            "translation": expected["look"],
+            "translation": expected["place"],
             "fields": ["theme"],
         },
         zh_notes: {
@@ -1585,7 +1747,7 @@ def test_rerunning_import_rewords_nothing(tmp_path: Path):
     assert "tea_room_01" in run1_by_id
 
     # Verify first run translations match map expectations
-    for field in ("label", "look", "notes"):
+    for field in ("label", "place", "notes"):
         assert run1_by_id["tea_room_01"][field] == expected[field]
 
     # Verify absence of source strings after run 1 in both raw and escape forms (Rule 3)
@@ -1619,7 +1781,7 @@ def test_rerunning_import_rewords_nothing(tmp_path: Path):
 
     # Compare every translated field between run 1 and run 2 (Rule 1 & Rule 2)
     # Deliberately compare translations rather than whole rows.
-    for field in ("label", "look", "notes"):
+    for field in ("label", "place", "notes"):
         assert run2_by_id["tea_room_01"][field] == run1_by_id["tea_room_01"][field]
         assert run2_by_id["tea_room_01"][field] == expected[field]
 
@@ -1758,7 +1920,7 @@ def test_translation_walk_refuses_a_shape_the_coverage_walk_does_not_reach(tmp_p
     dest_seed = data_dir / "workplace-scenes-rooms-seed.json"
     dest_seed.write_text(
         json.dumps(
-            [{"key": "wk-untouched", "identifier": "wk-untouched", "look": "a hallway"}],
+            [{"key": "wk-untouched", "identifier": "wk-untouched", "place": "a hallway"}],
             ensure_ascii=True,
             indent=2,
         )

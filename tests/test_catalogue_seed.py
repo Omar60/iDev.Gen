@@ -354,6 +354,21 @@ def test_the_new_candid_acts_fill_the_families_that_had_one_member():
 # lives in a seed file rather than in `component` because that table's `slot` is
 # the closed vocabulary of the trio, and a fourth slot would reach the draw.
 ROOMS = ROOT / "data" / "candid-rooms-seed.json"
+# The register is the manner's and the place is the room's, so the look only
+# exists once the two are joined. `frontend/src/rooms.js` does the join for the
+# picker; this is the same join, and the tests below assert against its result
+# rather than against a stored row, because a stored row is half a look.
+# The register is the manner's and the place is the room's, so a look only
+# exists once the two are joined - the same join the picker does. Read from the
+# repo's own data dir explicitly: `conftest` points `IDEVGEN_DATA_DIR` at a tmp
+# directory for the whole suite, and these tests are about the shipped seeds.
+from backend.room_registry import compose_look, load_manner_registers  # noqa: E402
+
+REGISTERS = load_manner_registers(data_dir=ROOT / "data")
+
+
+def composed_look(manner, place):
+    return compose_look(manner, place, REGISTERS)
 
 
 def test_every_room_names_the_furniture_it_offers():
@@ -367,26 +382,52 @@ def test_every_room_names_the_furniture_it_offers():
     rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
     assert len(rooms) >= 9
     for room in rooms:
-        flat = room["look"].lower().replace(" ", "").replace("-", "")
+        flat = room["place"].lower().replace(" ", "").replace("-", "")
         head = room["offers"].replace("-", "").replace("edge", "")
         assert head, room["key"]
-        assert head in flat, f"{room['key']}: offers {room['offers']!r} is not in its look"
+        assert head in flat, f"{room['key']}: offers {room['offers']!r} is not in its place"
 
 
-def test_every_room_carries_the_constant_half_of_the_look():
+def test_every_composed_room_carries_the_constant_half_of_the_look():
     """The capture clause and the hair are what make twenty frames one shoot, so
-    a room that drops them is not a look, it is half of one. Sessions 370 and 371
+    a look that drops them is not a look, it is half of one. Sessions 370 and 371
     spliced every candidate behind exactly this text.
+
+    The invariant is unchanged and WHERE it is true has moved. A room no longer
+    stores a look: it stores a place, and the register belongs to the manner, so
+    none of these four assertions is true of a stored row and all four are true
+    of what the picker composes. Asserting them on the row would be asserting
+    that the split never happened.
     """
     rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
     keys = [r["key"] for r in rooms]
     assert len(keys) == len(set(keys)), keys
     for room in rooms:
+        # the manner is a permission now: the room allows the one it composes for
         assert room["manner"] == "candid", room["key"]
-        assert room["look"].startswith("Small sensor,"), room["key"]
-        assert "She wears her hair loose" in room["look"], room["key"]
+        look = composed_look("candid", room["place"])
+        assert look.startswith("Small sensor,"), room["key"]
+        assert "She wears her hair loose" in look, room["key"]
         # the room half sits behind the constant half, and both are present
-        assert 60 <= len(room["look"].split()) <= 110, (room["key"], len(room["look"].split()))
+        assert 60 <= len(look.split()) <= 110, (room["key"], len(look.split()))
+
+
+def test_composing_the_nine_rooms_yields_the_text_they_yielded_before_the_split():
+    """5.2: the split is a refactor of storage, not a rewrite of the looks.
+
+    Every one of these ten texts was rendered - the nine candid rooms in
+    sessions 370 and 371, the studio in 381 - so a byte that moved is a
+    measurement that no longer describes what the app produces. The expected
+    strings are the pre-split file, copied in whole rather than rebuilt from
+    the halves, because rebuilding them from the halves is the thing under
+    test asserting itself.
+    """
+    before = json.loads((ROOT / "tests" / "rooms-before-the-split.json").read_text(encoding="utf-8"))
+    rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
+    rooms += json.loads(DIRECTED_LOOKS.read_text(encoding="utf-8"))
+    assert len(rooms) == len(before) == 10
+    for room in rooms:
+        assert composed_look(room["manner"], room["place"]) == before[room["key"]], room["key"]
 
 
 def test_the_rooms_seed_is_tracked_by_git():
@@ -431,11 +472,12 @@ def test_directed_looks_are_directed_and_not_candid_in_disguise():
     assert len(keys) == len(set(keys)), keys
     for row in looks:
         assert row["manner"] == "directed", row["key"]
-        assert "She wears her hair loose" in row["look"], row["key"]
+        look = composed_look("directed", row["place"])
+        assert "She wears her hair loose" in look, row["key"]
         for candid_only in ("small sensor", "sensor noise", "washed-out",
                             "no studio lighting"):
-            assert candid_only not in row["look"].lower(), (row["key"], candid_only)
-        assert 60 <= len(row["look"].split()) <= 110, (row["key"], len(row["look"].split()))
+            assert candid_only not in look.lower(), (row["key"], candid_only)
+        assert 60 <= len(look.split()) <= 110, (row["key"], len(look.split()))
 
 
 def test_the_directed_looks_seed_is_tracked_by_git():

@@ -80,8 +80,8 @@ def test_toggling_enabled_removes_and_restores_rooms_and_stays_readable(tmp_path
     directions, and the disabled library remains listed and inspectable.
     """
     fixture_rooms = [
-        {"key": "test-room-1", "label": "Test Room 1", "manner": "candid", "look": "A room.", "offers": "chair", "verdict": "unverified"},
-        {"key": "test-room-2", "label": "Test Room 2", "manner": "candid", "look": "Another room.", "offers": "table", "verdict": "unverified"},
+        {"key": "test-room-1", "label": "Test Room 1", "manner": "candid", "place": "A room.", "offers": "chair", "verdict": "unverified"},
+        {"key": "test-room-2", "label": "Test Room 2", "manner": "candid", "place": "Another room.", "offers": "table", "verdict": "unverified"},
     ]
     fixture_seed = "fixture-rooms-seed.json"
     (tmp_path / fixture_seed).write_text(json.dumps(fixture_rooms), encoding="utf-8")
@@ -239,8 +239,8 @@ def test_edge_branch_empty_registry(tmp_path: Path):
 
 def test_edge_branch_two_libraries(tmp_path: Path):
     """Edge branch: Multiple libraries are loaded and aggregated."""
-    room_a = [{"key": "a1", "label": "A1", "manner": "candid", "look": "A1 look", "offers": "bench", "verdict": "u"}]
-    room_b = [{"key": "b1", "label": "B1", "manner": "candid", "look": "B1 look", "offers": "stool", "verdict": "u"}]
+    room_a = [{"key": "a1", "label": "A1", "manner": "candid", "place": "A1 look", "offers": "bench", "verdict": "u"}]
+    room_b = [{"key": "b1", "label": "B1", "manner": "candid", "place": "B1 look", "offers": "stool", "verdict": "u"}]
 
     (tmp_path / "lib-a-rooms-seed.json").write_text(json.dumps(room_a), encoding="utf-8")
     (tmp_path / "lib-b-rooms-seed.json").write_text(json.dumps(room_b), encoding="utf-8")
@@ -265,7 +265,7 @@ def test_edge_branch_two_libraries(tmp_path: Path):
 
 def test_edge_branch_zero_weight(tmp_path: Path):
     """Edge branch: A weight of 0 is preserved as 0.0 and not overridden by default weight."""
-    fixture_rooms = [{"key": "z1", "label": "Z1", "manner": "candid", "look": "Z1 look", "offers": "chair", "verdict": "u"}]
+    fixture_rooms = [{"key": "z1", "label": "Z1", "manner": "candid", "place": "Z1 look", "offers": "chair", "verdict": "u"}]
     seed_file = "zero-rooms-seed.json"
     (tmp_path / seed_file).write_text(json.dumps(fixture_rooms), encoding="utf-8")
 
@@ -295,7 +295,7 @@ def test_seed_file_not_a_json_list_raises_value_error(tmp_path: Path):
 
 def test_enabled_only_false_includes_disabled_library_rooms(tmp_path: Path):
     """When enabled_only=False, disabled library rooms are included in lib['rooms']."""
-    fixture_rooms = [{"key": "r1", "label": "R1", "manner": "candid", "look": "R1 look", "offers": "bench", "verdict": "u"}]
+    fixture_rooms = [{"key": "r1", "label": "R1", "manner": "candid", "place": "R1 look", "offers": "bench", "verdict": "u"}]
     seed_file = "disabled-rooms-seed.json"
     (tmp_path / seed_file).write_text(json.dumps(fixture_rooms), encoding="utf-8")
     config = {

@@ -23,6 +23,46 @@ DEFAULT_ROOM_LIBRARIES: list[dict] = [
     }
 ]
 
+# The register a manner speaks in. It lives beside the room seeds because the
+# rooms are the only thing that composes with it, and it lives in ONE file
+# because it belongs to the manner and not to the room: before the split every
+# candid room carried its own byte-identical copy of candid's capture clause,
+# and every imported room would have had to be handed one.
+MANNER_REGISTERS_FILE = "manner-registers-seed.json"
+
+
+def load_manner_registers(data_dir: Path | str | None = None,
+                          config: dict | None = None) -> dict[str, str]:
+    """Every manner's register, keyed by manner. Absent file reads as none.
+
+    A missing file is not an error here: it means no manner has a register, and
+    `compose_look` then hands back the place alone. A room with no register is
+    a room somebody has to write a register for; a room wearing another
+    manner's register is the failure session 381 fixed.
+    """
+    path = resolve_data_dir(data_dir=data_dir, config=config) / MANNER_REGISTERS_FILE
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return {k: v for k, v in loaded.items() if isinstance(v, str)} if isinstance(loaded, dict) else {}
+
+
+def compose_look(manner: str, place: str, registers: dict[str, str] | None = None) -> str:
+    """The look a room composes to under a manner: the register, then the place.
+
+    The place is never edited - not trimmed of its own words, not reworded -
+    which is the verbatim-storage rule this import is built on. The only thing
+    done to it here is the join, and `frontend/src/rooms.js:composeLook` does
+    exactly the same one for the picker.
+    """
+    if registers is None:
+        registers = load_manner_registers()
+    return " ".join(p for p in (registers.get(manner, ""), (place or "").strip()) if p)
+
+
 def resolve_data_dir(
     data_dir: Path | str | None = None,
     config: dict | None = None,

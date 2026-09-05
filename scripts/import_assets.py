@@ -28,26 +28,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "source_dir",
-        nargs="?",
-        default=None,
         help="Path to source directory carrying asset JSON files",
     )
     parser.add_argument(
         "map_path",
-        nargs="?",
-        default=None,
-        help="Path to translation map JSON file",
-    )
-    parser.add_argument(
-        "--source-dir",
-        dest="opt_source_dir",
-        default=None,
-        help="Path to source directory carrying asset JSON files",
-    )
-    parser.add_argument(
-        "--map-path",
-        dest="opt_map_path",
-        default=None,
         help="Path to translation map JSON file",
     )
     parser.add_argument(
@@ -70,11 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    source_dir = args.opt_source_dir or args.source_dir
-    map_path = args.opt_map_path or args.map_path
+    source_dir = args.source_dir
+    map_path = args.map_path
 
-    if not source_dir or not map_path:
-        parser.error("Both source_dir and map_path are required")
     if not args.config:
         parser.error("--config is required: a seed file is written and registered together")
 
