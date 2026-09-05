@@ -906,7 +906,20 @@ def delete_component(comp_id: int):
 
 @app.post("/api/components/import")
 def import_components(items: list[dict] | None = None):
-    """Import measured components from JSON or data/catalogue-seed.json."""
+    """Import measured components from JSON or data/catalogue-seed.json.
+
+    Idempotent on the key AND on the wording, within one slot and manner: an
+    existing row is SKIPPED and left exactly as it is, never updated. The same
+    words under another manner are another measurement and are not a duplicate,
+    which is why the scope is not wider.
+
+    Every skip is NAMED in `duplicates`, and the report says which of the two
+    matched. That is what the mined import needs (8.15): a mined clause that
+    duplicates a row already in the catalogue must create no second row, and the
+    operator has to be told which existing row it collided with - a second row
+    saying the same thing splits one cell's evidence across two names, and a
+    count alone cannot point at either.
+    """
     if items is None:
         seed_path = ROOT / "data" / "catalogue-seed.json"
         if not seed_path.exists():
@@ -915,6 +928,12 @@ def import_components(items: list[dict] | None = None):
 
     added = 0
     skipped = 0
+    # Named, not just counted. A count tells the operator that something was
+    # already there and nothing about WHAT, and the mined import is where that
+    # matters: a mined clause that duplicates a row the catalogue already
+    # carries is a row this project measured under another key, and the entry it
+    # came from should be pointed at that row rather than at a second one.
+    duplicates: list[dict[str, str]] = []
     now_ts = db.now()
     for item in items:
         slot = item["slot"]
@@ -928,11 +947,23 @@ def import_components(items: list[dict] | None = None):
         needs = (item.get("needs") or "").strip()
 
         existing = db.one(
-            "SELECT id FROM component WHERE slot=? AND manner=? AND (concept_key=? OR wording=?)",
+            "SELECT id, concept_key, wording FROM component "
+            "WHERE slot=? AND manner=? AND (concept_key=? OR wording=?)",
             slot, manner, concept_key, wording,
         )
         if existing:
             skipped += 1
+            # Which of the two matched is the whole report. A KEY match is this
+            # row arriving twice - a re-import, and ordinary. A WORDING match
+            # under another key is two rows saying one thing, which splits one
+            # cell's evidence across two names and is the finding.
+            duplicates.append({
+                "slot": slot,
+                "manner": manner,
+                "concept_key": concept_key,
+                "existing_key": existing["concept_key"],
+                "matched_on": "key" if existing["concept_key"] == concept_key else "wording",
+            })
         else:
             db.run(
                 "INSERT INTO component (concept_key, slot, manner, family, faces, wording, judge_label, cameras, needs, created_at) "
@@ -940,7 +971,7 @@ def import_components(items: list[dict] | None = None):
                 concept_key, slot, manner, family, faces, wording, judge_label, cameras, needs, now_ts,
             )
             added += 1
-    return {"added": added, "skipped": skipped}
+    return {"added": added, "skipped": skipped, "duplicates": duplicates}
 
 
 # ------------------------------------------------------------------ wardrobe

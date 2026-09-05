@@ -159,3 +159,73 @@ def test_the_labels_file_round_trips_and_refuses_a_tracked_path(tmp_path):
     assert not tracked.exists(), "a refused save must write nothing"
     with pytest.raises(ValueError, match="is empty"):
         save_mined_labels({"mined-x-camera": "   "}, tmp_path / "blank.json")
+
+
+# -- 8.15 A mined row that the catalogue already carries -------------------
+
+
+def test_a_mined_row_re_imported_creates_no_second_row(client, seeded):
+    """Re-mining the same library twice is ordinary, and it must be a no-op.
+
+    The row key is derived from the source identifier, so the second run names
+    the same row - and the import matches on the key, reports it and leaves the
+    stored row exactly as it is. A second row would split one cell's evidence
+    across two names, and every consumer counting either would be counting half
+    a measurement.
+    """
+    rows = component_rows(_mined_rows(), LABELS)
+    first = client.post("/api/components/import", json=rows).json()
+    assert first["added"] == 2 and first["duplicates"] == []
+
+    again = client.post("/api/components/import", json=rows).json()
+    assert again["added"] == 0, again
+    assert {d["concept_key"] for d in again["duplicates"]} == {
+        "mined-invented_mined_store_01-camera",
+        "mined-invented_mined_store_01-act",
+    }
+    assert {d["matched_on"] for d in again["duplicates"]} == {"key"}
+    stored = client.get("/api/components").json()
+    assert len([c for c in stored if c["concept_key"].startswith("mined-")]) == 2
+
+
+def test_a_mined_wording_the_catalogue_already_carries_is_reported(client, seeded):
+    """The finding: one clause, two names.
+
+    The catalogue row here was written by hand under its own key and says
+    exactly what the mined camera says. Stored as a second row it would be
+    judged separately, and the matrix would hold two cells for one photograph
+    with the evidence split between them. So the import creates nothing and
+    names the row it collided with, because the operator's next move is to point
+    the source entry at that key.
+    """
+    client.post("/api/components/import", json=[{
+        "concept_key": "hand-written-low-camera", "slot": "camera", "manner": "pov",
+        "wording": CAMERA, "judge_label": "Low, from the floor", "family": "", "faces": "",
+    }])
+    before = len(client.get("/api/components").json())
+
+    report = client.post("/api/components/import",
+                         json=component_rows(_mined_rows(), LABELS)).json()
+    collision = [d for d in report["duplicates"] if d["matched_on"] == "wording"]
+    assert len(collision) == 1, report
+    assert collision[0]["concept_key"] == "mined-invented_mined_store_01-camera"
+    assert collision[0]["existing_key"] == "hand-written-low-camera"
+    # The act is not a duplicate, so exactly one row was added.
+    assert len(client.get("/api/components").json()) == before + 1
+
+
+def test_the_same_wording_under_another_manner_is_not_a_duplicate(client, seeded):
+    """A cell is keyed on the manner, so the same words there are another measurement.
+
+    A duplicate report that ignored the manner would refuse to store a mined pov
+    camera because a directed row happens to use the same clause - and the pov
+    matrix would then have a hole where a measurable row belongs.
+    """
+    client.post("/api/components/import", json=[{
+        "concept_key": "directed-low-camera", "slot": "camera", "manner": "directed",
+        "wording": CAMERA, "judge_label": "Low, from the floor", "family": "", "faces": "",
+    }])
+    report = client.post("/api/components/import",
+                         json=component_rows(_mined_rows(), LABELS)).json()
+    assert report["added"] == 2, report
+    assert report["duplicates"] == [], report
