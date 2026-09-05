@@ -26,8 +26,14 @@ from backend.cut_map import (
     CutMissingError,
     cut_for,
     missing_cuts,
+    resolve_cut_map_path,
     validate_cut_against_entry,
 )
+# The untracked-destination check, borrowed rather than respelled: the judge
+# labels sit beside the same source material as the cut map and under the same
+# rule, and a second answer to "is this path tracked" is a second set of edge
+# cases to get wrong.
+from backend.cut_map import _is_tracked_location
 from backend.extractor import IDENTIFIER_KEYS
 from backend.importer import derive_multi_body
 from backend.room_registry import resolve_data_dir
@@ -649,3 +655,165 @@ def combination_breakage(
                 f"split, so it no longer says what the source entry said"
             )
     return reasons
+
+
+# -- The judge labels of the mined rows -----------------------------------
+
+# A mined row cannot be put to a blind judge without one: `judge_label` is the
+# sentence the judge is asked to confirm, and the schema refuses a component
+# without it. It cannot be derived - this module parses no prose, and a label
+# built by cutting the wording down would be the wording again, which the
+# schema also refuses. So it is curated, one per mined row, and read from here.
+#
+# UNTRACKED, beside the source material, the way the cut map is. The file is
+# keyed per source entry and its values are prose ABOUT that entry, and this
+# change's rule for such a file is that it does not enter git - the tracked
+# combination store gets away with being tracked precisely because it holds
+# keys and no words. The concepts this project owns are recorded in their own
+# tracked file (8.16); this is not that file.
+MINED_LABELS_FILE: str = "mined-judge-labels.json"
+
+
+class JudgeLabelMissingError(ValueError):
+    """Mined rows that cannot be stored because nobody has labelled them.
+
+    Carries the whole shortfall rather than the first name, the rule
+    `CutMissingError` and `FamilyUndeclaredError` already answer under: a
+    library of 55 entries labelled one re-run at a time is 55 re-runs.
+
+    The two halves are reported apart because the operator's next move differs.
+    A row with NO label needs one written. A row whose label is its own wording
+    has one and it is unusable: the schema refuses `judge_label = wording`, and
+    a judge shown the prompt's own words is being asked whether the prompt says
+    what it says rather than whether the photograph shows it.
+    """
+
+    def __init__(self, unlabelled: list[str], echoed: list[str]) -> None:
+        self.unlabelled = list(unlabelled)
+        self.echoed = list(echoed)
+        parts = []
+        if self.unlabelled:
+            parts.append(f"no judge label for {sorted(self.unlabelled)!r}")
+        if self.echoed:
+            parts.append(
+                f"the judge label repeats the wording for {sorted(self.echoed)!r}"
+            )
+        super().__init__(
+            "; ".join(parts)
+            + f". Write them in {MINED_LABELS_FILE}, keyed by row key: a mined row "
+            f"with no usable label cannot be put to a blind judge, which is the "
+            f"only way it stops being unverified"
+        )
+
+
+def validate_mined_labels(data: Any) -> dict[str, str]:
+    """The labels file, checked to be row keys against non-empty sentences."""
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"The judge labels must be a mapping of row key to label, got "
+            f"{type(data).__name__}"
+        )
+    out: dict[str, str] = {}
+    for key, label in data.items():
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(
+                f"Judge label for {key!r} is empty. A row with a blank label is a "
+                f"row the schema refuses and a judge cannot be asked about"
+            )
+        out[str(key)] = label.strip()
+    return out
+
+
+def resolve_mined_labels_path(source_dir: Any, relative_path: Any) -> Path:
+    """Resolve the labels file beside the source material, as the cut map does."""
+    return resolve_cut_map_path(source_dir, relative_path)
+
+
+def load_mined_labels(path: Any) -> dict[str, str]:
+    """Every curated judge label, keyed by mined row key.
+
+    An absent file is no labels at all, which is the state before anybody has
+    labelled anything - and it refuses every row at `component_rows` rather
+    than here, where the message can name the rows.
+    """
+    target = Path(path)
+    if not target.is_file():
+        return {}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"Invalid JSON in judge labels {target}: {exc}") from exc
+    return validate_mined_labels(data)
+
+
+def save_mined_labels(labels: dict[str, str], path: Any) -> Path:
+    """Validate and write the judge labels to an untracked path.
+
+    The refusal is a check and not a sentence in a docstring, for the reason
+    `save_cut_map` has one: a rule nothing executes is a rule that holds until
+    the first hurry.
+    """
+    target = Path(path)
+    if _is_tracked_location(target):
+        raise ValueError(
+            f"The judge labels would be tracked by git at {target}: they are prose "
+            f"about the source entries and must live at an untracked path beside "
+            f"the source material"
+        )
+    validated = validate_mined_labels(labels)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps({k: validated[k] for k in sorted(validated)}, indent=2,
+                   ensure_ascii=True),
+        encoding="utf-8",
+    )
+    return target
+
+
+def component_rows(
+    rows: Iterable[dict[str, str]],
+    labels: dict[str, str],
+) -> list[dict[str, str]]:
+    """The mined camera and act rows in the shape `/api/components/import` eats.
+
+    The store is the catalogue's own import route and not a second writer: a
+    mined row is a candidate row like any other, and a second insert path would
+    be a second set of rules about what a component is.
+
+    A ROOM row is not a component - the catalogue's three slots are the three
+    dimensions of a cell and a room is the session's look - so it is dropped
+    here rather than refused: an entry carrying one is ordinary, and its room
+    reaches a photograph through the room library.
+
+    `family`, `faces` and `cameras` are left EMPTY on purpose. Each of them is a
+    measurement - which family the camera belongs to, which way she faces, which
+    cameras can see the act - and a mined row has been measured at nothing. A
+    guess here would be read downstream as a reading somebody took.
+    """
+    out: list[dict[str, str]] = []
+    unlabelled: list[str] = []
+    echoed: list[str] = []
+    for row in rows:
+        if row["slot"] == "room":
+            continue
+        label = (labels.get(row["key"]) or "").strip()
+        if not label:
+            unlabelled.append(row["key"])
+            continue
+        if label == row["wording"].strip():
+            echoed.append(row["key"])
+            continue
+        out.append({
+            "concept_key": row["key"],
+            "slot": row["slot"],
+            "manner": row["manner"],
+            "wording": row["wording"],
+            "judge_label": label,
+            "family": "",
+            "faces": "",
+            "cameras": "",
+            "needs": row.get("needs", ""),
+        })
+    if unlabelled or echoed:
+        raise JudgeLabelMissingError(unlabelled, echoed)
+    return out
