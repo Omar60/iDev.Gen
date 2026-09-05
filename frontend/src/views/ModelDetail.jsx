@@ -18,7 +18,8 @@ import directedLooks from '../../../data/directed-looks-seed.json'
 // The register is the manner's, not the room's, so composing is what turns a
 // place into a look. `rooms.js` holds both halves and the join.
 import {
-  allTags, hasTag, lookFromRoom, pickerRooms, refillLook, roomAllows, roomOption,
+  allTags, hasTag, lookFromRoom, openingLook, pickerRooms, refillLook, roomAllows,
+  roomOption, verdictLabel,
 } from '../rooms.js'
 
 // A row says which manners its PLACE makes sense under, and most say "any" -
@@ -47,6 +48,11 @@ export default function ModelDetail({ id }) {
   // options come from the rooms themselves - 239 tags belong to the
   // source, and a list written here would go stale on the next import.
   const [roomTag, setRoomTag] = useState('')
+  // The room the session was DEALT, kept only so the screen can say which
+  // one it was and what it measured. The look is the session's from the
+  // moment it is filled - editing it here is ordinary - so this is a label
+  // and not a second copy of the text.
+  const [drawnRoom, setDrawnRoom] = useState(null)
   const llm = !!config.llm_ok
   const [writing, setWriting] = useState('')
   const [error, setError] = useState('')
@@ -74,7 +80,18 @@ export default function ModelDetail({ id }) {
     catch (e) { setError(e.message) }
   }
 
-  const startSession = () => setNewSession({
+  const startSession = () => {
+    const draft = newSessionDraft()
+    // Dealt once, here, in the handler that makes the draft - never in render,
+    // where every keystroke in the form would deal another room. A drawn room
+    // is an ordinary default: the picker above replaces it and the textarea
+    // edits it, and neither is undone by anything that happens afterwards.
+    const drawn = openingLook(draft, ROOMS)
+    setDrawnRoom(drawn?.room ?? null)
+    setNewSession(drawn ? { ...draft, look: drawn.look } : draft)
+  }
+
+  const newSessionDraft = () => ({
     model_id: id,
     name: `Session ${model.sessions.length + 1}`,
     look: '',
@@ -326,6 +343,13 @@ export default function ModelDetail({ id }) {
           <textarea rows={2} value={newSession.look}
                     placeholder="hair down with a centre part, soft natural makeup, on a beach at golden hour"
                     onChange={(e) => setNewSession({ ...newSession, look: e.target.value })} />
+          {/* What was dealt, and what it measured under this manner. Said and
+              not enforced: the look is the operator's from here on. */}
+          {drawnRoom && (
+            <p className="muted" style={{ marginTop: 4 }}>
+              Dealt {drawnRoom.label} - {verdictLabel(drawnRoom, newSession.manner)}.
+            </p>
+          )}
           {/* The manner can be changed after the look was filled, and the
               register in the text is then the other manner's. Said, not fixed:
               the swap is one click and nothing happens without it, because a

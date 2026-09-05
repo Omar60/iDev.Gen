@@ -195,6 +195,50 @@ def derive_tags(entry: dict[str, Any]) -> list[str]:
     return tags
 
 
+# How far from its library's own middle a weight has to sit before the report
+# names it. Ten times, either way, against the MEDIAN of the library - not the
+# mean, which one entry weighted 500 drags far enough to hide itself behind.
+WEIGHT_OUTLIER_FACTOR = 10.0
+
+
+def outlying_weights(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The entries whose weight sits far outside what the rest of the library uses.
+
+    Reported and never corrected: the weight is stored exactly as the source
+    wrote it, because a number that looks wrong from here is the upstream
+    author's decision about their own library, and silently normalising it is
+    an import that lies about what it read. What the report buys is somebody
+    noticing that one room is dealt five hundred times as often as its
+    neighbours before a whole session's worth of frames comes back in it.
+
+    ponytail: a factor against the median, not a distribution fit. The
+    question is "would anyone reading this file blink at it", and ten times the
+    middle answers that for a library of 428 rooms weighted 1 to 5. If a
+    library ever arrives with a real spread this will name too much, and the
+    upgrade is a quantile - not now.
+    """
+    weights = sorted(float(r.get("weight", 1.0)) for r in rows)
+    if len(weights) < 3:
+        # Two rooms have no library to be an outlier of: whichever is bigger
+        # would name the other one.
+        return []
+    middle = weights[len(weights) // 2]
+    if len(weights) % 2 == 0:
+        middle = (middle + weights[len(weights) // 2 - 1]) / 2
+    if middle <= 0:
+        return []
+    named = []
+    for row in rows:
+        weight = float(row.get("weight", 1.0))
+        if weight >= middle * WEIGHT_OUTLIER_FACTOR or weight <= middle / WEIGHT_OUTLIER_FACTOR:
+            named.append({
+                "identifier": str(row.get("identifier") or row.get("key") or ""),
+                "weight": weight,
+                "library_median": middle,
+            })
+    return named
+
+
 def is_guidance_field(name: str) -> bool:
     """Is this source field the entry author writing down how the shot works.
 
@@ -577,6 +621,7 @@ def import_source(
     destination_results: dict[str, list[dict[str, Any]]] = {}
     dest_reports: dict[str, dict[str, Any]] = {}
 
+    outlying: list[dict[str, Any]] = []
     total_created = 0
     total_updated = 0
     total_unchanged = 0
@@ -645,6 +690,16 @@ def import_source(
                 "identifier": identifier,
                 "source_library": entry.get("library"),
             }
+            # The source's own draw weight, stored unchanged and defaulting to
+            # one. It has a consumer now - a session can have its room drawn
+            # instead of chosen - which is the only reason it is adopted at
+            # all. A weight that cannot be read as a number is 1.0: the entry
+            # still exists and refusing it over a malformed number would lose
+            # a room to a field nothing else depends on.
+            try:
+                new_row["weight"] = float(entry.get("weight", 1.0))
+            except (TypeError, ValueError):
+                new_row["weight"] = 1.0
             new_row["offers"] = derive_offers(entry, theme_text)
             # What kind of place the entry says this is. Stored translated,
             # because a tag in the source's language is a filter nobody here
@@ -711,7 +766,13 @@ def import_source(
                 merged_rows.append(existing_row)
 
         destination_results[dest] = merged_rows
+        # Named against the whole library as it now stands on disk, orphans
+        # included: an entry is an outlier of the file it lives in, not of the
+        # subset one run happened to touch.
+        dest_outliers = outlying_weights(merged_rows)
+        outlying.extend(dest_outliers)
         dest_reports[dest] = {
+            "outlying_weights": dest_outliers,
             "accepted": dest_accepted.get(dest, 0),
             "refused": dest_refused.get(dest, 0),
             "written": len(merged_rows),
@@ -749,6 +810,7 @@ def import_source(
                 "unchanged": 0,
                 "orphaned": 0,
                 "orphaned_keys": [],
+                "outlying_weights": [],
             }
 
     # 7. Write seed files and synchronize registry config atomically
@@ -798,4 +860,5 @@ def import_source(
         "by_library": guard_report["by_library"],
         "destinations": dest_reports,
         "orphaned_verdicts": orphaned_verdicts,
+        "outlying_weights": outlying,
     }

@@ -95,6 +95,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Refused library: {refusal['library']} ({refusal['reason']})")
     if report["refused_identifiers"]:
         print(f"  Refused identifiers: {', '.join(report['refused_identifiers'])}")
+    # Named, never acted on: the weight is stored as the source wrote it.
+    for out in report.get("outlying_weights", []):
+        print(f"  Weight far outside its library: {out['identifier']} "
+              f"at {out['weight']} against a median of {out['library_median']}")
     # Named, never acted on: an import does not write the verdict store.
     if report.get("orphaned_verdicts"):
         print(f"  Verdicts with no room here: {', '.join(report['orphaned_verdicts'])}")

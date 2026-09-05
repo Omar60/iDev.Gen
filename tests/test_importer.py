@@ -946,6 +946,102 @@ def test_an_imported_room_is_a_place_that_composes_under_either_manner(tmp_path:
     assert directed[len(registers["directed"]) + 1:] == place
 
 
+def test_a_weight_far_outside_its_library_is_named_and_stored_unchanged(tmp_path: Path):
+    """6.16: the weight is adopted because the draw now has a use for it, and
+    adopting a number means storing the number.
+
+    So an outlier is REPORTED and never corrected. A weight that looks wrong
+    from here is the upstream author's decision about their own library, and
+    normalising it quietly is an import that lies about what it read. What the
+    report buys is somebody noticing that one room is dealt five hundred times
+    as often as its neighbours before a whole session comes back in it.
+
+    Two fixtures, both directions: one weighted far above the library's middle
+    and one far below. Named by identifier, the way every other refusal and
+    report in this pipeline names an entry, and never by its text.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text(json.dumps({}), encoding="utf-8")
+
+    ordinary = [{
+        "identifier": f"gs_room_{n:02d}",
+        "label": f"Room {n}",
+        "theme": f"a room with a chair and a window, number {n}",
+        "weight": 2,
+    } for n in range(5)]
+    (source_dir / "general_scenes.json").write_text(json.dumps({
+        "library": "general_scenes",
+        "items": ordinary + [
+            {"identifier": "gs_shouting_01", "label": "Shouting",
+             "theme": "a room somebody weighted for themselves", "weight": 500},
+            {"identifier": "gs_whisper_02", "label": "Whisper",
+             "theme": "a room somebody would rather not see", "weight": 0.01},
+        ],
+    }, ensure_ascii=True), encoding="utf-8")
+
+    report = import_source(source_dir=source_dir, map_path=map_file,
+                           data_dir=data_dir, config=_fresh_config())
+
+    named = {o["identifier"]: o for o in report["outlying_weights"]}
+    assert sorted(named) == ["gs_shouting_01", "gs_whisper_02"]
+    assert named["gs_shouting_01"]["weight"] == 500.0
+    assert named["gs_whisper_02"]["weight"] == 0.01
+    assert report["destinations"]["general-scenes-rooms-seed.json"]["outlying_weights"]
+    # The report names entries and never their text, here as everywhere else.
+    assert "somebody weighted for themselves" not in json.dumps(report)
+
+    rows = {r["identifier"]: r
+            for r in json.loads((data_dir / "general-scenes-rooms-seed.json")
+                                .read_text(encoding="utf-8"))}
+    assert rows["gs_shouting_01"]["weight"] == 500.0
+    assert rows["gs_whisper_02"]["weight"] == 0.01
+    assert rows["gs_room_00"]["weight"] == 2.0
+    # Every other room is left alone by the report, which is the half that
+    # fails when the rule is a threshold on the value rather than on the
+    # library's own middle.
+    assert not set(named) & set(f"gs_room_{n:02d}" for n in range(5))
+
+
+def test_a_weight_the_source_never_wrote_is_one_and_is_not_an_outlier(tmp_path: Path):
+    """A library that weights nothing deals evenly, and nothing is reported.
+
+    The default is what makes the draw work on a library that never heard of
+    weights - every room at one, dealt evenly - and it must not be what makes
+    the outlier report fire on every room in it.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text(json.dumps({}), encoding="utf-8")
+    (source_dir / "general_scenes.json").write_text(json.dumps({
+        "library": "general_scenes",
+        "items": [{
+            "identifier": f"gs_room_{n:02d}",
+            "label": f"Room {n}",
+            "theme": f"a room with a chair and a window, number {n}",
+        } for n in range(4)] + [
+            # A weight nobody can read as a number: the room still exists, so
+            # it is dealt at one rather than refused over a field the rest of
+            # the pipeline does not depend on.
+            {"identifier": "gs_broken_09", "label": "Broken",
+             "theme": "a room whose weight is a sentence", "weight": "heavy"},
+        ],
+    }, ensure_ascii=True), encoding="utf-8")
+
+    report = import_source(source_dir=source_dir, map_path=map_file,
+                           data_dir=data_dir, config=_fresh_config())
+    assert report["outlying_weights"] == []
+    rows = json.loads((data_dir / "general-scenes-rooms-seed.json")
+                      .read_text(encoding="utf-8"))
+    assert {r["weight"] for r in rows} == {1.0}
+
+
 def test_tags_are_stored_for_the_filter_and_mood_words_are_guidance(tmp_path: Path):
     """6.13 and 6.14: two source fields, two different homes, one reason each.
 

@@ -95,6 +95,15 @@ export default function RoomImport() {
             </p>
           )}
 
+          {/* Stored unchanged, named so somebody notices before a session's
+              worth of frames comes back in one room. */}
+          {(report.outlying_weights || []).length > 0 && (
+            <p className="muted">
+              Weights far outside their library, stored as they were:{' '}
+              {report.outlying_weights.map((o) => `${o.identifier} (${o.weight})`).join(', ')}
+            </p>
+          )}
+
           {/* Said, not done. A measurement stays whatever the import found:
               the room usually comes back - another machine, another library,
               a seed nobody has imported here yet. */}

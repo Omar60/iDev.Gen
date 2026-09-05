@@ -126,6 +126,50 @@ export function roomOption(room, manner) {
   return `${room?.label ?? ''}${offers} - ${verdictLabel(room, manner)}`
 }
 
+/** One room, drawn by weight, from the rooms this manner allows.
+ *
+ *  The weight is the source's own and it is the reason the field was adopted:
+ *  its libraries deal a scene by weight, and a room nobody weighted draws at
+ *  one. A weight of zero is a room that is offered in the picker and never
+ *  dealt, which is a real thing to want and the reason the total is summed
+ *  rather than the count used.
+ *
+ *  Null when the manner allows nothing - a clone with no import and a manner
+ *  no tracked room allows - and the caller then opens the session with an empty
+ *  look, which is what it did before there was a draw at all.
+ *
+ *  ponytail: the library weight in the registry is NOT multiplied in here. The
+ *  route serves rooms flattened, so this reads the room's own weight only; if
+ *  weighting a whole library up ever matters, it is the route that has to carry
+ *  the library weight down onto the row.
+ */
+export function drawRoom(rooms, manner, rand = Math.random) {
+  const pool = (rooms ?? []).filter((r) => roomAllows(r, manner))
+  const weight = (r) => (Number.isFinite(r?.weight) ? Math.max(0, r.weight) : 1)
+  const total = pool.reduce((sum, r) => sum + weight(r), 0)
+  if (!pool.length || total <= 0) return null
+  let cut = rand() * total
+  for (const room of pool) {
+    cut -= weight(room)
+    if (cut < 0) return room
+  }
+  return pool[pool.length - 1]
+}
+
+/** The look a session OPENS with, drawn once, or null to leave it alone.
+ *
+ *  Null whenever the session already carries a look, which is what makes the
+ *  draw a thing that happens at creation rather than every time a session is
+ *  looked at: a drawn room is an ordinary default the operator can replace, and
+ *  a second draw on reopening would throw away both the replacement and the
+ *  original.
+ */
+export function openingLook(session, rooms, rand = Math.random) {
+  if (!session || (session.look ?? '').trim()) return null
+  const room = drawRoom(rooms, session.manner, rand)
+  return room ? { room, look: composeLook(session.manner, room.place) } : null
+}
+
 /** Every tag the listed rooms carry, once each, in alphabetical order.
  *
  *  The filter's options are read off the rooms rather than written down here:

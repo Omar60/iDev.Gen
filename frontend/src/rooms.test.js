@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  allTags, composeLook, hasTag, lookFromRoom, pickerRooms, refillLook, registerFor,
-  roomAllows, roomOption, verdictFor, verdictLabel,
+  allTags, composeLook, drawRoom, hasTag, lookFromRoom, openingLook, pickerRooms,
+  refillLook, registerFor, roomAllows, roomOption, verdictFor, verdictLabel,
 } from './rooms.js'
 import candidRooms from '../../data/candid-rooms-seed.json'
 import directedLooks from '../../data/directed-looks-seed.json'
@@ -282,5 +282,64 @@ describe('the tag filter', () => {
     expect(listed('')).toEqual(IMPORTED.map((r) => r.key))
     expect(hasTag(candidRooms[0], '')).toBe(true)
     expect(hasTag(candidRooms[0], 'indoor')).toBe(false)
+  })
+})
+
+// 6.15: a session can have its room dealt instead of chosen. The weight is the
+// source's own, which is the only reason that field was adopted at all.
+describe('the room a session is dealt', () => {
+  const POOL = [
+    { key: 'common', label: 'Common', place: 'a common room', weight: 8 },
+    { key: 'rare', label: 'Rare', place: 'a rare room', weight: 2 },
+    { key: 'studio', label: 'Studio', place: 'a studio', manners: ['directed'] },
+  ]
+  // A rand that walks the interval instead of a stubbed constant: a draw that
+  // only ever returns the first room passes every single-value test.
+  const at = (fraction) => () => fraction
+
+  it('deals by weight, and the weights are the ones stored', () => {
+    // Candid allows the two weighted rooms: 8 and 2, so the cut falls in the
+    // common room for the first four fifths of the interval.
+    expect(drawRoom(POOL, 'candid', at(0)).key).toBe('common')
+    expect(drawRoom(POOL, 'candid', at(0.79)).key).toBe('common')
+    expect(drawRoom(POOL, 'candid', at(0.81)).key).toBe('rare')
+    expect(drawRoom(POOL, 'candid', at(0.999)).key).toBe('rare')
+  })
+
+  it('deals only what the manner allows, and a room with no weight draws at one', () => {
+    // Under directed the studio joins the pool at a weight of one: 8, 2, 1.
+    expect(drawRoom(POOL, 'directed', at(0.95)).key).toBe('studio')
+    // Under candid it is not in the pool at all, at any cut.
+    for (const cut of [0, 0.5, 0.99]) {
+      expect(drawRoom(POOL, 'candid', at(cut)).key).not.toBe('studio')
+    }
+    // Nothing to deal is null, not a throw and not an empty room: a clone
+    // where nobody imported anything opens a session with an empty look.
+    expect(drawRoom([], 'candid', at(0))).toBe(null)
+    // A manner nobody has written yet still deals the unrestricted rooms,
+    // because restricting nothing means restricting nothing.
+    expect(drawRoom(POOL, 'a-manner-written-next-year', at(0)).key).toBe('common')
+    // Weight zero is a room the picker offers and the draw never deals, which
+    // is a real thing to want - and a pool of nothing but those is null.
+    expect(drawRoom([{ key: 'never', weight: 0 }], 'candid', at(0))).toBe(null)
+  })
+
+  it('fills the look once and never again', () => {
+    const draft = { manner: 'candid', look: '' }
+    const dealt = openingLook(draft, POOL, at(0))
+    expect(dealt.room.key).toBe('common')
+    expect(dealt.look).toBe(composeLook('candid', 'a common room'))
+
+    // Reopened, or re-rendered, or looked at a second time: a session that
+    // already carries a look is never dealt another one. Both halves matter -
+    // the dealt look must not be re-dealt, and a look somebody typed must not
+    // be thrown away by a draw that happens to run.
+    expect(openingLook({ ...draft, look: dealt.look }, POOL, at(0.99))).toBe(null)
+    expect(openingLook({ manner: 'candid', look: 'a look somebody typed' }, POOL, at(0.99)))
+      .toBe(null)
+    expect(openingLook(null, POOL, at(0))).toBe(null)
+    // And a session whose manner allows nothing opens with the empty look it
+    // had, rather than with a room from another manner.
+    expect(openingLook({ manner: 'candid', look: '' }, [POOL[2]], at(0))).toBe(null)
   })
 })
