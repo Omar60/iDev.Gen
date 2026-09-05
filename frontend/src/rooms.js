@@ -22,3 +22,15 @@ export function registerFor(manner) {
 export function composeLook(manner, place) {
   return [registerFor(manner), (place ?? '').trim()].filter(Boolean).join(' ')
 }
+
+/** The look the picker fills when a room is chosen, or null when nothing was
+ *  chosen. Null is not an error and it is not an empty look: the picker's first
+ *  option is "start from a measured room", and choosing it back has to leave a
+ *  look somebody typed exactly as they typed it. So the caller writes the look
+ *  only when this returns a string, and the one branch that decides whether a
+ *  hand-written look is overwritten is here rather than inline in an onChange,
+ *  where nothing could reach it. */
+export function lookFromRoom(manner, rooms, key) {
+  const room = (rooms ?? []).find((r) => r.key === key)
+  return room ? composeLook(manner, room.place) : null
+}

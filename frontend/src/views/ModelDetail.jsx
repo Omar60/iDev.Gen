@@ -17,7 +17,7 @@ import candidRooms from '../../../data/candid-rooms-seed.json'
 import directedLooks from '../../../data/directed-looks-seed.json'
 // The register is the manner's, not the room's, so composing is what turns a
 // place into a look. `rooms.js` holds both halves and the join.
-import { composeLook } from '../rooms.js'
+import { lookFromRoom } from '../rooms.js'
 
 // Every row carries the manner it was measured on, and the picker owes the
 // operator only the ones that belong to the session being written. Before this
@@ -282,8 +282,8 @@ export default function ModelDetail({ id }) {
           <select value=""
                   title="Fill the look with a measured room. Every one of these was rendered; the text stays editable."
                   onChange={(e) => {
-                    const room = LOOKS.find((r) => r.key === e.target.value)
-                    if (room) setNewSession({ ...newSession, look: composeLook(newSession.manner, room.place) })
+                    const filled = lookFromRoom(newSession.manner, LOOKS, e.target.value)
+                    if (filled !== null) setNewSession({ ...newSession, look: filled })
                   }}>
             <option value="">Start from a measured room…</option>
             {LOOKS.filter((r) => r.manner === newSession.manner).map((r) => (
