@@ -362,7 +362,11 @@ ROOMS = ROOT / "data" / "candid-rooms-seed.json"
 # exists once the two are joined - the same join the picker does. Read from the
 # repo's own data dir explicitly: `conftest` points `IDEVGEN_DATA_DIR` at a tmp
 # directory for the whole suite, and these tests are about the shipped seeds.
-from backend.room_registry import compose_look, load_manner_registers  # noqa: E402
+from backend.room_registry import (  # noqa: E402
+    compose_look,
+    load_manner_registers,
+    prose_names_piece,
+)
 
 REGISTERS = load_manner_registers(data_dir=ROOT / "data")
 
@@ -372,20 +376,27 @@ def composed_look(manner, place):
 
 
 def test_every_room_names_the_furniture_it_offers():
-    """`offers` is a data field and the look is prose, and the day they disagree
+    """`offers` is a data field and the place is prose, and the day they disagree
     the picker promises a piece no photograph can contain.
 
     It caught one: `shower` offered a bench its sentence never mentioned, from
-    the outside model that wrote it. Compared with spaces and hyphens stripped so
-    the field can be a key (`backseat`, `sink-edge`) while the prose stays prose.
+    the outside model that wrote it. The comparison itself is
+    `room_registry.prose_names_piece`, shared with the importer's derivation and
+    with the import suite, because three copies of one rule is how the room that
+    offers a piece nobody can photograph gets through the one copy that is wrong.
+
+    An imported room may offer nothing - that is the honest answer where its
+    prose names none of its source's props. A room THIS project wrote may not:
+    each of the nine was written to offer a piece, and one that stopped would be
+    a room that quietly stopped licensing every act that needs furniture.
     """
     rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
     assert len(rooms) >= 9
     for room in rooms:
-        flat = room["place"].lower().replace(" ", "").replace("-", "")
-        head = room["offers"].replace("-", "").replace("edge", "")
-        assert head, room["key"]
-        assert head in flat, f"{room['key']}: offers {room['offers']!r} is not in its place"
+        assert room["offers"], f"{room['key']}: a room this project wrote offers nothing"
+        for piece in room["offers"]:
+            assert prose_names_piece(piece, room["place"]), (
+                f"{room['key']}: offers {piece!r}, which its place never names")
 
 
 def test_every_composed_room_carries_the_constant_half_of_the_look():

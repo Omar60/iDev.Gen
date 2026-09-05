@@ -37,6 +37,7 @@ from backend.asset_guard import (
 from backend.room_registry import (
     compose_look,
     load_manner_registers,
+    prose_names_piece,
     verify_registry_disk_agreement,
 )
 from backend.importer import (
@@ -509,6 +510,123 @@ def test_translation_lookup_stops_when_string_missing_naming_entry_and_field(tmp
 
     # Validate-everything-then-write: nothing was written to data_dir
     assert list(data_dir.iterdir()) == []
+
+
+def test_offers_is_the_source_props_the_prose_actually_names(tmp_path: Path):
+    """5.7: the intersection, and nothing outside it.
+
+    The source writes its props as one comma-separated slot, and its author was
+    listing what is in the scene, not promising what a photograph will show. A
+    prop the theme string never mentions is a piece no photograph can contain,
+    so offering it has the picker promise furniture, the act ask for it and the
+    render answer with neither - which is the failure `shower` already caused
+    once, offering a bench its sentence never named.
+
+    Three rooms: one where the prose names some props and not others, one where
+    it names none, and one whose source lists no props at all. The empty result
+    is the correct answer and not a degraded one, so the import is not blocked
+    by it.
+
+    The last assertion is 5.7's own: the existing offers-names-the-furniture
+    rule, the same function the seed test calls, run over every imported room.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text("{}", encoding="utf-8")
+
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps({"library": "general_scenes", "items": [
+            {
+                "identifier": "gs_stockroom",
+                "label": "Stockroom",
+                # `rolling cart` and `glove boxes` are in the prop list and
+                # nowhere in the prose. They are the ones that must not survive.
+                "props": "supply shelves, stacked linen packs, glove boxes, rolling cart",
+                "theme": "narrow stockroom aisle, supply shelves rising on both sides "
+                         "with stacked linen packs on the lower rungs",
+            },
+            {
+                "identifier": "gs_empty_field",
+                "label": "Bare field",
+                "props": "hay bale, wooden gate",
+                "theme": "an open field under a flat grey sky with nothing in it",
+            },
+            {
+                "identifier": "gs_no_props",
+                "label": "No prop list",
+                "theme": "a stone corridor with a low bench along one wall",
+            },
+        ]}),
+        encoding="utf-8",
+    )
+
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+    rows = {
+        r["identifier"]: r
+        for r in json.loads(
+            (data_dir / "general-scenes-rooms-seed.json").read_text(encoding="utf-8")
+        )
+    }
+
+    assert rows["gs_stockroom"]["offers"] == ["supply shelves", "stacked linen packs"]
+    # Named by neither: the prose says the field is empty, so the room offers
+    # nothing and the import carried on.
+    assert rows["gs_empty_field"]["offers"] == []
+    # A source with no prop list at all is the same answer, not a crash.
+    assert rows["gs_no_props"]["offers"] == []
+
+    # 5.7's own criterion: the existing rule, over every imported room.
+    for identifier, row in rows.items():
+        for piece in row["offers"]:
+            assert prose_names_piece(piece, row["place"]), (identifier, piece)
+
+
+def test_offers_is_read_off_the_source_prose_and_not_off_a_translation(tmp_path: Path):
+    """5.7: a reworded translation cannot change what a room offers.
+
+    The label is the field the map rewrites, and it is the field somebody
+    corrects. If the offers check could see it, correcting an English label
+    would silently add or remove a piece of furniture from a room that has been
+    shot against - and the diff would show a label change.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_label = _zh(["8302", "5ba4"])
+    map_file = source_dir / "translation_map.json"
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps({"library": "general_scenes", "items": [{
+            "identifier": "gs_tea_room",
+            "label": zh_label,
+            "props": "low table, folding screen",
+            "theme": "quiet tea room with tatami mats and a low table",
+        }]}, ensure_ascii=True),
+        encoding="utf-8",
+    )
+    seed = data_dir / "general-scenes-rooms-seed.json"
+
+    def run(label_translation: str) -> dict:
+        map_file.write_text(
+            json.dumps({zh_label: {"translation": label_translation, "fields": ["label"]}}),
+            encoding="utf-8",
+        )
+        import_source(source_dir=source_dir, map_path=map_file,
+                      data_dir=data_dir, config=_fresh_config())
+        return json.loads(seed.read_text(encoding="utf-8"))[0]
+
+    # The first translation names the screen the prose does not. The second
+    # does not. Neither may reach `offers`.
+    with_screen = run("Tea room with a folding screen")
+    without = run("Tea room")
+
+    assert with_screen["offers"] == ["low table"] == without["offers"]
+    assert with_screen["label"] != without["label"]
 
 
 def test_a_row_says_which_of_its_values_are_authored_and_which_are_source(tmp_path: Path):

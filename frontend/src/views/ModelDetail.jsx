@@ -288,7 +288,7 @@ export default function ModelDetail({ id }) {
             <option value="">Start from a measured room…</option>
             {LOOKS.filter((r) => r.manner === newSession.manner).map((r) => (
               <option key={r.key} value={r.key}>
-                {r.label}{r.offers ? ` — offers ${r.offers}` : ''}
+                {r.label}{r.offers?.length ? ` — offers ${r.offers.join(', ')}` : ''}
               </option>
             ))}
           </select>

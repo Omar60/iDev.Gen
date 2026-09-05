@@ -25,6 +25,7 @@ from backend.extractor import (
 )
 from backend.room_registry import (
     get_room_libraries_config,
+    prose_names_piece,
     resolve_data_dir,
     verify_registry_disk_agreement,
 )
@@ -46,6 +47,45 @@ THEME_FIELDS: tuple[str, ...] = (
     "text",
     "prompt",
 )
+
+# Where a source entry lists what is in the room. The source writes it as one
+# comma-separated string in a `props` slot - "supply shelves, stacked linen
+# packs, glove boxes, rolling cart" - and a list is accepted too, because a
+# reader that only handles the shape in front of it is a reader that breaks on
+# the next library.
+PROP_FIELDS: tuple[str, ...] = ("props", "objects", "furniture")
+
+
+def derive_offers(entry: dict[str, Any], prose: str) -> list[str]:
+    """The pieces this room offers: its source prop list, minus what the prose
+    does not name.
+
+    A prop the theme string never mentions is a piece no photograph can
+    contain, so offering it would have the picker promise furniture and the act
+    ask for it, and the render answer with neither. The intersection is the
+    whole rule, and an empty result is the correct answer rather than a
+    degraded one: a room that offers nothing licenses no act that names
+    furniture, which is exactly what its prose supports.
+
+    Read off the room's own English prose, never off a translation. A reworded
+    translation must not be able to change whether a room offers its sofa.
+    """
+    pieces: list[str] = []
+    for field in PROP_FIELDS:
+        raw = entry.get(field)
+        if isinstance(raw, str):
+            pieces = [part.strip() for part in raw.split(",")]
+        elif isinstance(raw, (list, tuple)):
+            pieces = [str(part).strip() for part in raw]
+        else:
+            continue
+        break
+
+    kept: list[str] = []
+    for piece in pieces:
+        if piece and prose_names_piece(piece, prose) and piece not in kept:
+            kept.append(piece)
+    return kept
 
 
 class TranslationMissingError(ValueError):
@@ -464,8 +504,7 @@ def import_source(
                 "identifier": identifier,
                 "source_library": entry.get("library"),
             }
-            if "offers" in entry:
-                new_row["offers"] = entry["offers"]
+            new_row["offers"] = derive_offers(entry, theme_text)
             if "notes" in entry:
                 new_row["notes"] = _translate_field(
                     entry["notes"], translation_map, identifier, "notes", authored

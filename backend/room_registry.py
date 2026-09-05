@@ -50,6 +50,26 @@ def load_manner_registers(data_dir: Path | str | None = None,
     return {k: v for k, v in loaded.items() if isinstance(v, str)} if isinstance(loaded, dict) else {}
 
 
+def prose_names_piece(piece: str, prose: str) -> bool:
+    """Does this room's prose actually name the piece of furniture it offers.
+
+    Spaces and hyphens are ignored on both sides so the field can be a key -
+    `sink-edge`, `backseat` - while the prose stays prose. `edge` is dropped
+    from the piece for the same reason and no other: `sink-edge` is the edge OF
+    the sink, and the sentence that describes it says "the porcelain sink".
+
+    One function rather than three copies, because it answers one question in
+    three places: the importer keeps a source prop only when this is true of
+    it, the seed test asserts it over the nine rooms this project wrote, and
+    the import test asserts it over every imported room. Written out three
+    times, the room that offers a piece nobody can photograph is the one the
+    three copies disagree about.
+    """
+    flat = (prose or "").lower().replace(" ", "").replace("-", "")
+    head = (piece or "").lower().replace(" ", "").replace("-", "").replace("edge", "")
+    return bool(head) and head in flat
+
+
 def compose_look(manner: str, place: str, registers: dict[str, str] | None = None) -> str:
     """The look a room composes to under a manner: the register, then the place.
 
