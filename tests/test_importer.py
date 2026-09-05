@@ -44,7 +44,7 @@ from backend.importer import (
     derive_room_key,
     import_source,
 )
-from backend.translation_map import load_translation_map
+from backend.translation_map import contains_non_english, load_translation_map
 from backend.source_manifest import (
     REASON_UNDECLARED,
     SourceRefused,
@@ -509,6 +509,92 @@ def test_translation_lookup_stops_when_string_missing_naming_entry_and_field(tmp
 
     # Validate-everything-then-write: nothing was written to data_dir
     assert list(data_dir.iterdir()) == []
+
+
+def test_a_row_says_which_of_its_values_are_authored_and_which_are_source(tmp_path: Path):
+    """5.6: a translation is authored text, and a seed row does not hide that.
+
+    Which field is a translation is a property of the ENTRY, not of the field
+    name. `label` is the map's English for a source that wrote its label in its
+    own script, and the source's own words for one that wrote it in English -
+    both land in the same field, and a rule guessing from the name would be
+    right for most of the corpus and quietly wrong for the rest. Same for
+    `notes`, and for the place on the day a library ships one in another
+    script.
+
+    So the row carries the answer, collected at the substitution rather than
+    re-derived afterwards from the stored text. The assertion below is what
+    makes that answer mean something: every field the row calls authored has a
+    value that differs from the entry's own, and every field it does not call
+    authored is the entry's value character for character. A list that merely
+    happened to be right would fail the second half.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_label = _zh(["8302", "5ba4"])
+    zh_note = _zh(["6ce8", "610f"])
+    zh_theme = _zh(["6f5c", "8247"])
+
+    entries = [
+        # Label and notes in another script, theme already English.
+        {"identifier": "gs_tea_room", "label": zh_label, "notes": [zh_note],
+         "theme": "quiet tea room with tatami mats and a low table"},
+        # Nothing to translate: every value is the source's own.
+        {"identifier": "gs_lounge", "label": "Lounge", "notes": ["keep the blinds shut"],
+         "theme": "wide lounge with a leather armchair and a low table"},
+        # The place itself in another script.
+        {"identifier": "gs_hold", "label": "Cargo hold", "theme": zh_theme},
+    ]
+    translations = {
+        zh_label: {"translation": "Tea room", "fields": ["label"]},
+        zh_note: {"translation": "no crystal sparkle", "fields": ["notes"]},
+        zh_theme: {"translation": "steel cargo hold with a crate and a bare bulb",
+                   "fields": ["theme"]},
+    }
+
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text(json.dumps(translations), encoding="utf-8")
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps({"library": "general_scenes", "items": entries}, ensure_ascii=True),
+        encoding="utf-8",
+    )
+
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+    rows = {
+        r["identifier"]: r
+        for r in json.loads(
+            (data_dir / "general-scenes-rooms-seed.json").read_text(encoding="utf-8")
+        )
+    }
+
+    assert rows["gs_tea_room"]["authored"] == ["label", "notes"]
+    assert rows["gs_lounge"]["authored"] == []
+    assert rows["gs_hold"]["authored"] == ["place"]
+
+    # The list is not decoration: it has to agree with the values themselves,
+    # in both directions, on every row.
+    entries_by_id = {e["identifier"]: e for e in entries}
+    for identifier, row in rows.items():
+        entry = entries_by_id[identifier]
+        for field, source_value in (("label", entry.get("label")),
+                                    ("place", entry.get("theme")),
+                                    ("notes", entry.get("notes"))):
+            if field not in row:
+                continue
+            if field in row["authored"]:
+                assert row[field] != source_value, (identifier, field)
+                assert not contains_non_english(json.dumps(row[field]))
+            else:
+                assert row[field] == source_value, (identifier, field)
+
+    # The place of an untranslated room is the source prose 5.7 reads for
+    # `offers`, so it has to stay recognisable as source and not as authored.
+    assert "place" not in rows["gs_tea_room"]["authored"]
+    assert rows["gs_tea_room"]["place"] == entries_by_id["gs_tea_room"]["theme"]
 
 
 def test_the_stored_theme_is_the_source_string_character_for_character(tmp_path: Path):

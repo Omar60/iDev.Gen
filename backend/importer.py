@@ -165,6 +165,7 @@ def _translate_value(
     translation_map: dict[str, dict[str, Any]],
     identifier: str = "",
     field: str = "",
+    translated: set[str] | None = None,
 ) -> Any:
     """Translate a value using the translation map, refusing what it does not cover.
 
@@ -192,22 +193,60 @@ def _translate_value(
         if not contains_non_english(val):
             return val
         if val in translation_map:
+            if translated is not None:
+                translated.add(field)
             return translation_map[val]["translation"]
         raise TranslationMissingError(
             [{"identifier": identifier, "field": field, "string": val}]
         )
     if isinstance(val, list):
-        return [_translate_value(item, translation_map, identifier, field) for item in val]
+        return [
+            _translate_value(item, translation_map, identifier, field, translated)
+            for item in val
+        ]
     if isinstance(val, tuple):
-        return tuple(_translate_value(item, translation_map, identifier, field) for item in val)
+        return tuple(
+            _translate_value(item, translation_map, identifier, field, translated)
+            for item in val
+        )
     if isinstance(val, dict):
         return {
             k: _translate_value(
-                v, translation_map, identifier, f"{field}.{k}" if field else str(k)
+                v, translation_map, identifier,
+                f"{field}.{k}" if field else str(k), translated,
             )
             for k, v in val.items()
         }
     return val
+
+
+def _translate_field(
+    val: Any,
+    translation_map: dict[str, dict[str, Any]],
+    identifier: str,
+    field: str,
+    authored: set[str],
+) -> Any:
+    """Translate one top-level row field and record whether the map wrote it.
+
+    A field is AUTHORED when its words came out of the translation map, and it
+    is SOURCE when the entry was already in English and `_translate_value`
+    handed the string straight back. The same field is one or the other
+    depending on the entry - `label` is a translation for a source that wrote
+    it in its own script and the source's own words for one that did not - so
+    which it is cannot be read off the field name, and a rule guessing from the
+    name would be right for most of the corpus and quietly wrong for the rest.
+
+    So it is recorded where it is known, at the substitution, rather than
+    re-derived afterwards from the text. Re-deriving is the shape of bug this
+    repo has now found several times: two calculations of one fact that agree
+    until they do not.
+    """
+    seen: set[str] = set()
+    out = _translate_value(val, translation_map, identifier, field, seen)
+    if seen:
+        authored.add(field)
+    return out
 
 
 def import_source(
@@ -395,15 +434,19 @@ def import_source(
             seen_incoming_ids.add(identifier)
 
             room_key = derive_room_key(identifier)
+            # Which of this row's fields carry the map's words rather than the
+            # source's own. Collected as the translations happen, not worked
+            # out from the stored text afterwards.
+            authored: set[str] = set()
             raw_label = str(entry.get("label") or entry.get("name") or identifier)
-            label = _translate_value(raw_label, translation_map, identifier, "label")
+            label = _translate_field(raw_label, translation_map, identifier, "label", authored)
             # The room text goes through the map like every other string. It is
             # the reason this import exists, and storing it as the source wrote
             # it puts the source's own script in a seed file - invisibly, since
             # `ensure_ascii=True` writes it back out as \\u escapes that the
             # repository's CJK rule cannot see.
-            theme_text = _translate_value(
-                _extract_theme_text(entry), translation_map, identifier, "theme"
+            theme_text = _translate_field(
+                _extract_theme_text(entry), translation_map, identifier, "place", authored
             )
 
             # Build updated row
@@ -424,9 +467,13 @@ def import_source(
             if "offers" in entry:
                 new_row["offers"] = entry["offers"]
             if "notes" in entry:
-                new_row["notes"] = _translate_value(
-                    entry["notes"], translation_map, identifier, "notes"
+                new_row["notes"] = _translate_field(
+                    entry["notes"], translation_map, identifier, "notes", authored
                 )
+            # Always written, even empty: a reader must not have to tell "this
+            # row carries no translation" apart from "this row predates the
+            # field", which is a guess it would get wrong in one direction.
+            new_row["authored"] = sorted(authored)
 
             # Check if this row already existed
             existing_row = existing_by_id.get(identifier) or existing_by_id.get(room_key)
