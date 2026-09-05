@@ -1106,9 +1106,16 @@ def test_a_key_is_ascii_and_two_identifiers_never_share_one(tmp_path: Path):
     assert cjk_one == derive_room_key(_zh(["4f11", "606f", "5ba4"]))
 
 
-def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Path):
-    """Verify that merge updates room text while preserving verdicts and sample sizes,
-    and keeps orphaned rows when an upstream entry disappears.
+def test_merge_updates_text_and_preserves_our_own_fields_and_orphaned_rows(tmp_path: Path):
+    """Verify that merge updates room text while preserving what this project
+    wrote onto the row, and keeps orphaned rows when an upstream entry
+    disappears.
+
+    The preserved pair used to be `verdict` and `sample_size`. 6.10 moved the
+    measurement off the row into the tracked store keyed by room key, so what a
+    row now owns against the source is the manner restriction and its reason -
+    the same kind of thing, somebody's judgement about a place whose text
+    belongs to somebody else.
 
     Also 4.6 and 4.7, both satisfied by 4.3's implementation. What is added here
     is what keeps them true:
@@ -1142,19 +1149,17 @@ def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Pa
             "key": "sm-chamber-01-stale",
             "identifier": "sm_chamber_01",
             "label": "Old Chamber Label",
-            "manner": "candid",
+            "manners": ["directed"],
+            "manners_reason": "somebody looked at it and wrote this down",
             "place": "old theme text",
-            "verdict": "verified: 12/12",
-            "sample_size": 12,
         },
         {
             "key": "sm-vanished-row",
             "identifier": "sm_vanished_row",
             "label": "Vanished Room",
-            "manner": "candid",
+            "manners": [],
             "place": "vanished room text",
-            "verdict": "verified: 5/5",
-            "sample_size": 5,
+            "verdict": "a field from the shape before 6.10",
         },
     ]
     seed_file.write_text(
@@ -1200,23 +1205,25 @@ def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Pa
     updated_rows = json.loads(seed_file.read_text(encoding="utf-8"))
     rows_by_id = {r["identifier"]: r for r in updated_rows}
 
-    # 1. sm_chamber_01 updated its text and label but preserved verdict and sample size
+    # 1. sm_chamber_01 updated its text and label but kept what we wrote on it
     ch = rows_by_id["sm_chamber_01"]
     assert ch["label"] == "Updated Chamber Label"
     assert ch["place"] == "updated theme text with stone walls"
-    assert ch["verdict"] == "verified: 12/12"
-    assert ch["sample_size"] == 12
+    assert ch["manners"] == ["directed"]
+    assert ch["manners_reason"] == "somebody looked at it and wrote this down"
+    assert "verdict" not in ch, "the measurement lives in the verdict store"
     # 4.6: matched by identifier, so the derived key moved off the stale one
     assert ch["key"] == derive_room_key("sm_chamber_01") == "sm-chamber-01"
 
-    # 2. sm_dungeon_02 was created
+    # 2. sm_dungeon_02 was created, restricting nothing and claiming nothing
     assert "sm_dungeon_02" in rows_by_id
-    assert rows_by_id["sm_dungeon_02"]["verdict"] == "unverified"
+    assert rows_by_id["sm_dungeon_02"]["manners"] == []
+    assert "verdict" not in rows_by_id["sm_dungeon_02"]
 
     # 3. sm_vanished_row was not deleted (preserved as orphaned)
     assert "sm_vanished_row" in rows_by_id
-    assert rows_by_id["sm_vanished_row"]["verdict"] == "verified: 5/5"
-    # 4.7: it survives whole, not just its verdict
+    # 4.7: it survives WHOLE - a field this shape no longer writes included, so
+    # an orphan is not quietly migrated to the current shape on its way past.
     assert rows_by_id["sm_vanished_row"] == existing_seed_data[1]
 
     # 4.7: the report NAMES the orphan, and 4.6: it names the updated row
@@ -1235,7 +1242,8 @@ def test_reimport_updates_the_room_and_leaves_its_measurement_alone(tmp_path: Pa
     reworded room ever reaches the app. Everything THIS project measured has to
     stay - the verdict and the sample size - because those were paid for in
     rendered frames against that room, and a re-import that resets them is an
-    import that quietly deletes the measurements.
+    import that quietly deletes the measurements. Since 6.10 they stay by
+    living where no import writes: the tracked store, keyed by room key.
 
     So the fixture is a room that has been measured: imported once, then given
     a verdict the way a pass would, then imported again over changed source and
@@ -1282,14 +1290,17 @@ def test_reimport_updates_the_room_and_leaves_its_measurement_alone(tmp_path: Pa
     row = json.loads(seed_file.read_text(encoding="utf-8"))[0]
     assert row["label"] == "Storeroom"
     assert row["offers"] == ["steel shelving"]
-    assert row["verdict"] == "unverified"
+    assert "verdict" not in row
 
     # The measurement. Ten frames were shot against this room and the pass
-    # wrote what it found onto the row, which is the only place it lives.
-    row["verdict"] = "verified: 10/10"
-    row["sample_size"] = 10
-    seed_file.write_text(json.dumps([row], ensure_ascii=True, indent=2) + "\n",
-                         encoding="utf-8")
+    # wrote what it found into the verdict store, under the manner it was shot
+    # in, which is the only place a verdict lives since 6.10.
+    verdicts = data_dir / ROOM_VERDICTS_FILE
+    verdicts.write_text(json.dumps({
+        derive_room_key("gs_stockroom_01"): {
+            "directed": {"verdict": "verified", "sample_size": 10}},
+    }, indent=2) + chr(10), encoding="utf-8")
+    measured = verdicts.read_bytes()
 
     # A reworded room, a different prop list, and a corrected translation of
     # both the label and the notes.
@@ -1313,9 +1324,10 @@ def test_reimport_updates_the_room_and_leaves_its_measurement_alone(tmp_path: Pa
     assert updated["guidance"]["notes"] == "no crystal sparkle on the bulb"
     assert updated["authored"] == ["guidance.notes", "label"]
 
-    # What was measured stayed.
-    assert updated["verdict"] == "verified: 10/10"
-    assert updated["sample_size"] == 10
+    # What was measured stayed, and stayed byte for byte: an import with any
+    # opinion at all about this file is an import that can lose a measurement.
+    assert verdicts.read_bytes() == measured
+    assert "verdict" not in updated and "sample_size" not in updated
 
     # And a run over unchanged source is a no-op on disk, not merely a row that
     # compares equal in memory.

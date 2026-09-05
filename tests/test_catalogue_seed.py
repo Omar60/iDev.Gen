@@ -364,7 +364,9 @@ ROOMS = ROOT / "data" / "candid-rooms-seed.json"
 # repo's own data dir explicitly: `conftest` points `IDEVGEN_DATA_DIR` at a tmp
 # directory for the whole suite, and these tests are about the shipped seeds.
 from backend.importer import derive_multi_body  # noqa: E402
+from backend.db import cell_state  # noqa: E402
 from backend.room_registry import (  # noqa: E402
+    VERDICT_WORDS,
     compose_look,
     load_manner_registers,
     prose_names_piece,
@@ -625,6 +627,69 @@ def verdict_store_prose(store, places):
     return sorted(offenders)
 
 
+def test_the_verdict_vocabulary_is_the_catalogue_s_own_three_words():
+    """6.9: a room measured at ten frames is the same kind of measurement as a
+    cell measured at ten, so it is read in the same three words.
+
+    Bound to `cell_state` rather than written out beside it: two lists of the
+    same three strings in two files drift the first time somebody adds a
+    fourth, and the drift is silent - the picker keeps rendering, showing a
+    word no rule can produce.
+    """
+    produced = {cell_state(judged, arrived)
+                for judged in (0, 1, 9, 10, 20)
+                for arrived in range(0, judged + 1)}
+    assert produced == set(VERDICT_WORDS)
+    # "unverified" is the word the tasks use in prose and it is NOT a stored
+    # verdict: a second vocabulary for one question means the picker has to
+    # know which of the two it is reading.
+    assert "unverified" not in VERDICT_WORDS
+
+
+def test_the_ten_shipped_rooms_carry_a_converted_verdict_and_keep_their_sentence():
+    """6.10: the nine rooms and the studio carried free text where the
+    catalogue carries a vocabulary. The conversion is honest or it is nothing.
+
+    "built 1/1 in session 370" is one photograph, and this repo's own judging
+    protocol puts the verified bar at ten because below it the reading sits
+    inside the judge's noise. So none of the nine is verified, and the sample
+    size is the one the sentence states and no higher - which for the oldest
+    room, "in use since session 351", is none at all.
+
+    The studio is the one that converts: session 381 shot ten seeds and the
+    sentence says the softbox, the paper roll and the reflector are all built.
+    Ten judged, ten arrived, under directed - the manner it was shot in and the
+    only one it is allowed in.
+
+    The prose is not deleted, because the vocabulary cannot say which run
+    measured what: it moves to the note beside the verdict.
+    """
+    store = json.loads(VERDICTS.read_text(encoding="utf-8"))
+    rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
+    looks = json.loads(DIRECTED_LOOKS.read_text(encoding="utf-8"))
+
+    for room in rooms:
+        record = store[room["key"]]["candid"]
+        assert record["verdict"] == "unknown", room["key"]
+        assert record["sample_size"] <= 1, room["key"]
+        assert record["note"].strip(), room["key"]
+        assert "session 3" in record["note"], room["key"]
+
+    studio = store["studio-softbox"]["directed"]
+    assert studio["verdict"] == "verified" and studio["sample_size"] == 10
+    assert "session 381" in studio["note"]
+    assert "candid" not in store["studio-softbox"], (
+        "it was shot under directed, and allowed nowhere else")
+
+    # And the row it came off carries none of it. Two homes for one fact is
+    # what the split undid; a row that still answered "verdict" would answer it
+    # with whatever it was carrying the day the store was written.
+    for row in rooms + looks:
+        assert "verdict" not in row, row["key"]
+        assert "sample_size" not in row, row["key"]
+        assert row["key"] in store, row["key"]
+
+
 def test_the_verdict_store_holds_measurements_and_no_room_text():
     """Keys, manners, verdicts and sample sizes. Not a sentence of a room.
 
@@ -651,7 +716,20 @@ def test_the_verdict_store_holds_measurements_and_no_room_text():
         for manner, record in per_manner.items():
             assert manner and isinstance(manner, str), key
             assert set(record) <= {"verdict", "sample_size", "note"}, (key, manner)
-            assert isinstance(record.get("sample_size", 0), int), (key, manner)
+            # 6.9: one of the catalogue's own words, and a count with it. A
+            # verdict with no sample size is the free text this store replaced -
+            # "verified" says nothing until it says out of how many.
+            assert record["verdict"] in VERDICT_WORDS, (key, manner, record["verdict"])
+            assert isinstance(record["sample_size"], int), (key, manner)
+            assert record["sample_size"] >= 0, (key, manner)
+            # And the word agrees with the count by the catalogue's own rule,
+            # which is the only thing that keeps a room's verdict comparable to
+            # a cell's. A stored word the counts cannot produce is a reading
+            # somebody typed.
+            assert record["verdict"] == cell_state(
+                record["sample_size"],
+                record["sample_size"] if record["verdict"] == "verified" else 0,
+            ), (key, manner, record)
 
     assert verdict_store_prose(store, places) == []
 

@@ -419,9 +419,17 @@ The prose is not deleted. It moves to a note beside the verdict, because "built
 question, and the vocabulary says neither.
 
 *Consequence, stated so nobody is surprised by it:* on the day this ships the
-picker shows every room unverified, including the nine. That is the true state
-of the library, and 6.12's visible distinction then means something the first
-time a room is actually measured.
+nine show as unknown at a sample size of one, and the whole imported library
+shows as unknown at none. That is the true state of the library, and 6.12's
+visible distinction then means something the first time a room is measured.
+
+*The one exception, decided when 6.10 was written:* the studio converts to
+verified at ten. Its sentence states ten seeds and says the softbox, the paper
+roll and the reflector are all built - ten judged and ten arrived, which is
+`verified` by the same rule `db.cell_state` applies to a cell, under directed
+and nowhere else. It is the only room in the library anybody has measured at
+the bar, and showing it as unknown to keep the picker uniform would be
+throwing away the one measurement that makes 6.12 worth building.
 
 ### The fused entries are cut by hand, and the cuts are a file
 

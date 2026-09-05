@@ -194,6 +194,19 @@ def get_registered_rooms(
 # MEASURED in one and a room verified candid says nothing about directed.
 ROOM_VERDICTS_FILE = "room-verdicts-seed.json"
 
+# The words a verdict may be, and they are the catalogue's own: `db.cell_state`
+# reads a cell's two counts into exactly these three, and a room measured at ten
+# frames is the same kind of measurement as a cell measured at ten. A fourth
+# word here - "unverified", say - would be a second vocabulary for one question,
+# and the picker would then have to know which of the two it was reading.
+#
+# There is no default record. A room with no entry under a manner has not been
+# measured under it, which is `unknown` at a sample size of nobody-shot-it, and
+# writing that row out 428 times would be a file of zeroes saying nothing. So
+# absence IS the default, and the one reader that needs a word for it -
+# `rooms.js:verdictFor` - supplies it.
+VERDICT_WORDS: tuple[str, ...] = ("unknown", "verified", "dead")
+
 
 def load_room_verdicts(data_dir: Path | str | None = None,
                        config: dict | None = None) -> dict[str, dict]:

@@ -1,1 +1,72 @@
-{}
+{
+  "bedroom-night": {
+    "candid": {
+      "verdict": "unknown",
+      "sample_size": 0,
+      "note": "in use since session 351"
+    }
+  },
+  "living-room": {
+    "candid": {
+      "verdict": "unknown",
+      "sample_size": 1,
+      "note": "built 1/1 in session 370, furniture used 1/1 in session 371"
+    }
+  },
+  "kitchen": {
+    "candid": {
+      "verdict": "unknown",
+      "sample_size": 1,
+      "note": "built 1/1 in session 370, furniture used 1/1 in session 371"
+    }
+  },
+  "bathroom": {
+    "candid": {
+      "verdict": "unknown",
+      "sample_size": 1,
+      "note": "built 1/1 in session 370, furniture used 1/1 in session 371"
+    }
+  },
+  "shower": {
+    "candid": {
+      "verdict": "unknown",
+      "sample_size": 1,
+      "note": "built 1/1 in session 370, furniture used 1/1 in session 371; offers corrected from bench, which its sentence never names"
+    }
+  },
+  "hallway": {
+    "candid": {
+      "verdict": "unknown",
+      "sample_size": 1,
+      "note": "built 1/1 in session 370, furniture used 1/1 in session 371"
+    }
+  },
+  "bedroom-day": {
+    "candid": {
+      "verdict": "unknown",
+      "sample_size": 1,
+      "note": "built 1/1 in session 370, furniture used 1/1 in session 371"
+    }
+  },
+  "car-backseat": {
+    "candid": {
+      "verdict": "unknown",
+      "sample_size": 1,
+      "note": "built 1/1 in session 370, furniture used 1/1 in session 371"
+    }
+  },
+  "balcony": {
+    "candid": {
+      "verdict": "unknown",
+      "sample_size": 1,
+      "note": "built 1/1 in session 370, furniture used 1/1 in session 371"
+    }
+  },
+  "studio-softbox": {
+    "directed": {
+      "verdict": "verified",
+      "sample_size": 10,
+      "note": "session 381, 10 seeds: the ten frames agree on her hair 10/10, the ninety-degree profile arrives 10/10 full body, and the softbox, tripod, paper roll and reflector are all built"
+    }
+  }
+}

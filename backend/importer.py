@@ -631,8 +631,10 @@ def import_source(
                 # source owns. A manner restriction is somebody's judgement
                 # about the place, written here by hand, so a re-import that
                 # reset it to the import default would undo that judgement on
-                # every run - the same way it would undo a verdict.
-                for preserve_key in ("verdict", "sample_size", "manners", "manners_reason"):
+                # every run. The verdict used to be preserved here too and is
+                # not on the row any more: it lives in the tracked store keyed
+                # by room key, which no import writes in either direction.
+                for preserve_key in ("manners", "manners_reason"):
                     if preserve_key in existing_row:
                         new_row[preserve_key] = existing_row[preserve_key]
 
@@ -641,7 +643,6 @@ def import_source(
                 else:
                     updated_keys.append(room_key)
             else:
-                new_row.setdefault("verdict", "unverified")
                 created_keys.append(room_key)
 
             merged_rows.append(new_row)
