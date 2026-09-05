@@ -17,7 +17,7 @@ import candidRooms from '../../../data/candid-rooms-seed.json'
 import directedLooks from '../../../data/directed-looks-seed.json'
 // The register is the manner's, not the room's, so composing is what turns a
 // place into a look. `rooms.js` holds both halves and the join.
-import { lookFromRoom, pickerRooms, refillLook, roomAllows } from '../rooms.js'
+import { lookFromRoom, pickerRooms, refillLook, roomAllows, roomOption } from '../rooms.js'
 
 // A row says which manners its PLACE makes sense under, and most say "any" -
 // the register left the text in the split, so candid's bedroom is a bedroom and
@@ -301,7 +301,7 @@ export default function ModelDetail({ id }) {
             <option value="">Start from a measured room…</option>
             {ROOMS.filter((r) => roomAllows(r, newSession.manner)).map((r) => (
               <option key={r.key} value={r.key}>
-                {r.label}{r.offers?.length ? ` — offers ${r.offers.join(', ')}` : ''}
+                {roomOption(r, newSession.manner)}
               </option>
             ))}
           </select>

@@ -7,6 +7,10 @@
 // baked into it, so candid's bedrooms were hidden from a directed shoot for a
 // reason that was about the first sentence and not about the bedroom.
 import registers from '../../data/manner-registers-seed.json'
+// This project's own measurements, tracked, keyed by room key and then by
+// the manner the run was shot under. The rooms it measures may be imported
+// and untracked; the measurements are ours and are not.
+import verdicts from '../../data/room-verdicts-seed.json'
 
 /** The register a manner speaks in, or '' for a manner nobody has written one
  *  for. Empty is not an error: `composeLook` then hands back the place alone,
@@ -72,6 +76,54 @@ export function refillLook(manner, look) {
     (m) => m !== manner && registers[m] && text.startsWith(registers[m]))
   if (!carries) return null
   return { carries, look: composeLook(manner, text.slice(registers[carries].length)) }
+}
+
+/** What this project measured about this room under THIS manner, and never
+ *  under another one. A room verified under directed says nothing about candid:
+ *  the register, the framing and half the catalogue differ, so presenting one
+ *  verdict as if it covered every manner the room is allowed in is how 428
+ *  unmeasured pairings would read as measured.
+ *
+ *  Absence is the answer for most rooms and it is not a gap: `unknown` at a
+ *  sample size of nobody-shot-it is what the store not carrying a record MEANS,
+ *  and writing that record out per room per manner would be a file of zeroes.
+ *
+ *  Two sources, one for each half of the picker. A served room arrives with its
+ *  verdicts joined on by `/api/rooms`; a tracked room is in the bundle and its
+ *  verdicts are read from the same tracked file the route reads. They cannot
+ *  disagree - it is one file - and the served copy is preferred only because a
+ *  room the route served is the row the route also measured.
+ */
+export function verdictFor(room, manner) {
+  const stored = room?.verdicts?.[manner] ?? verdicts[room?.key]?.[manner]
+  return {
+    verdict: stored?.verdict ?? 'unknown',
+    sample_size: stored?.sample_size ?? 0,
+    note: stored?.note ?? '',
+  }
+}
+
+/** The verdict as the picker says it, in words rather than in a colour: a
+ *  select holds text and nothing else, and the operator has to be able to tell
+ *  a measured room from an unmeasured one while choosing between them.
+ *
+ *  The sample size is always shown with the word, because "verified" alone is
+ *  the free text this store replaced - it says nothing until it says out of how
+ *  many. An unmeasured room says so in plain words instead of showing
+ *  `unknown`, which reads as a fault in the app rather than as a room nobody
+ *  has shot yet.
+ */
+export function verdictLabel(room, manner) {
+  const { verdict, sample_size: n } = verdictFor(room, manner)
+  if (verdict === 'unknown') return n ? `not measured yet, ${n} so far` : 'not measured yet'
+  return `${verdict}, ${n} judged`
+}
+
+/** One room as the picker lists it: what it is, what it offers, and what it
+ *  measured under the manner being written. */
+export function roomOption(room, manner) {
+  const offers = room?.offers?.length ? ` - offers ${room.offers.join(', ')}` : ''
+  return `${room?.label ?? ''}${offers} - ${verdictLabel(room, manner)}`
 }
 
 /** The rooms the picker lists: the tracked ones the build carries, then every

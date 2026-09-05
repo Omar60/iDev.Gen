@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { composeLook, lookFromRoom, pickerRooms, refillLook, registerFor, roomAllows } from './rooms.js'
+import {
+  composeLook, lookFromRoom, pickerRooms, refillLook, registerFor, roomAllows,
+  roomOption, verdictFor, verdictLabel,
+} from './rooms.js'
 import candidRooms from '../../data/candid-rooms-seed.json'
 import directedLooks from '../../data/directed-looks-seed.json'
 
@@ -195,5 +198,56 @@ describe('the manners a room allows', () => {
       expect(listed.includes(studio.key)).toBe(manner === 'directed')
       expect(listed.length).toBe(manner === 'directed' ? 10 : 9)
     }
+  })
+})
+
+// 6.11 and 6.12: allowed is not measured. A room may be offered under every
+// manner and measured under one, and the picker has to say which.
+describe('what the picker says a room measured', () => {
+  const studio = directedLooks[0]
+  const bedroom = candidRooms[0]
+
+  it('reads a verdict only under the manner it was taken in', () => {
+    expect(verdictFor(studio, 'directed')).toMatchObject({ verdict: 'verified', sample_size: 10 })
+    // Same room, another manner. Not verified, and not because somebody wrote
+    // "unknown" down for it - because nobody has shot it there.
+    expect(verdictFor(studio, 'candid').verdict).toBe('unknown')
+    expect(verdictFor(studio, 'selfie').verdict).toBe('unknown')
+    // A room nobody has measured at all, and a room that does not exist.
+    expect(verdictFor({ key: 'gs-stockroom-01' }, 'candid'))
+      .toEqual({ verdict: 'unknown', sample_size: 0, note: '' })
+    expect(verdictFor(undefined, 'candid').verdict).toBe('unknown')
+  })
+
+  // A served room carries its verdicts joined on by the route; a tracked room
+  // is read from the same tracked file. One file, so they cannot disagree.
+  it('reads the verdicts the route joined on to an imported room', () => {
+    const served = { key: 'gs-stockroom-01', label: 'Storeroom',
+                     verdicts: { candid: { verdict: 'dead', sample_size: 12 } } }
+    expect(verdictLabel(served, 'candid')).toBe('dead, 12 judged')
+    expect(verdictLabel(served, 'directed')).toBe('not measured yet')
+  })
+
+  it('tells a measured room from an unmeasured one in the words it lists', () => {
+    expect(verdictLabel(studio, 'directed')).toBe('verified, 10 judged')
+    expect(verdictLabel(studio, 'candid')).toBe('not measured yet')
+    // The nine were converted at the sample size their sentence stated, so
+    // they are unmeasured WITH a count - eight at one frame, the oldest at
+    // none. Both say so rather than showing the catalogue's word.
+    expect(verdictLabel(candidRooms[1], 'candid')).toBe('not measured yet, 1 so far')
+    expect(verdictLabel(bedroom, 'candid')).toBe('not measured yet')
+  })
+
+  it('lists what the room is, what it offers and what it measured', () => {
+    expect(roomOption(studio, 'directed'))
+      .toBe('Studio, one softbox (shipped) - verified, 10 judged')
+    expect(roomOption(bedroom, 'candid'))
+      .toBe('Bedroom, bare bulb (shipped) - offers bed - not measured yet')
+    // The one room the library has measured, listed under the manner it was
+    // measured in and under one it was not: same row, two different lines.
+    // That difference is the whole of 6.11 seen from the screen.
+    expect(roomOption(studio, 'candid'))
+      .toBe('Studio, one softbox (shipped) - not measured yet')
+    expect(roomOption(studio, 'candid')).not.toBe(roomOption(studio, 'directed'))
   })
 })
