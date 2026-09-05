@@ -12,10 +12,12 @@ two would disagree the first time one of them was edited.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
+import db
 from backend.mining import (
     JudgeLabelMissingError,
     MINED_LABELS_FILE,
@@ -229,3 +231,125 @@ def test_the_same_wording_under_another_manner_is_not_a_duplicate(client, seeded
                          json=component_rows(_mined_rows(), LABELS)).json()
     assert report["added"] == 2, report
     assert report["duplicates"] == [], report
+
+
+# -- 8.17 An unverified mined row and the strict composer ------------------
+
+CAMERA_KEY = "mined-invented_mined_store_01-camera"
+ACT_KEY = "mined-invented_mined_store_01-act"
+
+
+def _pov_session(client, seeded) -> int:
+    return client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "mined", "look": "A bare bedroom.",
+        "manner": "pov", "checkpoint": "test-checkpoint", "shots": [],
+    }).json()["id"]
+
+
+def _mined_candidates() -> dict:
+    return {
+        "camera": [{"key": CAMERA_KEY, "wordings": [{"key": CAMERA_KEY, "text": CAMERA}]}],
+        "act": [{"key": ACT_KEY, "wordings": [{"key": ACT_KEY, "text": ACT}]}],
+        "framing": [{"key": "frame-mined",
+                     "wordings": [{"key": "frame-mined", "text": "full body"}]}],
+    }
+
+
+def test_an_unverified_mined_camera_is_not_drawn_on_the_strict_path(client, seeded):
+    """No new gate, and that is the finding.
+
+    The strict pool is the verified cells and nothing else, and a mined row has
+    no cell at all - so it is out of the strict draw by the rule that was
+    already there, not by one written for mined rows. A second gate keyed on
+    "is this row mined" would be a second calculation of what drawable means,
+    and the two would disagree the first time either was edited.
+
+    The exploratory half is what makes this a test of the MODE rather than of
+    the rows: the same call with the wider mode queues the shot, so the refusal
+    above is about the measurement and not about anything being wrong with a
+    mined row.
+    """
+    client.post("/api/components/import", json=component_rows(_mined_rows(), LABELS))
+    sid = _pov_session(client, seeded)
+
+    strict = client.post(f"/api/sessions/{sid}/compose-run",
+                         json={"count": 1, "candidates": _mined_candidates()})
+    assert strict.status_code == 422, strict.text
+    assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == 0
+
+    wider = client.post(f"/api/sessions/{sid}/compose-run",
+                        json={"count": 1, "mode": "exploratory",
+                              "candidates": _mined_candidates()})
+    assert wider.status_code == 200, wider.text
+    assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == 1
+
+
+def test_the_strict_draw_passes_over_the_mined_trio_for_the_measured_one(client, seeded):
+    """Asserted on the POOL SIZE, because "it drew something else" can pass by luck.
+
+    Both trios are candidates and only one is a verified cell. The strict run
+    draws that one, and a run asking for TWO distinct trios out of a pool of one
+    is refused - which is the observable difference between a pool that holds
+    the mined trio and one that does not. See [[idevgen-test-that-cannot-fail]].
+    """
+    client.post("/api/components/import", json=component_rows(_mined_rows(), LABELS))
+    client.post("/api/components/import", json=[
+        {"concept_key": "measured-cam", "slot": "camera", "manner": "pov",
+         "wording": "from across the room", "judge_label": "Across the room"},
+        {"concept_key": "measured-act", "slot": "act", "manner": "pov",
+         "wording": "she is sitting on the edge of the bed", "judge_label": "Sitting"},
+    ])
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, manner, "
+           "checkpoint, judged, arrived) VALUES (?,?,?,?,?,?,?)",
+           "measured-cam", "measured-act", "frame-mined", "pov", "test-checkpoint", 10, 9)
+
+    candidates = _mined_candidates()
+    candidates["camera"].append(
+        {"key": "measured-cam", "wordings": [{"key": "measured-cam", "text": "from across the room"}]})
+    candidates["act"].append(
+        {"key": "measured-act", "wordings": [{"key": "measured-act", "text": "she is sitting on the edge of the bed"}]})
+
+    sid = _pov_session(client, seeded)
+    one = client.post(f"/api/sessions/{sid}/compose-run",
+                      json={"count": 1, "candidates": candidates})
+    assert one.status_code == 200, one.text
+    drawn = [json.loads(r["components"])
+             for r in db.q("SELECT components FROM shot WHERE session_id=?", sid)]
+    assert drawn, "the run queued nothing, so it proves nothing about what it draws"
+    for shot in drawn:
+        assert shot["camera"]["concept"] == "measured-cam", shot
+
+    two = _pov_session(client, seeded)
+    refused = client.post(f"/api/sessions/{two}/compose-run",
+                          json={"count": 2, "candidates": candidates})
+    assert refused.status_code == 422, refused.text
+    assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", two)["n"] == 0
+
+
+def test_a_mined_trio_part_way_through_judging_is_still_not_drawn(client, seeded):
+    """Unverified is not only "never measured", and this is the half that catches it.
+
+    Once 8.18 starts judging these rows the mined trio HAS a cell, and it is
+    unknown until the tenth photograph. A strict pool that asked the table for a
+    row rather than for a VERIFIED row would pass this trio the moment the first
+    frame was judged - and it would read as measured while its sample was four.
+    The two tests above cannot see that break, because a trio nobody has judged
+    has no row for a loose predicate to match.
+    """
+    client.post("/api/components/import", json=component_rows(_mined_rows(), LABELS))
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, manner, "
+           "checkpoint, judged, arrived) VALUES (?,?,?,?,?,?,?)",
+           CAMERA_KEY, ACT_KEY, "frame-mined", "pov", "test-checkpoint", 4, 4)
+    sid = _pov_session(client, seeded)
+
+    strict = client.post(f"/api/sessions/{sid}/compose-run",
+                         json={"count": 1, "candidates": _mined_candidates()})
+    assert strict.status_code == 422, strict.text
+    assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == 0
+
+    # And the same cell at the threshold IS drawn, so the refusal above is the
+    # sample size and not the row.
+    db.run("UPDATE cell SET judged=10, arrived=9 WHERE camera_wording=?", CAMERA_KEY)
+    verified = client.post(f"/api/sessions/{sid}/compose-run",
+                           json={"count": 1, "candidates": _mined_candidates()})
+    assert verified.status_code == 200, verified.text
