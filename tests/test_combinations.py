@@ -19,7 +19,12 @@ import pytest
 
 import db
 import main
-from backend.mining import MINED_COMBINATIONS_FILE
+from backend.mining import (
+    MINED_COMBINATIONS_FILE,
+    record_combinations,
+    save_mined_combinations,
+    split_fused_entry,
+)
 
 IDENTIFIER = "invented_fused_combo_01"
 CAMERA_KEY = "mined-cam-01"
@@ -197,3 +202,63 @@ def test_an_unknown_combination_is_a_404(client, seeded, combination_on_disk):
     r = client.post(f"/api/sessions/{sid}/compose-combination",
                     json={"identifier": "nothing_recorded_here"})
     assert r.status_code == 404, r.text
+
+
+# ── 8.12 The combination reproduces the source entry's photograph ─────────
+
+SOURCE_CAMERA = "shot from the doorway at head height"
+SOURCE_ACT = "standing with her back to the wall and both palms flat against it"
+SOURCE_ROOM = "a bare hallway with one strip light overhead"
+SOURCE_ENTRY = {
+    "identifier": "invented_fused_reproduce_01",
+    "family": "fisheye POV",
+    "prompt": f"{SOURCE_CAMERA}, {SOURCE_ACT}, {SOURCE_ROOM}",
+}
+SOURCE_CUT = {"camera": SOURCE_CAMERA, "act": SOURCE_ACT, "room": SOURCE_ROOM}
+
+
+def test_a_recorded_combination_reproduces_the_source_entry(client, seeded):
+    """End to end: split, record, store the rows, compose, read the line.
+
+    Nothing in this test types a key. The entry is cut, the rows carry the keys
+    the split derived, the combination is recorded from those rows and written
+    to the file the app reads, and the route is then asked for the entry by
+    NAME. What comes back has to be the photograph the source entry was.
+
+    The three source clauses are asserted BYTE FOR BYTE inside the composed
+    prompt - the camera and the act because the rows carry them, the room
+    because the session's look was filled from it. A reproduction that composed
+    the right rows into the wrong words, or trimmed a clause on the way, is a
+    photograph nobody measured wearing the identifier of one somebody did.
+    """
+    rows = split_fused_entry(SOURCE_ENTRY, SOURCE_CUT)
+    by_slot = {row["slot"]: row for row in rows}
+    for slot in ("camera", "act"):
+        row = by_slot[slot]
+        db.run(
+            "INSERT INTO component (concept_key, slot, manner, family, faces, wording, "
+            "judge_label, cameras, needs, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            row["key"], slot, row["manner"], "", "", row["wording"],
+            f"{row['key']} judge", "", row.get("needs", ""), db.now(),
+        )
+    save_mined_combinations(record_combinations(rows), data_dir=main.DATA_DIR)
+
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "reproduction",
+        # The room row IS the look: that is how a mined room reaches a
+        # photograph, and the route refuses a session filled from another one.
+        "look": by_slot["room"]["wording"], "room_key": by_slot["room"]["key"],
+        "manner": by_slot["camera"]["manner"], "checkpoint": "test-checkpoint",
+        "shots": [],
+    }).json()["id"]
+
+    try:
+        r = client.post(f"/api/sessions/{sid}/compose-combination",
+                        json={"identifier": SOURCE_ENTRY["identifier"]})
+        assert r.status_code == 200, r.text
+        prompt = db.one("SELECT prompt FROM shot WHERE session_id=?", sid)["prompt"]
+        assert SOURCE_CAMERA in prompt, prompt
+        assert SOURCE_ACT in prompt, prompt
+        assert SOURCE_ROOM in prompt, prompt
+    finally:
+        (main.DATA_DIR / MINED_COMBINATIONS_FILE).unlink(missing_ok=True)

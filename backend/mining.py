@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Iterable
 
 from backend.cut_map import (
@@ -257,6 +258,41 @@ def needs_for_act(
     return NEEDS_NOTHING
 
 
+# The catalogue key a mined row is stored under, built from the source
+# identifier and the slot it fills. Derived and not invented: the combination
+# has to name the rows it was split into, and a key handed out at storage time
+# would leave the split with nothing to record until the rows were written.
+# Deterministic, so re-mining the same library twice names the same rows - which
+# is what makes 8.15's duplicate report possible at all.
+MINED_KEY_PREFIX: str = "mined"
+
+
+def row_key(identifier: str, slot: str) -> str:
+    """The key the mined row for this entry's `slot` is stored under."""
+    if slot not in CUT_SLOTS:
+        raise ValueError(
+            f"Unknown slot {slot!r}: the slots are {list(CUT_SLOTS)!r}"
+        )
+    stem = normalise_family(identifier)
+    if not stem:
+        raise ValueError(
+            f"Cannot build a row key from identifier {identifier!r}: a mined row "
+            f"with no key cannot be named by the combination it belongs to"
+        )
+    return f"{MINED_KEY_PREFIX}-{stem}-{slot}"
+
+
+def combination_for(rows: Iterable[dict[str, str]]) -> dict[str, str]:
+    """The combination a set of rows from ONE entry composes back into.
+
+    Keys only, which is the storage rule 8.10 sets. Built from the rows the
+    split actually produced, so a part the entry never carried is absent here
+    too - the combination records what was mined, not what a full entry would
+    have had.
+    """
+    return {row["slot"]: row["key"] for row in rows if row.get("key")}
+
+
 def split_fused_entry(
     entry: Any,
     cut: dict[str, str],
@@ -289,6 +325,7 @@ def split_fused_entry(
             continue
         row = {
             "slot": slot,
+            "key": row_key(key, slot),
             "wording": validated[slot],
             "source_identifier": key,
             "manner": manner,
@@ -328,6 +365,17 @@ def split_fused_entries(
     absent = missing_cuts(cut_map, identifiers)
     if absent:
         raise CutMissingError(absent)
+
+    by_row_key: dict[str, set[str]] = {}
+    for key in identifiers:
+        by_row_key.setdefault(row_key(key, CUT_SLOTS[0]), set()).add(key)
+    collisions = sorted(sorted(v) for v in by_row_key.values() if len(v) > 1)
+    if collisions:
+        raise ValueError(
+            f"Two source entries build the same row keys: {collisions!r}. A mined "
+            f"row is keyed on its identifier, so a collision silently merges two "
+            f"photographs into one row and one combination overwrites the other"
+        )
 
     families = [family_for(entry) for entry in listed]
     undeclared = [
@@ -457,3 +505,46 @@ def load_mined_combinations(
         str(key): validate_combination(value, str(key))
         for key, value in loaded.items()
     }
+
+
+def record_combinations(rows: Iterable[dict[str, str]]) -> dict[str, dict[str, str]]:
+    """The combination each source entry was split into, keyed by identifier.
+
+    Grouped from the rows themselves rather than recomputed from the entries: a
+    second walk over the source deciding what a combination holds is a second
+    calculation of one fact, and the day it disagrees the record names rows the
+    split never produced.
+    """
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        grouped.setdefault(row["source_identifier"], []).append(row)
+    return {key: combination_for(group) for key, group in grouped.items()}
+
+
+def save_mined_combinations(
+    combinations: dict[str, dict[str, str]],
+    data_dir: Any = None,
+    config: dict | None = None,
+) -> Path:
+    """Write the recorded combinations, validated, and return the path.
+
+    Every entry goes through `validate_combination` on the way out as well as on
+    the way in: the file is tracked, and the check that keeps source prose out of
+    it is worth nothing if only the reader runs it.
+
+    The whole file is replaced rather than merged. A merge would keep a
+    combination whose source entry has been re-cut, and the operator would then
+    have two records of one photograph with no way to tell which cut produced
+    the frames.
+    """
+    checked = {
+        str(key): validate_combination(value, str(key))
+        for key, value in combinations.items()
+    }
+    path = resolve_data_dir(data_dir=data_dir, config=config) / MINED_COMBINATIONS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({k: checked[k] for k in sorted(checked)}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return path

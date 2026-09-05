@@ -34,9 +34,13 @@ from backend.mining import (
     family_for,
     identifier_for,
     manner_for_family,
+    combination_for,
     load_mined_combinations,
     needs_for_act,
     normalise_family,
+    record_combinations,
+    row_key,
+    save_mined_combinations,
     second_body_families,
     split_fused_entries,
     validate_combination,
@@ -508,3 +512,98 @@ def test_a_combination_survives_its_rows_being_absent(tmp_path):
 def test_no_combination_file_reads_as_no_combinations(tmp_path):
     """A fresh checkout has mined nothing, which is a real state and not an error."""
     assert load_mined_combinations(data_dir=tmp_path) == {}
+
+
+# ── 8.12 The combination each source entry was split into ─────────────────
+
+
+def test_every_mined_row_carries_the_key_its_combination_names_it_by():
+    """The key is derived at the split, not handed out at storage time.
+
+    The combination has to name the rows it was split into, so a key that only
+    existed once the rows were written would leave the split with nothing to
+    record. Derived from the identifier and the slot, so re-mining the same
+    library twice names the same rows.
+    """
+    rows = split_fused_entry(FUSED_ENTRY, FULL_CUT)
+    assert [row["key"] for row in rows] == [
+        "mined-invented_fused_01-camera",
+        "mined-invented_fused_01-act",
+        "mined-invented_fused_01-room",
+    ]
+    assert row_key("Invented Fused 01", "act") == "mined-invented_fused_01-act"
+
+
+def test_the_combination_records_only_the_parts_the_entry_carried():
+    """What was mined, not what a full entry would have had.
+
+    The camera-and-room fixture has no act in it, and its combination has no act
+    key. A record that carried three slots regardless would name a row nothing
+    ever wrote, and 8.13 would report the combination broken forever.
+    """
+    rows = split_fused_entry(CAMERA_AND_ROOM_ENTRY, CAMERA_AND_ROOM_CUT)
+    assert combination_for(rows) == {
+        "camera": "mined-invented_fused_02-camera",
+        "room": "mined-invented_fused_02-room",
+    }
+
+
+def test_the_record_is_grouped_from_the_rows_the_split_produced(tmp_path):
+    """One walk, and a round trip through the file.
+
+    `record_combinations` groups the rows themselves rather than re-reading the
+    entries: a second walk deciding what a combination holds is a second
+    calculation of one fact, and the day it disagrees the record names rows the
+    split never produced.
+    """
+    cut_map = validate_cut_map(
+        {"invented_fused_01": FULL_CUT, "invented_fused_02": CAMERA_AND_ROOM_CUT}
+    )
+    rows = split_fused_entries([FUSED_ENTRY, CAMERA_AND_ROOM_ENTRY], cut_map)
+    recorded = record_combinations(rows)
+    assert set(recorded) == {"invented_fused_01", "invented_fused_02"}
+    assert recorded["invented_fused_01"]["act"] == "mined-invented_fused_01-act"
+
+    save_mined_combinations(recorded, data_dir=tmp_path)
+    assert load_mined_combinations(data_dir=tmp_path) == recorded
+
+    written = (tmp_path / MINED_COMBINATIONS_FILE).read_text(encoding="utf-8")
+    for row in rows:
+        assert row["wording"] not in written, "the record wrote source prose"
+
+
+def test_two_entries_that_build_one_row_key_stop_the_split():
+    """A collision merges two photographs into one row, silently.
+
+    `invented-fused-01` and `invented_fused_01` are different identifiers and one
+    key. Stored, the second entry's rows overwrite the first's and its
+    combination overwrites the other, and nothing anywhere says a photograph was
+    lost.
+    """
+    twin = dict(FUSED_ENTRY, identifier="invented-fused-01")
+    cut_map = validate_cut_map(
+        {"invented_fused_01": FULL_CUT, "invented-fused-01": FULL_CUT}
+    )
+    with pytest.raises(ValueError, match="same row keys"):
+        split_fused_entries([FUSED_ENTRY, twin], cut_map)
+
+
+def test_writing_the_record_replaces_the_file_rather_than_merging_it(tmp_path):
+    """A re-cut entry leaves no stale record behind.
+
+    Merging would keep the combination the previous cut produced, and the
+    operator would then hold two records of one photograph with no way to tell
+    which cut the frames came from. The break that merges passed every other
+    test in this file, which is why this one exists.
+    """
+    save_mined_combinations(
+        {"invented_fused_01": {"camera": "mined-a-camera", "act": "mined-a-act"}},
+        data_dir=tmp_path,
+    )
+    save_mined_combinations(
+        {"invented_fused_02": {"camera": "mined-b-camera", "room": "mined-b-room"}},
+        data_dir=tmp_path,
+    )
+    assert load_mined_combinations(data_dir=tmp_path) == {
+        "invented_fused_02": {"camera": "mined-b-camera", "room": "mined-b-room"}
+    }
