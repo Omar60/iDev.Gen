@@ -54,3 +54,28 @@ export function refillLook(manner, look) {
   if (!carries) return null
   return { carries, look: composeLook(manner, text.slice(registers[carries].length)) }
 }
+
+/** The rooms the picker lists: the tracked ones the build carries, then every
+ *  room the route served that the build does not already have.
+ *
+ *  Deduplicated by key on purpose. `/api/rooms` reads the room library
+ *  registry, and the registry's default entry is the nine tracked rooms
+ *  themselves - so the route hands back rooms the bundle already has, and
+ *  without this the picker lists every one of them twice. The tracked copy
+ *  wins because it is the one the build was tested against.
+ *
+ *  An empty or absent payload is not an error: the imported seeds are
+ *  untracked, so a clone where nobody ran the import serves nothing, and the
+ *  picker is then the nine rooms it was before any of this.
+ */
+export function pickerRooms(builtIn, served) {
+  const rooms = [...(builtIn ?? [])]
+  const have = new Set(rooms.map((r) => r.key))
+  for (const room of served ?? []) {
+    if (room && !have.has(room.key)) {
+      have.add(room.key)
+      rooms.push(room)
+    }
+  }
+  return rooms
+}

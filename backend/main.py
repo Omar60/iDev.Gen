@@ -40,7 +40,7 @@ from runner import Runner, slug
 # `--app-dir backend` puts `backend/` on the path and `python -m uvicorn` puts
 # the repo root there, so both spellings resolve.
 from backend.importer import TranslationMissingError, import_source
-from backend.room_registry import DEFAULT_ROOM_LIBRARIES
+from backend.room_registry import DEFAULT_ROOM_LIBRARIES, available_rooms
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -1160,6 +1160,19 @@ def _adopt_config(cfg: dict) -> None:
         return
     CONFIG = cfg
     CONFIG_PATH.write_text(json.dumps(CONFIG, indent=2) + "\n", encoding="utf-8")
+
+
+@app.get("/api/rooms")
+def list_rooms():
+    """The rooms the picker may offer, and why a registered library offers none.
+
+    Runtime rather than build time, which is the whole point: the imported
+    seeds are untracked, so a build that bundled them would break on every
+    clone that has not run the import. An absent library is an empty list and a
+    stated reason here, never an error - the screen has to open with the nine
+    tracked rooms in it whatever the registry names.
+    """
+    return available_rooms(CONFIG, DATA_DIR)
 
 
 @app.post("/api/rooms/import")

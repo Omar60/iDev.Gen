@@ -186,6 +186,61 @@ def get_registered_rooms(
     return rooms
 
 
+def available_rooms(
+    config: dict | None = None,
+    data_dir: Path | str | None = None,
+) -> dict:
+    """Every room the picker can offer right now, and why a library offers none.
+
+    `load_room_libraries` raises on a registered library whose seed is missing,
+    and that is right where it is used: the registry and the disk disagreeing
+    is a state an import must not leave behind. It is wrong for a picker. The
+    imported seeds are untracked, so a fresh clone, a second machine and a
+    checkout where nobody has run the import all have a config naming files
+    that are not there - and a picker that raises on those is a screen that
+    cannot open rather than a screen with nine rooms in it.
+
+    So this one never raises. A library that contributes nothing contributes an
+    empty list and a sentence saying why, and the sentence names the seed file
+    rather than its path: a machine path in an API response is the same leak as
+    a machine path in a tracked file, one hop further out.
+    """
+    resolved_dir = resolve_data_dir(data_dir=data_dir, config=config)
+    rooms: list[dict] = []
+    libraries: list[dict] = []
+    for raw in get_room_libraries_config(config):
+        lib = normalize_library_entry(raw)
+        seed_file = lib["seed_file"]
+        path = resolved_dir / seed_file
+        loaded: list = []
+        reason = ""
+        if not lib["enabled"]:
+            reason = "switched off in the room library registry"
+        elif not seed_file:
+            reason = "the registry entry names no seed file"
+        elif not path.is_file():
+            reason = f"no {seed_file} on disk; nothing has been imported into it here"
+        else:
+            try:
+                parsed = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                parsed = None
+                reason = f"{seed_file} is not readable JSON"
+            if isinstance(parsed, list):
+                loaded = [r for r in parsed if isinstance(r, dict)]
+            elif parsed is not None:
+                reason = f"{seed_file} does not hold a list of rooms"
+        libraries.append({
+            "name": lib["name"],
+            "seed_file": seed_file,
+            "enabled": lib["enabled"],
+            "rooms": len(loaded),
+            "reason": reason,
+        })
+        rooms.extend(loaded)
+    return {"rooms": rooms, "libraries": libraries}
+
+
 def is_room_seed_file(path: Path) -> bool:
     """Identify room seed files on disk.
 

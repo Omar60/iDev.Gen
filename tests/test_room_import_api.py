@@ -242,3 +242,58 @@ def test_a_refusal_still_persists_the_registry_for_the_seed_it_wrote(client, tmp
     on_disk = json.loads(main.CONFIG_PATH.read_text(encoding="utf-8"))
     assert "workplace-scenes-rooms-seed.json" in [
         lib["seed_file"] for lib in on_disk["room_libraries"]]
+
+
+def test_the_rooms_route_serves_what_is_on_disk_and_states_why_it_serves_nothing(
+        client, tmp_path):
+    """6.4: the picker reads the imported rooms at runtime, and an absent
+    library is a sentence rather than an error.
+
+    The seeds an import writes are untracked, so "the registry names a file
+    that is not there" is the ordinary state of a fresh clone, a second machine
+    and any checkout where nobody ran the import. `load_room_libraries` raises
+    on exactly that, which is right where an import is being verified and wrong
+    for a screen: raising here is a picker that will not open instead of a
+    picker holding the nine tracked rooms.
+
+    So all three states are asserted on one route: a registered library with no
+    seed on disk, the same library once its seed exists, and one switched off.
+    Each contributes no rooms for a DIFFERENT reason, and the reason is what the
+    operator reads to know which.
+    """
+    saved_dir = main.DATA_DIR
+    try:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        main.DATA_DIR = data_dir
+        main.CONFIG = dict(_empty_registry_config(), room_libraries=[
+            {"name": "workplace_scenes",
+             "seed_file": "workplace-scenes-rooms-seed.json",
+             "enabled": True, "weight": 1.0},
+        ])
+
+        # Nothing imported here yet.
+        body = client.get("/api/rooms").json()
+        assert body["rooms"] == []
+        library = body["libraries"][0]
+        assert library["name"] == "workplace_scenes" and library["rooms"] == 0
+        assert "workplace-scenes-rooms-seed.json" in library["reason"]
+        # The reason crosses the wire, so it carries no machine path.
+        assert str(tmp_path) not in json.dumps(body)
+
+        # The same registry, once the seed exists.
+        (data_dir / "workplace-scenes-rooms-seed.json").write_text(json.dumps([
+            {"key": "work-office-01", "label": "Office", "manner": "candid",
+             "place": "modern office room with glass partitions and a wide desk"},
+        ]), encoding="utf-8")
+        body = client.get("/api/rooms").json()
+        assert [r["key"] for r in body["rooms"]] == ["work-office-01"]
+        assert body["libraries"][0]["reason"] == ""
+
+        # And switched off: present on disk, offered to nobody, and said so.
+        main.CONFIG["room_libraries"][0]["enabled"] = False
+        body = client.get("/api/rooms").json()
+        assert body["rooms"] == []
+        assert "switched off" in body["libraries"][0]["reason"]
+    finally:
+        main.DATA_DIR = saved_dir

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { composeLook, lookFromRoom, refillLook, registerFor } from './rooms.js'
+import { composeLook, lookFromRoom, pickerRooms, refillLook, registerFor } from './rooms.js'
 import candidRooms from '../../data/candid-rooms-seed.json'
 import directedLooks from '../../data/directed-looks-seed.json'
 
@@ -118,5 +118,39 @@ describe('a look wearing another manner register', () => {
     const before = String(filled)
     refillLook('directed', filled)
     expect(filled).toBe(before)
+  })
+})
+
+describe('the rooms the picker lists', () => {
+  const BUILT_IN = [
+    { key: 'bedroom-night', manner: 'candid', label: 'Bedroom', place: 'a bedroom' },
+  ]
+  const SERVED = [
+    { key: 'gs-stockroom-01', manner: 'candid', label: 'Stockroom', place: 'a stockroom' },
+  ]
+
+  // 6.4: the imported seeds are untracked, so a clone where nobody ran the
+  // import serves nothing. The picker is then the rooms the build carries, and
+  // an absent library is a reason rather than a broken screen.
+  it('is the built-in rooms when the route serves nothing', () => {
+    expect(pickerRooms(BUILT_IN, [])).toEqual(BUILT_IN)
+    expect(pickerRooms(BUILT_IN, undefined)).toEqual(BUILT_IN)
+    expect(pickerRooms(BUILT_IN, null)).toEqual(BUILT_IN)
+  })
+
+  it('appends what the route served', () => {
+    expect(pickerRooms(BUILT_IN, SERVED).map((r) => r.key))
+      .toEqual(['bedroom-night', 'gs-stockroom-01'])
+  })
+
+  // The route reads the room library registry, whose default entry is the nine
+  // tracked rooms themselves - so it hands back rooms the bundle already has.
+  // Without the dedup the picker lists every one of them twice.
+  it('lists a room once when the route also serves the tracked copy', () => {
+    const alsoServed = [{ key: 'bedroom-night', manner: 'candid', label: 'Bedroom', place: 'a bedroom' }]
+    const listed = pickerRooms(BUILT_IN, [...alsoServed, ...SERVED])
+    expect(listed.map((r) => r.key)).toEqual(['bedroom-night', 'gs-stockroom-01'])
+    // The tracked copy wins: it is the one the build was tested against.
+    expect(listed[0]).toBe(BUILT_IN[0])
   })
 })

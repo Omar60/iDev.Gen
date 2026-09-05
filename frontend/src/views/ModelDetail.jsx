@@ -17,12 +17,15 @@ import candidRooms from '../../../data/candid-rooms-seed.json'
 import directedLooks from '../../../data/directed-looks-seed.json'
 // The register is the manner's, not the room's, so composing is what turns a
 // place into a look. `rooms.js` holds both halves and the join.
-import { lookFromRoom, refillLook } from '../rooms.js'
+import { lookFromRoom, pickerRooms, refillLook } from '../rooms.js'
 
 // Every row carries the manner it was measured on, and the picker owes the
 // operator only the ones that belong to the session being written. Before this
 // it offered candid's bedrooms on a directed shoot.
-const LOOKS = [...candidRooms, ...directedLooks]
+// The tracked half, carried by the build. The imported half arrives at
+// runtime from `/api/rooms`, because those seeds are untracked and a build
+// that imported them would not build on a clone that never ran the import.
+const BUILT_IN = [...candidRooms, ...directedLooks]
 
 export default function ModelDetail({ id }) {
   const [model, setModel] = useState(null)
@@ -33,6 +36,9 @@ export default function ModelDetail({ id }) {
   const [newSession, setNewSession] = useState(null)
   // The whole config: it also carries the per-checkpoint profiles.
   const [config, setConfig] = useState({})
+  // Empty until the route answers, and empty forever if it cannot: an
+  // absent library is a reason, not an error, and the picker still opens.
+  const [servedRooms, setServedRooms] = useState([])
   const llm = !!config.llm_ok
   const [writing, setWriting] = useState('')
   const [error, setError] = useState('')
@@ -46,7 +52,12 @@ export default function ModelDetail({ id }) {
     // No endpoint configured is not an error: the assistant is optional, and the
     // buttons simply do not appear.
     api.get('/api/config').then(setConfig).catch(() => {})
+    api.get('/api/rooms').then((d) => setServedRooms(d.rooms || [])).catch(() => {})
   }, [id])
+
+  // The two halves, deduplicated: the registry's default entry is the nine
+  // tracked rooms, so the route hands back rooms the bundle already carries.
+  const ROOMS = pickerRooms(BUILT_IN, servedRooms)
 
   if (!model) return <p className="muted">{error || 'Loading…'}</p>
 
@@ -282,11 +293,11 @@ export default function ModelDetail({ id }) {
           <select value=""
                   title="Fill the look with a measured room. Every one of these was rendered; the text stays editable."
                   onChange={(e) => {
-                    const filled = lookFromRoom(newSession.manner, LOOKS, e.target.value)
+                    const filled = lookFromRoom(newSession.manner, ROOMS, e.target.value)
                     if (filled !== null) setNewSession({ ...newSession, look: filled })
                   }}>
             <option value="">Start from a measured room…</option>
-            {LOOKS.filter((r) => r.manner === newSession.manner).map((r) => (
+            {ROOMS.filter((r) => r.manner === newSession.manner).map((r) => (
               <option key={r.key} value={r.key}>
                 {r.label}{r.offers?.length ? ` — offers ${r.offers.join(', ')}` : ''}
               </option>
