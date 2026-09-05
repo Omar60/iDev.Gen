@@ -7008,6 +7008,67 @@ def test_an_act_is_drawable_only_when_the_run_provides_what_it_needs(client, see
         "act-plain", "act-him", "act-nude", "act-chair"}
 
 
+
+def test_a_mined_act_that_needs_the_second_body_is_not_dealt_to_a_single_body_run(client, seeded):
+    """8.9. The mined row is composed through the same gate as a hand-written one.
+
+    The act here is not typed into the test: it comes out of `split_fused_entry`,
+    carrying whatever `needs` the mining derived, and is handed to `compose-run`
+    as a candidate. That is the whole point of the test - the derivation and the
+    draw agree on ONE vocabulary or they do not, and the two are written in
+    different modules.
+
+    The `with_him=True` half is what catches a mining that invents its own word
+    for the requirement. A run-level filter keeps only acts whose `needs` is in
+    the set the run provides, so an act declaring `second_body` would be absent
+    from the pool in BOTH directions - and a test that only asserted the
+    single-body run would read that as a pass.
+    """
+    from backend.mining import NEEDS_SECOND_BODY, split_fused_entry
+
+    camera = "low angle from the foot of the bed"
+    act = "kneeling upright with both hands behind her head"
+    room = "a narrow attic room with a sloped ceiling"
+    entry = {
+        "identifier": "invented_fused_mined_01",
+        "family": "facial POV",
+        "prompt": f"{camera}, {act}, {room}",
+    }
+    rows = split_fused_entry(entry, {"camera": camera, "act": act, "room": room})
+    mined = [row for row in rows if row["slot"] == "act"][0]
+    # The wording never says a second body. The family floor is what put the
+    # requirement on it, which is the case 8.7 exists for.
+    assert mined["needs"] == NEEDS_SECOND_BODY
+    assert "him" not in mined["wording"]
+
+    for cam, act_key, framing in (("cam-m", "act-plain-m", "frame-m"),
+                                  ("cam-m", "act-mined", "frame-m")):
+        _seed_verified_trio(cam, act_key, framing,
+                            manner="directed", checkpoint="test-checkpoint")
+    candidates = {
+        "camera": [_candidate("cam-m", "taken from her left side")],
+        "act": [_candidate("act-plain-m", "she leans against the wall"),
+                dict(_candidate("act-mined", mined["wording"]), needs=mined["needs"])],
+        "framing": [_candidate("frame-m", "full body")],
+    }
+
+    def drawn(**flags):
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"mined {sorted(flags.items())}",
+            "manner": "directed", "checkpoint": "test-checkpoint", "shots": [],
+        }).json()["id"]
+        for count in (2, 1):
+            r = client.post(f"/api/sessions/{sid}/compose-run",
+                            json={"count": count, "candidates": candidates, **flags})
+            if r.status_code == 200:
+                break
+        return {json.loads(row["components"])["act"]["concept"]
+                for row in db.q("SELECT components FROM shot WHERE session_id=?", sid)}
+
+    assert drawn() == {"act-plain-m"}
+    assert drawn(with_him=True) == {"act-plain-m", "act-mined"}
+
+
 def test_a_session_of_written_shots_is_created_when_no_shot_mentions_a_kiss(client, seeded):
     """The branch no test executed, and it raised on every input but one.
 
