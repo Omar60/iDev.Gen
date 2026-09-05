@@ -2371,6 +2371,28 @@ def _skip_for_spread(
     return family_counts.get(fam, 0) >= max_per_family
 
 
+def _room_for_session(session) -> dict | None:
+    """The catalogue room a session's look was filled from, or None.
+
+    None for a session with no key, for a key whose library is no longer
+    registered, and for a key nobody carries any more - all three are the same
+    answer to the gate above, and all three are ordinary. A room can leave the
+    catalogue after a session was filled from it; a session that then refuses
+    to compose would be a shoot held hostage by an unregistered seed file.
+
+    `available_rooms` is the reader rather than the seed files, because it is
+    the one the picker offered the operator: a room the screen could not list
+    is a room no session should be gated on.
+    """
+    key = (session["room_key"] or "").strip()
+    if not key:
+        return None
+    for room in available_rooms(CONFIG, DATA_DIR).get("rooms", []):
+        if room.get("key") == key:
+            return room
+    return None
+
+
 def _draw_n_trio_shots(
     sid: int,
     count: int,
@@ -2495,6 +2517,28 @@ def _draw_n_trio_shots(
             422,
             f"compose refused: session is missing {', '.join(missing)}; "
             f"set them on the session before composing",
+        )
+
+    # The room's own people, against the run's. A room whose text puts a nurse
+    # or a boyfriend in the frame is a room this run cannot shoot alone: the
+    # look composes that sentence into every photograph of the session, so the
+    # second body arrives whether the acts asked for one or not. The refusal
+    # names the room AND the words responsible, because "this room needs two
+    # people" without them is a no with no next step - the operator cannot see
+    # which half of a paragraph they wrote is the problem.
+    #
+    # Read from the catalogue by key and never from the look: the look is the
+    # operator's text from the moment the room filled it, and re-reading it
+    # here would answer a question about words that may no longer be in it.
+    # That is also why a detached session (7.2) passes: no key, no claim.
+    room = _room_for_session(session)
+    if room and room.get("multi_body") and not with_him:
+        words = ", ".join(room["multi_body"])
+        raise HTTPException(
+            422,
+            f"compose refused: the room {room.get('label') or room.get('key')!r} puts other "
+            f"people in the frame ({words}); switch the run's second body on, or detach the "
+            f"room from the session",
         )
 
     # `him` and `furniture` are properties of the RUN — he is in the room or he
