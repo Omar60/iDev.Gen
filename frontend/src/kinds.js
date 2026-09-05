@@ -1272,9 +1272,24 @@ const POV = {
   blurb: 'The camera is in a participant’s hand: what he sees, not what a photographer sees.',
 }
 
-export const MANNERS = [...BASE_MANNERS, SELFIE, POV]
+/** The manners the operator can start a session in.
+ *
+ *  `pov` is NOT here yet and that is the point. A manner with no camera rows
+ *  is refused by `main.py` on session creation - "camera catalogue is empty
+ *  for manner" - so offering it in the shoot picker would be offering a button
+ *  that always 422s. `test_the_candid_catalogue_is_what_was_measured` asserts
+ *  exactly that invariant over this list, and it caught this the first time
+ *  `pov` was put here. It joins in 8.14, with the mined rows it exists for. */
+export const MANNERS = [...BASE_MANNERS, SELFIE]
 
-export const MANNER = Object.fromEntries(MANNERS.map((m) => [m.key, m]))
+/** Every manner that exists, selectable or not.
+ *
+ *  Separate from `MANNERS` because a shot already recorded under `pov` still
+ *  has to render its label: `MANNER[key]` is the lookup the views use, and a
+ *  manner missing from it shows the operator `undefined` rather than a name. */
+export const ALL_MANNERS = [...MANNERS, POV]
+
+export const MANNER = Object.fromEntries(ALL_MANNERS.map((m) => [m.key, m]))
 
 export const BRIEF_AXES = {
   register: [

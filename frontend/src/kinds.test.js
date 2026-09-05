@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { cameraPlan, shootChunkNote, MANNER, MANNERS, TECHNIQUE_DEFECTS, BODY_OPENINGS,
+import { cameraPlan, shootChunkNote, MANNER, MANNERS, ALL_MANNERS, TECHNIQUE_DEFECTS, BODY_OPENINGS,
          BRIEF_AXES, setCatalogue, arrangements, positionsFor,
          fitCameras } from './kinds.js'
 import { undressBy } from './enhance.js'
@@ -160,7 +160,12 @@ describe('the pov manner', () => {
     for (const field of identity) expect(pov[field]).not.toBe(directed[field])
   })
 
-  test('is offered to the operator like the other three', () => {
-    expect(MANNERS.map((m) => m.key)).toEqual(['directed', 'candid', 'selfie', 'pov'])
+  test('is known but not yet offered, because it has no cameras to shoot with', () => {
+    // A manner with an empty camera catalogue is refused on session creation,
+    // so putting `pov` in the picker today would be a button that always 422s.
+    // It is in `ALL_MANNERS` so a shot recorded under it still renders a name.
+    expect(MANNERS.map((m) => m.key)).toEqual(['directed', 'candid', 'selfie'])
+    expect(ALL_MANNERS.map((m) => m.key)).toEqual(['directed', 'candid', 'selfie', 'pov'])
+    expect(MANNER.pov).toBe(ALL_MANNERS[3])
   })
 })
