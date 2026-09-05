@@ -70,6 +70,16 @@ CREATE TABLE IF NOT EXISTS session (
     -- session that predates 3.2, kept unverified rather than guessed.
     manner        TEXT NOT NULL DEFAULT '',
     checkpoint    TEXT NOT NULL DEFAULT '',
+    -- Which room in the catalogue the look above was filled from, by key. It
+    -- records provenance and nothing else: `look` still carries the whole
+    -- text, so a session composes identically whether this is set or empty,
+    -- and clearing the key never touches a word of the look. Empty means the
+    -- look was hand-written, which is every session that exists today and
+    -- every session whose operator detaches its room afterwards. Not a
+    -- foreign key: the catalogue lives in seed files a library can be
+    -- unregistered from, and a key whose room is gone is a session that still
+    -- has to open.
+    room_key      TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL
 );
 
@@ -437,6 +447,14 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
         conn.execute("ALTER TABLE session ADD COLUMN manner TEXT NOT NULL DEFAULT ''")
     if "checkpoint" not in session_cols:
         conn.execute("ALTER TABLE session ADD COLUMN checkpoint TEXT NOT NULL DEFAULT ''")
+
+    # The room a session's look was filled from (7.1). Nothing is back-filled
+    # and nothing can be: the look is one block of text by the time it is
+    # stored, and matching it against the catalogue to guess which room wrote
+    # it would invent provenance for a look somebody typed. Empty is the honest
+    # answer for every session that predates the column.
+    if "room_key" not in session_cols:
+        conn.execute("ALTER TABLE session ADD COLUMN room_key TEXT NOT NULL DEFAULT ''")
 
     # The session's origin: written, composed, or mixed. 3.6's spec
     # scenario "a later comparison can tell which produced which
