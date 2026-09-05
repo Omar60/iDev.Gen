@@ -1239,7 +1239,40 @@ const SELFIE = {
       + 'renders a different act on every checkpoint (see the framing paragraph above).',
 }
 
-export const MANNERS = [...BASE_MANNERS, SELFIE]
+/** The camera is a participant's, and nothing here says so yet.
+ *
+ *  The source's POV families put the camera in somebody's hand inside the
+ *  photograph. Mined into `directed` those rows would inherit an instruction
+ *  saying someone is photographing her, which is the one thing they
+ *  contradict, and a dead verdict would then mean the mismatch rather than the
+ *  row.
+ *
+ *  So they get a manner of their own, made by inheriting the baseline and
+ *  changing only the identity. `directed`'s brief and line are both empty, so
+ *  this invents no prose: `pov` IS directed's instruction until somebody
+ *  measures a better one, and what the rows gain today is a namespace where
+ *  their verdicts belong to them.
+ *
+ *  Why not write the block now: `selfie`'s block is measured prose - its arm
+ *  rule went 4 of 12 to 12 of 12 on the same seeds - and this repo does not
+ *  ship instruction text it has not measured. 8.19 is the arm that says
+ *  whether the block is worth writing.
+ *
+ *  Why not park the rows in `directed` and move them later: a cell is keyed on
+ *  the manner, so verdicts do not transfer. Whichever manner these rows enter
+ *  is where their measurements live, and moving them afterwards throws the
+ *  measurements away.
+ *
+ *  The fisheye family is the exception and does not come here: its camera is an
+ *  unattended device in the room, which is what `candid` already describes. */
+const POV = {
+  ...BASE_MANNERS[0],
+  key: 'pov',
+  label: 'From inside it, on his camera',
+  blurb: 'The camera is in a participant’s hand: what he sees, not what a photographer sees.',
+}
+
+export const MANNERS = [...BASE_MANNERS, SELFIE, POV]
 
 export const MANNER = Object.fromEntries(MANNERS.map((m) => [m.key, m]))
 
