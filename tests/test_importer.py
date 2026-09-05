@@ -44,6 +44,7 @@ from backend.importer import (
     derive_room_key,
     import_source,
 )
+from backend.translation_map import load_translation_map
 from backend.source_manifest import (
     REASON_UNDECLARED,
     SourceRefused,
@@ -508,6 +509,89 @@ def test_translation_lookup_stops_when_string_missing_naming_entry_and_field(tmp
 
     # Validate-everything-then-write: nothing was written to data_dir
     assert list(data_dir.iterdir()) == []
+
+
+def test_the_stored_theme_is_the_source_string_character_for_character(tmp_path: Path):
+    """5.5: an accepted entry's English theme reaches the seed unedited.
+
+    "Do not trim their words" is a statement about the corpus, and the place
+    is the whole reason this import exists. So the fixture theme carries every
+    character an import is tempted to tidy - leading and trailing spaces, an
+    embedded newline and a tab, a backslash, a double quote, an em dash, a
+    curly apostrophe, an accented letter and an ellipsis - and the stored text
+    is compared against the source string one character at a time.
+
+    Two paths, because there are two: an entry whose theme is already English
+    is copied from the source file, and an entry whose theme is in another
+    script is copied from the map. The second is compared against what
+    `load_translation_map` hands over rather than against the raw JSON,
+    because the map's own normaliser strips its translations - deliberately,
+    so an authoring artifact in a hand-written map file does not become a
+    leading space in a room. What is asserted here is that the importer adds
+    no edit of its own on top of that.
+
+    The last assertion is the one that is easy to miss: the seed is written
+    with `ensure_ascii=True`, so the file on disk is pure ASCII escapes. The
+    characters have to survive the round trip, not merely be handed to
+    `json.dumps`.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    # Built from escapes: this file is asserted pure ASCII, and what the test
+    # is about is that the characters survive, not which alphabet wrote them.
+    em_dash, apostrophe, ellipsis, e_acute = (
+        _zh(["2014"]), _zh(["2019"]), _zh(["2026"]), _zh(["00e9"])
+    )
+    theme = (
+        "  a tea room " + em_dash + " tatami mats, the girl" + apostrophe + "s low table,"
+        + chr(10) + "a second line with a" + chr(9) + "tab, a " + chr(92)
+        + " backslash, a " + chr(34) + "quote" + chr(34) + ", a caf"
+        + e_acute + ellipsis + " and trailing spaces   "
+    )
+    foreign = _zh(["8302", "5ba4"])
+
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text(
+        json.dumps({foreign: {"translation": theme, "fields": ["theme"]}}),
+        encoding="utf-8",
+    )
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps({
+            "library": "general_scenes",
+            "items": [
+                {"identifier": "gs_english", "label": "Already English", "theme": theme},
+                {"identifier": "gs_translated", "label": "Translated", "theme": foreign},
+            ],
+        }, ensure_ascii=True),
+        encoding="utf-8",
+    )
+
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+
+    seed = data_dir / "general-scenes-rooms-seed.json"
+    raw = seed.read_text(encoding="utf-8")
+    rows = {r["identifier"]: r for r in json.loads(raw)}
+
+    # The English path: the source's own string, character for character.
+    stored = rows["gs_english"]["place"]
+    assert len(stored) == len(theme), (len(stored), len(theme))
+    for i, (got, want) in enumerate(zip(stored, theme)):
+        assert got == want, (
+            i, repr(theme[max(0, i - 12):i + 12]), repr(stored[max(0, i - 12):i + 12])
+        )
+    assert stored == theme
+
+    # The translated path: exactly what the map hands over, and nothing else.
+    from_map = load_translation_map(map_file)[foreign]["translation"]
+    assert rows["gs_translated"]["place"] == from_map
+
+    # The round trip: written as ASCII escapes, read back as the same characters.
+    assert raw.isascii(), "the seed file itself has to stay ASCII on disk"
+    assert not stored.isascii(), "the fixture would prove nothing if it were plain ASCII"
 
 
 def test_an_imported_room_is_a_place_that_composes_under_either_manner(tmp_path: Path):
