@@ -361,6 +361,13 @@ class JudgeShotIn(BaseModel):
     control: bool = False
 
 
+# The longest room, in words, a run composes when the config does not say.
+# Named once and read by both the schema below and the compose gate: a default
+# spelled twice is two numbers free to disagree, and the one the app enforces
+# would not be the one Setup writes.
+ROOM_WORD_BUDGET: int = 120
+
+
 class ConfigIn(BaseModel):
     comfy_url: str
     comfy_output_dir: str = ""
@@ -389,6 +396,23 @@ class ConfigIn(BaseModel):
     # carried the key writes what the app was already using.
     room_libraries: list[dict] = Field(
         default_factory=lambda: [dict(lib) for lib in DEFAULT_ROOM_LIBRARIES])
+    # The longest room, in words, a run will compose. Here for the same reason
+    # the registry is: a key this schema does not carry is a key the next Setup
+    # save deletes.
+    #
+    # The default REFUSES NOTHING and is meant to. Two sessions pushed against
+    # the idea that a long line costs the camera and neither found the effect:
+    # session 391 kept a camera 3/3 on a 242-word line and lost it on a
+    # 224-word one, and session 394 shot one line twice, once as written and
+    # once with 87 to 187 words of whole blocks deleted, same seed, everything
+    # else byte-identical - 9/16 against 9/16. So length is not the mechanism
+    # it was taken for, and a gate tuned as though it were would refuse rooms
+    # for a reason nobody has measured. The longest room in the imported corpus
+    # is 89 words and the median is 17; 120 sits above the whole corpus with
+    # room to spare, which makes this a tripwire for an absurd input rather
+    # than a constraint. 7.9 varies room length alone against a fixed camera
+    # row and sets the real number.
+    room_word_budget: int = ROOM_WORD_BUDGET
 
 
 # ------------------------------------------------------------------ setup
@@ -2540,6 +2564,23 @@ def _draw_n_trio_shots(
             f"people in the frame ({words}); switch the run's second body on, or detach the "
             f"room from the session",
         )
+
+    # And the room's length against the budget. Counted on the room's own
+    # stored text and not on the look, for the reason above: the look is the
+    # operator's, and a budget that policed it would refuse a session for words
+    # nobody in this repo measured. The message carries both numbers because a
+    # limit without the measurement is untunable - "too long" leaves the
+    # operator guessing whether they are over by a word or by a hundred.
+    if room:
+        words = len((room.get("place") or "").split())
+        budget = int(CONFIG.get("room_word_budget") or ROOM_WORD_BUDGET)
+        if budget and words > budget:
+            raise HTTPException(
+                422,
+                f"compose refused: the room {room.get('label') or room.get('key')!r} is "
+                f"{words} words and the budget is {budget}; raise room_word_budget in the "
+                f"config, or pick a shorter room",
+            )
 
     # `him` and `furniture` are properties of the RUN — he is in the room or he
     # is not, the room has somewhere to sit or it does not — so they narrow the

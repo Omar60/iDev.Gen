@@ -12,6 +12,7 @@ from being implemented as "rewrite the room until it is safe".
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +22,16 @@ import main
 # A room whose own text puts a nurse in the frame, and one that does not.
 # `multi_body` is stored by the importer (it derives the words once, at import)
 # so a seed written by hand carries it the same way an imported one does.
+# The room seeds the BUILD carries, named rather than globbed. `data/` on a
+# working machine also holds the imported libraries, which are untracked - a
+# glob would make this suite read a different number of rooms on every machine
+# and fail on somebody's private import. The imported corpus was measured once,
+# at import: 396 rooms, median 17 words, longest 89.
+TRACKED_ROOM_SEEDS = (
+    Path("data/candid-rooms-seed.json"),
+    Path("data/directed-looks-seed.json"),
+)
+
 CROWDED = {
     "key": "ms-exam-room-01",
     "label": "Examination room",
@@ -144,3 +155,100 @@ def test_a_room_with_nobody_in_it_and_a_detached_session_both_pass(client, seede
         r = client.post(f"/api/sessions/{sid}/compose-run",
                         json={"count": 1, "candidates": candidates, "with_him": False})
         assert r.status_code == 200, (key, r.text)
+
+
+def test_the_refusal_over_the_budget_carries_the_count_and_the_budget(client, seeded, monkeypatch):
+    """7.5. Both numbers, asserted as literals.
+
+    A limit stated without the measurement is untunable: "this room is too
+    long" leaves the operator guessing whether they are over by a word or by a
+    hundred, and the only way to find out is to shorten and re-submit until it
+    passes. The two numbers together are what make the refusal a next step.
+
+    The budget is dropped to a number the fixture room exceeds rather than the
+    room being grown past 120, because the shipped default is deliberately
+    above the whole corpus and a test that needed a 121-word room would be
+    testing a room nobody has.
+    """
+    long_place = " ".join(["A"] + ["word"] * 29)   # 30 words
+    room = {**ALONE, "key": "ms-long-room-01", "place": long_place}
+    seed = main.DATA_DIR / "medical-scenes-rooms-seed.json"
+    main.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    seed.write_text(json.dumps([room], indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setattr(main, "CONFIG", {**main.CONFIG, "room_word_budget": 20,
+                                         "room_libraries": [{"name": "medical_scenes",
+                                                             "seed_file": seed.name,
+                                                             "enabled": True, "weight": 1.0}]})
+    try:
+        candidates = _seed_one_trio()
+        sid = _session(client, seeded, room["key"], long_place)
+        r = client.post(f"/api/sessions/{sid}/compose-run",
+                        json={"count": 1, "candidates": candidates, "with_him": False})
+        assert r.status_code == 422, r.text
+        detail = r.json()["detail"]
+        assert "30" in detail, detail
+        assert "20" in detail, detail
+        assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == 0
+    finally:
+        seed.unlink(missing_ok=True)
+
+
+def test_the_shipped_budget_refuses_no_room_the_app_carries(client, seeded):
+    """The default is documented as refusing nothing, and this is that sentence
+    as an assertion. It is the line that fails the day somebody tunes the
+    number down without varying room length alone first - which is 7.9's job,
+    and the whole reason the default is a tripwire rather than a constraint."""
+    # `main.ROOM_WORD_BUDGET` and not a literal: a test carrying its own copy of
+    # the number passes whatever the app enforces, which is the shape that let
+    # a deliberate break of the default go green here once already.
+    budget = main.CONFIG.get("room_word_budget") or main.ROOM_WORD_BUDGET
+    for path in TRACKED_ROOM_SEEDS:
+        for stored in json.loads(path.read_text(encoding="utf-8")):
+            words = len((stored.get("place") or "").split())
+            assert words <= budget, (path.name, stored["key"], words, budget)
+
+
+def test_every_seeded_room_composes_its_own_text_byte_for_byte(client, seeded):
+    """7.6. The property, over every room the build carries.
+
+    Not one room and not a fixture: the failure this is written against is a
+    composer that shortens SOME rooms - the long ones, the ones with a
+    semicolon, the ones whose prose ends without a full stop - and a test over
+    a single hand-written room would never see it. A room that reaches the
+    prompt one character short is a room shot under text nobody wrote and
+    measured under a verdict that no longer describes it.
+    """
+    rooms = [r for path in TRACKED_ROOM_SEEDS
+             for r in json.loads(path.read_text(encoding="utf-8"))]
+    assert rooms, "no tracked room seeds to compose"
+
+    seed = main.DATA_DIR / "candid-rooms-seed.json"
+    main.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    seed.write_text(json.dumps(rooms, indent=2) + "\n", encoding="utf-8")
+    saved = main.CONFIG
+    main.CONFIG = {**main.CONFIG, "room_libraries": [
+        {"name": "candid", "seed_file": seed.name, "enabled": True, "weight": 1.0}]}
+    try:
+        for at, stored in enumerate(rooms):
+            candidates = {
+                slot: [{"key": f"{slot}-{at}", "wordings": [{"key": f"{slot}-{at}",
+                                                             "text": f"{slot} text"}]}]
+                for slot in ("camera", "act", "framing")
+            }
+            db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+                   "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                   f"camera-{at}", f"act-{at}", f"framing-{at}",
+                   "directed", "finepornV4", 10, 8)
+            sid = _session(client, seeded, stored["key"], stored["place"])
+            r = client.post(f"/api/sessions/{sid}/compose-run",
+                            json={"count": 1, "candidates": candidates,
+                                  # Declared, so a room that names other people is
+                                  # accepted here: this asks what the composer does
+                                  # with the text, not what the gate does with it.
+                                  "with_him": True})
+            assert r.status_code == 200, (stored["key"], r.text)
+            prompt = db.one("SELECT prompt FROM shot WHERE session_id=?", sid)["prompt"]
+            assert stored["place"] in prompt, (stored["key"], prompt)
+    finally:
+        main.CONFIG = saved
+        seed.unlink(missing_ok=True)
