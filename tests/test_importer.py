@@ -1223,6 +1223,107 @@ def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Pa
     assert dest_report["created_keys"] == ["sm-dungeon-02"]
 
 
+def test_reimport_updates_the_room_and_leaves_its_measurement_alone(tmp_path: Path):
+    """5.10: a second import is a text update, not a new room.
+
+    The two halves pull against each other. Everything the source owns has to
+    move on a re-import - the place, the offers derived from it, the words the
+    map wrote - because that is the only way a corrected translation or a
+    reworded room ever reaches the app. Everything THIS project measured has to
+    stay - the verdict and the sample size - because those were paid for in
+    rendered frames against that room, and a re-import that resets them is an
+    import that quietly deletes the measurements.
+
+    So the fixture is a room that has been measured: imported once, then given
+    a verdict the way a pass would, then imported again over changed source and
+    a corrected map. The third run changes nothing and is asserted byte for
+    byte, because "idempotent" is a statement about the file and not about the
+    counts - a merge that rewrites the same row with its keys in a new order
+    reports `unchanged` and still makes a diff on every run.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    seed_file = data_dir / "general-scenes-rooms-seed.json"
+    map_file = source_dir / "translation_map.json"
+    source_file = source_dir / "general_scenes.json"
+
+    zh_label = _zh(["5eab", "623f"])
+    zh_notes = _zh(["7981", "6b62", "95ea", "7c89"])
+
+    def write_map(label: str, notes: str) -> None:
+        map_file.write_text(json.dumps({
+            zh_label: {"translation": label, "fields": ["label"]},
+            zh_notes: {"translation": notes, "fields": ["notes"]},
+        }), encoding="utf-8")
+
+    def write_source(theme: str, props: str) -> None:
+        source_file.write_text(json.dumps({
+            "library": "general_scenes",
+            "items": [{
+                "identifier": "gs_stockroom_01",
+                "label": zh_label,
+                "theme": theme,
+                "props": props,
+                "notes": zh_notes,
+            }],
+        }, ensure_ascii=True), encoding="utf-8")
+
+    first_theme = "stockroom with steel shelving and a bare bulb overhead"
+    write_map("Storeroom", "no crystal sparkle")
+    write_source(first_theme, "steel shelving, folding screen")
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+
+    row = json.loads(seed_file.read_text(encoding="utf-8"))[0]
+    assert row["label"] == "Storeroom"
+    assert row["offers"] == ["steel shelving"]
+    assert row["verdict"] == "unverified"
+
+    # The measurement. Ten frames were shot against this room and the pass
+    # wrote what it found onto the row, which is the only place it lives.
+    row["verdict"] = "verified: 10/10"
+    row["sample_size"] = 10
+    seed_file.write_text(json.dumps([row], ensure_ascii=True, indent=2) + "\n",
+                         encoding="utf-8")
+
+    # A reworded room, a different prop list, and a corrected translation of
+    # both the label and the notes.
+    second_theme = "stockroom with a scarred workbench under a bare bulb"
+    write_map("Stockroom", "no crystal sparkle on the bulb")
+    write_source(second_theme, "scarred workbench, folding screen")
+    report = import_source(source_dir=source_dir, map_path=map_file,
+                           data_dir=data_dir, config=_fresh_config())
+
+    rows = json.loads(seed_file.read_text(encoding="utf-8"))
+    assert len(rows) == 1, "a second import made a second room"
+    updated = rows[0]
+    assert report["created"] == 0 and report["updated"] == 1 and report["orphaned"] == 0
+
+    # What the source owns moved, derivations included.
+    assert updated["key"] == derive_room_key("gs_stockroom_01")
+    assert updated["label"] == "Stockroom"
+    assert updated["place"] == second_theme
+    assert updated["offers"] == ["scarred workbench"], (
+        "offers are derived from the place, so a reworded room re-derives them")
+    assert updated["guidance"]["notes"] == "no crystal sparkle on the bulb"
+    assert updated["authored"] == ["guidance.notes", "label"]
+
+    # What was measured stayed.
+    assert updated["verdict"] == "verified: 10/10"
+    assert updated["sample_size"] == 10
+
+    # And a run over unchanged source is a no-op on disk, not merely a row that
+    # compares equal in memory.
+    before = seed_file.read_bytes()
+    again = import_source(source_dir=source_dir, map_path=map_file,
+                          data_dir=data_dir, config=_fresh_config())
+    assert again["updated"] == 0 and again["created"] == 0
+    assert again["destinations"]["general-scenes-rooms-seed.json"]["unchanged"] == 1
+    assert seed_file.read_bytes() == before
+
+
 def test_empty_header_entries_skipped_and_reported(tmp_path: Path):
     """Fact 2 & 5.11: Verify that entries carrying no theme text (such as file-level
     header leftovers) are skipped from room seed writing and accounted for in the report.
