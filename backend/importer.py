@@ -267,6 +267,65 @@ def is_guidance_field(name: str) -> bool:
             or name == "mood" or name.startswith("mood_"))
 
 
+# A hole in the source's text meant to be filled by another field. Written as a
+# name in braces, which is what the corpus uses: `{pose}` appears in three
+# imported rooms and reached the prompt verbatim, so this is a defect that has
+# already shipped once rather than a shape somebody guessed at.
+#
+# The name is REQUIRED inside the braces. A bare `{}` is JSON this repo writes
+# on purpose - `guidance` is always written, empty dict included - and a
+# pattern that matched it would refuse every room carrying no guidance.
+PLACEHOLDER_PATTERN: re.Pattern = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def unresolved_placeholders(value: Any) -> list[str]:
+    """Every placeholder name still standing anywhere in a value, in order.
+
+    Takes a whole row rather than one string, because a hole is a hole
+    wherever it sits: the three that shipped are in `place`, but a label or a
+    guidance note carrying one reaches the operator's screen just the same.
+    Serialised rather than walked, so a field added later is covered without
+    this function being told about it.
+    """
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    seen: set[str] = set()
+    found: list[str] = []
+    for name in PLACEHOLDER_PATTERN.findall(text):
+        if name not in seen:
+            seen.add(name)
+            found.append(name)
+    return found
+
+
+def resolve_placeholders(text: str, entry: dict[str, Any]) -> str:
+    """Fill a hole from the entry's own material, and leave the rest standing.
+
+    Filled ONLY from a field of the entry with that exact name, holding a
+    non-empty string. There is no fallback wording and no deletion of the
+    braces: a hole quietly removed is a sentence with a piece missing that
+    still reads as English, which is worse than one that fails loudly - it
+    enters the catalogue and gets judged.
+
+    A hole this cannot fill is left in place for the caller to skip and report
+    on. That is the whole of the decision here: fill it from the entry, or do
+    not store the entry.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+
+    def _fill(match: re.Match) -> str:
+        name = match.group(1)
+        value = entry.get(name) if isinstance(entry, dict) else None
+        if isinstance(value, str) and value.strip():
+            return value
+        return match.group(0)
+
+    return PLACEHOLDER_PATTERN.sub(_fill, text)
+
+
 class TranslationMissingError(ValueError):
     """Raised when non-English strings in an upload are missing from the map."""
 
@@ -622,6 +681,12 @@ def import_source(
     dest_reports: dict[str, dict[str, Any]] = {}
 
     outlying: list[dict[str, Any]] = []
+    # Entries whose stored text still carried a hole nothing could fill.
+    # Collected across every destination, like the empty-theme skips, because
+    # the operator's question is "what did this run not write", not "what did
+    # this run not write into the medical file".
+    skipped_placeholder_ids: list[str] = []
+    skipped_placeholder_names: list[dict[str, Any]] = []
     total_created = 0
     total_updated = 0
     total_unchanged = 0
@@ -668,6 +733,11 @@ def import_source(
             theme_text = _translate_field(
                 _extract_theme_text(entry), translation_map, identifier, "place", authored
             )
+            # A hole filled from the entry's own material, after translation
+            # rather than before: the map is keyed on the source string as the
+            # source wrote it, hole included, and filling first would hand the
+            # map a string it has no entry for.
+            theme_text = resolve_placeholders(theme_text, entry)
 
             # Build updated row
             new_row: dict[str, Any] = {
@@ -733,6 +803,27 @@ def import_source(
             # row carries no translation" apart from "this row predates the
             # field", which is a guess it would get wrong in one direction.
             new_row["authored"] = sorted(authored)
+
+            # A hole nothing in the entry could fill. The row is not written -
+            # not with the braces in it, and not with them quietly removed.
+            #
+            # Checked over the WHOLE row and not over `place` alone: the three
+            # that shipped are all in `place`, which is exactly why a check
+            # written against them would miss the next one in a label.
+            #
+            # The stale row on disk goes with it. `identifier` is already in
+            # `seen_incoming_ids`, so a previously imported copy is neither
+            # merged nor retained as an orphan, which is the point: a room
+            # whose text still carries `{pose}` is unshootable, and leaving
+            # last import's copy in place would keep sending it to the sampler
+            # while the report said the entry was skipped.
+            holes = unresolved_placeholders(new_row)
+            if holes:
+                skipped_placeholder_ids.append(identifier)
+                skipped_placeholder_names.append(
+                    {"identifier": identifier, "placeholders": holes}
+                )
+                continue
 
             # Check if this row already existed
             existing_row = existing_by_id.get(identifier) or existing_by_id.get(room_key)
@@ -853,6 +944,9 @@ def import_source(
         "orphaned": total_orphaned,
         "skipped_empty": len(skipped_empty_ids),
         "skipped_empty_identifiers": skipped_empty_ids,
+        "skipped_placeholder": len(skipped_placeholder_ids),
+        "skipped_placeholder_identifiers": skipped_placeholder_ids,
+        "skipped_placeholders": skipped_placeholder_names,
         "refused_files": len(refused_libraries),
         "refused_libraries": refused_libraries,
         "refused_identifiers": guard_report["refused_identifiers"],

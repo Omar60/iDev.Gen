@@ -1723,6 +1723,128 @@ def test_empty_header_entries_skipped_and_reported(tmp_path: Path):
             assert zh_header.encode("unicode_escape") not in raw
 
 
+def test_an_entry_whose_hole_the_map_can_fill_is_stored_resolved(tmp_path: Path):
+    """8.4: a hole filled from the entry's own field reaches the seed filled."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (source_dir / "translation_map.json").write_text("{}", encoding="utf-8")
+
+    (source_dir / "medical_scenes.json").write_text(
+        json.dumps(
+            {
+                "library": "medical_scenes",
+                "items": [
+                    {
+                        "identifier": "medical_exam_01",
+                        "label": "Consultation room",
+                        "theme": "a sterile consultation room, {pose}, bright lighting",
+                        "pose": "bent forward over the examination table",
+                    }
+                ],
+            },
+            ensure_ascii=True, indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    report = import_source(
+        source_dir=source_dir, map_path=source_dir / "translation_map.json",
+        data_dir=data_dir, config=_fresh_config(),
+    )
+    assert report["skipped_placeholder"] == 0
+
+    rows = json.loads(
+        (data_dir / "medical-scenes-rooms-seed.json").read_text(encoding="utf-8"))
+    assert len(rows) == 1
+    assert rows[0]["place"] == (
+        "a sterile consultation room, bent forward over the examination "
+        "table, bright lighting"
+    )
+    assert "{pose}" not in json.dumps(rows)
+
+
+def test_an_unfillable_hole_skips_the_entry_and_takes_its_stale_row_with_it(tmp_path: Path):
+    """8.4: the row is not written, the report names it, and last import's copy goes.
+
+    The stale half is the half that matters. An entry skipped while a previous
+    import's copy stays on disk is a report that says the room was not written
+    and a seed file that still sends `{pose}` to the sampler on every draw.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (source_dir / "translation_map.json").write_text("{}", encoding="utf-8")
+
+    seed_path = data_dir / "medical-scenes-rooms-seed.json"
+    seed_path.write_text(
+        json.dumps(
+            [
+                {
+                    "key": "medical-exam-01",
+                    "label": "Consultation room",
+                    "manners": [],
+                    "place": "a sterile consultation room, {pose}, bright lighting",
+                    "identifier": "medical_exam_01",
+                }
+            ],
+            ensure_ascii=True, indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    (source_dir / "medical_scenes.json").write_text(
+        json.dumps(
+            {
+                "library": "medical_scenes",
+                "items": [
+                    {
+                        "identifier": "medical_exam_01",
+                        "label": "Consultation room",
+                        "theme": "a sterile consultation room, {pose}, bright lighting",
+                    },
+                    {
+                        "identifier": "medical_ward_02",
+                        "label": "Ward",
+                        "theme": "a quiet ward with a curtain drawn around one bed",
+                    },
+                    # The hole is in the LABEL and the theme is clean. The
+                    # three that shipped are all in `place`, so a check
+                    # written against `place` alone passes every test above
+                    # and lets this one through to the picker.
+                    {
+                        "identifier": "medical_theatre_03",
+                        "label": "Theatre, {pose}",
+                        "theme": "an operating theatre under a wide overhead lamp",
+                    },
+                ],
+            },
+            ensure_ascii=True, indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    report = import_source(
+        source_dir=source_dir, map_path=source_dir / "translation_map.json",
+        data_dir=data_dir, config=_fresh_config(),
+    )
+
+    assert report["skipped_placeholder"] == 2
+    assert report["skipped_placeholder_identifiers"] == [
+        "medical_exam_01", "medical_theatre_03"
+    ]
+    assert report["skipped_placeholders"] == [
+        {"identifier": "medical_exam_01", "placeholders": ["pose"]},
+        {"identifier": "medical_theatre_03", "placeholders": ["pose"]},
+    ]
+
+    rows = json.loads(seed_path.read_text(encoding="utf-8"))
+    assert [r["identifier"] for r in rows] == ["medical_ward_02"]
+    assert "{pose}" not in seed_path.read_text(encoding="utf-8")
+
+
 def test_importer_files_are_pure_ascii_and_contain_no_control_bytes():
     """Verify that all created/modified files are pure ASCII with no illegal control
     bytes, no literal backspaces, no trailing whitespace, and LF endings.
