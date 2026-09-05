@@ -115,7 +115,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Refused identifiers: {', '.join(report['refused_identifiers'])}")
 
     for dest, info in report.get("destinations", {}).items():
-        print(f"  Destination {dest}: {info['written']} written ({info['created']} created, {info['updated']} updated, {info['unchanged']} unchanged, {info['orphaned']} orphaned)")
+        print(
+            f"  Destination {dest}: accepted {info.get('accepted', 0)}, "
+            f"refused {info.get('refused', 0)}, {info['written']} written "
+            f"({info['created']} created, {info['updated']} updated, "
+            f"{info['unchanged']} unchanged, {info['orphaned']} orphaned)"
+        )
 
     return 0
 

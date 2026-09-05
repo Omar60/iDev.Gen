@@ -73,19 +73,17 @@ def _extract_strings_from_value(
                 "string": val,
             })
     elif isinstance(val, (list, tuple, set)):
+        # Every item goes back through this function rather than being
+        # handled inline per type. A list inside a list used to be dropped
+        # here while `_translate_value` descended it, and the two walks
+        # disagreeing is how source prose reached a seed file: the coverage
+        # walk reported nothing to cover and the writer wrote the string
+        # back out unchanged. The recursion is what keeps them the same
+        # shape. A str or a dict item lands on the same field path it did
+        # before - the branches below append with `field_name` and with
+        # `field_name.sub_key` respectively.
         for item in val:
-            if isinstance(item, str):
-                if contains_non_english(item):
-                    results.append({
-                        "identifier": identifier,
-                        "field": field_name,
-                        "string": item,
-                    })
-            elif isinstance(item, dict):
-                for sub_key in sorted(item.keys()):
-                    sub_val = item[sub_key]
-                    sub_field = f"{field_name}.{sub_key}" if field_name else sub_key
-                    results.extend(_extract_strings_from_value(sub_val, sub_field, identifier))
+            results.extend(_extract_strings_from_value(item, field_name, identifier))
     elif isinstance(val, dict):
         for sub_key in sorted(val.keys()):
             sub_val = val[sub_key]

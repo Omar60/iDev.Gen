@@ -16,8 +16,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from backend.asset_guard import guard_entries
-from backend.extractor import _load_entries_from_file
+from backend.asset_guard import guard_entries, guard_entry
+from backend.extractor import (
+    _extract_strings_from_value,
+    _load_entries_from_file,
+)
 from backend.room_registry import (
     get_room_libraries_config,
     resolve_data_dir,
@@ -44,15 +47,31 @@ THEME_FIELDS: tuple[str, ...] = (
 
 
 class TranslationMissingError(ValueError):
-    """Raised when a non-English string is missing from the translation map."""
+    """Raised when non-English strings in an upload are missing from the map."""
 
-    def __init__(self, identifier: str, field: str, text: str) -> None:
-        super().__init__(
-            f"Missing translation for entry {identifier!r}, field {field!r}: {text!r}"
-        )
-        self.identifier = identifier
-        self.field = field
-        self.text = text
+    def __init__(self, uncovered: list[dict[str, str]]) -> None:
+        self.uncovered = [dict(item) for item in uncovered]
+        first = self.uncovered[0] if self.uncovered else {}
+        self.identifier = str(first.get("identifier") or "")
+        self.field = str(first.get("field") or "")
+        self.text = str(first.get("string") or "")
+
+        if len(self.uncovered) <= 1:
+            msg = (
+                f"Missing translation for entry {self.identifier!r}, "
+                f"field {self.field!r}: {self.text!r}"
+            )
+        else:
+            lines = [
+                f"Missing translation for {len(self.uncovered)} string(s) across upload:"
+            ]
+            lines.extend(
+                f"  entry {item['identifier']!r}, field {item['field']!r}: "
+                f"{item['string']!r}"
+                for item in self.uncovered
+            )
+            msg = "\n".join(lines)
+        super().__init__(msg)
 
 
 def derive_room_key(identifier: str) -> str:
@@ -80,46 +99,84 @@ def _extract_theme_text(entry: dict[str, Any]) -> str:
 def _find_untranslated_strings(
     entry: dict[str, Any],
     translation_map: dict[str, dict[str, Any]],
-) -> list[tuple[str, str]]:
+) -> list[dict[str, str]]:
     """Find non-English strings in an entry not covered by the map.
 
-    Returns list of (field_name, source_string).
-    """
-    untranslated: list[tuple[str, str]] = []
-    identifier = str(entry.get("identifier") or entry.get("id") or entry.get("key") or "")
+    Returns list of dicts with 'identifier', 'field' and 'string'.
+    Reuses the recursive walker from backend.extractor so nested dicts and
+    lists are checked rather than silently escaping non-English text to disk.
 
-    for field, val in entry.items():
-        if isinstance(val, str):
-            if contains_non_english(val):
-                map_entry = translation_map.get(val)
-                trans = map_entry.get("translation") if isinstance(map_entry, dict) else None
-                if not isinstance(trans, str) or not trans.strip() or contains_non_english(trans):
-                    untranslated.append((field, val))
-        elif isinstance(val, (list, tuple)):
-            for idx, item in enumerate(val):
-                if isinstance(item, str) and contains_non_english(item):
-                    map_entry = translation_map.get(item)
-                    trans = map_entry.get("translation") if isinstance(map_entry, dict) else None
-                    if not isinstance(trans, str) or not trans.strip() or contains_non_english(trans):
-                        untranslated.append((f"{field}[{idx}]", item))
+    Every field is walked, the extractor's METADATA_FIELDS included. That list
+    marks what is not a translation candidate for a coverage report; it is not
+    what may reach a seed file. `identifier` is on it and is written to the row,
+    so filtering by it puts the source's own script on disk as unicode escapes the
+    repository's CJK rule cannot see - measured, not reasoned.
+    """
+    identifier = str(entry.get("identifier") or entry.get("id") or entry.get("key") or "")
+    untranslated: list[dict[str, str]] = []
+
+    for field in sorted(entry.keys()):
+        extracted = _extract_strings_from_value(entry[field], field, identifier)
+        for item in extracted:
+            source_str = item["string"]
+            map_entry = translation_map.get(source_str)
+            trans = map_entry.get("translation") if isinstance(map_entry, dict) else None
+            if not isinstance(trans, str) or not trans.strip() or contains_non_english(trans):
+                untranslated.append({
+                    "identifier": identifier,
+                    "field": item["field"],
+                    "string": source_str,
+                })
     return untranslated
 
 
 def _translate_value(
     val: Any,
     translation_map: dict[str, dict[str, Any]],
+    identifier: str = "",
+    field: str = "",
 ) -> Any:
-    """Translate a value using the translation map if it contains non-English text."""
+    """Translate a value using the translation map, refusing what it does not cover.
+
+    The map is the only source of translations, so a non-English string the map
+    does not carry has nowhere to come from and this raises rather than handing
+    the source's own script back to the caller. The old fallback returned such a
+    string unchanged, which is only ever reached when `_find_untranslated_strings`
+    missed it - and the two walks are separate recursions, so "missed it" is a
+    live shape and not a hypothetical: `_extract_strings_from_value` does not
+    descend a list inside a list, this function does, and a `notes` field shaped
+    `[[text]]` imported clean and landed on disk as the \\uXXXX escapes
+    `ensure_ascii=True` writes back out. Measured, both directions, on that
+    fixture. That is 4.4's defect in a second place, and refusing here closes it
+    for every shape rather than for the one shape found: the coverage walk stays
+    the reporter that lists every uncovered string at once, and this stays the
+    thing that makes a gap in it fail loudly instead of silently.
+
+    Raising here is still before any write - rows are merged in memory and the
+    seed files are written after the loop - so a destination stays byte-identical.
+    A map entry that is present carries a non-empty English translation by
+    construction, `validate_translation_map` refusing anything else on the way in,
+    so presence is the whole check.
+    """
     if isinstance(val, str):
-        if contains_non_english(val) and val in translation_map:
+        if not contains_non_english(val):
+            return val
+        if val in translation_map:
             return translation_map[val]["translation"]
-        return val
+        raise TranslationMissingError(
+            [{"identifier": identifier, "field": field, "string": val}]
+        )
     if isinstance(val, list):
-        return [_translate_value(item, translation_map) for item in val]
+        return [_translate_value(item, translation_map, identifier, field) for item in val]
     if isinstance(val, tuple):
-        return tuple(_translate_value(item, translation_map) for item in val)
+        return tuple(_translate_value(item, translation_map, identifier, field) for item in val)
     if isinstance(val, dict):
-        return {k: _translate_value(v, translation_map) for k, v in val.items()}
+        return {
+            k: _translate_value(
+                v, translation_map, identifier, f"{field}.{k}" if field else str(k)
+            )
+            for k, v in val.items()
+        }
     return val
 
 
@@ -209,24 +266,56 @@ def import_source(
     # 3. Guard entries: filter out refused entries
     accepted_entries, guard_report = guard_entries(all_entries)
 
-    # 4. Filter empty header entries and check translation coverage
+    # 3b. Attribute the same guard decision to a destination, per entry. Every
+    # entry in all_entries came from a declared_files member, and a file only
+    # reaches declared_files by surviving declare_source_file - which refuses
+    # any library with no destination before an entry is ever loaded. So the
+    # library on every entry here resolves to a real destination, and this is
+    # a direct read of data already on the entry, not an invented attribution.
+    # `guard_entry` is called again rather than matched against
+    # `accepted_entries` by identity, because `prune_options` returns a new
+    # dict for an entry it pruned, which object identity would misreport.
+    dest_accepted: dict[str, int] = {}
+    dest_refused: dict[str, int] = {}
+    for entry in all_entries:
+        decl = declaration_for(str(entry.get("library") or ""))
+        destinations = decl.get("destinations") if decl else ()
+        if not destinations:
+            continue
+        refused = guard_entry(entry) is not None
+        bucket = dest_refused if refused else dest_accepted
+        for dest in destinations:
+            bucket[dest] = bucket.get(dest, 0) + 1
+
+    # 4. Filter empty header entries, then check translation coverage over
+    # every entry that survives - the whole upload, before anything is written.
+    # An entry with no theme text is a file-level header leftover: it is not
+    # refused, it is simply never written, so a string on it cannot reach a
+    # seed and must not take the upload down with it. Same reason a guarded
+    # entry's strings are absent from the list.
     valid_accepted_entries: list[dict[str, Any]] = []
     skipped_empty_ids: list[str] = []
+    all_untranslated: list[dict[str, str]] = []
+    seen_untranslated: set[tuple[str, str, str]] = set()
 
     for entry in accepted_entries:
         identifier = str(entry.get("identifier") or entry.get("id") or entry.get("key") or "")
+
         theme = _extract_theme_text(entry)
         if not theme:
             skipped_empty_ids.append(identifier)
             continue
 
-        # Check for untranslated strings
-        untranslated = _find_untranslated_strings(entry, translation_map)
-        if untranslated:
-            field_name, bad_str = untranslated[0]
-            raise TranslationMissingError(identifier, field_name, bad_str)
+        for item in _find_untranslated_strings(entry, translation_map):
+            key = (item["identifier"], item["field"], item["string"])
+            if key not in seen_untranslated:
+                seen_untranslated.add(key)
+                all_untranslated.append(item)
 
         valid_accepted_entries.append(entry)
+
+    if all_untranslated:
+        raise TranslationMissingError(all_untranslated)
 
     # 5. Group entries by destination file
     entries_by_dest: dict[str, list[dict[str, Any]]] = {}
@@ -277,13 +366,15 @@ def import_source(
 
             room_key = derive_room_key(identifier)
             raw_label = str(entry.get("label") or entry.get("name") or identifier)
-            label = _translate_value(raw_label, translation_map)
+            label = _translate_value(raw_label, translation_map, identifier, "label")
             # The room text goes through the map like every other string. It is
             # the reason this import exists, and storing it as the source wrote
             # it puts the source's own script in a seed file - invisibly, since
             # `ensure_ascii=True` writes it back out as \\u escapes that the
             # repository's CJK rule cannot see.
-            theme_text = _translate_value(_extract_theme_text(entry), translation_map)
+            theme_text = _translate_value(
+                _extract_theme_text(entry), translation_map, identifier, "theme"
+            )
 
             # Build updated row
             new_row: dict[str, Any] = {
@@ -297,7 +388,9 @@ def import_source(
             if "offers" in entry:
                 new_row["offers"] = entry["offers"]
             if "notes" in entry:
-                new_row["notes"] = _translate_value(entry["notes"], translation_map)
+                new_row["notes"] = _translate_value(
+                    entry["notes"], translation_map, identifier, "notes"
+                )
 
             # Check if this row already existed
             existing_row = existing_by_id.get(identifier) or existing_by_id.get(room_key)
@@ -329,6 +422,8 @@ def import_source(
 
         destination_results[dest] = merged_rows
         dest_reports[dest] = {
+            "accepted": dest_accepted.get(dest, 0),
+            "refused": dest_refused.get(dest, 0),
             "written": len(merged_rows),
             "created": len(created_keys),
             "created_keys": created_keys,
@@ -344,6 +439,27 @@ def import_source(
         total_unchanged += len(unchanged_keys)
         total_orphaned += len(orphaned_keys)
         total_written += len(merged_rows)
+
+    # A destination whose entries were all refused, or all skipped for an
+    # empty theme, never gets an entries_by_dest key above, so it would
+    # otherwise be missing from the report even though its refused count is
+    # real. Nothing is written or registered for it - there is nothing to
+    # write - so it is reported with zeros for the counts this run did not
+    # produce, alongside the accepted/refused counts that are real.
+    for dest in set(dest_accepted) | set(dest_refused):
+        if dest not in dest_reports:
+            dest_reports[dest] = {
+                "accepted": dest_accepted.get(dest, 0),
+                "refused": dest_refused.get(dest, 0),
+                "written": 0,
+                "created": 0,
+                "created_keys": [],
+                "updated": 0,
+                "updated_keys": [],
+                "unchanged": 0,
+                "orphaned": 0,
+                "orphaned_keys": [],
+            }
 
     # 7. Write seed files and synchronize registry config atomically
     for dest, rows in destination_results.items():

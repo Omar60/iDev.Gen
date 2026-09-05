@@ -10,6 +10,10 @@ Asserts that:
   naming the entry and the field.
 - Merge updates text and derived fields while preserving verdicts and sample sizes.
 - Empty header entries are skipped and reported, not written as empty rooms.
+- 4.3c: The map is the only source of translations - an uncovered string stops
+  the run on every shape it can be written in, and no translator is loaded.
+- 4.3d: One source string yields one English string everywhere across libraries.
+- 4.3e: Re-running an import rewords nothing across all translated fields.
 - All created files are pure ASCII with no illegal control bytes or trailing whitespace.
 """
 from __future__ import annotations
@@ -21,7 +25,14 @@ from pathlib import Path
 
 import pytest
 
-from backend.asset_guard import SIGNAL_NOT_ADOPTED
+from backend.asset_guard import (
+    SIGNAL_IDENTIFIER,
+    SIGNAL_MINOR_PROFILE_KEY,
+    SIGNAL_NOT_ADOPTED,
+    SIGNAL_TAGS,
+    SIGNAL_THEME_TEXT,
+    guard_entry,
+)
 from backend.room_registry import verify_registry_disk_agreement
 from backend.importer import (
     TranslationMissingError,
@@ -57,13 +68,97 @@ def _fresh_config() -> dict:
     return {"room_libraries": []}
 
 
-def test_import_path_refuses_to_write_seed_rows_without_consulting_guard(tmp_path: Path):
-    """4.3a: Verify that the import path consults the guard and refuses to write seed rows
-    for entries matching refusal signals.
+# 4.3a: one refused fixture per guard signal that can reach an entry INSIDE
+# a declared library, keyed by the signal it must be refused on. Keyed
+# rather than listed because the signal is the whole point. Measured before
+# this was written: every refused fixture the suite fed the import path was
+# refused on `identifier`, so an import path that consulted the guard and
+# then wrote the row anyway on any OTHER signal passed all 592 tests. A
+# probe that raised on a non-identifier refusal inside `import_source` never
+# fired across the whole suite - the case was not merely unasserted, it was
+# unreached.
+#
+# `library` and `not_adopted` are absent on purpose: 4.1 refuses those whole
+# files in `declare_source_file`, before an entry is ever loaded, so no entry
+# carrying them can reach this point. That door is
+# `test_manifest_and_guard_refusals_run_before_writing`.
+GUARD_REFUSED_FIXTURES: dict[str, dict] = {
+    SIGNAL_IDENTIFIER: {
+        "identifier": "school_classroom_01",
+        "label": "classroom",
+        "theme": "a classroom with blackboard and wooden desks",
+    },
+    SIGNAL_MINOR_PROFILE_KEY: {
+        "identifier": "body_shape_row_01",
+        "profile_key": "jk",
+        "label": "Slim build",
+        "theme": "a plain bedroom with a low bed",
+    },
+    SIGNAL_TAGS: {
+        "identifier": "room_043",
+        "tags": ["indoor", "school uniform"],
+        "label": "Study nook",
+        "theme": "a quiet study nook with a reading lamp",
+    },
+    SIGNAL_THEME_TEXT: {
+        "identifier": "room_042",
+        "label": "Bright hall",
+        "theme": "a classroom with a blackboard and rows of wooden desks",
+    },
+}
 
-    An unguarded stub that writes rows directly to the destination seed file without
-    consulting the guard will fail this test by writing the refused entry.
-    """
+REFUSED_IDENTIFIERS: frozenset[str] = frozenset(
+    entry["identifier"] for entry in GUARD_REFUSED_FIXTURES.values()
+)
+
+
+def _refused_identifiers_on_disk(seed_path: Path) -> list[str]:
+    """The 4.3a assertion, read back off a written seed file.
+
+    Rows on disk, not a return value: what the criterion forbids is a refused
+    row being WRITTEN, and a report that says `refused` while the row sits in
+    the seed file is the exact defect. Shared by the real import path and the
+    unguarded stub so both are judged by one function."""
+    rows = json.loads(seed_path.read_text(encoding="utf-8"))
+    return sorted(
+        {str(row.get("identifier") or "") for row in rows} & REFUSED_IDENTIFIERS
+    )
+
+
+def _unguarded_import_stub(entries: list[dict], seed_path: Path) -> None:
+    """The control arm: an import path that writes every entry as a seed row.
+
+    It never consults the guard. This is what 4.3a means by a deliberately
+    unguarded stub, and the point of it is that a source scan for the string
+    `guard_entries` would not have saved us: a stub that imported the guard,
+    called it, and wrote the row regardless reads exactly like the real
+    thing to a scan."""
+    rows = [
+        {
+            "key": derive_room_key(str(entry.get("identifier") or "")),
+            "identifier": entry.get("identifier"),
+            "label": entry.get("label", ""),
+            "look": entry.get("theme", ""),
+        }
+        for entry in entries
+    ]
+    seed_path.write_text(
+        json.dumps(rows, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def test_import_path_refuses_to_write_seed_rows_without_consulting_guard(tmp_path: Path):
+    """4.3a: no entry the guard refuses reaches a written seed row, on any signal.
+
+    Three assertions, in order:
+    1. Each fixture is refused ON the signal it was written for. Without this
+       the test can go quietly vacuous the way the suite already had: four
+       fixtures all refused on `identifier` look like four signals covered
+       and are one.
+    2. The real import path writes none of them.
+    3. The same check, run over the unguarded stub's output, returns all four
+       - so the assertion is one an unguarded write fails, not one that
+       passes because there was nothing to catch."""
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
     data_dir = tmp_path / "data"
@@ -85,21 +180,27 @@ def test_import_path_refuses_to_write_seed_rows_without_consulting_guard(tmp_pat
         encoding="utf-8",
     )
 
-    # general_scenes is a declared room library whose destination is general-scenes-rooms-seed.json
+    accepted_entry = {
+        "identifier": "quiet_lounge_01",
+        "label": zh_label,
+        "theme": "spacious quiet lounge with low table and sofa",
+    }
+
+    # 1. Each fixture is refused on its own signal, and the accepted one is
+    # not refused at all. `library` is set the way the loader sets it, from
+    # the file name, so the guard sees the entry the importer will hand it.
+    for signal, entry in GUARD_REFUSED_FIXTURES.items():
+        assert guard_entry({**entry, "library": "general_scenes"}) == (
+            signal,
+            entry["identifier"],
+        ), f"fixture for {signal} is not refused on that signal"
+    assert guard_entry({**accepted_entry, "library": "general_scenes"}) is None
+
+    # general_scenes is a declared room library whose destination is
+    # general-scenes-rooms-seed.json
     source_payload = {
         "library": "general_scenes",
-        "items": [
-            {
-                "identifier": "quiet_lounge_01",
-                "label": zh_label,
-                "theme": "spacious quiet lounge with low table and sofa",
-            },
-            {
-                "identifier": "school_classroom_01",
-                "label": "classroom",
-                "theme": "a classroom with blackboard and wooden desks",
-            },
-        ],
+        "items": [accepted_entry] + list(GUARD_REFUSED_FIXTURES.values()),
     }
     source_file = source_dir / "general_scenes.json"
     source_file.write_text(
@@ -122,22 +223,33 @@ def test_import_path_refuses_to_write_seed_rows_without_consulting_guard(tmp_pat
     seed_rows = json.loads(dest_seed.read_text(encoding="utf-8"))
     written_identifiers = [r.get("identifier") for r in seed_rows]
 
-    # Guard consultation assertions:
-    # 1. The refused school entry MUST NOT be written to the seed file
-    assert "school_classroom_01" not in written_identifiers, (
-        "Refused entry 'school_classroom_01' was written to seed file without consulting guard"
+    # 2. Guard consultation: not one refused entry reached the seed file
+    assert _refused_identifiers_on_disk(dest_seed) == [], (
+        "Refused entries were written to the seed file without the guard's "
+        "verdict being honoured"
     )
-    # 2. The accepted entry MUST be written
+    # The accepted entry MUST be written, and it alone
     assert "quiet_lounge_01" in written_identifiers
-    # 3. Only the accepted room entry was written
     assert len(seed_rows) == 1
 
-    # Report assertions:
-    assert report["refused"] >= 1
-    assert "school_classroom_01" in report["refused_identifiers"]
-    assert report["accepted"] >= 1
+    # Report assertions. `accepted` is 2, not 1: the loader yields a header
+    # entry for the file's own root dict, which the guard accepts and the
+    # importer then skips for carrying no theme. Asserted rather than loosened
+    # to `>= 1`, so the two roads into "not written" stay told apart - refused
+    # by the guard, and skipped for an empty theme.
+    assert report["refused"] == len(GUARD_REFUSED_FIXTURES)
+    assert sorted(report["refused_identifiers"]) == sorted(REFUSED_IDENTIFIERS)
+    assert report["accepted"] == 2
+    assert report["skipped_empty_identifiers"] == ["general_scenes"]
     assert report["written"] == 1
 
+    # 3. The control arm. The same check over an import path that writes rows
+    # without consulting the guard names every refused entry - so the
+    # assertion above is one an unguarded write fails, not one that passes
+    # because there was nothing to catch.
+    stub_seed = data_dir / "unguarded-stub-seed.json"
+    _unguarded_import_stub(source_payload["items"], stub_seed)
+    assert _refused_identifiers_on_disk(stub_seed) == sorted(REFUSED_IDENTIFIERS)
 
 def test_app_operation_and_cli_entry_produce_identical_seed_content(tmp_path: Path):
     """4.3: Verify that the app operation and the CLI entry produce byte-for-byte
@@ -396,6 +508,20 @@ def test_translation_lookup_stops_when_string_missing_naming_entry_and_field(tmp
 def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Path):
     """Verify that merge updates room text while preserving verdicts and sample sizes,
     and keeps orphaned rows when an upstream entry disappears.
+
+    Also 4.6 and 4.7, both satisfied by 4.3's implementation. What is added here
+    is what keeps them true:
+
+    4.6 - the match is by SOURCE IDENTIFIER, not by the row's stored key. The
+    pre-existing chamber row carries a stale key on purpose, so the derived
+    `key` has to move to `derive_room_key(identifier)` while `verdict` and
+    `sample_size` survive. Matched by key instead, the row would be created
+    rather than updated and the stale key would stay on disk.
+
+    4.7 - the orphaned row is NAMED by the report, not merely counted, and its
+    whole content survives byte for byte, `sample_size` included. The count
+    alone passes for a report that names the wrong row; the verdict alone
+    passes for a merge that drops every other field.
     """
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
@@ -409,7 +535,10 @@ def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Pa
     # Pre-existing seed file with measured verdict and an extra row that will become orphaned
     existing_seed_data = [
         {
-            "key": "sm-chamber-01",
+            # A stale key, deliberately not what derive_room_key() makes of the
+            # identifier: the merge has to find this row by identifier and move
+            # the derived key on.
+            "key": "sm-chamber-01-stale",
             "identifier": "sm_chamber_01",
             "label": "Old Chamber Label",
             "manner": "candid",
@@ -476,6 +605,8 @@ def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Pa
     assert ch["look"] == "updated theme text with stone walls"
     assert ch["verdict"] == "verified: 12/12"
     assert ch["sample_size"] == 12
+    # 4.6: matched by identifier, so the derived key moved off the stale one
+    assert ch["key"] == derive_room_key("sm_chamber_01") == "sm-chamber-01"
 
     # 2. sm_dungeon_02 was created
     assert "sm_dungeon_02" in rows_by_id
@@ -484,11 +615,23 @@ def test_merge_updates_text_and_preserves_verdict_and_orphaned_rows(tmp_path: Pa
     # 3. sm_vanished_row was not deleted (preserved as orphaned)
     assert "sm_vanished_row" in rows_by_id
     assert rows_by_id["sm_vanished_row"]["verdict"] == "verified: 5/5"
+    # 4.7: it survives whole, not just its verdict
+    assert rows_by_id["sm_vanished_row"] == existing_seed_data[1]
+
+    # 4.7: the report NAMES the orphan, and 4.6: it names the updated row
+    dest_report = report["destinations"]["sm-scenes-rooms-seed.json"]
+    assert dest_report["orphaned_keys"] == ["sm-vanished-row"]
+    assert dest_report["updated_keys"] == ["sm-chamber-01"]
+    assert dest_report["created_keys"] == ["sm-dungeon-02"]
 
 
 def test_empty_header_entries_skipped_and_reported(tmp_path: Path):
     """Fact 2 & 5.11: Verify that entries carrying no theme text (such as file-level
     header leftovers) are skipped from room seed writing and accounted for in the report.
+
+    A skipped header carries an uncovered string here on purpose. It is not a
+    refused entry, it is one that is never written, so it must not refuse the
+    upload the way a written entry's uncovered string does.
     """
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
@@ -498,9 +641,12 @@ def test_empty_header_entries_skipped_and_reported(tmp_path: Path):
     map_file = source_dir / "translation_map.json"
     map_file.write_text("{}", encoding="utf-8")
 
+    zh_header = _zh(["7981", "6b62"])
+
     source_payload = {
         "library": "special_scenes",
         "version": 1,
+        "description": zh_header,
         "items": [
             {
                 "identifier": "special_hall_01",
@@ -531,12 +677,20 @@ def test_empty_header_entries_skipped_and_reported(tmp_path: Path):
     assert len(rows) == 1
     assert rows[0]["identifier"] == "special_hall_01"
 
+    # The skipped header's uncovered string refused nothing and reached nothing.
+    for written in data_dir.rglob("*"):
+        if written.is_file():
+            raw = written.read_bytes()
+            assert zh_header.encode("utf-8") not in raw
+            assert zh_header.encode("unicode_escape") not in raw
+
 
 def test_importer_files_are_pure_ascii_and_contain_no_control_bytes():
     """Verify that all created/modified files are pure ASCII with no illegal control
     bytes, no literal backspaces, no trailing whitespace, and LF endings.
     """
     files = [
+        ROOT / "backend" / "extractor.py",
         ROOT / "backend" / "importer.py",
         ROOT / "scripts" / "import_assets.py",
         ROOT / "tests" / "test_importer.py",
@@ -696,3 +850,1038 @@ def test_cli_refuses_to_run_without_a_config(tmp_path: Path, capsys):
                 str(tmp_path / "no-such-config.json"),
             ]
         )
+
+
+def test_source_with_uncovered_string_leaves_destinations_byte_identical(tmp_path: Path):
+    """4.4: Verify that a source upload with an uncovered string leaves every
+    destination file byte-for-byte identical.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_missing = _zh(["7981", "6b62"])
+
+    # Pre-populate two destination seed files with real content
+    med_seed = data_dir / "medical-scenes-rooms-seed.json"
+    gen_seed = data_dir / "general-scenes-rooms-seed.json"
+
+    med_content = [
+        {
+            "key": "med-exam-01",
+            "identifier": "med_exam_01",
+            "label": "Exam Room",
+            "manner": "candid",
+            "look": "clinical white exam room with table",
+            "verdict": "verified: 10/10",
+            "sample_size": 10,
+        }
+    ]
+    gen_content = [
+        {
+            "key": "gen-lounge-01",
+            "identifier": "gen_lounge_01",
+            "label": "Lounge",
+            "manner": "candid",
+            "look": "warm lounge with leather armchair",
+            "verdict": "unverified",
+        }
+    ]
+
+    med_seed.write_text(json.dumps(med_content, indent=2) + "\n", encoding="utf-8")
+    gen_seed.write_text(json.dumps(gen_content, indent=2) + "\n", encoding="utf-8")
+
+    initial_med_bytes = med_seed.read_bytes()
+    initial_gen_bytes = gen_seed.read_bytes()
+
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text("{}", encoding="utf-8")
+
+    # Source has medical_scenes with an uncovered string in label,
+    # and general_scenes with valid English
+    (source_dir / "medical_scenes.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "identifier": "med_exam_02",
+                        "label": zh_missing,
+                        "theme": "modern surgery prep room with sinks",
+                    }
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "identifier": "gen_lounge_02",
+                        "label": "Modern Lounge",
+                        "theme": "spacious lounge with floor-to-ceiling windows",
+                    }
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = {
+        "room_libraries": [
+            {"name": "medical_scenes", "seed_file": "medical-scenes-rooms-seed.json", "enabled": True},
+            {"name": "general_scenes", "seed_file": "general-scenes-rooms-seed.json", "enabled": True},
+        ]
+    }
+
+    with pytest.raises(TranslationMissingError):
+        import_source(
+            source_dir=source_dir,
+            map_path=map_file,
+            data_dir=data_dir,
+            config=config,
+        )
+
+    # 4.4 Criterion: every destination remains byte-identical
+    assert med_seed.read_bytes() == initial_med_bytes, (
+        "medical-scenes-rooms-seed.json was modified despite translation refusal"
+    )
+    assert gen_seed.read_bytes() == initial_gen_bytes, (
+        "general-scenes-rooms-seed.json was modified despite translation refusal"
+    )
+    # No other files were written to data_dir
+    assert sorted(p.name for p in data_dir.iterdir()) == [
+        "general-scenes-rooms-seed.json",
+        "medical-scenes-rooms-seed.json",
+    ]
+
+
+def test_translation_refusal_lists_every_uncovered_string_and_excludes_refused_entries(tmp_path: Path):
+    """4.5: Verify that a translation refusal lists every uncovered string with its
+    field across the whole upload, while completely excluding strings from refused entries.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_med_label = _zh(["7981", "6b62"])
+    zh_med_theme = _zh(["5ba2", "5385"])
+    zh_gen_notes = _zh(["7167", "706f"])
+
+    # Refusal fixtures:
+    # 1. An entry refused by guard signal ("school")
+    zh_refused_school = _zh(["6821", "56ed"])
+    # 2. An entry in a not-adopted library (amateurs)
+    zh_refused_amateurs = _zh(["79c1", "4eba"])
+
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text("{}", encoding="utf-8")
+
+    # medical_scenes: 2 accepted entries, each with an uncovered string in a different field
+    (source_dir / "medical_scenes.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "identifier": "med_room_01",
+                        "label": zh_med_label,
+                        "theme": "bright clinic exam room with white walls",
+                    },
+                    {
+                        "identifier": "med_room_02",
+                        "label": "Recovery Room",
+                        "theme": zh_med_theme,
+                    },
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    # general_scenes: 1 accepted entry with uncovered string in notes,
+    # and 1 entry refused by guard for school signal with an uncovered label
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "identifier": "gen_room_01",
+                        "label": "Sunlit Room",
+                        "theme": "sunlit room with large windows",
+                        "notes": zh_gen_notes,
+                    },
+                    {
+                        "identifier": "school_corridor_01",
+                        "label": zh_refused_school,
+                        "theme": "school corridor with lockers",
+                    },
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    # amateurs.json: not-adopted library carrying an uncovered string
+    (source_dir / "amateurs.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "identifier": "profile_01",
+                        "theme": zh_refused_amateurs,
+                    }
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TranslationMissingError) as exc_info:
+        import_source(
+            source_dir=source_dir,
+            map_path=map_file,
+            data_dir=data_dir,
+            config=_fresh_config(),
+        )
+
+    err = exc_info.value
+
+    # 1. Backwards-compatible attributes for the first uncovered string
+    assert err.identifier == err.uncovered[0]["identifier"]
+    assert err.field == err.uncovered[0]["field"]
+    assert err.text == err.uncovered[0]["string"]
+    assert err.identifier == "gen_room_01"
+    assert err.field == "notes"
+    assert err.text == zh_gen_notes
+
+    # 2. Full uncovered list covers all 3 accepted uncovered strings across upload
+    assert len(err.uncovered) == 3
+
+    uncovered_tuples = [(u["identifier"], u["field"], u["string"]) for u in err.uncovered]
+    assert ("med_room_01", "label", zh_med_label) in uncovered_tuples
+    assert ("med_room_02", "theme", zh_med_theme) in uncovered_tuples
+    assert ("gen_room_01", "notes", zh_gen_notes) in uncovered_tuples
+
+    # 3. String representation describes the count and all uncovered entries
+    msg = str(err)
+    assert "Missing translation for 3 string(s) across upload:" in msg
+    assert "med_room_01" in msg
+    assert "med_room_02" in msg
+    assert "gen_room_01" in msg
+
+    # 4. Refused entries (school_corridor_01 and profile_01) and their strings
+    # are completely absent from the refusal list and message
+    all_identifiers = [u["identifier"] for u in err.uncovered]
+    all_strings = [u["string"] for u in err.uncovered]
+
+    assert "school_corridor_01" not in all_identifiers
+    assert "profile_01" not in all_identifiers
+    assert zh_refused_school not in all_strings
+    assert zh_refused_amateurs not in all_strings
+    assert "school_corridor_01" not in msg
+    assert "profile_01" not in msg
+
+
+def test_translation_refusal_walks_nested_structures(tmp_path: Path):
+    """Verify that the translation walker checks nested dicts and lists,
+    stopping the import and translating properly when covered.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_nested = _zh(["6697", "5149"])  # dim light
+
+    # Source has an uncovered string in a nested dict under 'notes'
+    (source_dir / "workplace_scenes.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "identifier": "office_corner_01",
+                        "label": "Office Corner",
+                        "theme": "quiet corner office with desk",
+                        "notes": {
+                            "ambience": zh_nested,
+                        },
+                    }
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text("{}", encoding="utf-8")
+
+    # 1. Uncovered nested dict raises and names nested field path
+    with pytest.raises(TranslationMissingError) as exc_info:
+        import_source(
+            source_dir=source_dir,
+            map_path=map_file,
+            data_dir=data_dir,
+            config=_fresh_config(),
+        )
+
+    assert exc_info.value.identifier == "office_corner_01"
+    assert exc_info.value.field == "notes.ambience"
+    assert exc_info.value.text == zh_nested
+    assert exc_info.value.uncovered[0]["field"] == "notes.ambience"
+
+    # 2. Covering the nested string allows import to succeed and translate the nested dict
+    covered_map = {
+        zh_nested: {
+            "source": zh_nested,
+            "translation": "dim lighting",
+            "fields": ["notes.ambience"],
+        }
+    }
+    map_file.write_text(json.dumps(covered_map, indent=2) + "\n", encoding="utf-8")
+
+    report = import_source(
+        source_dir=source_dir,
+        map_path=map_file,
+        data_dir=data_dir,
+        config=_fresh_config(),
+    )
+    assert report["written"] == 1
+
+    dest_seed = data_dir / "workplace-scenes-rooms-seed.json"
+    rows = json.loads(dest_seed.read_text(encoding="utf-8"))
+    assert rows[0]["notes"]["ambience"] == "dim lighting"
+    # No escape sequence remains
+    assert (chr(92) + "u") not in dest_seed.read_text(encoding="utf-8")
+def test_untranslated_identifier_refuses_and_never_reaches_a_seed(tmp_path: Path):
+    """An identifier is written to the row, so it is a translation candidate.
+
+    The extractor's METADATA_FIELDS marks what a coverage report ignores, not
+    what may reach disk. Filtering the walk by it let a non-English identifier
+    through, and `ensure_ascii=True` wrote it back as unicode escapes that the
+    repository's CJK rule cannot see.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_identifier = _zh(["7981", "6b62"])
+
+    (source_dir / "medical_scenes.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "identifier": zh_identifier,
+                        "label": "Exam Room",
+                        "theme": "clinical white exam room with table",
+                    }
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(TranslationMissingError) as exc_info:
+        import_source(
+            source_dir=source_dir,
+            map_path=map_file,
+            data_dir=data_dir,
+            config=_fresh_config(),
+        )
+
+    assert exc_info.value.field == "identifier"
+    assert exc_info.value.text == zh_identifier
+
+    # Nothing reached disk, in any file, in any encoding.
+    for written in data_dir.rglob("*"):
+        if written.is_file():
+            raw = written.read_bytes()
+            assert zh_identifier.encode("utf-8") not in raw
+            assert zh_identifier.encode("unicode_escape") not in raw
+
+
+def test_identical_source_string_in_two_libraries_yields_same_translation_everywhere(tmp_path: Path):
+    """4.3d (Task 2.7): One source string yields one English string everywhere.
+
+    Verify that importing an identical non-English string present in two distinct
+    libraries (two separate .json files targeting two distinct destinations
+    declared in backend/source_manifest.py) writes the exact same English
+    translation to both destination seeds, byte for byte.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_shared = _zh(["5ba2", "5385"])
+    zh_theme = _zh(["5bbd", "655e", "623f", "95f4"])
+
+    map_data = {
+        zh_shared: {
+            "source": zh_shared,
+            "translation": "Shared Living Room",
+            "fields": ["label"],
+        },
+        zh_theme: {
+            "source": zh_theme,
+            "translation": "spacious quiet lounge with low table and sofa",
+            "fields": ["theme"],
+        },
+    }
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text(
+        json.dumps(map_data, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    # Library 1: general_scenes -> general-scenes-rooms-seed.json
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps(
+            {
+                "library": "general_scenes",
+                "items": [
+                    {
+                        "identifier": "gen_lounge_01",
+                        "label": zh_shared,
+                        "theme": zh_theme,
+                    }
+                ],
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    # Library 2: workplace_scenes -> workplace-scenes-rooms-seed.json
+    (source_dir / "workplace_scenes.json").write_text(
+        json.dumps(
+            {
+                "library": "workplace_scenes",
+                "items": [
+                    {
+                        "identifier": "work_office_01",
+                        "label": zh_shared,
+                        "theme": zh_theme,
+                    }
+                ],
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    import_source(
+        source_dir=source_dir,
+        map_path=map_file,
+        data_dir=data_dir,
+        config=_fresh_config(),
+    )
+
+    gen_seed = data_dir / "general-scenes-rooms-seed.json"
+    work_seed = data_dir / "workplace-scenes-rooms-seed.json"
+
+    assert gen_seed.is_file(), f"Expected {gen_seed} to be written"
+    assert work_seed.is_file(), f"Expected {work_seed} to be written"
+
+    gen_rows = json.loads(gen_seed.read_text(encoding="utf-8"))
+    work_rows = json.loads(work_seed.read_text(encoding="utf-8"))
+
+    assert len(gen_rows) == 1
+    assert len(work_rows) == 1
+
+    gen_row = gen_rows[0]
+    work_row = work_rows[0]
+
+    # Both rows carry the expected English translation from the map
+    assert gen_row["label"] == "Shared Living Room"
+    assert work_row["label"] == "Shared Living Room"
+
+    # The second shared field answers the same way. Asserting only on the label
+    # would pass a translation that diverged by library on any other field.
+    assert gen_row["look"] == work_row["look"]
+    assert gen_row["look"] == "spacious quiet lounge with low table and sofa"
+
+    # Source non-English strings do not leak into either seed file
+    for seed in (gen_seed, work_seed):
+        text = seed.read_text(encoding="utf-8")
+        assert zh_shared not in text
+        assert zh_theme not in text
+
+
+def test_app_and_cli_reports_carry_the_same_counts_per_destination(tmp_path: Path, capsys):
+    """4.8: the two entries report the same counts, per destination too.
+
+    `import_source` is the only place a report is built; the CLI's summary
+    prints fields read straight off the dict it returns, never recomputing a
+    count of its own. This asserts that stays true by comparing the app's
+    returned report against the CLI's printed summary for one fixture that
+    exercises both an accepted and a guard-refused entry landing on the same
+    destination - accepted and refused are attributable per destination
+    because every entry reaching the guard already carries a library that
+    resolves to one, per backend.source_manifest.declare_source_file refusing
+    any library with none before an entry is ever loaded.
+
+    The second library carries only a refused entry, so its destination
+    has nothing written and is reported on its refused count alone. That
+    is the branch keeping the per-destination counts summing to the run
+    totals, asserted at the end.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_app = tmp_path / "data_app"
+    data_app.mkdir(parents=True)
+    data_cli = tmp_path / "data_cli"
+    data_cli.mkdir(parents=True)
+
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text("{}", encoding="utf-8")
+
+    # One accepted room and one guard-refused ("school") entry in the same
+    # declared, destination-bearing library, so both counts land on the same
+    # destination and neither is zero.
+    source_payload = {
+        "items": [
+            {
+                "identifier": "gen_room_01",
+                "label": "Sunlit Room",
+                "theme": "sunlit room with large windows",
+            },
+            {
+                "identifier": "school_classroom_01",
+                "label": "classroom",
+                "theme": "a classroom with blackboard and wooden desks",
+            },
+        ],
+    }
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps(source_payload, indent=2) + "\n", encoding="utf-8"
+    )
+
+    # A second declared library whose ONLY entry is refused, so its
+    # destination has zero accepted entries and never reaches the merge.
+    # It still has a refused count to report, and dropping it would leave
+    # the per-destination counts summing to less than the run's totals.
+    (source_dir / "workplace_scenes.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "identifier": "school_corridor_01",
+                        "label": "corridor",
+                        "theme": "a corridor lined with lockers",
+                    },
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report_app = import_source(
+        source_dir=source_dir,
+        map_path=map_file,
+        data_dir=data_app,
+        config=_fresh_config(),
+    )
+
+    dest = "general-scenes-rooms-seed.json"
+    dest_report = report_app["destinations"][dest]
+    # Sanity: the fixture actually exercises one accepted and one refused
+    # entry on the same destination, not two zeros agreeing by accident.
+    assert dest_report["accepted"] == 1
+    assert dest_report["refused"] == 1
+
+    cli_config = tmp_path / "cli-config.json"
+    cli_config.write_text(
+        json.dumps(_fresh_config(), indent=2) + "\n", encoding="utf-8"
+    )
+
+    exit_code = cli_main(
+        [
+            str(source_dir),
+            str(map_file),
+            "--data-dir",
+            str(data_cli),
+            "--config",
+            str(cli_config),
+        ]
+    )
+    assert exit_code == 0
+    printed = capsys.readouterr().out
+
+    # Overall counts: the CLI prints exactly the app's own dict, in the same
+    # layout scripts/import_assets.py:main formats them in.
+    assert f"  Accepted:  {report_app['accepted']}" in printed
+    assert f"  Refused:   {report_app['refused']}" in printed
+    assert f"  Created:   {report_app['created']}" in printed
+    assert f"  Updated:   {report_app['updated']}" in printed
+    assert f"  Unchanged: {report_app['unchanged']}" in printed
+    assert f"  Orphaned:  {report_app['orphaned']}" in printed
+
+    # Per-destination counts: the same six words, the same numbers, read off
+    # the same report dict rather than recomputed by the CLI.
+    dest_line = next(line for line in printed.splitlines() if dest in line)
+    assert f"accepted {dest_report['accepted']}" in dest_line
+    assert f"refused {dest_report['refused']}" in dest_line
+    assert f"{dest_report['written']} written" in dest_line
+    assert f"{dest_report['created']} created" in dest_line
+    assert f"{dest_report['updated']} updated" in dest_line
+    assert f"{dest_report['unchanged']} unchanged" in dest_line
+    assert f"{dest_report['orphaned']} orphaned" in dest_line
+
+    # A destination with nothing written still reports its refused
+    # entries, and the CLI prints it on the same terms.
+    empty_dest = "workplace-scenes-rooms-seed.json"
+    empty_report = report_app["destinations"][empty_dest]
+    assert empty_report["accepted"] == 0
+    assert empty_report["refused"] == 1
+    assert empty_report["written"] == 0
+    assert empty_report["created"] == 0
+    assert empty_report["updated"] == 0
+    assert empty_report["unchanged"] == 0
+    assert empty_report["orphaned"] == 0
+    assert not (data_app / empty_dest).exists()
+    empty_line = next(
+        line for line in printed.splitlines() if empty_dest in line
+    )
+    assert "accepted 0" in empty_line
+    assert "refused 1" in empty_line
+
+    # The property both halves serve: every entry the guard judged is
+    # counted under exactly one destination, so the per-destination counts
+    # sum to the run's own totals. A destination dropped for writing
+    # nothing would make this fail.
+    assert sum(
+        info["accepted"] for info in report_app["destinations"].values()
+    ) == report_app["accepted"]
+    assert sum(
+        info["refused"] for info in report_app["destinations"].values()
+    ) == report_app["refused"]
+
+
+def test_rerunning_import_rewords_nothing(tmp_path: Path):
+    """4.3e (Task 2.8): Assert re-running an import rewords nothing.
+
+    Runs import_source twice over one fixture source directory into the SAME
+    data directory, and compares every stored translation (label, look, notes)
+    between the two runs.
+
+    Rules:
+    1. Compare every translated field: label, look (theme prose), notes.
+       The fixture carries non-English strings in all three, covered by the map.
+    2. Compare translations, not whole rows (phase 5 owns the row shape).
+    3. Absence assertion covers both raw and unicode_escape representations.
+    4. ONE config, built once and handed to both runs. That is the production
+       shape - a re-import is a second run against the config the first one
+       already registered the library in - and it is the only shape where the
+       registry can gain a duplicate entry. Two fresh configs leave
+       `existing_seed_files` empty on run 2, so the "already registered, do not
+       append again" branch is never executed and a second entry for the same
+       seed file would go unnoticed. Hence the length assertion below.
+
+    Verification: replacing the `unchanged`/`updated` split in
+    `backend/importer.py` with an unconditional `updated_keys.append(room_key)`
+    fails this test and no other. The mutation that reworded a stored label on
+    the update path is NOT this test's - it is caught by
+    `test_merge_updates_text_and_preserves_verdict_and_orphaned_rows`.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_label = _zh(["65e5", "5f0f", "8336", "5ba4"])
+    zh_theme = _zh(["6e05", "5e7d", "7684", "8336", "5ba4", "6709", "6728", "684c"])
+    zh_notes = _zh(["81ea", "7136", "5149", "7ebf"])
+
+    expected = {
+        "label": "Japanese Tea Room",
+        "look": "peaceful traditional tea room with tatami mats and low wooden table",
+        "notes": "soft diffused morning sunlight through paper screens",
+    }
+
+    map_data = {
+        zh_label: {
+            "source": zh_label,
+            "translation": expected["label"],
+            "fields": ["label"],
+        },
+        zh_theme: {
+            "source": zh_theme,
+            "translation": expected["look"],
+            "fields": ["theme"],
+        },
+        zh_notes: {
+            "source": zh_notes,
+            "translation": expected["notes"],
+            "fields": ["notes"],
+        },
+    }
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text(
+        json.dumps(map_data, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    source_payload = {
+        "library": "general_scenes",
+        "items": [
+            {
+                "identifier": "tea_room_01",
+                "label": zh_label,
+                "theme": zh_theme,
+                "notes": zh_notes,
+            }
+        ],
+    }
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps(source_payload, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    # One config for both runs (Rule 4)
+    config = _fresh_config()
+
+    report_1 = import_source(
+        source_dir=source_dir,
+        map_path=map_file,
+        data_dir=data_dir,
+        config=config,
+    )
+    assert len(config["room_libraries"]) == 1
+
+    dest_seed = data_dir / "general-scenes-rooms-seed.json"
+    assert dest_seed.is_file(), f"Expected seed file was not created: {dest_seed}"
+
+    # Read stored translations from run 1
+    rows_run1 = json.loads(dest_seed.read_text(encoding="utf-8"))
+    assert len(rows_run1) == 1
+    run1_by_id = {r["identifier"]: r for r in rows_run1}
+    assert "tea_room_01" in run1_by_id
+
+    # Verify first run translations match map expectations
+    for field in ("label", "look", "notes"):
+        assert run1_by_id["tea_room_01"][field] == expected[field]
+
+    # Verify absence of source strings after run 1 in both raw and escape forms (Rule 3)
+    raw_run1 = dest_seed.read_bytes()
+    text_run1 = dest_seed.read_text(encoding="utf-8")
+    for zh_str in (zh_label, zh_theme, zh_notes):
+        assert zh_str not in text_run1
+        assert zh_str.encode("utf-8") not in raw_run1
+        assert zh_str.encode("unicode_escape") not in raw_run1
+
+    # Second import run over the SAME fixture source directory, the SAME data
+    # directory and the SAME config object (Rule 4)
+    report_2 = import_source(
+        source_dir=source_dir,
+        map_path=map_file,
+        data_dir=data_dir,
+        config=config,
+    )
+
+    # The registry did not grow: run 2 found its seed file already registered
+    assert len(config["room_libraries"]) == 1
+    assert [lib["seed_file"] for lib in config["room_libraries"]] == [
+        "general-scenes-rooms-seed.json"
+    ]
+
+    # Read stored translations from run 2
+    rows_run2 = json.loads(dest_seed.read_text(encoding="utf-8"))
+    assert len(rows_run2) == 1
+    run2_by_id = {r["identifier"]: r for r in rows_run2}
+    assert "tea_room_01" in run2_by_id
+
+    # Compare every translated field between run 1 and run 2 (Rule 1 & Rule 2)
+    # Deliberately compare translations rather than whole rows.
+    for field in ("label", "look", "notes"):
+        assert run2_by_id["tea_room_01"][field] == run1_by_id["tea_room_01"][field]
+        assert run2_by_id["tea_room_01"][field] == expected[field]
+
+    # Verify absence of source strings after run 2 in both raw and escape forms (Rule 3)
+    raw_run2 = dest_seed.read_bytes()
+    text_run2 = dest_seed.read_text(encoding="utf-8")
+    for zh_str in (zh_label, zh_theme, zh_notes):
+        assert zh_str not in text_run2
+        assert zh_str.encode("utf-8") not in raw_run2
+        assert zh_str.encode("unicode_escape") not in raw_run2
+
+    # Branch execution verification:
+    # Run 1 creates the row (created branch)
+    assert report_1["created"] == 1
+    assert report_1["updated"] == 0
+    assert report_1["unchanged"] == 0
+    # Run 2 finds identical text/fields and executes the unchanged branch
+    assert report_2["created"] == 0
+    assert report_2["updated"] == 0
+    assert report_2["unchanged"] == 1
+def test_uncovered_list_names_every_string_inside_a_nested_list(tmp_path: Path):
+    """4.5, re-measured after 4.3c: the coverage walk descends a list in a list.
+
+    `_extract_strings_from_value` used to handle a str item and a dict item of
+    a list inline and drop a list item, while `_translate_value` recursed into
+    all of them. The two walks disagreeing is how a `notes` field shaped
+    `[[text]]` imported clean and put the source's own script on disk. The
+    writer refuses such a string now, but it refuses on the FIRST one it meets,
+    which is a stop and not a list - and 4.5's criterion is the list. So the
+    assertion here is the COUNT: two uncovered strings at different depths of
+    one nested list are both named, with their own field paths. One item would
+    mean the coverage walk missed them and the writer stopped the run instead.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_inner = _zh(["6697", "5149"])
+    zh_deeper = _zh(["6e05", "5e7d"])
+
+    (source_dir / "workplace_scenes.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "identifier": "office_corner_02",
+                        "label": "Office Corner",
+                        "theme": "quiet corner office with desk",
+                        "notes": {
+                            "ambience": [[zh_inner], [{"mood": zh_deeper}]],
+                        },
+                    }
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(TranslationMissingError) as exc_info:
+        import_source(
+            source_dir=source_dir,
+            map_path=map_file,
+            data_dir=data_dir,
+            config=_fresh_config(),
+        )
+
+    uncovered = exc_info.value.uncovered
+    assert len(uncovered) == 2
+    assert {item["string"] for item in uncovered} == {zh_inner, zh_deeper}
+    by_string = {item["string"]: item for item in uncovered}
+    assert by_string[zh_inner]["field"] == "notes.ambience"
+    assert by_string[zh_deeper]["field"] == "notes.ambience.mood"
+    for item in uncovered:
+        assert item["identifier"] == "office_corner_02"
+
+    # Nothing was written: the refusal is still before any write.
+    assert not list(data_dir.glob("*.json"))
+
+
+def test_translation_walk_refuses_a_shape_the_coverage_walk_does_not_reach(tmp_path: Path):
+    """4.3c: the map is the only source of translations, on every shape.
+
+    The stop and the translation are two separate recursions over one entry, and
+    the run is safe only while the stop reaches every field the translation can
+    write. Measured, they did not agree. `_extract_strings_from_value` descends a
+    dict, a list of strings and a dict inside a list; it does not descend a list
+    inside a list. `_translate_value` descends all of them, and `notes` is the one
+    structured field handed to it, so a `notes.ambience` shaped `[[text]]` was
+    reachable by the writer and invisible to the check: the import ran clean and
+    the source's own script landed in the seed as the escapes `ensure_ascii=True`
+    writes back out and the repository's CJK rule cannot see. That is 4.4's defect
+    in a second place, and the fix is on the writer rather than the check, so a
+    gap in the check fails loudly for every shape instead of the one found here.
+
+    Asserted on the shape the coverage walk misses on purpose. The same assertion
+    on a plain `label` would have passed against the old fallback and would prove
+    only what the neighbouring missing-string test already proves.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_nested = _zh(["6697", "5149"])  # dim light
+
+    (source_dir / "workplace_scenes.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "identifier": "office_corner_01",
+                        "label": "Office Corner",
+                        "theme": "quiet corner office with desk",
+                        "notes": {"ambience": [[zh_nested]]},
+                    }
+                ]
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text("{}", encoding="utf-8")
+
+    # A destination that already holds rows, so "wrote nothing" is a byte
+    # comparison against real content rather than an empty directory listing.
+    dest_seed = data_dir / "workplace-scenes-rooms-seed.json"
+    dest_seed.write_text(
+        json.dumps(
+            [{"key": "wk-untouched", "identifier": "wk-untouched", "look": "a hallway"}],
+            ensure_ascii=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before_bytes = dest_seed.read_bytes()
+
+    with pytest.raises(TranslationMissingError) as exc_info:
+        import_source(
+            source_dir=source_dir,
+            map_path=map_file,
+            data_dir=data_dir,
+            config=_fresh_config(),
+        )
+
+    assert exc_info.value.identifier == "office_corner_01"
+    assert exc_info.value.field == "notes.ambience"
+    assert exc_info.value.text == zh_nested
+    assert "office_corner_01" in str(exc_info.value)
+    assert "notes.ambience" in str(exc_info.value)
+
+    # Refused before anything is written: the merge builds rows in memory and
+    # the seed files are written after the loop.
+    assert dest_seed.read_bytes() == before_bytes
+
+    # The other direction: once the map carries it, the same shape imports and
+    # the stored string is the English one. Without this half the test passes
+    # against an importer that refuses every list inside a list on sight.
+    map_file.write_text(
+        json.dumps(
+            {
+                zh_nested: {
+                    "source": zh_nested,
+                    "translation": "dim lighting",
+                    "fields": ["notes.ambience"],
+                }
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    dest_seed.unlink()
+
+    report = import_source(
+        source_dir=source_dir,
+        map_path=map_file,
+        data_dir=data_dir,
+        config=_fresh_config(),
+    )
+    assert report["written"] == 1
+    rows = json.loads(dest_seed.read_text(encoding="utf-8"))
+    assert rows[0]["notes"]["ambience"] == [["dim lighting"]]
+    assert (chr(92) + "u") not in dest_seed.read_text(encoding="utf-8")
+
+
+def test_no_translator_is_reachable_from_an_import_run(tmp_path: Path):
+    """4.3c: the importer never translates during a run.
+
+    An absence claim, so it is made the way an absence claim has to be made here:
+    by running the real thing and reading what it loaded, not by scanning the
+    import block. A scan passes the moment the line is absent and says nothing
+    about a lazy `import backend.enhance` inside a function - and this codebase
+    does put imports inside functions, `backend.extractor.find_uncovered_strings`
+    among them.
+
+    A fresh interpreter, because in this process the assertion cannot fail
+    honestly: `backend/enhance.py` is loaded under the top-level name `enhance`
+    and `httpx` is loaded outright by the time the suite reaches this file, so an
+    in-process `sys.modules` check is either vacuous or red for reasons that have
+    nothing to do with the importer. Both names are checked plus `httpx`, which
+    `backend/enhance.py` imports at module scope, so the translator cannot be
+    reached under a third spelling without dragging it in.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text("{}", encoding="utf-8")
+    (source_dir / "workplace_scenes.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "identifier": "work_office_01",
+                        "label": "Office",
+                        "theme": "modern office room with glass partitions",
+                    }
+                ]
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    probe = "\n".join(
+        [
+            "import json, sys",
+            "from backend.importer import import_source",
+            "import_source(source_dir=sys.argv[1], map_path=sys.argv[2],",
+            "              data_dir=sys.argv[3], config={'room_libraries': []})",
+            "watched = ('backend.enhance', 'enhance', 'httpx')",
+            "print(json.dumps(sorted(m for m in watched if m in sys.modules)))",
+        ]
+    )
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            probe,
+            str(source_dir),
+            str(map_file),
+            str(data_dir),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+    )
+    assert proc.returncode == 0, f"probe failed: {proc.stderr}\n{proc.stdout}"
+    assert json.loads(proc.stdout.strip()) == []
