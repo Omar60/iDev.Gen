@@ -126,6 +126,38 @@ export function roomOption(room, manner) {
   return `${room?.label ?? ''}${offers} - ${verdictLabel(room, manner)}`
 }
 
+/** Does this room match what was typed into the filter box.
+ *
+ *  Matched against the label AND the room's own prose, because the two answer
+ *  different questions: the label is a translation somebody wrote and is what
+ *  the operator reads in the list, while the prose is the English text the
+ *  photograph is actually made of. Typing "mirror" has to find the room whose
+ *  sentence has a mirror in it even when its label is "Dressing room".
+ *
+ *  Not matched against the tags - they have their own filter - and not against
+ *  the guidance, which is advice about the room and not a description of it.
+ */
+export function matchesText(room, text) {
+  const needle = (text ?? '').trim().toLowerCase()
+  if (!needle) return true
+  return `${room?.label ?? ''} ${room?.place ?? ''}`.toLowerCase().includes(needle)
+}
+
+/** The rooms the picker shows: allowed under this manner, matching the tag and
+ *  the text, and ALWAYS the one the session is currently using.
+ *
+ *  That last clause is the whole of 6.18. A filter that hides the current room
+ *  leaves a select whose value is not among its options, which browsers render
+ *  as blank - so the screen would say the session has no room while its look is
+ *  full of one, and picking anything else would be the only way out.
+ */
+export function filterRooms(rooms, { manner, tag, text, current } = {}) {
+  return (rooms ?? []).filter((room) => (
+    (current && room?.key === current)
+    || (roomAllows(room, manner) && hasTag(room, tag) && matchesText(room, text))
+  ))
+}
+
 /** One room, drawn by weight, from the rooms this manner allows.
  *
  *  The weight is the source's own and it is the reason the field was adopted:

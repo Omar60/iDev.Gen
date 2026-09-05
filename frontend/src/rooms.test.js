@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
-  allTags, composeLook, drawRoom, hasTag, lookFromRoom, openingLook, pickerRooms,
-  refillLook, registerFor, roomAllows, roomOption, verdictFor, verdictLabel,
+  allTags, composeLook, drawRoom, filterRooms, hasTag, lookFromRoom, matchesText,
+  openingLook, pickerRooms, refillLook, registerFor, roomAllows, roomOption,
+  verdictFor, verdictLabel,
 } from './rooms.js'
 import candidRooms from '../../data/candid-rooms-seed.json'
 import directedLooks from '../../data/directed-looks-seed.json'
@@ -341,5 +342,56 @@ describe('the room a session is dealt', () => {
     // And a session whose manner allows nothing opens with the empty look it
     // had, rather than with a room from another manner.
     expect(openingLook({ manner: 'candid', look: '' }, [POOL[2]], at(0))).toBe(null)
+  })
+})
+
+// 6.17 and 6.18: 428 rooms is a list nobody reads, so the picker narrows - and
+// whatever it narrows to, the room the session is using stays reachable.
+describe('narrowing the room list', () => {
+  const ROOMS = [
+    { key: 'gs-dressing-01', label: 'Dressing room', tags: ['indoor'],
+      place: 'a vanity mirror ringed with bulbs and a velvet stool' },
+    { key: 'gs-alley-02', label: 'Alley', tags: ['outdoor'],
+      place: 'a wet brick lane behind a kitchen door' },
+    { key: 'gs-studio-03', label: 'Studio', tags: ['indoor'], manners: ['directed'],
+      place: 'a softbox and a roll of seamless paper' },
+  ]
+  const listed = (opts) => filterRooms(ROOMS, opts).map((r) => r.key)
+
+  it('finds a room by its label and another by a word inside its prose', () => {
+    // The label is a translation somebody wrote; the prose is what the
+    // photograph is made of. Both have to be searched, or a room whose
+    // sentence has a mirror in it is unfindable under any label.
+    expect(listed({ manner: 'candid', text: 'alley' })).toEqual(['gs-alley-02'])
+    expect(listed({ manner: 'candid', text: 'mirror' })).toEqual(['gs-dressing-01'])
+    expect(listed({ manner: 'candid', text: 'MIRROR' })).toEqual(['gs-dressing-01'])
+    expect(matchesText(ROOMS[0], '')).toBe(true)
+    expect(matchesText(ROOMS[0], '   ')).toBe(true)
+    expect(listed({ manner: 'candid', text: 'nothing here' })).toEqual([])
+  })
+
+  it('narrows by tag and by manner at the same time', () => {
+    expect(listed({ manner: 'candid', tag: 'indoor' })).toEqual(['gs-dressing-01'])
+    expect(listed({ manner: 'directed', tag: 'indoor' }))
+      .toEqual(['gs-dressing-01', 'gs-studio-03'])
+    expect(listed({ manner: 'candid', tag: 'indoor', text: 'velvet' }))
+      .toEqual(['gs-dressing-01'])
+  })
+
+  it('keeps the room the session is using, whatever the filter says', () => {
+    // Filtered out three ways over - wrong tag, wrong text, and under a manner
+    // it is not even allowed in - and still listed, because a select whose
+    // value is not among its options renders blank: the screen would say the
+    // session has no room while its look is full of one.
+    expect(listed({ manner: 'candid', tag: 'outdoor', text: 'nothing here',
+                    current: 'gs-studio-03' })).toEqual(['gs-studio-03'])
+    expect(listed({ manner: 'candid', text: 'alley', current: 'gs-dressing-01' }))
+      .toEqual(['gs-dressing-01', 'gs-alley-02'])
+    // And it is listed once, not twice, when it also passes the filter.
+    expect(listed({ manner: 'candid', text: 'mirror', current: 'gs-dressing-01' }))
+      .toEqual(['gs-dressing-01'])
+    // A look somebody typed has no current room and nothing is pinned.
+    expect(listed({ manner: 'candid', text: 'alley', current: '' }))
+      .toEqual(['gs-alley-02'])
   })
 })

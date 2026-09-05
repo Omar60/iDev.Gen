@@ -18,7 +18,7 @@ import directedLooks from '../../../data/directed-looks-seed.json'
 // The register is the manner's, not the room's, so composing is what turns a
 // place into a look. `rooms.js` holds both halves and the join.
 import {
-  allTags, hasTag, lookFromRoom, openingLook, pickerRooms, refillLook, roomAllows,
+  allTags, filterRooms, lookFromRoom, openingLook, pickerRooms, refillLook,
   roomOption, verdictLabel,
 } from '../rooms.js'
 
@@ -48,11 +48,15 @@ export default function ModelDetail({ id }) {
   // options come from the rooms themselves - 239 tags belong to the
   // source, and a list written here would go stale on the next import.
   const [roomTag, setRoomTag] = useState('')
-  // The room the session was DEALT, kept only so the screen can say which
-  // one it was and what it measured. The look is the session's from the
-  // moment it is filled - editing it here is ordinary - so this is a label
-  // and not a second copy of the text.
-  const [drawnRoom, setDrawnRoom] = useState(null)
+  // What was typed into the room filter. Matched against the label and the
+  // room's own prose, so "mirror" finds the room with a mirror in it whatever
+  // its label says.
+  const [roomText, setRoomText] = useState('')
+  // The room the session is using - dealt at creation or picked since. Kept as
+  // a KEY and not as a row: it is what the select's value has to be, it is
+  // what keeps that room in the list whatever the filter says, and the look
+  // itself is the session's from the moment it is filled.
+  const [roomKey, setRoomKey] = useState('')
   const llm = !!config.llm_ok
   const [writing, setWriting] = useState('')
   const [error, setError] = useState('')
@@ -72,6 +76,8 @@ export default function ModelDetail({ id }) {
   // The two halves, deduplicated: the registry's default entry is the nine
   // tracked rooms, so the route hands back rooms the bundle already carries.
   const ROOMS = pickerRooms(BUILT_IN, servedRooms)
+  // The room the look came from, or nothing for a look somebody typed.
+  const ROOM = ROOMS.find((r) => r.key === roomKey) || null
 
   if (!model) return <p className="muted">{error || 'Loading…'}</p>
 
@@ -87,7 +93,9 @@ export default function ModelDetail({ id }) {
     // is an ordinary default: the picker above replaces it and the textarea
     // edits it, and neither is undone by anything that happens afterwards.
     const drawn = openingLook(draft, ROOMS)
-    setDrawnRoom(drawn?.room ?? null)
+    setRoomKey(drawn?.room?.key ?? '')
+    setRoomText('')
+    setRoomTag('')
     setNewSession(drawn ? { ...draft, look: drawn.look } : draft)
   }
 
@@ -327,14 +335,21 @@ export default function ModelDetail({ id }) {
               ))}
             </select>
           )}
-          <select value=""
+          <input value={roomText} onChange={(e) => setRoomText(e.target.value)}
+                 placeholder="Find a room…"
+                 title="Matched against the room's label and against its own text, so a word that is only in the sentence still finds it." />
+          <select value={roomKey}
                   title="Fill the look with a measured room. Every one of these was rendered; the text stays editable."
                   onChange={(e) => {
                     const filled = lookFromRoom(newSession.manner, ROOMS, e.target.value)
-                    if (filled !== null) setNewSession({ ...newSession, look: filled })
+                    if (filled !== null) {
+                      setRoomKey(e.target.value)
+                      setNewSession({ ...newSession, look: filled })
+                    }
                   }}>
             <option value="">Start from a measured room…</option>
-            {ROOMS.filter((r) => roomAllows(r, newSession.manner) && hasTag(r, roomTag)).map((r) => (
+            {filterRooms(ROOMS, { manner: newSession.manner, tag: roomTag,
+                                  text: roomText, current: roomKey }).map((r) => (
               <option key={r.key} value={r.key}>
                 {roomOption(r, newSession.manner)}
               </option>
@@ -343,11 +358,12 @@ export default function ModelDetail({ id }) {
           <textarea rows={2} value={newSession.look}
                     placeholder="hair down with a centre part, soft natural makeup, on a beach at golden hour"
                     onChange={(e) => setNewSession({ ...newSession, look: e.target.value })} />
-          {/* What was dealt, and what it measured under this manner. Said and
-              not enforced: the look is the operator's from here on. */}
-          {drawnRoom && (
+          {/* Which room the look came from, and what it measured under this
+              manner. Said and not enforced: the look is the operator's from
+              here on, and the text is edited below like any other. */}
+          {ROOM && (
             <p className="muted" style={{ marginTop: 4 }}>
-              Dealt {drawnRoom.label} - {verdictLabel(drawnRoom, newSession.manner)}.
+              From {ROOM.label} - {verdictLabel(ROOM, newSession.manner)}.
             </p>
           )}
           {/* The manner can be changed after the look was filled, and the
