@@ -18,8 +18,8 @@ import directedLooks from '../../../data/directed-looks-seed.json'
 // The register is the manner's, not the room's, so composing is what turns a
 // place into a look. `rooms.js` holds both halves and the join.
 import {
-  allTags, filterRooms, lookFromRoom, openingLook, pickerRooms, refillLook,
-  roomOption, verdictLabel,
+  allTags, filterRooms, guidanceLines, openingLook, pickRoom, pickerRooms,
+  refillLook, roomOption, verdictLabel,
 } from '../rooms.js'
 
 // A row says which manners its PLACE makes sense under, and most say "any" -
@@ -341,10 +341,12 @@ export default function ModelDetail({ id }) {
           <select value={roomKey}
                   title="Fill the look with a measured room. Every one of these was rendered; the text stays editable."
                   onChange={(e) => {
-                    const filled = lookFromRoom(newSession.manner, ROOMS, e.target.value)
-                    if (filled !== null) {
+                    // Only the look. The wardrobe, the shots and the settings
+                    // come back as the same objects they went in as.
+                    const picked = pickRoom(newSession, ROOMS, e.target.value)
+                    if (picked !== newSession) {
                       setRoomKey(e.target.value)
-                      setNewSession({ ...newSession, look: filled })
+                      setNewSession(picked)
                     }
                   }}>
             <option value="">Start from a measured room…</option>
@@ -365,6 +367,15 @@ export default function ModelDetail({ id }) {
             <p className="muted" style={{ marginTop: 4 }}>
               From {ROOM.label} - {verdictLabel(ROOM, newSession.manner)}.
             </p>
+          )}
+          {/* What the entry's author wrote about the room, for whoever is
+              writing the line - never composed into it. */}
+          {ROOM && guidanceLines(ROOM).length > 0 && (
+            <ul className="muted" style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {guidanceLines(ROOM).map((line) => (
+                <li key={line.field}>{line.field}: {line.text}</li>
+              ))}
+            </ul>
           )}
           {/* The manner can be changed after the look was filled, and the
               register in the text is then the other manner's. Said, not fixed:

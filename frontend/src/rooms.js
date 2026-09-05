@@ -126,6 +126,48 @@ export function roomOption(room, manner) {
   return `${room?.label ?? ''}${offers} - ${verdictLabel(room, manner)}`
 }
 
+/** The room's authoring guidance, ready to read: one line per source field,
+ *  under the source's own field name.
+ *
+ *  It is READ and never composed. The entry author wrote it for whoever picks
+ *  or edits the room - what the subject is doing and why, what breaks the shot,
+ *  the mood words - and "avoid crystal sparkle" is an instruction to a human
+ *  and a description of glitter to a sampler. Keeping it out of the line is
+ *  structural: `composeLook` joins the register to the place and reads nothing
+ *  else, so there is no filter here anybody can forget to apply.
+ *
+ *  The field names come from the row, not from a list here: which slots count
+ *  as guidance is `is_guidance_field`'s decision on the backend, and a second
+ *  copy of that rule in the frontend would be free to disagree with it.
+ */
+export function guidanceLines(room) {
+  return Object.entries(room?.guidance ?? {})
+    .map(([field, value]) => ({
+      field,
+      text: Array.isArray(value) ? value.join(', ') : String(value ?? ''),
+    }))
+    .filter((line) => line.text.trim())
+}
+
+/** The session after a room is picked: the same session with its look filled,
+ *  and NOTHING else touched.
+ *
+ *  Returned as a new object rather than mutated, and returned AS IT WAS when
+ *  nothing was chosen - the picker's first option is "start from a measured
+ *  room", and choosing it back has to leave a look somebody typed exactly as
+ *  they typed it.
+ *
+ *  A function rather than a spread inside the onChange because that is what
+ *  makes "only the look" assertable: the wardrobe, the shots and the settings
+ *  come back as the same objects, not as equal copies, so an edit that ever
+ *  rebuilt one of them is caught here rather than by somebody noticing their
+ *  shot list reset.
+ */
+export function pickRoom(session, rooms, key) {
+  const look = lookFromRoom(session?.manner, rooms, key)
+  return look === null ? session : { ...session, look }
+}
+
 /** Does this room match what was typed into the filter box.
  *
  *  Matched against the label AND the room's own prose, because the two answer

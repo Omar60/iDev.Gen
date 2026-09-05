@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
-  allTags, composeLook, drawRoom, filterRooms, hasTag, lookFromRoom, matchesText,
-  openingLook, pickerRooms, refillLook, registerFor, roomAllows, roomOption,
-  verdictFor, verdictLabel,
+  allTags, composeLook, drawRoom, filterRooms, guidanceLines, hasTag, lookFromRoom,
+  matchesText, openingLook, pickRoom, pickerRooms, refillLook, registerFor,
+  roomAllows, roomOption, verdictFor, verdictLabel,
 } from './rooms.js'
 import candidRooms from '../../data/candid-rooms-seed.json'
 import directedLooks from '../../data/directed-looks-seed.json'
@@ -393,5 +393,67 @@ describe('narrowing the room list', () => {
     // A look somebody typed has no current room and nothing is pinned.
     expect(listed({ manner: 'candid', text: 'alley', current: '' }))
       .toEqual(['gs-alley-02'])
+  })
+})
+
+// 6.19 and 6.20: what the picker shows beside a room, and what it changes when
+// one is chosen.
+describe('picking a room', () => {
+  const ROOM = {
+    key: 'gs-stockroom-01', label: 'Stockroom', manners: [],
+    place: 'steel shelving and a bare bulb overhead',
+    guidance: {
+      action_anchor: 'she is crouching to restock, not posing',
+      mood: ['tender', 'hushed'],
+      notes: 'no crystal sparkle',
+      empty_anchor: '   ',
+    },
+  }
+
+  it('reads the room the entry author wrote it for, and composes none of it', () => {
+    expect(guidanceLines(ROOM)).toEqual([
+      { field: 'action_anchor', text: 'she is crouching to restock, not posing' },
+      { field: 'mood', text: 'tender, hushed' },
+      { field: 'notes', text: 'no crystal sparkle' },
+    ])
+    // The field names are the row's own: which slots count as guidance is the
+    // backend's rule, and a copy of it here would be free to disagree.
+    // A room with none, and a row from before the field existed, both read as
+    // nothing to show rather than as an empty list on the screen.
+    expect(guidanceLines({ key: 'bare' })).toEqual([])
+    expect(guidanceLines(undefined)).toEqual([])
+    // And none of it is in the look the same room composes, in either manner.
+    for (const manner of ['candid', 'directed']) {
+      const look = composeLook(manner, ROOM.place)
+      for (const word of ['crouching', 'sparkle', 'tender', 'hushed']) {
+        expect(look).not.toContain(word)
+      }
+    }
+  })
+
+  it('fills the look and touches nothing else', () => {
+    const session = {
+      manner: 'candid', look: '', wardrobe: 'a grey cotton dress',
+      shots: [{ prompt: 'one' }], settings: { lora_strength: 0.8 },
+      name: 'Session 4', seed: 0,
+    }
+    const after = pickRoom(session, [ROOM], 'gs-stockroom-01')
+    expect(after.look).toBe(composeLook('candid', ROOM.place))
+    // The same objects, not equal copies: an edit that rebuilt the shot list
+    // would pass a deep comparison and reset the shoot somebody was writing.
+    expect(after.wardrobe).toBe(session.wardrobe)
+    expect(after.shots).toBe(session.shots)
+    expect(after.settings).toBe(session.settings)
+    expect(after.name).toBe(session.name)
+    expect(after.seed).toBe(session.seed)
+    expect(Object.keys(after).sort()).toEqual(Object.keys(session).sort())
+    // The session it was asked about is not mutated on the way.
+    expect(session.look).toBe('')
+
+    // Choosing the first option back is not an empty room: a look somebody
+    // typed comes back as the very same object, untouched.
+    const typed = { ...session, look: 'a look somebody typed' }
+    expect(pickRoom(typed, [ROOM], '')).toBe(typed)
+    expect(pickRoom(typed, [ROOM], 'a-key-no-room-carries')).toBe(typed)
   })
 })
