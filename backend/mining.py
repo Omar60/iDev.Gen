@@ -817,3 +817,52 @@ def component_rows(
     if unlabelled or echoed:
         raise JudgeLabelMissingError(unlabelled, echoed)
     return out
+
+
+# -- The camera concepts the mining introduces -----------------------------
+
+# What the source libraries are being mined FOR. Their cameras are held by a
+# participant, and two of the positions that follow from that are positions this
+# project's camera catalogue does not carry in any manner - not as a wording, not
+# under another name, and not as a treatment that happens to look like one.
+#
+# Recorded here and not in a seed file: it is a finding about OUR catalogue,
+# written in our own words, and it is read by a test rather than by the app. A
+# JSON file would need a loader, a validator and a place in the registry checks
+# to say what a tuple says.
+#
+# Each entry names the rows it is NEAREST to, and that is what makes the claim
+# accountable rather than an assertion: the near misses are named so a reader can
+# check them, and a test asserts they still exist. When one of these concepts is
+# added to the catalogue under its key, it stops being new and comes out of here
+# - which the same test enforces from the other side.
+NEW_CAMERA_CONCEPTS: tuple[dict[str, Any], ...] = (
+    {
+        "key": "feet-first-low-pov",
+        "judge_label": "From below her feet, looking up the length of her body",
+        "nearest": ("worms-eye", "ground-level", "floor-low-angle", "low-angle"),
+        "why_new": (
+            "The catalogue's low cameras say how HIGH the lens is and not where "
+            "around her it stands: `ground-level` looks across the floor, "
+            "`worms-eye` looks steeply up, and both are silent about the axis. "
+            "This one is on the axis of her body at its foot end, which is the "
+            "position that foreshortens her along its whole length - and "
+            "`cand-foreshortening` names that as a TREATMENT, an effect to look "
+            "for, with no camera standing anywhere."
+        ),
+    },
+    {
+        "key": "overhead-over-kneeling",
+        "judge_label": "Looking down from standing height at someone kneeling below the lens",
+        "nearest": ("overhead-direct", "top-down", "high-angle", "overhead-term"),
+        "why_new": (
+            "Every overhead the catalogue carries looks down at HER as the whole "
+            "subject, from a ceiling, a shelf or an arm - `top-down` is straight "
+            "down, `overhead-direct` is directly above her. This one is a "
+            "participant's own eyeline at standing height onto a body kneeling "
+            "below it, which is a height and a relation between two people rather "
+            "than an angle onto one, and the catalogue has no camera that says "
+            "where the second body is."
+        ),
+    },
+)
