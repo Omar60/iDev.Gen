@@ -155,6 +155,27 @@ def derive_offers(entry: dict[str, Any], prose: str) -> list[str]:
     return kept
 
 
+def is_guidance_field(name: str) -> bool:
+    """Is this source field the entry author writing down how the shot works.
+
+    `notes` and the four `*_anchor` fields are the only slots in the corpus
+    that explain themselves - an `action_anchor` saying the subject is bending
+    to restock rather than merely standing, a `notes` field forbidding crystal
+    sparkle - and `anchors` is the same material grouped under one key by a
+    library that writes it that way.
+
+    It is guidance for whoever picks or edits the room and it never reaches a
+    line: `compose_look` joins the manner's register to the room's place and
+    reads nothing else, so keeping guidance out of a prompt is a property of
+    where it is stored, not a filter somebody has to remember to apply.
+
+    ponytail: a name rule, not a per-library map. A library that calls the
+    same material something else stores it as an ordinary field and the picker
+    does not show it; the upgrade is another name here, not a schema.
+    """
+    return name == "notes" or name == "anchors" or name.endswith("_anchor")
+
+
 class TranslationMissingError(ValueError):
     """Raised when non-English strings in an upload are missing from the map."""
 
@@ -575,10 +596,22 @@ def import_source(
             # Read off the room's own text, at import, and stored. The gate
             # resolves against this and never re-reads the composed look.
             new_row["multi_body"] = derive_multi_body(theme_text)
-            if "notes" in entry:
-                new_row["notes"] = _translate_field(
-                    entry["notes"], translation_map, identifier, "notes", authored
-                )
+            # The entry author's own reasons - why the room is shaped this way,
+            # what breaks it - kept in ONE field rather than as loose top-level
+            # keys. The picker has to show all of it, and a picker that has to
+            # know which field names count as guidance is a second copy of
+            # `is_guidance_field` living in the frontend, free to disagree with
+            # this one. Always written, empty dict included, for the same
+            # reason `authored` always is: a reader must not have to tell "this
+            # room carries no guidance" from "this row predates the field".
+            guidance: dict[str, Any] = {}
+            for name in sorted(entry):
+                if is_guidance_field(name):
+                    guidance[name] = _translate_field(
+                        entry[name], translation_map, identifier,
+                        f"guidance.{name}", authored,
+                    )
+            new_row["guidance"] = guidance
             # Always written, even empty: a reader must not have to tell "this
             # row carries no translation" apart from "this row predates the
             # field", which is a guess it would get wrong in one direction.

@@ -778,7 +778,7 @@ def test_a_row_says_which_of_its_values_are_authored_and_which_are_source(tmp_pa
         )
     }
 
-    assert rows["gs_tea_room"]["authored"] == ["label", "notes"]
+    assert rows["gs_tea_room"]["authored"] == ["guidance.notes", "label"]
     assert rows["gs_lounge"]["authored"] == []
     assert rows["gs_hold"]["authored"] == ["place"]
 
@@ -787,16 +787,18 @@ def test_a_row_says_which_of_its_values_are_authored_and_which_are_source(tmp_pa
     entries_by_id = {e["identifier"]: e for e in entries}
     for identifier, row in rows.items():
         entry = entries_by_id[identifier]
+        stored = {"label": row["label"], "place": row["place"]}
+        stored.update({f"guidance.{k}": v for k, v in row["guidance"].items()})
         for field, source_value in (("label", entry.get("label")),
                                     ("place", entry.get("theme")),
-                                    ("notes", entry.get("notes"))):
-            if field not in row:
+                                    ("guidance.notes", entry.get("notes"))):
+            if field not in stored:
                 continue
             if field in row["authored"]:
-                assert row[field] != source_value, (identifier, field)
-                assert not contains_non_english(json.dumps(row[field]))
+                assert stored[field] != source_value, (identifier, field)
+                assert not contains_non_english(json.dumps(stored[field]))
             else:
-                assert row[field] == source_value, (identifier, field)
+                assert stored[field] == source_value, (identifier, field)
 
     # The place of an untranslated room is the source prose 5.7 reads for
     # `offers`, so it has to stay recognisable as source and not as authored.
@@ -939,6 +941,85 @@ def test_an_imported_room_is_a_place_that_composes_under_either_manner(tmp_path:
     # The same place text, byte for byte, under both.
     assert candid[len(registers["candid"]) + 1:] == place
     assert directed[len(registers["directed"]) + 1:] == place
+
+
+def test_authoring_guidance_is_stored_translated_and_never_composed(tmp_path: Path):
+    """5.9: the entry author's reasons are kept for the operator, not for the line.
+
+    `notes` and the `*_anchor` fields are the only slots in this corpus that
+    explain themselves - what the subject is doing and why, what breaks the
+    shot - and they are the reason the translation pass was worth running at
+    all. They are also the last text that should reach a prompt: "avoid crystal
+    sparkle" is an instruction to a human and a description of glitter to a
+    sampler.
+
+    So the guarantee is structural rather than a filter. Guidance lives in its
+    own field, `compose_look` joins the register to the place and reads nothing
+    else, and the test below asserts the consequence: every guidance string is
+    in the row, in English, and none of them - and none of their source
+    originals - is anywhere in what either manner composes.
+
+    Both directions matter. Asserting only that the composed line is missing
+    the guidance passes on a row that stored no guidance at all, which is why
+    the stored values are checked first, against the map's English.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    zh_notes = _zh(["7981", "6b62", "95ea", "7c89"])
+    zh_action = _zh(["8e72", "4e0b", "6574", "7406"])
+    place = "stockroom with steel shelving, a folding step stool and a bare bulb"
+    guidance_english = {
+        "notes": "no crystal sparkle",
+        "action_anchor": "she is crouching to restock, not posing",
+        "camera_anchor": "the phone rests on the shelf above her",
+    }
+
+    translations = {
+        zh_notes: {"translation": guidance_english["notes"], "fields": ["notes"]},
+        zh_action: {"translation": guidance_english["action_anchor"],
+                    "fields": ["action_anchor"]},
+    }
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text(json.dumps(translations), encoding="utf-8")
+    (source_dir / "general_scenes.json").write_text(
+        json.dumps({
+            "library": "general_scenes",
+            "items": [{
+                "identifier": "gs_stockroom_01",
+                "label": "Stockroom",
+                "theme": place,
+                "notes": zh_notes,
+                "action_anchor": zh_action,
+                # Already English: guidance is stored whether or not the map
+                # wrote it, and `authored` is what tells the two apart.
+                "camera_anchor": guidance_english["camera_anchor"],
+            }],
+        }, ensure_ascii=True),
+        encoding="utf-8",
+    )
+
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+    row = json.loads(
+        (data_dir / "general-scenes-rooms-seed.json").read_text(encoding="utf-8")
+    )[0]
+
+    # Stored, translated, and in one field the picker can show whole.
+    assert row["guidance"] == guidance_english
+    assert row["authored"] == ["guidance.action_anchor", "guidance.notes"]
+
+    # And absent from what is composed, under either manner - the source's own
+    # words as well as the English, since a room that leaked its untranslated
+    # notes would leak them into the same line.
+    registers = load_manner_registers(data_dir=ROOT / "data")
+    for manner in ("candid", "directed"):
+        look = compose_look(manner, row["place"], registers)
+        assert look.endswith(place)
+        for text in list(guidance_english.values()) + [zh_notes, zh_action]:
+            assert text not in look, (manner, text)
 
 
 def test_the_key_survives_a_corrected_translation(tmp_path: Path):
@@ -1703,7 +1784,7 @@ def test_translation_refusal_walks_nested_structures(tmp_path: Path):
 
     dest_seed = data_dir / "workplace-scenes-rooms-seed.json"
     rows = json.loads(dest_seed.read_text(encoding="utf-8"))
-    assert rows[0]["notes"]["ambience"] == "dim lighting"
+    assert rows[0]["guidance"]["notes"]["ambience"] == "dim lighting"
     # No escape sequence remains
     assert (chr(92) + "u") not in dest_seed.read_text(encoding="utf-8")
 def test_untranslated_identifier_refuses_and_never_reaches_a_seed(tmp_path: Path):
@@ -2124,8 +2205,9 @@ def test_rerunning_import_rewords_nothing(tmp_path: Path):
     assert "tea_room_01" in run1_by_id
 
     # Verify first run translations match map expectations
-    for field in ("label", "place", "notes"):
+    for field in ("label", "place"):
         assert run1_by_id["tea_room_01"][field] == expected[field]
+    assert run1_by_id["tea_room_01"]["guidance"]["notes"] == expected["notes"]
 
     # Verify absence of source strings after run 1 in both raw and escape forms (Rule 3)
     raw_run1 = dest_seed.read_bytes()
@@ -2158,9 +2240,12 @@ def test_rerunning_import_rewords_nothing(tmp_path: Path):
 
     # Compare every translated field between run 1 and run 2 (Rule 1 & Rule 2)
     # Deliberately compare translations rather than whole rows.
-    for field in ("label", "place", "notes"):
+    for field in ("label", "place"):
         assert run2_by_id["tea_room_01"][field] == run1_by_id["tea_room_01"][field]
         assert run2_by_id["tea_room_01"][field] == expected[field]
+    assert (run2_by_id["tea_room_01"]["guidance"]
+            == run1_by_id["tea_room_01"]["guidance"])
+    assert run2_by_id["tea_room_01"]["guidance"]["notes"] == expected["notes"]
 
     # Verify absence of source strings after run 2 in both raw and escape forms (Rule 3)
     raw_run2 = dest_seed.read_bytes()
@@ -2352,7 +2437,7 @@ def test_translation_walk_refuses_a_shape_the_coverage_walk_does_not_reach(tmp_p
     )
     assert report["written"] == 1
     rows = json.loads(dest_seed.read_text(encoding="utf-8"))
-    assert rows[0]["notes"]["ambience"] == [["dim lighting"]]
+    assert rows[0]["guidance"]["notes"]["ambience"] == [["dim lighting"]]
     assert (chr(92) + "u") not in dest_seed.read_text(encoding="utf-8")
 
 
