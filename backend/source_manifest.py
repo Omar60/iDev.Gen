@@ -46,7 +46,12 @@ KIND_IDENTITIES: str = "identities"
 # Refusal reasons. `SIGNAL_NOT_ADOPTED` is imported rather than respelled so
 # the file-level refusal and the entry-level one are one word, not two.
 REASON_UNDECLARED: str = "undeclared"
-REASON_NOT_SPLIT: str = "not_split_yet"
+# A declared library whose material this caller is not the importer for. The
+# fused library is the case: its entries reach a room seed, but only after they
+# have been cut into rows, and the room importer would write each one whole -
+# a room seed row carrying a camera position is a room that overrules the
+# line's camera, which is the defect the whole split exists to avoid.
+REASON_WRONG_IMPORTER: str = "wrong_importer"
 
 # Every source library this project can be handed, the kind of material it
 # carries, and every destination its entries reach. `reason` is present only on
@@ -80,10 +85,16 @@ SOURCE_LIBRARIES: dict[str, dict[str, Any]] = {
         "kind": KIND_ROOMS,
         "destinations": ("school-scenes-rooms-seed.json",),
     },
+    # Reaches a room seed like its siblings, and is written by a different
+    # importer: its entries are cut into a camera, an act and a room first, and
+    # only the room part lands here. The KIND is what keeps the room importer
+    # out - not an empty destination list, which is what stood here while the
+    # split did not exist. The camera and act rows are not named because they
+    # are not FILES: a destination is a file this app reads at runtime, and a
+    # mined component row goes through the catalogue's own import route.
     "perspective_scenes": {
         "kind": KIND_FUSED_SCENES,
-        "destinations": (),
-        "reason": REASON_NOT_SPLIT,
+        "destinations": ("perspective-scenes-rooms-seed.json",),
     },
     "amateurs": {
         "kind": KIND_BODY_PROFILES,
@@ -124,13 +135,23 @@ def declaration_for(library: str) -> dict[str, Any] | None:
     return dict(found) if found is not None else None
 
 
-def declare_source_file(path: Path | str) -> dict[str, Any]:
+def declare_source_file(path: Path | str, *, writes: str) -> dict[str, Any]:
     """Return the declaration a source file imports under, or refuse it.
 
     Reads the file's name and nothing else - no bytes are read and nothing is
     written, whatever the answer. Raises `SourceRefused` naming the library it
-    could not identify, or the reason a declared library reaches no
-    destination.
+    could not identify, the reason a declared library reaches no destination, or
+    the fact that this caller is not the importer for the kind of material it
+    carries.
+
+    `writes` is the kind of material the CALLER can write, and it is required
+    with no default. It only ever NARROWS: it cannot declare a library, cannot
+    add a destination and cannot turn a refusal into an acceptance, so it is not
+    the bypass keyword `test_no_caller_argument_declares_an_undeclared_file`
+    refuses - it is the caller admitting what it is able to write. A default
+    would make it optional, and an importer that forgot to say would write a
+    fused entry into a room seed whole, which is the one outcome the split
+    exists to prevent.
     """
     library = library_name_for_file(path)
     declared = declaration_for(library)
@@ -138,5 +159,7 @@ def declare_source_file(path: Path | str) -> dict[str, Any]:
         raise SourceRefused(REASON_UNDECLARED, library)
     if not declared["destinations"]:
         raise SourceRefused(declared.get("reason", REASON_UNDECLARED), library)
+    if declared["kind"] != writes:
+        raise SourceRefused(REASON_WRONG_IMPORTER, library)
     declared["library"] = library
     return declared

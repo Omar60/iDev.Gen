@@ -53,6 +53,7 @@ from backend.translation_map import contains_non_english, load_translation_map
 from backend.source_manifest import (
     REASON_UNDECLARED,
     SourceRefused,
+    KIND_ROOMS,
     declare_source_file,
 )
 from scripts.import_assets import main as cli_main
@@ -466,7 +467,7 @@ def test_manifest_and_guard_refusals_run_before_writing(tmp_path: Path):
 
     # `declare_source_file` still refuses on its own; the importer catches it
     with pytest.raises(SourceRefused):
-        declare_source_file(source_dir / "amateurs.json")
+        declare_source_file(source_dir / "amateurs.json", writes=KIND_ROOMS)
 
 
 def test_translation_lookup_stops_when_string_missing_naming_entry_and_field(tmp_path: Path):

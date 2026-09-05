@@ -33,6 +33,7 @@ from backend.room_registry import (
 from backend.source_manifest import (
     SourceRefused,
     declaration_for,
+    KIND_ROOMS,
     declare_source_file,
 )
 from backend.translation_map import (
@@ -596,7 +597,7 @@ def import_source(
     refused_libraries: list[dict[str, str]] = []
     for sf in source_files:
         try:
-            declare_source_file(sf)
+            declare_source_file(sf, writes=KIND_ROOMS)
         except SourceRefused as refusal:
             refused_libraries.append(
                 {"library": refusal.library, "reason": refusal.reason}
