@@ -36,6 +36,7 @@ data/*
 !data/candid-acts-seed.json
 !data/directed-cameras-seed.json
 !data/candid-rooms-seed.json
+!data/room-verdicts-seed.json
 !data/manner-registers-seed.json
 !data/directed-looks-seed.json
 !data/directed-acts-seed.json

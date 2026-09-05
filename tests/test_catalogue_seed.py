@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 import pytest
@@ -580,3 +581,78 @@ def test_no_two_readings_are_the_same_sentence_on_the_same_menu():
             f"{r['slot']}/{r['manner']}: {r['key']!r} and {seen[k]!r} are the same "
             "sentence on the same menu")
         seen[k] = r["key"]
+
+
+# 6.5: the verdict store. A measurement is this project's own work; the text it
+# was taken against may be an import that never reaches git. Stored together,
+# every measurement leaves with the licensing decision - so they are stored
+# apart, and the rule that keeps the tracked half committable is that it
+# reproduces none of the prose it was measured against.
+VERDICTS = ROOT / "data" / "room-verdicts-seed.json"
+
+# Six consecutive words is prose. Shorter runs collide honestly - "on the bed",
+# "in the kitchen" - and a note saying which run measured a room is allowed to
+# name what is in it. What may not appear is the room's own sentences.
+PROSE_RUN = 6
+
+
+def _runs(text, n=PROSE_RUN):
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return {" ".join(words[i:i + n]) for i in range(max(0, len(words) - n + 1))}
+
+
+def verdict_store_prose(store, places):
+    """(key, manner, field) for every stored value reproducing a room's prose."""
+    known = set()
+    for place in places:
+        known |= _runs(place)
+    offenders = []
+    for key, per_manner in (store or {}).items():
+        for manner, record in (per_manner or {}).items():
+            for field, value in (record or {}).items():
+                if isinstance(value, str) and _runs(value) & known:
+                    offenders.append((key, manner, field))
+    return sorted(offenders)
+
+
+def test_the_verdict_store_holds_measurements_and_no_room_text():
+    """Keys, manners, verdicts and sample sizes. Not a sentence of a room.
+
+    The store is tracked and the imported rooms are not, which is the whole
+    reason the two are separate files - and it is also how source prose gets
+    committed by accident, one note at a time. So the shape is closed and the
+    prose rule is asserted rather than trusted: a value carrying six
+    consecutive words of any room's place is the room's sentence copied, under
+    whatever field name.
+
+    The detector is exercised on invented rooms in both directions, because the
+    real store starts empty and a rule that only ever reads an empty file is a
+    rule nobody has run.
+    """
+    store = json.loads(VERDICTS.read_text(encoding="utf-8"))
+    assert isinstance(store, dict)
+
+    rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
+    places = [r["place"] for r in rooms]
+
+    for key, per_manner in store.items():
+        assert re.fullmatch(r"[a-z0-9-]+", key), key
+        assert isinstance(per_manner, dict), key
+        for manner, record in per_manner.items():
+            assert manner and isinstance(manner, str), key
+            assert set(record) <= {"verdict", "sample_size", "note"}, (key, manner)
+            assert isinstance(record.get("sample_size", 0), int), (key, manner)
+
+    assert verdict_store_prose(store, places) == []
+
+    # The rule, run on something. A note naming the run is fine; the room's own
+    # sentence under any field name is not.
+    planted = places[0]
+    assert verdict_store_prose(
+        {"bedroom-night": {"candid": {"note": "in use since session 351"}}}, places) == []
+    assert verdict_store_prose(
+        {"bedroom-night": {"candid": {"note": planted}}}, places) == [
+        ("bedroom-night", "candid", "note")]
+    assert verdict_store_prose(
+        {"bedroom-night": {"candid": {"verdict": planted[:120]}}}, places) == [
+        ("bedroom-night", "candid", "verdict")]

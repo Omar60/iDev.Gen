@@ -22,6 +22,7 @@ from room_registry import (
     DEFAULT_ROOM_LIBRARIES,
     get_registered_rooms,
     get_room_libraries_config,
+    ROOM_VERDICTS_FILE,
     is_room_seed_file,
     load_room_libraries,
     verify_registry_disk_agreement,
@@ -152,6 +153,14 @@ def test_shipped_registry_and_disk_agree_both_directions():
     assert unregistered == [], (
         f"Tracked room seed files no registry entry names: {unregistered}"
     )
+
+    # 6.5's store is named for rooms and is not a library of them: it holds the
+    # measurements, keyed by room key. Read as a room seed it is unregistered on
+    # every checkout, and direction 2 above then refuses every import while it
+    # sits on disk - which is how this was found. Asserted here because a rename
+    # of the file would take the exclusion with it, silently.
+    assert ROOM_VERDICTS_FILE in tracked
+    assert not is_room_seed_file(Path(ROOM_VERDICTS_FILE))
 
 
 def test_disk_agreement_fails_when_registry_names_missing_file(tmp_path: Path):
