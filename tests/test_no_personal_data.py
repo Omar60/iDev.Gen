@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from backend.source_manifest import SOURCE_LIBRARIES
+
 ROOT = Path(__file__).resolve().parents[1]
 
 PATTERNS = {
@@ -238,3 +240,70 @@ def test_tracked_data_files_are_named_by_gitignore():
           "'!' line if the file belongs in the repo, or git rm --cached it.")
     assert not stale, (
         "a .gitignore exception names a file git does not track: " + ", ".join(stale))
+
+
+# The rule above is "nothing tracked under data/ is unnamed". This is the other
+# direction, and 6.1 is where it is stated: nothing an import WRITES may become
+# tracked, and nothing an import writes may be read at build time. The two are
+# one guarantee - a fresh clone with no import run has to build - and neither
+# half is visible from the other's assertion.
+SEED_IMPORT = re.compile(r"""from\s+['"]([^'"]*data/[^'"]+\.json)['"]""")
+
+
+def _frontend_build_time_seeds() -> list[str]:
+    """Every data/ seed the frontend reads at build time, repo-relative."""
+    found: list[str] = []
+    for src in sorted((ROOT / "frontend" / "src").rglob("*.js*")):
+        for match in SEED_IMPORT.finditer(src.read_text(encoding="utf-8")):
+            resolved = (src.parent / match.group(1)).resolve()
+            found.append(resolved.relative_to(ROOT).as_posix())
+    return sorted(set(found))
+
+
+def test_an_import_destination_is_neither_tracked_nor_bundled_into_the_build():
+    """6.1: the operator's licence decision keeps imported prose out of git, and
+    the frontend has to build on a clone where it was never imported.
+
+    Both halves fail silently in the direction that matters. A destination that
+    became tracked publishes 428 rooms of somebody else's wording and nothing
+    goes red; a destination read by `import ... from '../../data/...json'`
+    builds fine on the machine that ran the import and breaks every fresh
+    clone, which is the failure `tests/test_catalogue_seed.py` was written for
+    in the first place.
+
+    Read off the declaration rather than off a filename pattern: the manifest is
+    where a destination is named, so a library added there is covered here the
+    day it is added and not the day somebody remembers this test.
+    """
+    destinations = sorted({
+        dest
+        for declaration in SOURCE_LIBRARIES.values()
+        for dest in declaration.get("destinations", ())
+    })
+    assert destinations, "the manifest declares no destination; this asserts nothing"
+
+    out = subprocess.run(["git", "ls-files", "data/"], cwd=ROOT,
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        pytest.skip("not a git repository")
+    tracked = {f for f in out.stdout.splitlines() if f}
+
+    for dest in destinations:
+        path = f"data/{dest}"
+        assert path not in tracked, (
+            f"{path} is tracked: an import would commit source prose. "
+            "git rm --cached it and drop its .gitignore exception.")
+        # Ignored whether or not the file exists yet, which is the state a
+        # checkout is in before anybody imports.
+        ignored = subprocess.run(["git", "check-ignore", "-q", path], cwd=ROOT)
+        assert ignored.returncode == 0, f"{path} is not ignored by .gitignore"
+
+    # The nine rooms this project wrote, directed's look and the registers stay
+    # build-time imports and stay tracked. What may not appear here is an import
+    # destination.
+    build_time = _frontend_build_time_seeds()
+    assert build_time, "no build-time seed import found; the scan is broken"
+    for seed in build_time:
+        assert seed in tracked, (
+            f"{seed} is imported at build time and is not tracked: a fresh "
+            "clone does not build")
