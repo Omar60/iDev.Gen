@@ -1208,6 +1208,38 @@ def list_rooms():
     return available_rooms(CONFIG, DATA_DIR)
 
 
+class RoomPreflightIn(BaseModel):
+    """What a planned run declares, for the report below. Only the declaration
+    a room gate reads: the count, the candidates and the wardrobe arc decide
+    nothing about a room."""
+    with_him: bool = False
+
+
+@app.post("/api/rooms/preflight")
+def rooms_preflight(p: RoomPreflightIn):
+    """Which rooms this planned run would be refused in, and why - before it is
+    sent.
+
+    The whole point is that it QUEUES NOTHING. An operator finds out a room is
+    unshootable today by sending the run and reading the 422, which is fine for
+    one room and useless for a picker with 396 in it. This answers the same
+    question over the whole catalogue for the cost of one call.
+
+    Every reason comes from `room_refusal`, the function the run itself calls.
+    A report that recomputed the rules would be a second opinion, and the day
+    the two disagree is the day the operator picks a room the report cleared
+    and the run refuses.
+    """
+    rooms = available_rooms(CONFIG, DATA_DIR).get("rooms", [])
+    refused = []
+    for room in rooms:
+        why = room_refusal(room, with_him=p.with_him)
+        if why:
+            refused.append({"key": room.get("key"), "label": room.get("label") or "",
+                            "reason": why})
+    return {"rooms": len(rooms), "refused": refused}
+
+
 @app.post("/api/rooms/import")
 def import_rooms(p: RoomImportIn):
     """Import a source asset directory into room seed files, and register them.
@@ -2417,6 +2449,43 @@ def _room_for_session(session) -> dict | None:
     return None
 
 
+def room_refusal(room: dict | None, *, with_him: bool) -> str | None:
+    """Why this room refuses a run that declares `with_him`, or None.
+
+    The one place both gates are spelled, because `rooms_preflight` (7.8)
+    answers the same question before a run is sent and a report computed apart
+    from the gate is a report free to say yes where the run says no. No room -
+    a detached session, an unregistered library - is no refusal.
+
+    A room whose own text puts a nurse or a boyfriend in the frame cannot be
+    shot alone: the look composes that sentence into every photograph of the
+    session, so the second body arrives whether the acts asked for one or not.
+    The message names the room AND the words, because "this room needs two
+    people" without them is a no with no next step - the operator cannot see
+    which half of a paragraph they wrote is the problem.
+
+    The budget is counted on the room's stored text for the same reason the
+    words are read there, and the message carries both numbers: a limit without
+    the measurement is untunable, and "too long" leaves the operator guessing
+    whether they are over by a word or by a hundred.
+    """
+    if not room:
+        return None
+    name = room.get("label") or room.get("key")
+    if room.get("multi_body") and not with_him:
+        words = ", ".join(room["multi_body"])
+        return (f"compose refused: the room {name!r} puts other people in the frame "
+                f"({words}); switch the run's second body on, or detach the room from "
+                f"the session")
+    words_in_room = len((room.get("place") or "").split())
+    budget = int(CONFIG.get("room_word_budget") or ROOM_WORD_BUDGET)
+    if budget and words_in_room > budget:
+        return (f"compose refused: the room {name!r} is {words_in_room} words and the "
+                f"budget is {budget}; raise room_word_budget in the config, or pick a "
+                f"shorter room")
+    return None
+
+
 def _draw_n_trio_shots(
     sid: int,
     count: int,
@@ -2543,44 +2612,17 @@ def _draw_n_trio_shots(
             f"set them on the session before composing",
         )
 
-    # The room's own people, against the run's. A room whose text puts a nurse
-    # or a boyfriend in the frame is a room this run cannot shoot alone: the
-    # look composes that sentence into every photograph of the session, so the
-    # second body arrives whether the acts asked for one or not. The refusal
-    # names the room AND the words responsible, because "this room needs two
-    # people" without them is a no with no next step - the operator cannot see
-    # which half of a paragraph they wrote is the problem.
+    # The room's gates. One function, `room_refusal`, because 7.8 reports the
+    # same answers ahead of the run and a report computed separately from the
+    # gate is a report that can say yes where the run says no.
     #
     # Read from the catalogue by key and never from the look: the look is the
     # operator's text from the moment the room filled it, and re-reading it
     # here would answer a question about words that may no longer be in it.
     # That is also why a detached session (7.2) passes: no key, no claim.
-    room = _room_for_session(session)
-    if room and room.get("multi_body") and not with_him:
-        words = ", ".join(room["multi_body"])
-        raise HTTPException(
-            422,
-            f"compose refused: the room {room.get('label') or room.get('key')!r} puts other "
-            f"people in the frame ({words}); switch the run's second body on, or detach the "
-            f"room from the session",
-        )
-
-    # And the room's length against the budget. Counted on the room's own
-    # stored text and not on the look, for the reason above: the look is the
-    # operator's, and a budget that policed it would refuse a session for words
-    # nobody in this repo measured. The message carries both numbers because a
-    # limit without the measurement is untunable - "too long" leaves the
-    # operator guessing whether they are over by a word or by a hundred.
-    if room:
-        words = len((room.get("place") or "").split())
-        budget = int(CONFIG.get("room_word_budget") or ROOM_WORD_BUDGET)
-        if budget and words > budget:
-            raise HTTPException(
-                422,
-                f"compose refused: the room {room.get('label') or room.get('key')!r} is "
-                f"{words} words and the budget is {budget}; raise room_word_budget in the "
-                f"config, or pick a shorter room",
-            )
+    refusal = room_refusal(_room_for_session(session), with_him=with_him)
+    if refusal:
+        raise HTTPException(422, refusal)
 
     # `him` and `furniture` are properties of the RUN — he is in the room or he
     # is not, the room has somewhere to sit or it does not — so they narrow the

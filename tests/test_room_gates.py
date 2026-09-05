@@ -319,3 +319,42 @@ def test_a_refused_run_leaves_the_shots_that_were_already_there(client, seeded, 
         assert db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=?", sid)["n"] == before
     finally:
         main.CONFIG = saved
+
+
+def test_the_report_says_which_rooms_a_run_would_be_refused_in_and_queues_nothing(
+        client, seeded, rooms_on_disk):
+    """7.8. The same answers as the run, ahead of it, at no cost.
+
+    Queueing nothing is asserted over the whole shot table and not over one
+    session, because the report is not sent from a session - a call that
+    queued anything would queue it somewhere this test does not know to look.
+
+    The reason string is compared to the gate's own: the report exists to be
+    trusted, and a report that recomputed the rules would be a second opinion
+    free to clear a room the run refuses.
+    """
+    candidates = _seed_trios(1)
+    sid = _session(client, seeded, CROWDED["key"], CROWDED["place"])
+    before = db.one("SELECT COUNT(*) AS n FROM shot")["n"]
+
+    r = client.post("/api/rooms/preflight", json={"with_him": False})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert db.one("SELECT COUNT(*) AS n FROM shot")["n"] == before
+
+    refused = {row["key"]: row["reason"] for row in body["refused"]}
+    assert CROWDED["key"] in refused, body
+    assert ALONE["key"] not in refused, body
+    assert "nurse" in refused[CROWDED["key"]]
+    assert refused[CROWDED["key"]] == main.room_refusal(
+        {**CROWDED}, with_him=False)
+
+    # And the run agrees with it, which is the property that matters.
+    run = client.post(f"/api/sessions/{sid}/compose-run",
+                      json={"count": 1, "candidates": candidates, "with_him": False})
+    assert run.status_code == 422, run.text
+    assert run.json()["detail"] == refused[CROWDED["key"]]
+
+    # Declaring him clears the room, in the report and in the run alike.
+    cleared = client.post("/api/rooms/preflight", json={"with_him": True}).json()
+    assert cleared["refused"] == [], cleared
