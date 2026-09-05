@@ -7178,3 +7178,65 @@ def test_bare_still_answers_for_a_photograph_the_arc_says_nothing_about(client, 
     # An arc shorter than the run leaves the photographs past its end to `bare`.
     assert queued(bare=True, access=[]) == 200
     assert queued(bare=False, access=[None]) == 422
+
+
+def test_the_room_a_look_came_from_is_recorded_replaced_and_detachable(client, seeded):
+    """7.2, all four halves on one session.
+
+    The column is provenance and the look is the text. Everything here turns on
+    keeping those two apart: the key moves as the operator picks, re-picks and
+    detaches, and the words never move with it. The look is asserted BYTE for
+    byte after the detach, not merely non-empty - the failure this exists to
+    catch is a detach implemented as "clear the room", which is one line away
+    from clearing the sentence the room wrote and is unrecoverable once the
+    operator has left the screen.
+
+    A session with no key composes unrefused, which is the other half of
+    provenance-only: nothing downstream may read this column to decide
+    anything. That assertion is cheap and is the one that fails the day
+    somebody makes the key a requirement for a strict draw.
+    """
+    look = "A bare ceiling bulb lights the room from overhead, and the window is black against it."
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "from a room",
+        "look": look, "room_key": "bedroom-night", "manner": "directed", "shots": [],
+    }).json()["id"]
+    assert client.get(f"/api/sessions/{sid}").json()["room_key"] == "bedroom-night"
+
+    # Replacing the room replaces the key. The look moves too on a real
+    # re-pick, which is the picker's job and not this route's - here it is sent
+    # as its own field so the two are seen to travel separately.
+    client.patch(f"/api/sessions/{sid}", json={"room_key": "kitchen"})
+    assert client.get(f"/api/sessions/{sid}").json()["room_key"] == "kitchen"
+
+    # Detaching clears the key and nothing else.
+    client.patch(f"/api/sessions/{sid}", json={"room_key": ""})
+    after = client.get(f"/api/sessions/{sid}").json()
+    assert after["room_key"] == ""
+    assert after["look"] == look
+
+    # And the detached session still composes. The cell is seeded on the
+    # session's own dimensions, the same way the strict path expects.
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "base.safetensors", 10, 8)
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": "front-direct",
+                   "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]},
+        "act": {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]},
+        "framing": {"key": "full-length", "wordings": [{"key": "full-length", "text": "framing text"}]},
+    })
+    assert r.status_code == 200, r.text
+
+
+def test_a_clone_carries_the_room_its_look_came_from(client, seeded):
+    """The clone's look is the source's look byte for byte, so the room that
+    filled one filled the other. Same argument the tags already carry, and the
+    reason it is asserted: a clone that drops the provenance leaves a look in
+    the tree that says it came from nowhere."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "source",
+        "look": "a kitchen at night", "room_key": "kitchen", "shots": [],
+    }).json()["id"]
+    copy = client.post(f"/api/sessions/{sid}/clone", json={}).json()
+    assert client.get(f"/api/sessions/{copy['id']}").json()["room_key"] == "kitchen"

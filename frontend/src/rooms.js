@@ -168,6 +168,27 @@ export function pickRoom(session, rooms, key) {
   return look === null ? session : { ...session, look }
 }
 
+/** What the picker does with the value the select just handed it: the key the
+ *  session records, and the session that goes with it.
+ *
+ *  Three transitions, one function, because the third is the one that gets
+ *  written wrong. Picking a room fills the look and records the key. Picking
+ *  another replaces both. Choosing the empty option DETACHES: the key clears
+ *  and the session comes back as the very same object, because the words are
+ *  the operator's from the moment the room filled them and a detach that also
+ *  clears the sentence is unrecoverable once the screen is left.
+ *
+ *  A key no room carries is refused outright - neither half moves. That is the
+ *  stale-select case: a library unregistered while the form was open would
+ *  otherwise record a key whose room nobody can look up, over a look it never
+ *  wrote.
+ */
+export function roomChoice(session, rooms, key) {
+  if (!key) return { key: '', session }
+  const picked = pickRoom(session, rooms, key)
+  return picked === session ? null : { key, session: picked }
+}
+
 /** Does this room match what was typed into the filter box.
  *
  *  Matched against the label AND the room's own prose, because the two answer

@@ -170,6 +170,10 @@ class SessionIn(BaseModel):
     # that is refused before the cell lookup, naming what is missing.
     manner: str = ""
     checkpoint: str = ""
+    # Which room in the catalogue filled `look`, by key. Provenance only:
+    # `look` above carries the whole text either way, so nothing downstream
+    # reads this to compose with. Empty is a look somebody typed.
+    room_key: str = ""
 
 
 class ComposeIn(BaseModel):
@@ -261,6 +265,11 @@ class SessionPatch(BaseModel):
     # (trim, drop empties, dedupe case-insensitively) and stores the cleaned
     # version, so a PATCH of "Balcony" then "balcony" lands as one tag.
     tags: list[str] | None = None
+    # Detaching a room is this field set to the empty string. The look is
+    # deliberately not patchable here (see `wardrobe` above), which is what
+    # makes "the text survives a detach" structural rather than a rule the
+    # route has to remember.
+    room_key: str | None = None
 
 
 class ShotPatch(BaseModel):
@@ -1413,11 +1422,11 @@ def create_session(s: SessionIn):
     sid = db.run(
         """INSERT INTO session (model_id, name, look, wardrobe, workflow_id,
                                 reference_workflow_id, anchor_shot_ids, settings,
-                                manner, checkpoint, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                manner, checkpoint, room_key, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         s.model_id, s.name, s.look, s.wardrobe, s.workflow_id, s.reference_workflow_id,
         json.dumps(_valid_anchors(s.anchor_shot_ids)), json.dumps(settings),
-        s.manner, checkpoint, db.now(),
+        s.manner, checkpoint, s.room_key.strip(), db.now(),
     )
     _expand_shots(sid, model, _look_for(settings, s.look), s.wardrobe, s.shots, s.seed_mode, s.seed)
     return {"id": sid}
@@ -1474,6 +1483,12 @@ def update_session(sid: int, p: SessionPatch):
     if p.anchor_shot_ids is not None:
         db.run("UPDATE session SET anchor_shot_ids=? WHERE id=?",
                json.dumps(_valid_anchors(p.anchor_shot_ids)), sid)
+    if p.room_key is not None:
+        # Written as given, trimmed, with no check that the room exists: a
+        # library can be unregistered after a session was filled from it, and
+        # refusing the write would leave the operator unable to detach the one
+        # key they can no longer look up.
+        db.run("UPDATE session SET room_key=? WHERE id=?", p.room_key.strip(), sid)
     if p.tags is not None:
         # Stored cleaned, not echoed back, so the frontend renders the same
         # thing the database holds. A PATCH that asks for a duplicate in a
@@ -1567,8 +1582,9 @@ def clone_session(sid: int, c: SessionClone):
 
     new_id = db.run(
         """INSERT INTO session (model_id, name, look, wardrobe, workflow_id,
-                                reference_workflow_id, anchor_shot_ids, settings, tags, created_at)
-           VALUES (?,?,?,?,?,?,'[]',?,?,?)""",
+                                reference_workflow_id, anchor_shot_ids, settings, tags,
+                                room_key, created_at)
+           VALUES (?,?,?,?,?,?,'[]',?,?,?,?)""",
         src["model_id"], c.name or f"{src['name']} (copy)", src["look"], src["wardrobe"],
         c.workflow_id or src["workflow_id"], src["reference_workflow_id"],
         json.dumps(settings),
@@ -1576,7 +1592,12 @@ def clone_session(sid: int, c: SessionClone):
         # still a "Balcony" session. Re-stored verbatim (already cleaned on
         # write), so the JSON column never holds a value the list route would
         # not find.
-        src["tags"] or "[]", db.now(),
+        src["tags"] or "[]",
+        # And the provenance travels for the same reason: the clone's look is
+        # the source's look, byte for byte, so the room that filled it filled
+        # this one too.
+        src["room_key"] or "",
+        db.now(),
     )
     # The clone's origin is the source's: a clone of a `'composed'`
     # session is a `'composed'` session, a clone of a `'mixed'`

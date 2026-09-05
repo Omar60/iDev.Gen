@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   allTags, composeLook, drawRoom, filterRooms, guidanceLines, hasTag, lookFromRoom,
-  matchesText, openingLook, pickRoom, pickerRooms, refillLook, registerFor,
+  matchesText, openingLook, pickRoom, pickerRooms, refillLook, registerFor, roomChoice,
   roomAllows, roomOption, verdictFor, verdictLabel,
 } from './rooms.js'
 import candidRooms from '../../data/candid-rooms-seed.json'
@@ -455,5 +455,51 @@ describe('picking a room', () => {
     const typed = { ...session, look: 'a look somebody typed' }
     expect(pickRoom(typed, [ROOM], '')).toBe(typed)
     expect(pickRoom(typed, [ROOM], 'a-key-no-room-carries')).toBe(typed)
+  })
+})
+
+describe('roomChoice', () => {
+  const ROOM = {
+    key: 'gs-stockroom-01', label: 'Stockroom', manners: [],
+    place: 'A stockroom with steel shelving and one strip light.',
+  }
+  const OTHER = {
+    key: 'gs-corridor-01', label: 'Corridor', manners: [],
+    place: 'A corridor with a window at the far end.',
+  }
+  const session = { manner: 'candid', look: '', wardrobe: 'a coat', shots: [{}], settings: {} }
+
+  it('records the key of the room it fills the look from', () => {
+    const next = roomChoice(session, [ROOM, OTHER], 'gs-stockroom-01')
+    expect(next.key).toBe('gs-stockroom-01')
+    expect(next.session.look).toBe(composeLook('candid', ROOM.place))
+  })
+
+  it('replaces both halves when another room is picked', () => {
+    const first = roomChoice(session, [ROOM, OTHER], 'gs-stockroom-01')
+    const second = roomChoice(first.session, [ROOM, OTHER], 'gs-corridor-01')
+    expect(second.key).toBe('gs-corridor-01')
+    expect(second.session.look).toBe(composeLook('candid', OTHER.place))
+  })
+
+  // The one that matters. A detach clears the key and returns the session
+  // itself - not a copy, so no edit can have slipped into the words on the way.
+  it('detaches by clearing the key and leaves the words exactly as they are', () => {
+    const filled = roomChoice(session, [ROOM, OTHER], 'gs-stockroom-01').session
+    const detached = roomChoice(filled, [ROOM, OTHER], '')
+    expect(detached.key).toBe('')
+    expect(detached.session).toBe(filled)
+    expect(detached.session.look).toBe(composeLook('candid', ROOM.place))
+  })
+
+  // A look somebody typed detaches the same way: there is no room to undo.
+  it('detaches a hand-written look without touching it', () => {
+    const typed = { ...session, look: 'a look somebody typed' }
+    expect(roomChoice(typed, [ROOM], '').session).toBe(typed)
+  })
+
+  // A key no room carries moves neither half - the stale-select case.
+  it('refuses a key no room carries', () => {
+    expect(roomChoice(session, [ROOM], 'no-room-carries-this')).toBe(null)
   })
 })

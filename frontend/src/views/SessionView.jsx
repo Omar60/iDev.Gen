@@ -458,6 +458,20 @@ export default function SessionView({ id }) {
             {s.settings.scheduler && <> · <Sent slot="scheduler">{s.settings.scheduler}</Sent></>}
           </p>
           {s.look && <p className="muted" style={{ marginTop: -6 }}><b>Look:</b> {s.look}</p>}
+          {/* Where the look came from, and the way out of saying so. The key
+              and not a label: this screen does not load the room library, and
+              a session can outlive the library it was filled from. Detaching
+              patches the key alone - the look is not a field this route
+              accepts, so the words cannot move with it. */}
+          {s.room_key && (
+            <p className="muted" style={{ marginTop: -6 }}>
+              Filled from <code>{s.room_key}</code>{' '}
+              <button onClick={() => call(() => api.patch(`/api/sessions/${id}`, { room_key: '' }))}
+                      title="Stop recording which room this look came from. The look itself is untouched.">
+                Detach
+              </button>
+            </p>
+          )}
           {s.wardrobe && (
             <p className="muted" style={{ marginTop: -6 }}>
               <b>Wardrobe:</b> {s.wardrobe} <i>— what a take wears unless it says otherwise</i>

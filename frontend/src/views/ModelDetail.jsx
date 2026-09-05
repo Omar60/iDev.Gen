@@ -18,7 +18,7 @@ import directedLooks from '../../../data/directed-looks-seed.json'
 // The register is the manner's, not the room's, so composing is what turns a
 // place into a look. `rooms.js` holds both halves and the join.
 import {
-  allTags, filterRooms, guidanceLines, openingLook, pickRoom, pickerRooms,
+  allTags, filterRooms, guidanceLines, openingLook, pickerRooms, roomChoice,
   refillLook, roomOption, verdictLabel,
 } from '../rooms.js'
 
@@ -161,7 +161,11 @@ export default function ModelDetail({ id }) {
       // rather than refusing to create is what lets a session start empty and
       // be filled from the composer, which is how a cell gets measured.
       const { id: sid } = await api.post('/api/sessions', {
-        ...newSession, shots: newSession.shots.filter((s) => s.prompt.trim()) })
+        // The room the look was filled from rides along as provenance. It is
+        // state of its own and not part of the draft, because it is the
+        // select's value first and the session's record second.
+        ...newSession, room_key: roomKey,
+        shots: newSession.shots.filter((s) => s.prompt.trim()) })
       go(`/session/${sid}`)
     } catch (e) { setError(e.message) }
   }
@@ -341,15 +345,19 @@ export default function ModelDetail({ id }) {
           <select value={roomKey}
                   title="Fill the look with a measured room. Every one of these was rendered; the text stays editable."
                   onChange={(e) => {
-                    // Only the look. The wardrobe, the shots and the settings
-                    // come back as the same objects they went in as.
-                    const picked = pickRoom(newSession, ROOMS, e.target.value)
-                    if (picked !== newSession) {
-                      setRoomKey(e.target.value)
-                      setNewSession(picked)
+                    // Pick, replace and detach are one decision and it is made
+                    // in `roomChoice`, not here: only the look ever moves, the
+                    // wardrobe and the shots and the settings come back as the
+                    // same objects, and null is a value that changes nothing.
+                    const next = roomChoice(newSession, ROOMS, e.target.value)
+                    if (next) {
+                      setRoomKey(next.key)
+                      setNewSession(next.session)
                     }
                   }}>
-            <option value="">Start from a measured room…</option>
+            <option value="">
+              {roomKey ? 'Detach this room (the text stays)' : 'Start from a measured room…'}
+            </option>
             {filterRooms(ROOMS, { manner: newSession.manner, tag: roomTag,
                                   text: roomText, current: roomKey }).map((r) => (
               <option key={r.key} value={r.key}>
