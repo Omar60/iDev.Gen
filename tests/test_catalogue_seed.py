@@ -416,8 +416,11 @@ def test_every_composed_room_carries_the_constant_half_of_the_look():
     keys = [r["key"] for r in rooms]
     assert len(keys) == len(set(keys)), keys
     for room in rooms:
-        # the manner is a permission now: the room allows the one it composes for
-        assert room["manner"] == "candid", room["key"]
+        # A permission, and these nine restrict nothing: the register left the
+        # text in the split, so the bedroom is a bedroom and a directed session
+        # can be shot in it. Empty is every manner, including one nobody has
+        # written yet.
+        assert room["manners"] == [], room["key"]
         look = composed_look("candid", room["place"])
         assert look.startswith("Small sensor,"), room["key"]
         assert "She wears her hair loose" in look, room["key"]
@@ -436,11 +439,14 @@ def test_composing_the_nine_rooms_yields_the_text_they_yielded_before_the_split(
     test asserting itself.
     """
     before = json.loads((ROOT / "tests" / "rooms-before-the-split.json").read_text(encoding="utf-8"))
-    rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
-    rooms += json.loads(DIRECTED_LOOKS.read_text(encoding="utf-8"))
+    # The manner each was measured under is the file it is in, not a field on
+    # the row: `manner` became `manners` in 6.7 and says what a room is ALLOWED
+    # in, which is a different question and no longer answers this one.
+    rooms = [("candid", r) for r in json.loads(ROOMS.read_text(encoding="utf-8"))]
+    rooms += [("directed", r) for r in json.loads(DIRECTED_LOOKS.read_text(encoding="utf-8"))]
     assert len(rooms) == len(before) == 10
-    for room in rooms:
-        assert composed_look(room["manner"], room["place"]) == before[room["key"]], room["key"]
+    for manner, room in rooms:
+        assert composed_look(manner, room["place"]) == before[room["key"]], room["key"]
 
 
 def test_every_room_stores_the_marking_its_own_prose_earns():
@@ -500,7 +506,11 @@ def test_directed_looks_are_directed_and_not_candid_in_disguise():
     keys = [r["key"] for r in looks]
     assert len(keys) == len(set(keys)), keys
     for row in looks:
-        assert row["manner"] == "directed", row["key"]
+        # The one restriction anybody has written, and the reason is stored
+        # with it: the place is a photographic set-up, so it makes no sense
+        # under a manner where nobody is photographing her.
+        assert row["manners"] == ["directed"], row["key"]
+        assert row["manners_reason"].strip(), row["key"]
         look = composed_look("directed", row["place"])
         assert "She wears her hair loose" in look, row["key"]
         for candid_only in ("small sensor", "sensor noise", "washed-out",

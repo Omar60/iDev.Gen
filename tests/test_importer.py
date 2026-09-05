@@ -1327,6 +1327,64 @@ def test_reimport_updates_the_room_and_leaves_its_measurement_alone(tmp_path: Pa
     assert seed_file.read_bytes() == before
 
 
+def test_an_imported_room_restricts_no_manner_and_keeps_one_written_by_hand(tmp_path: Path):
+    """6.7: `manner` became `manners`, and what it means changed with it.
+
+    Before the split it said which register was fused into the room's text. It
+    now says whether the PLACE makes sense under a manner at all, and a source
+    library says nothing about that - so an imported room restricts nothing and
+    the importer invents no restriction to fill the field.
+
+    Empty rather than the three manner keys of today: the two read the same
+    this afternoon and diverge the day a fourth manner is written, where the
+    frozen list silently excludes every room ever imported. So the test asserts
+    the empty restriction AND that a manner nobody has written yet is allowed
+    by it.
+
+    The other half is the re-import. A restriction is somebody's judgement
+    about the place, typed in by hand the way the studio's was, and an import
+    that reset it to the default would undo that judgement on every run - the
+    same failure the verdict preservation exists for.
+    """
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    seed_file = data_dir / "general-scenes-rooms-seed.json"
+    map_file = source_dir / "translation_map.json"
+    map_file.write_text(json.dumps({}), encoding="utf-8")
+    (source_dir / "general_scenes.json").write_text(json.dumps({
+        "library": "general_scenes",
+        "items": [{
+            "identifier": "gs_stockroom_01",
+            "label": "Storeroom",
+            "theme": "a storeroom with steel shelving and a bare bulb overhead",
+            "props": "steel shelving",
+        }],
+    }, ensure_ascii=True), encoding="utf-8")
+
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+    row = json.loads(seed_file.read_text(encoding="utf-8"))[0]
+    assert "manner" not in row, "the single manner is gone, not carried alongside"
+    # Empty is the restriction, and `rooms.js:roomAllows` is what reads it -
+    # one reader, on the side that offers the rooms. A second copy here would
+    # be a rule that can disagree with itself.
+    assert row["manners"] == []
+
+    # Somebody decides this one is a directed set-up and writes it down.
+    row["manners"] = ["directed"]
+    row["manners_reason"] = "hand-written for this test"
+    seed_file.write_text(json.dumps([row], ensure_ascii=True, indent=2) + chr(10),
+                         encoding="utf-8")
+
+    import_source(source_dir=source_dir, map_path=map_file,
+                  data_dir=data_dir, config=_fresh_config())
+    again = json.loads(seed_file.read_text(encoding="utf-8"))[0]
+    assert again["manners"] == ["directed"]
+    assert again["manners_reason"] == "hand-written for this test"
+
+
 def test_a_verdict_whose_room_is_absent_is_reported_and_never_deleted(tmp_path: Path):
     """6.6: an import writes rooms. It never writes the verdict store, in
     either direction, and it says which measurements now point at no room.

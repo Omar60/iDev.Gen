@@ -582,7 +582,13 @@ def import_source(
             new_row: dict[str, Any] = {
                 "key": room_key,
                 "label": label,
-                "manner": "candid",
+                # Every manner, and stored as an empty restriction rather than
+                # as today's list of manners: the source says nothing about
+                # manners, so the honest default is no restriction at all. A
+                # frozen ["candid", "directed", "selfie"] would read the same
+                # today and silently exclude every imported room from the
+                # fourth manner the day one is written.
+                "manners": [],
                 # The place, and only the place. No register is written into an
                 # imported room's text: the register belongs to the manner and
                 # is joined on at compose time, so one place reads in whichever
@@ -621,12 +627,14 @@ def import_source(
             # Check if this row already existed
             existing_row = existing_by_id.get(identifier) or existing_by_id.get(room_key)
             if existing_row is not None:
-                # Preserve existing verdict and sample size
-                for preserve_key in ("verdict", "sample_size", "manner"):
-                    if preserve_key in existing_row and preserve_key not in new_row:
+                # What this project decided about the room, against what the
+                # source owns. A manner restriction is somebody's judgement
+                # about the place, written here by hand, so a re-import that
+                # reset it to the import default would undo that judgement on
+                # every run - the same way it would undo a verdict.
+                for preserve_key in ("verdict", "sample_size", "manners", "manners_reason"):
+                    if preserve_key in existing_row:
                         new_row[preserve_key] = existing_row[preserve_key]
-                    elif preserve_key in existing_row and preserve_key == "manner":
-                        new_row["manner"] = existing_row["manner"]
 
                 if new_row == existing_row:
                     unchanged_keys.append(room_key)

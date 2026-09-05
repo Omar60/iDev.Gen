@@ -17,11 +17,13 @@ import candidRooms from '../../../data/candid-rooms-seed.json'
 import directedLooks from '../../../data/directed-looks-seed.json'
 // The register is the manner's, not the room's, so composing is what turns a
 // place into a look. `rooms.js` holds both halves and the join.
-import { lookFromRoom, pickerRooms, refillLook } from '../rooms.js'
+import { lookFromRoom, pickerRooms, refillLook, roomAllows } from '../rooms.js'
 
-// Every row carries the manner it was measured on, and the picker owes the
-// operator only the ones that belong to the session being written. Before this
-// it offered candid's bedrooms on a directed shoot.
+// A row says which manners its PLACE makes sense under, and most say "any" -
+// the register left the text in the split, so candid's bedroom is a bedroom and
+// a directed session can be shot in it. The studio is the exception the field
+// was rewritten for: it is a photographic set-up, and nobody is photographing
+// her under the other two manners.
 // The tracked half, carried by the build. The imported half arrives at
 // runtime from `/api/rooms`, because those seeds are untracked and a build
 // that imported them would not build on a clone that never ran the import.
@@ -297,7 +299,7 @@ export default function ModelDetail({ id }) {
                     if (filled !== null) setNewSession({ ...newSession, look: filled })
                   }}>
             <option value="">Start from a measured room…</option>
-            {ROOMS.filter((r) => r.manner === newSession.manner).map((r) => (
+            {ROOMS.filter((r) => roomAllows(r, newSession.manner)).map((r) => (
               <option key={r.key} value={r.key}>
                 {r.label}{r.offers?.length ? ` — offers ${r.offers.join(', ')}` : ''}
               </option>

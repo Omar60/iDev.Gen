@@ -15,6 +15,25 @@ export function registerFor(manner) {
   return registers[manner] ?? ''
 }
 
+/** Is this room allowed under this manner.
+ *
+ *  `manners` is a RESTRICTION and not a membership: an empty or absent list is
+ *  every manner, which is what an imported room carries and what the nine
+ *  rooms carry since the register left their text. Storing the manners of the
+ *  day instead would read the same now and quietly exclude every existing room
+ *  from the fourth manner the day somebody writes one.
+ *
+ *  What the field means changed with the split. It used to say which register
+ *  was fused into the room's text; it now says whether the PLACE makes sense
+ *  under the manner at all, which is why only the studio carries one - a room
+ *  that is itself a photographic set-up has nobody in it under a manner where
+ *  nobody is photographing her.
+ */
+export function roomAllows(room, manner) {
+  const allowed = room?.manners
+  return !Array.isArray(allowed) || allowed.length === 0 || allowed.includes(manner)
+}
+
 /** The look a room composes to under a manner: the register, then the place.
  *  Either half may be absent, and the result never carries a leading or
  *  doubled space. Nothing here edits the place - the room text is stored as it

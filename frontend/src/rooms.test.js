@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { composeLook, lookFromRoom, pickerRooms, refillLook, registerFor } from './rooms.js'
+import { composeLook, lookFromRoom, pickerRooms, refillLook, registerFor, roomAllows } from './rooms.js'
 import candidRooms from '../../data/candid-rooms-seed.json'
 import directedLooks from '../../data/directed-looks-seed.json'
 
@@ -152,5 +152,48 @@ describe('the rooms the picker lists', () => {
     expect(listed.map((r) => r.key)).toEqual(['bedroom-night', 'gs-stockroom-01'])
     // The tracked copy wins: it is the one the build was tested against.
     expect(listed[0]).toBe(BUILT_IN[0])
+  })
+})
+
+// 6.7 and 6.8: the picker filters by what a room ALLOWS, not by what it equals.
+// Before the split a room's `manner` said which register was baked into its
+// text, so candid's bedroom could not be offered to a directed shoot - for a
+// reason that was about the first sentence and not about the bedroom.
+describe('the manners a room allows', () => {
+  const MANNERS = ['candid', 'directed', 'selfie']
+  const bedroom = candidRooms[0]
+  const studio = directedLooks[0]
+
+  it('allows every manner when the room restricts none', () => {
+    expect(bedroom.manners).toEqual([])
+    for (const manner of MANNERS) expect(roomAllows(bedroom, manner)).toBe(true)
+    // Empty is a restriction nobody wrote, not the list of today's manners: a
+    // manner written next year is allowed by it too, which is the whole reason
+    // the field is stored empty rather than filled in with the three.
+    expect(roomAllows(bedroom, 'a-manner-written-next-year')).toBe(true)
+    // An imported room arrives the same way, and so does a row from before the
+    // field existed.
+    expect(roomAllows({ key: 'gs-stockroom-01', manners: [] }, 'directed')).toBe(true)
+    expect(roomAllows({ key: 'no-field-at-all' }, 'directed')).toBe(true)
+  })
+
+  it('allows the studio only where somebody is photographing her', () => {
+    expect(studio.manners).toEqual(['directed'])
+    expect(studio.manners_reason).toBeTruthy()
+    expect(roomAllows(studio, 'directed')).toBe(true)
+    expect(roomAllows(studio, 'candid')).toBe(false)
+    expect(roomAllows(studio, 'selfie')).toBe(false)
+  })
+
+  // What the picker itself does with the two: the shipped ten under each
+  // manner. The bedroom is listed under all three and the studio under one.
+  it('lists the unrestricted rooms under every manner and the studio under one', () => {
+    const shipped = pickerRooms(candidRooms, directedLooks)
+    for (const manner of MANNERS) {
+      const listed = shipped.filter((r) => roomAllows(r, manner)).map((r) => r.key)
+      expect(listed).toContain(bedroom.key)
+      expect(listed.includes(studio.key)).toBe(manner === 'directed')
+      expect(listed.length).toBe(manner === 'directed' ? 10 : 9)
+    }
   })
 })
