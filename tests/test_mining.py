@@ -21,13 +21,17 @@ import pytest
 from backend.cut_map import CutMissingError, validate_cut_map
 from backend.mining import (
     MANNER_CANDID,
+    NEEDS_NOTHING,
+    NEEDS_SECOND_BODY,
     MANNER_POV,
     SOURCE_FAMILY_MANNERS,
     FamilyUndeclaredError,
     family_for,
     identifier_for,
     manner_for_family,
+    needs_for_act,
     normalise_family,
+    second_body_families,
     split_fused_entries,
     split_fused_entry,
 )
@@ -253,3 +257,97 @@ def test_an_entry_whose_family_declares_no_manner_is_refused_by_name():
 
     with pytest.raises(FamilyUndeclaredError):
         split_fused_entry(no_family, CAMERA_AND_ROOM_CUT)
+
+
+# ── 8.7 A mined act declares what the photograph must provide ─────────────
+
+
+def test_an_act_whose_wording_names_a_second_body_carries_the_requirement():
+    """The catalogue's own reading, not a second one written here.
+
+    `derive_multi_body` is what marks a room, and it is what marks an act: the
+    rooms and the mined acts answering the same words two ways is the drift
+    this import is written against.
+    """
+    assert needs_for_act("kneeling in front of him with both hands on his knees") == NEEDS_SECOND_BODY
+    assert needs_for_act("standing between two nurses at the end of the bed") == NEEDS_SECOND_BODY
+    assert needs_for_act(ACT) == NEEDS_NOTHING
+
+
+def test_an_act_of_a_floored_family_carries_the_requirement_its_wording_omits():
+    """The floor is the half a wording-only reading cannot see.
+
+    The fixture act is pure geometry - nobody but her is in the sentence - and
+    it still carries the requirement, because the family it came from puts the
+    camera in a participant's hands and a participant is a body that is not
+    hers.
+
+    Asserted through the SPLIT and not only through the reading, because a
+    derivation that is right in isolation and never reaches the row is the same
+    as no derivation at all.
+    """
+    assert needs_for_act(ACT) == NEEDS_NOTHING
+    assert needs_for_act(ACT, "facial POV") == NEEDS_SECOND_BODY
+
+    rows = split_fused_entry(FUSED_ENTRY, FULL_CUT)
+    act = [row for row in rows if row["slot"] == "act"][0]
+    assert act["wording"] == ACT
+    assert act["needs"] == NEEDS_SECOND_BODY
+
+
+def test_the_floor_is_read_off_the_manner_declaration():
+    """One list, not two.
+
+    A family is mined into `pov` because its camera is held by a participant,
+    which is the same fact as "there is a second body in this photograph". A
+    second list saying so is a second calculation of one fact, and the day the
+    two disagree an act is floored in one place and drawn in the other.
+    """
+    assert second_body_families() == {
+        f for f, m in SOURCE_FAMILY_MANNERS.items() if m == MANNER_POV
+    }
+    assert "fisheye_pov" not in second_body_families()
+
+
+def test_an_uncertain_reading_sets_the_requirement_rather_than_omitting_it():
+    """The two errors are not symmetrical.
+
+    None of these words is proof of a second body - `derive_multi_body` leaves
+    them out on purpose, because over a room's prose they are as likely to be
+    her. Over an act they are uncertain, and uncertain sets it: set in error
+    only narrows a pool nobody switched on, while omitted in error deals a
+    two-body act into a single-body photograph.
+    """
+    for wording in (
+        "leaning back while someone steadies her shoulder",
+        "her wrists held above her head by another pair of hands",
+        "kneeling with his hand flat on the small of her back",
+    ):
+        assert needs_for_act(wording) == NEEDS_SECOND_BODY, wording
+
+
+def test_a_camera_or_a_room_row_declares_no_requirement():
+    """`needs` is the act's field.
+
+    A camera or a room carrying `him` would narrow a pool for a requirement
+    nothing about it asks for - the unattended fixture's room is a place, and a
+    place needs nobody.
+    """
+    rows = split_fused_entry(CAMERA_AND_ROOM_ENTRY, CAMERA_AND_ROOM_CUT)
+    assert [row["slot"] for row in rows] == ["camera", "room"]
+    assert not any("needs" in row for row in rows)
+
+
+def test_an_unfloored_family_leaves_a_single_body_act_drawable():
+    """The floor is per family and not a blanket.
+
+    `fisheye_pov`'s camera is a device in the room, so its acts are read on
+    their wording alone. A derivation that floored everything would pass every
+    other test in this section and would quietly empty the single-body pool.
+    """
+    entry = dict(CAMERA_AND_ROOM_ENTRY, identifier="invented_fused_06")
+    entry["prompt"] = f"{CAMERA}, {ACT}, {ROOM}"
+    rows = split_fused_entry(entry, FULL_CUT)
+    act = [row for row in rows if row["slot"] == "act"][0]
+    assert act["manner"] == MANNER_CANDID
+    assert act["needs"] == NEEDS_NOTHING

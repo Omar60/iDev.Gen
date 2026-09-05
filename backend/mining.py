@@ -26,6 +26,7 @@ from backend.cut_map import (
     validate_cut_against_entry,
 )
 from backend.extractor import IDENTIFIER_KEYS
+from backend.importer import derive_multi_body
 
 
 def identifier_for(entry: Any) -> str:
@@ -144,6 +145,74 @@ def manner_for_family(family: Any, identifier: str = "") -> str:
     return manner
 
 
+# What a mined act needs before it can be photographed, in the vocabulary the
+# act catalogue already uses: `needs` is '' for pure geometry and 'him' for an
+# act with a second person in it (`backend/main.py:298`).
+NEEDS_SECOND_BODY: str = "him"
+NEEDS_NOTHING: str = ""
+
+# Words that might be a second body and might be her. `derive_multi_body`
+# leaves these out on purpose - over a ROOM's prose they are as likely to be
+# the subject as somebody else, and a rule wrong half the time trains the
+# operator to switch the gate off. An ACT's wording is the other case: it
+# describes what is happening in the photograph, so a hand that is not hers or
+# a "someone" is a second body far more often than not.
+#
+# They do not decide anything on their own - they make the reading UNCERTAIN,
+# and an uncertain reading sets the requirement. The two errors are not
+# symmetrical: set in error, it only narrows the pool of a run that never
+# switched the second body on; omitted in error, it deals a two-body act into a
+# single-body photograph, which is a failure this repo has already shot.
+UNCERTAIN_SECOND_BODY_WORDS: tuple[str, ...] = (
+    "someone", "somebody", "another", "partner", "his", "they", "them", "their",
+)
+
+_UNCERTAIN_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in UNCERTAIN_SECOND_BODY_WORDS) + r")\b"
+)
+
+
+def second_body_families() -> frozenset[str]:
+    """The families whose acts always involve a second body.
+
+    Read OFF the manner declaration rather than listed again beside it: a
+    family is mined into `pov` precisely because its camera is held by a
+    participant, and a participant is a body in the photograph that is not
+    hers. Two lists saying that would be two calculations of one fact, which is
+    the bug this repo has now found several times.
+    """
+    return frozenset(
+        family
+        for family, manner in SOURCE_FAMILY_MANNERS.items()
+        if manner == MANNER_POV
+    )
+
+
+def needs_for_act(wording: str, source_family: str = "") -> str:
+    """What a photograph must provide before this mined act can be drawn.
+
+    Three readings, in the order that matters, and any one of them is enough:
+
+    - the family floor, so an act of a participant-camera family carries the
+      requirement even where its own wording never spells the second body out;
+    - the catalogue's own reading of the wording, `derive_multi_body`, imported
+      rather than respelled so the rooms and the mined acts cannot drift into
+      two answers about the same words;
+    - an uncertain word, which SETS the requirement rather than omitting it.
+
+    '' is returned only when the family does not floor it, the catalogue's
+    reading finds nobody, and nothing in the wording is ambiguous.
+    """
+    if normalise_family(source_family) in second_body_families():
+        return NEEDS_SECOND_BODY
+    text = wording or ""
+    if derive_multi_body(text):
+        return NEEDS_SECOND_BODY
+    if _UNCERTAIN_PATTERN.search(text.lower()):
+        return NEEDS_SECOND_BODY
+    return NEEDS_NOTHING
+
+
 def split_fused_entry(
     entry: Any,
     cut: dict[str, str],
@@ -170,16 +239,23 @@ def split_fused_entry(
     family = normalise_family(source_family) if source_family else family_for(entry)
     manner = manner_for_family(family, key)
     validated = validate_cut_against_entry(key, cut, entry)
-    return [
-        {
+    rows: list[dict[str, str]] = []
+    for slot in CUT_SLOTS:
+        if slot not in validated:
+            continue
+        row = {
             "slot": slot,
             "wording": validated[slot],
             "source_identifier": key,
             "manner": manner,
         }
-        for slot in CUT_SLOTS
-        if slot in validated
-    ]
+        # Only the act declares what the photograph must provide. A camera or a
+        # room carrying `needs` would narrow a pool for a requirement nothing
+        # about it asks for.
+        if slot == "act":
+            row["needs"] = needs_for_act(row["wording"], family)
+        rows.append(row)
+    return rows
 
 
 def split_fused_entries(
