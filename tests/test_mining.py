@@ -19,7 +19,18 @@ from __future__ import annotations
 import pytest
 
 from backend.cut_map import CutMissingError, validate_cut_map
-from backend.mining import identifier_for, split_fused_entries, split_fused_entry
+from backend.mining import (
+    MANNER_CANDID,
+    MANNER_POV,
+    SOURCE_FAMILY_MANNERS,
+    FamilyUndeclaredError,
+    family_for,
+    identifier_for,
+    manner_for_family,
+    normalise_family,
+    split_fused_entries,
+    split_fused_entry,
+)
 
 CAMERA = "low angle from the foot of the bed"
 ACT = "kneeling upright with both hands behind her head"
@@ -27,6 +38,7 @@ ROOM = "a narrow attic room with a sloped ceiling"
 
 FUSED_ENTRY: dict[str, object] = {
     "identifier": "invented_fused_01",
+    "family": "facial POV",
     "prompt": f"{CAMERA}, {ACT}, {ROOM}",
     "tags": ["invented", "fixture"],
 }
@@ -37,6 +49,7 @@ FULL_CUT: dict[str, str] = {"camera": CAMERA, "act": ACT, "room": ROOM}
 # describes her body.
 CAMERA_AND_ROOM_ENTRY: dict[str, object] = {
     "identifier": "invented_fused_02",
+    "family": "fisheye POV",
     "prompt": f"{CAMERA} in {ROOM}",
 }
 CAMERA_AND_ROOM_CUT: dict[str, str] = {"camera": CAMERA, "room": ROOM}
@@ -113,7 +126,11 @@ def test_an_upload_missing_a_cut_stops_with_every_shortfall_named():
     exception's type, would pass on it. What it would hand the operator is one
     identifier per run over a library of 55.
     """
-    third = {"identifier": "invented_fused_03", "prompt": f"{CAMERA} in {ROOM}"}
+    third = {
+        "identifier": "invented_fused_03",
+        "family": "fisheye POV",
+        "prompt": f"{CAMERA} in {ROOM}",
+    }
     cut_map = validate_cut_map({"invented_fused_01": FULL_CUT})
     entries = [FUSED_ENTRY, CAMERA_AND_ROOM_ENTRY, third]
 
@@ -146,3 +163,93 @@ def test_an_entry_with_no_identifier_is_refused():
 
     with pytest.raises(TypeError, match="must be a dict"):
         identifier_for([CAMERA])
+
+
+# ── 8.6 The manner is declared per source family ──────────────────────────
+
+
+def test_every_mined_row_carries_the_manner_its_family_declares():
+    """The manner comes from the family, and every row of an entry gets it.
+
+    Both halves are asserted, because a split that wrote a manner onto the
+    camera row alone would pass a test that only read `rows[0]`, and the act
+    beside it would then reach the catalogue with no manner at all - drawn in
+    whichever one the writer happened to be in.
+
+    The two fixtures are deliberately from the two different declarations: a
+    participant family and the unattended-camera one. A split that hard-wrote
+    one manner is green on either fixture alone.
+    """
+    participant = split_fused_entry(FUSED_ENTRY, FULL_CUT)
+    assert [row["manner"] for row in participant] == [MANNER_POV] * 3
+
+    unattended = split_fused_entry(CAMERA_AND_ROOM_ENTRY, CAMERA_AND_ROOM_CUT)
+    assert [row["manner"] for row in unattended] == [MANNER_CANDID] * 2
+
+
+def test_the_participant_families_are_not_mined_into_directed():
+    """The one answer the design rules out.
+
+    `directed`'s instruction says somebody is photographing her, which a
+    participant-camera entry contradicts, and a dead verdict inside it would
+    mean the mismatch and not the row. Asserted over the whole declaration
+    rather than over the three names, so a family added later is covered by
+    this test on the day it is added.
+    """
+    assert MANNER_POV != "directed"
+    assert "directed" not in SOURCE_FAMILY_MANNERS.values()
+    assert SOURCE_FAMILY_MANNERS["fisheye_pov"] == MANNER_CANDID
+    assert set(SOURCE_FAMILY_MANNERS) - {"fisheye_pov"} == {
+        "rear_entry_pov",
+        "stockings_pov",
+        "facial_pov",
+    }
+    assert all(
+        SOURCE_FAMILY_MANNERS[f] == MANNER_POV
+        for f in set(SOURCE_FAMILY_MANNERS) - {"fisheye_pov"}
+    )
+
+
+def test_a_family_the_source_spells_differently_is_the_same_family():
+    """The declaration is keyed on one spelling and the source writes several.
+
+    `Rear-Entry POV`, `rear entry pov` and `rear_entry_pov` are one family. A
+    lookup on the raw label would miss two of the three and refuse entries the
+    map does declare.
+    """
+    assert normalise_family("Rear-Entry POV") == "rear_entry_pov"
+    assert normalise_family("  fisheye   POV  ") == "fisheye_pov"
+    assert manner_for_family("Rear-Entry POV") == MANNER_POV
+    assert family_for({"category": "Facial POV"}) == "facial_pov"
+    assert family_for({"identifier": "x"}) == ""
+
+
+def test_an_entry_whose_family_declares_no_manner_is_refused_by_name():
+    """No default, and the whole shortfall at once.
+
+    Two entries are short here and BOTH names are asserted, which is the only
+    observable difference between collecting the shortfall and stopping at the
+    first one - the loop's own lookup raises either way. Same rule, and the
+    same test shape, as the missing-cut shortfall above.
+
+    The two cover the two halves of the failure: an entry naming a family
+    nothing declares, and one naming no family at all. A refusal that only read
+    the first would let the second through with whatever manner was default.
+    """
+    unknown_family = dict(FUSED_ENTRY, identifier="invented_fused_04", family="drone POV")
+    no_family = {"identifier": "invented_fused_05", "prompt": f"{CAMERA} in {ROOM}"}
+    cut_map = validate_cut_map(
+        {
+            "invented_fused_04": FULL_CUT,
+            "invented_fused_05": CAMERA_AND_ROOM_CUT,
+        }
+    )
+
+    with pytest.raises(FamilyUndeclaredError) as excinfo:
+        split_fused_entries([unknown_family, no_family], cut_map)
+    assert excinfo.value.identifiers == ["invented_fused_04", "invented_fused_05"]
+    assert "drone_pov" in str(excinfo.value)
+    assert "no family named" in str(excinfo.value)
+
+    with pytest.raises(FamilyUndeclaredError):
+        split_fused_entry(no_family, CAMERA_AND_ROOM_CUT)
