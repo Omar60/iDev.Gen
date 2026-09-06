@@ -7446,3 +7446,37 @@ def test_the_cancel_route_reaches_the_runner_the_app_runs(client, seeded):
         # The runner outlives the test client: a session id left in the set
         # would cancel whatever session reuses that id.
         main.runner._cancel.discard(sid)
+
+
+def test_every_seed_import_route_has_a_button_on_some_screen():
+    """A store the app ships empty needs a way in that is not curl.
+
+    Written as a walk over the routes rather than as two assertions about two
+    buttons, because the defect was never about one route: `/api/wardrobe/import`
+    and `/api/readings/import` had existed since the phases that wrote them with
+    no caller on any screen, and `POST /api/rooms/preflight` had gone the same
+    way before them. The next store added will ship the same way unless the
+    check is over the whole set.
+
+    Scoped to the seed imports - `/api/<store>/import`, no path parameter. The
+    per-session import (`/api/sessions/{sid}/import`) is a photograph arriving
+    in one session, not a store filling itself, and it is reached from the
+    session screen.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    routes = re.findall(
+        r'@app[.]post[(]"(/api/[a-z]+/import)"[)]',
+        (root / "backend" / "main.py").read_text(encoding="utf-8"))
+    assert len(routes) >= 4, routes
+
+    screens = ""
+    for f in sorted((root / "frontend" / "src").rglob("*.js*")):
+        screens += f.read_text(encoding="utf-8")
+
+    missing = [r for r in routes if r not in screens]
+    assert not missing, (
+        f"seed import routes with no caller in frontend/src: {missing}. "
+        "A store the operator cannot fill from a screen is a store filled by curl.")

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { api } from '../api.js'
 import { setCatalogue, ALL_MANNERS } from '../kinds.js'
+import { setWardrobe } from '../wardrobe.js'
 
 export default function Catalogue() {
   const [components, setComponents] = useState([])
@@ -32,6 +33,10 @@ export default function Catalogue() {
   const [newReadingLabel, setNewReadingLabel] = useState('')
   const [readingSaving, setReadingSaving] = useState(false)
   const [readingError, setReadingError] = useState(null)
+  const [readingNotice, setReadingNotice] = useState(null)
+
+  const [wardrobe, setWardrobeRows] = useState({ garments: [], outfits: [] })
+  const [wardrobeError, setWardrobeError] = useState(null)
 
   const loadComponents = async () => {
     setLoading(true)
@@ -57,8 +62,49 @@ export default function Catalogue() {
     }
   }
 
+  // The wardrobe is a store with no screen of its own: the outfit picker in a
+  // session reads it out of `wardrobe.js`, which the app fills once at startup.
+  // Loading it here refills that module store too, so an import lands in the
+  // picker without a reload.
+  const loadWardrobe = async () => {
+    setWardrobeError(null)
+    try {
+      const data = await api.get('/api/wardrobe')
+      setWardrobeRows({ garments: data?.garments || [], outfits: data?.outfits || [] })
+      setWardrobe(data)
+    } catch (err) {
+      setWardrobeError(err.message || 'Failed to load wardrobe')
+    }
+  }
+
+  const handleImportReadings = async () => {
+    setReadingError(null)
+    setReadingNotice(null)
+    try {
+      const res = await api.post('/api/readings/import')
+      // Counted and not shown: the table below is filtered to one slot and one
+      // manner, and a seed adds rows to eleven of them. Without the count an
+      // import that worked looks like an import that did nothing.
+      setReadingNotice(`Imported readings: ${res.added} added, ${res.skipped} already present.`)
+      await loadBaseReadings()
+    } catch (err) {
+      setReadingError(err.message || 'Import failed')
+    }
+  }
+
+  const handleImportWardrobe = async () => {
+    setWardrobeError(null)
+    try {
+      await api.post('/api/wardrobe/import')
+      await loadWardrobe()
+    } catch (err) {
+      setWardrobeError(err.message || 'Import failed')
+    }
+  }
+
   useEffect(() => {
     loadComponents()
+    loadWardrobe()
   }, [])
 
   useEffect(() => {
@@ -334,14 +380,22 @@ export default function Catalogue() {
 
       {/* Base Readings Management */}
       <div className="panel" style={{ marginTop: 24, padding: 16 }}>
-        <h3 style={{ fontSize: 16, marginBottom: 6 }}>
-          Base Readings ({slotFilter} · {mannerFilter})
-        </h3>
-        <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
-          The baseline vocabulary for judging passes on {slotFilter} in {mannerFilter} manner.
-        </p>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <h3 style={{ fontSize: 16, marginBottom: 6 }}>
+              Base Readings ({slotFilter} · {mannerFilter})
+            </h3>
+            <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+              The baseline vocabulary for judging passes on {slotFilter} in {mannerFilter} manner.
+            </p>
+          </div>
+          <button onClick={handleImportReadings} title="Load data/readings-seed.json. An existing key is skipped and its label left alone: a label is the question a stored verdict was answered against.">
+            Import Readings Seed
+          </button>
+        </div>
 
         {readingError && <div className="error" style={{ marginBottom: 12 }}>{readingError}</div>}
+        {readingNotice && <div className="notice" style={{ marginBottom: 12, background: 'var(--panel)', padding: '8px 14px', borderRadius: 4 }}>{readingNotice}</div>}
 
         {baseReadings.length > 0 ? (
           <table style={{ width: '100%', marginBottom: 16, fontSize: 13 }}>
@@ -403,6 +457,26 @@ export default function Catalogue() {
             {readingSaving ? 'Adding...' : 'Add Base Reading'}
           </button>
         </form>
+      </div>
+
+      {/* The wardrobe. It has no screen of its own and no rows on this one: the
+          count IS the report, because the only question this button answers is
+          whether the store is empty. Editing a garment is still the seed file
+          plus a re-import. */}
+      <div className="panel" style={{ marginTop: 24, padding: 16 }}>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <h3 style={{ fontSize: 16, marginBottom: 6 }}>Wardrobe</h3>
+            <p className="muted" style={{ fontSize: 12, margin: 0 }}>
+              {wardrobe.garments.length} garments · {wardrobe.outfits.length} outfits.
+              {' '}An outfit is what a session undresses through; empty, the outfit picker offers nothing.
+            </p>
+          </div>
+          <button onClick={handleImportWardrobe} title="Load data/wardrobe-seed.json. An existing key is skipped and its wording left alone: a garment's wording is the text of every state that carries it.">
+            Import Wardrobe Seed
+          </button>
+        </div>
+        {wardrobeError && <div className="error" style={{ marginTop: 12 }}>{wardrobeError}</div>}
       </div>
 
       {editing && (

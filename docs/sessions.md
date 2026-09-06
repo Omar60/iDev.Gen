@@ -109,8 +109,9 @@ alone, because a garment's wording is the text of every state that carries it
 and re-importing must not re-word a session already shot. An outfit naming a
 garment the store does not hold is refused *before* any insert — a half-imported
 outfit is one whose arc has a hole in the middle, and you would meet it as a
-missing stage rather than as an error. There is no screen for this; it is an API
-call.
+missing stage rather than as an error. **Import Wardrobe Seed**, in the Wardrobe
+panel on the Catalogue screen, posts it with no body and reports the store's
+size; a wardrobe of your own goes in through the route with a JSON body.
 
 Two things are **derived and never stored**, both for the same reason — a second
 copy of a fact drifts from the first the moment one of them is edited:

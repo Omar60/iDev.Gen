@@ -103,13 +103,17 @@ discover them mid-shoot.
 
 ## The catalogue, the composer and judging
 
-- **The component store ships empty.** Nothing is imported on first run and
-  nothing imports itself when a screen is opened. Press **Import Measured
-  Catalogue** on the Catalogue screen once; until then composing and creating a
-  session refuse with a 422 naming the empty slot and manner. The other three
-  stores — readings, wardrobe, rooms — have no button at all: readings and the
-  wardrobe are `POST /api/readings/import` and `POST /api/wardrobe/import`, and
-  rooms come in through the Rooms screen.
+- **The stores ship empty.** Nothing is imported on first run and nothing
+  imports itself when a screen is opened. Press **Import Measured Catalogue**
+  on the Catalogue screen once; until then composing and creating a session
+  refuse with a 422 naming the empty slot and manner. The same screen carries
+  **Import Readings Seed** beside the base readings and **Import Wardrobe
+  Seed** in its own panel — a judging pass refuses a slot whose families have
+  no reading, and an empty wardrobe leaves the outfit picker offering nothing.
+  Rooms come in through the Rooms screen. **Every import is idempotent on the
+  key and never re-words a row that is already there**, so pressing one twice
+  is safe and editing a shipped row means the seed file plus a fresh data
+  folder.
 - **Strict mode on a young catalogue queues nothing.** It draws only cells the
   judge has verified, and a table with two verified trios refuses almost every
   request. That is the table being honest; exploratory is the default for that

@@ -57,7 +57,9 @@ Readings ship in `data/readings-seed.json` and are loaded with
 body at all to read that file. The import **keeps** what is already there: an
 existing `(slot, manner, key)` is skipped and its label left alone, because
 re-importing must never re-word a vocabulary a session was already judged
-against. There is no button for this on any screen; it is an API call.
+against. **Import Readings Seed**, beside the base readings on the Catalogue
+screen, posts it with no body; the route also takes a JSON body for a
+vocabulary of your own.
 
 The seed exists because a judging pass refuses a slot whose photographed
 families have no reading — candid had none at all, and writing the twelve it
