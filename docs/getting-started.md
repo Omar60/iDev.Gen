@@ -68,6 +68,11 @@ and the field each came from. The Setup screen carries `room_libraries` back
 untouched when you save, so a saved path does not delete what an import
 registered.
 
+A library whose entries fuse a camera position, an act and a room into one
+string is not imported here: it is cut into rows first, by
+`scripts/mine_perspective_scenes.py`, and only the room part of each entry
+reaches a seed file. See the Rooms section of the README.
+
 ## Reaching the app from a phone
 
 The default `start.bat` binds loopback only — a public repository should not,

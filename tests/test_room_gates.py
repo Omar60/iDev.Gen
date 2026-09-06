@@ -358,3 +358,28 @@ def test_the_report_says_which_rooms_a_run_would_be_refused_in_and_queues_nothin
     # Declaring him clears the room, in the report and in the run alike.
     cleared = client.post("/api/rooms/preflight", json={"with_him": True}).json()
     assert cleared["refused"] == [], cleared
+
+
+def test_the_look_tooltip_quotes_the_budget_the_code_enforces():
+    """10.4. The screen that warns about the look's length has to quote the
+    number the app actually refuses on, and the two are written in different
+    files by different hands.
+
+    It quoted `~85 composed words` for months against a budget of 200, which was
+    not a stale number so much as a stale FINDING: sessions 395-400 measured the
+    camera arriving 7/10 with no room at all and 10/10 at 176 words, so the trend
+    the tooltip warned about runs the other way. Read out of `main` rather than
+    typed here, for the reason the gate's own test gives - a test carrying its
+    own copy of the number is green whatever the app enforces.
+    """
+    import pathlib
+    import re
+
+    tooltip = (pathlib.Path(__file__).resolve().parents[1]
+               / "frontend/src/views/ModelDetail.jsx").read_text(encoding="utf-8")
+    quoted = re.search(r"room word budget is (\d+)", tooltip)
+    assert quoted, "the look tooltip no longer says what the room word budget is"
+    assert int(quoted.group(1)) == main.ROOM_WORD_BUDGET, (
+        f"the tooltip says {quoted.group(1)} and the app refuses at {main.ROOM_WORD_BUDGET}")
+    # The retracted claim is gone, not merely outnumbered by the new one.
+    assert "~85 composed words" not in tooltip

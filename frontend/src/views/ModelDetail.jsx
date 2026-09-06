@@ -307,7 +307,7 @@ export default function ModelDetail({ id }) {
 
           <h3 style={{ marginTop: 16 }}>
             <label style={{ fontSize: 'inherit', fontWeight: 'inherit', cursor: 'pointer' }}
-                   title="Off: the look is not written into any prompt of this session. The text stays where it is, so it can be switched back on. Measured: past ~85 composed words this sampler stops rendering the position and framing a take asks for, and the look is the largest block before the take.">
+                   title="Off: the look is not written into any prompt of this session. The text stays where it is, so it can be switched back on. Length is NOT the reason to switch it off: sessions 395-400 shot one calibrated cell against a room ladder and the camera arrived 7/10 with no room at all, 9/10 at 53 words and 10/10 at both 84 and 176 - the trend runs upward. Session 394 shot the same line twice, once whole and once with 87 to 187 words of blocks deleted, and got 9 of 16 either way. The room word budget is 200, above the longest length measured good and twice the longest room in the catalogue: it is a tripwire against an absurd input, not a limit anybody meets.">
               <input type="checkbox"
                      checked={newSession.settings.use_look !== false}
                      onChange={(e) => setNewSession({ ...newSession,
