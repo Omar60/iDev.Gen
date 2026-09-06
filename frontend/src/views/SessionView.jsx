@@ -5,7 +5,8 @@ import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
 import { BaseModelSelect, SamplerSelect } from './Models.jsx'
-import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary } from '../kinds.js'
+import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary,
+         RUN_SUBJECTS, missingSubjects } from '../kinds.js'
 import { candidatePool, defaultCount, extrasFor, fillCellDefaultCount } from '../compose.js'
 import { composed, spread } from '../enhance.js'
 import { arcFor, outfits, statesFor } from '../wardrobe.js'
@@ -106,6 +107,18 @@ export default function SessionView({ id }) {
   // room at all — the sampler invents one — so an act that names a chair or a bed
   // BUILDS it, and off is the honest default for a look that has no such piece.
   const [withFurniture, setWithFurniture] = useState(false)
+  // The three subjects a run can switch on, in the same shape as the two above:
+  // off by default, a property of the RUN. They are the writer's rather than the
+  // draw's - a tattoo is something the LINE says - so they travel to
+  // `sessionFromBrief` instead of onto the compose payload, and each carries the
+  // words the operator wants used. The flag alone is not enough: a switch with
+  // nothing behind it is an invitation to invent, which is what it was turned on
+  // to prevent, so the writer refuses a run that is short of one.
+  const [subjects, setSubjects] = useState({
+    with_tattoo: false, tattoo: '', with_pet: false, pet: '',
+    with_liquids: false, liquids: '',
+  })
+  const subjectShort = missingSubjects(subjects)
   // Whether she is undressed for the next composed run. Same shape as `withHim`
   // and the same reason: an act that needs her bare (a toy, a hand between her
   // legs) is not drawn at all unless the run says so, because dealing one to a
@@ -565,6 +578,28 @@ export default function SessionView({ id }) {
                      onChange={(e) => setWithFurniture(e.target.checked)} />
               furniture
             </label>
+            {/* The three run subjects. A checkbox alone would be the failure they
+                exist to prevent - the writer would invent one - so the words
+                come with the switch, and the run is refused while a box is on
+                and its words are empty. */}
+            {RUN_SUBJECTS.map((subject) => (
+              <label key={subject.flag}
+                     title={`This shoot has one, written in your words and carried into the \`${subject.field}\` field of every photograph that does not change it. Off: nothing about it reaches the writer at all, and a line that describes one anyway is flagged.`}
+                     style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                <input type="checkbox" checked={subjects[subject.flag]}
+                       disabled={s.running}
+                       onChange={(e) => setSubjects({ ...subjects,
+                                                      [subject.flag]: e.target.checked })} />
+                {subject.input}
+                {subjects[subject.flag] && (
+                  <input type="text" value={subjects[subject.input]} disabled={s.running}
+                         placeholder={`what the ${subject.input} is, in your words`}
+                         style={{ width: 220 }}
+                         onChange={(e) => setSubjects({ ...subjects,
+                                                        [subject.input]: e.target.value })} />
+                )}
+              </label>
+            ))}
             <label title="The fallback answer for a photograph the arc says nothing about. An act that needs access - a toy, a hand between her legs - is drawn where the dealt wardrobe gives access: nothing covering her below the waist, or the garment pulled aside. This decides the photographs an outfit does not: a hand-typed arc, or a session with no arc at all."
                    style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
               <input type="checkbox" checked={bare}
@@ -1135,7 +1170,8 @@ export default function SessionView({ id }) {
               re-reads it from the server anyway. A shoot whose hair, place and
               light changed halfway is two sessions. */}
           <ShotsEditor kind={kind} shots={adding} onChange={setAdding} llm={llm}
-                       context={composed(s.model, '')} look={s.look} wardrobe={worn} />
+                       context={composed(s.model, '')} look={s.look} wardrobe={worn}
+                       runSubjects={subjects} />
 
           {/* Deciding to edit a keeper happens mid-shoot, looking at the gallery —
               not when the session was created. So the reference workflow is picked

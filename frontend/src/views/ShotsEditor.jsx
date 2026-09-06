@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { KINDS, REACHES, REACH, MANNERS, MANNER, arrangements } from '../kinds.js'
+import { KINDS, REACHES, REACH, MANNERS, MANNER, arrangements, missingSubjects } from '../kinds.js'
 import {
   guideFor, rewriteTake, takesFromBrief, lookFromBrief, rewriteWardrobe,
   wardrobeProgression, sessionFromBrief, briefFromLook, alreadySaid, spread,
@@ -41,7 +41,7 @@ const MAX_TAKES = 100
 export default function ShotsEditor({ shots, onChange, kind, llm = false,
                                       context = '', look = '', wardrobe = '',
                                       onLook = null, manner: mannerProp,
-                                      onManner = null }) {
+                                      onManner = null, runSubjects = {} }) {
   const set = (i, k, v) => onChange(shots.map((s, j) => (j === i ? { ...s, [k]: v } : s)))
   const total = shots.reduce((n, s) => n + (s.prompt.trim() ? Math.max(1, s.count) : 0), 0)
   const spec = KINDS[kind] || KINDS.shoot
@@ -232,14 +232,24 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
    *  photograph. Four variations of a step is a decision to make afterwards, in
    *  the count box, on the steps worth it.
    */
+  // The run subjects the operator switched on with no words for them. The
+  // writer refuses these too (`shootLines` throws before a line is written),
+  // and this is the same call rather than a second reading of the same state:
+  // a panel that decided for itself would be a second answer to one question,
+  // and the two would disagree the first time either was edited.
+  const subjectShort = missingSubjects(runSubjects)
+
   const wholeShoot = () => run('shoot', async () => {
     setMade([0, howMany])
     const it = await dressTheSession()
     // The look alone as the base context: the clothes of each stretch are passed
     // in by the writer itself, photograph by photograph.
+    // The run's switched-on subjects travel with the brief: they are the
+    // writer's business and not the draw's, and `sessionFromBrief` refuses the
+    // run before a line is written when one is switched on with no words.
     const rows = await sessionFromBrief(brief, already(it.look), it.wardrobe, howMany,
                                         (made, total) => setMade([made, total]), reach, manner,
-                                        poses)
+                                        poses, runSubjects)
     if (!rows.length) throw new Error('the assistant answered nothing usable')
     countBack(rows.length, howMany)
     onChange([
@@ -305,8 +315,10 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
           {/* The shoot that walks somewhere, both halves of it in one click. */}
           {!spec.refDefault && (
             <button className="primary" style={{ whiteSpace: 'nowrap' }} onClick={wholeShoot}
-                    disabled={!brief.trim() || !!busy}
-                    title="The whole shoot from one brief: the takes in order, and a wardrobe for each of them walking beside the poses. Say where it starts, where it ends and what stays on.">
+                    disabled={!brief.trim() || !!busy || subjectShort.length > 0}
+                    title={subjectShort.length
+                      ? `Switched on with no words for ${subjectShort.join(', ')}. Write what each one is, or switch it off: a switch with nothing behind it is an invitation to invent one.`
+                      : 'The whole shoot from one brief: the takes in order, and a wardrobe for each of them walking beside the poses. Say where it starts, where it ends and what stays on.'}>
               {busy === 'shoot' ? `… ${made[0]}/${made[1]}` : '🎬 The whole shoot'}
             </button>
           )}

@@ -12,6 +12,7 @@ import {
   LOOK_FROM_PHOTO_INSTRUCTION, WARDROBE_INSTRUCTION, WARDROBE_PROGRESSION_INSTRUCTION,
   ANGLE_FROM_TEXT_INSTRUCTION, BRIEF_INSTRUCTION, BRIEF_AXES, REACH, MANNER,
   SHOOT_LINE_INSTRUCTION, SHOOT_FIELDS, STAGE_PLAN_INSTRUCTION, REPAIR_INSTRUCTION,
+  RUN_SUBJECTS, subjectNote, missingSubjects,
   EXPLICIT_REGISTER, EXPLICIT_STRETCH, reachesTheAct,
   takesChunkNote, wardrobeChunkNote, shootChunkNote, cameraPlan, positionsFor, arrangementPlan,
   fitCameras, BODY_OPENINGS, FRAMING, CLOSE_FRAMING,
@@ -308,14 +309,14 @@ export const takesAlongArc = (brief, context, n, onProgress, manner = 'directed'
  *  the words the assistant already gets, not to contradict it.
  */
 export const sessionFromBrief = async (brief, look, wardrobe, n, onProgress, reach = 'nude',
-                                       manner = 'directed', arrangements = []) => {
+                                       manner = 'directed', arrangements = [], run = {}) => {
   // No wardrobe to walk: there is no arc, so the old two-stream writer is still
   // the right one — takes varying pose and framing, and nothing to desync with.
   if (!wardrobe.trim()) {
     const takes = await takesAlongArc(brief, look, n, (made) => onProgress?.(made, n), manner)
     return takes.map((take) => ({ ...take, wardrobe: null }))
   }
-  return shootLines(brief, look, wardrobe, n, onProgress, reach, manner, arrangements)
+  return shootLines(brief, look, wardrobe, n, onProgress, reach, manner, arrangements, run)
 }
 
 /** A whole shoot, one complete photograph per line, from one stream.
@@ -364,8 +365,40 @@ export const withoutClashing = (poses, kisses, n) => {
   return out
 }
 
+/** The standing part of what the writer is told: everything that is the same for
+ *  every chunk of one shoot.
+ *
+ *  Pulled out of the call so it can be read without a network: the blocks are
+ *  appended by concatenation, and a block that is built correctly and never
+ *  appended is indistinguishable from one that was never built - measured the
+ *  hard way, a break that dropped `subjectNote` from the call passed every test
+ *  there was. What varies per chunk - the brief and the chunk note - stays at
+ *  the call site.
+ *
+ *  Order is the shipped one and none of it moved: the subjects sit directly
+ *  under the field list because they name the fields they belong in, and the
+ *  register and the manner's own block follow as they always have. */
+export const shootInstruction = (manner = 'directed', { bare = false, act = false,
+                                                        run = {} } = {}) =>
+  `${SHOOT_LINE_INSTRUCTION}`
+  + (subjectNote(run) ? `\n\n${subjectNote(run)}` : '')
+  + (bare ? `\n\n${EXPLICIT_REGISTER}` : act ? `\n\n${EXPLICIT_STRETCH}` : '')
+  + (MANNER[manner]?.line ? `\n\n${MANNER[manner].line}` : '')
+
 export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = 'nude',
-                                manner = 'directed', arrangements = []) => {
+                                manner = 'directed', arrangements = [], run = {}) => {
+  // Refused BEFORE the shoot is written and not after: a switch on with nothing
+  // behind it produces a shoot whose tattoo the writer invented, and by the time
+  // that is visible the run has been spent. Every short input is named at once,
+  // because an operator who switched on three and filled in none should be told
+  // three times rather than once per attempt.
+  const short = missingSubjects(run)
+  if (short.length) {
+    throw new Error(`This run switched on ${short.join(', ')} and gave no words for `
+                  + `${short.length > 1 ? 'them' : 'it'}. Write what ${short.join(' and ')} `
+                  + 'is, or switch it off: a switch with nothing behind it is an invitation to '
+                  + 'invent one, which is what it was turned on to prevent.')
+  }
   // The one thing the setting decides in here, and it is not a paragraph of
   // prose: whether photograph 1 is dressed. Handing the writer the outfit as
   // `what she is wearing in photograph 1` is what dressed the first seven frames
@@ -464,9 +497,7 @@ export const shootLines = async (brief, look, wardrobe, n, onProgress, reach = '
     // note anyway. Exempting the code from overwriting the line was never enough;
     // the row itself has to carry the exception.
     return ask({
-    instruction: `${SHOOT_LINE_INSTRUCTION}`
-               + (bare ? `\n\n${EXPLICIT_REGISTER}` : act ? `\n\n${EXPLICIT_STRETCH}` : '')
-               + (MANNER[manner]?.line ? `\n\n${MANNER[manner].line}` : '')
+    instruction: shootInstruction(manner, { bare, act, run })
                + `\n\nThe shoot goes like this:\n${brief}`
                + `\n\n${shootChunkNote({ ...at, bare, stages: covered,
                                          cameras: cameras?.slice(at.from - 1, at.from - 1 + at.want),
@@ -1081,7 +1112,7 @@ const HEADING = /^[A-Z][A-Za-z& ]{2,24}:[ \t]*$/gm
 
 const body = (line) => (line || '').replace(HEADING, '').replace(/\s*\n\s*/g, ' ').trim()
 
-const contentProblems = (rawLine, rawPrevious, framing = null) => {
+const contentProblems = (rawLine, rawPrevious, framing = null, run = {}) => {
   const line = body(rawLine)
   const previous = body(rawPrevious)
   const found = []
@@ -1225,6 +1256,33 @@ const contentProblems = (rawLine, rawPrevious, framing = null) => {
                + 'the line.')
     }
   }
+  // A subject this run did not switch on, described anyway. It is checked here
+  // and forbidden nowhere in the instruction on purpose: naming a thing in a
+  // prohibition is naming it, and this project has measured that the example
+  // teaches harder than the rule. So the writer is told nothing about a tattoo
+  // and the line is read afterwards.
+  for (const subject of RUN_SUBJECTS) {
+    const said = line.match(subject.names)
+    if (!run[subject.flag]) {
+      if (said) {
+        found.push(`It describes something this shoot does not have: \`${said[0]}\`. `
+                 + 'Nothing of the kind is in this session unless the run says so, and this '
+                 + 'one did not. Take the clause out; do not replace it with another.')
+      }
+      continue
+    }
+    // Switched ON, and the words are the operator's. A line that names the thing
+    // in its own words has invented a second one: the whole reason the run
+    // supplies the words is that a described-again tattoo is a different tattoo
+    // by the next chunk. Checked only when the line MENTIONS it, because a
+    // photograph that simply does not show it is not a fault.
+    const supplied = String(run[subject.input] || '').trim()
+    if (said && supplied && !line.toLowerCase().includes(supplied.toLowerCase())) {
+      found.push(`It describes \`${said[0]}\` in its own words. This shoot has exactly one, `
+               + `and it is written \`${supplied}\` - word for word, in every photograph that `
+               + 'does not change it. Reworded, it is a different one by the next photograph.')
+    }
+  }
   return found
 }
 
@@ -1233,8 +1291,8 @@ const contentProblems = (rawLine, rawPrevious, framing = null) => {
  *  `limit` is the shoot's own length, from `lengthLimit`. Left out — a single
  *  line, checked on its own — only the absolute wall applies, because one line
  *  has no neighbours to be long against. */
-export const problemsWith = (line, previous, limit = MAX_WORDS, framing = null) =>
-  [...tooLong(line, limit), ...contentProblems(line, previous, framing)]
+export const problemsWith = (line, previous, limit = MAX_WORDS, framing = null, run = {}) =>
+  [...tooLong(line, limit), ...contentProblems(line, previous, framing, run)]
 
 /** Garments by family, not by word.
  *

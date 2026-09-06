@@ -1430,6 +1430,68 @@ export const STAGE_PLAN_INSTRUCTION =
  *  decides nothing about the photograph and a line spends its last words on what
  *  it can afford to lose. The order of the original seven is the measured one
  *  and none of them moved. */
+/** The subjects a run can switch on, in the same shape as `with_him` and
+ *  `with_furniture`: a boolean that is off by default and a property of the RUN
+ *  rather than of a photograph.
+ *
+ *  They exist because each one is a thing the sampler will invent if the line
+ *  leaves room for it and will never invent the same way twice. A tattoo that
+ *  appears in photograph 6 and is gone in photograph 7 is two different women,
+ *  and the writer has no reason to know which. So the run says whether there is
+ *  one at all, and says what it is - `subject` is required when the switch is on
+ *  (9.8), because a switch with nothing behind it is an invitation to invent,
+ *  which is the failure it was turned on to prevent.
+ *
+ *  OFF is silence and not a prohibition. Nothing about a tattoo reaches the
+ *  writer's instruction when `with_tattoo` is off - not the word, not a rule
+ *  against it - because a rule that names a thing is a rule that puts the thing
+ *  in the reader's head: this project has measured that an example teaches
+ *  harder than a prohibition, and the same is true of the noun in the
+ *  prohibition. The line is checked instead, after it is written.
+ *
+ *  `field` says which of the twelve the subject belongs in, so the note tells
+ *  the writer where to put it rather than leaving it to land anywhere. */
+export const RUN_SUBJECTS = [
+  { flag: 'with_tattoo', input: 'tattoo', field: 'marks',
+    // `ink` alone is a colour and a liquid; `inked` and `ink on her` are not.
+    names: /\b(tattoos?|tattooed|inked|ink on her)\b/i },
+  { flag: 'with_pet', input: 'pet', field: 'props',
+    names: /\b(dog|puppy|cat|kitten|pet|kitty|hound)\b/i },
+  { flag: 'with_liquids', input: 'liquids', field: 'marks',
+    names: /\b(cum|semen|saliva|spit|drool|milk|oil(ed)?|lube|wet with|dripping)\b/i },
+]
+
+/** The flags that are on with nothing behind them, by the input they are short of.
+ *
+ *  Returned rather than thrown so the caller can name every one at once, which
+ *  is the rule every other shortfall in this project answers under: an operator
+ *  who has switched on three and filled in none should be told three times, not
+ *  once per attempt. */
+export const missingSubjects = (run = {}) =>
+  RUN_SUBJECTS.filter((s) => run[s.flag] && !String(run[s.input] || '').trim())
+              .map((s) => s.input)
+
+/** What the writer is told about the subjects this run switched on.
+ *
+ *  Empty when none is on, which is the whole of the OFF behaviour: the
+ *  instruction the writer sees is byte for byte what it was before the switches
+ *  existed.
+ *
+ *  The words are the operator's and they are handed over verbatim, to be carried
+ *  the way the garments are: the same tattoo in every photograph that does not
+ *  change it (9.9). A writer asked to describe a tattoo in its own words writes
+ *  a different one each chunk, which is the drift the switch exists to stop. */
+export const subjectNote = (run = {}) => {
+  const on = RUN_SUBJECTS.filter((s) => run[s.flag] && String(run[s.input] || '').trim())
+  if (!on.length) return ''
+  return 'THIS SHOOT HAS THESE IN IT, and they are given to you in words that are already '
+       + 'chosen:\n'
+       + on.map((s) => `- ${String(run[s.input]).trim()} - write it in the \`${s.field}\` field, `
+                     + 'word for word as it is written here, in every photograph that does not '
+                     + 'change it. Not reworded, not expanded, not described again in your own '
+                     + 'words: the same words every time.').join('\n')
+}
+
 export const SHOOT_FIELDS =
   ['camera', 'act', 'her', 'him', 'marks', 'worn', 'accessories', 'props',
    'technique', 'style', 'face', 'story']
