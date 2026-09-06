@@ -1,3 +1,5 @@
+# wardrobe Specification
+
 ## Purpose
 
 What a photograph is wearing, and what that entitles it to. The wardrobe holds
@@ -5,7 +7,7 @@ the garments and the outfits made of them, derives the undressing an outfit
 implies rather than storing it, and answers per photograph whether the stage it
 was dealt gives an act the access it needs.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: A garment is one piece of clothing, an outfit is an order
 
