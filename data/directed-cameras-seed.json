@@ -29,28 +29,6 @@
   {
     "slot": "camera",
     "manner": "directed",
-    "concept_key": "full-body",
-    "family": "full",
-    "faces": "",
-    "wording": "full body",
-    "judge_label": "head to feet, nothing cropped",
-    "verdict": "unmeasurable",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on both acts, and the control is already head to feet -- so this term asks for what the default gives and cannot be told apart from doing nothing"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "three-quarter-shot",
-    "family": "full",
-    "faces": "",
-    "wording": "three-quarter shot",
-    "judge_label": "head down to mid-calf or knees",
-    "verdict": "weak",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on an act naming her feet, 1/3 tighter on `arms-raised`. Below the noise of a 3-seed screen"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
     "concept_key": "ground-level",
     "family": "floor",
     "faces": "",
@@ -92,39 +70,6 @@
     "faces": "",
     "wording": "low angle",
     "judge_label": "looking up at her from below her chin"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "medium-long-shot",
-    "family": "medium",
-    "faces": "",
-    "wording": "medium long shot",
-    "judge_label": "knees up",
-    "verdict": "weak",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on an act naming her feet, 1/3 tighter on `arms-raised`. Below the noise of a 3-seed screen"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "medium-shot",
-    "family": "medium",
-    "faces": "",
-    "wording": "medium shot",
-    "judge_label": "waist up",
-    "verdict": "weak",
-    "sample_size": "sessions 387-388, 6 photographs: the control 3/3 on an act naming her feet, 1/3 tighter on `arms-raised`. Below the noise of a 3-seed screen"
-  },
-  {
-    "slot": "camera",
-    "manner": "directed",
-    "concept_key": "waist-up",
-    "family": "medium",
-    "faces": "",
-    "wording": "waist-up",
-    "judge_label": "her feet are out of the frame and the crop lands at her hip or thigh",
-    "verdict": "alive",
-    "sample_size": "sessions 387-388, 6 photographs. THE ONE SURVIVOR of six wordings that all delivered the same frame -- close-up, extreme close-up, headshot, shoulder-up and medium close-up were retired as duplicates of it. Kept over the 3/3 `extreme close-up` because at three seeds 3/3 and 2/3 are the same measurement and this is the name that misleads a writer least: what arrives is a crop at the hip or thigh. It only bites when the ACT names nothing lower"
   },
   {
     "slot": "camera",

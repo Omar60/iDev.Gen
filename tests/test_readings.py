@@ -726,3 +726,64 @@ def test_a_menu_never_offers_the_same_sentence_twice(client, seeded):
     # miss.
     assert keys == ["front", "side-level"], keys
     assert len({r["label"] for r in body["readings"]}) == len(body["readings"])
+
+
+def test_retiring_every_component_of_a_family_stops_it_refusing_the_slot(client, seeded):
+    """GAP 2. Retiring is this app's remedy for a row that should never have
+    been in the slot, and it did not work: the refusal is computed off the
+    families in the PHOTOGRAPHS, and a retired component stays in the
+    `components` of every shot ever drawn from it. So the operator retired the
+    row, the draw stopped offering it, and every session that had already
+    photographed it refused the whole slot on every axis, permanently.
+
+    Measured before the fix on the live database: eleven directed sessions, all
+    three axes, 422 -- and the seven `lens` rows and four `wide` rows the
+    refusals named had ALREADY been retired.
+
+    The safety net survives, and that is the second half of this test: a family
+    with a LIVE component and no reading still refuses. The difference is
+    "nobody has written a reading yet" (a bug, refuse) against "the operator
+    retired every row of it" (a decision, with a timestamp).
+    """
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "retired family",
+        "manner": "directed", "checkpoint": "ckpt1", "shots": [],
+    }).json()["id"]
+
+    # `side` has two components in the shipped catalogue, which is what makes
+    # the middle step below a real step rather than a restatement of the last.
+    fam = db.q("SELECT id, concept_key FROM component "
+               "WHERE slot='camera' AND manner='directed' AND family='side' ORDER BY id")
+    assert len(fam) >= 2, [dict(r) for r in fam]
+
+    shot = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": fam[0]["concept_key"],
+                   "wordings": [{"key": fam[0]["concept_key"], "text": "from her side"}]},
+        "act": {"key": "astride", "wordings": [{"key": "astride", "text": "astride"}]},
+        "framing": {"key": "full-length", "wordings": [{"key": "full-length", "text": "full"}]},
+        "mode": "exploratory",
+    }).json()["ids"][0]
+    db.run("UPDATE shot SET status='done' WHERE id=?", shot)
+
+    db.run("DELETE FROM reading WHERE slot='camera' AND manner='directed' AND key='side'")
+
+    # 1. A live family with no reading refuses. The net that catches GAP 1.
+    refused = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
+    assert refused.status_code == 422, refused.json()
+    assert "side" in refused.json()["detail"]
+
+    # 2. Retiring SOME of it changes nothing: the family is still asked about.
+    client.post(f"/api/components/{fam[0]['id']}/retire")
+    still = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
+    assert still.status_code == 422, still.json()
+    assert "side" in still.json()["detail"]
+
+    # 3. Retiring the last of it ends the question, and the pass runs again.
+    for row in fam[1:]:
+        client.post(f"/api/components/{row['id']}/retire")
+    served = client.get(f"/api/sessions/{sid}/judge-pass?slot=camera")
+    assert served.status_code == 200, served.json()
+
+    # And the photograph is off the deck rather than on it unanswerable: there
+    # is no menu entry left that could record it.
+    assert shot not in served.json()["shots"]

@@ -593,9 +593,19 @@ def test_a_slot_either_asks_one_question_or_names_every_axis():
 # not something a predicate can see. Splitting directed's camera slot by axis is
 # its own change; when it lands, these names leave this list rather than gaining
 # a reading.
+# Families a seed ships that a judge cannot be asked about, exempted from the
+# check below. All four are mined CANDIDATES - properties of the picture, not
+# positions of the camera - and `camera-candidates-seed.json` is not imported by
+# any route: `/api/components/import` with no body reads `catalogue-seed.json`.
+#
+# `full` and `medium` were here too, and they were something else: crop terms
+# filed in the camera slot, with `full body` and `waist-up` duplicating the
+# framing slot's own wordings exactly. They are gone from the seed rather than
+# exempted here - the framing catalogue carries those crops under readings that
+# CAN be judged.
 NOT_A_QUESTION = {
     ("camera", "directed", fam)
-    for fam in ("composition", "full", "geometry", "lens", "medium", "register")
+    for fam in ("composition", "geometry", "lens", "register")
 }
 
 
@@ -618,6 +628,7 @@ def test_every_family_a_seed_ships_can_be_judged():
     have = {(r["slot"], r["manner"], r["key"]) for r in readings}
 
     missing = []
+    shipped = set()
     for name in sorted(p.name for p in (ROOT / "data").glob("*seed*.json")):
         path = ROOT / "data" / name
         try:
@@ -633,12 +644,20 @@ def test_every_family_a_seed_ships_can_be_judged():
             if not family:
                 continue                      # a row with no family reduces to nothing
             key = (item["slot"], item["manner"], family)
+            shipped.add(key)
             if key not in have and key not in NOT_A_QUESTION:
                 missing.append(f"{name}: {item['manner']}/{item['slot']} family {family!r}")
 
     assert not missing, (
         "these families ship and cannot be judged -- judge-pass refuses the "
         "whole slot for the manner:\n  " + "\n  ".join(sorted(set(missing))))
+
+    # An exemption for a family no seed ships any more is an exemption that
+    # cannot fail, and it is the door the next crop term walks in through: two
+    # of these covered `full` and `medium` for as long as the camera slot
+    # carried crops, so re-adding one would have kept this test green.
+    stale = sorted(k for k in NOT_A_QUESTION if k not in shipped)
+    assert not stale, f"NOT_A_QUESTION exempts families no seed ships: {stale}"
 
 
 def test_no_two_readings_are_the_same_sentence_on_the_same_menu():

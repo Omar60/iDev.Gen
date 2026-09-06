@@ -77,6 +77,17 @@ refuse the pass and name the families that have none, because a judge cannot pic
 an answer that is not on the list and every such photograph would be recorded as
 a miss.
 
+A family EVERY component of which is retired SHALL be exempt from that check, and
+its photographs SHALL be left out of the deck. Retiring is how the operator
+withdraws a row the slot should never have carried, and without the exemption it
+did not work: the check reads the families in the photographs, a retired
+component stays in the recorded components of every shot drawn from it, and so a
+retired row refused the whole slot of that manner for every session that had
+already photographed it, permanently and on every axis. A family with at least
+one component still in the catalogue is NOT exempt, whether or not its
+components are retired individually, and neither is a family with no component
+at all — that one is unknown rather than withdrawn.
+
 #### Scenario: Every family in the deck has a reading
 
 - **WHEN** a pass is requested for a slot whose photographed families all have
@@ -89,6 +100,13 @@ a miss.
   has no reading in either scope
 - **THEN** the system refuses the pass, names the family or families with no
   reading, and serves no deck
+
+#### Scenario: Every component of a photographed family is retired
+
+- **WHEN** a pass is requested and one of the families photographed in the deck
+  has no reading, and every component of that family is retired
+- **THEN** the pass is served, and the photographs drawn from that family are
+  not in the deck
 
 #### Scenario: The judge cannot tell
 

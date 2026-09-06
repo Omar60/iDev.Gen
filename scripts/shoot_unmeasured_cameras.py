@@ -97,7 +97,18 @@ SEEDS = [770905001 + i for i in range(3)]
 def cameras_from_seed(path: str = "data/directed-cameras-seed.json") -> list[dict]:
     with open(path, encoding="utf-8") as fh:
         rows = json.load(fh)
-    return [r for r in rows if r.get("family") in UNMEASURED]
+    found = [r for r in rows if r.get("family") in UNMEASURED]
+    if not found:
+        # The screen this script exists to run is OVER: 20 rows retired on the
+        # evidence, and the five it left inconclusive dropped later because the
+        # framing slot already carries those crops under readings that can be
+        # judged. Results in docs/catalogue-measurements.md. Said out loud,
+        # because a filter that matches nothing shoots nothing and reports
+        # success.
+        raise SystemExit(
+            f"no rows left in {path} for families {', '.join(UNMEASURED)}: "
+            "the unmeasured-camera screen is finished, see docs/catalogue-measurements.md")
+    return found
 
 
 def acts_from_seed(path: str = "data/directed-acts-seed.json") -> dict[str, dict]:

@@ -156,6 +156,24 @@ a fresh install does not import them live again -- the import only inserts what
 is missing and would have resurrected every one of them
 ([[idevgen-seed-files-drift]]).
 
+**The five left alone went the same way later, on a different ground.** Not the
+screen's -- at 1/3 they are still inconclusive and that verdict stands. They are
+gone because they are CROP terms sitting in the camera slot, and the framing
+slot already carries those crops under readings a judge can be asked: `full
+body` and `waist-up` were wording-for-wording duplicates of `crop-full-body`
+and `crop-waist-up`, and `medium shot`, `medium long shot` and `three-quarter
+shot` are other spellings of the same two cuts. A row in the camera slot whose
+family has no reading is not merely unmeasured -- it takes the whole camera slot
+of that manner out of judging for every session that ever photographed it. That
+was measured: eleven directed sessions, all three axes, 422.
+
+Retiring is the remedy, and until the same day it did not work: the refusal
+reads the families in the PHOTOGRAPHS, and a retired component stays in the
+`components` of every shot drawn from it, so the 20 rows retired above were
+still refusing passes months later. `judge-pass` now treats a family whose every
+row is retired as a question withdrawn, and skips its photographs. A family with
+a live row and no reading still refuses.
+
 ### A drifted row found on the way out
 
 Diffing the seed against the store after the retire turned up `side-right`

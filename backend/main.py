@@ -4412,6 +4412,35 @@ def get_judge_pass(sid: int, slot: str, axis: str = ""):
     # not on it belongs to a different question and is not in this deck.
     axis_keys = {r["key"] for r in readings}
 
+    # The families this catalogue still ASKS about. A family every one of whose
+    # components is retired is not a question any more: retiring is the
+    # operator saying so, with a timestamp, and it is the remedy this app
+    # already offers for a row that should never have been in the slot.
+    #
+    # Without this the remedy did not work. The refusal below is computed off
+    # the families in the PHOTOGRAPHS, and a retired component stays in the
+    # `components` of every shot ever drawn from it - so retiring took the row
+    # out of the draw and left every session that had photographed it refusing
+    # the whole slot, on every axis, for good. Measured on this machine before
+    # the fix: eleven directed sessions, all three axes, all 422 - and the
+    # seven `lens` rows and the four `wide` rows the refusal named had ALREADY
+    # been retired.
+    #
+    # This is not the axis skip the comment above refuses. That one would hide
+    # "nobody has written a reading for `lens` yet"; this one hides "the
+    # operator retired every `lens` row". A family with a live component and no
+    # reading still refuses, which is what keeps GAP 1 caught.
+    # Narrow on purpose: a family EVERY row of which is retired. A family with
+    # no row here at all is not retired, it is unknown -- a photograph drawn
+    # from a component that never existed or was deleted outright -- and that
+    # stays a refusal, because "the catalogue has nothing by this name" is a
+    # question nobody has answered rather than one somebody withdrew.
+    catalogued = db.q(
+        "SELECT family, COUNT(*) AS n, SUM(retired_at IS NULL) AS live FROM component "
+        "WHERE slot=? AND manner=? AND family IS NOT NULL AND family!='' GROUP BY family",
+        slot, session["manner"])
+    withdrawn = {r["family"] for r in catalogued if not r["live"]}
+
     rows = db.q(
         "SELECT id, components, verdicts FROM shot "
         "WHERE session_id=? AND status='done' AND (rejected=0 OR rejected IS NULL) "
@@ -4438,9 +4467,15 @@ def get_judge_pass(sid: int, slot: str, axis: str = ""):
                 drawn, session["manner"],
             )
             family = (fam_row["family"] if fam_row else "") or drawn
-            if family:
+            if family and family not in withdrawn:
                 photographed_families.add(family)
 
+        if drawn != "none" and family in withdrawn:
+            # Drawn from a family the catalogue no longer asks about: every
+            # component of it is retired. There is no menu entry it could be
+            # answered with, so it is off this deck for the same reason an
+            # off-axis photograph is.
+            continue
         if axis and drawn != "none" and family not in axis_keys:
             # Asked on another axis. Not a miss, not a negative: this pass is
             # not the question this photograph can answer.
