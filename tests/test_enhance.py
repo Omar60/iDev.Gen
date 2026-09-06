@@ -552,8 +552,8 @@ def test_the_headings_name_the_fields_the_writer_is_asked_for():
 
 
 def test_the_json_skeleton_leaves_technique_out_on_purpose():
-    """The skeleton in `SHOOT_LINE_INSTRUCTION` lists six of the seven keys, and
-    the missing one is `technique`. That is the switch, not an oversight: the
+    """The skeleton in `SHOOT_LINE_INSTRUCTION` lists eleven of the twelve keys,
+    and the missing one is `technique`. That is the switch, not an oversight: the
     writer copies the example over the rule, and `directed` — which defines the
     field in no block of its own — writes a director-of-photography lighting plan
     the moment the key appears. Measured 2026-08-21, n=25: 23 lines of 23, and a
@@ -564,8 +564,8 @@ def test_the_json_skeleton_leaves_technique_out_on_purpose():
 
     src = (pathlib.Path(__file__).resolve().parents[1]
            / "frontend/src/kinds.js").read_text(encoding="utf-8")
-    skeleton = re.search(r"THE SIX FIELDS\.(.*?)one object per photograph", src, re.S)
-    assert skeleton, "the JSON skeleton is no longer introduced as THE SIX FIELDS"
+    skeleton = re.search(r"THE ELEVEN FIELDS\.(.*?)one object per photograph", src, re.S)
+    assert skeleton, "the JSON skeleton is no longer introduced as THE ELEVEN FIELDS"
     keys = [k for k in re.findall(r'"(\w+)":', skeleton.group(1)) if k != "photographs"]
     assert keys == [f for f in enhance.BLOCK_HEADINGS if f != "technique"], keys
 

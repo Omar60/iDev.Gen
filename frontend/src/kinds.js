@@ -1420,18 +1420,29 @@ export const STAGE_PLAN_INSTRUCTION =
  *  named late is a second body that does not render. `worn` sits after both
  *  bodies for the same reason - the garments are what a long line spends itself
  *  on, and everything that decides whether the photograph is the right photograph
- *  is already said by then. */
+ *  is already said by then.
+ *
+ *  The five added in 9.1 sit beside the field whose job they are nearest, and
+ *  that placement is REASONED and not measured: `marks` is her skin so it
+ *  follows `her`, `accessories` is what else is on her so it follows `worn`,
+ *  `props` is what is not on her, `style` is how the photograph was made so it
+ *  sits beside `technique`, and `story` closes because a narrative sentence
+ *  decides nothing about the photograph and a line spends its last words on what
+ *  it can afford to lose. The order of the original seven is the measured one
+ *  and none of them moved. */
 export const SHOOT_FIELDS =
-  ['camera', 'act', 'her', 'him', 'worn', 'technique', 'face']
+  ['camera', 'act', 'her', 'him', 'marks', 'worn', 'accessories', 'props',
+   'technique', 'style', 'face', 'story']
 
 export const SHOOT_LINE_INSTRUCTION =
   'Write one photograph per object of a photo session, in the order they are shot. Each '
-  + 'object is a whole photograph, and it arrives in seven fields rather than in one line: '
+  + 'object is a whole photograph, and it arrives in twelve fields rather than in one line: '
   + 'the app joins them back into the single line the photograph is painted from. '
   + 'Everything below describes how a photograph is written; the fields say where each '
   + 'part of it goes.\n'
-  + 'THE SEVEN KEYS ARE `camera`, `act`, `her`, `him`, `worn`, `technique`, `face`, and '
-  + 'EVERY OBJECT CARRIES ALL SEVEN. None is optional and none is left empty, with one '
+  + 'THE TWELVE KEYS ARE `camera`, `act`, `her`, `him`, `marks`, `worn`, `accessories`, '
+  + '`props`, `technique`, `style`, `face`, `story`, and '
+  + 'EVERY OBJECT CARRIES ALL TWELVE. None is optional and none is left empty, with one '
   + 'exception: `him` is empty in a photograph with nobody else in it. A key you have '
   + 'nothing new to say about is still written - measured, a field added to this list '
   + 'without this paragraph arrived in 9 photographs of 25 and the other 16 simply left '
@@ -1658,8 +1669,9 @@ export const SHOOT_LINE_INSTRUCTION =
   // word down the run — `Available light from the window, no flash, a still quiet
   // frame` on line after line. That is the 2026-08-21 failure above, reproduced. The
   // field is candid's, and a skeleton that asks for it has to ask only there.
-  + 'THE SIX FIELDS. Answer as JSON: `{"photographs": [{"camera": "…", "act": "…", '
-  + '"her": "…", "him": "…", "worn": "…", "face": "…"}, …]}`, one object per photograph, '
+  + 'THE ELEVEN FIELDS. Answer as JSON: `{"photographs": [{"camera": "…", "act": "…", '
+  + '"her": "…", "him": "…", "marks": "…", "worn": "…", "accessories": "…", "props": "…", '
+  + '"style": "…", "face": "…", "story": "…"}, …]}`, one object per photograph, '
   + 'in order. Every field is filled on every object, as prose, with no field name repeated '
   + 'inside a field. The app joins them in this order into the one line that is painted:\n'
   + '- `camera`: where the camera is, then the framing, in the words above.\n'
@@ -1677,6 +1689,11 @@ export const SHOOT_LINE_INSTRUCTION =
   + '  Do not pick from the arrangements that have names. There are far more arrangements than '
   + 'there are names for them, and the named handful is what makes a session monotonous.\n'
   + '- `her`: her chest and torso, her hips and legs, her feet. All three, every time.\n'
+  + '- `marks`: what is ON HER SKIN and nothing else - a tan line, a scar, a mole, a '
+  + 'freckled shoulder, gooseflesh, a flush across her chest, sweat, a mark somebody '
+  + 'left. Her skin only: not where the camera is, not how much of her is in frame, not '
+  + 'what she is wearing and not the light. `a pale tan line across her hips`, `a faint '
+  + 'scar under her left knee`.\n'
   + '- `him`: HIS body, as fully as hers — his chest, his shoulders, his arms, his stomach, '
   + 'his hips, his thighs, his knees, whichever of them this camera can see from where it '
   + 'stands, chosen for that position rather than the same two every line. He is a body and '
@@ -1684,7 +1701,24 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'never empty when she is not.\n'
   + '- `worn`: what is still on her, word for word from the photograph before. Every garment '
   + 'lives here. Nude is written here too: `nude but for the white fishnet stockings`.\n'
-  + '- `face`: her expression — but FIRST decide whether this camera can see her face at all. '
+  + '- `accessories`: what is on her that is not a garment - jewellery, a watch, a '
+  + 'hairband, glasses, a collar, a ribbon, a bag on her shoulder. Carried word for word '
+  + 'from the photograph before, the way `worn` is, because a bracelet that appears and '
+  + 'disappears down a shoot is a different woman each time.\n'
+  + '- `props`: what is in the photograph that is NOT on her and not the room - what she '
+  + 'holds, what she leans on, what sits beside her. The room itself is prepended to '
+  + 'every line already, so write the thing and not the place: `a glass of wine in her '
+  + 'right hand`, `a folded towel under her knee`.\n'
+  + '- `style`: THE LENS, THE MEDIUM AND THE TREATMENT, and nothing else. The lens: `shot '
+  + 'on a fast fifty, the background gone soft`. The medium: `on grainy colour film`, `a '
+  + 'digital frame with clean shadows`. The treatment: `warm and slightly faded`, `cool '
+  + 'and contrasty`.\n'
+  + '  NEVER a camera position and NEVER a framing in this field. `low`, `from behind`, '
+  + '`overhead`, `close`, `wide`, `full-length`, `waist-up` and every other word that '
+  + 'says where the camera stands or how much of her is in the picture belong in '
+  + '`camera` and are already written there. A position written here is a SECOND camera '
+  + 'in the line, and the two are resolved against each other by the sampler rather than '
+  + 'by you: measured, a line carrying two positions renders neither reliably.\n'  + '- `face`: her expression — but FIRST decide whether this camera can see her face at all. '
   + 'If `camera` puts the lens behind her — `directly behind her`, `behind her left shoulder`, '
   + '`behind her right shoulder`, a rear camera of any kind — then her face is NOT in this '
   + 'photograph and `face` is the back of her head, unless `act` has already turned her head '
@@ -1692,7 +1726,12 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'cannot see`) was ignored in seven behind-the-camera lines of thirteen, and the version '
   + 'above missed once in sixteen. A photograph that asks for a face its own camera cannot '
   + 'see is resolved against the position: the camera moves rather than the face, and the '
-  + 'photograph comes back as a different position entirely.'
+  + 'photograph comes back as a different position entirely.\n'
+  + '- `story`: one sentence saying what this moment IS - what just happened, what she is '
+  + 'about to do, what she is thinking of. It is the last field joined and the one the '
+  + 'line can most afford to lose, so it decides nothing: no camera, no framing, no '
+  + 'garment, no body part that is not already written above. `she has just come in from '
+  + 'the rain and has not decided whether to stay`.\n'
 
 /** The standing version of the explicit rule, for a shoot that is explicit all
  *  the way through.
