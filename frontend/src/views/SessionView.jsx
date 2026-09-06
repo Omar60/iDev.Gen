@@ -71,6 +71,10 @@ export default function SessionView({ id }) {
   // round-trip is one per tag, not one per keystroke, and on remove so each
   // click is its own action with its own undo.
   const [tagDraft, setTagDraft] = useState('')
+  // The rooms this planned run would be refused in, asked for before it is
+  // sent. Null until asked: an empty report and no report are different
+  // answers, and only one of them is worth a line on the screen.
+  const [roomReport, setRoomReport] = useState(null)
   // Open when the user starts typing; close on blur once the field is empty
   // again, so a session with no tags does not eat a row of vertical space.
   const [tagsOpen, setTagsOpen] = useState(false)
@@ -193,6 +197,16 @@ export default function SessionView({ id }) {
         : true))
 
   const call = async (fn) => { try { await fn(); reload() } catch (e) { setError(e.message) } }
+
+  // Which rooms this run would be refused in, before anything is queued. The
+  // route recomputes nothing: every reason comes from `room_refusal`, the
+  // function the run itself calls, so the report and the refusal cannot
+  // disagree. Asked here because `with_him` is a property of the RUN and
+  // this is where it is set - the picker two screens back does not know it.
+  const askRooms = async () => {
+    try { setRoomReport(await api.post('/api/rooms/preflight', { with_him: withHim })) }
+    catch (e) { setError(e.message) }
+  }
 
   // Compose a run of N photographs from the catalogue. The button is on
   // an EXISTING session (not in the create flow) because the 3.2 rework
@@ -458,6 +472,18 @@ export default function SessionView({ id }) {
   return (
     <>
       {error && <div className="error" onClick={() => setError('')}>{error}</div>}
+      {roomReport && (
+        <div className="muted" onClick={() => setRoomReport(null)}>
+          {roomReport.refused.length === 0
+            ? `All ${roomReport.rooms} rooms are shootable under this run.`
+            : `${roomReport.refused.length} of ${roomReport.rooms} rooms are refused under this run:`}
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {roomReport.refused.map((r) => (
+              <li key={r.key}>{r.label || r.key}: {r.reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <div>
           <h1>{s.name}</h1>
@@ -600,6 +626,14 @@ export default function SessionView({ id }) {
                 )}
               </label>
             ))}
+            {/* The gates report before the run, not during it: an operator finds
+                out a room is unshootable today by sending the run and reading the
+                422, which is fine for one room and useless for a picker with
+                hundreds in it. Nothing is queued by asking. */}
+            <button className="icon" onClick={askRooms}
+                    title="Which rooms this run would be refused in, and why. Queues nothing.">
+              rooms?
+            </button>
             <label title="The fallback answer for a photograph the arc says nothing about. An act that needs access - a toy, a hand between her legs - is drawn where the dealt wardrobe gives access: nothing covering her below the waist, or the garment pulled aside. This decides the photographs an outfit does not: a hand-typed arc, or a session with no arc at all."
                    style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
               <input type="checkbox" checked={bare}
