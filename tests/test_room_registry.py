@@ -20,6 +20,7 @@ import pytest
 import room_registry
 from room_registry import (
     DEFAULT_ROOM_LIBRARIES,
+    available_rooms,
     get_registered_rooms,
     get_room_libraries_config,
     ROOM_VERDICTS_FILE,
@@ -336,3 +337,46 @@ def test_resolve_data_dir_handles_relative_and_env(tmp_path: Path, monkeypatch: 
     resolved_cfg = resolve_data_dir(config={"data_dir": "cfg_data"})
     assert resolved_cfg == ROOT / "cfg_data"
 
+
+def test_the_library_weight_reaches_the_room_the_draw_reads(tmp_path: Path):
+    """The registry has always carried a library weight and nothing consumed it:
+    `drawRoom` reads `room.weight` and the route served the row unscaled, so a
+    library weighted up took no bigger share of the draw than one weighted 1.
+
+    The two weights are different questions - how often this room comes up
+    against its neighbours, and how much of the draw its library takes - so
+    they multiply."""
+    heavy = [{"key": "h1", "label": "H1", "manner": "candid", "place": "H1 look",
+              "offers": "bench", "verdict": "u", "weight": 3},
+             {"key": "h2", "label": "H2", "manner": "candid", "place": "H2 look",
+              "offers": "stool", "verdict": "u"}]
+    light = [{"key": "l1", "label": "L1", "manner": "candid", "place": "L1 look",
+              "offers": "chair", "verdict": "u", "weight": 4}]
+    (tmp_path / "lib-a-rooms-seed.json").write_text(json.dumps(heavy), encoding="utf-8")
+    (tmp_path / "lib-b-rooms-seed.json").write_text(json.dumps(light), encoding="utf-8")
+    config = {"room_libraries": [
+        {"name": "heavy", "seed_file": "lib-a-rooms-seed.json", "enabled": True, "weight": 2.0},
+        {"name": "light", "seed_file": "lib-b-rooms-seed.json", "enabled": True, "weight": 0.5},
+    ]}
+
+    served = {r["key"]: r["weight"] for r in
+              available_rooms(config=config, data_dir=tmp_path)["rooms"]}
+    # 3 x 2.0, then a room with no weight of its own counting as one, then
+    # 4 x 0.5 - a room weighted four times its neighbours in a library that
+    # takes half the draw.
+    assert served == {"h1": 6.0, "h2": 2.0, "l1": 2.0}
+
+
+def test_a_library_at_zero_weight_is_drawn_from_never_and_still_listed(tmp_path: Path):
+    """Zero is not "disabled": a disabled library contributes no rooms at all,
+    and this one contributes rooms the operator can still pick by hand. The
+    draw skips them because `drawRoom` builds its pool by weight."""
+    rooms = [{"key": "z1", "label": "Z1", "manner": "candid", "place": "Z1 look",
+              "offers": "chair", "verdict": "u", "weight": 5}]
+    (tmp_path / "zero-rooms-seed.json").write_text(json.dumps(rooms), encoding="utf-8")
+    config = {"room_libraries": [
+        {"name": "zero", "seed_file": "zero-rooms-seed.json", "enabled": True, "weight": 0},
+    ]}
+    served = available_rooms(config=config, data_dir=tmp_path)["rooms"]
+    assert [r["key"] for r in served] == ["z1"]
+    assert served[0]["weight"] == 0.0

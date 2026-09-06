@@ -228,6 +228,31 @@ def load_room_verdicts(data_dir: Path | str | None = None,
     return {k: v for k, v in loaded.items() if isinstance(v, dict)}
 
 
+def _drawn_weight(room: dict, library_weight: float) -> float:
+    """The weight the draw sees: the room's own, scaled by its library's.
+
+    The two are different questions and the registry has always carried both -
+    the entry weight says how often THIS room comes up against its neighbours,
+    the library weight says how much of the draw the whole library takes. Only
+    the first one reached the draw until now, so a library weighted up did
+    nothing at all.
+
+    A room with no weight of its own counts as one, which is what the draw did
+    with an absent field anyway. A library at zero takes no share of the draw
+    and its rooms stay pickable by hand - not the same as "enabled: false",
+    which hides them.
+
+    ponytail: the nine rooms this project ships are also in the frontend
+    bundle, and the picker prefers the bundled copy on a key collision - so
+    weighting the default `candid` entry up moves only the imported rooms.
+    Nobody has weighted it; the day somebody does, `pickerRooms` is where the
+    served row has to win.
+    """
+    own = room.get("weight")
+    own = float(own) if isinstance(own, (int, float)) else 1.0
+    return own * library_weight
+
+
 def available_rooms(
     config: dict | None = None,
     data_dir: Path | str | None = None,
@@ -273,7 +298,8 @@ def available_rooms(
                 parsed = None
                 reason = f"{seed_file} is not readable JSON"
             if isinstance(parsed, list):
-                loaded = [dict(r, verdicts=verdicts.get(r.get("key"), {}))
+                loaded = [dict(r, verdicts=verdicts.get(r.get("key"), {}),
+                               weight=_drawn_weight(r, lib["weight"]))
                           for r in parsed if isinstance(r, dict)]
             elif parsed is not None:
                 reason = f"{seed_file} does not hold a list of rooms"
