@@ -150,6 +150,8 @@ Editing that file by hand is still fine; restart afterwards.
 | `llm_vision_model` | Optional. Used when a photo is sent; falls back to `llm_model`. Setup lists only the models that can actually read one. |
 | `llm_key` | Optional. Only a hosted endpoint needs one. |
 | `room_libraries` | Optional. List of room libraries for session looks (each entry has `name`, `seed_file`, `enabled`, and `weight`). Defaults to `candid-rooms-seed.json` (the shipped nine rooms). An import adds its own entry here in the same operation that writes the seed. |
+| `room_word_budget` | Optional, default `200`. The longest room, in words, a compose will accept; over it the run is refused naming both numbers. **It refuses nothing anybody has** and is meant to: sessions 395-400 varied room length alone and the camera arrived 7/10 at 0 words rising to 10/10 at 176, which is the opposite of a length cost. The longest room in the imported corpus is 89 words. Keep it as a tripwire for an absurd input — a refusal beats a silent truncation. |
+| `checkpoints` | Optional. Sampler settings per base model, keyed by the filename ComfyUI reports: `steps`, `cfg`, `sampler`, `scheduler`. A session picking that checkpoint is handed them; blank or unknown fields are ignored rather than reset. Nothing here is app behaviour — it is a fact about the files on your machine, and it is meant to be edited by hand. |
 
 ## Rooms
 
@@ -361,6 +363,8 @@ MIT — see [LICENSE](LICENSE).
 [Workflows](docs/workflows.md) ·
 [Sessions](docs/sessions.md) ·
 [Judging](docs/judging.md) ·
+[Catalogue measurements](docs/catalogue-measurements.md) ·
+[Asking for candidates](docs/catalogue-candidate-prompt.md) ·
 [Slideshow](docs/slideshow.md) ·
 [Troubleshooting](docs/troubleshooting.md) ·
 [Known limitations](docs/known-limitations.md)

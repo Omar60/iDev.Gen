@@ -97,6 +97,31 @@ So a shoot can walk: dressed, straps off one shoulder, dress at the waist, none
 of it — one take each, in one session, with the hair, the makeup and the light
 unchanged throughout.
 
+### The wardrobe catalogue
+
+Beside the written wardrobe there is a stored one: **garments** and the
+**outfits** made of them, served together by `GET /api/wardrobe` because an
+outfit is a list of garment keys and is unreadable without them. It ships as
+`data/wardrobe-seed.json` and is loaded with `POST /api/wardrobe/import` — a
+JSON body, or no body at all to read that file. Like the readings import it
+**keeps** what is already there: an existing key is skipped and its wording left
+alone, because a garment's wording is the text of every state that carries it
+and re-importing must not re-word a session already shot. An outfit naming a
+garment the store does not hold is refused *before* any insert — a half-imported
+outfit is one whose arc has a hole in the middle, and you would meet it as a
+missing stage rather than as an error. There is no screen for this; it is an API
+call.
+
+Two things are **derived and never stored**, both for the same reason — a second
+copy of a fact drifts from the first the moment one of them is edited:
+
+- **The undressing.** The states an outfit walks through come from the order of
+  its garments (`frontend/src/wardrobe.js`), not from a stored list.
+- **How far down a garment reaches.** Served on each garment as `reaches`,
+  computed by the same `crop.lowest_named` call the [crop law](#the-crop-law)
+  makes on a composed line. That is why stockings cost you every crop above the
+  knees: the garment counts as the body it covers.
+
 ## Tags and the library
 
 A session carries free-text **tags** edited on the session view. They are the
@@ -1393,6 +1418,13 @@ cleaner when it is one or the other.
 
 iDev.Gen manages prompt components across three slots (**camera**, **act**, **framing**) and three manners (**directed**, **candid**, **selfie**).
 
+A fourth manner, **`pov`** — the camera in a participant's hand — exists in the
+store and is **not offered in the session picker**. A manner whose camera
+catalogue is empty is refused at session creation, so offering it would be
+offering a button that always 422s; its rows arrive by mining
+(`scripts/mine_perspective_scenes.py`) and are the operator's, not shipped. A
+session already recorded under `pov` still renders its name everywhere.
+
 ### Component Catalogue (`#/catalogue`)
 The Component Catalogue lists all components with their slot, manner, prompt wording, blind viewer `judge_label`, family, and `faces` orientation (`front`, `side`, `back`, or unconstrained).
 - **Managing Components**: Add new components, edit wording or judge labels, and retire/restore them. A component with evidence against it cannot be deleted — retire it instead, which keeps it readable and out of every draw.
@@ -1405,7 +1437,7 @@ The Component Catalogue lists all components with their slot, manner, prompt wor
 Shots can be judged blindly on their slot execution:
 - Choices are presented using neutral `judge_label` observer descriptions, never the prompt wording.
 - **Contradiction Answer**: Press **Contradiction (body & camera disagree)** (or press `C`) when the rendered body and camera contradict each other — her feet turned away from the camera while her torso and face are turned into it, which is a photograph of no real body. It records a miss like any other and *also* increments `contradicted`, so the two failures stay apart on the catalogue screen.
-- **Camera and act only**: framing is in the store like every other component, but each manner carries a single framing, and a forced choice over one option is not a question. The judge-pass endpoint refuses `slot=framing` and says how many framings the store holds.
+- **All three slots are judgeable.** Framing used to be excluded, on the grounds that each manner carried a single framing and a forced choice over one option is not a question. It is one now that the screen offers a choice per *reading* rather than per wording: one reading plus "None or cannot tell" is a yes/no question, and the floor is measured. What still refuses a pass is a slot whose catalogue is **empty for this session's manner** — zero components is nothing to offer the judge. See [judging](judging.md#pass-pre-check-and-refusal) for the other two refusals, including the one that makes a multi-question vocabulary name its `axis`.
 
 ### Cell Backups
 When database migrations update cell tracking schemas, prior cell evidence is safely backed up to `data/cell-backup-<timestamp>.json`.

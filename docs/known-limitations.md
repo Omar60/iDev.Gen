@@ -100,3 +100,41 @@ discover them mid-shoot.
   the old one.
 - **Moving, not copying.** A finished image leaves ComfyUI's output folder. If
   you also want it in ComfyUI's own gallery, copy it back yourself.
+
+## The catalogue, the composer and judging
+
+- **The component store ships empty.** Nothing is imported on first run and
+  nothing imports itself when a screen is opened. Press **Import Measured
+  Catalogue** on the Catalogue screen once; until then composing and creating a
+  session refuse with a 422 naming the empty slot and manner. The other three
+  stores — readings, wardrobe, rooms — have no button at all: readings and the
+  wardrobe are `POST /api/readings/import` and `POST /api/wardrobe/import`, and
+  rooms come in through the Rooms screen.
+- **Strict mode on a young catalogue queues nothing.** It draws only cells the
+  judge has verified, and a table with two verified trios refuses almost every
+  request. That is the table being honest; exploratory is the default for that
+  reason.
+- **A short pool is refused, never padded.** A trio is drawn at most once, so a
+  run of N fills N distinct cells. When the pool runs out first the request is
+  refused naming the largest count that would have worked. Every check runs
+  before any insert: N rows or zero, never some.
+- **Judging is a person at a screen.** The blind pass is a human forced choice.
+  There is a scripted vision judge (`scripts/judge_cell.py`) but it is a harness
+  beside the app, not a button in it, and the human-versus-vision timing ratio
+  in the design notes is still an estimate.
+- **A mined trio is composable and unmeasurable on its own.** A combination
+  mined from a fused source library carries a camera and an act but no framing,
+  because the source has no crop field — and a cell is three dimensions, so the
+  photograph cannot be recorded. Shoot it with a framing of your own held
+  constant (`crop-full-body` is the one this repo used) to make the evidence
+  recordable.
+- **`pov` is not in the session picker.** The manner exists and the store can
+  hold its rows, but a manner whose camera catalogue is empty is refused at
+  session creation, and its rows are mined from material that is not in this
+  repository. It stays out of the picker rather than being a button that always
+  fails.
+- **Mining needs three files this repo does not ship.** Cutting a fused library
+  into rows reads a curated cut map, a family per entry and a judge label per
+  row, all beside the source material on your own machine. None of it is
+  guessed: a missing label refuses the whole import rather than deriving one
+  from the wording.

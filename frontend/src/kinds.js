@@ -1274,12 +1274,17 @@ const POV = {
 
 /** The manners the operator can start a session in.
  *
- *  `pov` is NOT here yet and that is the point. A manner with no camera rows
- *  is refused by `main.py` on session creation - "camera catalogue is empty
- *  for manner" - so offering it in the shoot picker would be offering a button
+ *  `pov` is NOT here and that is the point. A manner with no camera rows is
+ *  refused by `main.py` on session creation - "camera catalogue is empty for
+ *  manner" - so offering it in the shoot picker would be offering a button
  *  that always 422s. `test_the_candid_catalogue_is_what_was_measured` asserts
  *  exactly that invariant over this list, and it caught this the first time
- *  `pov` was put here. It joins in 8.14, with the mined rows it exists for. */
+ *  `pov` was put here.
+ *
+ *  Its rows exist now - mining writes them through the catalogue's own import
+ *  - but they are the OPERATOR'S: the corpus they are cut from is not in this
+ *  repository, so a fresh checkout still has an empty `pov` camera catalogue
+ *  and the refusal still applies. It joins this list the day the rows ship. */
 export const MANNERS = [...BASE_MANNERS, SELFIE]
 
 /** Every manner that exists, selectable or not.

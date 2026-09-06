@@ -33,9 +33,13 @@ schema: spec-driven
 
 context: |
   iDev.Gen: local ComfyUI photo-shoot app. Python/FastAPI backend
-  (backend/main.py routes, runner.py, db.py, comfy.py, enhance.py), React 19 +
-  Vite frontend (frontend/src/views/*.jsx). SQLite, single local user, no auth,
-  binds 127.0.0.1.
+  (backend/main.py routes, runner.py, db.py, comfy.py, enhance.py; plus
+  crop.py for the crop law, importer.py / asset_guard.py /
+  translation_map.py / source_manifest.py / room_registry.py for bringing an
+  outside asset library in, and mining.py / cut_map.py / extractor.py for
+  cutting a fused library into catalogue rows), React 19 + Vite frontend
+  (frontend/src/views/*.jsx). SQLite, single local user, no auth, binds
+  127.0.0.1.
 
   AGENTS.md at the repo root is the single source of working rules and is
   binding on every change. Read it before proposing anything. It carries the

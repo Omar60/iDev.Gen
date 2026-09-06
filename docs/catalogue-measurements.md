@@ -707,3 +707,100 @@ Rewriting `side` so it describes where the camera stands in any posture would
 make the pose measurable -- and would invalidate the profile cells of 382 and
 383, which were judged against the current sentence. That is a decision about
 the evidence, not a fix, and it is not taken here.
+
+## The Room's Length Is Not a Cost
+
+Sessions 395-400, 2026-09-05, on `Moody-Krea-Mix-premium`. Six arms, ten
+photographs each, wardrobe muted throughout, run by
+`scripts/shoot_room_length.py`.
+
+The instrument is the project's one calibrated cell -- session 382's anchor,
+`side-view` / `wall-facing-forearms` / `crop-full-body` -- composed **through
+the app** rather than written verbatim, because a verbatim line leaves
+`shot.components` empty and the judge endpoint then refuses it. The ladder is
+cut from ONE room, `general-rooftop-laundry`, by whole clauses; the corpus's own
+long rooms are abstract chambers whose text describes her body, and those would
+have fought the act instead of measuring it. Judged blind on the camera slot's
+`position` axis at five passes, two frontal controls per run, `front` 2/2 every
+time.
+
+| room length | camera arrived |
+|---|---|
+| 0 words | 7/10 |
+| 18 words | 8/10 |
+| 53 words | 9/10 |
+| 84 words | **10/10** |
+| 176 words | **10/10** |
+| studio control, 48 words | 5/10 |
+
+The trend runs **upward** with length and the studio control is the worst arm of
+the six. That is the opposite of a length cost -- the third session run to hunt
+that effect and find something else. `ROOM_WORD_BUDGET` is set to **200** from
+this: above the longest length measured good, and twice the longest room in the
+corpus (89 words, median 17). It refuses nothing anybody has and stays as a
+tripwire, because a refusal beats a silent truncation.
+
+Nothing was posted to a cell. All six arms share one trio, manner and
+checkpoint, so posting would have merged them into a single cell and destroyed
+the comparison being made.
+
+**The caveat that matters:** read by eye off the contact sheet all six arms
+looked side-on 10/10, and they are not. Several frames are three-quarters from
+behind and read `shoulder`. The numbers above are the blind judge's, not the
+eye's.
+
+## The Two Mined Camera Concepts: One Verified, One Retracted
+
+Sessions 405 and 407, 2026-09-05, manner `pov`. The first camera concepts to
+enter the catalogue by mining a fused source library rather than by being
+written. Protocol as everywhere else: five passes a photograph, strict majority,
+a coin toss recorded `unreadable` and posted for nothing, six controls from two
+other sessions interleaved in the same shuffle.
+
+| concept | claim | axis | result |
+|---|---|---|---|
+| `feet-first-low-pov` | `pov` | position | **verified, 10 of 10** |
+| `overhead-over-kneeling` | `overhead` | height | **dead, 4 of 13** |
+
+**The dead one is not a failed photograph.** Every frame is above her; the
+controls held `hip-level` 6 of 6 and the deck never answered eye-level or below.
+What died is the CLAIM. Nine of thirteen read `high-angle` -- the far wall is
+still behind her rather than the floor, which is the one thing the catalogue's
+two above-her readings split on and the one thing the source line never says. So
+it is not a camera the catalogue lacks: it lands on `high-angle`, which
+`overhead-high` already carries, and what the source pairs it with -- a subject
+kneeling below a standing-height lens -- is the ACT. The row is kept with its
+verdict rather than deleted, or the next reader mines it out of the same corpus
+a second time. The same frames were **not** re-claimed as `high-angle` to make
+the number move; that is fitting the hypothesis to the data, and a second claim
+needs its own frames.
+
+### A mined trio cannot be recorded without a framing of your own
+
+The run's first twenty photographs were lost to this. Ten frames of each concept
+were composed through `compose-combination` and judged clean -- `pov` 10 of 10
+with the same six controls -- and then every POST refused with `CHECK constraint
+failed: framing_wording <> ''`. A mined combination carries no framing on
+purpose, because the source library has no crop field, and a cell is three
+dimensions. The cells were re-shot with `crop-full-body` held constant, which is
+this project's own field and the crop law's floor for acts naming feet and
+knees.
+
+### Does `pov` need an instruction block of its own? No
+
+Each mined camera was then shot twice against the same room and the same
+framing: once with the act from its **own** source entry, once with an act mined
+from another entry of the same family. Ten photographs an arm, same protocol.
+
+| camera | own act | foreign act |
+|---|---|---|
+| `feet-first-low-pov` | 10 of 10 | 9 of 10 |
+| `overhead-over-kneeling` | 4 of 13 | 5 of 11 |
+
+Both cameras land in the same state either way, so breaking the author's pairing
+breaks nothing and there is no block to write. One arm on its own answers
+nothing -- a camera at 10 of 10 with its own act could be a camera that always
+works or an agreement carrying it, and only the second arm separates the two.
+`pov` keeps directed's instruction, which is the empty string, and the repair
+for a camera that does not arrive is at that row's own wording, where the matrix
+already puts it.

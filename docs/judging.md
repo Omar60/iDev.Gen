@@ -36,14 +36,52 @@ Readings live in two scopes:
    verdicts reference it. A session reading scans only that session's shots,
    while a base reading scans all sessions of that manner.
 
+## One reading answers one question: `axis`
+
+A reading carries an optional `axis` — the question it answers. Directed's
+camera vocabulary asks two: `position` (which side of her the camera is on) and
+`height` (how far above or below her it sits). They are independent, so a menu
+mixing them hands the judge a list where several answers are true at once.
+Session 382 measured a camera side-on in 10 of 10 and had it come back
+`hip-level` 6 and `side-level` 1 through exactly that door.
+
+So a pass over a vocabulary that asks more than one question **must name one**:
+`?axis=position`. A pass that does not is refused 422 listing the axes it found.
+A vocabulary where no reading carries an axis asks a single question and needs
+no parameter.
+
+## The shipped vocabulary and importing it
+
+Readings ship in `data/readings-seed.json` and are loaded with
+`POST /api/readings/import` — with a JSON body of reading objects, or with no
+body at all to read that file. The import **keeps** what is already there: an
+existing `(slot, manner, key)` is skipped and its label left alone, because
+re-importing must never re-word a vocabulary a session was already judged
+against. There is no button for this on any screen; it is an API call.
+
+The seed exists because a judging pass refuses a slot whose photographed
+families have no reading — candid had none at all, and writing the twelve it
+needed by hand was what stood between a shot session and any number about it.
+
 ## Pass Pre-Check and Refusal
 
-When a judging pass is requested (`GET /api/sessions/{sid}/judge-pass?slot=<slot>`),
-the backend pre-checks all photographed families across both unjudged shots
-and control shots.
+A judging pass is requested as
+`GET /api/sessions/{sid}/judge-pass?slot=<slot>[&axis=<axis>]`. Three things
+refuse it, all before any deck is served:
 
-If any photographed family lacks a reading in either scope, the pass is
-**refused 422** naming the missing families and serving no deck.
+1. **The slot's catalogue is empty for this session's manner.** Counted per
+   manner, not over the whole store: six framings spread across three manners
+   still offer nothing to a session in the fourth. Zero components is not a
+   question. One component *is* one, now that the screen offers a choice per
+   reading rather than per wording — a single reading plus "None or cannot
+   tell" is a yes/no question, and it is answerable because the floor is
+   measured (the empty prompt renders frontal 10 of 10 on this checkpoint, so
+   "did a side view arrive?" has a real negative).
+2. **The vocabulary asks more than one question and the caller named none** —
+   see `axis` above.
+3. **A photographed family lacks a reading in either scope.** The pre-check
+   covers both unjudged shots and control shots, and the refusal names the
+   missing families.
 
 ## Scoring and Control Agreement
 

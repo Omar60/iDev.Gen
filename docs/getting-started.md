@@ -59,6 +59,8 @@ paths specific to your machine. Advanced settings can also be edited there:
 | Setting | Notes |
 |---|---|
 | `room_libraries` | List of room libraries (each with `name`, `seed_file`, `enabled`, and `weight`). Defaults to `candid-rooms-seed.json` (the shipped nine candid rooms). |
+| `room_word_budget` | Optional, default `200`. The longest room, in words, a compose will accept; over it the run is refused naming both numbers. **It refuses nothing anybody has** and is meant to: sessions 395-400 varied room length alone and the camera arrived 7/10 at 0 words rising to 10/10 at 176, which is the opposite of a length cost. The longest room in the imported corpus is 89 words. Keep it as a tripwire for an absurd input — a refusal beats a silent truncation. |
+| `checkpoints` | Optional. Sampler settings per base model, keyed by the filename ComfyUI reports: `steps`, `cfg`, `sampler`, `scheduler`. A session picking that checkpoint is handed them; blank or unknown fields are ignored rather than reset. Nothing here is app behaviour — it is a fact about the files on your machine, and it is meant to be edited by hand. |
 
 The **Rooms** screen fills this list in for you: it takes a source directory
 and a translation map, writes one room seed file per library and registers each

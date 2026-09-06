@@ -423,10 +423,12 @@ class ConfigIn(BaseModel):
     # else byte-identical - 9/16 against 9/16. So length is not the mechanism
     # it was taken for, and a gate tuned as though it were would refuse rooms
     # for a reason nobody has measured. The longest room in the imported corpus
-    # is 89 words and the median is 17; 120 sits above the whole corpus with
-    # room to spare, which makes this a tripwire for an absurd input rather
-    # than a constraint. 7.9 varies room length alone against a fixed camera
-    # row and sets the real number.
+    # is 89 words and the median is 17, and sessions 395-400 then varied room
+    # length alone against a fixed camera row: 0w 7/10, 18w 8/10, 53w 9/10,
+    # 84w 10/10, 176w 10/10. The trend runs UPWARD. So 200 is set from that -
+    # above the longest length measured good, twice the longest room anybody
+    # has - and it stays a tripwire for an absurd input rather than a
+    # constraint, because a refusal beats a silent truncation.
     room_word_budget: int = ROOM_WORD_BUDGET
 
 
