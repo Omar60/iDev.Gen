@@ -1260,6 +1260,21 @@ where *every* shot failed is **failed**, and one you stopped is **cancelled**.
 Closing the app mid-run leaves the session marked failed on the next start,
 because nothing is polling that job any more. Retry picks it back up.
 
+### Which rooms this run would refuse
+
+A composed run is refused before anything is queued when its room puts other
+people in the frame and the run has no second body, or when the room runs past
+`room_word_budget`. Finding that out one room at a time means sending a run and
+reading the 422, which is fine for one room and useless for a picker with
+hundreds in it.
+
+**rooms?**, beside the run flags, asks the same question over the whole
+catalogue: it lists every room this run would be refused in and the words
+responsible, and it queues nothing. It is asked here rather than at the picker
+because the answer depends on **with him**, which belongs to the run. Every
+reason comes from the function the run itself calls, so the report and the
+refusal cannot disagree.
+
 ## Reviewing
 
 - **Stars** rate a shot 1–5. Clicking the same star again clears the rating.
@@ -1418,12 +1433,16 @@ cleaner when it is one or the other.
 
 iDev.Gen manages prompt components across three slots (**camera**, **act**, **framing**) and three manners (**directed**, **candid**, **selfie**).
 
-A fourth manner, **`pov`** — the camera in a participant's hand — exists in the
-store and is **not offered in the session picker**. A manner whose camera
-catalogue is empty is refused at session creation, so offering it would be
-offering a button that always 422s; its rows arrive by mining
-(`scripts/mine_perspective_scenes.py`) and are the operator's, not shipped. A
-session already recorded under `pov` still renders its name everywhere.
+A fourth manner, **`pov`** — the camera in a participant's hand — is offered
+**only where its cameras exist**. The picker reads the same rule the backend
+refuses by: a manner whose camera catalogue is empty is refused at session
+creation, so it is offered exactly where it has camera rows. `pov`'s rows
+arrive by mining (`scripts/mine_perspective_scenes.py`) and are the operator's,
+not shipped, so the manner appears on the machine that ran the import and
+nowhere else — no release in between. A checkout that has imported nothing at
+all keeps the three shipped manners, because an empty picker cannot reach the
+import that would fill it, and a session already recorded under `pov` renders
+its name everywhere either way.
 
 ### Component Catalogue (`#/catalogue`)
 The Component Catalogue lists all components with their slot, manner, prompt wording, blind viewer `judge_label`, family, and `faces` orientation (`front`, `side`, `back`, or unconstrained).
