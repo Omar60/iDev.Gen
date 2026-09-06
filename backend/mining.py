@@ -979,3 +979,49 @@ def save_mined_families(families: dict[str, str], path: Any) -> Path:
         encoding="utf-8",
     )
     return target
+
+
+# -- Is a `pov` instruction block worth writing --------------------------
+
+# 8.19. `pov` ships with directed's instruction, which is the empty string, and
+# the open question was whether the manner needs prose of its own. The way to
+# ask it: a mined camera renders because ONE author wrote it to agree with the
+# act and the room beside it, or it renders on its own words. If the agreement
+# is what carries it, a block is the place that agreement would have to be
+# written down. If it is not, a block has nothing to repair.
+#
+# So each camera was shot twice against the same room and the same framing,
+# once with the act from its OWN entry and once with an act mined from another
+# entry of the same family, ten photographs an arm, judged blind at five passes
+# with controls, exactly as 8.18 was.
+#
+# **The arm makes no difference.** A camera that arrives arrives with a foreign
+# act (10 of 10 against 9 of 10) and a camera that does not, does not (4 of 13
+# against 5 of 11). The entry's internal agreement is not what carries the
+# camera - the clause is - so a `pov` block has nothing to fix. The repair for
+# the dead one is at the row's own wording, which is where the matrix already
+# puts it, and that is the recommendation this record carries.
+#
+# The two `arrived` counts are of the CLAIM each camera makes, the same claim
+# 8.18 judged: `pov` on the position axis, `overhead` on the height axis.
+POV_BLOCK_EVIDENCE: dict[str, Any] = {
+    "question": "Is a `pov` instruction block worth writing",
+    "answer": "no",
+    "reason": (
+        "The arm makes no difference. A mined camera arrives on its own clause "
+        "or not at all: pairing it with an act mined from another entry cost "
+        "one photograph of ten on the verified camera and moved the dead one by "
+        "nothing. An instruction block is where a manner's agreement would be "
+        "written down, and there is no agreement here for it to carry."
+    ),
+    "arms": (
+        {"camera": "mined-general_bedroom_edge_silk-camera", "claim": "pov",
+         "axis": "position", "arm": "own act", "judged": 10, "arrived": 10},
+        {"camera": "mined-general_bedroom_edge_silk-camera", "claim": "pov",
+         "axis": "position", "arm": "foreign act", "judged": 10, "arrived": 9},
+        {"camera": "mined-general_tatami_room-camera", "claim": "overhead",
+         "axis": "height", "arm": "own act", "judged": 13, "arrived": 4},
+        {"camera": "mined-general_tatami_room-camera", "claim": "overhead",
+         "axis": "height", "arm": "foreign act", "judged": 11, "arrived": 5},
+    ),
+}

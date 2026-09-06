@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 
 import db
-from backend.mining import NEW_CAMERA_CONCEPTS
+from backend.mining import NEW_CAMERA_CONCEPTS, POV_BLOCK_EVIDENCE
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 
@@ -131,3 +131,55 @@ def test_the_retracted_concept_is_kept_with_what_it_was_measured_against():
         landed = {"overhead-over-kneeling": "high-angle"}[concept["key"]]
         assert landed in concept["nearest"], (
             f"{concept['key']}: the reading it landed on is not among its near misses")
+
+
+# -- 8.19 The combination against its parts drawn separately -------------
+
+
+def test_the_pov_block_question_is_answered_by_two_arms_of_each_camera():
+    """The evidence, and the shape that makes it evidence rather than an opinion.
+
+    One arm alone answers nothing: a camera at 10 of 10 with its own act could
+    be a camera that always works or an agreement that carries it. It is the
+    SECOND arm - the same camera and room with an act mined from another entry -
+    that separates them, so both are required here, per camera, and each at the
+    protocol's own minimum.
+
+    The claims are the ones 8.18 judged, and they are asserted to match: an arm
+    scored against a different claim than the concept was judged under would be
+    two measurements dressed as a comparison.
+    """
+    arms = POV_BLOCK_EVIDENCE["arms"]
+    assert POV_BLOCK_EVIDENCE["answer"] in ("yes", "no")
+    assert POV_BLOCK_EVIDENCE["reason"].strip()
+
+    claims = {c["claim"] for c in NEW_CAMERA_CONCEPTS}
+    by_camera: dict[str, set[str]] = {}
+    for arm in arms:
+        assert arm["judged"] >= 10, (
+            f"{arm['camera']} {arm['arm']}: judged {arm['judged']}, below the minimum")
+        assert 0 <= arm["arrived"] <= arm["judged"]
+        assert arm["claim"] in claims, arm
+        by_camera.setdefault(arm["camera"], set()).add(arm["arm"])
+    for camera, kinds in by_camera.items():
+        assert kinds == {"own act", "foreign act"}, (
+            f"{camera} carries {sorted(kinds)}; one arm on its own compares nothing")
+
+
+def test_the_answer_follows_from_the_arms_rather_than_sitting_beside_them():
+    """`answer` is derived here from the counts, so prose cannot outvote them.
+
+    A block would be worth writing if breaking the author's pairing broke the
+    photograph. It is worth writing when SOME camera's verdict changes between
+    its two arms; it is not when every camera lands in the same state both ways.
+    Written out rather than asserted as a constant, so the day an arm is
+    re-measured the recorded answer has to move with it.
+    """
+    states: dict[str, set[str]] = {}
+    for arm in POV_BLOCK_EVIDENCE["arms"]:
+        states.setdefault(arm["camera"], set()).add(
+            db.cell_state(arm["judged"], arm["arrived"]))
+    moved = {camera for camera, seen in states.items() if len(seen) > 1}
+    assert POV_BLOCK_EVIDENCE["answer"] == ("yes" if moved else "no"), (
+        f"the record answers {POV_BLOCK_EVIDENCE['answer']!r} while the arms that "
+        f"moved between states are {sorted(moved)}")
