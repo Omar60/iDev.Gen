@@ -1,1 +1,614 @@
-{}
+{
+  "fisheye-bathroom-mirror": {
+    "camera": {
+      "key": "mined-fisheye_bathroom_mirror-camera",
+      "digest": "ba8e0058a5881361"
+    },
+    "act": {
+      "key": "mined-fisheye_bathroom_mirror-act",
+      "digest": "d6c4bbc3d48b7937"
+    },
+    "room": {
+      "key": "mined-fisheye_bathroom_mirror-room",
+      "digest": "0af718504aa7672e"
+    }
+  },
+  "fisheye-bed-edge-kneel": {
+    "camera": {
+      "key": "mined-fisheye_bed_edge_kneel-camera",
+      "digest": "8b13566eb7d15f2c"
+    },
+    "act": {
+      "key": "mined-fisheye_bed_edge_kneel-act",
+      "digest": "31a394ea73ebe2e2"
+    },
+    "room": {
+      "key": "mined-fisheye_bed_edge_kneel-room",
+      "digest": "90d42837f2d4aa73"
+    }
+  },
+  "fisheye-bedroom-ceiling-dome": {
+    "camera": {
+      "key": "mined-fisheye_bedroom_ceiling_dome-camera",
+      "digest": "13b902e54ead05b7"
+    },
+    "act": {
+      "key": "mined-fisheye_bedroom_ceiling_dome-act",
+      "digest": "16fe872dc90b8f27"
+    }
+  },
+  "fisheye-elevator-corner": {
+    "camera": {
+      "key": "mined-fisheye_elevator_corner-camera",
+      "digest": "6c9542112a7072a2"
+    },
+    "act": {
+      "key": "mined-fisheye_elevator_corner-act",
+      "digest": "7bdb9fe4f3a60870"
+    },
+    "room": {
+      "key": "mined-fisheye_elevator_corner-room",
+      "digest": "49e6d982d1136f74"
+    }
+  },
+  "fisheye-hotel-bathtub": {
+    "camera": {
+      "key": "mined-fisheye_hotel_bathtub-camera",
+      "digest": "de44f9fa340ef93b"
+    },
+    "act": {
+      "key": "mined-fisheye_hotel_bathtub-act",
+      "digest": "64618028d1b97ddb"
+    },
+    "room": {
+      "key": "mined-fisheye_hotel_bathtub-room",
+      "digest": "a0c4afd0d8cac42c"
+    }
+  },
+  "fisheye-locker-room-bench": {
+    "camera": {
+      "key": "mined-fisheye_locker_room_bench-camera",
+      "digest": "12f7a7ade15279c9"
+    },
+    "act": {
+      "key": "mined-fisheye_locker_room_bench-act",
+      "digest": "d1a6136f9044042f"
+    },
+    "room": {
+      "key": "mined-fisheye_locker_room_bench-room",
+      "digest": "55e4d0769bf352e0"
+    }
+  },
+  "fisheye-office-cubicle-corner": {
+    "camera": {
+      "key": "mined-fisheye_office_cubicle_corner-camera",
+      "digest": "147318cddd24d14a"
+    },
+    "act": {
+      "key": "mined-fisheye_office_cubicle_corner-act",
+      "digest": "3f9ea2ecd0771a7d"
+    },
+    "room": {
+      "key": "mined-fisheye_office_cubicle_corner-room",
+      "digest": "5fd75b502f5868c6"
+    }
+  },
+  "fisheye-rear-seat-space": {
+    "camera": {
+      "key": "mined-fisheye_rear_seat_space-camera",
+      "digest": "79da5524540d6ac8"
+    },
+    "act": {
+      "key": "mined-fisheye_rear_seat_space-act",
+      "digest": "0cd4b825dbc5ba43"
+    },
+    "room": {
+      "key": "mined-fisheye_rear_seat_space-room",
+      "digest": "f789b745e2b136dc"
+    }
+  },
+  "fisheye-toilet-stall": {
+    "camera": {
+      "key": "mined-fisheye_toilet_stall-camera",
+      "digest": "51fc4d43fe19be1a"
+    },
+    "act": {
+      "key": "mined-fisheye_toilet_stall-act",
+      "digest": "859de213ecd7174d"
+    },
+    "room": {
+      "key": "mined-fisheye_toilet_stall-room",
+      "digest": "d5ef81d3b6fc915c"
+    }
+  },
+  "fisheye-underwater-pool": {
+    "camera": {
+      "key": "mined-fisheye_underwater_pool-camera",
+      "digest": "57adc11b21de5a44"
+    },
+    "act": {
+      "key": "mined-fisheye_underwater_pool-act",
+      "digest": "bc7c3d789207c5e6"
+    },
+    "room": {
+      "key": "mined-fisheye_underwater_pool-room",
+      "digest": "ba57faae6a8bc84b"
+    }
+  },
+  "fisheye-vanity-counter-selfie": {
+    "camera": {
+      "key": "mined-fisheye_bathroom_mirror-camera",
+      "digest": "ba8e0058a5881361"
+    },
+    "act": {
+      "key": "mined-fisheye_vanity_counter_selfie-act",
+      "digest": "bf1204d7a9800823"
+    },
+    "room": {
+      "key": "mined-fisheye_vanity_counter_selfie-room",
+      "digest": "0b6d4ffecffbbc6d"
+    }
+  },
+  "fisheye-washitsu-lantern-dome": {
+    "camera": {
+      "key": "mined-fisheye_locker_room_bench-camera",
+      "digest": "12f7a7ade15279c9"
+    },
+    "act": {
+      "key": "mined-fisheye_washitsu_lantern_dome-act",
+      "digest": "4dcaaae355648443"
+    },
+    "room": {
+      "key": "mined-fisheye_washitsu_lantern_dome-room",
+      "digest": "4a97a93467c927b6"
+    }
+  },
+  "general-art-studio-splatter-silk": {
+    "camera": {
+      "key": "mined-general_art_studio_splatter_silk-camera",
+      "digest": "6bad7417c2c2bc87"
+    },
+    "act": {
+      "key": "mined-general_art_studio_splatter_silk-act",
+      "digest": "86dacdcfe49f8041"
+    },
+    "room": {
+      "key": "mined-general_art_studio_splatter_silk-room",
+      "digest": "9ae899b1cc99e469"
+    }
+  },
+  "general-bathroom-floor-silk": {
+    "camera": {
+      "key": "mined-general_bathroom_floor_silk-camera",
+      "digest": "3cf2cbe51690b07b"
+    },
+    "act": {
+      "key": "mined-general_bathroom_floor_silk-act",
+      "digest": "43ca3e0b0910c619"
+    },
+    "room": {
+      "key": "mined-general_bathroom_floor_silk-room",
+      "digest": "529d16da19f8c9c9"
+    }
+  },
+  "general-bathroom-sink-bend": {
+    "camera": {
+      "key": "mined-general_bathroom_sink_bend-camera",
+      "digest": "70313e587e7978cb"
+    },
+    "act": {
+      "key": "mined-general_bathroom_sink_bend-act",
+      "digest": "566555763617b67c"
+    },
+    "room": {
+      "key": "mined-general_bathroom_sink_bend-room",
+      "digest": "0a87b7d9bd4c3853"
+    }
+  },
+  "general-bedroom-edge-silk": {
+    "camera": {
+      "key": "mined-general_bedroom_edge_silk-camera",
+      "digest": "01deeba0d791458e"
+    },
+    "act": {
+      "key": "mined-general_bedroom_edge_silk-act",
+      "digest": "87f2126b9476725f"
+    },
+    "room": {
+      "key": "mined-general_bedroom_edge_silk-room",
+      "digest": "892018b94db88959"
+    }
+  },
+  "general-bedroom-rug": {
+    "camera": {
+      "key": "mined-general_tatami_room-camera",
+      "digest": "b0d69f463f5ca1b2"
+    },
+    "act": {
+      "key": "mined-general_bedroom_rug-act",
+      "digest": "7b8533d59c2e8d3c"
+    },
+    "room": {
+      "key": "mined-general_bedroom_rug-room",
+      "digest": "b8a7e5dffbd17bfd"
+    }
+  },
+  "general-car-hood-bend": {
+    "camera": {
+      "key": "mined-general_car_hood_bend-camera",
+      "digest": "5af33594fdc8fa3b"
+    },
+    "act": {
+      "key": "mined-general_car_hood_bend-act",
+      "digest": "179c0c81a14eb139"
+    },
+    "room": {
+      "key": "mined-general_car_hood_bend-room",
+      "digest": "596df313bebe6588"
+    }
+  },
+  "general-convenience-store-shelf-bend": {
+    "camera": {
+      "key": "mined-general_car_hood_bend-camera",
+      "digest": "5af33594fdc8fa3b"
+    },
+    "act": {
+      "key": "mined-general_convenience_store_shelf_bend-act",
+      "digest": "bbca16ff7d91982b"
+    },
+    "room": {
+      "key": "mined-general_convenience_store_shelf_bend-room",
+      "digest": "21eae0f0aba9a95f"
+    }
+  },
+  "general-cyber-gaming-desk-silk": {
+    "camera": {
+      "key": "mined-general_cyber_gaming_desk_silk-camera",
+      "digest": "d7ab2acce0cb4540"
+    },
+    "act": {
+      "key": "mined-general_cyber_gaming_desk_silk-act",
+      "digest": "9bda3758a193653d"
+    },
+    "room": {
+      "key": "mined-general_cyber_gaming_desk_silk-room",
+      "digest": "9f9901c8b82c6818"
+    }
+  },
+  "general-elevator-corner": {
+    "camera": {
+      "key": "mined-general_tatami_room-camera",
+      "digest": "b0d69f463f5ca1b2"
+    },
+    "act": {
+      "key": "mined-general_elevator_corner-act",
+      "digest": "08bcd18e9d00950c"
+    },
+    "room": {
+      "key": "mined-general_elevator_corner-room",
+      "digest": "3e53cb4cf288f23a"
+    }
+  },
+  "general-entrance-welcome": {
+    "camera": {
+      "key": "mined-general_tatami_room-camera",
+      "digest": "b0d69f463f5ca1b2"
+    },
+    "act": {
+      "key": "mined-general_entrance_welcome-act",
+      "digest": "6953b9e8aa5ec9e6"
+    },
+    "room": {
+      "key": "mined-general_entrance_welcome-room",
+      "digest": "5e67415669f9d276"
+    }
+  },
+  "general-fitting-room": {
+    "camera": {
+      "key": "mined-general_tatami_room-camera",
+      "digest": "b0d69f463f5ca1b2"
+    },
+    "act": {
+      "key": "mined-general_fitting_room-act",
+      "digest": "49bc1d1dc8bb65d6"
+    },
+    "room": {
+      "key": "mined-general_fitting_room-room",
+      "digest": "9742851127e9793b"
+    }
+  },
+  "general-fitting-room-mirror-silk": {
+    "camera": {
+      "key": "mined-general_fitting_room_mirror_silk-camera",
+      "digest": "b3675601f7ec441f"
+    },
+    "act": {
+      "key": "mined-general_fitting_room_mirror_silk-act",
+      "digest": "dd1f421234b20fb9"
+    },
+    "room": {
+      "key": "mined-general_fitting_room_mirror_silk-room",
+      "digest": "109154a3b7b8c03a"
+    }
+  },
+  "general-rainy-window-kneel-facial": {
+    "camera": {
+      "key": "mined-general_rainy_window_kneel_facial-camera",
+      "digest": "7da40031858fd09d"
+    },
+    "act": {
+      "key": "mined-general_rainy_window_kneel_facial-act",
+      "digest": "87552e751a3817d8"
+    },
+    "room": {
+      "key": "mined-general_rainy_window_kneel_facial-room",
+      "digest": "8f7131e7d16bd1a9"
+    }
+  },
+  "general-rainy-window-rear": {
+    "camera": {
+      "key": "mined-general_rainy_window_rear-camera",
+      "digest": "53a1eba85a392bbc"
+    },
+    "act": {
+      "key": "mined-general_rainy_window_rear-act",
+      "digest": "fcc4874e58424f3c"
+    },
+    "room": {
+      "key": "mined-general_rainy_window_rear-room",
+      "digest": "8f7131e7d16bd1a9"
+    }
+  },
+  "general-standing-wormseye-silk": {
+    "camera": {
+      "key": "mined-general_standing_wormseye_silk-camera",
+      "digest": "c9328aa1cafd5f39"
+    },
+    "act": {
+      "key": "mined-general_standing_wormseye_silk-act",
+      "digest": "9d4a726cffce4381"
+    },
+    "room": {
+      "key": "mined-general_standing_wormseye_silk-room",
+      "digest": "d311423271d24a1b"
+    }
+  },
+  "general-tatami-room": {
+    "camera": {
+      "key": "mined-general_tatami_room-camera",
+      "digest": "b0d69f463f5ca1b2"
+    },
+    "act": {
+      "key": "mined-general_tatami_room-act",
+      "digest": "63b226c3c1a0851b"
+    },
+    "room": {
+      "key": "mined-general_tatami_room-room",
+      "digest": "c04220aa526e0870"
+    }
+  },
+  "general-warehouse-wooden": {
+    "camera": {
+      "key": "mined-general_tatami_room-camera",
+      "digest": "b0d69f463f5ca1b2"
+    },
+    "act": {
+      "key": "mined-general_warehouse_wooden-act",
+      "digest": "938e729478cfb96f"
+    },
+    "room": {
+      "key": "mined-general_warehouse_wooden-room",
+      "digest": "ff7a7593e3100d7b"
+    }
+  },
+  "general-washitsu-shoji-shadow-silk": {
+    "camera": {
+      "key": "mined-general_washitsu_shoji_shadow_silk-camera",
+      "digest": "3b4a3cd23a93e0fe"
+    },
+    "act": {
+      "key": "mined-general_washitsu_shoji_shadow_silk-act",
+      "digest": "52bdb8b0fdc9b384"
+    },
+    "room": {
+      "key": "mined-general_washitsu_shoji_shadow_silk-room",
+      "digest": "25dd366f3cdc344b"
+    }
+  },
+  "luxury-car-backseat-silk": {
+    "camera": {
+      "key": "mined-luxury_car_backseat_silk-camera",
+      "digest": "78702a5560ba6c8d"
+    },
+    "act": {
+      "key": "mined-luxury_car_backseat_silk-act",
+      "digest": "1f7b1ce124ca87a7"
+    },
+    "room": {
+      "key": "mined-luxury_car_backseat_silk-room",
+      "digest": "faf656eb6fbf38b6"
+    }
+  },
+  "luxury-car-dash-silk": {
+    "camera": {
+      "key": "mined-luxury_car_dash_silk-camera",
+      "digest": "755547295539fe85"
+    },
+    "act": {
+      "key": "mined-luxury_car_dash_silk-act",
+      "digest": "d6134a808c782c93"
+    },
+    "room": {
+      "key": "mined-luxury_car_dash_silk-room",
+      "digest": "6d9eaa2ff6a61b7e"
+    }
+  },
+  "medical-clinic-exam-chair-silk": {
+    "camera": {
+      "key": "mined-medical_clinic_exam_chair_silk-camera",
+      "digest": "0208d6a3fe9347ad"
+    },
+    "act": {
+      "key": "mined-medical_clinic_exam_chair_silk-act",
+      "digest": "0e653e6fd5d2ff33"
+    },
+    "room": {
+      "key": "mined-medical_clinic_exam_chair_silk-room",
+      "digest": "3553f1ebfb9e3c64"
+    }
+  },
+  "medical-consulting": {
+    "camera": {
+      "key": "mined-medical_consulting-camera",
+      "digest": "7de7121d52af9a4d"
+    },
+    "act": {
+      "key": "mined-medical_consulting-act",
+      "digest": "0d5db35efbc82cb1"
+    },
+    "room": {
+      "key": "mined-medical_consulting-room",
+      "digest": "b2b4a99d62504129"
+    }
+  },
+  "medical-exam-table": {
+    "camera": {
+      "key": "mined-medical_exam_table-camera",
+      "digest": "20fff97796206bc2"
+    },
+    "act": {
+      "key": "mined-medical_exam_table-act",
+      "digest": "e4f1b3bf87bd3eec"
+    },
+    "room": {
+      "key": "mined-medical_exam_table-room",
+      "digest": "b7e0cf3810df47a7"
+    }
+  },
+  "medical-toilet-urinal": {
+    "camera": {
+      "key": "mined-general_tatami_room-camera",
+      "digest": "b0d69f463f5ca1b2"
+    },
+    "act": {
+      "key": "mined-medical_toilet_urinal-act",
+      "digest": "3f4a136ed9f43da6"
+    },
+    "room": {
+      "key": "mined-medical_toilet_urinal-room",
+      "digest": "c2dcf89c7242c16f"
+    }
+  },
+  "medical-ward-bed": {
+    "camera": {
+      "key": "mined-general_tatami_room-camera",
+      "digest": "b0d69f463f5ca1b2"
+    },
+    "act": {
+      "key": "mined-medical_ward_bed-act",
+      "digest": "cbf4eae8367eab46"
+    },
+    "room": {
+      "key": "mined-medical_ward_bed-room",
+      "digest": "77e6b90a25a6c69f"
+    }
+  },
+  "meeting-under-table-silk": {
+    "camera": {
+      "key": "mined-meeting_under_table_silk-camera",
+      "digest": "8c9883fdee039f11"
+    },
+    "act": {
+      "key": "mined-meeting_under_table_silk-act",
+      "digest": "a062077ec5e2359a"
+    },
+    "room": {
+      "key": "mined-meeting_under_table_silk-room",
+      "digest": "e30a5a8265fd8ee4"
+    }
+  },
+  "streamer-under-desk-silk": {
+    "camera": {
+      "key": "mined-streamer_under_desk_silk-camera",
+      "digest": "0b83eb19a4c69545"
+    },
+    "act": {
+      "key": "mined-streamer_under_desk_silk-act",
+      "digest": "79ff9303ec15b207"
+    },
+    "room": {
+      "key": "mined-streamer_under_desk_silk-room",
+      "digest": "24650675533e3d64"
+    }
+  },
+  "workplace-ceo-desk": {
+    "camera": {
+      "key": "mined-general_tatami_room-camera",
+      "digest": "b0d69f463f5ca1b2"
+    },
+    "act": {
+      "key": "mined-workplace_ceo_desk-act",
+      "digest": "11d9ce9633b94666"
+    },
+    "room": {
+      "key": "mined-workplace_ceo_desk-room",
+      "digest": "7e9d9097b18acfcc"
+    }
+  },
+  "workplace-ceo-window-bend": {
+    "camera": {
+      "key": "mined-workplace_ceo_window_bend-camera",
+      "digest": "0bf55feda22f42e2"
+    },
+    "act": {
+      "key": "mined-workplace_ceo_window_bend-act",
+      "digest": "3f9dfff5cd9a0476"
+    },
+    "room": {
+      "key": "mined-workplace_ceo_window_bend-room",
+      "digest": "7e9d9097b18acfcc"
+    }
+  },
+  "workplace-filing-cabinet-bend": {
+    "camera": {
+      "key": "mined-workplace_ceo_window_bend-camera",
+      "digest": "0bf55feda22f42e2"
+    },
+    "act": {
+      "key": "mined-workplace_filing_cabinet_bend-act",
+      "digest": "f249d92ccecb7c86"
+    },
+    "room": {
+      "key": "mined-workplace_filing_cabinet_bend-room",
+      "digest": "a38421fcacab5b0c"
+    }
+  },
+  "workplace-meeting-table": {
+    "camera": {
+      "key": "mined-general_tatami_room-camera",
+      "digest": "b0d69f463f5ca1b2"
+    },
+    "act": {
+      "key": "mined-workplace_meeting_table-act",
+      "digest": "9212f0cde78f8031"
+    },
+    "room": {
+      "key": "mined-workplace_meeting_table-room",
+      "digest": "c1f2403d335d481d"
+    }
+  },
+  "workplace-meeting-whiteboard-bend": {
+    "camera": {
+      "key": "mined-general_car_hood_bend-camera",
+      "digest": "5af33594fdc8fa3b"
+    },
+    "act": {
+      "key": "mined-workplace_meeting_whiteboard_bend-act",
+      "digest": "55abd8a6829a33e7"
+    },
+    "room": {
+      "key": "mined-workplace_meeting_whiteboard_bend-room",
+      "digest": "4c7263e3989a3553"
+    }
+  }
+}
