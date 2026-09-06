@@ -580,6 +580,67 @@ def test_a_slot_either_asks_one_question_or_names_every_axis():
 # together, which is what the first, reverted attempt did not do.
 
 
+# A `family` that is not a question the judge of that slot asks. Every one of
+# these is filed under `camera` for `directed` and none of them is a camera
+# POSITION: `full` and `medium` are crops (`full-body` is "head to feet",
+# `medium-shot` is "waist up"), and `composition`, `geometry`, `lens` and
+# `register` are properties of the picture (a vanishing point, a fisheye, a ring
+# light, "shot on a Canon EOS"). Writing a reading for one would put two
+# questions on one menu, which is the failure that killed two questions in a day
+# and the reason `axis` exists at all.
+#
+# It is an explicit list and not a rule, because "is this a camera position" is
+# not something a predicate can see. Splitting directed's camera slot by axis is
+# its own change; when it lands, these names leave this list rather than gaining
+# a reading.
+NOT_A_QUESTION = {
+    ("camera", "directed", fam)
+    for fam in ("composition", "full", "geometry", "lens", "medium", "register")
+}
+
+
+def test_every_family_a_seed_ships_can_be_judged():
+    """A component whose family has no reading cannot be judged at all.
+
+    `judge-pass` refuses the whole slot naming the family -- "no reading for
+    family/families ontop in act catalogue for manner 'directed'" -- so ONE
+    uncovered family takes the entire slot of that manner out of the app. It
+    took directed's act slot out for good: the vocabulary shipped five solo
+    readings written for an act catalogue that no longer ships, the three
+    two-person acts that DO ship carried none, and directed is the default
+    manner. A fresh clone could not judge an act.
+
+    Nothing caught it because the existing agreement test compares the component
+    seeds against EACH OTHER and never crosses into the readings file. This one
+    crosses.
+    """
+    readings = json.loads(READINGS.read_text(encoding="utf-8"))
+    have = {(r["slot"], r["manner"], r["key"]) for r in readings}
+
+    missing = []
+    for name in sorted(p.name for p in (ROOT / "data").glob("*seed*.json")):
+        path = ROOT / "data" / name
+        try:
+            items = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict) or not item.get("slot"):
+                continue
+            family = (item.get("family") or "").strip()
+            if not family:
+                continue                      # a row with no family reduces to nothing
+            key = (item["slot"], item["manner"], family)
+            if key not in have and key not in NOT_A_QUESTION:
+                missing.append(f"{name}: {item['manner']}/{item['slot']} family {family!r}")
+
+    assert not missing, (
+        "these families ship and cannot be judged -- judge-pass refuses the "
+        "whole slot for the manner:\n  " + "\n  ".join(sorted(set(missing))))
+
+
 def test_no_two_readings_are_the_same_sentence_on_the_same_menu():
     """A menu that offers one sentence twice records a correct reading under
     whichever spelling the judge happened to land on, and the other copy scores

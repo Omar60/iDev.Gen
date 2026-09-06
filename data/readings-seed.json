@@ -111,7 +111,7 @@
     "slot": "camera",
     "manner": "candid",
     "key": "shoulder",
-    "label": "The camera is behind her and off to one side: her back or one buttock is toward the lens, and part of her front \u2014 a breast, a hip, or her face turned back over her shoulder \u2014 is still in frame. Where her face points does not move the camera. The picture is NOT a reflection in a mirror; if it is, it is a mirror shot however she is turned."
+    "label": "The camera is behind her and off to one side: her back or one buttock is toward the lens, and part of her front — a breast, a hip, or her face turned back over her shoulder — is still in frame. Where her face points does not move the camera. The picture is NOT a reflection in a mirror; if it is, it is a mirror shot however she is turned."
   },
   {
     "slot": "camera",
@@ -123,7 +123,7 @@
     "slot": "act",
     "manner": "directed",
     "key": "standing",
-    "label": "She is on her feet with her torso upright. Her hips are not folded."
+    "label": "She is on her feet with her torso upright. Her hips are not folded. She is the only person in the picture."
   },
   {
     "slot": "act",
@@ -147,7 +147,7 @@
     "slot": "act",
     "manner": "directed",
     "key": "leaning",
-    "label": "She is on her feet with her legs straight, her hands or her forearms resting on a surface in front of her, and her shoulders carried forward of her hips."
+    "label": "She is on her feet with her legs straight, her hands or her forearms resting on a surface in front of her, and her shoulders carried forward of her hips. She is the only person in the picture."
   },
   {
     "slot": "camera",
@@ -618,5 +618,47 @@
     "key": "floor",
     "label": "The lens is on the floor: her feet or her knees are the nearest thing to the camera and large in the frame, and the ceiling or the top of the far wall is in view behind her.",
     "axis": "height"
+  },
+  {
+    "slot": "act",
+    "manner": "directed",
+    "key": "all-fours",
+    "label": "Her knees are on the floor and her torso is tipped forward over them, with at least one hand or forearm down on the floor in front of her. Her hips are level with her shoulders or higher. She is the only person in the picture."
+  },
+  {
+    "slot": "act",
+    "manner": "directed",
+    "key": "kneeling",
+    "label": "Her knees are on the floor and her torso is upright above them, with no hand on the floor in front of her. She is the only person in the picture."
+  },
+  {
+    "slot": "act",
+    "manner": "directed",
+    "key": "lying",
+    "label": "Her shoulder blades, or the front of her body, are against the floor or the bed. She may be propped up on her forearms or elbows and her knees may be drawn up, but her upper back or her chest is touching the surface. She is the only person in the picture."
+  },
+  {
+    "slot": "act",
+    "manner": "directed",
+    "key": "crouching",
+    "label": "She is on her feet with her knees deeply bent and her hips dropped toward her heels, her buttocks off the floor and off any surface. She is the only person in the picture."
+  },
+  {
+    "slot": "act",
+    "manner": "directed",
+    "key": "ontop",
+    "label": "There are two people in the picture. She is on top of him and facing him."
+  },
+  {
+    "slot": "act",
+    "manner": "directed",
+    "key": "away",
+    "label": "There are two people in the picture. She is on top of him and facing away from him."
+  },
+  {
+    "slot": "act",
+    "manner": "directed",
+    "key": "standing-him",
+    "label": "There are two people, both on their feet, her back against his chest."
   }
 ]
