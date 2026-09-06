@@ -7008,6 +7008,67 @@ def test_an_act_is_drawable_only_when_the_run_provides_what_it_needs(client, see
         "act-plain", "act-him", "act-nude", "act-chair"}
 
 
+
+def test_a_mined_act_that_needs_the_second_body_is_not_dealt_to_a_single_body_run(client, seeded):
+    """8.9. The mined row is composed through the same gate as a hand-written one.
+
+    The act here is not typed into the test: it comes out of `split_fused_entry`,
+    carrying whatever `needs` the mining derived, and is handed to `compose-run`
+    as a candidate. That is the whole point of the test - the derivation and the
+    draw agree on ONE vocabulary or they do not, and the two are written in
+    different modules.
+
+    The `with_him=True` half is what catches a mining that invents its own word
+    for the requirement. A run-level filter keeps only acts whose `needs` is in
+    the set the run provides, so an act declaring `second_body` would be absent
+    from the pool in BOTH directions - and a test that only asserted the
+    single-body run would read that as a pass.
+    """
+    from backend.mining import NEEDS_SECOND_BODY, split_fused_entry
+
+    camera = "low angle from the foot of the bed"
+    act = "kneeling upright with both hands behind her head"
+    room = "a narrow attic room with a sloped ceiling"
+    entry = {
+        "identifier": "invented_fused_mined_01",
+        "family": "facial POV",
+        "prompt": f"{camera}, {act}, {room}",
+    }
+    rows = split_fused_entry(entry, {"camera": camera, "act": act, "room": room})
+    mined = [row for row in rows if row["slot"] == "act"][0]
+    # The wording never says a second body. The family floor is what put the
+    # requirement on it, which is the case 8.7 exists for.
+    assert mined["needs"] == NEEDS_SECOND_BODY
+    assert "him" not in mined["wording"]
+
+    for cam, act_key, framing in (("cam-m", "act-plain-m", "frame-m"),
+                                  ("cam-m", "act-mined", "frame-m")):
+        _seed_verified_trio(cam, act_key, framing,
+                            manner="directed", checkpoint="test-checkpoint")
+    candidates = {
+        "camera": [_candidate("cam-m", "taken from her left side")],
+        "act": [_candidate("act-plain-m", "she leans against the wall"),
+                dict(_candidate("act-mined", mined["wording"]), needs=mined["needs"])],
+        "framing": [_candidate("frame-m", "full body")],
+    }
+
+    def drawn(**flags):
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"], "name": f"mined {sorted(flags.items())}",
+            "manner": "directed", "checkpoint": "test-checkpoint", "shots": [],
+        }).json()["id"]
+        for count in (2, 1):
+            r = client.post(f"/api/sessions/{sid}/compose-run",
+                            json={"count": count, "candidates": candidates, **flags})
+            if r.status_code == 200:
+                break
+        return {json.loads(row["components"])["act"]["concept"]
+                for row in db.q("SELECT components FROM shot WHERE session_id=?", sid)}
+
+    assert drawn() == {"act-plain-m"}
+    assert drawn(with_him=True) == {"act-plain-m", "act-mined"}
+
+
 def test_a_session_of_written_shots_is_created_when_no_shot_mentions_a_kiss(client, seeded):
     """The branch no test executed, and it raised on every input but one.
 
@@ -7178,3 +7239,65 @@ def test_bare_still_answers_for_a_photograph_the_arc_says_nothing_about(client, 
     # An arc shorter than the run leaves the photographs past its end to `bare`.
     assert queued(bare=True, access=[]) == 200
     assert queued(bare=False, access=[None]) == 422
+
+
+def test_the_room_a_look_came_from_is_recorded_replaced_and_detachable(client, seeded):
+    """7.2, all four halves on one session.
+
+    The column is provenance and the look is the text. Everything here turns on
+    keeping those two apart: the key moves as the operator picks, re-picks and
+    detaches, and the words never move with it. The look is asserted BYTE for
+    byte after the detach, not merely non-empty - the failure this exists to
+    catch is a detach implemented as "clear the room", which is one line away
+    from clearing the sentence the room wrote and is unrecoverable once the
+    operator has left the screen.
+
+    A session with no key composes unrefused, which is the other half of
+    provenance-only: nothing downstream may read this column to decide
+    anything. That assertion is cheap and is the one that fails the day
+    somebody makes the key a requirement for a strict draw.
+    """
+    look = "A bare ceiling bulb lights the room from overhead, and the window is black against it."
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "from a room",
+        "look": look, "room_key": "bedroom-night", "manner": "directed", "shots": [],
+    }).json()["id"]
+    assert client.get(f"/api/sessions/{sid}").json()["room_key"] == "bedroom-night"
+
+    # Replacing the room replaces the key. The look moves too on a real
+    # re-pick, which is the picker's job and not this route's - here it is sent
+    # as its own field so the two are seen to travel separately.
+    client.patch(f"/api/sessions/{sid}", json={"room_key": "kitchen"})
+    assert client.get(f"/api/sessions/{sid}").json()["room_key"] == "kitchen"
+
+    # Detaching clears the key and nothing else.
+    client.patch(f"/api/sessions/{sid}", json={"room_key": ""})
+    after = client.get(f"/api/sessions/{sid}").json()
+    assert after["room_key"] == ""
+    assert after["look"] == look
+
+    # And the detached session still composes. The cell is seeded on the
+    # session's own dimensions, the same way the strict path expects.
+    db.run("INSERT INTO cell (camera_wording, act_wording, framing_wording, "
+           "manner, checkpoint, judged, arrived) VALUES (?, ?, ?, ?, ?, ?, ?)",
+           "front-direct", "astride", "full-length", "directed", "base.safetensors", 10, 8)
+    r = client.post(f"/api/sessions/{sid}/compose", json={
+        "camera": {"key": "front-direct",
+                   "wordings": [{"key": "front-direct", "text": "Taken from directly in front of her"}]},
+        "act": {"key": "astride", "wordings": [{"key": "astride", "text": "astride text"}]},
+        "framing": {"key": "full-length", "wordings": [{"key": "full-length", "text": "framing text"}]},
+    })
+    assert r.status_code == 200, r.text
+
+
+def test_a_clone_carries_the_room_its_look_came_from(client, seeded):
+    """The clone's look is the source's look byte for byte, so the room that
+    filled one filled the other. Same argument the tags already carry, and the
+    reason it is asserted: a clone that drops the provenance leaves a look in
+    the tree that says it came from nowhere."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "source",
+        "look": "a kitchen at night", "room_key": "kitchen", "shots": [],
+    }).json()["id"]
+    copy = client.post(f"/api/sessions/{sid}/clone", json={}).json()
+    assert client.get(f"/api/sessions/{copy['id']}").json()["room_key"] == "kitchen"

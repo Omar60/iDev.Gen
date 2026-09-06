@@ -465,9 +465,14 @@ BLOCK_HEADINGS = {
     "act": "Pose",
     "her": "Subject",
     "him": "Second Subject",
+    "marks": "Skin",
     "worn": "Outfit & Texture",
+    "accessories": "Accessories",
+    "props": "Props",
     "technique": "Technique",
+    "style": "Style",
     "face": "Expression",
+    "story": "Story",
 }
 
 

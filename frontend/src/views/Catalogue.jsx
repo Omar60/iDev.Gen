@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { api } from '../api.js'
-import { setCatalogue } from '../kinds.js'
+import { setCatalogue, ALL_MANNERS } from '../kinds.js'
 
 export default function Catalogue() {
   const [components, setComponents] = useState([])
@@ -231,10 +231,15 @@ export default function Catalogue() {
 
         <div className="row" style={{ gap: 6, alignItems: 'center' }}>
           <label style={{ fontSize: 13, fontWeight: 500 }}>Manner:</label>
+          {/* `ALL_MANNERS` and not `MANNERS`: this screen lists the rows that
+              EXIST, and a manner a session cannot be started in still holds
+              components - the mined `pov` rows are 74 of them. Typed out as
+              three literal options it was a second copy of the manner list, and
+              the day `pov` was added the screen quietly could not show it. */}
           <select value={mannerFilter} onChange={(e) => setMannerFilter(e.target.value)}>
-            <option value="directed">directed</option>
-            <option value="candid">candid</option>
-            <option value="selfie">selfie</option>
+            {ALL_MANNERS.map((m) => (
+              <option key={m.key} value={m.key}>{m.key}</option>
+            ))}
           </select>
         </div>
 
@@ -440,9 +445,9 @@ export default function Catalogue() {
                   onChange={(e) => setFormValues({ ...formValues, manner: e.target.value })}
                   style={{ width: '100%' }}
                 >
-                  <option value="directed">directed</option>
-                  <option value="candid">candid</option>
-                  <option value="selfie">selfie</option>
+                  {ALL_MANNERS.map((m) => (
+                    <option key={m.key} value={m.key}>{m.key}</option>
+                  ))}
                 </select>
               </div>
             </div>

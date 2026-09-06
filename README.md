@@ -141,6 +141,35 @@ Editing that file by hand is still fine; restart afterwards.
 | `llm_model` | The model that writes. Setup lists what the endpoint has, biggest first. |
 | `llm_vision_model` | Optional. Used when a photo is sent; falls back to `llm_model`. Setup lists only the models that can actually read one. |
 | `llm_key` | Optional. Only a hosted endpoint needs one. |
+| `room_libraries` | Optional. List of room libraries for session looks (each entry has `name`, `seed_file`, `enabled`, and `weight`). Defaults to `candid-rooms-seed.json` (the shipped nine rooms). An import adds its own entry here in the same operation that writes the seed. |
+
+## Rooms
+
+**Rooms** imports an external asset library into room seed files. Give it the
+folder holding the source JSON and the path to the translation map beside it;
+nothing is guessed and no example path is shipped, because both are paths on
+your own machine.
+
+The import is all or nothing. Refused libraries, refused entries and the
+translation lookup all run over the whole upload before a single seed file is
+touched, so an upload carrying one string the map does not cover writes
+nothing and comes back with every uncovered string listed by entry and field -
+a worklist for the translation map, not a warning. A successful import writes
+each seed file and registers it in `room_libraries` in the same operation:
+either half alone is the state the registry check refuses.
+
+A **fused** library — one whose entries name a camera position, an act and a
+room in a single string — is refused by Rooms and imported by
+`scripts/mine_perspective_scenes.py` instead. Stored whole, such an entry is a
+room that overrules the line's camera, so it is cut into one row per part first:
+the camera and the act land in the component catalogue as unverified rows and
+only the room part reaches a seed file. Where every cut falls is read from a
+curated map beside the source material, never guessed, and the mining also needs
+a family per entry and a judge label per row — three untracked files the operator
+writes, all of them beside the corpus and none of them in this repository. The
+combination each entry was split into is recorded in
+`data/mined-combinations-seed.json` as row keys and fingerprints, no prose, so
+the photograph the entry produced can be composed again by name.
 
 ## Writing the prompts
 

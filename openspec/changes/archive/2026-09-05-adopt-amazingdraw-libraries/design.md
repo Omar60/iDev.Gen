@@ -326,7 +326,7 @@ descriptions, 36 identity names, 36 anchors over 16 entries, 24 profile display
 names, 15 shot variants, 42 notes, 5 pose hints. Refused entries are not counted
 and not translated.
 
-*Determinism.* Translations live in a tracked map keyed by the source string, so
+*Determinism.* Translations live in an untracked map keyed by the source string, so
 one source string always yields one English string. A re-import reads the map
 and does not re-translate; a string missing from the map stops the import rather
 than being filled in on the fly. This is what keeps a second import from
@@ -419,9 +419,17 @@ The prose is not deleted. It moves to a note beside the verdict, because "built
 question, and the vocabulary says neither.
 
 *Consequence, stated so nobody is surprised by it:* on the day this ships the
-picker shows every room unverified, including the nine. That is the true state
-of the library, and 6.12's visible distinction then means something the first
-time a room is actually measured.
+nine show as unknown at a sample size of one, and the whole imported library
+shows as unknown at none. That is the true state of the library, and 6.12's
+visible distinction then means something the first time a room is measured.
+
+*The one exception, decided when 6.10 was written:* the studio converts to
+verified at ten. Its sentence states ten seeds and says the softbox, the paper
+roll and the reflector are all built - ten judged and ten arrived, which is
+`verified` by the same rule `db.cell_state` applies to a cell, under directed
+and nowhere else. It is the only room in the library anybody has measured at
+the bar, and showing it as unknown to keep the picker uniform would be
+throwing away the one measurement that makes 6.12 worth building.
 
 ### The fused entries are cut by hand, and the cuts are a file
 
@@ -545,13 +553,38 @@ together, which the test that binds them will insist on.
   deleted, same seed, everything else byte-identical — 9/16 against 9/16. What
   391 really found was the open-garment reading, not a word count.
 
-  So the budget may be guarding nothing, and the honest default is one that
-  refuses nothing until 7.9 varies room length alone against a fixed camera row.
-  If that arm also comes back flat, the requirement stands but the gate becomes
-  a tripwire for absurd inputs rather than a real constraint — which is still
-  worth having, because it is the difference between a refusal and a silent
-  truncation. The answer changes the default and the framing of the risk, not
-  the specs.
+  **Answered, sessions 395-400 (task 7.9). There is no length effect, and the
+  budget is a tripwire.** The arm held the project's one calibrated cell — the
+  session 382 anchor, side-view / wall-facing-forearms / crop-full-body,
+  composed through the app so the shots carry components and can be judged —
+  and moved the room alone up a ladder cut from `general-rooftop-laundry` by
+  whole clauses, wardrobe muted, ten photographs per rung. Judged blind at five
+  passes on the camera slot's `position` axis, with two frontal controls in
+  every run answering `front` 2/2:
+
+  | room | 0w | 18w | 53w | 84w | 176w | studio control, 48w |
+  |------|----|-----|-----|-----|------|---------------------|
+  | camera arrives `side` | 7/10 | 8/10 | 9/10 | 10/10 | 10/10 | 5/10 |
+
+  The trend runs UPWARD with length, and the studio control is the worst arm of
+  the six. That is not "length does not matter" — it is the opposite of a
+  length cost, and it is the third session in a row to look for the effect and
+  find something else. The likely mechanism is content, not word count: the
+  rooftop room's own furniture (a laundry line at arm height, a parapet) gives
+  the act something to stand at, while the studio's softbox is a thing to face.
+
+  So `ROOM_WORD_BUDGET` is **200**, above the longest length measured good
+  (176), which is itself twice the longest room in the corpus (89). It refuses
+  nothing anybody has. The requirement stands as a tripwire for an absurd input
+  rather than as a constraint, which is still worth having: it is the difference
+  between a refusal and a silent truncation. The answer changed the default and
+  the framing of the risk, not the specs.
+
+  One caveat recorded with it: the numbers above are the JUDGE's. Read by eye
+  off the contact sheet the same six arms all looked side-on 10/10, and they are
+  not — several frames are three-quarters from behind and read `shoulder`. The
+  eye was wrong in the direction that would have hidden the control arm's own
+  weakness.
 * **Should a mined act carry its source's wardrobe clause?** The source fuses
   them. Deferring: the act rows enter unverified either way, and the question is
   answerable when the first mined act is judged.

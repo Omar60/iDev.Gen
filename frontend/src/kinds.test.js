@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { cameraPlan, shootChunkNote, MANNER, TECHNIQUE_DEFECTS, BODY_OPENINGS,
+import { cameraPlan, shootChunkNote, MANNER, MANNERS, ALL_MANNERS, TECHNIQUE_DEFECTS, BODY_OPENINGS,
          BRIEF_AXES, setCatalogue, arrangements, positionsFor,
          fitCameras } from './kinds.js'
 import { undressBy } from './enhance.js'
@@ -130,5 +130,42 @@ describe('an act carries its own camera families', () => {
     const dealt = ['Taken from directly in front of her']
     const out = fitCameras(dealt, { 1: arrangements('directed')[0] }, positionsFor('directed'))
     expect(out[0]).toBe('Taken from directly in front of her')
+  })
+})
+
+/** `pov` exists so the mined participant-camera rows have a manner whose
+ *  verdicts belong to them. What it must NOT have is prose: an unmeasured
+ *  instruction block is exactly what this repo does not ship, and a block
+ *  written here would be the thing 8.19 is supposed to be measuring against. */
+describe('the pov manner', () => {
+  test('carries no instruction of its own, in either place', () => {
+    expect(MANNER.pov).toBeDefined()
+    expect(MANNER.pov.brief).toBe('')
+    expect(MANNER.pov.line).toBe('')
+  })
+
+  test('differs from the manner it inherits only in its identity', () => {
+    // Asserted field by field rather than on brief and line alone. The failure
+    // this is written against is a later edit that gives `pov` a defect plan,
+    // a technique field or any other behaviour, which two empty-string
+    // assertions would not see.
+    const identity = new Set(['key', 'label', 'blurb'])
+    const directed = MANNER.directed
+    const pov = MANNER.pov
+    expect(new Set(Object.keys(pov))).toEqual(new Set(Object.keys(directed)))
+    for (const field of Object.keys(directed)) {
+      if (identity.has(field)) continue
+      expect(pov[field]).toEqual(directed[field])
+    }
+    for (const field of identity) expect(pov[field]).not.toBe(directed[field])
+  })
+
+  test('is known but not yet offered, because it has no cameras to shoot with', () => {
+    // A manner with an empty camera catalogue is refused on session creation,
+    // so putting `pov` in the picker today would be a button that always 422s.
+    // It is in `ALL_MANNERS` so a shot recorded under it still renders a name.
+    expect(MANNERS.map((m) => m.key)).toEqual(['directed', 'candid', 'selfie'])
+    expect(ALL_MANNERS.map((m) => m.key)).toEqual(['directed', 'candid', 'selfie', 'pov'])
+    expect(MANNER.pov).toBe(ALL_MANNERS[3])
   })
 })

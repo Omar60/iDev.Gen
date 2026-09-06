@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import db
@@ -137,3 +138,49 @@ def test_the_needs_backfill_reads_the_second_person_out_of_the_wording(tmp_path)
            for r in conn.execute("SELECT concept_key, needs FROM component")}
     conn.close()
     assert got == {key: expected for key, _, _, expected in rows}, got
+
+
+def test_a_session_written_before_the_room_key_reads_an_empty_key(tmp_path):
+    """A database written before 7.1's column, reopened.
+
+    The column records which room filled the session's look. Nothing is
+    back-filled: by storage time the look is one block of text, and matching it
+    against the catalogue to decide which room wrote it would invent provenance
+    for a look somebody typed by hand. So the assertion is that an older
+    session reads EMPTY - not that it reads something plausible.
+
+    The look is asserted alongside, byte for byte, because the failure worth
+    catching is not a missing column (the next query would raise) but a
+    migration that adds the column by rebuilding the table and loses or
+    rewrites the text on the way.
+    """
+    p = Path(tmp_path) / "old-rooms.db"
+    look = "A bare ceiling bulb lights the room from overhead."
+    conn = db.connect(p)
+    conn.execute("ALTER TABLE session DROP COLUMN room_key")
+    conn.execute("INSERT INTO model (name, trigger, created_at) VALUES ('m','t','now')")
+    mid = conn.execute("SELECT id FROM model").fetchone()["id"]
+    sid = conn.execute(
+        "INSERT INTO session (model_id, name, look, created_at) VALUES (?,?,?,'now')",
+        (mid, "before the column", look),
+    ).lastrowid
+    conn.commit()
+    conn.close()
+
+    conn = db.connect(p)
+    row = conn.execute("SELECT room_key, look FROM session WHERE id=?", (sid,)).fetchone()
+    conn.close()
+    assert row["room_key"] == ""
+    assert row["look"] == look
+
+    # And the other half of "in SCHEMA and in _migrate together". Everything
+    # above passes on a column that lives only in `_migrate`, because
+    # `db.connect` runs both and an upgrade path that adds the column is
+    # indistinguishable from a schema that declares it. `session.origin` is
+    # already in the tree that way. So `SCHEMA` is asked on its own, with no
+    # migration behind it.
+    fresh = sqlite3.connect(":memory:")
+    fresh.executescript(db.SCHEMA)
+    cols = {r[1] for r in fresh.execute("PRAGMA table_info(session)")}
+    fresh.close()
+    assert "room_key" in cols, sorted(cols)

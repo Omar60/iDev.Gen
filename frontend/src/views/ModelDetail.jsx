@@ -15,11 +15,22 @@ import candidRooms from '../../../data/candid-rooms-seed.json'
 // first sentence is an amateur-technique register, so offering it on a directed
 // session would not give directed a look, it would turn directed into candid.
 import directedLooks from '../../../data/directed-looks-seed.json'
+// The register is the manner's, not the room's, so composing is what turns a
+// place into a look. `rooms.js` holds both halves and the join.
+import {
+  allTags, filterRooms, guidanceLines, openingLook, pickerRooms, roomChoice,
+  refillLook, roomOption, verdictLabel,
+} from '../rooms.js'
 
-// Every row carries the manner it was measured on, and the picker owes the
-// operator only the ones that belong to the session being written. Before this
-// it offered candid's bedrooms on a directed shoot.
-const LOOKS = [...candidRooms, ...directedLooks]
+// A row says which manners its PLACE makes sense under, and most say "any" -
+// the register left the text in the split, so candid's bedroom is a bedroom and
+// a directed session can be shot in it. The studio is the exception the field
+// was rewritten for: it is a photographic set-up, and nobody is photographing
+// her under the other two manners.
+// The tracked half, carried by the build. The imported half arrives at
+// runtime from `/api/rooms`, because those seeds are untracked and a build
+// that imported them would not build on a clone that never ran the import.
+const BUILT_IN = [...candidRooms, ...directedLooks]
 
 export default function ModelDetail({ id }) {
   const [model, setModel] = useState(null)
@@ -30,6 +41,22 @@ export default function ModelDetail({ id }) {
   const [newSession, setNewSession] = useState(null)
   // The whole config: it also carries the per-checkpoint profiles.
   const [config, setConfig] = useState({})
+  // Empty until the route answers, and empty forever if it cannot: an
+  // absent library is a reason, not an error, and the picker still opens.
+  const [servedRooms, setServedRooms] = useState([])
+  // The tag the room list is narrowed to, empty for all of them. The
+  // options come from the rooms themselves - 239 tags belong to the
+  // source, and a list written here would go stale on the next import.
+  const [roomTag, setRoomTag] = useState('')
+  // What was typed into the room filter. Matched against the label and the
+  // room's own prose, so "mirror" finds the room with a mirror in it whatever
+  // its label says.
+  const [roomText, setRoomText] = useState('')
+  // The room the session is using - dealt at creation or picked since. Kept as
+  // a KEY and not as a row: it is what the select's value has to be, it is
+  // what keeps that room in the list whatever the filter says, and the look
+  // itself is the session's from the moment it is filled.
+  const [roomKey, setRoomKey] = useState('')
   const llm = !!config.llm_ok
   const [writing, setWriting] = useState('')
   const [error, setError] = useState('')
@@ -43,7 +70,14 @@ export default function ModelDetail({ id }) {
     // No endpoint configured is not an error: the assistant is optional, and the
     // buttons simply do not appear.
     api.get('/api/config').then(setConfig).catch(() => {})
+    api.get('/api/rooms').then((d) => setServedRooms(d.rooms || [])).catch(() => {})
   }, [id])
+
+  // The two halves, deduplicated: the registry's default entry is the nine
+  // tracked rooms, so the route hands back rooms the bundle already carries.
+  const ROOMS = pickerRooms(BUILT_IN, servedRooms)
+  // The room the look came from, or nothing for a look somebody typed.
+  const ROOM = ROOMS.find((r) => r.key === roomKey) || null
 
   if (!model) return <p className="muted">{error || 'Loading…'}</p>
 
@@ -52,7 +86,20 @@ export default function ModelDetail({ id }) {
     catch (e) { setError(e.message) }
   }
 
-  const startSession = () => setNewSession({
+  const startSession = () => {
+    const draft = newSessionDraft()
+    // Dealt once, here, in the handler that makes the draft - never in render,
+    // where every keystroke in the form would deal another room. A drawn room
+    // is an ordinary default: the picker above replaces it and the textarea
+    // edits it, and neither is undone by anything that happens afterwards.
+    const drawn = openingLook(draft, ROOMS)
+    setRoomKey(drawn?.room?.key ?? '')
+    setRoomText('')
+    setRoomTag('')
+    setNewSession(drawn ? { ...draft, look: drawn.look } : draft)
+  }
+
+  const newSessionDraft = () => ({
     model_id: id,
     name: `Session ${model.sessions.length + 1}`,
     look: '',
@@ -114,7 +161,11 @@ export default function ModelDetail({ id }) {
       // rather than refusing to create is what lets a session start empty and
       // be filled from the composer, which is how a cell gets measured.
       const { id: sid } = await api.post('/api/sessions', {
-        ...newSession, shots: newSession.shots.filter((s) => s.prompt.trim()) })
+        // The room the look was filled from rides along as provenance. It is
+        // state of its own and not part of the draft, because it is the
+        // select's value first and the session's record second.
+        ...newSession, room_key: roomKey,
+        shots: newSession.shots.filter((s) => s.prompt.trim()) })
       go(`/session/${sid}`)
     } catch (e) { setError(e.message) }
   }
@@ -256,7 +307,7 @@ export default function ModelDetail({ id }) {
 
           <h3 style={{ marginTop: 16 }}>
             <label style={{ fontSize: 'inherit', fontWeight: 'inherit', cursor: 'pointer' }}
-                   title="Off: the look is not written into any prompt of this session. The text stays where it is, so it can be switched back on. Measured: past ~85 composed words this sampler stops rendering the position and framing a take asks for, and the look is the largest block before the take.">
+                   title="Off: the look is not written into any prompt of this session. The text stays where it is, so it can be switched back on. Length is NOT the reason to switch it off: sessions 395-400 shot one calibrated cell against a room ladder and the camera arrived 7/10 with no room at all, 9/10 at 53 words and 10/10 at both 84 and 176 - the trend runs upward. Session 394 shot the same line twice, once whole and once with 87 to 187 words of blocks deleted, and got 9 of 16 either way. The room word budget is 200, above the longest length measured good and twice the longest room in the catalogue: it is a tripwire against an absurd input, not a limit anybody meets.">
               <input type="checkbox"
                      checked={newSession.settings.use_look !== false}
                      onChange={(e) => setNewSession({ ...newSession,
@@ -276,22 +327,80 @@ export default function ModelDetail({ id }) {
               Measured in sessions 370 and 371: every one of these builds its
               room, and where the sentence puts the furniture does not matter —
               the act naming a piece is what puts her on it. */}
-          <select value=""
+          {/* The tag filter, and it is only shown when the rooms carry tags:
+              nobody has imported a library on a fresh clone, and an empty
+              select is a control that promises a filter it cannot apply. */}
+          {allTags(ROOMS).length > 0 && (
+            <select value={roomTag} onChange={(e) => setRoomTag(e.target.value)}
+                    title="Narrow the rooms to one kind of place. The tags come from the library the room was imported from.">
+              <option value="">Every kind of place</option>
+              {allTags(ROOMS).map((tag) => (
+                <option key={tag} value={tag}>{tag}</option>
+              ))}
+            </select>
+          )}
+          <input value={roomText} onChange={(e) => setRoomText(e.target.value)}
+                 placeholder="Find a room…"
+                 title="Matched against the room's label and against its own text, so a word that is only in the sentence still finds it." />
+          <select value={roomKey}
                   title="Fill the look with a measured room. Every one of these was rendered; the text stays editable."
                   onChange={(e) => {
-                    const room = LOOKS.find((r) => r.key === e.target.value)
-                    if (room) setNewSession({ ...newSession, look: room.look })
+                    // Pick, replace and detach are one decision and it is made
+                    // in `roomChoice`, not here: only the look ever moves, the
+                    // wardrobe and the shots and the settings come back as the
+                    // same objects, and null is a value that changes nothing.
+                    const next = roomChoice(newSession, ROOMS, e.target.value)
+                    if (next) {
+                      setRoomKey(next.key)
+                      setNewSession(next.session)
+                    }
                   }}>
-            <option value="">Start from a measured room…</option>
-            {LOOKS.filter((r) => r.manner === newSession.manner).map((r) => (
+            <option value="">
+              {roomKey ? 'Detach this room (the text stays)' : 'Start from a measured room…'}
+            </option>
+            {filterRooms(ROOMS, { manner: newSession.manner, tag: roomTag,
+                                  text: roomText, current: roomKey }).map((r) => (
               <option key={r.key} value={r.key}>
-                {r.label}{r.offers ? ` — offers ${r.offers}` : ''}
+                {roomOption(r, newSession.manner)}
               </option>
             ))}
           </select>
           <textarea rows={2} value={newSession.look}
                     placeholder="hair down with a centre part, soft natural makeup, on a beach at golden hour"
                     onChange={(e) => setNewSession({ ...newSession, look: e.target.value })} />
+          {/* Which room the look came from, and what it measured under this
+              manner. Said and not enforced: the look is the operator's from
+              here on, and the text is edited below like any other. */}
+          {ROOM && (
+            <p className="muted" style={{ marginTop: 4 }}>
+              From {ROOM.label} - {verdictLabel(ROOM, newSession.manner)}.
+            </p>
+          )}
+          {/* What the entry's author wrote about the room, for whoever is
+              writing the line - never composed into it. */}
+          {ROOM && guidanceLines(ROOM).length > 0 && (
+            <ul className="muted" style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {guidanceLines(ROOM).map((line) => (
+                <li key={line.field}>{line.field}: {line.text}</li>
+              ))}
+            </ul>
+          )}
+          {/* The manner can be changed after the look was filled, and the
+              register in the text is then the other manner's. Said, not fixed:
+              the swap is one click and nothing happens without it, because a
+              look edited after the room was picked is the operator's text and
+              a silent rewrite is how an edit disappears. */}
+          {(() => {
+            const offer = refillLook(newSession.manner, newSession.look)
+            return offer && (
+              <p className="muted" style={{ marginTop: 4 }}>
+                This look opens with {offer.carries}'s register, not {newSession.manner}'s.{' '}
+                <button onClick={() => setNewSession({ ...newSession, look: offer.look })}>
+                  Use {newSession.manner}'s register
+                </button>
+              </p>
+            )
+          })()}
           {llm && (
             <div className="row" style={{ marginTop: 6 }}>
               <button disabled={!newSession.look.trim() || !!writing}

@@ -54,7 +54,24 @@ An endpoint that does not list its models at all is not a problem either: the
 boxes stay typeable.
 
 Settings are written to `config.json`, which stays out of git because it holds
-paths specific to your machine.
+paths specific to your machine. Advanced settings can also be edited there:
+
+| Setting | Notes |
+|---|---|
+| `room_libraries` | List of room libraries (each with `name`, `seed_file`, `enabled`, and `weight`). Defaults to `candid-rooms-seed.json` (the shipped nine candid rooms). |
+
+The **Rooms** screen fills this list in for you: it takes a source directory
+and a translation map, writes one room seed file per library and registers each
+one here in the same operation. It writes nothing at all if any string in the
+upload is missing from the map, and lists the uncovered strings with the entry
+and the field each came from. The Setup screen carries `room_libraries` back
+untouched when you save, so a saved path does not delete what an import
+registered.
+
+A library whose entries fuse a camera position, an act and a room into one
+string is not imported here: it is cut into rows first, by
+`scripts/mine_perspective_scenes.py`, and only the room part of each entry
+reaches a seed file. See the Rooms section of the README.
 
 ## Reaching the app from a phone
 

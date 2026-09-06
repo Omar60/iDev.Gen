@@ -1239,9 +1239,57 @@ const SELFIE = {
       + 'renders a different act on every checkpoint (see the framing paragraph above).',
 }
 
+/** The camera is a participant's, and nothing here says so yet.
+ *
+ *  The source's POV families put the camera in somebody's hand inside the
+ *  photograph. Mined into `directed` those rows would inherit an instruction
+ *  saying someone is photographing her, which is the one thing they
+ *  contradict, and a dead verdict would then mean the mismatch rather than the
+ *  row.
+ *
+ *  So they get a manner of their own, made by inheriting the baseline and
+ *  changing only the identity. `directed`'s brief and line are both empty, so
+ *  this invents no prose: `pov` IS directed's instruction until somebody
+ *  measures a better one, and what the rows gain today is a namespace where
+ *  their verdicts belong to them.
+ *
+ *  Why not write the block now: `selfie`'s block is measured prose - its arm
+ *  rule went 4 of 12 to 12 of 12 on the same seeds - and this repo does not
+ *  ship instruction text it has not measured. 8.19 is the arm that says
+ *  whether the block is worth writing.
+ *
+ *  Why not park the rows in `directed` and move them later: a cell is keyed on
+ *  the manner, so verdicts do not transfer. Whichever manner these rows enter
+ *  is where their measurements live, and moving them afterwards throws the
+ *  measurements away.
+ *
+ *  The fisheye family is the exception and does not come here: its camera is an
+ *  unattended device in the room, which is what `candid` already describes. */
+const POV = {
+  ...BASE_MANNERS[0],
+  key: 'pov',
+  label: 'From inside it, on his camera',
+  blurb: 'The camera is in a participant’s hand: what he sees, not what a photographer sees.',
+}
+
+/** The manners the operator can start a session in.
+ *
+ *  `pov` is NOT here yet and that is the point. A manner with no camera rows
+ *  is refused by `main.py` on session creation - "camera catalogue is empty
+ *  for manner" - so offering it in the shoot picker would be offering a button
+ *  that always 422s. `test_the_candid_catalogue_is_what_was_measured` asserts
+ *  exactly that invariant over this list, and it caught this the first time
+ *  `pov` was put here. It joins in 8.14, with the mined rows it exists for. */
 export const MANNERS = [...BASE_MANNERS, SELFIE]
 
-export const MANNER = Object.fromEntries(MANNERS.map((m) => [m.key, m]))
+/** Every manner that exists, selectable or not.
+ *
+ *  Separate from `MANNERS` because a shot already recorded under `pov` still
+ *  has to render its label: `MANNER[key]` is the lookup the views use, and a
+ *  manner missing from it shows the operator `undefined` rather than a name. */
+export const ALL_MANNERS = [...MANNERS, POV]
+
+export const MANNER = Object.fromEntries(ALL_MANNERS.map((m) => [m.key, m]))
 
 export const BRIEF_AXES = {
   register: [
@@ -1372,18 +1420,91 @@ export const STAGE_PLAN_INSTRUCTION =
  *  named late is a second body that does not render. `worn` sits after both
  *  bodies for the same reason - the garments are what a long line spends itself
  *  on, and everything that decides whether the photograph is the right photograph
- *  is already said by then. */
+ *  is already said by then.
+ *
+ *  The five added in 9.1 sit beside the field whose job they are nearest, and
+ *  that placement is REASONED and not measured: `marks` is her skin so it
+ *  follows `her`, `accessories` is what else is on her so it follows `worn`,
+ *  `props` is what is not on her, `style` is how the photograph was made so it
+ *  sits beside `technique`, and `story` closes because a narrative sentence
+ *  decides nothing about the photograph and a line spends its last words on what
+ *  it can afford to lose. The order of the original seven is the measured one
+ *  and none of them moved. */
+/** The subjects a run can switch on, in the same shape as `with_him` and
+ *  `with_furniture`: a boolean that is off by default and a property of the RUN
+ *  rather than of a photograph.
+ *
+ *  They exist because each one is a thing the sampler will invent if the line
+ *  leaves room for it and will never invent the same way twice. A tattoo that
+ *  appears in photograph 6 and is gone in photograph 7 is two different women,
+ *  and the writer has no reason to know which. So the run says whether there is
+ *  one at all, and says what it is - `subject` is required when the switch is on
+ *  (9.8), because a switch with nothing behind it is an invitation to invent,
+ *  which is the failure it was turned on to prevent.
+ *
+ *  OFF is silence and not a prohibition. Nothing about a tattoo reaches the
+ *  writer's instruction when `with_tattoo` is off - not the word, not a rule
+ *  against it - because a rule that names a thing is a rule that puts the thing
+ *  in the reader's head: this project has measured that an example teaches
+ *  harder than a prohibition, and the same is true of the noun in the
+ *  prohibition. The line is checked instead, after it is written.
+ *
+ *  `field` says which of the twelve the subject belongs in, so the note tells
+ *  the writer where to put it rather than leaving it to land anywhere. */
+export const RUN_SUBJECTS = [
+  { flag: 'with_tattoo', input: 'tattoo', field: 'marks',
+    // `ink` alone is a colour and a liquid; `inked` and `ink on her` are not.
+    names: /\b(tattoos?|tattooed|inked|ink on her)\b/i },
+  { flag: 'with_pet', input: 'pet', field: 'props',
+    names: /\b(dog|puppy|cat|kitten|pet|kitty|hound)\b/i },
+  { flag: 'with_liquids', input: 'liquids', field: 'marks',
+    names: /\b(cum|semen|saliva|spit|drool|milk|oil(ed)?|lube|wet with|dripping)\b/i },
+]
+
+/** The flags that are on with nothing behind them, by the input they are short of.
+ *
+ *  Returned rather than thrown so the caller can name every one at once, which
+ *  is the rule every other shortfall in this project answers under: an operator
+ *  who has switched on three and filled in none should be told three times, not
+ *  once per attempt. */
+export const missingSubjects = (run = {}) =>
+  RUN_SUBJECTS.filter((s) => run[s.flag] && !String(run[s.input] || '').trim())
+              .map((s) => s.input)
+
+/** What the writer is told about the subjects this run switched on.
+ *
+ *  Empty when none is on, which is the whole of the OFF behaviour: the
+ *  instruction the writer sees is byte for byte what it was before the switches
+ *  existed.
+ *
+ *  The words are the operator's and they are handed over verbatim, to be carried
+ *  the way the garments are: the same tattoo in every photograph that does not
+ *  change it (9.9). A writer asked to describe a tattoo in its own words writes
+ *  a different one each chunk, which is the drift the switch exists to stop. */
+export const subjectNote = (run = {}) => {
+  const on = RUN_SUBJECTS.filter((s) => run[s.flag] && String(run[s.input] || '').trim())
+  if (!on.length) return ''
+  return 'THIS SHOOT HAS THESE IN IT, and they are given to you in words that are already '
+       + 'chosen:\n'
+       + on.map((s) => `- ${String(run[s.input]).trim()} - write it in the \`${s.field}\` field, `
+                     + 'word for word as it is written here, in every photograph that does not '
+                     + 'change it. Not reworded, not expanded, not described again in your own '
+                     + 'words: the same words every time.').join('\n')
+}
+
 export const SHOOT_FIELDS =
-  ['camera', 'act', 'her', 'him', 'worn', 'technique', 'face']
+  ['camera', 'act', 'her', 'him', 'marks', 'worn', 'accessories', 'props',
+   'technique', 'style', 'face', 'story']
 
 export const SHOOT_LINE_INSTRUCTION =
   'Write one photograph per object of a photo session, in the order they are shot. Each '
-  + 'object is a whole photograph, and it arrives in seven fields rather than in one line: '
+  + 'object is a whole photograph, and it arrives in twelve fields rather than in one line: '
   + 'the app joins them back into the single line the photograph is painted from. '
   + 'Everything below describes how a photograph is written; the fields say where each '
   + 'part of it goes.\n'
-  + 'THE SEVEN KEYS ARE `camera`, `act`, `her`, `him`, `worn`, `technique`, `face`, and '
-  + 'EVERY OBJECT CARRIES ALL SEVEN. None is optional and none is left empty, with one '
+  + 'THE TWELVE KEYS ARE `camera`, `act`, `her`, `him`, `marks`, `worn`, `accessories`, '
+  + '`props`, `technique`, `style`, `face`, `story`, and '
+  + 'EVERY OBJECT CARRIES ALL TWELVE. None is optional and none is left empty, with one '
   + 'exception: `him` is empty in a photograph with nobody else in it. A key you have '
   + 'nothing new to say about is still written - measured, a field added to this list '
   + 'without this paragraph arrived in 9 photographs of 25 and the other 16 simply left '
@@ -1610,8 +1731,9 @@ export const SHOOT_LINE_INSTRUCTION =
   // word down the run — `Available light from the window, no flash, a still quiet
   // frame` on line after line. That is the 2026-08-21 failure above, reproduced. The
   // field is candid's, and a skeleton that asks for it has to ask only there.
-  + 'THE SIX FIELDS. Answer as JSON: `{"photographs": [{"camera": "…", "act": "…", '
-  + '"her": "…", "him": "…", "worn": "…", "face": "…"}, …]}`, one object per photograph, '
+  + 'THE ELEVEN FIELDS. Answer as JSON: `{"photographs": [{"camera": "…", "act": "…", '
+  + '"her": "…", "him": "…", "marks": "…", "worn": "…", "accessories": "…", "props": "…", '
+  + '"style": "…", "face": "…", "story": "…"}, …]}`, one object per photograph, '
   + 'in order. Every field is filled on every object, as prose, with no field name repeated '
   + 'inside a field. The app joins them in this order into the one line that is painted:\n'
   + '- `camera`: where the camera is, then the framing, in the words above.\n'
@@ -1629,6 +1751,11 @@ export const SHOOT_LINE_INSTRUCTION =
   + '  Do not pick from the arrangements that have names. There are far more arrangements than '
   + 'there are names for them, and the named handful is what makes a session monotonous.\n'
   + '- `her`: her chest and torso, her hips and legs, her feet. All three, every time.\n'
+  + '- `marks`: what is ON HER SKIN and nothing else - a tan line, a scar, a mole, a '
+  + 'freckled shoulder, gooseflesh, a flush across her chest, sweat, a mark somebody '
+  + 'left. Her skin only: not where the camera is, not how much of her is in frame, not '
+  + 'what she is wearing and not the light. `a pale tan line across her hips`, `a faint '
+  + 'scar under her left knee`.\n'
   + '- `him`: HIS body, as fully as hers — his chest, his shoulders, his arms, his stomach, '
   + 'his hips, his thighs, his knees, whichever of them this camera can see from where it '
   + 'stands, chosen for that position rather than the same two every line. He is a body and '
@@ -1636,7 +1763,24 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'never empty when she is not.\n'
   + '- `worn`: what is still on her, word for word from the photograph before. Every garment '
   + 'lives here. Nude is written here too: `nude but for the white fishnet stockings`.\n'
-  + '- `face`: her expression — but FIRST decide whether this camera can see her face at all. '
+  + '- `accessories`: what is on her that is not a garment - jewellery, a watch, a '
+  + 'hairband, glasses, a collar, a ribbon, a bag on her shoulder. Carried word for word '
+  + 'from the photograph before, the way `worn` is, because a bracelet that appears and '
+  + 'disappears down a shoot is a different woman each time.\n'
+  + '- `props`: what is in the photograph that is NOT on her and not the room - what she '
+  + 'holds, what she leans on, what sits beside her. The room itself is prepended to '
+  + 'every line already, so write the thing and not the place: `a glass of wine in her '
+  + 'right hand`, `a folded towel under her knee`.\n'
+  + '- `style`: THE LENS, THE MEDIUM AND THE TREATMENT, and nothing else. The lens: `shot '
+  + 'on a fast fifty, the background gone soft`. The medium: `on grainy colour film`, `a '
+  + 'digital frame with clean shadows`. The treatment: `warm and slightly faded`, `cool '
+  + 'and contrasty`.\n'
+  + '  NEVER a camera position and NEVER a framing in this field. `low`, `from behind`, '
+  + '`overhead`, `close`, `wide`, `full-length`, `waist-up` and every other word that '
+  + 'says where the camera stands or how much of her is in the picture belong in '
+  + '`camera` and are already written there. A position written here is a SECOND camera '
+  + 'in the line, and the two are resolved against each other by the sampler rather than '
+  + 'by you: measured, a line carrying two positions renders neither reliably.\n'  + '- `face`: her expression — but FIRST decide whether this camera can see her face at all. '
   + 'If `camera` puts the lens behind her — `directly behind her`, `behind her left shoulder`, '
   + '`behind her right shoulder`, a rear camera of any kind — then her face is NOT in this '
   + 'photograph and `face` is the back of her head, unless `act` has already turned her head '
@@ -1644,7 +1788,12 @@ export const SHOOT_LINE_INSTRUCTION =
   + 'cannot see`) was ignored in seven behind-the-camera lines of thirteen, and the version '
   + 'above missed once in sixteen. A photograph that asks for a face its own camera cannot '
   + 'see is resolved against the position: the camera moves rather than the face, and the '
-  + 'photograph comes back as a different position entirely.'
+  + 'photograph comes back as a different position entirely.\n'
+  + '- `story`: one sentence saying what this moment IS - what just happened, what she is '
+  + 'about to do, what she is thinking of. It is the last field joined and the one the '
+  + 'line can most afford to lose, so it decides nothing: no camera, no framing, no '
+  + 'garment, no body part that is not already written above. `she has just come in from '
+  + 'the rain and has not decided whether to stay`.\n'
 
 /** The standing version of the explicit rule, for a shoot that is explicit all
  *  the way through.

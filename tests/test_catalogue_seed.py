@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 import pytest
@@ -354,39 +355,116 @@ def test_the_new_candid_acts_fill_the_families_that_had_one_member():
 # lives in a seed file rather than in `component` because that table's `slot` is
 # the closed vocabulary of the trio, and a fourth slot would reach the draw.
 ROOMS = ROOT / "data" / "candid-rooms-seed.json"
+# The register is the manner's and the place is the room's, so the look only
+# exists once the two are joined. `frontend/src/rooms.js` does the join for the
+# picker; this is the same join, and the tests below assert against its result
+# rather than against a stored row, because a stored row is half a look.
+# The register is the manner's and the place is the room's, so a look only
+# exists once the two are joined - the same join the picker does. Read from the
+# repo's own data dir explicitly: `conftest` points `IDEVGEN_DATA_DIR` at a tmp
+# directory for the whole suite, and these tests are about the shipped seeds.
+from backend.importer import derive_multi_body  # noqa: E402
+from backend.db import cell_state  # noqa: E402
+from backend.room_registry import (  # noqa: E402
+    VERDICT_WORDS,
+    compose_look,
+    load_manner_registers,
+    prose_names_piece,
+)
+
+REGISTERS = load_manner_registers(data_dir=ROOT / "data")
+
+
+def composed_look(manner, place):
+    return compose_look(manner, place, REGISTERS)
 
 
 def test_every_room_names_the_furniture_it_offers():
-    """`offers` is a data field and the look is prose, and the day they disagree
+    """`offers` is a data field and the place is prose, and the day they disagree
     the picker promises a piece no photograph can contain.
 
     It caught one: `shower` offered a bench its sentence never mentioned, from
-    the outside model that wrote it. Compared with spaces and hyphens stripped so
-    the field can be a key (`backseat`, `sink-edge`) while the prose stays prose.
+    the outside model that wrote it. The comparison itself is
+    `room_registry.prose_names_piece`, shared with the importer's derivation and
+    with the import suite, because three copies of one rule is how the room that
+    offers a piece nobody can photograph gets through the one copy that is wrong.
+
+    An imported room may offer nothing - that is the honest answer where its
+    prose names none of its source's props. A room THIS project wrote may not:
+    each of the nine was written to offer a piece, and one that stopped would be
+    a room that quietly stopped licensing every act that needs furniture.
     """
     rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
     assert len(rooms) >= 9
     for room in rooms:
-        flat = room["look"].lower().replace(" ", "").replace("-", "")
-        head = room["offers"].replace("-", "").replace("edge", "")
-        assert head, room["key"]
-        assert head in flat, f"{room['key']}: offers {room['offers']!r} is not in its look"
+        assert room["offers"], f"{room['key']}: a room this project wrote offers nothing"
+        for piece in room["offers"]:
+            assert prose_names_piece(piece, room["place"]), (
+                f"{room['key']}: offers {piece!r}, which its place never names")
 
 
-def test_every_room_carries_the_constant_half_of_the_look():
+def test_every_composed_room_carries_the_constant_half_of_the_look():
     """The capture clause and the hair are what make twenty frames one shoot, so
-    a room that drops them is not a look, it is half of one. Sessions 370 and 371
+    a look that drops them is not a look, it is half of one. Sessions 370 and 371
     spliced every candidate behind exactly this text.
+
+    The invariant is unchanged and WHERE it is true has moved. A room no longer
+    stores a look: it stores a place, and the register belongs to the manner, so
+    none of these four assertions is true of a stored row and all four are true
+    of what the picker composes. Asserting them on the row would be asserting
+    that the split never happened.
     """
     rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
     keys = [r["key"] for r in rooms]
     assert len(keys) == len(set(keys)), keys
     for room in rooms:
-        assert room["manner"] == "candid", room["key"]
-        assert room["look"].startswith("Small sensor,"), room["key"]
-        assert "She wears her hair loose" in room["look"], room["key"]
+        # A permission, and these nine restrict nothing: the register left the
+        # text in the split, so the bedroom is a bedroom and a directed session
+        # can be shot in it. Empty is every manner, including one nobody has
+        # written yet.
+        assert room["manners"] == [], room["key"]
+        look = composed_look("candid", room["place"])
+        assert look.startswith("Small sensor,"), room["key"]
+        assert "She wears her hair loose" in look, room["key"]
         # the room half sits behind the constant half, and both are present
-        assert 60 <= len(room["look"].split()) <= 110, (room["key"], len(room["look"].split()))
+        assert 60 <= len(look.split()) <= 110, (room["key"], len(look.split()))
+
+
+def test_composing_the_nine_rooms_yields_the_text_they_yielded_before_the_split():
+    """5.2: the split is a refactor of storage, not a rewrite of the looks.
+
+    Every one of these ten texts was rendered - the nine candid rooms in
+    sessions 370 and 371, the studio in 381 - so a byte that moved is a
+    measurement that no longer describes what the app produces. The expected
+    strings are the pre-split file, copied in whole rather than rebuilt from
+    the halves, because rebuilding them from the halves is the thing under
+    test asserting itself.
+    """
+    before = json.loads((ROOT / "tests" / "rooms-before-the-split.json").read_text(encoding="utf-8"))
+    # The manner each was measured under is the file it is in, not a field on
+    # the row: `manner` became `manners` in 6.7 and says what a room is ALLOWED
+    # in, which is a different question and no longer answers this one.
+    rooms = [("candid", r) for r in json.loads(ROOMS.read_text(encoding="utf-8"))]
+    rooms += [("directed", r) for r in json.loads(DIRECTED_LOOKS.read_text(encoding="utf-8"))]
+    assert len(rooms) == len(before) == 10
+    for manner, room in rooms:
+        assert composed_look(manner, room["place"]) == before[room["key"]], room["key"]
+
+
+def test_every_room_stores_the_marking_its_own_prose_earns():
+    """A room's multi-body marking is computed at import and read at compose,
+    so nothing recomputes it in between - which is exactly why it can go stale.
+
+    Editing one of these nine by hand to add a second person into the place is
+    a one-line change that would leave `multi_body` empty and the room composing
+    into a single-subject run with somebody else in the frame. This is the only
+    thing that would notice.
+    """
+    rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
+    rooms += json.loads(DIRECTED_LOOKS.read_text(encoding="utf-8"))
+    for room in rooms:
+        assert "multi_body" in room, room["key"]
+        assert room["multi_body"] == derive_multi_body(room["place"]), room["key"]
 
 
 def test_the_rooms_seed_is_tracked_by_git():
@@ -430,12 +508,17 @@ def test_directed_looks_are_directed_and_not_candid_in_disguise():
     keys = [r["key"] for r in looks]
     assert len(keys) == len(set(keys)), keys
     for row in looks:
-        assert row["manner"] == "directed", row["key"]
-        assert "She wears her hair loose" in row["look"], row["key"]
+        # The one restriction anybody has written, and the reason is stored
+        # with it: the place is a photographic set-up, so it makes no sense
+        # under a manner where nobody is photographing her.
+        assert row["manners"] == ["directed"], row["key"]
+        assert row["manners_reason"].strip(), row["key"]
+        look = composed_look("directed", row["place"])
+        assert "She wears her hair loose" in look, row["key"]
         for candid_only in ("small sensor", "sensor noise", "washed-out",
                             "no studio lighting"):
-            assert candid_only not in row["look"].lower(), (row["key"], candid_only)
-        assert 60 <= len(row["look"].split()) <= 110, (row["key"], len(row["look"].split()))
+            assert candid_only not in look.lower(), (row["key"], candid_only)
+        assert 60 <= len(look.split()) <= 110, (row["key"], len(look.split()))
 
 
 def test_the_directed_looks_seed_is_tracked_by_git():
@@ -510,3 +593,154 @@ def test_no_two_readings_are_the_same_sentence_on_the_same_menu():
             f"{r['slot']}/{r['manner']}: {r['key']!r} and {seen[k]!r} are the same "
             "sentence on the same menu")
         seen[k] = r["key"]
+
+
+# 6.5: the verdict store. A measurement is this project's own work; the text it
+# was taken against may be an import that never reaches git. Stored together,
+# every measurement leaves with the licensing decision - so they are stored
+# apart, and the rule that keeps the tracked half committable is that it
+# reproduces none of the prose it was measured against.
+VERDICTS = ROOT / "data" / "room-verdicts-seed.json"
+
+# Six consecutive words is prose. Shorter runs collide honestly - "on the bed",
+# "in the kitchen" - and a note saying which run measured a room is allowed to
+# name what is in it. What may not appear is the room's own sentences.
+PROSE_RUN = 6
+
+
+def _runs(text, n=PROSE_RUN):
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return {" ".join(words[i:i + n]) for i in range(max(0, len(words) - n + 1))}
+
+
+def verdict_store_prose(store, places):
+    """(key, manner, field) for every stored value reproducing a room's prose."""
+    known = set()
+    for place in places:
+        known |= _runs(place)
+    offenders = []
+    for key, per_manner in (store or {}).items():
+        for manner, record in (per_manner or {}).items():
+            for field, value in (record or {}).items():
+                if isinstance(value, str) and _runs(value) & known:
+                    offenders.append((key, manner, field))
+    return sorted(offenders)
+
+
+def test_the_verdict_vocabulary_is_the_catalogue_s_own_three_words():
+    """6.9: a room measured at ten frames is the same kind of measurement as a
+    cell measured at ten, so it is read in the same three words.
+
+    Bound to `cell_state` rather than written out beside it: two lists of the
+    same three strings in two files drift the first time somebody adds a
+    fourth, and the drift is silent - the picker keeps rendering, showing a
+    word no rule can produce.
+    """
+    produced = {cell_state(judged, arrived)
+                for judged in (0, 1, 9, 10, 20)
+                for arrived in range(0, judged + 1)}
+    assert produced == set(VERDICT_WORDS)
+    # "unverified" is the word the tasks use in prose and it is NOT a stored
+    # verdict: a second vocabulary for one question means the picker has to
+    # know which of the two it is reading.
+    assert "unverified" not in VERDICT_WORDS
+
+
+def test_the_ten_shipped_rooms_carry_a_converted_verdict_and_keep_their_sentence():
+    """6.10: the nine rooms and the studio carried free text where the
+    catalogue carries a vocabulary. The conversion is honest or it is nothing.
+
+    "built 1/1 in session 370" is one photograph, and this repo's own judging
+    protocol puts the verified bar at ten because below it the reading sits
+    inside the judge's noise. So none of the nine is verified, and the sample
+    size is the one the sentence states and no higher - which for the oldest
+    room, "in use since session 351", is none at all.
+
+    The studio is the one that converts: session 381 shot ten seeds and the
+    sentence says the softbox, the paper roll and the reflector are all built.
+    Ten judged, ten arrived, under directed - the manner it was shot in and the
+    only one it is allowed in.
+
+    The prose is not deleted, because the vocabulary cannot say which run
+    measured what: it moves to the note beside the verdict.
+    """
+    store = json.loads(VERDICTS.read_text(encoding="utf-8"))
+    rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
+    looks = json.loads(DIRECTED_LOOKS.read_text(encoding="utf-8"))
+
+    for room in rooms:
+        record = store[room["key"]]["candid"]
+        assert record["verdict"] == "unknown", room["key"]
+        assert record["sample_size"] <= 1, room["key"]
+        assert record["note"].strip(), room["key"]
+        assert "session 3" in record["note"], room["key"]
+
+    studio = store["studio-softbox"]["directed"]
+    assert studio["verdict"] == "verified" and studio["sample_size"] == 10
+    assert "session 381" in studio["note"]
+    assert "candid" not in store["studio-softbox"], (
+        "it was shot under directed, and allowed nowhere else")
+
+    # And the row it came off carries none of it. Two homes for one fact is
+    # what the split undid; a row that still answered "verdict" would answer it
+    # with whatever it was carrying the day the store was written.
+    for row in rooms + looks:
+        assert "verdict" not in row, row["key"]
+        assert "sample_size" not in row, row["key"]
+        assert row["key"] in store, row["key"]
+
+
+def test_the_verdict_store_holds_measurements_and_no_room_text():
+    """Keys, manners, verdicts and sample sizes. Not a sentence of a room.
+
+    The store is tracked and the imported rooms are not, which is the whole
+    reason the two are separate files - and it is also how source prose gets
+    committed by accident, one note at a time. So the shape is closed and the
+    prose rule is asserted rather than trusted: a value carrying six
+    consecutive words of any room's place is the room's sentence copied, under
+    whatever field name.
+
+    The detector is exercised on invented rooms in both directions, because the
+    real store starts empty and a rule that only ever reads an empty file is a
+    rule nobody has run.
+    """
+    store = json.loads(VERDICTS.read_text(encoding="utf-8"))
+    assert isinstance(store, dict)
+
+    rooms = json.loads(ROOMS.read_text(encoding="utf-8"))
+    places = [r["place"] for r in rooms]
+
+    for key, per_manner in store.items():
+        assert re.fullmatch(r"[a-z0-9-]+", key), key
+        assert isinstance(per_manner, dict), key
+        for manner, record in per_manner.items():
+            assert manner and isinstance(manner, str), key
+            assert set(record) <= {"verdict", "sample_size", "note"}, (key, manner)
+            # 6.9: one of the catalogue's own words, and a count with it. A
+            # verdict with no sample size is the free text this store replaced -
+            # "verified" says nothing until it says out of how many.
+            assert record["verdict"] in VERDICT_WORDS, (key, manner, record["verdict"])
+            assert isinstance(record["sample_size"], int), (key, manner)
+            assert record["sample_size"] >= 0, (key, manner)
+            # And the word agrees with the count by the catalogue's own rule,
+            # which is the only thing that keeps a room's verdict comparable to
+            # a cell's. A stored word the counts cannot produce is a reading
+            # somebody typed.
+            assert record["verdict"] == cell_state(
+                record["sample_size"],
+                record["sample_size"] if record["verdict"] == "verified" else 0,
+            ), (key, manner, record)
+
+    assert verdict_store_prose(store, places) == []
+
+    # The rule, run on something. A note naming the run is fine; the room's own
+    # sentence under any field name is not.
+    planted = places[0]
+    assert verdict_store_prose(
+        {"bedroom-night": {"candid": {"note": "in use since session 351"}}}, places) == []
+    assert verdict_store_prose(
+        {"bedroom-night": {"candid": {"note": planted}}}, places) == [
+        ("bedroom-night", "candid", "note")]
+    assert verdict_store_prose(
+        {"bedroom-night": {"candid": {"verdict": planted[:120]}}}, places) == [
+        ("bedroom-night", "candid", "verdict")]

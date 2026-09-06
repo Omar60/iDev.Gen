@@ -35,6 +35,14 @@ import enhance
 from comfy import REFERENCE_SLOTS, SLOTS, Comfy, detect_map, graph_checkpoint
 from runner import Runner, slug
 
+# The import pipeline and the registry it writes into. These are `backend.*`
+# imports and not bare ones because that is how the package refers to itself;
+# `--app-dir backend` puts `backend/` on the path and `python -m uvicorn` puts
+# the repo root there, so both spellings resolve.
+from backend.importer import TranslationMissingError, import_source
+from backend.room_registry import DEFAULT_ROOM_LIBRARIES, available_rooms
+from backend.mining import combination_breakage, load_mined_combinations
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -163,6 +171,10 @@ class SessionIn(BaseModel):
     # that is refused before the cell lookup, naming what is missing.
     manner: str = ""
     checkpoint: str = ""
+    # Which room in the catalogue filled `look`, by key. Provenance only:
+    # `look` above carries the whole text either way, so nothing downstream
+    # reads this to compose with. Empty is a look somebody typed.
+    room_key: str = ""
 
 
 class ComposeIn(BaseModel):
@@ -254,6 +266,11 @@ class SessionPatch(BaseModel):
     # (trim, drop empties, dedupe case-insensitively) and stores the cleaned
     # version, so a PATCH of "Balcony" then "balcony" lands as one tag.
     tags: list[str] | None = None
+    # Detaching a room is this field set to the empty string. The look is
+    # deliberately not patchable here (see `wardrobe` above), which is what
+    # makes "the text survives a detach" structural rather than a rule the
+    # route has to remember.
+    room_key: str | None = None
 
 
 class ShotPatch(BaseModel):
@@ -345,6 +362,27 @@ class JudgeShotIn(BaseModel):
     control: bool = False
 
 
+# The longest room, in words, a run composes when the config does not say.
+# Named once and read by both the schema below and the compose gate: a default
+# spelled twice is two numbers free to disagree, and the one the app enforces
+# would not be the one Setup writes.
+#
+# 200, set from session 395-400 (task 7.9) and not from a guess. That arm held
+# the anchor cell - side-view / wall-facing-forearms / crop-full-body - and
+# moved the room alone up a ladder cut from one room by whole clauses. Judged
+# blind at five passes with frontal controls answering `front` 2/2 every time,
+# the camera arrived: 7/10 with no room, 8/10 at 18 words, 9/10 at 53, 10/10 at
+# 84, 10/10 at 176. The trend runs UPWARD with length and the studio control is
+# the worst arm of the six, which is the opposite of a length cost. 200 sits
+# above the longest length measured good (176), which is itself twice the
+# longest room in the corpus (89).
+#
+# So this gate refuses nothing anybody has, and it is kept as a tripwire for an
+# absurd input rather than as a constraint - the difference that matters is a
+# refusal instead of a silent truncation.
+ROOM_WORD_BUDGET: int = 200
+
+
 class ConfigIn(BaseModel):
     comfy_url: str
     comfy_output_dir: str = ""
@@ -364,6 +402,32 @@ class ConfigIn(BaseModel):
     # purpose — an unknown key inside a profile is ignored, not rejected, so the
     # file can be edited by hand ahead of the app.
     checkpoints: dict[str, dict] = Field(default_factory=dict)
+    # The room library registry. Here for exactly the reason stated above: an
+    # import registers each seed file it writes in this key, and without the
+    # field the first Setup save after an import deletes every registered
+    # library — leaving seed files on disk that no entry names, which is the
+    # state `room_registry.verify_registry_disk_agreement` exists to refuse.
+    # The default is the shipped one, so a save from a config that never
+    # carried the key writes what the app was already using.
+    room_libraries: list[dict] = Field(
+        default_factory=lambda: [dict(lib) for lib in DEFAULT_ROOM_LIBRARIES])
+    # The longest room, in words, a run will compose. Here for the same reason
+    # the registry is: a key this schema does not carry is a key the next Setup
+    # save deletes.
+    #
+    # The default REFUSES NOTHING and is meant to. Two sessions pushed against
+    # the idea that a long line costs the camera and neither found the effect:
+    # session 391 kept a camera 3/3 on a 242-word line and lost it on a
+    # 224-word one, and session 394 shot one line twice, once as written and
+    # once with 87 to 187 words of whole blocks deleted, same seed, everything
+    # else byte-identical - 9/16 against 9/16. So length is not the mechanism
+    # it was taken for, and a gate tuned as though it were would refuse rooms
+    # for a reason nobody has measured. The longest room in the imported corpus
+    # is 89 words and the median is 17; 120 sits above the whole corpus with
+    # room to spare, which makes this a tripwire for an absurd input rather
+    # than a constraint. 7.9 varies room length alone against a fixed camera
+    # row and sets the real number.
+    room_word_budget: int = ROOM_WORD_BUDGET
 
 
 # ------------------------------------------------------------------ setup
@@ -842,7 +906,20 @@ def delete_component(comp_id: int):
 
 @app.post("/api/components/import")
 def import_components(items: list[dict] | None = None):
-    """Import measured components from JSON or data/catalogue-seed.json."""
+    """Import measured components from JSON or data/catalogue-seed.json.
+
+    Idempotent on the key AND on the wording, within one slot and manner: an
+    existing row is SKIPPED and left exactly as it is, never updated. The same
+    words under another manner are another measurement and are not a duplicate,
+    which is why the scope is not wider.
+
+    Every skip is NAMED in `duplicates`, and the report says which of the two
+    matched. That is what the mined import needs (8.15): a mined clause that
+    duplicates a row already in the catalogue must create no second row, and the
+    operator has to be told which existing row it collided with - a second row
+    saying the same thing splits one cell's evidence across two names, and a
+    count alone cannot point at either.
+    """
     if items is None:
         seed_path = ROOT / "data" / "catalogue-seed.json"
         if not seed_path.exists():
@@ -851,6 +928,12 @@ def import_components(items: list[dict] | None = None):
 
     added = 0
     skipped = 0
+    # Named, not just counted. A count tells the operator that something was
+    # already there and nothing about WHAT, and the mined import is where that
+    # matters: a mined clause that duplicates a row the catalogue already
+    # carries is a row this project measured under another key, and the entry it
+    # came from should be pointed at that row rather than at a second one.
+    duplicates: list[dict[str, str]] = []
     now_ts = db.now()
     for item in items:
         slot = item["slot"]
@@ -864,11 +947,23 @@ def import_components(items: list[dict] | None = None):
         needs = (item.get("needs") or "").strip()
 
         existing = db.one(
-            "SELECT id FROM component WHERE slot=? AND manner=? AND (concept_key=? OR wording=?)",
+            "SELECT id, concept_key, wording FROM component "
+            "WHERE slot=? AND manner=? AND (concept_key=? OR wording=?)",
             slot, manner, concept_key, wording,
         )
         if existing:
             skipped += 1
+            # Which of the two matched is the whole report. A KEY match is this
+            # row arriving twice - a re-import, and ordinary. A WORDING match
+            # under another key is two rows saying one thing, which splits one
+            # cell's evidence across two names and is the finding.
+            duplicates.append({
+                "slot": slot,
+                "manner": manner,
+                "concept_key": concept_key,
+                "existing_key": existing["concept_key"],
+                "matched_on": "key" if existing["concept_key"] == concept_key else "wording",
+            })
         else:
             db.run(
                 "INSERT INTO component (concept_key, slot, manner, family, faces, wording, judge_label, cameras, needs, created_at) "
@@ -876,7 +971,7 @@ def import_components(items: list[dict] | None = None):
                 concept_key, slot, manner, family, faces, wording, judge_label, cameras, needs, now_ts,
             )
             added += 1
-    return {"added": added, "skipped": skipped}
+    return {"added": added, "skipped": skipped, "duplicates": duplicates}
 
 
 # ------------------------------------------------------------------ wardrobe
@@ -1122,6 +1217,115 @@ def import_readings(items: list[dict] | None = None):
     return {"added": added, "skipped": skipped}
 
 
+class RoomImportIn(BaseModel):
+    """Where the source material and its translation map are on this machine.
+
+    Both are required with no default, the same rule the CLI keeps: a machine
+    path is the operator's to type and there is no sensible one to guess.
+    """
+    source_dir: str
+    map_path: str
+    data_dir: str | None = None
+
+
+def _adopt_config(cfg: dict) -> None:
+    """Take a config the import mutated live and persist it to `CONFIG_PATH`.
+
+    Silent when nothing changed, so a refusal raised before any write does
+    not rewrite the operator's config.json for nothing.
+    """
+    global CONFIG
+    if cfg == CONFIG:
+        return
+    CONFIG = cfg
+    CONFIG_PATH.write_text(json.dumps(CONFIG, indent=2) + "\n", encoding="utf-8")
+
+
+@app.get("/api/rooms")
+def list_rooms():
+    """The rooms the picker may offer, and why a registered library offers none.
+
+    Runtime rather than build time, which is the whole point: the imported
+    seeds are untracked, so a build that bundled them would break on every
+    clone that has not run the import. An absent library is an empty list and a
+    stated reason here, never an error - the screen has to open with the nine
+    tracked rooms in it whatever the registry names.
+    """
+    return available_rooms(CONFIG, DATA_DIR)
+
+
+class RoomPreflightIn(BaseModel):
+    """What a planned run declares, for the report below. Only the declaration
+    a room gate reads: the count, the candidates and the wardrobe arc decide
+    nothing about a room."""
+    with_him: bool = False
+
+
+@app.post("/api/rooms/preflight")
+def rooms_preflight(p: RoomPreflightIn):
+    """Which rooms this planned run would be refused in, and why - before it is
+    sent.
+
+    The whole point is that it QUEUES NOTHING. An operator finds out a room is
+    unshootable today by sending the run and reading the 422, which is fine for
+    one room and useless for a picker with 396 in it. This answers the same
+    question over the whole catalogue for the cost of one call.
+
+    Every reason comes from `room_refusal`, the function the run itself calls.
+    A report that recomputed the rules would be a second opinion, and the day
+    the two disagree is the day the operator picks a room the report cleared
+    and the run refuses.
+    """
+    rooms = available_rooms(CONFIG, DATA_DIR).get("rooms", [])
+    refused = []
+    for room in rooms:
+        why = room_refusal(room, with_him=p.with_him)
+        if why:
+            refused.append({"key": room.get("key"), "label": room.get("label") or "",
+                            "reason": why})
+    return {"rooms": len(rooms), "refused": refused}
+
+
+@app.post("/api/rooms/import")
+def import_rooms(p: RoomImportIn):
+    """Import a source asset directory into room seed files, and register them.
+
+    Writing a seed file and registering its library are one operation:
+    `import_source` appends to `config['room_libraries']`, and this route
+    persists that config in the same call. A seed on disk whose registry entry
+    was never written is precisely the state
+    `room_registry.verify_registry_disk_agreement` exists to refuse — so the
+    config is written from a copy that is adopted on both paths out of the
+    import, a refusal included, because that check runs after the seeds are
+    already on disk.
+
+    A missing translation comes back as 422 carrying the WHOLE uncovered list,
+    not just the first item: the screen's job is to show the translator every
+    string still to cover. That list is source prose. It crosses the wire to
+    the operator and is never logged — hence `from None`, which keeps it out of
+    any traceback a handler above might print.
+    """
+    cfg = dict(CONFIG)
+    try:
+        report = import_source(p.source_dir, p.map_path, p.data_dir or DATA_DIR, config=cfg)
+    except TranslationMissingError as exc:
+        raise HTTPException(422, {"error": "translation_missing",
+                                  "uncovered": exc.uncovered}) from None
+    except (ValueError, OSError) as exc:
+        # A refusal must not widen the disagreement it reports.
+        # `verify_registry_disk_agreement` runs at the END of `import_source`,
+        # after the seeds are on disk, and its direction-2 failure arrives here
+        # as a ValueError. Dropping `cfg` on that path would leave the seed
+        # written and the registry entry naming it thrown away - the exact
+        # state this route exists to avoid, and one that gets worse on every
+        # retry. A library is registered only once its seed is written, so the
+        # registry half is adopted whether or not the call went on to raise.
+        _adopt_config(cfg)
+        raise HTTPException(422, str(exc)) from None
+    _adopt_config(cfg)
+    return report
+
+
 @app.delete("/api/readings/{reading_id}")
 def delete_reading(reading_id: int):
     """Delete a reading only if no stored verdict references it."""
@@ -1320,11 +1524,11 @@ def create_session(s: SessionIn):
     sid = db.run(
         """INSERT INTO session (model_id, name, look, wardrobe, workflow_id,
                                 reference_workflow_id, anchor_shot_ids, settings,
-                                manner, checkpoint, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                manner, checkpoint, room_key, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         s.model_id, s.name, s.look, s.wardrobe, s.workflow_id, s.reference_workflow_id,
         json.dumps(_valid_anchors(s.anchor_shot_ids)), json.dumps(settings),
-        s.manner, checkpoint, db.now(),
+        s.manner, checkpoint, s.room_key.strip(), db.now(),
     )
     _expand_shots(sid, model, _look_for(settings, s.look), s.wardrobe, s.shots, s.seed_mode, s.seed)
     return {"id": sid}
@@ -1381,6 +1585,12 @@ def update_session(sid: int, p: SessionPatch):
     if p.anchor_shot_ids is not None:
         db.run("UPDATE session SET anchor_shot_ids=? WHERE id=?",
                json.dumps(_valid_anchors(p.anchor_shot_ids)), sid)
+    if p.room_key is not None:
+        # Written as given, trimmed, with no check that the room exists: a
+        # library can be unregistered after a session was filled from it, and
+        # refusing the write would leave the operator unable to detach the one
+        # key they can no longer look up.
+        db.run("UPDATE session SET room_key=? WHERE id=?", p.room_key.strip(), sid)
     if p.tags is not None:
         # Stored cleaned, not echoed back, so the frontend renders the same
         # thing the database holds. A PATCH that asks for a duplicate in a
@@ -1474,8 +1684,9 @@ def clone_session(sid: int, c: SessionClone):
 
     new_id = db.run(
         """INSERT INTO session (model_id, name, look, wardrobe, workflow_id,
-                                reference_workflow_id, anchor_shot_ids, settings, tags, created_at)
-           VALUES (?,?,?,?,?,?,'[]',?,?,?)""",
+                                reference_workflow_id, anchor_shot_ids, settings, tags,
+                                room_key, created_at)
+           VALUES (?,?,?,?,?,?,'[]',?,?,?,?)""",
         src["model_id"], c.name or f"{src['name']} (copy)", src["look"], src["wardrobe"],
         c.workflow_id or src["workflow_id"], src["reference_workflow_id"],
         json.dumps(settings),
@@ -1483,7 +1694,12 @@ def clone_session(sid: int, c: SessionClone):
         # still a "Balcony" session. Re-stored verbatim (already cleaned on
         # write), so the JSON column never holds a value the list route would
         # not find.
-        src["tags"] or "[]", db.now(),
+        src["tags"] or "[]",
+        # And the provenance travels for the same reason: the clone's look is
+        # the source's look, byte for byte, so the room that filled it filled
+        # this one too.
+        src["room_key"] or "",
+        db.now(),
     )
     # The clone's origin is the source's: a clone of a `'composed'`
     # session is a `'composed'` session, a clone of a `'mixed'`
@@ -2257,6 +2473,187 @@ def _skip_for_spread(
     return family_counts.get(fam, 0) >= max_per_family
 
 
+
+class ComposeCombinationIn(BaseModel):
+    """The recorded combination to compose, named by the source entry it came from.
+
+    One field, and no components: the point of the record is that the operator
+    does not reassemble the photograph by hand. A payload that carried the rows
+    would be hand assembly with a lookup in front of it, and it would compose
+    whatever was typed rather than what the entry was.
+    """
+    identifier: str
+
+
+@app.post("/api/sessions/{sid}/compose-combination")
+def compose_combination_endpoint(sid: int, c: ComposeCombinationIn):
+    """Queue the photograph a mined source entry was, from its record alone.
+
+    Mining separates a camera, an act and a room that ONE author wrote to agree,
+    and the agreement is what made the entry render. This is the route that
+    spends the record: the keys are resolved to catalogue rows here, and the
+    combination is composed only while every row it names is still the row it
+    was split into. A row that is gone, retired or reworded refuses rather than
+    composing the two that are left - the agreement is the thing being
+    reproduced, and two parts of it plus a substitute is a photograph nobody
+    measured wearing the identifier of one somebody did.
+
+    It is never dealt. The combination store is not a source of candidates and
+    `_draw_n_trio_shots` does not read it: a recorded combination reaches a
+    session because somebody asked for it by name, which is what keeps it out
+    of the matrix - the parts are measured separately, and a combination that
+    could be drawn would put an unmeasurable trio into a run.
+
+    **The room is the session's and this route does not write it.** The look is
+    the one thing a session holds constant and `SessionPatch` deliberately
+    cannot reach it (7.2), so the combination is refused when the session was
+    not filled from the room it names. Composing it anyway would put the entry's
+    camera and act into somebody else's place and call the result the source's
+    photograph.
+
+    **No framing, on purpose.** The source library has no crop field at all -
+    that is what session 391 measured, at 6 of 6 knee-up crops - so the
+    combination names three parts and not four. `_sentences` drops an empty
+    piece, so the composed line carries the camera and the act exactly as the
+    entry did. Inventing a framing here would compose a photograph the entry
+    never was, and the crop is one of the two fields this project adds to that
+    library rather than one it mines from it.
+    """
+    session = db.one("SELECT * FROM session WHERE id=?", sid)
+    if not session:
+        raise HTTPException(404, "session not found")
+
+    key = (c.identifier or "").strip()
+    combination = load_mined_combinations(config=CONFIG, data_dir=DATA_DIR).get(key)
+    if not combination:
+        raise HTTPException(404, f"no recorded combination named {key!r}")
+
+    room_key = (combination.get("room") or {}).get("key", "")
+    session_room = (session["room_key"] or "").strip()
+    if room_key and session_room != room_key:
+        raise HTTPException(
+            422,
+            f"compose refused: the combination {key!r} was shot in the room "
+            f"{room_key!r} and this session's look was filled from "
+            f"{session_room or 'no room'}; fill the look from that room first",
+        )
+
+    # Resolved before anything is judged broken, and NOT filtered on
+    # `retired_at`: a retired row is found here so the refusal can say it was
+    # retired. A query that hid it would report the row absent, and the
+    # operator's next move for the two is not the same one.
+    resolved: dict[str, dict | None] = {}
+    for slot in ("camera", "act"):
+        reference = combination.get(slot)
+        if not reference:
+            raise HTTPException(
+                422,
+                f"compose refused: the combination {key!r} records no {slot}; "
+                f"a photograph cannot be reproduced from the parts that are left",
+            )
+        row = db.one(
+            "SELECT * FROM component WHERE concept_key=? AND slot=?",
+            reference["key"], slot,
+        )
+        resolved[slot] = dict(row) if row else None
+    # The ROOM slot is checked for identity above and not for wording here. It
+    # is not a component: it cannot be retired and the catalogue screen cannot
+    # reword it, and its text in this session is the look, which the operator
+    # owns and may legitimately edit. Reporting a look edit as a broken row
+    # would refuse a photograph nothing happened to.
+    # ponytail: the day mined room rows are imported into a room library they
+    # resolve like the other two, and they get the same digest check by being
+    # added to `resolved`.
+
+    broken = combination_breakage(combination, resolved)
+    if broken:
+        raise HTTPException(
+            422,
+            f"compose refused: the combination {key!r} is broken - "
+            + "; ".join(broken)
+            + ". A combination is the record of parts one author wrote to agree, "
+            "and it is not composed from the ones that are left",
+        )
+
+    drawn: dict[str, dict] = {}
+    for slot in ("camera", "act"):
+        row = resolved[slot]
+        if row["manner"] != session["manner"]:
+            raise HTTPException(
+                422,
+                f"compose refused: the {slot} row {row['concept_key']!r} belongs to "
+                f"the manner {row['manner']!r} and this session is "
+                f"{session['manner']!r}; the same words in another manner are "
+                f"another measurement",
+            )
+        drawn[slot] = {
+            "key": row["concept_key"],
+            "wordings": [{"key": row["concept_key"], "text": row["wording"]}],
+        }
+
+    shot_id = compose_and_queue_shot(sid, drawn["camera"], drawn["act"], {})
+    return {"shot_id": shot_id, "identifier": key, "combination": combination}
+
+
+def _room_for_session(session) -> dict | None:
+    """The catalogue room a session's look was filled from, or None.
+
+    None for a session with no key, for a key whose library is no longer
+    registered, and for a key nobody carries any more - all three are the same
+    answer to the gate above, and all three are ordinary. A room can leave the
+    catalogue after a session was filled from it; a session that then refuses
+    to compose would be a shoot held hostage by an unregistered seed file.
+
+    `available_rooms` is the reader rather than the seed files, because it is
+    the one the picker offered the operator: a room the screen could not list
+    is a room no session should be gated on.
+    """
+    key = (session["room_key"] or "").strip()
+    if not key:
+        return None
+    for room in available_rooms(CONFIG, DATA_DIR).get("rooms", []):
+        if room.get("key") == key:
+            return room
+    return None
+
+
+def room_refusal(room: dict | None, *, with_him: bool) -> str | None:
+    """Why this room refuses a run that declares `with_him`, or None.
+
+    The one place both gates are spelled, because `rooms_preflight` (7.8)
+    answers the same question before a run is sent and a report computed apart
+    from the gate is a report free to say yes where the run says no. No room -
+    a detached session, an unregistered library - is no refusal.
+
+    A room whose own text puts a nurse or a boyfriend in the frame cannot be
+    shot alone: the look composes that sentence into every photograph of the
+    session, so the second body arrives whether the acts asked for one or not.
+    The message names the room AND the words, because "this room needs two
+    people" without them is a no with no next step - the operator cannot see
+    which half of a paragraph they wrote is the problem.
+
+    The budget is counted on the room's stored text for the same reason the
+    words are read there, and the message carries both numbers: a limit without
+    the measurement is untunable, and "too long" leaves the operator guessing
+    whether they are over by a word or by a hundred.
+    """
+    if not room:
+        return None
+    name = room.get("label") or room.get("key")
+    if room.get("multi_body") and not with_him:
+        words = ", ".join(room["multi_body"])
+        return (f"compose refused: the room {name!r} puts other people in the frame "
+                f"({words}); switch the run's second body on, or detach the room from "
+                f"the session")
+    words_in_room = len((room.get("place") or "").split())
+    budget = int(CONFIG.get("room_word_budget") or ROOM_WORD_BUDGET)
+    if budget and words_in_room > budget:
+        return (f"compose refused: the room {name!r} is {words_in_room} words and the "
+                f"budget is {budget}; raise room_word_budget in the config, or pick a "
+                f"shorter room")
+    return None
+
+
 def _draw_n_trio_shots(
     sid: int,
     count: int,
@@ -2382,6 +2779,18 @@ def _draw_n_trio_shots(
             f"compose refused: session is missing {', '.join(missing)}; "
             f"set them on the session before composing",
         )
+
+    # The room's gates. One function, `room_refusal`, because 7.8 reports the
+    # same answers ahead of the run and a report computed separately from the
+    # gate is a report that can say yes where the run says no.
+    #
+    # Read from the catalogue by key and never from the look: the look is the
+    # operator's text from the moment the room filled it, and re-reading it
+    # here would answer a question about words that may no longer be in it.
+    # That is also why a detached session (7.2) passes: no key, no claim.
+    refusal = room_refusal(_room_for_session(session), with_him=with_him)
+    if refusal:
+        raise HTTPException(422, refusal)
 
     # `him` and `furniture` are properties of the RUN — he is in the room or he
     # is not, the room has somewhere to sit or it does not — so they narrow the

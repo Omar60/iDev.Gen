@@ -207,6 +207,43 @@ line, and the trigger, base prompt and look are still prepended by the app.
 The expression picker writes nothing at all — its four lines are already written,
 see [expressions](#expressions).
 
+**The whole shoot arrives in twelve fields, not in one line.** The assistant
+answers a JSON object per photograph and the app joins the fields back into the
+single line that is painted, each under its own heading. The transport is the
+thing that changed and it is measured: his body is described in 83 per cent of
+lines this way against 18 as prose.
+
+| Field | What goes in it |
+|---|---|
+| `camera` | where the camera is, then the framing, in that order |
+| `act` | what the bodies are doing, and where each one carries its weight |
+| `her` | her chest and torso, her hips and legs, her feet |
+| `him` | his body, as fully as hers; empty when she is alone in the frame |
+| `marks` | what is on her SKIN — a tan line, a scar, a flush |
+| `worn` | every garment, carried word for word from the photograph before |
+| `accessories` | what is on her that is not a garment — jewellery, a watch, glasses |
+| `props` | what is in the picture and not on her, and not the room |
+| `technique` | how the photograph was taken badly, and only where a manner asks for it |
+| `style` | the lens, the medium and the treatment — never a camera position and never a framing |
+| `face` | her expression, decided against whether this camera can see her face |
+| `story` | one sentence saying what the moment is |
+
+The hair, the makeup, the room and the light are in none of them: the look
+carries all four and the app prepends it to every line, so a field for any of
+them would be a second answer to a question already answered.
+
+**Three subjects a run can switch on.** A tattoo, a pet or liquids are things
+the sampler invents when the line leaves room for them, and never the same way
+twice — a tattoo in photograph 6 and none in photograph 7 is two different
+women. So the compose panel carries a checkbox for each, and a checkbox alone is
+not enough: switch one on and you write what it is, in your words. Those words
+are handed to the writer to be repeated verbatim in every photograph that does
+not change them, and the shoot is refused before a line is written while a
+switch is on with nothing behind it. Switched off, the writer is told nothing at
+all — not the word, not a rule against it, because a rule that names a thing
+puts the thing in the reader's head — and a line that describes one anyway is
+flagged like any other fault.
+
 **🎲 writes the brief.** With a photo read into the two boxes there is nothing
 left for you to type: the look and the wardrobe *are* that photograph in words,
 so a shoot written from them is one it could be a frame of — the room comes from
