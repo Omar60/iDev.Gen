@@ -1340,6 +1340,14 @@ queues anything: strict on a table with two verified trios is a 422 that reads
 as the feature being broken. The refusal names the cell, its state and the mode
 that would accept it.
 
+**A short pool is refused, never padded.** A trio is drawn at most once, so a
+run of N fills N distinct cells; when the drawable pool runs out before the
+count does, the request is refused and names the largest count that would have
+worked, rather than repeating a trio to reach the number asked for. Values
+inside a slot are spread by round-robin passes over the shuffled pool - the
+first pass repeats nothing, and a later pass reuses a camera or an act only
+once the run has nowhere else to go.
+
 **Every check runs before any insertion.** A request either queues all of its
 photographs or none — a loop that queued eight and refused the ninth would leave
 eight rows behind, because each insertion commits on its own. This is why the

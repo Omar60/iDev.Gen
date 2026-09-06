@@ -101,10 +101,10 @@ console.log(JSON.stringify({
 # The duplicates already in the tree, in catalogue order. Shrinking this list
 # is the cleanup; growing it is a regression and needs a reason written here.
 #
-# Still open, task 7.1 of the prompt-component-matrix change (the two inline
-# camera examples in `SHOOT_LINE_INSTRUCTION` that proposal names):
-#   'Taken from her right side, her body in full profile', 'Taken from
-#   directly behind her'
+# Task 7.1 of the prompt-component-matrix change removed the two inline camera
+# examples from `SHOOT_LINE_INSTRUCTION` - the camera is dealt onto each
+# photograph's row from the catalogue, so a second copy in the prose was the
+# defect this rule names. Their two texts came off this list with them.
 # Real duplicates 7.1 does not touch — the camera and `mirror-selfie` examples
 # in the candid manner's `line` (inherited by selfie), the body openings
 # enumerated in the `her` field description, and the two technique defects used
@@ -125,8 +125,6 @@ console.log(JSON.stringify({
 # camera examples above; nothing about it was introduced by that change.
 KNOWN_DUPLICATES = [
     'Taken from directly in front of her',
-    'Taken from her right side, her body in full profile',
-    'Taken from directly behind her',
     'Overhead camera directly above her',
     'Mirror selfie, the phone up in her right hand and visible in the mirror',
     'a three-quarter photograph from the knees up',

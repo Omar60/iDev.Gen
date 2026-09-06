@@ -63,8 +63,16 @@ while a composed one is three catalogue entries and can be scored by the blind
 judge. `Compose` deals variety; `Fill` takes one cell to its threshold. Trios
 that contradict themselves are refused before anything is queued — the frame
 reaches the lowest part of the body the line names, so a `waist-up` framing in a
-line that names her feet is not a crop, it is a contradiction. See
-[sessions](docs/sessions.md#composing-from-the-catalogue).
+line that names her feet is not a crop, it is a contradiction.
+
+A compose runs in one of two modes. **strict** draws only cells the judge has
+verified; **exploratory**, the default, also draws cells nothing has been judged
+on yet. Neither draws a dead one. A run that cannot fill the count asked for is
+**refused rather than padded with repeats**: every check runs before any
+insertion, so a request queues all of its photographs or none, and the 422 names
+the largest count that would have worked. On a young catalogue strict is the
+mode that queues nothing, which is the table being honest and not the feature
+being broken. See [sessions](docs/sessions.md#composing-from-the-catalogue).
 
 ## Library
 
