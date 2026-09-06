@@ -866,3 +866,93 @@ NEW_CAMERA_CONCEPTS: tuple[dict[str, Any], ...] = (
         ),
     },
 )
+
+
+# -- The curated family declaration ----------------------------------------
+
+# The third curated input, beside the cut map and the judge labels, and for the
+# same reason: the corpus does not carry this fact. Its entries name a
+# `category` - `special_visual`, `classroom`, `bedroom` - which is the ROOM they
+# are set in and not the family whose camera they were written for, so
+# `family_for` reads a word nothing declares and refuses all 55. The family is
+# the operator's to state, one line per entry, and `split_fused_entry` already
+# takes it as `source_family=`.
+#
+# UNTRACKED beside the source material, like the cut map and the labels: it is
+# keyed per source entry. The VALUES are our own vocabulary, and that is what
+# makes the loader able to check them - a family `SOURCE_FAMILY_MANNERS` does
+# not declare is refused here, at load, rather than at the split, where the
+# operator would meet one typo per re-run.
+MINED_FAMILIES_FILE: str = "mined-families.json"
+
+
+def validate_mined_families(data: Any) -> dict[str, str]:
+    """The family declaration, checked against the manners map on the way in.
+
+    Every value must be a family this project declares a manner for. Checked
+    here and not only at the split because the whole file is read before any
+    entry is cut: a misspelt family caught at the split stops the run after the
+    entries before it were already cut, and the operator fixes one line per run.
+    """
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"The family declaration must be a mapping of source identifier to "
+            f"family, got {type(data).__name__}"
+        )
+    out: dict[str, str] = {}
+    undeclared: list[tuple[str, str]] = []
+    for key, family in data.items():
+        if not isinstance(family, str) or not family.strip():
+            raise ValueError(
+                f"Family for {key!r} is empty. An entry whose family is blank has "
+                f"no manner, and a manner is what its rows are measured in"
+            )
+        normalised = normalise_family(family)
+        if normalised not in SOURCE_FAMILY_MANNERS:
+            undeclared.append((str(key), normalised))
+            continue
+        out[str(key)] = normalised
+    if undeclared:
+        raise FamilyUndeclaredError(undeclared)
+    return out
+
+
+def load_mined_families(path: Any) -> dict[str, str]:
+    """Every curated family, keyed by source identifier.
+
+    An absent file is no declarations at all, and every entry then refuses at
+    the split by name - which is where the message can say which entries are
+    short.
+    """
+    target = Path(path)
+    if not target.is_file():
+        return {}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"Invalid JSON in family declaration {target}: {exc}") from exc
+    return validate_mined_families(data)
+
+
+def save_mined_families(families: dict[str, str], path: Any) -> Path:
+    """Validate and write the family declaration to an untracked path.
+
+    Untracked for the reason the cut map is: the file is one line per source
+    entry, and a per-entry file about somebody else's corpus does not enter this
+    repository even when the words in it are ours.
+    """
+    target = Path(path)
+    if _is_tracked_location(target):
+        raise ValueError(
+            f"The family declaration would be tracked by git at {target}: it is "
+            f"one line per source entry and belongs at an untracked path beside "
+            f"the source material"
+        )
+    validated = validate_mined_families(families)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps({k: validated[k] for k in sorted(validated)}, indent=2,
+                   ensure_ascii=True),
+        encoding="utf-8",
+    )
+    return target

@@ -19,10 +19,14 @@ import pytest
 
 import db
 from backend.mining import (
+    FamilyUndeclaredError,
     JudgeLabelMissingError,
+    MINED_FAMILIES_FILE,
     MINED_LABELS_FILE,
     component_rows,
+    load_mined_families,
     load_mined_labels,
+    save_mined_families,
     save_mined_labels,
     split_fused_entry,
 )
@@ -353,3 +357,63 @@ def test_a_mined_trio_part_way_through_judging_is_still_not_drawn(client, seeded
     verified = client.post(f"/api/sessions/{sid}/compose-run",
                            json={"count": 1, "candidates": _mined_candidates()})
     assert verified.status_code == 200, verified.text
+
+
+# -- The curated family declaration ----------------------------------------
+
+
+def test_the_family_declaration_is_checked_against_the_manners_map(tmp_path):
+    """A family nothing declares is refused at LOAD, not at the split.
+
+    The corpus does not carry this fact: its entries name the room they are set
+    in, so the family is the operator's to state. Checked while the whole file
+    is read, because a typo caught at the split stops the run with the entries
+    before it already cut - one line fixed per re-run, which is the shape every
+    other shortfall in this module is collected against.
+
+    The whole shortfall is named for the same reason, and the two undeclared
+    entries below are what makes that observable: a check that stopped at the
+    first raises the same exception and reads as a pass.
+    """
+    path = tmp_path / MINED_FAMILIES_FILE
+    assert load_mined_families(path) == {}
+
+    save_mined_families({"ps_01": "Rear-Entry POV", "ps_02": "fisheye pov"}, path)
+    assert load_mined_families(path) == {"ps_01": "rear_entry_pov", "ps_02": "fisheye_pov"}
+
+    with pytest.raises(FamilyUndeclaredError) as refusal:
+        save_mined_families(
+            {"ps_03": "special_visual", "ps_04": "classroom"}, tmp_path / "bad.json"
+        )
+    assert "ps_03" in str(refusal.value) and "ps_04" in str(refusal.value)
+    assert not (tmp_path / "bad.json").exists(), "a refused save must write nothing"
+
+    with pytest.raises(ValueError, match="is empty"):
+        save_mined_families({"ps_05": "  "}, tmp_path / "blank.json")
+
+    tracked = ROOT / "backend" / "invented-families-should-never-live-here.json"
+    assert not tracked.exists()
+    with pytest.raises(ValueError, match="would be tracked by git"):
+        save_mined_families({"ps_01": "fisheye_pov"}, tracked)
+    assert not tracked.exists()
+
+
+def test_a_declared_family_reaches_the_split_and_sets_the_manner(tmp_path):
+    """The declaration is what the split reads, end to end.
+
+    A loader that validated a family and handed back something the split did not
+    use would be a check with no effect. The entry here names `category:
+    "special_visual"` the way the corpus does - the word that refuses on its own
+    - and the declared family is what puts the rows in `pov`.
+    """
+    path = tmp_path / MINED_FAMILIES_FILE
+    save_mined_families({ENTRY["identifier"]: "rear_entry_pov"}, path)
+    families = load_mined_families(path)
+
+    entry = dict(ENTRY, category="special_visual")
+    del entry["family"]
+    with pytest.raises(FamilyUndeclaredError):
+        split_fused_entry(entry, CUT)
+
+    rows = split_fused_entry(entry, CUT, source_family=families[ENTRY["identifier"]])
+    assert {row["manner"] for row in rows} == {"pov"}
