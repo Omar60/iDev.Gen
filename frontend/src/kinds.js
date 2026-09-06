@@ -1284,7 +1284,12 @@ const POV = {
  *  Its rows exist now - mining writes them through the catalogue's own import
  *  - but they are the OPERATOR'S: the corpus they are cut from is not in this
  *  repository, so a fresh checkout still has an empty `pov` camera catalogue
- *  and the refusal still applies. It joins this list the day the rows ship. */
+ *  and the refusal still applies.
+ *
+ *  This is the SHIPPED list and no longer what the screen offers: see
+ *  `selectableManners`, which reads the same rule off the catalogue, so the
+ *  operator who imports the rows gets the manner without waiting for a
+ *  release. */
 export const MANNERS = [...BASE_MANNERS, SELFIE]
 
 /** Every manner that exists, selectable or not.
@@ -1940,6 +1945,27 @@ let _catalogue = []
 
 export const setCatalogue = (rows) => {
   _catalogue = Array.isArray(rows) ? rows : []
+}
+
+/** The manners a shoot can actually be started in, read off the catalogue.
+ *
+ *  The same rule `main.py` refuses session creation by: a manner with no
+ *  camera rows is a 422, so offering it is offering a button that always
+ *  fails. Derived rather than written down, because `pov`'s rows arrive by
+ *  IMPORT - the corpus they are cut from is the operator's and is not in this
+ *  repository - and a hand-kept list means the manner stays invisible on the
+ *  machine that has the rows until somebody ships a release.
+ *
+ *  An empty catalogue is not "no manners": it is a fresh clone where nothing
+ *  has been imported at all, and there the shipped list stands, because a
+ *  screen with an empty manner select cannot be used to reach the import that
+ *  would fill it. The refusal the operator meets then already names it.
+ */
+export const selectableManners = (rows = _catalogue) => {
+  const withCameras = new Set(
+    (rows ?? []).filter((r) => r.slot === 'camera' && !r.retired_at).map((r) => r.manner))
+  if (!withCameras.size) return MANNERS
+  return ALL_MANNERS.filter((m) => withCameras.has(m.key))
 }
 
 export const positionsFor = (manner = 'directed') => {

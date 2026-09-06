@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { cameraPlan, shootChunkNote, MANNER, MANNERS, ALL_MANNERS, TECHNIQUE_DEFECTS, BODY_OPENINGS,
+import { cameraPlan, shootChunkNote, MANNER, MANNERS, ALL_MANNERS, selectableManners, TECHNIQUE_DEFECTS, BODY_OPENINGS,
          BRIEF_AXES, setCatalogue, arrangements, positionsFor,
          fitCameras } from './kinds.js'
 import { undressBy } from './enhance.js'
@@ -158,6 +158,29 @@ describe('the pov manner', () => {
       expect(pov[field]).toEqual(directed[field])
     }
     for (const field of identity) expect(pov[field]).not.toBe(directed[field])
+  })
+
+  test('is offered the day its cameras are imported, and not before', () => {
+    // The rule is the backend's: session creation is refused for a manner
+    // whose camera catalogue is empty, so the picker offers exactly the
+    // manners that have one. `pov`'s rows arrive by import - the corpus is the
+    // operator's - so a hand-kept list would hide the manner on the very
+    // machine that has the rows.
+    const camera = (manner, key) => ({ slot: 'camera', manner, concept_key: key,
+                                       wording: 'x', judge_label: 'y', retired_at: null })
+    expect(selectableManners([camera('directed', 'a'), camera('pov', 'b')])
+      .map((m) => m.key)).toEqual(['directed', 'pov'])
+    // Retired rows are not a catalogue: the manner is refused just the same.
+    expect(selectableManners([camera('directed', 'a'),
+                              { ...camera('pov', 'b'), retired_at: '2026-09-06' }])
+      .map((m) => m.key)).toEqual(['directed'])
+    // An act row is not a camera row.
+    expect(selectableManners([camera('directed', 'a'),
+                              { slot: 'act', manner: 'pov', retired_at: null }])
+      .map((m) => m.key)).toEqual(['directed'])
+    // A fresh clone has imported nothing at all, and there the shipped list
+    // stands: an empty select cannot reach the import that would fill it.
+    expect(selectableManners([])).toBe(MANNERS)
   })
 
   test('is known but not yet offered, because it has no cameras to shoot with', () => {

@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { KINDS, REACHES, REACH, MANNERS, MANNER, arrangements, missingSubjects } from '../kinds.js'
+import { KINDS, REACHES, REACH, selectableManners, MANNER, arrangements, missingSubjects } from '../kinds.js'
 import {
   guideFor, rewriteTake, takesFromBrief, lookFromBrief, rewriteWardrobe,
   wardrobeProgression, sessionFromBrief, briefFromLook, alreadySaid, spread,
@@ -282,7 +282,7 @@ export default function ShotsEditor({ shots, onChange, kind, llm = false,
           <select value={manner} disabled={!!busy} style={{ width: 170 }}
                   title={MANNER[manner]?.blurb}
                   onChange={(e) => setManner(e.target.value)}>
-            {MANNERS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+            {selectableManners().map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
           </select>
           {/* The arrangements, only where they mean anything: a shoot that keeps
               its clothes on has no two bodies to arrange. Multiple on purpose -
