@@ -164,8 +164,9 @@ exit 0
 - [x] 2.4 Sync the delta into `openspec/specs/wardrobe/spec.md` and verify `openspec validate --all --strict` passes with eighteen capabilities
 
 The capability did not exist, so the sync created it: the delta's `## Purpose`
-copied verbatim, its seven ADDED requirements moved under one `## Requirements`
-header, and no delta operation header left in the file.
+copied verbatim, its eight ADDED requirements and all twenty of their scenarios
+moved under one `## Requirements` header, and no delta operation header left in
+the file.
 
 `openspec validate --all --strict` — `Totals: 19 passed, 0 failed`, which is the
 eighteen capabilities plus this change. `openspec validate --specs` alone reports
