@@ -26,7 +26,6 @@ from backend.cut_map import (
     CutMissingError,
     cut_for,
     missing_cuts,
-    resolve_cut_map_path,
     validate_cut_against_entry,
 )
 # The untracked-destination check, borrowed rather than respelled: the judge
@@ -722,11 +721,6 @@ def validate_mined_labels(data: Any) -> dict[str, str]:
             )
         out[str(key)] = label.strip()
     return out
-
-
-def resolve_mined_labels_path(source_dir: Any, relative_path: Any) -> Path:
-    """Resolve the labels file beside the source material, as the cut map does."""
-    return resolve_cut_map_path(source_dir, relative_path)
 
 
 def load_mined_labels(path: Any) -> dict[str, str]:

@@ -44,6 +44,11 @@ export default function ModelDetail({ id }) {
   // Empty until the route answers, and empty forever if it cannot: an
   // absent library is a reason, not an error, and the picker still opens.
   const [servedRooms, setServedRooms] = useState([])
+  // The registered libraries and, for one that offered nothing, the sentence
+  // saying why. A library switched off or never imported is the ordinary state
+  // of a clone, and the picker showing nine rooms with no explanation is how
+  // that reads as a fault.
+  const [servedLibraries, setServedLibraries] = useState([])
   // The tag the room list is narrowed to, empty for all of them. The
   // options come from the rooms themselves - 239 tags belong to the
   // source, and a list written here would go stale on the next import.
@@ -70,7 +75,10 @@ export default function ModelDetail({ id }) {
     // No endpoint configured is not an error: the assistant is optional, and the
     // buttons simply do not appear.
     api.get('/api/config').then(setConfig).catch(() => {})
-    api.get('/api/rooms').then((d) => setServedRooms(d.rooms || [])).catch(() => {})
+    api.get('/api/rooms').then((d) => {
+      setServedRooms(d.rooms || [])
+      setServedLibraries(d.libraries || [])
+    }).catch(() => {})
   }, [id])
 
   // The two halves, deduplicated: the registry's default entry is the nine
@@ -365,6 +373,16 @@ export default function ModelDetail({ id }) {
               </option>
             ))}
           </select>
+          {/* A registered library that offered nothing, and the reason it
+              gives. Said here rather than swallowed: the route answers with an
+              empty list and a sentence for a library switched off, absent or
+              unreadable, and a picker that shows only the rooms it does have
+              reads as a fault instead of as an import nobody ran. */}
+          {servedLibraries.filter((lib) => lib.reason).map((lib) => (
+            <p key={lib.name} className="muted" style={{ margin: '4px 0 0' }}>
+              {lib.name}: no rooms here - {lib.reason}.
+            </p>
+          ))}
           <textarea rows={2} value={newSession.look}
                     placeholder="hair down with a centre part, soft natural makeup, on a beach at golden hour"
                     onChange={(e) => setNewSession({ ...newSession, look: e.target.value })} />

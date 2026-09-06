@@ -1942,8 +1942,6 @@ export const setCatalogue = (rows) => {
   _catalogue = Array.isArray(rows) ? rows : []
 }
 
-export const getCatalogue = () => _catalogue
-
 export const positionsFor = (manner = 'directed') => {
   const m = manner || 'directed'
   // No fallback to `directed`. A manner whose catalogue is empty has NO
