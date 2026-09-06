@@ -7301,3 +7301,102 @@ def test_a_clone_carries_the_room_its_look_came_from(client, seeded):
     }).json()["id"]
     copy = client.post(f"/api/sessions/{sid}/clone", json={}).json()
     assert client.get(f"/api/sessions/{copy['id']}").json()["room_key"] == "kitchen"
+
+
+# ------------------------------------------------- comfy, lora and cancel routes
+# Four routes every screen calls and no test touched: the status poll App.jsx
+# runs on a timer, the lora list the model screen fills its selects from, the
+# preview image beside a .safetensors - which carries a path check, and a guard
+# with no test is a guard until the next refactor - and the Cancel button.
+
+
+def test_comfy_status_says_offline_rather_than_failing(client, monkeypatch):
+    """The poll runs every few seconds with ComfyUI usually not running yet. An
+    exception here is a red screen on a machine that is simply not started."""
+    async def _stats():
+        raise RuntimeError("connection refused")
+    monkeypatch.setattr(main.comfy, "stats", _stats)
+    r = client.get("/api/comfy/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["online"] is False
+    assert "connection refused" in body["error"]
+    assert body["url"] == main.comfy.url
+
+
+def test_comfy_status_reports_the_device_when_comfy_answers(client, monkeypatch):
+    async def _stats():
+        return {"system": {"comfyui_version": "0.3.60"},
+                "devices": [{"name": "cuda:0", "vram_free": 4, "vram_total": 16}]}
+    monkeypatch.setattr(main.comfy, "stats", _stats)
+    body = client.get("/api/comfy/status").json()
+    assert body["online"] is True
+    assert (body["version"], body["device"]) == ("0.3.60", "cuda:0")
+    assert (body["vram_free"], body["vram_total"]) == (4, 16)
+
+
+def test_the_lora_list_answers_502_when_comfy_is_not_there(client, monkeypatch):
+    """Not a 500: the app is fine, the thing it asks is not there, and the
+    screen says so instead of showing an empty select as if there were none."""
+    async def _loras():
+        raise RuntimeError("connection refused")
+    monkeypatch.setattr(main.comfy, "loras", _loras)
+    r = client.get("/api/comfy/loras")
+    assert r.status_code == 502
+    assert "not responding" in r.json()["detail"]
+
+
+def test_the_lora_list_is_what_comfy_answered(client, monkeypatch):
+    async def _loras():
+        return ["characters/ada.safetensors", "styles/film.safetensors"]
+    monkeypatch.setattr(main.comfy, "loras", _loras)
+    assert client.get("/api/comfy/loras").json() == {
+        "loras": ["characters/ada.safetensors", "styles/film.safetensors"]}
+
+
+def test_the_lora_preview_is_the_image_beside_the_safetensors(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "LORA_DIR", tmp_path)
+    folder = tmp_path / "characters"
+    folder.mkdir()
+    (folder / "ada.safetensors").write_bytes(b"")
+    (folder / "ada.preview.jpeg").write_bytes(b"fake jpeg bytes")
+    r = client.get("/api/loras/preview", params={"name": "characters/ada.safetensors"})
+    assert r.status_code == 200
+    assert r.content == b"fake jpeg bytes"
+    # A lora with no sibling image is a card with no thumbnail, not an error
+    # the screen has to handle.
+    (folder / "bob.safetensors").write_bytes(b"")
+    assert client.get("/api/loras/preview",
+                      params={"name": "characters/bob.safetensors"}).status_code == 404
+
+
+def test_the_lora_preview_refuses_a_name_that_climbs_out_of_the_lora_dir(
+        client, monkeypatch, tmp_path):
+    """`name` is a query parameter, so the route reads whatever is in the
+    address bar. Without the check it serves any file on the disk whose name
+    ends the right way."""
+    lora_dir = tmp_path / "loras"
+    lora_dir.mkdir()
+    (tmp_path / "secret.preview.jpeg").write_bytes(b"not yours")
+    monkeypatch.setattr(main, "LORA_DIR", lora_dir)
+    r = client.get("/api/loras/preview", params={"name": "../secret.safetensors"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "path outside lora_dir"
+
+
+def test_the_cancel_route_reaches_the_runner_the_app_runs(client, seeded):
+    """The Cancel button posts here and nothing else stops the loop: the set
+    `Runner.cancel` writes to is what `_run_session` reads between shots. A
+    route that answered ok against some other Runner would keep shooting."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "cancelled",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    try:
+        r = client.post(f"/api/sessions/{sid}/cancel")
+        assert r.status_code == 200
+        assert r.json() == {"ok": True}
+        assert sid in main.runner._cancel
+    finally:
+        # The runner outlives the test client: a session id left in the set
+        # would cancel whatever session reuses that id.
+        main.runner._cancel.discard(sid)
