@@ -841,6 +841,14 @@ NEW_CAMERA_CONCEPTS: tuple[dict[str, Any], ...] = (
         "key": "feet-first-low-pov",
         "judge_label": "From below her feet, looking up the length of her body",
         "nearest": ("worms-eye", "ground-level", "floor-low-angle", "low-angle"),
+        # Judged blind on the position axis, five passes a photograph, majority,
+        # with six controls from two other sessions that answered `side` 3 and
+        # `behind` 3 and never once said `pov`.
+        "claim": "pov",
+        "axis": "position",
+        "verdict": "verified",
+        "judged": 10,
+        "arrived": 10,
         "why_new": (
             "The catalogue's low cameras say how HIGH the lens is and not where "
             "around her it stands: `ground-level` looks across the floor, "
@@ -852,9 +860,24 @@ NEW_CAMERA_CONCEPTS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        # RETRACTED by measurement, and kept rather than deleted: what the run
+        # found IS the finding. Every frame is above her - the controls held at
+        # `hip-level` 6 of 6 and the deck never answered eye-level or below -
+        # but the claim that it reads `overhead` is dead at 4 of 13. Nine read
+        # `high-angle`: the far wall is still behind her rather than the floor,
+        # which is the one thing the catalogue's two above-her readings split on
+        # and the one thing the source line never says. So this is NOT a camera
+        # the catalogue lacks; it lands on `high-angle`, which `overhead-high`
+        # already carries. What the source pairs it with - a subject kneeling
+        # below a standing-height lens - is the ACT.
         "key": "overhead-over-kneeling",
         "judge_label": "Looking down from standing height at someone kneeling below the lens",
         "nearest": ("overhead-direct", "top-down", "high-angle", "overhead-term"),
+        "claim": "overhead",
+        "axis": "height",
+        "verdict": "dead",
+        "judged": 13,
+        "arrived": 4,
         "why_new": (
             "Every overhead the catalogue carries looks down at HER as the whole "
             "subject, from a ceiling, a shelf or an arm - `top-down` is straight "

@@ -111,7 +111,7 @@
     "slot": "camera",
     "manner": "candid",
     "key": "shoulder",
-    "label": "The camera is behind her and off to one side: her back or one buttock is toward the lens, and part of her front — a breast, a hip, or her face turned back over her shoulder — is still in frame. Where her face points does not move the camera. The picture is NOT a reflection in a mirror; if it is, it is a mirror shot however she is turned."
+    "label": "The camera is behind her and off to one side: her back or one buttock is toward the lens, and part of her front \u2014 a breast, a hip, or her face turned back over her shoulder \u2014 is still in frame. Where her face points does not move the camera. The picture is NOT a reflection in a mirror; if it is, it is a mirror shot however she is turned."
   },
   {
     "slot": "camera",
@@ -531,6 +531,90 @@
   {
     "slot": "camera",
     "manner": "directed",
+    "key": "floor",
+    "label": "The lens is on the floor: her feet or her knees are the nearest thing to the camera and large in the frame, and the ceiling or the top of the far wall is in view behind her.",
+    "axis": "height"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
+    "key": "front",
+    "label": "Both of her nipples are in frame and her navel faces the lens. None of her back is visible.",
+    "axis": "position"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
+    "key": "pov",
+    "label": "The lens is on the axis of her own body, looking ALONG her rather than at her from in front: her torso and legs run away from the lens and are foreshortened, the near part of her much larger than the far.",
+    "axis": "position"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
+    "key": "overhead",
+    "label": "The camera is above her looking down. What lies behind her in the picture is the floor or the bed rather than the far wall of the room.",
+    "axis": "height"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
+    "key": "high-angle",
+    "label": "The camera is above her eye line and tilted down at her, but the far wall is still behind her rather than the floor. The top of her head and her shoulders are foreshortened.",
+    "axis": "height"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
+    "key": "eye-level",
+    "label": "The lens is level with her eyes: she meets it without lifting or dropping her chin, and neither the underside of her jaw nor the top of her head is showing.",
+    "axis": "height"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
+    "key": "shoulder-level",
+    "label": "The lens is level with her shoulders, just below her eye line: she looks very slightly down into it and the top of her head is in view.",
+    "axis": "height"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
+    "key": "hip-level",
+    "label": "The lens is level with her hips: her hips sit across the middle of the frame, she is looked at slightly from below, and the underside of her jaw is not yet showing.",
+    "axis": "height"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
+    "key": "low-angle",
+    "label": "The lens is below her waist and tilted up at her: the underside of her jaw or her chin is in view and she is taller at the bottom of the frame than at the top.",
+    "axis": "height"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
+    "key": "side",
+    "label": "Only one nipple is in frame, in outline against the background. The camera is to one side of her, and the front and the back edges of her torso both show as outlines.",
+    "axis": "position"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
+    "key": "shoulder",
+    "label": "Her back is toward the lens and one buttock is in frame. At most the outer curve of one breast shows.",
+    "axis": "position"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
+    "key": "behind",
+    "label": "Her back and both buttocks are toward the lens. No breast is in frame.",
+    "axis": "position"
+  },
+  {
+    "slot": "camera",
+    "manner": "pov",
     "key": "floor",
     "label": "The lens is on the floor: her feet or her knees are the nearest thing to the camera and large in the frame, and the ceiling or the top of the far wall is in view behind her.",
     "axis": "height"

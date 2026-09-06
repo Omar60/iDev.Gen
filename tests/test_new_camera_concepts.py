@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import db
 from backend.mining import NEW_CAMERA_CONCEPTS
 
 DATA = Path(__file__).resolve().parents[1] / "data"
@@ -87,3 +88,46 @@ def test_the_near_misses_the_record_names_are_real_rows():
         assert concept["nearest"], concept["key"]
         for near in concept["nearest"]:
             assert near in shipped, f"{concept['key']} names a row nobody carries: {near}"
+
+
+# -- 8.18 The verdicts the blind judge returned --------------------------
+
+
+def test_every_recorded_concept_carries_a_verdict_at_the_protocol_minimum():
+    """A concept nobody judged is a claim, and this file is where that shows.
+
+    The sample size is compared against `db.cell_state`'s own threshold rather
+    than against a 10 written here: the bar is the catalogue's, and a second
+    copy of it would drift the day the protocol moves. A verdict recorded on
+    nine photographs is `unknown` wearing a verdict's name.
+
+    `arrived` is checked against the same function, so the word and the counts
+    cannot disagree - which is the failure this test exists for: a `verified`
+    typed next to 4 of 13 would otherwise sit here reading as a result.
+    """
+    for concept in NEW_CAMERA_CONCEPTS:
+        assert concept["verdict"] in ("verified", "dead"), concept["key"]
+        assert concept["claim"] and concept["axis"], concept["key"]
+        assert concept["judged"] >= 10, (
+            f"{concept['key']}: judged {concept['judged']}, below the protocol's minimum")
+        assert db.cell_state(concept["judged"], concept["arrived"]) == concept["verdict"], (
+            f"{concept['key']}: {concept['arrived']} of {concept['judged']} is not "
+            f"{concept['verdict']!r}")
+
+
+def test_the_retracted_concept_is_kept_with_what_it_was_measured_against():
+    """A dead concept is not deleted, and its claim stays readable.
+
+    Deleting it would leave the next reader to re-derive the same idea from the
+    same corpus and mine it a second time. Kept with its verdict, the record
+    says the camera was shot, judged and landed on a reading the catalogue
+    already carries - and `nearest` names that reading, which is what makes the
+    retraction checkable rather than a sentence.
+    """
+    dead = [c for c in NEW_CAMERA_CONCEPTS if c["verdict"] == "dead"]
+    assert dead, "nothing is recorded as dead; the 8.18 result is not in the record"
+    for concept in dead:
+        assert concept["claim"] not in concept["nearest"], concept["key"]
+        landed = {"overhead-over-kneeling": "high-angle"}[concept["key"]]
+        assert landed in concept["nearest"], (
+            f"{concept['key']}: the reading it landed on is not among its near misses")
