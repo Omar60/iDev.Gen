@@ -555,7 +555,7 @@ def list_workflows():
     picking a base model pick the workflow written for it. The graph itself is
     not returned: it is megabytes, and only the detail route needs it.
     """
-    rows = db.q("SELECT id, name, graph, node_map, kind, is_template, created_at "
+    rows = db.q("SELECT id, name, graph, node_map, kind, created_at "
                 "FROM workflow ORDER BY name")
     out = []
     for r in rows:

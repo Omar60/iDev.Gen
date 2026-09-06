@@ -47,7 +47,17 @@ function ComfyStatus() {
         </a>}
       <span className={'dot' + (st?.online ? ' on' : '')} />
       {st?.online ? `ComfyUI ${st.version || ''} · ${vram}` : 'ComfyUI offline'}
-      {st?.busy && <span className="badge running">generating</span>}
+      {/* The badge names WHICH session is running, because the status route has
+          always served it and nothing read it. One session runs at a time, so a
+          second start is refused with "A session is already running" — and until
+          this link existed the operator had no way to reach the one that is, on
+          a machine with three hundred sessions in the library. */}
+      {st?.busy && (st.running_session
+        ? <a className="badge running" href={`#/session/${st.running_session}`}
+             title={`session ${st.running_session} is generating`}>
+            generating · #{st.running_session}
+          </a>
+        : <span className="badge running">generating</span>)}
     </div>
   )
 }

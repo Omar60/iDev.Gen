@@ -7335,6 +7335,52 @@ def test_comfy_status_reports_the_device_when_comfy_answers(client, monkeypatch)
     assert (body["vram_free"], body["vram_total"]) == (4, 16)
 
 
+def test_comfy_status_names_the_session_that_is_running(client, seeded, monkeypatch):
+    """The badge has to say WHICH session, not just that one is generating.
+
+    `running_session` was served from the day the route was written and no
+    caller ever named it: the header showed a bare "generating" and a second
+    start was refused with "A session is already running", so on a machine with
+    three hundred sessions in the library the operator had no way to reach the
+    one that was. The audit that found it was mechanical - list what a route
+    returns, list what the frontend names, subtract - and this test is the
+    guard, because a dropped key is invisible in every screenshot.
+    """
+    async def _stats():
+        return {"system": {"comfyui_version": "0.3.60"},
+                "devices": [{"name": "cuda:0", "vram_free": 4, "vram_total": 16}]}
+    monkeypatch.setattr(main.comfy, "stats", _stats)
+
+    # Nothing running: the key is present and empty, never absent. A caller that
+    # reads `st.running_session` has to be able to tell "idle" from "no answer".
+    body = client.get("/api/comfy/status").json()
+    assert "running_session" in body
+    assert body["running_session"] is None
+
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "running",
+        "shots": [{"prompt": "standing", "count": 1}]}).json()["id"]
+    db.run("UPDATE session SET status='running' WHERE id=?", sid)
+    assert client.get("/api/comfy/status").json()["running_session"] == sid
+
+
+def test_a_workflow_carries_no_column_nothing_writes(client):
+    """`is_template` was declared, selected into this response and never once
+    written or read: the INSERT did not name it, so every row was 0 and every
+    branch on it was a branch nobody had. It shipped over the wire for months.
+
+    The test is on the RESPONSE and not on the schema, because that is where
+    the cost was - a key the browser receives and drops is the same shape as
+    the room picker throwing away `libraries`. A future "let me tag templates"
+    lands as a column something writes AND something reads, and updates this.
+    """
+    client.post("/api/workflows", json={
+        "name": "w", "graph": {"1": {"class_type": "CLIPTextEncode",
+                                     "inputs": {"text": "hello"}}}})
+    row = client.get("/api/workflows").json()[0]
+    assert "is_template" not in row, f"dead column back on the wire: {sorted(row)}"
+
+
 def test_the_lora_list_answers_502_when_comfy_is_not_there(client, monkeypatch):
     """Not a 500: the app is fine, the thing it asks is not there, and the
     screen says so instead of showing an empty select as if there were none."""

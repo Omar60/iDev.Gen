@@ -19,7 +19,6 @@ CREATE TABLE IF NOT EXISTS workflow (
     -- What this graph is for: t2i|edit|angles|scene. Empty means untagged, which
     -- is every workflow imported before kinds existed: it stays offered everywhere.
     kind          TEXT NOT NULL DEFAULT '',
-    is_template   INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL
 );
 

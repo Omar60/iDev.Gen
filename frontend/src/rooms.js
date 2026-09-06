@@ -233,10 +233,13 @@ export function filterRooms(rooms, { manner, tag, text, current } = {}) {
  *  no tracked room allows - and the caller then opens the session with an empty
  *  look, which is what it did before there was a draw at all.
  *
- *  ponytail: the library weight in the registry is NOT multiplied in here. The
- *  route serves rooms flattened, so this reads the room's own weight only; if
- *  weighting a whole library up ever matters, it is the route that has to carry
- *  the library weight down onto the row.
+ *  The weight read here is ALREADY the library's own multiplied onto the room's:
+ *  `available_rooms` folds them together in `_drawn_weight` before serving, so a
+ *  room weighted 2 in a library weighted 5 arrives as 10. Doing it there rather
+ *  than here is what keeps one answer to "how often is this room dealt" — the
+ *  browser reads a decided number, the same rule `/api/wardrobe` follows for
+ *  `covers`. The nine rooms this file ships carry no library and draw at their
+ *  own weight, which is what they did before there was a registry.
  */
 export function drawRoom(rooms, manner, rand = Math.random) {
   const pool = (rooms ?? []).filter((r) => roomAllows(r, manner))
