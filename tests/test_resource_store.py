@@ -1344,15 +1344,663 @@ class TestLegacySchemaUnaffected:
 # ---- Privacy: the new files add no personal data ------------------------
 
 
+# ---- Readiness evaluation (task 2.4) -------------------------------------
+
+
+class TestReadinessEvaluation:
+    """Translation-pending readiness is derived from the
+    original payload and the translation sidecar; the
+    original payload is never translated, rewritten, or
+    removed. A revision can be stored and inspectable while
+    remaining not ready, and the verdict names the field
+    that is blocking it.
+
+    The seven scenarios pinned here are the ones task 2.4
+    names explicitly:
+
+      1. accepted untranslated data is stored but readiness
+         is pending;
+      2. a missing required English field reports the
+         specific field;
+      3. valid English translation/readiness metadata makes
+         a revision ready;
+      4. translation/coverage updates do not alter the
+         original payload or immutable provenance;
+      5. optional unused fields remain visible but do not
+         block readiness;
+      6. legacy room import translation-first behavior
+         remains unchanged;
+      7. no personal data or non-English tracked test
+         content is introduced (this is the focused
+         privacy scan; the repo-wide scan still covers the
+         file).
+
+    The fixtures and assertions use invented English-only
+    strings. No source-corpus text, no real names, no machine
+    paths, no CJK glyphs. The privacy scan at the bottom of
+    this file is the focused guard for this module.
+    """
+
+    # An invented rooms entry that satisfies the rooms
+    # preparation contract: id, label, scene_theme. The
+    # "tag", "weight" and "props" fields are optional
+    # descriptive inputs; the unmapped "private_internal_flag"
+    # is retained but does not block readiness.
+    INV_ROOMS_PAYLOAD = {
+        "id": "inv_room_studio_dawn",
+        "label": "invented studio at dawn",
+        "scene_theme": (
+            "A bare studio with a tall north-facing window. "
+            "Soft grey light enters from the side and leaves "
+            "the back wall in shadow."
+        ),
+        "tags": ["indoor", "studio"],
+        "props": ["chair", "sheet"],
+        "weight": 1.5,
+        "private_internal_flag": "retained but unused",
+    }
+
+    # A full English translation of every required field,
+    # plus the optional descriptive inputs, used by the
+    # "ready" tests.
+    INV_ROOMS_FULL_TRANSLATION = {
+        "id": "inv_room_studio_dawn",
+        "label": "invented studio at dawn",
+        "scene_theme": (
+            "A bare studio with a tall north-facing window. "
+            "Soft grey light enters from the side and leaves "
+            "the back wall in shadow."
+        ),
+        "tags": ["indoor", "studio"],
+        "props": ["chair", "sheet"],
+        "weight": 1.5,
+    }
+
+    # A partial translation: only the label is provided; the
+    # scene_theme (the other required field) is missing.
+    INV_ROOMS_PARTIAL_TRANSLATION = {
+        "id": "inv_room_studio_dawn",
+        "label": "invented studio at dawn",
+    }
+
+    # An invented fused scene with a single descriptive
+    # field ('prompt'). The required fields for fused_scenes
+    # are 'id' and 'prompt'.
+    INV_FUSED_PAYLOAD = {
+        "id": "inv_fused_dressing_room_01",
+        "prompt": (
+            "A waist-up photograph, taken from her right side. "
+            "She stands before the mirror in a fitting room, "
+            "running a hand down the lapel of an unbuttoned "
+            "blazer."
+        ),
+    }
+
+    def test_accepted_untranslated_data_is_stored_but_readiness_is_pending(
+        self, isolated_db,
+    ):
+        # An entry whose translation column is empty (the
+        # safe neutral state the schema declares) is stored
+        # immutably and inspectable, and the readiness verdict
+        # is pending. The original payload survives the
+        # acceptance step unchanged; the verdict lives in a
+        # separate column.
+        import resource_readiness
+
+        lib_id = resource_store.ensure_library("inv_pending_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "inv_pending_entry", self.INV_ROOMS_PAYLOAD,
+        )
+        # The revision is in the database and inspectable.
+        stored = resource_store.get_revision(revision_id=rev_id)
+        assert stored is not None
+        assert stored["payload"] == self.INV_ROOMS_PAYLOAD
+        assert stored["translation"] == {}
+        # The readiness verdict is pending, and the pending
+        # fields list names the required fields the operator
+        # needs to translate.
+        report = resource_readiness.evaluate_revision_readiness(
+            library_id=lib_id, source_id="inv_pending_entry",
+        )
+        assert report.is_pending
+        assert not report.is_ready
+        # Both required fields are blocking; the verdict is
+        # not guessing which one an operator should fix.
+        assert set(report.pending_field_names) == {"label", "scene_theme"}
+        # The original payload is still the same dict, the
+        # provenance columns are still the same, and the
+        # readiness verdict did not write to the database.
+        again = resource_store.get_revision(revision_id=rev_id)
+        assert again["payload"] == self.INV_ROOMS_PAYLOAD
+        assert again["source_id"] == "inv_pending_entry"
+        assert again["content_digest"] == resource_store.canonical_digest(
+            self.INV_ROOMS_PAYLOAD,
+        )
+        assert again["library_id"] == lib_id
+        assert again["coverage"] == {}
+
+    def test_a_missing_required_english_field_reports_the_specific_field(
+        self, isolated_db,
+    ):
+        # A partial translation: label is provided, scene_theme
+        # is missing. The verdict names the field that is
+        # blocking, NOT a generic "some field is missing" or a
+        # silent readiness that ignores the gap. The field-
+        # specific reason is what an operator acts on.
+        import resource_readiness
+
+        lib_id = resource_store.ensure_library("inv_partial_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "inv_partial_entry", self.INV_ROOMS_PAYLOAD,
+            translation=self.INV_ROOMS_PARTIAL_TRANSLATION,
+        )
+        report = resource_readiness.evaluate_revision_readiness(
+            library_id=lib_id, source_id="inv_partial_entry",
+        )
+        assert report.is_pending
+        # Exactly the missing required field is in the
+        # pending list. The provided required field is not.
+        assert report.pending_field_names == ["scene_theme"]
+        # The reason names the field by name so an operator
+        # can act on it without re-running the evaluation.
+        reason = report.pending_fields["scene_theme"]
+        assert "scene_theme" in reason
+        assert "translation" in reason.lower()
+        # The field-by-field readiness entry for the
+        # provided field is translated=True; the missing
+        # field is translated=False.
+        per_field = {fr.name: fr for fr in report.field_readiness}
+        assert per_field["label"].translated is True
+        assert per_field["scene_theme"].translated is False
+        # The verdict was read off the stored row, not a
+        # re-evaluation of the inputs: the original payload
+        # is still intact.
+        stored = resource_store.get_revision(revision_id=rev_id)
+        assert stored["payload"] == self.INV_ROOMS_PAYLOAD
+        assert stored["translation"] == self.INV_ROOMS_PARTIAL_TRANSLATION
+
+    def test_valid_english_translation_readiness_makes_a_revision_ready(
+        self, isolated_db,
+    ):
+        # Every required field has a non-empty English value
+        # in the translation sidecar: the verdict is ready.
+        # The coverage record lists the role and the
+        # translated flag for every named field, so a UI or
+        # a future preparation step can read the verdict
+        # off the column without re-running the evaluation.
+        import resource_readiness
+
+        lib_id = resource_store.ensure_library("inv_ready_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "inv_ready_entry", self.INV_ROOMS_PAYLOAD,
+            translation=self.INV_ROOMS_FULL_TRANSLATION,
+        )
+        report = resource_readiness.evaluate_revision_readiness(
+            library_id=lib_id, source_id="inv_ready_entry",
+        )
+        assert report.is_ready
+        assert not report.is_pending
+        assert report.pending_fields == {}
+        assert report.pending_field_names == []
+        # Every required field is reported as translated.
+        required = ("id", "label", "scene_theme")
+        per_field = {fr.name: fr for fr in report.field_readiness}
+        for name in required:
+            assert per_field[name].translated is True, name
+        # The coverage record is the dict the persistence
+        # layer writes into the coverage column.
+        coverage = report.coverage
+        assert "fields" in coverage
+        assert "missing_translations" in coverage
+        assert "unmapped_fields" in coverage
+        assert coverage["missing_translations"] == []
+        # The unmapped_fields list names the field the
+        # contract does not recognise, not the required ones.
+        assert "private_internal_flag" in coverage["unmapped_fields"]
+        # Writing the verdict back through the persistence
+        # helper updates only the coverage column; the
+        # original payload and the provenance are intact.
+        resource_readiness.set_revision_readiness_from_report(rev_id, report)
+        after = resource_store.get_revision(revision_id=rev_id)
+        assert after["payload"] == self.INV_ROOMS_PAYLOAD
+        assert after["translation"] == self.INV_ROOMS_FULL_TRANSLATION
+        assert after["coverage"] == coverage
+
+    def test_translation_and_coverage_updates_do_not_alter_the_original_payload_or_immutable_provenance(
+        self, isolated_db,
+    ):
+        # The whole point of separate columns: writing the
+        # readiness verdict and the translation sidecar does
+        # NOT change the original payload, the source id,
+        # the content digest, the library id, or the
+        # created_at. The test reads the raw row before and
+        # after the readiness write so a regression that
+        # touches any protected column is visible as a
+        # precise string diff.
+        import resource_readiness
+
+        lib_id = resource_store.ensure_library("inv_separate_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "inv_separate_entry", self.INV_ROOMS_PAYLOAD,
+        )
+        # Capture the raw row before any readiness work.
+        before_raw = db.one(
+            "SELECT id, library_id, source_id, content_digest, "
+            "payload, translation, coverage, created_at "
+            "FROM asset_revision WHERE id = ?",
+            rev_id,
+        )
+        # 1. Run the evaluation; the verdict lives in
+        #    report.coverage and is what the helper writes.
+        report = resource_readiness.evaluate_revision_readiness(
+            library_id=lib_id, source_id="inv_separate_entry",
+        )
+        # 2. Write the coverage back through the helper.
+        resource_readiness.set_revision_readiness_from_report(rev_id, report)
+        # 3. Write the translation sidecar directly (the
+        #    same UPDATE pattern a future task would use to
+        #    fill in translations as they are produced).
+        new_translation = dict(self.INV_ROOMS_FULL_TRANSLATION)
+        db.run(
+            "UPDATE asset_revision SET translation = ? WHERE id = ?",
+            json.dumps(new_translation), rev_id,
+        )
+        after_raw = db.one(
+            "SELECT id, library_id, source_id, content_digest, "
+            "payload, translation, coverage, created_at "
+            "FROM asset_revision WHERE id = ?",
+            rev_id,
+        )
+        # Every protected column is byte-for-byte identical
+        # to the pre-write state. The original payload was
+        # NOT rewritten, re-encoded, or re-sorted; the
+        # source identity was NOT moved; the digest was NOT
+        # recomputed; the library id was NOT changed; the
+        # recording time was NOT touched.
+        for col in (
+            "id", "library_id", "source_id", "content_digest",
+            "payload", "created_at",
+        ):
+            assert after_raw[col] == before_raw[col], (
+                f"column {col!r} was rewritten: "
+                f"before={before_raw[col]!r} after={after_raw[col]!r}"
+            )
+        # The two sidecar columns carry the new values; the
+        # decoded payload still parses to the input the test
+        # planted.
+        assert json.loads(after_raw["payload"]) == self.INV_ROOMS_PAYLOAD
+        assert json.loads(after_raw["translation"]) == new_translation
+        # The coverage column was written by the readiness
+        # helper, and the schema-level guard rejected any
+        # accidental UPDATE that names the payload column.
+        # The trigger is the only thing standing between
+        # an operator and a corrupted revision; the test
+        # below is the proof that the readiness layer did
+        # not bypass it.
+        import sqlite3
+        with pytest.raises(sqlite3.IntegrityError):
+            db.run(
+                "UPDATE asset_revision SET payload = ? WHERE id = ?",
+                json.dumps({"forged": "payload"}), rev_id,
+            )
+        # The original payload survives the rejected write
+        # too: the immutability guard is enforced.
+        final = db.one(
+            "SELECT payload FROM asset_revision WHERE id = ?", rev_id,
+        )
+        assert json.loads(final["payload"]) == self.INV_ROOMS_PAYLOAD
+
+    def test_optional_unused_fields_remain_visible_but_do_not_block_readiness(
+        self, isolated_db,
+    ):
+        # A rooms entry with required fields translated,
+        # plus optional descriptive fields (tags, props)
+        # AND a field the contract declares as
+        # intentionally_unused, AND a field whose name the
+        # contract does not recognise at all. The verdict
+        # is ready: the required fields are translated. The
+        # optional / unused / unmapped fields are listed in
+        # the coverage record so a UI or a reviewer can see
+        # them, but they do NOT become blockers and they
+        # are NOT silently fed to a prompt.
+        import resource_readiness
+
+        payload_with_extras = {
+            **self.INV_ROOMS_PAYLOAD,
+            # Optional descriptive inputs the contract names.
+            "tags": ["indoor", "studio"],
+            "props": ["chair", "sheet"],
+            # A field the contract declares as
+            # intentionally_unused for rooms.
+            "lighting_hint": "an invented hint, retained but unused",
+            "pose_hint": "an invented pose hint, retained but unused",
+            # A field whose name the contract does not
+            # recognise at all.
+            "unmapped_secret_corpus_marker": (
+                "an invented value for an unmapped name"
+            ),
+        }
+        translation = dict(self.INV_ROOMS_FULL_TRANSLATION)
+        # Translate the optional descriptive fields too;
+        # the verdict must still be ready when the optional
+        # fields are present and translated.
+        translation["tags"] = ["indoor", "studio"]
+        translation["props"] = ["chair", "sheet"]
+
+        lib_id = resource_store.ensure_library("inv_visible_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "inv_visible_entry", payload_with_extras,
+            translation=translation,
+        )
+        report = resource_readiness.evaluate_revision_readiness(
+            library_id=lib_id, source_id="inv_visible_entry",
+        )
+        assert report.is_ready
+        # No required field is blocking.
+        assert report.pending_field_names == []
+        # The intentionally-unused fields are NOT in
+        # pending_fields: a field the contract declares
+        # unused is not a blocker. The "unmapped" name is
+        # also not a blocker.
+        assert "lighting_hint" not in report.pending_fields
+        assert "pose_hint" not in report.pending_fields
+        assert "unmapped_secret_corpus_marker" not in report.pending_fields
+        # The coverage record lists the unmapped field and
+        # the role for every named field, so the operator
+        # can see the entry's full shape.
+        coverage = report.coverage
+        assert "unmapped_secret_corpus_marker" in coverage["unmapped_fields"]
+        # Every named field has a role and a translated
+        # flag; the unmapped field is not in `fields` (the
+        # contract does not name it), only in
+        # `unmapped_fields`. The original payload survives
+        # the verdict, including the unknown field name.
+        stored = resource_store.get_revision(revision_id=rev_id)
+        assert stored["payload"] == payload_with_extras
+        # The verdict did not silently rewrite the original
+        # strings: the invented "hint" and "secret" values
+        # are still there, byte for byte.
+        assert stored["payload"]["lighting_hint"] == (
+            "an invented hint, retained but unused"
+        )
+        assert stored["payload"]["unmapped_secret_corpus_marker"] == (
+            "an invented value for an unmapped name"
+        )
+
+    def test_dynamic_writer_guidance_fields_are_visible_in_coverage_and_field_readiness(
+        self, isolated_db,
+    ):
+        # A rooms entry with two writer-guidance fields whose
+        # names match the dynamic rules `classify_field`
+        # publishes: a `mood_*` prefix and a `*_anchor` suffix.
+        # Neither is in the static preparation mapping, so the
+        # readiness layer MUST reach the dynamic name rules
+        # the same way the preparation contract does, classify
+        # the names as `writer_guidance`, surface them in
+        # `coverage["fields"]` and `field_readiness`, and
+        # keep them out of `unmapped_fields`. The fields are
+        # NOT blockers, even when untranslated: writer
+        # guidance is not display or preparation prose, and
+        # the readiness verdict is about the prose the
+        # prompt reads.
+        import resource_readiness
+
+        payload_with_dynamic = {
+            **self.INV_ROOMS_PAYLOAD,
+            # Two dynamic writer-guidance names, neither
+            # in the static ROOMS_FIELD_MAPPING.
+            "mood_violet": "a quiet evening mood, in english",
+            "action_anchor": "she reaches for the cup with her right hand",
+            # One truly unmapped name, to confirm the dynamic
+            # path does NOT swallow it.
+            "truly_unmapped_field": "an invented value, never a prompt input",
+        }
+        translation = dict(self.INV_ROOMS_FULL_TRANSLATION)
+        translation["mood_violet"] = "a quiet evening mood, in english"
+        translation["action_anchor"] = (
+            "she reaches for the cup with her right hand"
+        )
+
+        lib_id = resource_store.ensure_library("inv_dynamic_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "inv_dynamic_entry", payload_with_dynamic,
+            translation=translation,
+        )
+        report = resource_readiness.evaluate_revision_readiness(
+            library_id=lib_id, source_id="inv_dynamic_entry",
+        )
+        # The required descriptive fields are translated, so
+        # the verdict is ready: the dynamic writer-guidance
+        # fields do NOT block readiness even when their
+        # translation flag is False.
+        assert report.is_ready
+        assert report.pending_field_names == []
+
+        # Both dynamic names appear in `field_readiness` with
+        # role `writer_guidance`. They are inspectable and a
+        # UI or a reviewer can list them without re-running
+        # the evaluation.
+        per_field = {fr.name: fr for fr in report.field_readiness}
+        assert "mood_violet" in per_field, sorted(per_field)
+        assert "action_anchor" in per_field, sorted(per_field)
+        assert per_field["mood_violet"].role == "writer_guidance"
+        assert per_field["action_anchor"].role == "writer_guidance"
+        # The dynamic rules do not collapse translated to
+        # False for an untranslated writer-guidance value
+        # either, so the contract "writer guidance is not a
+        # blocker" holds in both states. A name the contract
+        # does not classify as required never produces a
+        # pending reason.
+        untranslated_dynamic_payload = {
+            **self.INV_ROOMS_PAYLOAD,
+            "mood_violet": "an invented mood, untranslated",
+            "action_anchor": "an invented anchor, untranslated",
+        }
+        partial_translation = dict(self.INV_ROOMS_FULL_TRANSLATION)
+        # No translation for the dynamic fields on purpose.
+        untranslated_report = resource_readiness.evaluate_readiness(
+            kind="rooms",
+            payload=untranslated_dynamic_payload,
+            translation=partial_translation,
+        )
+        assert untranslated_report.is_ready
+        assert untranslated_report.pending_field_names == []
+        untranslated_per_field = {
+            fr.name: fr for fr in untranslated_report.field_readiness
+        }
+        assert untranslated_per_field["mood_violet"].translated is False
+        assert untranslated_per_field["action_anchor"].translated is False
+        assert untranslated_per_field["mood_violet"].role == "writer_guidance"
+        assert untranslated_per_field["action_anchor"].role == "writer_guidance"
+
+        # Both dynamic names appear in `coverage["fields"]`
+        # with role `writer_guidance` and a translation flag.
+        coverage = report.coverage
+        assert "mood_violet" in coverage["fields"], sorted(coverage["fields"])
+        assert "action_anchor" in coverage["fields"], sorted(coverage["fields"])
+        assert coverage["fields"]["mood_violet"]["role"] == "writer_guidance"
+        assert coverage["fields"]["action_anchor"]["role"] == "writer_guidance"
+        assert coverage["fields"]["mood_violet"]["translated"] is True
+        assert coverage["fields"]["action_anchor"]["translated"] is True
+
+        # The dynamic names MUST NOT appear in `unmapped_fields`:
+        # the contract recognises them as writer guidance, and
+        # a UI that conflates "writer guidance" with "unmapped"
+        # would hide the only signal the operator has that
+        # these fields exist. The truly unmapped name, by
+        # contrast, stays in `unmapped_fields` and is NOT in
+        # `coverage["fields"]`.
+        assert "mood_violet" not in coverage["unmapped_fields"]
+        assert "action_anchor" not in coverage["unmapped_fields"]
+        assert "truly_unmapped_field" in coverage["unmapped_fields"]
+        assert "truly_unmapped_field" not in coverage["fields"]
+
+        # `missing_translations` does not list the dynamic
+        # names. They are not blockers, and listing them as
+        # missing translations would imply the operator must
+        # translate them before the revision is ready.
+        assert "mood_violet" not in coverage["missing_translations"]
+        assert "action_anchor" not in coverage["missing_translations"]
+
+        # The original payload is unchanged, byte for byte.
+        # The verdict did not silently rewrite the invented
+        # mood and anchor strings.
+        stored = resource_store.get_revision(revision_id=rev_id)
+        assert stored["payload"] == payload_with_dynamic
+        assert stored["payload"]["mood_violet"] == (
+            "a quiet evening mood, in english"
+        )
+        assert stored["payload"]["action_anchor"] == (
+            "she reaches for the cup with her right hand"
+        )
+        assert stored["payload"]["truly_unmapped_field"] == (
+            "an invented value, never a prompt input"
+        )
+        # The translation sidecar is unchanged too: the
+        # readiness layer reads the column and never
+        # rewrites it.
+        assert stored["translation"] == translation
+        # Writing the coverage back through the helper
+        # updates only the coverage column; the original
+        # payload and the provenance are intact.
+        resource_readiness.set_revision_readiness_from_report(rev_id, report)
+        after = resource_store.get_revision(revision_id=rev_id)
+        assert after["payload"] == payload_with_dynamic
+        assert after["translation"] == translation
+        assert after["coverage"] == coverage
+
+    def test_legacy_room_import_translation_first_behavior_remains_unchanged(
+        self, isolated_db, tmp_path,
+    ):
+        # The legacy room importer and its
+        # all-translations-first contract are NOT touched
+        # by this task. The test imports a non-English
+        # source value through the legacy path and asserts
+        # that the importer raises TranslationMissingError
+        # (the strict refusal) when the translation map
+        # does not cover the value. The legacy contract is
+        # preserved: the new resource store and readiness
+        # layer do not silently translate or filter the
+        # accepted entry, and the legacy importer keeps
+        # its refusal-first behavior.
+        from backend.importer import (
+            TranslationMissingError,
+            import_source,
+        )
+        # Build a non-English label at runtime from
+        # codepoints so the test source itself stays
+        # ASCII. The CJK characters live only in the
+        # JSON written to the source file under
+        # `tmp_path`; they never enter the tracked
+        # test file. The legacy importer detects the
+        # non-ASCII bytes when it parses the file and
+        # treats the string as source-language text
+        # that must be in the translation map.
+        non_english_label = chr(0x7167) + chr(0x706f)  # two invented CJK chars
+        # The legacy importer reads its source under a
+        # `library` field and refuses any library the
+        # manifest does not declare. The manifest
+        # accepts a `medical_scenes` library for the
+        # rooms destination, so the test points the
+        # source at that library and lets the manifest
+        # declaration do its job.
+        source_dir = tmp_path / "legacy_source"
+        source_dir.mkdir(parents=True)
+        data_dir = tmp_path / "legacy_data"
+        data_dir.mkdir(parents=True)
+        # An empty translation map: every non-English
+        # string in the source is uncovered, and the
+        # legacy importer MUST refuse the import before
+        # writing anything.
+        map_file = source_dir / "translation_map.json"
+        map_file.write_text("{}", encoding="utf-8")
+        # A single rooms entry whose label is non-ASCII.
+        # The source file is written with ensure_ascii=False
+        # so the CJK characters land on disk in the source
+        # file the legacy importer reads. The JSON body
+        # is in the test's tmp_path, not in the tracked
+        # test file.
+        source_payload = {
+            "library": "medical_scenes",
+            "items": [
+                {
+                    "identifier": "inv_legacy_clinic_one",
+                    "label": non_english_label,
+                    "theme": (
+                        "a plain invented exam room with a single "
+                        "examination table and a low chair"
+                    ),
+                }
+            ],
+        }
+        (source_dir / "medical_scenes.json").write_text(
+            json.dumps(source_payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        # The legacy importer requires a config whose
+        # `room_libraries` list is empty (a fresh registry
+        # that does not demand the shipped default seeds
+        # exist on a tmp_path data dir).
+        config = {"room_libraries": []}
+        # The legacy importer raises TranslationMissingError
+        # when the map does not cover a non-English string.
+        # The new resource store is NOT consulted and the
+        # acceptance side of the resource path is NOT
+        # exercised here: this is the legacy path, and its
+        # behavior is unchanged.
+        with pytest.raises(TranslationMissingError) as exc_info:
+            import_source(
+                source_dir=str(source_dir),
+                map_path=str(map_file),
+                data_dir=str(data_dir),
+                config=config,
+            )
+        # The refusal names the entry and the field, the
+        # same way the existing translation-first tests
+        # pin it; the new resource path does not change
+        # the legacy message.
+        assert exc_info.value.identifier == "inv_legacy_clinic_one"
+        assert exc_info.value.field == "label"
+        # Validate-everything-then-write: nothing was
+        # written to the legacy data dir, and nothing
+        # was written to the new resource tables.
+        assert list(data_dir.iterdir()) == []
+        assert resource_store.list_libraries() == []
+        # The new readiness layer, applied to a
+        # hypothetical accepted entry, would still
+        # report pending for the missing English
+        # translation. The legacy refusal and the new
+        # readiness verdict are consistent: an entry
+        # without an English translation is not ready,
+        # whether the layer that reports it is the
+        # legacy one or the new one.
+        import resource_readiness
+        verdict = resource_readiness.evaluate_readiness(
+            kind="rooms",
+            payload={
+                "id": "inv_legacy_pending",
+                "label": "an invented english label",
+                # scene_theme missing: would be pending.
+            },
+            translation={
+                "id": "inv_legacy_pending",
+                "label": "an invented english label",
+            },
+        )
+        assert verdict.is_pending
+        assert verdict.pending_field_names == ["scene_theme"]
+
+
 def test_new_modules_are_free_of_personal_data_and_non_english_glyphs():
     """The new modules this task adds do not introduce personal data or CJK
     glyphs. The repo-wide scanner in ``test_no_personal_data.py`` already
-    covers tracked files; this focused test pins the rule for the two
-    files this task adds so a future refactor of either module is caught
+    covers tracked files; this focused test pins the rule for the three
+    files this task adds so a future refactor of any module is caught
     with a message that names the offender.
     """
     new_files = (
         Path(__file__).resolve().parent.parent / "backend" / "resource_store.py",
+        Path(__file__).resolve().parent.parent / "backend" / "resource_readiness.py",
         Path(__file__).resolve(),
     )
     for path in new_files:
@@ -1362,7 +2010,7 @@ def test_new_modules_are_free_of_personal_data_and_non_english_glyphs():
                 line = text[:match.start()].count("\n") + 1
                 pytest.fail(f"{path}:{line}: {label}: {match.group(0)}")
         # English-only: anything outside the ASCII range is a
-        # violation of the working rules in AGENTS.md. The two new
+        # violation of the working rules in AGENTS.md. The three new
         # modules have no reason to carry non-ASCII characters.
         for ch in text:
             if ord(ch) > 0x7F:
