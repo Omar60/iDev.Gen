@@ -1085,3 +1085,410 @@ def test_perspective_scenes_is_known_shape_with_prompt_field(tmp_path):
     assert by_name["prompt"].structural_type == TYPE_STRING
     serialised = json.dumps(entry.to_dict(), ensure_ascii=True)
     assert "low angle from the foot of the bed" not in serialised
+
+
+# -- 11. Resource-prompt preparation mapping (task 1.2) --------------------
+#
+# Task 1.2 defines the SUPPORTED field mappings for resource-based prompt
+# preparation. The inventory above classifies what is OBSERVED; this
+# section classifies what is SUPPORTED for the prompt path, declares
+# required versus optional fields, declares the text `weight`
+# adaptation explicitly, marks the fused-scenes compiled behavior as
+# unverified, and refuses to let an unknown or unmapped field reach
+# the prompt silently. All fixtures are invented English-only data;
+# none of the operator's source prose, identifiers, or paths reaches
+# the assertions below.
+
+from backend import resource_prompts as rp  # noqa: E402  (group import below)
+
+
+# -- 11.1 Complete field classification -----------------------------------
+
+
+def test_preparation_mapping_classifies_each_observed_field_for_its_own_kind(tmp_path):
+    """Every observed field is classified for the resource kind that owns it.
+
+    The fixtures exercise rooms, fused scenes, and all four auxiliary
+    schemas. A field cannot satisfy the contract merely because it appears
+    in another kind's mapping: the effective kind is the declared scene kind
+    or, for an auxiliary entry, its auxiliary kind.
+    """
+    ledger = inventory_source_dir(_source_dir(tmp_path))
+    unmapped: list[str] = []
+    for entry in ledger.entries:
+        kind = entry.declared_kind or entry.auxiliary_kind
+        if kind not in rp.ALL_PREPARATION_KINDS:
+            continue
+        for field in entry.field_observations:
+            info = rp.classify_field(kind, field.name)
+            if info["role"] == "unmapped":
+                unmapped.append(f"{kind}.{field.name}")
+    assert not unmapped, (
+        "observed fields without a mapping for their own kind: "
+        + ", ".join(sorted(unmapped))
+    )
+
+
+def test_every_entry_in_the_preparation_mapping_has_a_valid_role():
+    """Each field entry carries a role from the documented set; no
+    private role can silently fork the contract.
+
+    The six roles are the union the spec under
+    `openspec/.../specs/resource-prompts` calls out by name. The
+    `unmapped` sentinel that `classify_field` returns is NOT a
+    membership role: it is a return-only marker for "this field is
+    not in the mapping", and it must never appear as the `role` of
+    an entry in `PREPARATION_FIELD_MAPPING`.
+    """
+    bad: list[str] = []
+    for kind, mapping in rp.PREPARATION_FIELD_MAPPING.items():
+        for name, info in mapping.items():
+            role = info.get("role")
+            if role not in rp.ALL_PREPARATION_ROLES:
+                bad.append(f"{kind}.{name} has role {role!r}")
+    assert not bad, "field entries with a non-documented role:\n" + "\n".join(bad)
+
+
+def test_every_scene_kind_lists_every_field_in_one_of_the_six_roles():
+    """The six roles are exhaustive: every field in the scene
+    mappings is in exactly one of `identity`, `selection_metadata`,
+    `descriptive_input`, `writer_guidance`, `auxiliary_data`, or
+    `intentionally_unused`. The auxiliary kinds use
+    `auxiliary_data` only.
+    """
+    for kind in (rp.KIND_ROOMS, rp.KIND_FUSED_SCENES):
+        for name, info in rp.PREPARATION_FIELD_MAPPING[kind].items():
+            assert info["role"] in rp.ALL_PREPARATION_ROLES, (
+                f"{kind}.{name}: {info['role']!r} is not in "
+                f"{rp.ALL_PREPARATION_ROLES}"
+            )
+    for kind in (
+        rp.KIND_TRANSLATION_MAP, rp.KIND_CUT_MAP,
+        rp.KIND_MINED_FAMILIES, rp.KIND_MINED_LABELS,
+    ):
+        for name, info in rp.PREPARATION_FIELD_MAPPING[kind].items():
+            assert info["role"] == rp.ROLE_AUXILIARY_DATA, (
+                f"auxiliary kind {kind!r}.{name}: expected only "
+                f"auxiliary_data, got {info['role']!r}"
+            )
+
+
+# -- 11.2 Required versus optional preparation fields ---------------------
+
+
+def test_required_fields_for_rooms_are_documented():
+    """The rooms contract requires `id`, `label`, and `scene_theme`.
+
+    Each is the only canonical way the preparation builds a room
+    prompt: an `id` for the take's provenance, a `label` (or one of
+    its aliases) for the visible name, and a `scene_theme` (or one of
+    its aliases) for the prose the session looks at. A name is
+    missing -> the entry cannot be prepared and the operator gets a
+    field-specific reason.
+    """
+    assert rp.required_fields_for_kind(rp.KIND_ROOMS) == ("id", "label", "scene_theme")
+
+
+def test_required_fields_for_fused_scenes_are_documented():
+    """The fused-scenes contract requires `id` and `prompt`.
+
+    `prompt` is the source's own free prose and the only
+    descriptive input the spec pins as required. Its compiled
+    behavior is explicitly unverified; the contract says the
+    string is preserved intact, not auto-split.
+    """
+    assert rp.required_fields_for_kind(rp.KIND_FUSED_SCENES) == ("id", "prompt")
+
+
+def test_auxiliary_kinds_have_no_required_fields():
+    """Auxiliary schemas are pipeline data and never block preparation."""
+    for kind in (
+        rp.KIND_TRANSLATION_MAP, rp.KIND_CUT_MAP,
+        rp.KIND_MINED_FAMILIES, rp.KIND_MINED_LABELS,
+    ):
+        assert rp.required_fields_for_kind(kind) == (), kind
+
+
+def test_missing_required_field_is_reported_with_a_field_specific_reason():
+    """A required field that is missing produces a reason naming the field and the kind."""
+    reasons = rp.validate_resource_entry(
+        rp.KIND_ROOMS, {"label": "sample", "scene_theme": "sample"}
+    )
+    assert any("'id'" in r and "missing" in r for r in reasons), reasons
+
+
+# -- 11.3 Explicit optional reasons ---------------------------------------
+
+
+def test_every_intentionally_unused_field_has_a_non_empty_reason():
+    """The contract documents every unused field with a reason.
+
+    A field with role `intentionally_unused` and no reason would
+    be a silent omission: the field is not in the prompt and the
+    operator has no way to know why. The test catches that.
+    """
+    bad: list[str] = []
+    for kind, mapping in rp.PREPARATION_FIELD_MAPPING.items():
+        for name, info in mapping.items():
+            if info.get("role") != rp.ROLE_INTENTIONALLY_UNUSED:
+                continue
+            reason = info.get("reason", "")
+            if not reason or not reason.strip():
+                bad.append(f"{kind}.{name}")
+    assert not bad, "intentionally_unused fields without a reason:\n" + "\n".join(bad)
+
+
+def test_classify_returns_the_documented_reason_for_unused_fields():
+    """`classify_field` returns the same reason the mapping declares."""
+    for name in rp.intentionally_unused_fields_for_kind(rp.KIND_ROOMS):
+        info = rp.classify_field(rp.KIND_ROOMS, name)
+        assert info["role"] == rp.ROLE_INTENTIONALLY_UNUSED, name
+        assert info.get("reason"), name
+
+
+# -- 11.4 Safe auxiliary handling -----------------------------------------
+
+
+def test_auxiliary_kinds_return_no_prompt_inputs():
+    """An auxiliary file is pipeline data, never a prompt input.
+
+    The check covers the four auxiliary kinds and accepts both
+    record-shape values (translation_map, cut_map) and scalar
+    values (mined_families, mined_labels). The result is always
+    an empty dict, regardless of the value.
+    """
+    assert rp.extract_prompt_inputs(rp.KIND_TRANSLATION_MAP, {
+        "source": "a", "translation": "b", "fields": ["label"]
+    }) == {}
+    assert rp.extract_prompt_inputs(rp.KIND_CUT_MAP, {
+        "camera": "a", "act": "b", "room": "c"
+    }) == {}
+    assert rp.extract_prompt_inputs(rp.KIND_MINED_FAMILIES, "rear_entry_pov") == {}
+    assert rp.extract_prompt_inputs(rp.KIND_MINED_LABELS, "mined-row-label") == {}
+
+
+def test_auxiliary_record_with_an_unknown_field_is_reported_not_silently_used():
+    """A translation_map record with a non-documented top-level key
+    is reported with a field-specific reason, not silently treated
+    as auxiliary data.
+    """
+    record = {
+        "source": "a", "translation": "b", "fields": ["label"],
+        "invented_extra_field": "invented value that the contract does not name",
+    }
+    reasons = rp.validate_resource_entry(rp.KIND_TRANSLATION_MAP, record)
+    assert any("'invented_extra_field'" in r for r in reasons), reasons
+
+
+def test_mined_families_scalar_must_be_a_non_empty_string():
+    """A scalar auxiliary value is auxiliary data when it is a
+    non-empty string; an empty or non-string value is reported.
+    """
+    assert rp.validate_resource_entry(rp.KIND_MINED_FAMILIES, "rear_entry_pov") == []
+    assert rp.validate_resource_entry(rp.KIND_MINED_LABELS, "mined-row-label") == []
+    assert rp.validate_resource_entry(rp.KIND_MINED_FAMILIES, "") != []
+    assert rp.validate_resource_entry(rp.KIND_MINED_FAMILIES, 42) != []
+
+
+def test_an_auxiliary_data_field_on_a_scene_is_reported():
+    """A scene entry that carries an auxiliary record field is
+    reported as a role mismatch, not silently dropped.
+    """
+    reasons = rp.validate_resource_entry(
+        rp.KIND_ROOMS,
+        {"id": "r1", "label": "x", "scene_theme": "y", "source": "a"},
+    )
+    assert any("'source'" in r and "auxiliary" in r for r in reasons), reasons
+
+
+# -- 11.5 No compiled-parity claims ---------------------------------------
+
+
+def test_weight_text_adaptation_is_explicit_and_forbids_prompt_emphasis():
+    """The `weight` field is a numeric selection parameter, not a text
+    emphasis. The constant pins the rule and the test pins the rule.
+    """
+    text = rp.WEIGHT_TEXT_ADAPTATION
+    assert isinstance(text, str) and text.strip(), "weight adaptation must be a non-empty string"
+    # The text must forbid translating weight into a prompt-weight syntax.
+    assert "MUST NOT" in text or "must not" in text.lower(), text
+    assert "weight" in text.lower()
+    # It must reference the selection role the inventory already records.
+    assert "selection" in text.lower() or "outlier" in text.lower(), text
+
+
+def test_fused_scenes_compiled_behavior_is_marked_unverified():
+    """The perspective (fused_scenes) compiled behavior is explicitly
+    unverified: the constant names the unverified status and the test
+    pins it.
+    """
+    text = rp.FUSED_SCENES_COMPILED_BEHAVIOR
+    assert isinstance(text, str) and text.strip(), "compiled-behavior note must be a non-empty string"
+    assert "unverified" in text.lower() or "not verifiable" in text.lower(), text
+    # The contract explicitly disclaims auto-decomposition of the
+    # source prose (the prose is preserved intact, not split). The
+    # contract's negative form ("does not auto-split") is what we
+    # require; the module-level parity-claim check further down
+    # covers positive claims like "achieves parity" or
+    # "guarantees parity".
+    lower = text.lower()
+    assert "does not auto-split" in lower or "does NOT auto-split" in text, text
+    assert "not claim parity" in lower or "does not claim parity" in lower, text
+
+
+def test_perspective_compiled_behavior_is_unverified_in_classify():
+    """The 'prompt' field's mapping entry points at the unverified note
+    rather than claiming a compiled role.
+    """
+    info = rp.classify_field(rp.KIND_FUSED_SCENES, "prompt")
+    assert info["role"] == rp.ROLE_DESCRIPTIVE_INPUT
+    assert "FUSED_SCENES_COMPILED_BEHAVIOR" in info.get("notes", ""), info
+
+
+def test_module_does_not_claim_parity_for_perspective_or_compiled_behavior():
+    """A grep over the module's source for `parity` finds only the
+    unverified declarations, not any positive claim. The contract
+    marks the compiled behavior unverified; it does not promise it.
+    """
+    module_text = (Path(__file__).resolve().parent.parent /
+                   "backend" / "resource_prompts.py").read_text(encoding="utf-8")
+    lower = module_text.lower()
+    # The word "parity" appears in the unverified declarations; it
+    # never appears in a positive form like "achieves parity" or
+    # "matches parity" or "guarantees parity".
+    for forbidden in (
+        "achieves parity", "matches parity", "guarantees parity",
+        "byte-for-byte parity", "byte for byte parity",
+    ):
+        assert forbidden not in lower, forbidden
+
+
+# -- 11.6 Unknown fields never enter the prompt silently -------------------
+
+
+def test_unknown_field_is_blocked_from_silent_prompt_entry():
+    """A field the mapping does not name cannot reach the prompt.
+
+    `extract_prompt_inputs` returns only fields whose role is
+    `descriptive_input` for the given kind. A name that is in the
+    entry but not in the mapping is dropped by construction, and
+    the `unmapped` sentinel is not a `descriptive_input` role.
+    """
+    entry = {
+        "id": "r1", "label": "sample", "scene_theme": "sample",
+        "invented_unknown_field": "this MUST NOT enter the prompt",
+    }
+    inputs = rp.extract_prompt_inputs(rp.KIND_ROOMS, entry)
+    assert "invented_unknown_field" not in inputs
+    # And the validator reports it with a field-specific reason.
+    reasons = rp.validate_resource_entry(rp.KIND_ROOMS, entry)
+    assert any("'invented_unknown_field'" in r for r in reasons), reasons
+
+
+def test_classify_marks_unknown_field_with_an_unmapped_sentinel():
+    """`classify_field` returns `unmapped` for a name the contract
+    does not cover, with a non-empty reason.
+    """
+    info = rp.classify_field(rp.KIND_ROOMS, "an_invented_field_with_no_role")
+    assert info["role"] == "unmapped", info
+    assert info.get("reason"), info
+
+
+def test_writer_guidance_name_rules_are_accepted_for_unmapped_names():
+    """The inventory's `is_guidance_field` suffix and prefix rules
+    promote a name the mapping does not cover to `writer_guidance`.
+    The rule is the only way an unmapped name can avoid the
+    `unmapped` sentinel, and it explicitly does not promote the
+    name into the prompt.
+    """
+    assert rp.classify_field(rp.KIND_ROOMS, "camera_anchor")["role"] == rp.ROLE_WRITER_GUIDANCE
+    assert rp.classify_field(rp.KIND_ROOMS, "mood_warm")["role"] == rp.ROLE_WRITER_GUIDANCE
+    assert rp.classify_field(rp.KIND_FUSED_SCENES, "action_anchor")["role"] == rp.ROLE_WRITER_GUIDANCE
+    # And the writer-guidance role is NOT a prompt input:
+    assert "camera_anchor" not in rp.extract_prompt_inputs(
+        rp.KIND_ROOMS, {"id": "r1", "label": "x", "scene_theme": "y", "camera_anchor": "z"}
+    )
+
+
+def test_perspective_entry_with_unmapped_field_is_reported_not_silently_used():
+    """A fused-scene entry that carries an unmapped field is
+    reported with a field-specific reason and the field is not
+    added to the prompt input set.
+    """
+    entry = {
+        "id": "f1", "prompt": "invented prose for the take",
+        "label": "sample", "invented_unknown": "MUST NOT enter the prompt",
+    }
+    inputs = rp.extract_prompt_inputs(rp.KIND_FUSED_SCENES, entry)
+    assert "invented_unknown" not in inputs
+    assert "prompt" in inputs
+    reasons = rp.validate_resource_entry(rp.KIND_FUSED_SCENES, entry)
+    assert any("'invented_unknown'" in r for r in reasons), reasons
+
+
+# -- 11.7 Privacy: the new module carries no private corpus identifiers ---
+
+
+# A small subset of the patterns the repo's no-personal-data scan
+# applies, repeated here so the new module has a focused guard in
+# the same file as the contract tests. The repo-wide scan still
+# covers every tracked file, including this one; the focused guard
+# pins the new module's behaviour with a message that names the
+# module under test, which the repo-wide scan does not.
+_RESOURCE_PROMPTS_PATTERNS = {
+    "windows user path": re.compile(
+        r"[A-Za-z]:[\\/]+Users[\\/]+(?!<)[A-Za-z0-9._-]+", re.I
+    ),
+    "unix home path": re.compile(r"/(?:home|Users)/(?!<)[A-Za-z0-9._-]+"),
+    "email address": re.compile(
+        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+    ),
+    "api token": re.compile(
+        r"\b(?:sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{20,})\b"
+    ),
+}
+
+
+# A closed set of operator-side identifiers the new module must never
+# reference in its source: the file stems the private ledger recorded
+# for the operator's selected source libraries, plus the structural
+# outer keys the same ledger used for the not-adopted collections.
+# The list is structural: file_stem spellings and the two
+# `structural_notes` patterns the coverage ledger recorded. They are
+# not real names and they are not personal data; the assertion is
+# that the new module's tracked source never copies them.
+PRIVATE_CORPUS_MARKERS: tuple[str, ...] = (
+    "amateurs", "celebrities", "perspective_scenes", "school_scenes",
+    "medical_scenes", "workplace_scenes", "general_scenes",
+    "keyed_record_collection", "list_keyed_collection",
+    "scalar_keyed_collection",
+)
+
+
+def test_module_source_carries_no_private_corpus_markers():
+    """The new module's source code never names the operator's
+    file_stems or the structural patterns the private ledger
+    recorded. The contract is structural, not corpus-specific.
+    """
+    module_text = (Path(__file__).resolve().parent.parent /
+                   "backend" / "resource_prompts.py").read_text(encoding="utf-8")
+    for marker in PRIVATE_CORPUS_MARKERS:
+        assert marker not in module_text, (
+            f"private corpus marker {marker!r} found in "
+            f"backend/resource_prompts.py"
+        )
+
+
+def test_module_source_carries_no_absolute_paths_or_personal_data():
+    """The same scan the repo applies to every tracked file is
+    restricted to the new module: no Windows user paths, no Unix
+    home paths, no email-shaped strings, no API tokens.
+    """
+    module_text = (Path(__file__).resolve().parent.parent /
+                   "backend" / "resource_prompts.py").read_text(encoding="utf-8")
+    for label, pattern in _RESOURCE_PROMPTS_PATTERNS.items():
+        match = pattern.search(module_text)
+        assert not match, (
+            f"{label} pattern matched in backend/resource_prompts.py: "
+            f"{match.group(0)!r}"
+        )

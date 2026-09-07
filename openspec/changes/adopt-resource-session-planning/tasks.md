@@ -38,7 +38,73 @@
   >
   > The aggregate pass count is reported by pytest at run time;
   > this note does not record a hard-coded total.
-- [ ] 1.2 Define the supported field mappings and explicit adaptations for accepted scene, perspective and auxiliary resources; verify each source field is classified and no required preparation field is silently unused. Record compiled behavior as unverified rather than claim parity.
+- [x] 1.2 Define the supported field mappings and explicit adaptations for accepted scene, perspective and auxiliary resources; verify each source field is classified and no required preparation field is silently unused. Record compiled behavior as unverified rather than claim parity.
+
+  > 1.2 status: **complete.** The explicit preparation contract was
+  > defined in `backend/resource_prompts.py` and proven by focused
+  > English-only tests. The contract covers six supported resource
+  > kinds: `rooms`, `fused_scenes`,
+  > `translation_map`, `cut_map`, `mined_families` and
+  > `mined_labels`. Every field name the inventory's
+  > `PROVISIONAL_FIELD_ROLES` table records is classified in
+  > `PREPARATION_FIELD_MAPPING` under one of the six roles the
+  > `resource-prompts` spec calls out by name: `identity`,
+  > `selection_metadata`, `descriptive_input`, `writer_guidance`,
+  > `auxiliary_data` or `intentionally_unused`. Every
+  > `intentionally_unused` entry carries a non-empty `reason`.
+  >
+  > Required fields are pinned: a `rooms` entry needs `id`, `label`
+  > and `scene_theme`; a `fused_scenes` entry needs `id` and
+  > `prompt`; auxiliary kinds have no required fields. Missing
+  > required fields are reported by `validate_resource_entry` with
+  > a field-specific reason.
+  >
+  > The text `weight` adaptation is declared explicitly in
+  > `WEIGHT_TEXT_ADAPTATION`: the numeric `weight` field is a
+  > selection parameter, MUST NOT be translated into prompt-weight
+  > syntax, and is recorded as provenance on the take. The
+  > `fused_scenes` compiled behavior is declared explicitly in
+  > `FUSED_SCENES_COMPILED_BEHAVIOR`: the splitting of the
+  > `prompt` prose into camera, act and room clauses is NOT
+  > verifiable from the readable evidence this project has, the
+  > contract does NOT claim parity, and the prose is preserved
+  > intact, not auto-split. The module is grepped for positive
+  > parity claims (`achieves parity`, `guarantees parity`,
+  > `byte-for-byte parity`); none are present.
+  >
+  > An unknown or unmapped field cannot reach the prompt silently:
+  > `extract_prompt_inputs` returns ONLY fields whose role is
+  > `descriptive_input` for the given kind; `classify_field`
+  > returns an `unmapped` sentinel with a non-empty reason for any
+  > field the contract does not name; the writer-guidance name
+  > rules (`*_anchor` suffix and `mood_*` prefix) are the only
+  > way an unmapped name avoids the `unmapped` sentinel, and the
+  > writer-guidance role is not a prompt input.
+  >
+  > Auxiliary schemas are handled safely: the four auxiliary kinds
+  > never contribute to a prompt, a `translation_map` or `cut_map`
+  > record with an unknown top-level key is reported with a
+  > field-specific reason, a scalar auxiliary value must be a
+  > non-empty string, and a scene entry that carries a
+  > record-shape auxiliary key (`source`, `translation`, `fields`,
+  > `camera`, `act`, `room`) is reported as a role mismatch.
+  >
+  > The new module's source is verified to carry no private
+  > corpus markers (operator file stems, structural collection
+  > patterns) and no absolute paths, emails, API tokens or CJK
+  > glyphs. The repo-wide `tests/test_no_personal_data.py` scan
+  > still covers the new module; the focused guards in
+  > `test_resource_ledger.py` and `test_no_personal_data.py`
+  > pin the new module's behaviour with messages that name the
+  > module under test.
+  >
+  > Verification commands and outcomes (all pass):
+  > - `.venv\\Scripts\\python.exe -m pytest tests/test_resource_ledger.py` (63 pass)
+  > - `.venv\\Scripts\\python.exe -m pytest tests/test_no_personal_data.py` (10 pass)
+  > - `.venv\\Scripts\\python.exe -m pytest` (the full backend suite, 803 pass)
+  >
+  > The aggregate pass count is reported by pytest at run time;
+  > this note does not record a hard-coded total.
 - [ ] 1.3 Capture invented legacy session fixtures for text-to-image, editing and guided workflows; verify existing prompt composition, wardrobe overrides and evidence remain unchanged before new-mode work.
 
 ## 2. Complete local resource storage

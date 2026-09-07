@@ -307,3 +307,79 @@ def test_an_import_destination_is_neither_tracked_nor_bundled_into_the_build():
         assert seed in tracked, (
             f"{seed} is imported at build time and is not tracked: a fresh "
             "clone does not build")
+
+
+# The resource-prompt preparation contract (task 1.2) is a public
+# module whose field names come from a private coverage ledger. The
+# same repo-wide scan above already covers the new module's source
+# for absolute paths, emails and tokens; this focused test pins the
+# second half of the contract: the new module's source MUST NOT
+# reference any of the operator's file stems or the structural
+# collection patterns the private ledger recorded. Those are
+# structural markers, not personal data, but copying them into a
+# tracked module would publish what the operator's licence decision
+# keeps private and would couple a public contract to a private
+# corpus. The list below is closed and structural: a regression
+# that adds a new marker would be a decision somebody made, not a
+# silent drift.
+_RESOURCE_PROMPTS_MODULE = ROOT / "backend" / "resource_prompts.py"
+_RESOURCE_PROMPTS_MARKERS: tuple[str, ...] = (
+    # The file stems the private coverage ledger recorded as
+    # known_shape or not_adopted for the operator's selected
+    # libraries. A new tracked module that names one of these
+    # would be leaking the operator's source library names.
+    "amateurs", "celebrities", "perspective_scenes", "school_scenes",
+    "medical_scenes", "workplace_scenes", "general_scenes",
+    # The structural collection patterns the same ledger recorded
+    # for the not_adopted libraries. Same reasoning: a public
+    # module that names the pattern by its source-specific label
+    # couples the contract to the private corpus.
+    "keyed_record_collection", "list_keyed_collection",
+    "scalar_keyed_collection",
+)
+
+
+def test_resource_prompts_module_carries_no_private_corpus_markers():
+    """The public resource-prompts contract never names the
+    operator's file stems or the private ledger's structural
+    patterns. The repo-wide scan above is pattern-blind to these
+    markers, so this test fills the gap.
+    """
+    assert _RESOURCE_PROMPTS_MODULE.exists(), (
+        "backend/resource_prompts.py is missing: the task 1.2 "
+        "contract module is not in place"
+    )
+    text = _RESOURCE_PROMPTS_MODULE.read_text(encoding="utf-8")
+    offenders = [m for m in _RESOURCE_PROMPTS_MARKERS if m in text]
+    assert not offenders, (
+        "private corpus markers in the public resource-prompts "
+        "module: " + ", ".join(offenders) + ". The contract is "
+        "structural, not corpus-specific; a regression that names "
+        "the operator's file_stems couples the public contract to "
+        "a private corpus."
+    )
+
+
+def test_resource_prompts_module_carries_no_no_personal_data_patterns():
+    """Same as ``test_no_personal_data_in_tracked_files`` but
+    restricted to the resource-prompts module, with a message that
+    names the module under test. The repo-wide scan still covers
+    this file; the focused test is a guard with a useful failure.
+    """
+    assert _RESOURCE_PROMPTS_MODULE.exists(), (
+        "backend/resource_prompts.py is missing: the task 1.2 "
+        "contract module is not in place"
+    )
+    text = _RESOURCE_PROMPTS_MODULE.read_text(encoding="utf-8", errors="ignore")
+    offenders: list[str] = []
+    for label, pattern in PATTERNS.items():
+        for match in pattern.finditer(text):
+            line = text[:match.start()].count("\n") + 1
+            offenders.append(
+                f"backend/resource_prompts.py:{line}: {label}: "
+                f"{match.group(0)!r}"
+            )
+    assert not offenders, (
+        "personal-data pattern matched in the resource-prompts "
+        "module:\n" + "\n".join(offenders)
+    )
