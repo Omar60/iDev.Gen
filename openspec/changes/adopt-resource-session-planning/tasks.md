@@ -105,7 +105,53 @@
   >
   > The aggregate pass count is reported by pytest at run time;
   > this note does not record a hard-coded total.
-- [ ] 1.3 Capture invented legacy session fixtures for text-to-image, editing and guided workflows; verify existing prompt composition, wardrobe overrides and evidence remain unchanged before new-mode work.
+- [x] 1.3 Capture invented legacy session fixtures for text-to-image, editing and guided workflows; verify existing prompt composition, wardrobe overrides and evidence remain unchanged before new-mode work.
+
+  > 1.3 status: **complete.** The invented legacy-session fixtures
+  > are tracked at `tests/legacy_session_fixtures.json` and the
+  > baseline is locked by `tests/test_legacy_session_baseline.py`.
+  > The fixture file is hand-written English prose; no source corpus
+  > text, no personal data, no machine paths, no real names, no
+  > generated images. The fixture carries three session shapes —
+  > text-to-image, editing (`kind=edit`) and guided (`kind=guide`) —
+  > and the workflow `kind` and `uses_reference_workflow` flags are
+  > the data the tests read; the suite refuses to load any future
+  > fixture whose `workflow_kind` is not one of the three
+  > `workflow_kinds` values it lists.
+  >
+  > The baseline covers the six legacy invariants the resource-mode
+  > work must not break:
+  > - text-to-image composition (trigger + base + look + wardrobe +
+  >   take, joined with full stops, with an explicit `{trigger}`
+  >   placeholder NOT prepended a second time);
+  > - the editing branch sends the take's prompt raw (no trigger,
+  >   no base, no look, no wardrobe prepended);
+  > - the guided branch composes the take's prompt (because the
+  >   graph paints from noise, not from a reference image);
+  > - the wardrobe override rules: `None` follows the session,
+  >   `""` removes the wardrobe clause without a doubled period,
+  >   a string wins over the session;
+  > - the verbatim branch stores the take's prompt raw, with the
+  >   trigger, base, look and wardrobe NEVER prepended;
+  > - legacy session creation does not mutate the cell table: a
+  >   pre-seeded cell row stays byte-for-byte equal across the
+  >   three legacy kinds, and the global totals of judged, arrived
+  >   and row count are unchanged. The `/api/sessions/{sid}/shots`
+  >   extension is asserted to return `status_code == 200` and
+  >   `{"added": 1}` so a 4xx or a silent drop would fail the test.
+  >
+  > The privacy scan reuses the canonical `PATTERNS` set from
+  > `tests/test_no_personal_data.py` (a private copy of the regexes
+  > here would be exactly the drift the upstream guard catches);
+  > "English only" is asserted by the prose being hand-written
+  > invented English, not by ASCII alone.
+  >
+  > Verification commands and outcomes (all pass):
+  > - `.venv\\Scripts\\python.exe -m pytest tests/test_legacy_session_baseline.py tests/test_no_personal_data.py --tb=no` (17 pass)
+  > - `.venv\\Scripts\\python.exe -m pytest --tb=no` (810 pass)
+  >
+  > The aggregate pass count is reported by pytest at run time;
+  > this note does not record a hard-coded total.
 
 ## 2. Complete local resource storage
 

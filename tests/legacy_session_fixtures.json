@@ -1,0 +1,111 @@
+{
+  "comment": "Invented legacy session fixtures for task 1.3 of the adopt-resource-session-planning OpenSpec change. Every string is invented and English-only. No source corpus text, no real names, no machine paths, no personal data. Three workflow kinds are covered: text-to-image, editing (edit) and guided (guide).",
+  "workflow_kinds": {
+    "text_to_image": "",
+    "editing": "edit",
+    "guided": "guide"
+  },
+  "sessions": [
+    {
+      "fixture_id": "inv_t2i_studio_portrait",
+      "name": "invented t2i studio portrait",
+      "workflow_kind": "",
+      "uses_reference_workflow": false,
+      "look": "A small studio with a bare grey backdrop. Soft light from a single large window falls on her right cheek. She wears her hair loose, brushed forward over one shoulder, with no makeup beyond a faint pink lip",
+      "wardrobe": "a thin grey linen shirt with the sleeves rolled to the elbows, dark cotton trousers, bare feet",
+      "shots": [
+        {
+          "label": "wide",
+          "prompt": "standing square to the camera with her hands at her sides, full body in frame",
+          "count": 1,
+          "wardrobe": null,
+          "verbatim": false,
+          "reference": false
+        },
+        {
+          "label": "jacket on",
+          "prompt": "turned three quarters to the camera, one hand on her hip, the other raised to her collar",
+          "count": 1,
+          "wardrobe": "the same grey linen shirt, dark cotton trousers, a loose dark jacket over the shirt, bare feet",
+          "verbatim": false,
+          "reference": false
+        },
+        {
+          "label": "explicit trigger",
+          "prompt": "close-up of {trigger}, the camera centred on her face",
+          "count": 1,
+          "wardrobe": null,
+          "verbatim": false,
+          "reference": false
+        },
+        {
+          "label": "no clothes at all",
+          "prompt": "kneeling upright on the floor, both hands resting on her thighs",
+          "count": 1,
+          "wardrobe": "",
+          "verbatim": false,
+          "reference": false
+        },
+        {
+          "label": "more like this",
+          "prompt": "a quiet portrait of a stone staircase at dusk, framed from the foot of the steps",
+          "count": 1,
+          "wardrobe": null,
+          "verbatim": true,
+          "reference": false
+        }
+      ]
+    },
+    {
+      "fixture_id": "inv_edit_remove_layer",
+      "name": "invented edit remove a layer",
+      "workflow_kind": "edit",
+      "uses_reference_workflow": true,
+      "look": "The same small studio with a bare grey backdrop and soft light from a single large window on her right cheek",
+      "wardrobe": "a thin grey linen shirt, dark cotton trousers, a loose dark jacket over the shirt, bare feet",
+      "anchor": {
+        "label": "anchor",
+        "prompt": "standing square to the camera with her hands at her sides, full body in frame",
+        "count": 1
+      },
+      "shots": [
+        {
+          "label": "remove the jacket",
+          "prompt": "remove the dark jacket, leave the rest unchanged",
+          "count": 1,
+          "wardrobe": null,
+          "verbatim": false,
+          "reference": true
+        }
+      ]
+    },
+    {
+      "fixture_id": "inv_guide_body_pose",
+      "name": "invented guided body pose",
+      "workflow_kind": "guide",
+      "uses_reference_workflow": true,
+      "look": "The same small studio with a bare grey backdrop and soft light from a single large window on her right cheek",
+      "wardrobe": "a thin grey linen shirt, dark cotton trousers, bare feet",
+      "anchor": {
+        "label": "anchor",
+        "prompt": "standing square to the camera with her hands at her sides, full body in frame",
+        "count": 1
+      },
+      "shots": [
+        {
+          "label": "guided leaning",
+          "prompt": "leaning her weight onto her right leg with her left shoulder against an invisible wall, both hands loose at her sides",
+          "count": 1,
+          "wardrobe": null,
+          "verbatim": false,
+          "reference": true
+        }
+      ]
+    }
+  ],
+  "expected_composition": {
+    "trigger": "4da woman",
+    "base_positive": "photo, 35mm",
+    "base_negative": "blurry"
+  }
+}
