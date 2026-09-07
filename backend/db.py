@@ -5,6 +5,7 @@ purpose — four tables and hand-written SQL is less code than the mapping layer
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -353,6 +354,60 @@ CREATE TABLE IF NOT EXISTS asset_revision (
 CREATE INDEX IF NOT EXISTS ix_asset_revision_library_source
     ON asset_revision(library_id, source_id);
 
+-- Auxiliary resources: a separate table for the parser's auxiliary
+-- outcomes (translation_map, cut_map, mined_families, mined_labels).
+-- Auxiliary maps are NOT interpreted as scenes and NOT folded into a
+-- scene payload: they are stored as their own immutable revisions
+-- under a per-(library, kind, content_digest) unique key. The same
+-- idempotence rule the asset_revision table pins applies: identical
+-- content creates no duplicate row, changed content creates a new
+-- immutable row, and prior rows stay readable. The kind column
+-- follows the same six-value vocabulary the parser publishes
+-- (translation_map, cut_map, mined_families, mined_labels; the
+-- two scene kinds rooms and fused_scenes never land here).
+--
+-- The complete original auxiliary map is stored as JSON in
+-- ``payload``, preserving every nested structure and every original
+-- string verbatim, exactly the way asset_revision stores its
+-- payload. Provenance lives on the row (library_id and created_at);
+-- no UPDATE path is exposed in the Python surface, and the
+-- immutability triggers below refuse a hand-rolled UPDATE of the
+-- protected columns.
+--
+-- Additive on purpose: existing tables and legacy rows are
+-- untouched, and the CREATE TABLE IF NOT EXISTS makes the
+-- migration safe to run repeatedly.
+CREATE TABLE IF NOT EXISTS auxiliary_resource (
+    id             INTEGER PRIMARY KEY,
+    library_id     INTEGER NOT NULL REFERENCES resource_library(id) ON DELETE CASCADE,
+    kind           TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    payload        TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    UNIQUE(library_id, kind, content_digest),
+    CHECK (kind IN ('translation_map', 'cut_map', 'mined_families', 'mined_labels'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_auxiliary_resource_library_kind
+    ON auxiliary_resource(library_id, kind);
+
+-- Immutability guard for auxiliary_resource, mirroring the
+-- asset_revision guard above. The columns that define a row's
+-- identity (id), provenance (library_id, kind, content_digest),
+-- accepted content (payload) and recording time (created_at) MUST
+-- NOT be rewritten after the row is written. A direct SQL UPDATE
+-- that names one of those columns in its SET clause is rejected at
+-- the SQL level with an explicit error and the original row is
+-- left intact. This pins the immutability to the schema: a future
+-- code path that builds an UPDATE statement cannot quietly bypass
+-- the service-level record_auxiliary contract.
+CREATE TRIGGER IF NOT EXISTS auxiliary_resource_protect_immutable
+BEFORE UPDATE OF id, library_id, kind, content_digest, payload, created_at
+ON auxiliary_resource
+BEGIN
+  SELECT RAISE(ABORT, 'auxiliary_resource is immutable: id, library_id, kind, content_digest, payload and created_at cannot be rewritten after the row is written.');
+END;
+
 -- Immutability guard for asset_revision. The columns that define a
 -- revision's identity (id), its provenance (library_id, source_id,
 -- content_digest), its accepted content (payload) and its recording
@@ -388,6 +443,57 @@ END;
 """
 
 _conn: sqlite3.Connection | None = None
+
+# Re-entrant counter for active transactions. Resource import (task 2.3)
+# needs atomic multi-statement writes through ``resource_store``; a counter
+# is the smallest addition that lets ``db.run`` keep its one-statement
+# auto-commit behavior outside transactions and skip it inside one. The
+# counter is re-entrant so a caller that nests two ``db.transaction``
+# blocks does not have to balance them by hand: the outer commit covers
+# the inner block's work, and a rollback in the inner block re-raises
+# and undoes both.
+_tx_depth: int = 0
+
+
+@contextlib.contextmanager
+def transaction():
+    """Atomic multi-statement transaction.
+
+    Inside the ``with`` block, ``db.run`` does NOT auto-commit. The
+    block commits as a single unit on normal exit, or rolls back
+    every change and re-raises on exception. The counter is
+    re-entrant: a nested ``with db.transaction()`` participates in
+    the outer transaction, and only the outermost block issues the
+    final COMMIT or ROLLBACK.
+
+    This is the small additive change task 2.3 needs. The default
+    one-statement ``db.run`` behavior is preserved for every caller
+    that does not use the context manager (the resource import
+    wraps ``resource_store.record_revision`` calls in a transaction
+    so a simulated persistence failure rolls back the entire
+    accepted set, not just the row that failed).
+    """
+    global _tx_depth
+    c = conn()
+    if _tx_depth == 0:
+        c.execute("BEGIN IMMEDIATE")
+    _tx_depth += 1
+    try:
+        yield
+    except BaseException:
+        if _tx_depth == 1:
+            try:
+                c.execute("ROLLBACK")
+            except sqlite3.Error:
+                # The connection may already be in a broken state;
+                # surface the original exception, not the rollback error.
+                pass
+        _tx_depth -= 1
+        raise
+    else:
+        if _tx_depth == 1:
+            c.execute("COMMIT")
+        _tx_depth -= 1
 
 
 def now() -> str:
@@ -662,7 +768,12 @@ def one(sql: str, *args) -> dict | None:
 
 def run(sql: str, *args) -> int:
     cur = conn().execute(sql, args)
-    conn().commit()
+    # Inside a ``transaction()`` block, the surrounding COMMIT/ROLLBACK
+    # is the one that takes effect. Outside, the one-statement auto-commit
+    # behavior is unchanged so legacy callers do not have to learn the
+    # context manager.
+    if _tx_depth == 0:
+        conn().commit()
     return cur.lastrowid
 
 

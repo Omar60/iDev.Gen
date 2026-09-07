@@ -275,6 +275,98 @@ def list_revisions(
     return [_decode_revision(r) for r in rows]
 
 
+# -- Auxiliary resources ----------------------------------------------------
+
+
+# The four kinds the parser recognises as auxiliary and the auxiliary
+# table's CHECK accepts. Mirrored here so the Python surface can
+# validate a kind argument before it reaches the SQL CHECK.
+AUXILIARY_KINDS: tuple[str, ...] = (
+    "translation_map", "cut_map", "mined_families", "mined_labels",
+)
+
+
+def record_auxiliary(
+    library_id: int,
+    kind: str,
+    payload: Any,
+) -> int:
+    """Return the id of the auxiliary row for this triple, creating
+    it if absent.
+
+    A row is uniquely identified by
+    ``(library_id, kind, content_digest)``. Identical content for the
+    same library and kind returns the existing row's id and does NOT
+    create a second row. A CHANGED payload (a different content
+    digest) creates a new row alongside the prior one; both stay
+    readable and immutable.
+
+    The ``payload`` column stores the complete original auxiliary
+    map as JSON, preserving every nested structure and every
+    original string verbatim. The canonical form used for the
+    digest is key-sorted, but the stored payload is NOT
+    re-serialized in any way that would change strings, the order
+    of items in a list, the number-form of a number, or the
+    presence of an empty mapping. A round trip through
+    ``record_auxiliary`` then ``list_auxiliary`` returns a value
+    that compares equal to the input.
+    """
+    if not isinstance(library_id, int) or isinstance(library_id, bool):
+        raise TypeError(
+            f"library_id must be an int, got {type(library_id).__name__}"
+        )
+    if kind not in AUXILIARY_KINDS:
+        raise ValueError(
+            f"kind must be one of {AUXILIARY_KINDS}, got {kind!r}"
+        )
+    if not isinstance(payload, dict):
+        raise TypeError(
+            f"payload must be a dict, got {type(payload).__name__}"
+        )
+    digest = canonical_digest(payload)
+    existing = db.one(
+        "SELECT id FROM auxiliary_resource "
+        "WHERE library_id = ? AND kind = ? AND content_digest = ?",
+        library_id, kind, digest,
+    )
+    if existing is not None:
+        return int(existing["id"])
+    return int(db.run(
+        """INSERT INTO auxiliary_resource
+           (library_id, kind, content_digest, payload, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        library_id, kind, digest,
+        _encode_payload(payload),
+        db.now(),
+    ))
+
+
+def list_auxiliary(
+    library_id: int,
+    kind: str | None = None,
+) -> list[dict]:
+    """Every auxiliary row for ``library_id``, optionally narrowed by
+    ``kind``.
+
+    The result is ordered by id ascending, which is also the order
+    the rows were recorded. The returned dicts carry the decoded
+    ``payload`` Python value.
+    """
+    if kind is None:
+        rows = db.q(
+            "SELECT * FROM auxiliary_resource WHERE library_id = ? ORDER BY id",
+            library_id,
+        )
+    else:
+        rows = db.q(
+            "SELECT * FROM auxiliary_resource "
+            "WHERE library_id = ? AND kind = ? "
+            "ORDER BY id",
+            library_id, kind,
+        )
+    return [_decode_auxiliary(r) for r in rows]
+
+
 # -- Internal helpers -------------------------------------------------------
 
 
@@ -317,4 +409,13 @@ def _decode_revision(row: Any) -> dict:
             out[col] = json.loads(raw)
         elif isinstance(raw, str):
             out[col] = {}
+    return out
+
+
+def _decode_auxiliary(row: Any) -> dict:
+    """Decode the JSON payload column of a fetched auxiliary row in place."""
+    out = dict(row)
+    raw = out.get("payload")
+    if isinstance(raw, str) and raw:
+        out["payload"] = json.loads(raw)
     return out
