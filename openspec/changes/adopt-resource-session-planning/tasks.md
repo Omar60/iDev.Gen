@@ -1,6 +1,43 @@
 ## 1. Source coverage and compatibility baseline
 
-- [ ] 1.1 Inventory all operator-selected source libraries and auxiliary maps, recording shapes, field roles and readable consumer evidence without copying source prose into tracked files; verify every discovered file has a coverage-ledger entry and every pending item has a reason.
+- [x] 1.1 Inventory all operator-selected source libraries and auxiliary maps, recording shapes, field roles and readable consumer evidence without copying source prose into tracked files; verify every discovered file has a coverage-ledger entry and every pending item has a reason.
+
+  > 1.1 status: **complete.** The private nine-file ledger was
+  > generated successfully and all verification commands passed.
+  >
+  > The operator-selected corpus (nine scene-library JSON files in
+  > the named operator directory) was inventoried by
+  > `inventory_source_dir`. The private ledger was written to
+  > `data/resource-ledger.json` (a gitignored, untracked location;
+  > it does not enter the repository). Every discovered file
+  > produced exactly one entry; every non-OK status carries a
+  > non-empty `reason`; the two `not_adopted` files are recorded
+  > with their structural schema (not silently reduced), each
+  > carrying a structural note that names the pattern. The dynamic
+  > identity-like outer keys the operator's data uses are NEVER
+  > emitted anywhere in the artifact. The `perspective_scenes`
+  > library is recorded as a known shape without any claim of
+  > compiled behavior parity. No source corpus JSON was copied
+  > into the repository.
+  >
+  > The walk was extended to recognise three patterns the
+  > operator's data uses that the previous walk could not:
+  > - `keyed_record_collection`: a dict whose values share an
+  >   inner record schema;
+  > - `list_keyed_collection`: a dict whose values are uniformly
+  >   lists;
+  > - `scalar_keyed_collection`: a dict of scalars.
+  > In all three, the OUTER keys (the part of the source most
+  > likely to carry personal or profile identifiers) are not
+  > emitted; the inner schema is what the ledger records.
+  >
+  > Verification commands and outcomes (all pass):
+  > - `python -m pytest tests/test_resource_ledger.py` (all pass)
+  > - `python -m pytest tests/test_no_personal_data.py` (all pass)
+  > - `python -m pytest` (the full backend suite, all pass)
+  >
+  > The aggregate pass count is reported by pytest at run time;
+  > this note does not record a hard-coded total.
 - [ ] 1.2 Define the supported field mappings and explicit adaptations for accepted scene, perspective and auxiliary resources; verify each source field is classified and no required preparation field is silently unused. Record compiled behavior as unverified rather than claim parity.
 - [ ] 1.3 Capture invented legacy session fixtures for text-to-image, editing and guided workflows; verify existing prompt composition, wardrobe overrides and evidence remain unchanged before new-mode work.
 
