@@ -740,6 +740,15 @@ def _build_file_report(file_path: Path, library_key: str) -> FileReport:
             )],
         )
     fingerprint, data = read
+    return _build_file_report_from_verified(fingerprint, data, library_key)
+
+
+def _build_file_report_from_verified(
+    fingerprint: FileFingerprint,
+    data: bytes,
+    library_key: str,
+) -> FileReport:
+    """Classify bytes already read and fingerprinted by the caller."""
     payload = _parse_payload(data, fingerprint.path)
     if isinstance(payload, UnreadableFile):
         # The file is well-formed text but not valid JSON. The
@@ -1078,9 +1087,10 @@ def _verify_and_partition(
     list[tuple[FileReport, bytes]],
     list[FileReport],
     list[tuple[str, str, str]],
+    list[tuple[FileReport, FileFingerprint, bytes]],
 ]:
     """Verify every file's fingerprint and partition the preview
-    into three lists.
+    into four lists.
 
     The verification reads each file ONCE, computes the
     fingerprint from those bytes, and returns the same bytes for
@@ -1104,10 +1114,13 @@ def _verify_and_partition(
         unless the file was already unresolved at preview time:
         those are kept in ``unresolved_to_skip`` instead, so a
         good file alongside a bad file is not held hostage.
+      * ``verified``: fingerprint-matching file reports and the
+        exact bytes used to rebuild their classifications.
     """
     to_persist: list[tuple[FileReport, bytes]] = []
     unresolved_to_skip: list[FileReport] = []
     mismatches: list[tuple[str, str, str]] = []
+    verified: list[tuple[FileReport, FileFingerprint, bytes]] = []
     for file_report in preview.files:
         if file_report.fingerprint is None:
             # Unreadable at preview: no fingerprint, no commit
@@ -1132,6 +1145,7 @@ def _verify_and_partition(
                 current_fp.content_sha256,
             ))
             continue
+        verified.append((file_report, current_fp, current_data))
         # The fingerprint matches. If the preview already marked
         # the file as a file-read error (e.g. invalid JSON), the
         # matched bytes are still not parseable, so there is
@@ -1143,7 +1157,117 @@ def _verify_and_partition(
             unresolved_to_skip.append(file_report)
             continue
         to_persist.append((file_report, current_data))
-    return to_persist, unresolved_to_skip, mismatches
+    return to_persist, unresolved_to_skip, mismatches, verified
+
+
+class PreviewMismatchError(ValueError):
+    """The supplied preview was altered or no longer matches its source."""
+
+
+def _file_reports_equal(expected: FileReport, supplied: FileReport) -> bool:
+    """Compare report semantics while allowing diagnostic mtime drift."""
+    if (
+        expected.file_path != supplied.file_path
+        or expected.library_key != supplied.library_key
+        or expected.total_inputs != supplied.total_inputs
+        or len(expected.accepted_outcomes) != len(supplied.accepted_outcomes)
+        or len(expected.auxiliary_outcomes) != len(supplied.auxiliary_outcomes)
+        or len(expected.duplicate_identifiers) != len(supplied.duplicate_identifiers)
+        or len(expected.unresolved) != len(supplied.unresolved)
+    ):
+        return False
+    if expected.fingerprint is None or supplied.fingerprint is None:
+        if expected.fingerprint is not supplied.fingerprint:
+            return False
+    elif not expected.fingerprint.matches(supplied.fingerprint):
+        return False
+    return (
+        expected.accepted_outcomes == supplied.accepted_outcomes
+        and expected.auxiliary_outcomes == supplied.auxiliary_outcomes
+        and expected.duplicate_identifiers == supplied.duplicate_identifiers
+        and expected.unresolved == supplied.unresolved
+    )
+
+
+def _validate_unreadable_report(file_report: FileReport) -> None:
+    """Recheck a no-fingerprint report without importing its file."""
+    if (
+        file_report.total_inputs != 1
+        or file_report.fingerprint is not None
+        or file_report.accepted_outcomes
+        or file_report.auxiliary_outcomes
+        or file_report.duplicate_identifiers
+        or len(file_report.unresolved) != 1
+    ):
+        raise PreviewMismatchError(
+            "serialized preview does not match the unreadable-file outcome"
+        )
+    current = _read_file_bytes(Path(file_report.file_path))
+    if not isinstance(current, UnreadableFile):
+        raise PreviewMismatchError(
+            "serialized preview source is readable now; create a fresh preview"
+        )
+    expected = FileReport(
+        file_path=current.path,
+        library_key=file_report.library_key,
+        total_inputs=1,
+        fingerprint=None,
+        unresolved=[UnresolvedItem(
+            bucket=BUCKET_FILE_READ_ERROR,
+            index=0,
+            reason=current.reason,
+        )],
+    )
+    if not _file_reports_equal(expected, file_report):
+        raise PreviewMismatchError(
+            "serialized preview does not match the unreadable-file outcome"
+        )
+
+
+def _validate_preview_matches_source(
+    preview: PreviewReport,
+    verified: list[tuple[FileReport, FileFingerprint, bytes]],
+) -> None:
+    """Recompute all classifications before the commit transaction.
+
+    The serialized report is a review artifact, not an authority. The parser,
+    classification helpers and current database state rebuild the expected
+    report from the bytes whose fingerprints just matched. Any omitted,
+    injected or altered outcome therefore fails before persistence begins.
+    """
+    verified_by_file = {
+        id(file_report): (fingerprint, data)
+        for file_report, fingerprint, data in verified
+    }
+    expected_files: list[FileReport] = []
+    for file_report in preview.files:
+        verified_data = verified_by_file.get(id(file_report))
+        if verified_data is None:
+            _validate_unreadable_report(file_report)
+            expected_files.append(file_report)
+            continue
+        fingerprint, data = verified_data
+        expected_files.append(
+            _build_file_report_from_verified(
+                fingerprint, data, file_report.library_key,
+            )
+        )
+
+    _detect_cross_file_duplicates(expected_files)
+    expected_missing = _compute_missing_source_entries(expected_files)
+    if len(expected_files) != len(preview.files):
+        raise PreviewMismatchError("serialized preview file count does not match")
+    if any(
+        not _file_reports_equal(expected, supplied)
+        for expected, supplied in zip(expected_files, preview.files)
+    ):
+        raise PreviewMismatchError(
+            "serialized preview outcomes do not match the current source classification"
+        )
+    if expected_missing != preview.missing_source_entries:
+        raise PreviewMismatchError(
+            "serialized preview missing-source entries do not match the current database"
+        )
 
 
 def commit_import(
@@ -1187,9 +1311,15 @@ def commit_import(
          unresolved file reports that were preserved from the
          preview.
     """
-    to_persist, unresolved_to_skip, mismatches = _verify_and_partition(preview)
+    (
+        to_persist,
+        unresolved_to_skip,
+        mismatches,
+        verified,
+    ) = _verify_and_partition(preview)
     if mismatches:
         raise StaleFingerprintError(mismatches)
+    _validate_preview_matches_source(preview, verified)
 
     # All files appear in the CommitReport: the to-persist files
     # are added as the write proceeds, the unresolved-to-skip
@@ -1375,7 +1505,7 @@ __all__ = (
     "AcceptedEntryOutcome", "AuxiliaryOutcome",
     "DuplicateIdentifier", "UnresolvedItem", "MissingSourceEntry",
     "FileReport", "PreviewReport", "CommitReport",
-    "StaleFingerprintError", "CommitAborted",
+    "StaleFingerprintError", "PreviewMismatchError", "CommitAborted",
     "CLASSIFICATION_NEW", "CLASSIFICATION_UNCHANGED", "CLASSIFICATION_UPDATED",
     "ALL_CLASSIFICATIONS",
     "BUCKET_AUXILIARY", "BUCKET_MALFORMED", "BUCKET_UNSUPPORTED",

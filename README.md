@@ -74,6 +74,42 @@ the largest count that would have worked. On a young catalogue strict is the
 mode that queues nothing, which is the table being honest and not the feature
 being broken. See [sessions](docs/sessions.md#composing-from-the-catalogue).
 
+## Resource libraries
+
+The resource path keeps complete accepted entries and immutable revisions in the
+local SQLite database without changing the legacy Rooms import. The app exposes
+library and exact-revision inspection at `/api/resources/libraries` and
+`/api/resources/revisions/{library_key}/{source_id}/{content_digest}`. Revision
+details include provenance, digests, translation, coverage and readiness; a
+digest is required so an older revision is never silently replaced by a newer
+one.
+
+Imports are two explicit operations at `/api/resources/import/preview` and
+`/api/resources/import/commit`. Preview reads and classifies selected JSON files
+without writing resource libraries or revisions; it does create private local
+attestation metadata required for the one-time commit. Commit consumes the
+serialized preview, rechecks the source fingerprints and writes the accepted
+set atomically. A changed source requires a fresh preview, and a refresh creates
+a new revision while missing entries remain reported rather than deleted.
+Required English translations gate readiness; accepted untranslated data remains
+inspectable and pending.
+
+The same service is available from the CLI:
+
+```bash
+python scripts/import_resources.py preview --selection PATH=LIBRARY_KEY \
+  --preview-out preview.json --report-out report.json
+python scripts/import_resources.py commit --preview preview.json \
+  --report-out report.json
+```
+
+The CLI and app produce the same safe report. Report artifacts contain counts,
+identifiers, classifications and digests, not source prose or machine paths.
+The private preview file carries a one-time local attestation; its signing
+secret stays in the configured data directory and is never serialized. It
+expires after one day and is consumed by a successful commit, so do not move
+or edit the preview between preview and commit.
+
 ## Library
 
 Sessions are reachable through the model that owns them — **Library** lists

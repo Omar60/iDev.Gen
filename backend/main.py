@@ -42,6 +42,8 @@ from runner import Runner, slug
 from backend.importer import TranslationMissingError, import_source
 from backend.room_registry import DEFAULT_ROOM_LIBRARIES, available_rooms
 from backend.mining import combination_breakage, load_mined_combinations
+from backend import resource_service
+from backend.resource_import import CommitAborted, StaleFingerprintError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -1228,6 +1230,69 @@ class RoomImportIn(BaseModel):
     source_dir: str
     map_path: str
     data_dir: str | None = None
+
+
+class ResourceSelectionIn(BaseModel):
+    path: str
+    library_key: str
+
+
+class ResourcePreviewIn(BaseModel):
+    selections: list[ResourceSelectionIn]
+
+
+class ResourceCommitIn(BaseModel):
+    preview: dict
+
+
+@app.get("/api/resources/libraries")
+def list_resource_libraries():
+    """List locally imported resource libraries and exact revision metadata."""
+    return resource_service.list_resource_libraries()
+
+
+@app.get("/api/resources/libraries/{library_key}")
+def get_resource_library(library_key: str):
+    """Inspect one resource library without selecting a latest revision."""
+    library = resource_service.get_resource_library(library_key)
+    if library is None:
+        raise HTTPException(404, "resource library not found")
+    return library
+
+
+@app.get("/api/resources/revisions/{library_key}/{source_id}/{content_digest}")
+def get_resource_revision(library_key: str, source_id: str, content_digest: str):
+    """Read one immutable revision by its complete natural identity."""
+    revision = resource_service.get_resource_revision(
+        library_key, source_id, content_digest,
+    )
+    if revision is None:
+        raise HTTPException(404, "resource revision not found")
+    return revision
+
+
+@app.post("/api/resources/import/preview")
+def preview_resource_import(p: ResourcePreviewIn):
+    """Preview files without resource rows; serialization records private attestation metadata."""
+    preview = resource_service.preview_import(
+        (item.path, item.library_key) for item in p.selections
+    )
+    return {
+        "preview": resource_service.preview_to_dict(preview),
+        "report": resource_service.safe_report(preview),
+    }
+
+
+@app.post("/api/resources/import/commit")
+def commit_resource_import(p: ResourceCommitIn):
+    """Commit exactly the supplied preview and preserve its fingerprint gate."""
+    try:
+        report = resource_service.commit_import(p.preview)
+    except StaleFingerprintError as exc:
+        raise HTTPException(409, "resource source changed; create a fresh preview") from exc
+    except (CommitAborted, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"report": resource_service.safe_report(report)}
 
 
 def _adopt_config(cfg: dict) -> None:

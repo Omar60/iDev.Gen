@@ -75,6 +75,37 @@ string is not imported here: it is cut into rows first, by
 `scripts/mine_perspective_scenes.py`, and only the room part of each entry
 reaches a seed file. See the Rooms section of the README.
 
+## Resource import API and CLI
+
+Resource import is separate from the legacy room-seed route. The app exposes:
+
+- `GET /api/resources/libraries` for library and revision metadata.
+- `GET /api/resources/revisions/{library_key}/{source_id}/{content_digest}`
+  for one exact immutable revision.
+- `POST /api/resources/import/preview` with selected `{path, library_key}`
+  pairs. This writes no resource libraries or revisions, but creates private
+  local attestation metadata required for the one-time commit.
+- `POST /api/resources/import/commit` with the serialized preview returned by
+  preview. The commit rechecks every source fingerprint and is atomic.
+
+The CLI uses the same service boundary as the app:
+
+```bash
+python scripts/import_resources.py preview --selection PATH=LIBRARY_KEY \
+  --preview-out preview.json --report-out report.json
+python scripts/import_resources.py commit --preview preview.json \
+  --report-out report.json
+```
+
+Set `IDEVGEN_DATA_DIR` and `IDEVGEN_CONFIG` as usual. The report artifact is a
+safe summary of counts, identifiers, classifications and digests; it does not
+contain source prose or machine paths. The serialized preview is an internal
+commit input with a one-time local attestation: its secret stays in the
+configured data directory, it expires after one day, and a successful commit
+consumes it. A changed or edited preview therefore requires a fresh preview.
+Resource readiness is translation-pending until required English fields are
+available; importing data does not automatically make it generation-ready.
+
 ## Reaching the app from a phone
 
 The default `start.bat` binds loopback only — a public repository should not,
