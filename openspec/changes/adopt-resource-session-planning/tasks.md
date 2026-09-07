@@ -155,7 +155,70 @@
 
 ## 2. Complete local resource storage
 
-- [ ] 2.1 Add additive SQLite migrations for resource libraries and immutable revisions with separate translation and coverage data; verify full nested-object round trips, revision uniqueness and repeated migration against isolated databases.
+- [x] 2.1 Add additive SQLite migrations for resource libraries and immutable revisions with separate translation and coverage data; verify full nested-object round trips, revision uniqueness and repeated migration against isolated databases.
+
+  > 2.1 status: **complete.** Two new tables were added to
+  > `backend.db.SCHEMA` additively (no existing table was modified, no
+  > legacy row was rewritten, no destructive down-migration runs):
+  >
+  > - `resource_library(id, library_key UNIQUE, display_name, kind, created_at)` —
+  >   a named, safe identity for a source library. The unique key on
+  >   `library_key` makes library registration idempotent.
+  > - `asset_revision(id, library_id FK CASCADE, source_id, content_digest,
+  >   payload, translation DEFAULT '{}', coverage DEFAULT '{}',
+  >   created_at, UNIQUE(library_id, source_id, content_digest))` —
+  >   the immutable unit of evidence. `payload` stores the complete
+  >   original accepted object as JSON (every nested structure and
+  >   original string preserved verbatim); `translation` and `coverage`
+  >   are stored in their own JSON columns so they can be filled or
+  >   updated without rewriting the original payload. The composite
+  >   unique key is what makes the spec's "no duplicate revisions for
+  >   identical content, new immutable revision for changed content"
+  >   rule enforceable at the SQL level.
+  >
+  > The Python persistence surface is `backend.resource_store`, kept
+  > deliberately narrow: `canonical_digest`, `ensure_library`,
+  > `record_revision`, `get_revision`, `list_revisions`,
+  > `list_libraries`. The digest is canonical (key-sorted) so two
+  > payloads that compare equal as JSON values produce the same
+  > revision, and whole-number floats are normalised to int so `1.0`
+  > and `1` share a digest across platforms.
+  >
+  > Verified with isolated, invented-data tests in
+  > `tests/test_resource_store.py` (46 focused tests):
+  > - a full nested payload round-trips byte-for-byte (escapes,
+  >   newlines, tabs, nested dicts, nested lists, `None`, empty
+  >   containers, whole-number floats);
+  > - translation and coverage data remain independent of the original
+  >   payload when each is rewritten in isolation;
+  > - identical `(library, source_id, content)` does NOT create a
+  >   duplicate revision (the unique key refuses a direct second
+  >   INSERT at the SQL level, so a future code path cannot quietly
+  >   disable the rule);
+  > - changed content for the same `(library, source_id)` creates a
+  >   new immutable revision alongside the prior one, and the prior
+  >   row's stored payload text is byte-for-byte unchanged;
+  > - `db.connect(path)` can be called repeatedly on the same
+  >   isolated database without raising or losing data, and a
+  >   database written before the migration gains the new tables on
+  >   reopen while every legacy row survives;
+  > - the legacy schema and data required by existing tests remain
+  >   byte-for-byte unchanged;
+  > - direct SQL UPDATEs of the protected revision identity,
+  >   provenance and payload columns are rejected at the schema
+  >   level (a `BEFORE UPDATE OF <protected>` trigger raises
+  >   `RAISE(ABORT, ...)` and leaves the original row intact),
+  >   while `translation` and `coverage` remain independently
+  >   writable at the SQL level so a later task can fill or
+  >   update them without rewriting the original payload.
+  >
+  > Verification commands and outcomes (all pass):
+  > - `python -m pytest tests/test_resource_store.py` (46 pass)
+  > - `python -m pytest tests/test_resource_store.py tests/test_db_migrate.py
+  >   tests/test_no_personal_data.py` (60 pass)
+  > - `python -m pytest tests/test_shoot_checks.py` (36 pass;
+  >   no control characters, no trailing whitespace in the new files)
+  > - `git diff --check` is clean (no whitespace errors)
 - [ ] 2.2 Implement shared resource parsing before persistence, retaining accepted unfamiliar fields and reporting unsupported shapes; verify invented fixtures cover fused records, auxiliary files and malformed input, and that no source entry is filtered out of the database or the import report by content.
 - [ ] 2.3 Implement preview and atomic commit bound to source fingerprints; verify changed-source rejection, duplicate-ID reporting, simulated transaction failure rollback and count reconciliation across all outcomes.
 - [ ] 2.4 Implement translation-pending readiness separately from original payload retention; verify accepted untranslated data stays private, English output readiness is enforced and legacy translation-first imports retain their behavior.

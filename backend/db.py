@@ -298,6 +298,93 @@ CREATE UNIQUE INDEX IF NOT EXISTS outfit_key ON outfit (key);
 
 CREATE INDEX IF NOT EXISTS ix_shot_session ON shot(session_id);
 CREATE INDEX IF NOT EXISTS ix_session_model ON session(model_id);
+
+-- Resource libraries: a named, safe identity for a source-library the
+-- operator has registered. Created on demand by the resource-store
+-- service; never created implicitly. Carries no source prose: the
+-- library_key is a safe identifier and the display_name is a short
+-- human label. The kind column follows the six-value vocabulary the
+-- preparation contract in ``backend.resource_prompts`` already names
+-- (rooms, fused_scenes, translation_map, cut_map, mined_families,
+-- mined_labels) and is otherwise empty.
+--
+-- Additive on purpose: existing tables are untouched, legacy rows
+-- survive every upgrade, and the unique key on library_key is what
+-- makes library registration idempotent (a re-register of an existing
+-- key returns the existing row, no second row is written).
+CREATE TABLE IF NOT EXISTS resource_library (
+    id            INTEGER PRIMARY KEY,
+    library_key   TEXT NOT NULL UNIQUE,
+    display_name  TEXT NOT NULL DEFAULT '',
+    kind          TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL
+);
+
+-- Immutable asset revisions. A revision is the unit of evidence for a
+-- single (library, source_id, content_digest) triple: the full
+-- accepted source object is stored as JSON in ``payload`` (preserving
+-- every nested structure and every original string verbatim), and the
+-- translation and field-coverage data live in their own JSON columns
+-- so they can be updated without rewriting the original payload.
+--
+-- A revision is immutable: there is no UPDATE path, and the unique
+-- key (library_id, source_id, content_digest) makes the row identity
+-- a property of the content. A second call with the same triple does
+-- NOT create a duplicate revision; a second call with a different
+-- content (a changed source entry) creates a new immutable revision
+-- while the prior one stays readable. This is what the spec means by
+-- "explicit uniqueness constraints that prevent duplicate revisions
+-- for identical content while allowing a changed source entry to
+-- create a new immutable revision".
+--
+-- Additive on purpose: existing tables and legacy rows are untouched.
+CREATE TABLE IF NOT EXISTS asset_revision (
+    id             INTEGER PRIMARY KEY,
+    library_id     INTEGER NOT NULL REFERENCES resource_library(id) ON DELETE CASCADE,
+    source_id      TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    payload        TEXT NOT NULL,           -- complete original accepted object, JSON
+    translation    TEXT NOT NULL DEFAULT '{}',  -- English translations, JSON, separate from payload
+    coverage       TEXT NOT NULL DEFAULT '{}',  -- field-coverage data, JSON, separate from payload
+    created_at     TEXT NOT NULL,
+    UNIQUE(library_id, source_id, content_digest)
+);
+
+CREATE INDEX IF NOT EXISTS ix_asset_revision_library_source
+    ON asset_revision(library_id, source_id);
+
+-- Immutability guard for asset_revision. The columns that define a
+-- revision's identity (id), its provenance (library_id, source_id,
+-- content_digest), its accepted content (payload) and its recording
+-- time (created_at) MUST NOT be rewritten after the row is written.
+-- A direct SQL UPDATE that names one of those columns in its SET
+-- clause is rejected at the SQL level with an explicit error and
+-- the original row is left intact. The translation and coverage
+-- columns are deliberately NOT in the OF list: a later task can
+-- fill them in or update them without touching the original
+-- payload, which is the "translation and coverage data remain
+-- separate from the original payload" rule the spec requires.
+--
+-- The trigger is BEFORE UPDATE OF <col>, not a row-level WHEN
+-- clause, so a hand-rolled UPDATE that mentions a protected column
+-- is rejected whether or not the new value differs from the old.
+-- This pins the immutability to the schema: a future code path
+-- that builds an UPDATE statement cannot quietly bypass the
+-- service-level record_revision contract, and the only way to
+-- rewrite a revision is to DROP the trigger, which is a destructive
+-- schema change an operator notices.
+--
+-- The CREATE TRIGGER IF NOT EXISTS makes this additive: fresh
+-- databases get the trigger on the first connect, and an older
+-- database that has the table but predates the trigger gets it on
+-- the next connect (SCHEMA runs on every db.connect call). No
+-- destructive down-migration runs.
+CREATE TRIGGER IF NOT EXISTS asset_revision_protect_immutable
+BEFORE UPDATE OF id, library_id, source_id, content_digest, payload, created_at
+ON asset_revision
+BEGIN
+  SELECT RAISE(ABORT, 'asset_revision is immutable: id, library_id, source_id, content_digest, payload and created_at cannot be rewritten after the row is written. Only translation and coverage remain independently writable.');
+END;
 """
 
 _conn: sqlite3.Connection | None = None
