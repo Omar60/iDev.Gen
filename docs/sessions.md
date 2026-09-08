@@ -1261,6 +1261,44 @@ where *every* shot failed is **failed**, and one you stopped is **cancelled**.
 Closing the app mid-run leaves the session marked failed on the next start,
 because nothing is polling that job any more. Retry picks it back up.
 
+## Resource plan preparation
+
+Sessions created with `composition_mode: "resource-v1"` can persist preparation
+incrementally against the current saved plan revision. The preparation key is
+exactly `(session_id, plan_revision, take_id)`: the session must exist, use
+resource mode, the revision must still be current, and the take id must exist in
+that revision.
+
+Preparation uses two writes:
+
+- `POST /api/sessions/{sid}/plan/preparations/begin` records the take as
+  `pending` before lengthy preparation work starts.
+- `POST /api/sessions/{sid}/plan/preparations/complete` atomically changes that
+  pending row to `ready` while saving `final_prompt`, `effective_state`,
+  `mapping_version`, `compiler_version`, and `provenance` together.
+
+`GET /api/sessions/{sid}/plan` includes a `preparation` object. Its `completed`
+list contains current-revision `ready` and `generated` snapshots. Its
+`incomplete` list contains current takes that are `pending` or have no
+preparation row yet. Older revisions and invalidated rows are returned as
+`history`; they are not active results for the current revision. Reading or
+reopening a plan never starts preparation and never regenerates a completed
+take.
+
+A finalized `ready`, `generated`, or `invalidated` snapshot is immutable
+history. An identical completion retry can return the existing row, but a
+different snapshot is refused instead of overwriting it. Saving a newer plan
+revision keeps the existing invalidation rule: only older `pending` and `ready`
+rows are invalidated; `generated`, already-invalidated, and rows already keyed
+to the new revision are left intact.
+
+If persistence fails while finalizing a take, the request returns an error and
+the transaction rolls back. The interrupted row remains resumable instead of
+being exposed as `ready`, and previously completed snapshots remain unchanged.
+These routes do not compile prompts, submit jobs, queue ComfyUI work, or adapt
+conflicts. Legacy sessions are refused by the resource-plan routes and keep
+their existing composition behavior.
+
 ### Which rooms this run would refuse
 
 A composed run is refused before anything is queued when its room puts other

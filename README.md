@@ -286,6 +286,21 @@ camera angles, scene + subject, guided paint): a session of that kind then
 offers it, and offers nothing else. Untagged graphs stay offered everywhere, so an existing
 setup keeps working untouched.
 
+## Resource session plan preparation
+
+`resource-v1` session plans persist preparation one take at a time. A caller
+first records a take as `pending`, then finalizes that same
+`(session_id, plan_revision, take_id)` as `ready` with its complete prompt,
+effective state, mapping/compiler versions, and provenance snapshot. Reopening
+the plan reports `ready` and `generated` takes as completed and `pending` or
+missing takes as resumable; it does not regenerate anything during the read.
+
+Completed or invalidated snapshots are history. Repeating the exact completed
+snapshot is idempotent, while an attempt to replace it with different data is
+refused. Persistence failures are returned as errors and leave interrupted work
+pending without discarding already completed snapshots. Legacy sessions do not
+use these plan-preparation routes. See [sessions](docs/sessions.md#resource-plan-preparation).
+
 ## How a run works
 
 - The queue is **serial**: one photo at a time, one active session. One GPU.

@@ -159,6 +159,14 @@ class PlanConstantsFrozenAfterGenerated(Exception):
     """
 
 
+class PreparedTakeConflict(Exception):
+    """A prepared-take snapshot would overwrite immutable history."""
+
+
+class PreparedTakePersistenceError(Exception):
+    """A prepared-take write failed and was rolled back."""
+
+
 # -- Validation -------------------------------------------------------------
 
 
@@ -856,6 +864,291 @@ def get_draft(session_id: int) -> dict | None:
     return {
         "plan_revision": int(row["plan_revision"]),
         "plan": json.loads(row["plan_json"]),
+    }
+
+
+def _load_current_resource_plan(session_id: int) -> tuple[int, dict]:
+    """Return the current resource-v1 plan after validating the session mode."""
+    session = db.one(
+        "SELECT id, settings FROM session WHERE id = ?",
+        session_id,
+    )
+    if session is None:
+        raise SessionNotFound(f"session {session_id} not found")
+    mode = read_composition_mode(session["settings"])
+    if mode != MODE_RESOURCE_V1:
+        raise SessionNotInResourceMode(
+            f"session {session_id} composition_mode is {mode!r}, "
+            f"expected {MODE_RESOURCE_V1!r}"
+        )
+    row = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    if row is None:
+        raise PlanRevisionStale(
+            f"session {session_id} has no saved plan revision to prepare"
+        )
+    try:
+        plan = json.loads(row["plan_json"])
+    except json.JSONDecodeError as exc:
+        raise PreparedTakePersistenceError(
+            f"session {session_id} stored plan could not be read"
+        ) from exc
+    if not isinstance(plan, dict):
+        raise PreparedTakePersistenceError(
+            f"session {session_id} stored plan is not an object"
+        )
+    return int(row["plan_revision"]), plan
+
+
+def _validate_preparation_target(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+) -> dict:
+    """Validate the exact session, revision and take preparation key."""
+    actual_revision, plan = _load_current_resource_plan(session_id)
+    if actual_revision != plan_revision:
+        raise PlanRevisionStale(
+            f"session {session_id} plan revision is {actual_revision}, "
+            f"requested preparation revision is {plan_revision}"
+        )
+    if not isinstance(take_id, str) or not take_id:
+        raise PlanValidationError("take_id must be a non-empty string")
+    take_ids = {
+        take.get("take_id")
+        for take in plan.get("takes", [])
+        if isinstance(take, dict)
+    }
+    if take_id not in take_ids:
+        raise PlanValidationError(
+            f"take_id {take_id!r} is not present in plan revision {plan_revision}"
+        )
+    return plan
+
+
+def _decode_prepared_take(row: dict) -> dict:
+    """Decode the JSON snapshot columns without rewriting their row."""
+    decoded = dict(row)
+    try:
+        decoded["effective_state"] = json.loads(decoded["effective_state"])
+        decoded["provenance"] = json.loads(decoded["provenance"])
+    except json.JSONDecodeError as exc:
+        raise PreparedTakePersistenceError(
+            f"prepared take {row.get('id')} contains unreadable snapshot JSON"
+        ) from exc
+    return decoded
+
+
+def _prepared_take_row(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+) -> dict | None:
+    return db.one(
+        "SELECT id, session_id, plan_revision, take_id, final_prompt, "
+        "effective_state, mapping_version, compiler_version, provenance, "
+        "status, linked_shot_id, created_at, updated_at "
+        "FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+        "AND take_id = ?",
+        session_id, plan_revision, take_id,
+    )
+
+
+def _encode_snapshot_json(value: Any, field_name: str) -> str:
+    try:
+        return json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise PlanValidationError(
+            f"{field_name} must be JSON serializable"
+        ) from exc
+
+
+def begin_preparation(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+) -> dict:
+    """Persist pending before lengthy work and return the durable row."""
+    try:
+        with db.transaction():
+            _validate_preparation_target(session_id, plan_revision, take_id)
+            existing = _prepared_take_row(session_id, plan_revision, take_id)
+            if existing is not None:
+                if existing["status"] == PREPARED_TAKE_STATUS_INVALIDATED:
+                    raise PreparedTakeConflict(
+                        f"prepared take {take_id!r} at plan revision "
+                        f"{plan_revision} is invalidated history"
+                    )
+                return _decode_prepared_take(existing)
+            now = db.now()
+            db.run(
+                "INSERT INTO prepared_take "
+                "(session_id, plan_revision, take_id, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                session_id, plan_revision, take_id,
+                PREPARED_TAKE_STATUS_PENDING, now, now,
+            )
+            row = _prepared_take_row(session_id, plan_revision, take_id)
+            if row is None:
+                raise PreparedTakePersistenceError(
+                    f"pending prepared take {take_id!r} was not persisted"
+                )
+            return _decode_prepared_take(row)
+    except (
+        SessionNotFound,
+        SessionNotInResourceMode,
+        PlanRevisionStale,
+        PlanValidationError,
+        PreparedTakeConflict,
+        PreparedTakePersistenceError,
+    ):
+        raise
+    except Exception as exc:
+        raise PreparedTakePersistenceError(
+            f"could not persist pending prepared take {take_id!r}: {exc}"
+        ) from exc
+
+
+def complete_preparation(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    *,
+    final_prompt: str,
+    effective_state: Any,
+    mapping_version: str,
+    compiler_version: str,
+    provenance: Any,
+) -> dict:
+    """Atomically transition one durable pending row to ready."""
+    if not isinstance(final_prompt, str):
+        raise PlanValidationError("final_prompt must be a string")
+    if not final_prompt.strip():
+        raise PlanValidationError("final_prompt must be a non-empty string")
+    if not isinstance(mapping_version, str):
+        raise PlanValidationError("mapping_version must be a string")
+    if not mapping_version.strip():
+        raise PlanValidationError("mapping_version must be a non-empty string")
+    if not isinstance(compiler_version, str):
+        raise PlanValidationError("compiler_version must be a string")
+    if not compiler_version.strip():
+        raise PlanValidationError("compiler_version must be a non-empty string")
+    encoded_state = _encode_snapshot_json(effective_state, "effective_state")
+    encoded_provenance = _encode_snapshot_json(provenance, "provenance")
+    desired = (
+        final_prompt,
+        encoded_state,
+        mapping_version,
+        compiler_version,
+        encoded_provenance,
+    )
+    try:
+        with db.transaction():
+            _validate_preparation_target(session_id, plan_revision, take_id)
+            existing = _prepared_take_row(session_id, plan_revision, take_id)
+            if existing is None:
+                raise PreparedTakeConflict(
+                    f"prepared take {take_id!r} has no pending row; begin it first"
+                )
+            current_snapshot = (
+                existing["final_prompt"],
+                existing["effective_state"],
+                existing["mapping_version"],
+                existing["compiler_version"],
+                existing["provenance"],
+            )
+            if existing["status"] != PREPARED_TAKE_STATUS_PENDING:
+                if current_snapshot == desired:
+                    return _decode_prepared_take(existing)
+                raise PreparedTakeConflict(
+                    f"prepared take {take_id!r} at plan revision {plan_revision} "
+                    f"is immutable {existing['status']} history and differs from "
+                    f"the requested snapshot"
+                )
+            now = db.now()
+            db.run(
+                "UPDATE prepared_take SET final_prompt = ?, effective_state = ?, "
+                "mapping_version = ?, compiler_version = ?, provenance = ?, "
+                "status = ?, updated_at = ? WHERE id = ? AND status = ?",
+                final_prompt, encoded_state, mapping_version, compiler_version,
+                encoded_provenance, PREPARED_TAKE_STATUS_READY, now,
+                existing["id"], PREPARED_TAKE_STATUS_PENDING,
+            )
+            row = _prepared_take_row(session_id, plan_revision, take_id)
+            if row is None or row["status"] != PREPARED_TAKE_STATUS_READY:
+                raise PreparedTakePersistenceError(
+                    f"prepared take {take_id!r} did not reach ready state"
+                )
+            return _decode_prepared_take(row)
+    except (
+        SessionNotFound,
+        SessionNotInResourceMode,
+        PlanRevisionStale,
+        PlanValidationError,
+        PreparedTakeConflict,
+        PreparedTakePersistenceError,
+    ):
+        raise
+    except Exception as exc:
+        raise PreparedTakePersistenceError(
+            f"could not persist ready prepared take {take_id!r}: {exc}"
+        ) from exc
+
+
+def recover_preparation(session_id: int) -> dict:
+    """Return completed, resumable and historical preparation for the plan."""
+    plan_revision, plan = _load_current_resource_plan(session_id)
+    ordered_take_ids = [
+        take["take_id"]
+        for take in plan.get("takes", [])
+        if isinstance(take, dict) and isinstance(take.get("take_id"), str)
+    ]
+    active_ids = set(ordered_take_ids)
+    rows = db.q(
+        "SELECT id, session_id, plan_revision, take_id, final_prompt, "
+        "effective_state, mapping_version, compiler_version, provenance, "
+        "status, linked_shot_id, created_at, updated_at "
+        "FROM prepared_take WHERE session_id = ? ORDER BY id",
+        session_id,
+    )
+    current_by_take: dict[str, dict] = {}
+    history: list[dict] = []
+    for row in rows:
+        is_current_active = (
+            int(row["plan_revision"]) == plan_revision
+            and row["take_id"] in active_ids
+            and row["status"] != PREPARED_TAKE_STATUS_INVALIDATED
+        )
+        if is_current_active:
+            current_by_take[row["take_id"]] = row
+        else:
+            history.append(_decode_prepared_take(row))
+
+    completed: list[dict] = []
+    incomplete: list[dict] = []
+    for take_id in ordered_take_ids:
+        row = current_by_take.get(take_id)
+        if row is None:
+            incomplete.append({"take_id": take_id, "status": "missing"})
+            continue
+        if row["status"] in (
+            PREPARED_TAKE_STATUS_READY,
+            PREPARED_TAKE_STATUS_GENERATED,
+        ):
+            completed.append(_decode_prepared_take(row))
+        elif row["status"] == PREPARED_TAKE_STATUS_PENDING:
+            incomplete.append({"take_id": take_id, "status": "pending"})
+        else:
+            history.append(_decode_prepared_take(row))
+    return {
+        "plan_revision": plan_revision,
+        "completed": completed,
+        "incomplete": incomplete,
+        "history": history,
     }
 
 

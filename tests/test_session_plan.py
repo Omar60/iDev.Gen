@@ -3884,3 +3884,459 @@ class TestConstantsIdentityAndExplicitInvalidation:
         draft = session_plan.get_draft(sid)
         assert draft["plan_revision"] == 1
         assert draft["plan"]["look"] == INV_LOOK
+
+
+# =====================================================================
+# 10. Incremental prepared-take persistence and recovery (task 3.4).
+# =====================================================================
+
+
+def _task34_plan(take_count: int = 3) -> dict:
+    """Return an invented resource-v1 plan for preparation tests."""
+    return {
+        "version": "resource-v1",
+        "look": "A quiet invented studio with soft side light.",
+        "initial_wardrobe": "a plain charcoal shirt and dark trousers",
+        "takes": [
+            {
+                "take_id": f"resume-{index:02d}",
+                "label": f"invented take {index:02d}",
+            }
+            for index in range(1, take_count + 1)
+        ],
+        "selected_resources": [],
+        "wardrobe_changes": [],
+    }
+
+
+def _task34_snapshot(index: int) -> dict:
+    """Return the complete persisted snapshot for one invented take."""
+    return {
+        "final_prompt": f"invented finalized prompt {index:02d}",
+        "effective_state": {
+            "take_index": index,
+            "wardrobe": ["charcoal shirt", "dark trousers"],
+            "settings": {"steps": 20 + index, "cfg": 1.0 + index / 10},
+        },
+        "mapping_version": "mapping-test-v1",
+        "compiler_version": "compiler-test-v1",
+        "provenance": {
+            "source": "invented preparation test",
+            "take_index": index,
+        },
+    }
+
+
+def _task34_resource_session(client, seeded, name: str) -> int:
+    response = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": name,
+        "composition_mode": "resource-v1",
+    })
+    assert response.status_code == 200, response.text
+    return response.json()["id"]
+
+
+def _task34_raw_prepared(session_id: int, revision: int, take_id: str) -> dict | None:
+    return db.one(
+        "SELECT id, session_id, plan_revision, take_id, final_prompt, "
+        "effective_state, mapping_version, compiler_version, provenance, "
+        "status, linked_shot_id, created_at, updated_at "
+        "FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+        "AND take_id = ?",
+        session_id, revision, take_id,
+    )
+
+
+class TestPreparedTakePersistenceAndRecovery:
+    def test_begin_is_durable_pending_and_complete_round_trips_full_snapshot(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "incremental preparation")
+        plan = _task34_plan()
+        saved = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert saved.status_code == 200, saved.text
+
+        begun = client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        )
+        assert begun.status_code == 200, begun.text
+        assert begun.json()["status"] == "pending"
+        pending = _task34_raw_prepared(sid, 1, "resume-01")
+        assert pending is not None
+        assert pending["status"] == "pending"
+        assert pending["final_prompt"] == ""
+        assert pending["effective_state"] == "{}"
+        assert pending["mapping_version"] == ""
+        assert pending["compiler_version"] == ""
+        assert pending["provenance"] == "{}"
+
+        snapshot = _task34_snapshot(1)
+        completed = client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-01", **snapshot},
+        )
+        assert completed.status_code == 200, completed.text
+        body = completed.json()
+        assert body["status"] == "ready"
+        for key, value in snapshot.items():
+            assert body[key] == value
+
+        raw = _task34_raw_prepared(sid, 1, "resume-01")
+        assert raw is not None
+        assert raw["status"] == "ready"
+        assert raw["final_prompt"] == snapshot["final_prompt"]
+        assert json.loads(raw["effective_state"]) == snapshot["effective_state"]
+        assert raw["mapping_version"] == snapshot["mapping_version"]
+        assert raw["compiler_version"] == snapshot["compiler_version"]
+        assert json.loads(raw["provenance"]) == snapshot["provenance"]
+
+        reopened = client.get(f"/api/sessions/{sid}/plan")
+        assert reopened.status_code == 200, reopened.text
+        preparation = reopened.json()["preparation"]
+        assert [row["take_id"] for row in preparation["completed"]] == ["resume-01"]
+        assert [row["take_id"] for row in preparation["incomplete"]] == [
+            "resume-02", "resume-03",
+        ]
+        assert preparation["completed"][0]["effective_state"] == snapshot[
+            "effective_state"
+        ]
+        assert preparation["completed"][0]["provenance"] == snapshot["provenance"]
+
+    def test_blank_snapshot_strings_are_refused_without_finalizing_pending(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "blank preparation fields")
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": _task34_plan(7), "expected_revision": 0},
+        ).status_code == 200
+
+        invalid_values = [
+            ("final_prompt", ""),
+            ("final_prompt", "   "),
+            ("mapping_version", ""),
+            ("mapping_version", "   "),
+            ("compiler_version", ""),
+            ("compiler_version", "   "),
+        ]
+        for index, (field, value) in enumerate(invalid_values, start=1):
+            take_id = f"resume-{index:02d}"
+            assert client.post(
+                f"/api/sessions/{sid}/plan/preparations/begin",
+                json={"plan_revision": 1, "take_id": take_id},
+            ).status_code == 200
+            before = _task34_raw_prepared(sid, 1, take_id)
+            assert before is not None
+            snapshot = {**_task34_snapshot(index), field: value}
+
+            with pytest.raises(
+                session_plan.PlanValidationError,
+                match=rf"{field} must be a non-empty string",
+            ):
+                session_plan.complete_preparation(sid, 1, take_id, **snapshot)
+            assert _task34_raw_prepared(sid, 1, take_id) == before
+
+            response = client.post(
+                f"/api/sessions/{sid}/plan/preparations/complete",
+                json={"plan_revision": 1, "take_id": take_id, **snapshot},
+            )
+            assert response.status_code == 422, response.text
+            assert field in response.json()["detail"]
+            assert _task34_raw_prepared(sid, 1, take_id) == before
+
+        recovery = session_plan.recover_preparation(sid)
+        assert recovery["completed"] == []
+        assert recovery["incomplete"] == [
+            {"take_id": f"resume-{index:02d}", "status": "pending"}
+            for index in range(1, 7)
+        ] + [{"take_id": "resume-07", "status": "missing"}]
+
+        valid = {
+            **_task34_snapshot(7),
+            "final_prompt": "  invented finalized prompt 07  ",
+            "mapping_version": " mapping-test-v1 ",
+            "compiler_version": " compiler-test-v1 ",
+        }
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-07"},
+        ).status_code == 200
+        completed = client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-07", **valid},
+        )
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["status"] == "ready"
+        for field in ("final_prompt", "mapping_version", "compiler_version"):
+            assert completed.json()[field] == valid[field]
+
+    def test_invalid_preparation_targets_refuse_without_partial_rows(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "invalid preparation targets")
+        plan = _task34_plan()
+        saved = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert saved.status_code == 200, saved.text
+
+        missing = client.post(
+            "/api/sessions/999999/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        )
+        assert missing.status_code == 404, missing.text
+
+        stale = client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 2, "take_id": "resume-01"},
+        )
+        assert stale.status_code == 409, stale.text
+
+        unknown = client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-missing"},
+        )
+        assert unknown.status_code == 422, unknown.text
+
+        legacy = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "legacy preparation refusal",
+        })
+        assert legacy.status_code == 200, legacy.text
+        legacy_sid = legacy.json()["id"]
+        legacy_begin = client.post(
+            f"/api/sessions/{legacy_sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        )
+        assert legacy_begin.status_code == 400, legacy_begin.text
+        legacy_get = client.get(f"/api/sessions/{legacy_sid}/plan")
+        assert legacy_get.status_code == 400, legacy_get.text
+
+        assert db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take WHERE session_id IN (?, ?)",
+            sid, legacy_sid,
+        )["n"] == 0
+
+    def test_completed_snapshot_retry_is_idempotent_and_different_retry_is_refused(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "immutable prepared snapshot")
+        plan = _task34_plan()
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        ).status_code == 200
+
+        snapshot = _task34_snapshot(1)
+        first = client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-01", **snapshot},
+        )
+        assert first.status_code == 200, first.text
+        before = _task34_raw_prepared(sid, 1, "resume-01")
+        assert before is not None
+
+        identical = client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-01", **snapshot},
+        )
+        assert identical.status_code == 200, identical.text
+        assert identical.json()["id"] == before["id"]
+        assert db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take WHERE session_id = ? "
+            "AND plan_revision = 1 AND take_id = 'resume-01'",
+            sid,
+        )["n"] == 1
+
+        different = client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={
+                "plan_revision": 1,
+                "take_id": "resume-01",
+                **{**snapshot, "final_prompt": "a different invented prompt"},
+            },
+        )
+        assert different.status_code == 409, different.text
+        assert "immutable ready history" in different.json()["detail"]
+        assert _task34_raw_prepared(sid, 1, "resume-01") == before
+
+    def test_three_of_twelve_survive_reopen_and_only_nine_are_resumable(
+        self, isolated_db,
+    ):
+        now = db.now()
+        model_id = db.run(
+            "INSERT INTO model (name, created_at) VALUES (?, ?)",
+            "invented reopen model", now,
+        )
+        sid = db.run(
+            "INSERT INTO session (model_id, name, settings, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            model_id, "invented reopen session",
+            json.dumps({"composition_mode": "resource-v1"}), now,
+        )
+        plan = _task34_plan(12)
+        saved = session_plan.save_draft(sid, plan, expected_revision=0)
+        assert saved["plan_revision"] == 1
+
+        for index in range(1, 4):
+            take_id = f"resume-{index:02d}"
+            session_plan.begin_preparation(sid, 1, take_id)
+            session_plan.complete_preparation(
+                sid, 1, take_id, **_task34_snapshot(index),
+            )
+        session_plan.begin_preparation(sid, 1, "resume-04")
+
+        raw_before = list(db.q(
+            "SELECT take_id, final_prompt, effective_state, mapping_version, "
+            "compiler_version, provenance, status FROM prepared_take "
+            "WHERE session_id = ? AND status = 'ready' ORDER BY take_id",
+            sid,
+        ))
+        assert len(raw_before) == 3
+
+        _close_silently()
+        _open(isolated_db)
+
+        raw_after = list(db.q(
+            "SELECT take_id, final_prompt, effective_state, mapping_version, "
+            "compiler_version, provenance, status FROM prepared_take "
+            "WHERE session_id = ? AND status = 'ready' ORDER BY take_id",
+            sid,
+        ))
+        assert raw_after == raw_before
+
+        recovery = session_plan.recover_preparation(sid)
+        assert recovery["plan_revision"] == 1
+        assert [row["take_id"] for row in recovery["completed"]] == [
+            "resume-01", "resume-02", "resume-03",
+        ]
+        assert len(recovery["incomplete"]) == 9
+        assert recovery["incomplete"][0] == {
+            "take_id": "resume-04", "status": "pending",
+        }
+        assert recovery["incomplete"][1:] == [
+            {"take_id": f"resume-{index:02d}", "status": "missing"}
+            for index in range(5, 13)
+        ]
+        assert recovery["history"] == []
+
+    def test_finalize_persistence_failure_is_visible_and_rolls_back(
+        self, client, seeded, monkeypatch,
+    ):
+        sid = _task34_resource_session(client, seeded, "visible persistence failure")
+        plan = _task34_plan()
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+
+        for take_id in ("resume-01", "resume-02"):
+            assert client.post(
+                f"/api/sessions/{sid}/plan/preparations/begin",
+                json={"plan_revision": 1, "take_id": take_id},
+            ).status_code == 200
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-01", **_task34_snapshot(1)},
+        ).status_code == 200
+        completed_before = _task34_raw_prepared(sid, 1, "resume-01")
+        assert completed_before is not None
+
+        original_run = db.run
+
+        def fail_finalize(sql: str, *args):
+            if sql.startswith("UPDATE prepared_take SET final_prompt = ?"):
+                raise sqlite3.OperationalError("invented prepared take write failure")
+            return original_run(sql, *args)
+
+        monkeypatch.setattr(db, "run", fail_finalize)
+        failed = client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-02", **_task34_snapshot(2)},
+        )
+        assert failed.status_code == 500, failed.text
+        assert "invented prepared take write failure" in failed.json()["detail"]
+
+        interrupted = _task34_raw_prepared(sid, 1, "resume-02")
+        assert interrupted is not None
+        assert interrupted["status"] == "pending"
+        assert interrupted["final_prompt"] == ""
+        assert interrupted["effective_state"] == "{}"
+        assert interrupted["mapping_version"] == ""
+        assert interrupted["compiler_version"] == ""
+        assert interrupted["provenance"] == "{}"
+        assert _task34_raw_prepared(sid, 1, "resume-01") == completed_before
+
+    def test_new_revision_keeps_generated_and_current_revision_rows_as_history_requires(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "revision recovery history")
+        plan = _task34_plan()
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+
+        ready_id = _plant_prepared_take(sid, 1, "resume-01", status="ready")
+        pending_id = _plant_prepared_take(sid, 1, "resume-02", status="pending")
+        generated_id = _plant_prepared_take(
+            sid, 1, "resume-03", status="generated",
+            linked_shot_id=_plant_shot(sid, "invented generated shot"),
+        )
+        future_id = _plant_prepared_take(sid, 2, "resume-01", status="pending")
+
+        edited = {
+            **plan,
+            "takes": [plan["takes"][1], plan["takes"][0], plan["takes"][2]],
+        }
+        second = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": edited, "expected_revision": 1},
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["plan_revision"] == 2
+
+        rows = {row["id"]: row for row in db.q(
+            "SELECT id, plan_revision, take_id, status, final_prompt, linked_shot_id "
+            "FROM prepared_take WHERE session_id = ? ORDER BY id",
+            sid,
+        )}
+        assert rows[ready_id]["status"] == "invalidated"
+        assert rows[pending_id]["status"] == "invalidated"
+        assert rows[generated_id]["status"] == "generated"
+        assert rows[future_id]["status"] == "pending"
+
+        recovery = client.get(f"/api/sessions/{sid}/plan")
+        assert recovery.status_code == 200, recovery.text
+        preparation = recovery.json()["preparation"]
+        assert preparation["completed"] == []
+        assert preparation["incomplete"] == [
+            {"take_id": "resume-02", "status": "missing"},
+            {"take_id": "resume-01", "status": "pending"},
+            {"take_id": "resume-03", "status": "missing"},
+        ]
+        history = {row["id"]: row for row in preparation["history"]}
+        assert history[ready_id]["status"] == "invalidated"
+        assert history[pending_id]["status"] == "invalidated"
+        assert history[generated_id]["status"] == "generated"
+
+        current_generated = _plant_prepared_take(
+            sid, 2, "resume-03", status="generated",
+            linked_shot_id=_plant_shot(sid, "invented current generated shot"),
+        )
+        resumed = session_plan.recover_preparation(sid)
+        assert [row["id"] for row in resumed["completed"]] == [current_generated]
+        assert [row["take_id"] for row in resumed["incomplete"]] == [
+            "resume-02", "resume-01",
+        ]

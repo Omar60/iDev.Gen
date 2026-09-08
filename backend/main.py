@@ -1832,6 +1832,80 @@ class PlanDraftIn(BaseModel):
     expected_revision: int = 0
 
 
+class PreparedTakeBeginIn(BaseModel):
+    plan_revision: int
+    take_id: str
+
+
+class PreparedTakeCompleteIn(BaseModel):
+    plan_revision: int
+    take_id: str
+    final_prompt: str
+    effective_state: dict
+    mapping_version: str
+    compiler_version: str
+    provenance: dict
+
+
+def _prepared_take_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, session_plan.PlanValidationError):
+        return HTTPException(422, str(exc))
+    if isinstance(
+        exc, (session_plan.PlanRevisionStale, session_plan.PreparedTakeConflict),
+    ):
+        return HTTPException(409, str(exc))
+    if isinstance(exc, session_plan.SessionNotInResourceMode):
+        return HTTPException(400, str(exc))
+    if isinstance(exc, session_plan.SessionNotFound):
+        return HTTPException(404, str(exc))
+    if isinstance(exc, session_plan.PreparedTakePersistenceError):
+        return HTTPException(500, str(exc))
+    return HTTPException(500, "prepared take persistence failed")
+
+
+@app.post("/api/sessions/{sid}/plan/preparations/begin")
+def begin_plan_preparation(sid: int, p: PreparedTakeBeginIn):
+    """Persist a resumable pending marker before lengthy preparation work."""
+    try:
+        return session_plan.begin_preparation(
+            sid, p.plan_revision, p.take_id,
+        )
+    except (
+        session_plan.PlanValidationError,
+        session_plan.PlanRevisionStale,
+        session_plan.PreparedTakeConflict,
+        session_plan.SessionNotInResourceMode,
+        session_plan.SessionNotFound,
+        session_plan.PreparedTakePersistenceError,
+    ) as exc:
+        raise _prepared_take_http_error(exc)
+
+
+@app.post("/api/sessions/{sid}/plan/preparations/complete")
+def complete_plan_preparation(sid: int, p: PreparedTakeCompleteIn):
+    """Atomically finalize one pending preparation snapshot as ready."""
+    try:
+        return session_plan.complete_preparation(
+            sid,
+            p.plan_revision,
+            p.take_id,
+            final_prompt=p.final_prompt,
+            effective_state=p.effective_state,
+            mapping_version=p.mapping_version,
+            compiler_version=p.compiler_version,
+            provenance=p.provenance,
+        )
+    except (
+        session_plan.PlanValidationError,
+        session_plan.PlanRevisionStale,
+        session_plan.PreparedTakeConflict,
+        session_plan.SessionNotInResourceMode,
+        session_plan.SessionNotFound,
+        session_plan.PreparedTakePersistenceError,
+    ) as exc:
+        raise _prepared_take_http_error(exc)
+
+
 @app.post("/api/sessions/{sid}/plan")
 def save_plan_draft(sid: int, p: PlanDraftIn):
     """Save a resource-v1 plan draft with compare-and-swap.
@@ -1919,6 +1993,7 @@ def get_plan_draft(sid: int):
     draft = session_plan.get_draft(sid)
     if draft is None:
         raise HTTPException(404, "no plan draft for this session")
+    draft["preparation"] = session_plan.recover_preparation(sid)
     return draft
 
 

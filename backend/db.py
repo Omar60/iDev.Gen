@@ -497,8 +497,8 @@ CREATE TABLE IF NOT EXISTS session_plan (
 -- not finalized), ``ready`` (finalized, awaiting submission),
 -- ``invalidated`` (superseded by a later plan revision), and
 -- ``generated`` (submitted, the linked_shot_id points at the
--- queued or done shot). 3.1 only writes the table; 3.2 / 4.x
--- drives the writes.
+-- queued or done shot). 3.4 writes pending/ready preparation snapshots;
+-- later submission work drives generated rows.
 --
 -- Additive on purpose: the CREATE TABLE IF NOT EXISTS makes the
 -- migration safe to run repeatedly, no existing table is touched,
