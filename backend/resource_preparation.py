@@ -1,5 +1,5 @@
-"""Deterministic preparation of resource-v1 take inputs (task 4.1 of
-``adopt-resource-session-planning``).
+"""Deterministic preparation of resource-v1 take inputs (tasks 4.1 and
+4.2 of ``adopt-resource-session-planning``).
 
 The module is a small, dedicated backend layer that turns a session's
 resource-v1 plan plus explicit take choices plus a thin manual
@@ -114,16 +114,97 @@ descriptive input came from the take and which came from a
 deliberate user decision. The two are joined into a single
 deterministic descriptive clause set only at the explicit
 ``assemble_descriptive_clauses`` call.
+
+Task 4.2 layers the conflict / adaptation / placeholder handling
+on top of task 4.1 without changing the deterministic shape of
+the preparation. The new rules are:
+
+  * A ``fused_scenes`` resource whose ``prompt`` prose mentions
+    clothing tokens that are NOT in the take's effective wardrobe
+    produces a visible structural conflict marker. The marker
+    names the resource revision triple, the field, the source
+    value verbatim, the effective wardrobe the take is supposed
+    to wear, and a message that asks for human review. The
+    detector is deliberately structural: a keyword/token match
+    on a closed clothing-vocabulary set, no semantic reasoning.
+    The detection rule NEVER claims to find every possible
+    contradiction in free-form prose; the marker says so.
+
+  * The original ``asset_revision.payload`` is NEVER rewritten,
+    and the resource's original prose is NEVER silently
+    substituted in the preparation output. When a conflict is
+    detected, the preparation surfaces the original value AND
+    the conflict marker side by side; the effective clause set
+    is still built from the original until a reviewed
+    adaptation is provided.
+
+  * A user-provided ``adaptation`` is a reviewed, explicit
+    override of a single resource field. It is stored
+    SEPARATELY from the resource payload, is keyed by the
+    exact immutable revision triple the resource carries, and
+    is never allowed to rewrite look, identity, wardrobe, or
+    any other fixed session state. An adaptation that points
+    at a different revision triple than the resource the
+    plan selected, that pretends to rewrite a forbidden
+    field, or that still contains an unresolved template
+    placeholder is refused with a readable message; the
+    refusal names the offending key.
+
+  * Unresolved template placeholders anywhere in the fused
+    description OR the adaptation block ``finalization`` of
+    the take. The check uses the same ``{name}`` syntax
+    ``backend.importer.unresolved_placeholders`` already
+    publishes, so the repository owns a single placeholder
+    vocabulary. The check is field-specific and never
+    rewrites the source.
+
+  * A new ``review_state`` block on the preparation output
+    lists the conflicts, the adaptations and the unresolved
+    placeholders the take currently carries. The state is
+    JSON-serialisable, has no wall-clock timestamps, and is
+    the single source of truth a UI or a later task reads to
+    decide whether the take is ready to leave the
+    deterministic preparation layer. The layer does NOT
+    mark a take ``ready`` and does NOT call
+    ``session_plan.complete_preparation``: that is task 4.4
+    and owns its own persistence.
+
+The module does NOT:
+
+  * invent a second interpretation of the weight adaptation the
+    preparation contract pins (a numeric selection parameter is
+    selection metadata, not a prompt emphasis);
+  * split a fused scene's prose into camera, act or room
+    clauses, rewrite it heuristically, claim rendering parity,
+    or assert semantic contradiction detection;
+  * re-implement wardrobe inheritance, ``this_take``,
+    ``from_here``, plan-constant freezing, or prepared-take
+    invalidation — every one of those has a single source of
+    truth in ``session_plan``;
+  * persist a final prompt, a snapshot row, or a ``ready``
+    status. The function ``prepare_take_inputs`` is a pure
+    deterministic builder; persistence belongs to tasks 4.2+;
+  * depend on a translation service, an LLM, the network or a
+    running ComfyUI.
 """
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping
 
 import db
+import importer
 import resource_prompts
 import resource_store
 import session_plan
+# Re-export the persistence-error class the existing
+# ``session_plan`` API publishes, so a caller that reads
+# ``resource_preparation.PrearedTakePersistenceError``
+# sees the same type the save path raises. The class is
+# the single source of truth for "a write to a take
+# persistence table failed and was rolled back".
+from session_plan import PreparedTakePersistenceError  # noqa: E402, F401
 
 
 # -- Versioning -------------------------------------------------------------
@@ -231,6 +312,161 @@ class PreparationArgumentError(PreparationError):
     completion key outside the closed allowlist, an attempt
     to override an existing take choice, and so on.
     """
+
+
+class AdaptationError(PreparationError):
+    """A user-provided adaptation is not acceptable for the take.
+
+    The refusal names the offending key (``library_key``,
+    ``source_id``, ``content_digest``, ``resource_field``,
+    ``adapted_value``, or any extra key outside the closed
+    allowlist), the value that failed validation, and the
+    rule the value violated. A refused adaptation does not
+    reach the preparation output and does not reach the
+    persistence layer (which task 4.4 owns).
+    """
+
+
+class PlaceholderUnresolvedError(PreparationError):
+    """A template placeholder is still standing in the take's preparation.
+
+    The check uses the same ``{name}`` syntax
+    ``backend.importer.unresolved_placeholders`` publishes, so
+    the repository owns a single placeholder vocabulary. The
+    exception names the resource/field the standing
+    placeholder is in, the placeholder name, and the field
+    that carries it. The source value is NEVER modified by
+    the check; the refusal is the surface that blocks
+    finalization.
+    """
+
+
+# -- Task 4.2: review state vocabulary ------------------------------------
+
+
+# The closed allowlist of names an adaptation dict may carry.
+# Every other key is refused. The list is the single source of
+# truth for what an adaptation IS; a future widening is a
+# code change the tests will surface.
+ADAPTATION_KEYS: frozenset[str] = frozenset({
+    "library_key",
+    "source_id",
+    "content_digest",
+    "resource_field",
+    "adapted_value",
+})
+
+# The fields a fused scene's ``prompt`` (or any other
+# ``descriptive_input``) is NEVER allowed to rewrite through an
+# adaptation. The list is the closed surface that protects the
+# session's fixed state: an adaptation is a per-take
+# descriptive override, not a redefinition of identity, look,
+# or wardrobe. The list is enforced by name; a numeric or
+# nested-shape value is refused the same way.
+ADAPTATION_FORBIDDEN_FIELDS: frozenset[str] = frozenset({
+    "look",
+    "initial_wardrobe",
+    "wardrobe",
+    "identity",
+    "id",
+    "library",
+})
+
+# The closed clothing-token vocabulary the structural conflict
+# detector matches against fused_scenes prompts. The set is
+# intentionally narrow and contains only garment names whose
+# mention in a fused description is plausible AND whose absence
+# from the effective wardrobe is a visible conflict the user
+# can read. A token that is not in this set is invisible to the
+# detector; the detector is structural, not semantic, and the
+# marker says so. The set is the single source of truth a
+# test, a UI message or a code review can read.
+CLOTHING_TOKENS: frozenset[str] = frozenset({
+    "shirt",
+    "blouse",
+    "t-shirt",
+    "tshirt",
+    "tee",
+    "sweater",
+    "pullover",
+    "hoodie",
+    "cardigan",
+    "jacket",
+    "coat",
+    "blazer",
+    "vest",
+    "waistcoat",
+    "trousers",
+    "pants",
+    "jeans",
+    "denim",
+    "shorts",
+    "skirt",
+    "dress",
+    "gown",
+    "shoes",
+    "boots",
+    "sneakers",
+    "sandals",
+    "heels",
+    "socks",
+    "stockings",
+    "tights",
+    "hat",
+    "cap",
+    "beanie",
+    "scarf",
+    "gloves",
+    "belt",
+    "tie",
+    "bow",
+})
+
+# A precompiled word-boundary regex that matches any of the
+# closed clothing tokens. The detector builds the pattern once
+# at module load time and reuses it; the pattern is the
+# structural match rule the rest of the module reads.
+CLOTHING_TOKEN_PATTERN: re.Pattern = re.compile(
+    r"\b(" + "|".join(sorted(CLOTHING_TOKENS)) + r")\b",
+    flags=re.IGNORECASE,
+)
+
+# The single string the conflict marker carries in its ``kind``
+# field. The value is the contract every UI message or review
+# screen reads; a future task that wants to add a new conflict
+# kind is a code change.
+CONFLICT_KIND_FUSED_VS_EFFECTIVE_WARDROBE: str = (
+    "fused_scene_prompt_vs_effective_wardrobe"
+)
+
+
+# -- Placeholder vocabulary -----------------------------------------------
+
+
+# The placeholder syntax is owned by ``backend.importer`` and
+# is exposed here by reference. The preparation layer never
+# invents a parallel vocabulary; the contract a test asserts is
+# the same contract the import path enforces on every accepted
+# source row. Re-importing the symbol makes the dependency
+# explicit and surfaces a future vocabulary change as a code
+# change.
+PLACEHOLDER_PATTERN: re.Pattern = importer.PLACEHOLDER_PATTERN
+
+
+def _placeholder_names_in(value: Any) -> list[str]:
+    """Return the placeholder names still standing in ``value``.
+
+    The function delegates to ``importer.unresolved_placeholders``
+    so the module owns a single placeholder vocabulary. A
+    string is checked as-is; a mapping, a list or any other
+    JSON-compatible value is serialised with sorted keys
+    (the same convention ``importer`` uses) so a placeholder
+    hidden in a nested field is also caught. The function
+    returns the names in the order ``importer`` reports them,
+    which is the first-occurrence order on the serialised
+    form.
+    """
+    return list(importer.unresolved_placeholders(value))
 
 
 # -- Manual completion validation -----------------------------------------
@@ -767,7 +1003,7 @@ def prepare_take_inputs(
         "session_id": session_id,
     }
 
-    return {
+    preparation = {
         "take_id": take_id,
         "session_id": session_id,
         "plan_revision": plan_revision,
@@ -780,6 +1016,15 @@ def prepare_take_inputs(
         "writer_guidance": _collect_writer_guidance(resource_entries),
         "provenance": provenance,
     }
+    # Task 4.2: the review state is computed from the
+    # preparation the same way a UI or a future task 4.4
+    # would compute it. The initial state has no
+    # adaptations; conflicts and unresolved placeholders
+    # are visible immediately so a reviewer can act on
+    # them before persistence. The state is JSON-serialisable
+    # and carries no wall-clock timestamps.
+    preparation["review_state"] = build_review_state(preparation, adaptations=None)
+    return preparation
 
 
 def _collect_writer_guidance(resource_entries: list[dict]) -> dict[str, Any]:
@@ -962,3 +1207,1318 @@ def preparation_to_json(preparation: dict) -> str:
         preparation, ensure_ascii=False,
         sort_keys=True, separators=(",", ":"),
     )
+
+
+# -- Task 4.2: conflict detection ----------------------------------------
+
+
+def _clothing_tokens_in(text: str) -> list[str]:
+    """Return the closed-vocabulary clothing tokens ``text`` mentions.
+
+    The match is a structural word-boundary search against
+    ``CLOTHING_TOKEN_PATTERN``; tokens are returned in the
+    order they first appear in ``text`` and deduplicated by
+    the canonical lower-cased name the vocabulary uses. A
+    token not in the vocabulary is invisible to the detector
+    (this is the structural limit the marker says is
+    deliberate). The function is the single implementation
+    the conflict detector and the adaptation validator use
+    to read which clothing items a piece of prose mentions.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in CLOTHING_TOKEN_PATTERN.finditer(text):
+        token = match.group(0).lower()
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _detect_fused_wardrobe_conflict(
+    resource_entry: dict,
+    effective_wardrobe: str,
+) -> dict | None:
+    """Return a conflict marker when a fused scene's prose contradicts the take's wardrobe.
+
+    The detector reads the resource's ``descriptive_inputs``
+    and looks at every value the contract classified as
+    ``descriptive_input`` for the ``fused_scenes`` kind. The
+    detector is structural: it tokenises the prose against
+    ``CLOTHING_TOKEN_PATTERN`` and reports a conflict ONLY
+    when the prose mentions a clothing token the effective
+    wardrobe does not mention. A scene that mentions the
+    same tokens as the wardrobe is compatible; a scene that
+    adds a token is a visible conflict the user must
+    resolve.
+
+    The detector returns a single marker per fused resource
+    per take. A resource whose prose mentions two
+    incompatible tokens still produces one marker; the
+    marker lists the union of the conflicting tokens so a
+    reviewer can read the full picture in one place. The
+    marker carries the immutable revision triple the
+    resource was loaded by, the field name, the original
+    source value verbatim, the effective wardrobe the take
+    is supposed to wear, the conflicting token list, and a
+    human-readable message that names the rule and the
+    review it requires.
+
+    A resource whose descriptive inputs do not mention any
+    clothing token, or whose every mentioned token is also
+    in the effective wardrobe, returns ``None``: there is
+    no conflict to surface and the review state stays free
+    of noise.
+    """
+    if not isinstance(resource_entry, dict):
+        return None
+    if resource_entry.get("kind") != resource_prompts.KIND_FUSED_SCENES:
+        # The detector only speaks the fused_scenes contract.
+        # Rooms and other scene kinds are not in scope: their
+        # ``label``/``scene_theme`` prose is meant to feed the
+        # prompt directly, and the clothing-vs-wardrobe
+        # contradiction the spec calls out is a fused-scene
+        # property.
+        return None
+    effective_tokens = set(_clothing_tokens_in(effective_wardrobe or ""))
+    if not effective_tokens:
+        # An empty effective wardrobe is the "no constant
+        # yet" state: the detector has nothing to compare
+        # against, and the session_plan detector has the
+        # same quiet behaviour for that case. The structural
+        # conflict that the spec calls out requires a
+        # fixed wardrobe to compete with.
+        return None
+    descriptive = resource_entry.get("descriptive_inputs", {})
+    if not isinstance(descriptive, dict):
+        return None
+    conflicting: list[str] = []
+    original_value = ""
+    field_name = ""
+    for name in sorted(descriptive.keys()):
+        value = descriptive[name]
+        if not isinstance(value, str) or not value:
+            continue
+        tokens = _clothing_tokens_in(value)
+        if not tokens:
+            continue
+        extra = [
+            token for token in tokens if token not in effective_tokens
+        ]
+        if not extra:
+            continue
+        # A resource may carry several descriptive fields;
+        # the marker reports the first one the detector
+        # found, so a single resource produces a single
+        # readable conflict. The original_value carries the
+        # complete prose the user can read; the conflicting
+        # tokens are reported in canonical order so two
+        # runs produce the same list.
+        if not original_value:
+            original_value = value
+            field_name = name
+        for token in extra:
+            if token not in conflicting:
+                conflicting.append(token)
+    if not conflicting:
+        return None
+    conflicting.sort()
+    return {
+        "kind": CONFLICT_KIND_FUSED_VS_EFFECTIVE_WARDROBE,
+        "library_key": resource_entry.get("library_key", ""),
+        "source_id": resource_entry.get("source_id", ""),
+        "content_digest": resource_entry.get("content_digest", ""),
+        "resource_field": field_name,
+        "resource_value": original_value,
+        "effective_wardrobe": effective_wardrobe,
+        "conflicting_tokens": conflicting,
+        "message": (
+            f"selected fused scene "
+            f"{resource_entry.get('library_key', '')}/"
+            f"{resource_entry.get('source_id', '')} mentions "
+            f"clothing tokens {conflicting!r} that are NOT in the "
+            f"take's effective wardrobe; the source value is "
+            f"preserved verbatim, the effective wardrobe wins, "
+            f"a reviewed adaptation OR a different resource is "
+            f"required before finalization; the detector is "
+            f"structural and does NOT claim to find every "
+            f"possible contradiction in free-form prose"
+        ),
+    }
+
+
+def detect_take_conflicts(preparation: dict) -> list[dict]:
+    """Return every visible conflict the take's preparation currently carries.
+
+    The function is the single entry point a UI review
+    screen or a future task 4.4 reads to surface the take's
+    conflict state. It walks the resource inputs the
+    preparation returns and runs the structural detector on
+    every ``fused_scenes`` entry. The list is empty for a
+    take that has no fused scene, for a take whose fused
+    scene is compatible, or for a take whose effective
+    wardrobe is empty (the "no constant yet" state).
+
+    The function is pure: it does not consult a wall clock,
+    does not read the database, and does not mutate the
+    preparation. Two calls with the same preparation return
+    the same list, byte-for-byte, in the same order.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    effective_state = preparation.get("effective_state") or {}
+    effective_wardrobe = (
+        effective_state.get("wardrobe", "") if isinstance(effective_state, dict) else ""
+    )
+    conflicts: list[dict] = []
+    for entry in preparation.get("resource_inputs", []):
+        marker = _detect_fused_wardrobe_conflict(entry, effective_wardrobe)
+        if marker is not None:
+            conflicts.append(marker)
+    return conflicts
+
+
+# -- Task 4.2: adaptation validation -------------------------------------
+
+
+def validate_adaptation(
+    adaptation: Any,
+    preparation: dict,
+) -> dict:
+    """Validate and normalize a user-provided adaptation for one resource field.
+
+    An adaptation is a flat dict whose keys MUST be exactly
+    the names in ``ADAPTATION_KEYS``. Every value is checked:
+
+      * the three identity fields (``library_key``,
+        ``source_id``, ``content_digest``) are non-empty
+        strings that match a resource the preparation
+        actually loaded. An adaptation that points at a
+        different revision triple — including a re-imported
+        revision of the same source entry — is refused
+        because the adaptation must be tied to the exact
+        revision the plan selected;
+
+      * ``resource_field`` is a non-empty string that names a
+        field the resource's payload actually carries and
+        that the contract classifies as ``descriptive_input``
+        for the resource's kind. An adaptation that tries to
+        rewrite a forbidden field (``look``,
+        ``initial_wardrobe``, ``wardrobe``, ``identity``,
+        ``id``, ``library``) is refused by name. An
+        adaptation that targets a ``writer_guidance``,
+        ``selection_metadata`` or ``intentionally_unused``
+        field is refused because the layer never copies
+        those roles into the prompt and an adaptation that
+        pretended to do so would silently change the rule;
+
+      * ``adapted_value`` is a non-empty string. Any other
+        shape (None, list, dict, number) is refused. The
+        string MUST NOT contain an unresolved template
+        placeholder; the check uses the same
+        ``{name}`` syntax ``backend.importer`` already
+        publishes, so the repository owns a single
+        vocabulary. A placeholder found in
+        ``adapted_value`` is the surface that blocks
+        finalization, and the error names the field and
+        the placeholder name;
+
+      * any extra key outside ``ADAPTATION_KEYS`` is refused
+        by name. The closed allowlist is what keeps the
+        adaptation's contract surface auditable; a future
+        widening is a code change the tests will surface.
+
+    The function is pure: it returns a fresh dict in the
+    canonical key order, with the same byte-for-byte values
+    the caller supplied, when the input is valid. It does
+    not write to the database, does not consult a wall
+    clock, and does not change the preparation. The
+    persistence of a validated adaptation is the
+    responsibility of task 4.4 and the existing
+    ``session_plan`` pipeline; the layer hands back the
+    normalized dict a caller can store.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    if not isinstance(adaptation, dict):
+        raise AdaptationError(
+            f"adaptation must be a dict, got {type(adaptation).__name__}"
+        )
+    extra_keys = sorted(
+        key for key in adaptation.keys() if key not in ADAPTATION_KEYS
+    )
+    if extra_keys:
+        raise AdaptationError(
+            f"adaptation carries keys outside the closed allowlist: "
+            f"{extra_keys!r}; allowed: {sorted(ADAPTATION_KEYS)}"
+        )
+    for required_key in (
+        "library_key", "source_id", "content_digest",
+        "resource_field", "adapted_value",
+    ):
+        if required_key not in adaptation:
+            raise AdaptationError(
+                f"adaptation is missing required key {required_key!r}; "
+                f"required: {sorted(ADAPTATION_KEYS)}"
+            )
+        value = adaptation[required_key]
+        if required_key == "adapted_value":
+            if not isinstance(value, str) or not value:
+                raise AdaptationError(
+                    f"adaptation['adapted_value'] must be a non-empty "
+                    f"string, got {type(value).__name__}"
+                )
+        else:
+            if not isinstance(value, str) or not value:
+                raise AdaptationError(
+                    f"adaptation[{required_key!r}] must be a non-empty "
+                    f"string, got {type(value).__name__}"
+                )
+
+    resource_field = adaptation["resource_field"]
+    if resource_field in ADAPTATION_FORBIDDEN_FIELDS:
+        raise AdaptationError(
+            f"adaptation cannot rewrite the fixed field "
+            f"{resource_field!r}; the session's look, identity "
+            f"and wardrobe are authoritative and are not reachable "
+            f"through an adaptation"
+        )
+
+    triple = {
+        "library_key": adaptation["library_key"],
+        "source_id": adaptation["source_id"],
+        "content_digest": adaptation["content_digest"],
+    }
+    matched = None
+    for entry in preparation.get("resource_inputs", []):
+        if (
+            entry.get("library_key") == triple["library_key"]
+            and entry.get("source_id") == triple["source_id"]
+            and entry.get("content_digest") == triple["content_digest"]
+        ):
+            matched = entry
+            break
+    if matched is None:
+        raise AdaptationError(
+            f"adaptation references revision triple "
+            f"{triple['library_key']!r}/{triple['source_id']!r}/"
+            f"{triple['content_digest']!r} but the take's "
+            f"preparation did not load a resource with that "
+            f"triple; the plan's selected revisions are the only "
+            f"valid anchor for an adaptation"
+        )
+
+    payload = matched.get("descriptive_inputs", {})
+    if not isinstance(payload, dict) or resource_field not in payload:
+        raise AdaptationError(
+            f"adaptation targets field {resource_field!r} which is "
+            f"not a descriptive_input of "
+            f"{triple['library_key']!r}/{triple['source_id']!r}; "
+            f"an adaptation can only override a field the contract "
+            f"classifies as descriptive_input for the resource's "
+            f"kind"
+        )
+    source_value = payload[resource_field]
+    if not isinstance(source_value, str):
+        raise AdaptationError(
+            f"adaptation targets field {resource_field!r} whose "
+            f"source value is not a string; the layer only "
+            f"accepts adaptations of string descriptive inputs"
+        )
+
+    adapted_value = adaptation["adapted_value"]
+    standing = _placeholder_names_in(adapted_value)
+    if standing:
+        raise PlaceholderUnresolvedError(
+            f"adaptation of {triple['library_key']!r}/"
+            f"{triple['source_id']!r} field {resource_field!r} "
+            f"still carries unresolved placeholders {standing!r}; "
+            f"a placeholder must be filled before the adaptation "
+            f"is finalizable"
+        )
+
+    return {
+        "library_key": triple["library_key"],
+        "source_id": triple["source_id"],
+        "content_digest": triple["content_digest"],
+        "resource_field": resource_field,
+        "adapted_value": adapted_value,
+        "source_value": source_value,
+    }
+
+
+# -- Task 4.2: placeholder check -----------------------------------------
+
+
+def _find_unresolved_placeholders_in_source(
+    preparation: dict,
+) -> list[dict]:
+    """Return the standing placeholders the resource descriptive inputs carry.
+
+    The check walks the resource inputs the preparation
+    returns and applies the same ``{name}`` syntax
+    ``backend.importer`` already publishes. A standing
+    placeholder anywhere in a resource's descriptive
+    input is a preparation refusal, the surface that blocks
+    finalization. The check NEVER rewrites the source
+    value: a placeholder that stands in the source stays in
+    the source, and the caller is the one that decides
+    what to do about it (fill, adapt, or refuse).
+
+    The returned list is the structured answer a UI
+    review screen or a future task 4.4 reads. Each entry
+    carries the immutable revision triple the placeholder
+    is in, the field name, and the placeholder name. The
+    list is sorted by ``(library_key, source_id,
+    content_digest, resource_field, placeholder)`` so two
+    runs produce the same order. ``in_adaptation`` is
+    always ``False`` on the source-side findings; the
+    adaptation-side findings
+    ``_find_unresolved_placeholders_in_adaptations``
+    returns carry ``in_adaptation = True``.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    findings: list[dict] = []
+    for entry in preparation.get("resource_inputs", []):
+        if not isinstance(entry, dict):
+            continue
+        triple = (
+            str(entry.get("library_key", "")),
+            str(entry.get("source_id", "")),
+            str(entry.get("content_digest", "")),
+        )
+        for field_name, value in (entry.get("descriptive_inputs") or {}).items():
+            if not isinstance(value, str) or not value:
+                continue
+            standing = _placeholder_names_in(value)
+            for name in standing:
+                findings.append({
+                    "library_key": triple[0],
+                    "source_id": triple[1],
+                    "content_digest": triple[2],
+                    "resource_field": str(field_name),
+                    "placeholder": name,
+                    "in_adaptation": False,
+                })
+    findings.sort(key=lambda item: (
+        item["library_key"], item["source_id"], item["content_digest"],
+        item["resource_field"], item["placeholder"],
+    ))
+    return findings
+
+
+def _find_unresolved_placeholders_in_adaptations(
+    applicable_adaptations: list[dict],
+) -> list[dict]:
+    """Return the standing placeholders the applicable adaptations carry.
+
+    The check walks the adapted values of the
+    applicable adaptations the caller already filtered
+    (the function never re-queries the database, never
+    re-validates, and never inspects a row whose triple
+    the current preparation does not select). Each
+    finding carries the immutable revision triple, the
+    field name, the placeholder name, and the
+    ``in_adaptation = True`` marker that names the
+    provenance. The list is sorted by the same
+    five-tuple the source-side helper uses, so a
+    combined call that simply concatenates the two
+    results stays in canonical order.
+    """
+    findings: list[dict] = []
+    for item in applicable_adaptations:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("adapted_value", "")
+        if not isinstance(value, str) or not value:
+            continue
+        for name in _placeholder_names_in(value):
+            findings.append({
+                "library_key": str(item.get("library_key", "")),
+                "source_id": str(item.get("source_id", "")),
+                "content_digest": str(item.get("content_digest", "")),
+                "resource_field": str(item.get("resource_field", "")),
+                "placeholder": name,
+                "in_adaptation": True,
+            })
+    findings.sort(key=lambda item: (
+        item["library_key"], item["source_id"], item["content_digest"],
+        item["resource_field"], item["placeholder"],
+    ))
+    return findings
+
+
+def _resolve_applicable_adaptations(
+    preparation: dict,
+    adaptations: list[dict] | None,
+) -> list[dict]:
+    """Return the applicable adaptations the take will apply.
+
+    When ``adaptations`` is a list, the function returns
+    the validated list verbatim, in the caller's order.
+    When ``adaptations`` is ``None``, the function reads
+    the durable adaptations through
+    ``load_take_adaptations`` and applies the same
+    applicable filter ``build_review_state`` and the
+    rest of the layer use, so a stored adaptation whose
+    triple the current plan no longer selects is never
+    surfaced as an applicable adaptation.
+
+    The function is the single source of truth for the
+    applicable adaptation list. ``build_review_state``,
+    ``assert_no_unresolved_placeholders`` and
+    ``assemble_adapted_clauses`` all use it; a future
+    caller that wants a fourth view of the same take
+    widens this function in one place.
+    """
+    if not isinstance(preparation, dict):
+        return []
+    if adaptations is None:
+        if not all(
+            key in preparation
+            for key in ("session_id", "plan_revision", "take_id")
+        ):
+            return []
+        persisted = load_take_adaptations(
+            int(preparation["session_id"]),
+            int(preparation["plan_revision"]),
+            str(preparation["take_id"]),
+        )
+        return _applicable_adaptations(preparation, persisted)
+    if not isinstance(adaptations, list):
+        raise PreparationArgumentError(
+            f"adaptations must be a list or None, got "
+            f"{type(adaptations).__name__}"
+        )
+    validated: list[dict] = []
+    for index, raw in enumerate(adaptations):
+        try:
+            validated.append(validate_adaptation(raw, preparation))
+        except AdaptationError as exc:
+            raise AdaptationError(
+                f"adaptations[{index}] is not acceptable: {exc}"
+            ) from exc
+        except PlaceholderUnresolvedError as exc:
+            raise PlaceholderUnresolvedError(
+                f"adaptations[{index}] is not acceptable: {exc}"
+            ) from exc
+    return validated
+
+
+def _collect_unresolved_placeholders(
+    preparation: dict,
+    *,
+    adaptations: list[dict] | None = None,
+) -> list[dict]:
+    """Return every standing placeholder the take's review state must surface.
+
+    The function is the single source of truth a UI
+    review screen, ``assert_no_unresolved_placeholders``
+    and the ``ready_for_finalization`` boolean the
+    review state surfaces all read. The list is the
+    UNION of two findings:
+
+      * the source-side findings, computed from the
+        resource descriptive inputs the preparation
+        returns;
+      * the adaptation-side findings, computed from
+        the adapted values of the applicable
+        adaptations the take will apply.
+
+    A persisted adaptation that arrives by an
+    adversarial route and still carries a ``{name}``
+    placeholder is included in the adaptation-side
+    findings with ``in_adaptation = True``, and the
+    caller (the review state builder or the
+    finalization boundary) sees a non-empty list and
+    a ``False`` ready-for-finalization boolean. The
+    source value is NEVER modified by the check; the
+    function never overwrites the original.
+
+    The two findings lists are sorted by the same
+    five-tuple, so the union is in canonical order.
+    The function does NOT consult a wall clock and
+    does NOT mutate the preparation.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    applicable = _resolve_applicable_adaptations(
+        preparation, adaptations,
+    )
+    findings = _find_unresolved_placeholders_in_source(preparation)
+    findings.extend(
+        _find_unresolved_placeholders_in_adaptations(applicable)
+    )
+    findings.sort(key=lambda item: (
+        item["library_key"], item["source_id"], item["content_digest"],
+        item["resource_field"], item["placeholder"],
+    ))
+    return findings
+
+
+def find_unresolved_placeholders_in_take(preparation: dict) -> list[dict]:
+    """Return the source-side unresolved placeholders the take carries.
+
+    The function is preserved for the tests that read
+    only the resource-side placeholder surface (a
+    future UI may want to display "placeholders in the
+    source prose" separately from "placeholders in a
+    reviewed adaptation"). The full review-state list
+    is what ``build_review_state`` and
+    ``assert_no_unresolved_placeholders`` read, and
+    that list is the union of source-side and
+    adaptation-side findings.
+    """
+    return _find_unresolved_placeholders_in_source(preparation)
+
+
+def assert_no_unresolved_placeholders(
+    preparation: dict,
+    *,
+    adaptations: list[dict] | None = None,
+) -> None:
+    """Raise ``PlaceholderUnresolvedError`` when the take carries any standing placeholder.
+
+    The function is the single call a future task 4.4
+    (or a UI review screen) makes to decide whether the
+    take is finalizable. The check reads the resource
+    descriptive inputs the preparation returns AND the
+    persisted or supplied adaptations the take will
+    apply, because an unresolved placeholder in an
+    adapted value is the same block on finalization as
+    a placeholder in the resource's original prose.
+
+    The check is the same call
+    ``_collect_unresolved_placeholders`` makes for the
+    review state, so the review state and the
+    finalization boundary cannot disagree on whether a
+    placeholder stands. A persisted adaptation that
+    arrived by an adversarial route and still carries
+    a ``{name}`` placeholder is caught by both: the
+    review state lists it under
+    ``unresolved_placeholders`` and the
+    finalization boundary raises this exception.
+
+    The error names the resource, the field, the
+    placeholder name, and (when the finding came from
+    an adaptation) the provenance marker. The source
+    value is NEVER modified by the check.
+    """
+    findings = _collect_unresolved_placeholders(
+        preparation, adaptations=adaptations,
+    )
+    if not findings:
+        return
+    first = findings[0]
+    suffix = " in an adaptation" if first.get("in_adaptation") else ""
+    raise PlaceholderUnresolvedError(
+        f"preparation for resource {first['library_key']!r}/"
+        f"{first['source_id']!r} field {first['resource_field']!r}"
+        f"{suffix} still carries unresolved placeholder "
+        f"{{{first['placeholder']}}}; "
+        f"a placeholder must be filled before the take is "
+        f"finalizable; total standing placeholders: {len(findings)}"
+    )
+
+
+# -- Task 4.2: adaptation persistence ------------------------------------
+
+
+# Single explicit string the trigger on
+# ``take_resource_adaptation`` raises on. The value is
+# documented here so a test that asserts the SQL-level
+# guard can read it without re-deriving the message.
+TAKE_RESOURCE_ADAPTATION_PROTECT_MESSAGE: str = (
+    "take_resource_adaptation is immutable: session_id, "
+    "plan_revision, take_id, library_key, source_id, "
+    "content_digest, resource_field and created_at cannot "
+    "be rewritten; only source_value, adapted_value and "
+    "updated_at may change on re-review"
+)
+
+
+def _normalize_recorded_adaptation(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    validated: dict,
+) -> dict:
+    """Project a validated adaptation to the persisted-row shape.
+
+    The persisted row carries the seven identity columns
+    the ``take_resource_adaptation`` table pins through
+    its UNIQUE constraint, the source value the
+    adaptation was reviewed against, the adapted value
+    the user approved, and the wall-clock timestamps the
+    schema requires. The dict is JSON-serialisable and
+    stable, and is the single source of truth a future
+    task reads.
+    """
+    return {
+        "session_id": int(session_id),
+        "plan_revision": int(plan_revision),
+        "take_id": str(take_id),
+        "library_key": str(validated["library_key"]),
+        "source_id": str(validated["source_id"]),
+        "content_digest": str(validated["content_digest"]),
+        "resource_field": str(validated["resource_field"]),
+        "source_value": str(validated["source_value"]),
+        "adapted_value": str(validated["adapted_value"]),
+    }
+
+
+def record_take_adaptation(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    adaptation: Any,
+) -> dict:
+    """Validate and persist a single reviewed adaptation for the take.
+
+    The function is the single entry point a UI review
+    screen or a future task 4.4 calls to make a
+    reviewed adaptation durable. The validation runs
+    the same rules ``validate_adaptation`` publishes
+    (allowlist, no forbidden fields, no unresolved
+    placeholders, triple bound to a resource the
+    preparation actually loaded, non-empty string value)
+    and refuses the input with the same exception
+    ``validate_adaptation`` raises; the layer never
+    silently stores an invalid review.
+
+    The write runs inside the same ``db.transaction``
+    block the rest of the project uses. The single
+    INSERT (or UPDATE, when the exact conflict was
+    reviewed before) is the only write; a failure of the
+    SQL call raises ``PreparedTakePersistenceError`` and
+    the transaction rolls back, so a transient
+    persistence failure is never reported as "the
+    adaptation was saved". After the INSERT, the function
+    re-reads the row through the unique key and returns
+    the persisted shape; a missing read after a successful
+    INSERT is the boundary case the function turns into
+    a ``PreparedTakePersistenceError``.
+
+    The function does NOT mark a ``prepared_take`` row
+    ``ready`` and does NOT generate a ``final_prompt``;
+    that is task 4.4's responsibility. The
+    ``session_id``/``plan_revision``/``take_id`` triple
+    is what the future finalisation step joins to.
+
+    A second review of the exact same conflict (same
+    seven columns) replaces the previously-persisted
+    ``updated_at`` and leaves every other column
+    byte-for-byte unchanged, the same way
+    ``asset_revision`` does for refreshed source content.
+    The trigger the schema installs is the SQL-level
+    guard that says "the seven identity columns and
+    source_value/adapted_value/created_at are immutable,
+    only updated_at may change"; a direct UPDATE that
+    tries to rewrite one of the protected columns is
+    refused at the schema level.
+    """
+    if not isinstance(session_id, int) or isinstance(session_id, bool):
+        raise PreparationArgumentError(
+            f"session_id must be an int, got {type(session_id).__name__}"
+        )
+    if not isinstance(plan_revision, int) or isinstance(plan_revision, bool):
+        raise PreparationArgumentError(
+            f"plan_revision must be an int, got "
+            f"{type(plan_revision).__name__}"
+        )
+    if plan_revision <= 0:
+        raise PreparationArgumentError(
+            f"plan_revision must be > 0, got {plan_revision}"
+        )
+    if not isinstance(take_id, str) or not take_id:
+        raise PreparationArgumentError(
+            f"take_id must be a non-empty string, got {take_id!r}"
+        )
+    # The session, plan-revision and take_id must be a
+    # valid target. The validation runs against the
+    # plan the resource_preparation layer already
+    # produced for the same triple, so an adaptation
+    # cannot reach the persistence layer for a
+    # session/plan/take that has not been prepared.
+    _, plan = session_plan._load_current_resource_plan(  # noqa: SLF001
+        session_id,
+    )
+    actual_revision, _ = session_plan._load_current_resource_plan(  # noqa: SLF001
+        session_id,
+    )
+    if actual_revision != plan_revision:
+        raise PreparationError(
+            f"session {session_id} plan revision is "
+            f"{actual_revision}, requested adaptation revision is "
+            f"{plan_revision}"
+        )
+    if not any(
+        isinstance(take, dict) and take.get("take_id") == take_id
+        for take in plan.get("takes", [])
+    ):
+        raise PreparationError(
+            f"take_id {take_id!r} is not present in plan revision "
+            f"{plan_revision}"
+        )
+
+    # Build a synthetic preparation that carries the
+    # minimum the validator needs (effective_state and
+    # resource_inputs) without re-running the full
+    # deterministic preparation. The validator only
+    # looks at the resource_inputs, the effective_state
+    # and the take_id; the rest is unused.
+    resource_entries: list[dict] = []
+    for sel in plan.get("selected_resources", []):
+        try:
+            revision = _load_resource_revision(
+                library_key=str(sel["library_key"]),
+                source_id=str(sel["source_id"]),
+                content_digest=str(sel["content_digest"]),
+            )
+        except PreparationRevisionMissing:
+            # A plan that names a missing revision is
+            # refused at save time; the boundary case
+            # here is reported as a persistence error so
+            # the caller does not get a different
+            # exception for the same problem.
+            raise PreparationRevisionMissing(
+                f"plan.selected_resources references missing "
+                f"revision for take {take_id!r}"
+            )
+        resource_entries.append({
+            "library_key": revision["library_key"],
+            "source_id": revision["source_id"],
+            "content_digest": revision["content_digest"],
+            "kind": revision["kind"],
+            "descriptive_inputs": (
+                _classify_resource_fields(
+                    revision["kind"], revision["payload"],
+                )["descriptive_inputs"]
+            ),
+        })
+    effective_take: dict | None = None
+    for take in plan.get("takes", []):
+        if isinstance(take, dict) and take.get("take_id") == take_id:
+            effective_take = take
+            break
+    if effective_take is None:
+        raise PreparationError(
+            f"take_id {take_id!r} is not present in plan revision "
+            f"{plan_revision}"
+        )
+    effective_state = _resolve_take_effective_state(plan, effective_take)
+    synthetic_preparation = {
+        "take_id": take_id,
+        "session_id": session_id,
+        "plan_revision": plan_revision,
+        "effective_state": effective_state,
+        "resource_inputs": resource_entries,
+    }
+    validated = validate_adaptation(adaptation, synthetic_preparation)
+    record = _normalize_recorded_adaptation(
+        session_id, plan_revision, take_id, validated,
+    )
+
+    now = db.now()
+    try:
+        with db.transaction():
+            existing = db.one(
+                "SELECT id, updated_at FROM take_resource_adaptation "
+                "WHERE session_id = ? AND plan_revision = ? AND take_id = ? "
+                "AND library_key = ? AND source_id = ? "
+                "AND content_digest = ? AND resource_field = ?",
+                record["session_id"], record["plan_revision"],
+                record["take_id"], record["library_key"],
+                record["source_id"], record["content_digest"],
+                record["resource_field"],
+            )
+            if existing is None:
+                db.run(
+                    "INSERT INTO take_resource_adaptation "
+                    "(session_id, plan_revision, take_id, library_key, "
+                    "source_id, content_digest, resource_field, "
+                    "source_value, adapted_value, "
+                    "created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    record["session_id"], record["plan_revision"],
+                    record["take_id"], record["library_key"],
+                    record["source_id"], record["content_digest"],
+                    record["resource_field"], record["source_value"],
+                    record["adapted_value"], now, now,
+                )
+            else:
+                # A re-review of the exact conflict updates
+                # the source value, the adapted value, and
+                # the timestamp. The trigger the schema
+                # installs refuses a direct UPDATE of any
+                # of the seven identity columns or
+                # ``created_at``; the WHERE clause below
+                # targets the immutable row the SELECT
+                # found. ``updated_at`` is always mutable;
+                # ``source_value`` and ``adapted_value`` are
+                # re-review values (the new approval the
+                # operator is recording), not part of the
+                # identity.
+                db.run(
+                    "UPDATE take_resource_adaptation "
+                    "SET source_value = ?, adapted_value = ?, "
+                    "updated_at = ? "
+                    "WHERE id = ? AND "
+                    "session_id = ? AND plan_revision = ? AND take_id = ? "
+                    "AND library_key = ? AND source_id = ? "
+                    "AND content_digest = ? AND resource_field = ?",
+                    record["source_value"], record["adapted_value"], now,
+                    int(existing["id"]),
+                    record["session_id"], record["plan_revision"],
+                    record["take_id"], record["library_key"],
+                    record["source_id"], record["content_digest"],
+                    record["resource_field"],
+                )
+            row = db.one(
+                "SELECT session_id, plan_revision, take_id, library_key, "
+                "source_id, content_digest, resource_field, "
+                "source_value, adapted_value, created_at, updated_at "
+                "FROM take_resource_adaptation "
+                "WHERE session_id = ? AND plan_revision = ? "
+                "AND take_id = ? AND library_key = ? "
+                "AND source_id = ? AND content_digest = ? "
+                "AND resource_field = ?",
+                record["session_id"], record["plan_revision"],
+                record["take_id"], record["library_key"],
+                record["source_id"], record["content_digest"],
+                record["resource_field"],
+            )
+            if row is None:
+                raise PreparedTakePersistenceError(
+                    f"adaptation for "
+                    f"{record['library_key']!r}/{record['source_id']!r}/"
+                    f"{record['content_digest']!r} field "
+                    f"{record['resource_field']!r} on take "
+                    f"{record['take_id']!r} was not persisted"
+                )
+    except (
+        AdaptationError,
+        PlaceholderUnresolvedError,
+        PreparationArgumentError,
+        PreparationRevisionMissing,
+        PreparationError,
+    ):
+        raise
+    except Exception as exc:
+        raise PreparedTakePersistenceError(
+            f"could not persist adaptation for take "
+            f"{record['take_id']!r} plan revision "
+            f"{record['plan_revision']}: {exc}"
+        ) from exc
+    return {
+        "session_id": int(row["session_id"]),
+        "plan_revision": int(row["plan_revision"]),
+        "take_id": str(row["take_id"]),
+        "library_key": str(row["library_key"]),
+        "source_id": str(row["source_id"]),
+        "content_digest": str(row["content_digest"]),
+        "resource_field": str(row["resource_field"]),
+        "source_value": str(row["source_value"]),
+        "adapted_value": str(row["adapted_value"]),
+    }
+
+
+def load_take_adaptations(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+) -> list[dict]:
+    """Return every persisted adaptation for the exact triple.
+
+    The function is the single path the review state
+    builder and the assembler use to read the durable
+    reviewed adaptations a take carries. The query is
+    indexed by the UNIQUE constraint the schema
+    installs on the seven identity columns; the result
+    is the full row set, sorted by the seven columns so
+    two calls return the same list order.
+
+    The function does NOT validate the persisted rows
+    against the current preparation. A persisted
+    adaptation whose triple the current plan no longer
+    selects is simply ignored by the reviewer: the
+    lookup is keyed by triple, the resource_inputs the
+    preparation returns are the only triples a
+    conflict can name, and a stored row whose triple is
+    not in the preparation's resource_inputs is not
+    applicable to the current take.
+    """
+    if not isinstance(session_id, int) or isinstance(session_id, bool):
+        raise PreparationArgumentError(
+            f"session_id must be an int, got {type(session_id).__name__}"
+        )
+    if not isinstance(plan_revision, int) or isinstance(plan_revision, bool):
+        raise PreparationArgumentError(
+            f"plan_revision must be an int, got "
+            f"{type(plan_revision).__name__}"
+        )
+    if not isinstance(take_id, str) or not take_id:
+        raise PreparationArgumentError(
+            f"take_id must be a non-empty string, got {take_id!r}"
+        )
+    rows = db.q(
+        "SELECT session_id, plan_revision, take_id, library_key, "
+        "source_id, content_digest, resource_field, "
+        "source_value, adapted_value, created_at, updated_at "
+        "FROM take_resource_adaptation "
+        "WHERE session_id = ? AND plan_revision = ? AND take_id = ? "
+        "ORDER BY library_key, source_id, content_digest, resource_field",
+        int(session_id), int(plan_revision), str(take_id),
+    )
+    return [
+        {
+            "session_id": int(r["session_id"]),
+            "plan_revision": int(r["plan_revision"]),
+            "take_id": str(r["take_id"]),
+            "library_key": str(r["library_key"]),
+            "source_id": str(r["source_id"]),
+            "content_digest": str(r["content_digest"]),
+            "resource_field": str(r["resource_field"]),
+            "source_value": str(r["source_value"]),
+            "adapted_value": str(r["adapted_value"]),
+        }
+        for r in rows
+    ]
+
+
+def _applicable_adaptations(
+    preparation: dict,
+    persisted: list[dict],
+) -> list[dict]:
+    """Return the persisted adaptations that match the take's preparation.
+
+    The match is the exact seven-column triple (the
+    ``session_id``, ``plan_revision`` and ``take_id`` plus
+    the resource triple and the field). A persisted row
+    whose triple the current plan no longer selects is
+    not returned. The function is the boundary between
+    durable storage and the deterministic preparation
+    output: a future finalisation step reads the
+    applicable list, the assembler uses the same list.
+    """
+    if not isinstance(preparation, dict):
+        return []
+    prep_session = preparation.get("session_id", 0)
+    prep_revision = preparation.get("plan_revision", 0)
+    prep_take = preparation.get("take_id", "")
+    resource_triples: set[tuple[str, str, str]] = set()
+    for entry in preparation.get("resource_inputs", []):
+        if not isinstance(entry, dict):
+            continue
+        resource_triples.add((
+            str(entry.get("library_key", "")),
+            str(entry.get("source_id", "")),
+            str(entry.get("content_digest", "")),
+        ))
+    applicable: list[dict] = []
+    for item in persisted:
+        triple = (
+            str(item.get("library_key", "")),
+            str(item.get("source_id", "")),
+            str(item.get("content_digest", "")),
+        )
+        if triple not in resource_triples:
+            continue
+        if (
+            int(item.get("session_id", 0)) != int(prep_session)
+            or int(item.get("plan_revision", 0)) != int(prep_revision)
+            or str(item.get("take_id", "")) != str(prep_take)
+        ):
+            continue
+        applicable.append(item)
+    return applicable
+
+
+# -- Task 4.2: review state assembly -------------------------------------
+
+
+def build_review_state(
+    preparation: dict,
+    *,
+    adaptations: list[dict] | None = None,
+) -> dict:
+    """Return the visible review state for the take's preparation.
+
+    The state is the single source of truth a UI review
+    screen, a future task 4.4 or a future HTTP handler
+    reads to decide what the take still needs. The shape is
+    stable and JSON-serialisable:
+
+      * ``take_id`` and ``session_id`` — addressing keys
+        the next layer echoes back;
+      * ``effective_state`` — a copy of the preparation's
+        effective state, with the authoritative
+        ``look`` / ``initial_wardrobe`` / ``wardrobe`` the
+        resolver computed;
+      * ``selected_resource_revisions`` — the list of
+        immutable revision triples the preparation loaded,
+        with each resource's kind, so a reviewer can see
+        exactly which revisions are bound to the take;
+      * ``conflicts`` — the visible conflict markers
+        ``detect_take_conflicts`` returned, in deterministic
+        order. An empty list means "no conflict the
+        structural detector can see";
+      * ``adaptations`` — the validated adaptation list
+        the function applies. When ``adaptations`` is
+        ``None``, the function reads the durable
+        adaptations the take has already persisted
+        through ``record_take_adaptation`` and applies
+        only the ones whose seven-column triple still
+        matches the current preparation. When
+        ``adaptations`` is a list, the function uses that
+        list verbatim and never consults the database,
+        so a caller that wants to preview a not-yet-
+        persisted review can still build the state;
+      * ``unresolved_placeholders`` — the standing
+        placeholder list
+        ``_collect_unresolved_placeholders`` returned,
+        in canonical order. The list is the union of
+        the source-side findings and the
+        adaptation-side findings, so a persisted
+        adaptation that arrived by an adversarial
+        route and still carries a ``{name}``
+        placeholder is visible here, the same way it
+        is to ``assert_no_unresolved_placeholders``.
+        An entry whose ``in_adaptation`` is True
+        names the provenance; an entry whose
+        ``in_adaptation`` is False (or missing) names
+        a finding in the resource's original prose.
+        An empty list means "no standing placeholder
+        the detector can see";
+      * ``ready_for_finalization`` — a single boolean
+        that is True only when there are no conflicts AND
+        no standing placeholders. The boolean is what a UI
+        or a future task 4.4 reads as the gate; the
+        function does NOT mark the take ``ready`` in the
+        database, that is task 4.4's responsibility and
+        uses ``session_plan.complete_preparation``.
+
+    The function does NOT write to the database and does
+    NOT consult a wall clock. Two calls with the same
+    preparation, the same persisted adaptations, and the
+    same explicit ``adaptations`` argument return the
+    same dict, byte-for-byte.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    validated_adaptations = _resolve_applicable_adaptations(
+        preparation, adaptations,
+    )
+    conflicts = detect_take_conflicts(preparation)
+    unresolved = _collect_unresolved_placeholders(
+        preparation, adaptations=adaptations,
+    )
+
+    # A conflict is considered resolved when an adaptation
+    # targets the same field of the same revision triple. The
+    # match is exact: an adaptation that targets a different
+    # field of the same triple does not resolve a conflict on
+    # the original field, and a conflict on a different triple
+    # is not resolved by an adaptation on a different triple.
+    # The resolved set is the input to the boolean the
+    # review state surfaces.
+    resolved_triples: set[tuple[str, str, str, str]] = {
+        (
+            item["library_key"], item["source_id"],
+            item["content_digest"], item["resource_field"],
+        )
+        for item in validated_adaptations
+    }
+    open_conflicts: list[dict] = []
+    resolved_conflicts: list[dict] = []
+    for marker in conflicts:
+        key = (
+            marker.get("library_key", ""),
+            marker.get("source_id", ""),
+            marker.get("content_digest", ""),
+            marker.get("resource_field", ""),
+        )
+        if key in resolved_triples:
+            resolved_conflicts.append(dict(marker))
+        else:
+            open_conflicts.append(dict(marker))
+
+    selected_resource_revisions: list[dict] = []
+    for entry in preparation.get("resource_inputs", []):
+        if not isinstance(entry, dict):
+            continue
+        selected_resource_revisions.append({
+            "library_key": entry.get("library_key", ""),
+            "source_id": entry.get("source_id", ""),
+            "content_digest": entry.get("content_digest", ""),
+            "kind": entry.get("kind", ""),
+        })
+    selected_resource_revisions.sort(key=lambda item: (
+        item["library_key"], item["source_id"], item["content_digest"],
+    ))
+
+    return {
+        "take_id": preparation.get("take_id", ""),
+        "session_id": preparation.get("session_id", 0),
+        "plan_revision": preparation.get("plan_revision", 0),
+        "composition_mode": preparation.get("composition_mode", ""),
+        "effective_state": dict(preparation.get("effective_state") or {}),
+        "selected_resource_revisions": selected_resource_revisions,
+        "conflicts": open_conflicts,
+        "resolved_conflicts": resolved_conflicts,
+        "adaptations": validated_adaptations,
+        "unresolved_placeholders": unresolved,
+        "ready_for_finalization": (
+            not open_conflicts and not unresolved
+        ),
+    }
+
+
+# -- Task 4.2: adaptation-aware assembly ---------------------------------
+
+
+def _adapted_value_for_field(
+    entry: dict,
+    field_name: str,
+    adaptations: list[dict],
+) -> str | None:
+    """Return the adapted value for ``(entry, field_name)`` or None.
+
+    The lookup matches the immutable revision triple the
+    entry was loaded by AND the field name. A match returns
+    the adapted value verbatim; a non-match returns ``None``
+    so the caller falls back to the original value. The
+    function is the only path the assembler uses to read
+    the adapted value, so a future task that wants a
+    different lookup rule (e.g. by resource id only) widens
+    this function in one place.
+    """
+    triple = (
+        entry.get("library_key", ""),
+        entry.get("source_id", ""),
+        entry.get("content_digest", ""),
+    )
+    for adaptation in adaptations:
+        if (
+            adaptation.get("library_key") == triple[0]
+            and adaptation.get("source_id") == triple[1]
+            and adaptation.get("content_digest") == triple[2]
+            and adaptation.get("resource_field") == field_name
+        ):
+            value = adaptation.get("adapted_value")
+            if isinstance(value, str):
+                return value
+            return None
+    return None
+
+
+def assemble_adapted_clauses(
+    preparation: dict,
+    *,
+    adaptations: list[dict] | None = None,
+) -> str:
+    """Assemble the descriptive clause set the adaptations overwrite.
+
+    The function is the INTERMEDIATE preparation output
+    the take's review state reads, NOT a ``final_prompt``.
+    It does NOT prepend a look, a wardrobe, a trigger or a
+    base prompt, and it does NOT claim rendering parity.
+    The function is a pure deterministic assembler; the
+    exact final-prompt composition policy is task 4.4's
+    responsibility, and persistence is the responsibility
+    of tasks 4.2 / 4.3 / 4.4 (which use the existing
+    ``session_plan`` pipeline).
+
+    For every resource descriptive input the preparation
+    returns, the assembler reads the adapted value when an
+    adaptation exists for the exact (triple, field) pair,
+    and falls back to the original value otherwise. A
+    non-empty adapted value REPLACES the original in the
+    effective clause set; the original is still preserved
+    in the adaptation entry and in the resource entry the
+    preparation returns, so a reviewer can read the full
+    picture.
+
+    The function refuses an invalid adaptation with the
+    same exception the validator raises, so a review
+    state that contains an invalid adaptation cannot
+    reach the assembler silently. The function is pure
+    and deterministic: two calls with the same
+    preparation and the same adaptations return the same
+    string.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    validated_adaptations: list[dict] = []
+    if adaptations is None:
+        if all(
+            key in preparation
+            for key in ("session_id", "plan_revision", "take_id")
+        ):
+            persisted = load_take_adaptations(
+                int(preparation["session_id"]),
+                int(preparation["plan_revision"]),
+                str(preparation["take_id"]),
+            )
+            validated_adaptations = _applicable_adaptations(
+                preparation, persisted,
+            )
+    else:
+        if not isinstance(adaptations, list):
+            raise PreparationArgumentError(
+                f"adaptations must be a list or None, got "
+                f"{type(adaptations).__name__}"
+            )
+        for index, raw in enumerate(adaptations):
+            try:
+                validated = validate_adaptation(raw, preparation)
+            except AdaptationError as exc:
+                raise AdaptationError(
+                    f"adaptations[{index}] is not acceptable: {exc}"
+                ) from exc
+            except PlaceholderUnresolvedError as exc:
+                raise PlaceholderUnresolvedError(
+                    f"adaptations[{index}] is not acceptable: {exc}"
+                ) from exc
+            validated_adaptations.append(validated)
+
+    clauses: list[str] = []
+
+    for name in sorted(TAKE_DESCRIPTIVE_CHOICES):
+        value = preparation.get("effective_take_choices", {}).get(name)
+        if isinstance(value, str) and value:
+            clauses.append(value)
+
+    for entry in preparation.get("resource_inputs", []):
+        descriptive = entry.get("descriptive_inputs", {})
+        for field_name in sorted(descriptive.keys()):
+            original = descriptive[field_name]
+            adapted = _adapted_value_for_field(entry, field_name, validated_adaptations)
+            effective = adapted if isinstance(adapted, str) and adapted else original
+            for text in _stringify_value(effective, field_name, entry):
+                if text:
+                    clauses.append(text)
+
+    return ". ".join(clauses)

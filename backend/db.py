@@ -522,6 +522,100 @@ CREATE TABLE IF NOT EXISTS prepared_take (
     CHECK (take_id <> ''),
     CHECK (status IN ('pending', 'ready', 'invalidated', 'generated'))
 );
+
+-- Reviewed adaptations of resource-v1 take descriptive inputs
+-- (task 4.2 of ``adopt-resource-session-planning``). One row
+-- per accepted (session, plan_revision, take_id, resource
+-- triple, field) combination; the UNIQUE constraint makes
+-- "one adaptation per conflict" enforceable at the SQL level
+-- the same way the asset_revision triple is. The row stores
+-- the source value the adaptation was reviewed against and
+-- the adapted value the user approved, so the layer that
+-- later finalises the take can read the original for
+-- provenance without re-querying ``asset_revision``. The
+-- original asset_revision row is never rewritten and a
+-- adaptation is never turned into a new asset_revision.
+--
+-- The composite UNIQUE on the seven columns
+-- (session_id, plan_revision, take_id, library_key, source_id,
+-- content_digest, resource_field) is what pins "a persisted
+-- adaptation only resolves the exact conflict it was
+-- approved for":
+--   * a different take_id is a different row;
+--   * a different plan_revision is a different row (the
+--     plan-revision bump that a draft save produces does NOT
+--     inherit the prior revision's adaptations);
+--   * a different content_digest is a different row (a new
+--     immutable revision of the same source entry does NOT
+--     inherit the prior digest's adaptations);
+--   * a different resource_field is a different row (an
+--     adaptation of ``prompt`` does NOT resolve a conflict on
+--     ``scene_theme``).
+--
+-- The session_id foreign key CASCADEs because a deleted
+-- session takes its reviewed adaptations with it, the same
+-- way prepared_take does. created_at/updated_at are the only
+-- columns the write path touches; no other column of an
+-- existing row is mutable, so a second approved review of
+-- the same exact conflict UPDATES updated_at and never
+-- rewrites source_value or adapted_value underneath the
+-- original reviewer.
+--
+-- Additive on purpose: the CREATE TABLE IF NOT EXISTS makes
+-- the migration safe to run repeatedly, no existing table is
+-- touched, and every legacy row survives. The
+-- BEFORE UPDATE OF <protected> trigger pins "the conflict
+-- identity, the source value and the adaptation identity
+-- are immutable" at the SQL level, matching the trigger the
+-- ``asset_revision`` table already publishes.
+CREATE TABLE IF NOT EXISTS take_resource_adaptation (
+    id              INTEGER PRIMARY KEY,
+    session_id      INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    plan_revision   INTEGER NOT NULL,
+    take_id         TEXT NOT NULL,
+    library_key     TEXT NOT NULL,
+    source_id       TEXT NOT NULL,
+    content_digest  TEXT NOT NULL,
+    resource_field  TEXT NOT NULL,
+    source_value    TEXT NOT NULL,
+    adapted_value   TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE (session_id, plan_revision, take_id, library_key, source_id, content_digest, resource_field),
+    CHECK (plan_revision > 0),
+    CHECK (take_id <> ''),
+    CHECK (library_key <> ''),
+    CHECK (source_id <> ''),
+    CHECK (content_digest <> ''),
+    CHECK (resource_field <> ''),
+    CHECK (source_value <> ''),
+    CHECK (adapted_value <> '')
+);
+
+CREATE TRIGGER IF NOT EXISTS take_resource_adaptation_protect_identity
+BEFORE UPDATE OF session_id, plan_revision, take_id, library_key, source_id, content_digest, resource_field, created_at
+ON take_resource_adaptation
+WHEN NOT (NEW.session_id = OLD.session_id
+          AND NEW.plan_revision = OLD.plan_revision
+          AND NEW.take_id = OLD.take_id
+          AND NEW.library_key = OLD.library_key
+          AND NEW.source_id = OLD.source_id
+          AND NEW.content_digest = OLD.content_digest
+          AND NEW.resource_field = OLD.resource_field
+          AND NEW.created_at = OLD.created_at)
+BEGIN
+  SELECT RAISE(ABORT, 'take_resource_adaptation is immutable: session_id, plan_revision, take_id, library_key, source_id, content_digest, resource_field and created_at cannot be rewritten; only source_value, adapted_value and updated_at may change on re-review');
+END;
+
+-- The trigger above lists the protected identity columns
+-- in its BEFORE UPDATE OF clause so SQLite only fires
+-- when a protected column is targeted. A re-review
+-- (UPDATE of ``source_value`` and/or ``adapted_value``
+-- together with ``updated_at``) is allowed without
+-- raising, and ``updated_at`` may always change. The
+-- seven-column identity that pins "a persisted
+-- adaptation only resolves the exact conflict it was
+-- approved for" stays protected at the SQL level.
 """
 
 _conn: sqlite3.Connection | None = None
