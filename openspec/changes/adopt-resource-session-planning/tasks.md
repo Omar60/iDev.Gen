@@ -234,8 +234,8 @@
 ## 4. Resource-based prompt preparation
 
 - [x] 4.1 Implement deterministic preparation from declared resource mappings and effective state, with manual completion available without an assistant; verify unused metadata and source instructions never become accidental prompt clauses or executable instructions.
-- [ ] 4.2 Add visible conflict handling and separately stored adaptations for fused descriptions; verify original payload preservation, fixed wardrobe precedence and unresolved-placeholder refusal using invented non-explicit scenes.
-- [ ] 4.3 Integrate optional assistant synthesis for unlocked fields and save its inputs/outputs; verify fixed choices survive preparation and repeating a finalized take requires no new writer request.
+- [x] 4.2 Add visible conflict handling and separately stored adaptations for fused descriptions; verify original payload preservation, fixed wardrobe precedence and unresolved-placeholder refusal using invented non-explicit scenes.
+- [x] 4.3 Integrate optional assistant synthesis for unlocked fields and save its inputs/outputs; verify fixed choices survive preparation and repeating a finalized take requires no new writer request.
 - [ ] 4.4 Save exact prompts with source and preparation versions; verify source refresh, translation edits and model-writer changes cannot rewrite an already finalized prompt.
 - [ ] 4.5 Connect finalized takes to existing shot creation and serial queue with submission uniqueness; verify retries produce one shot, complete prompts are not prefixed twice, and graph-kind reference rules remain unchanged.
 - [ ] 4.6 Scope measured-catalogue readiness and uniqueness checks to legacy paths; verify resource drafts work with an empty measured catalogue and twelve intentional same-camera portraits are accepted while legacy checks still fail appropriately.

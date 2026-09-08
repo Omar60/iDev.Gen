@@ -191,7 +191,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import db
 import importer
@@ -339,6 +339,131 @@ class PlaceholderUnresolvedError(PreparationError):
     the check; the refusal is the surface that blocks
     finalization.
     """
+
+
+# -- Task 4.3: writer synthesis vocabulary --------------------------------
+
+
+class WriterUnavailableError(PreparationError):
+    """A writer synthesis was requested but no writer is available.
+
+    The synthesis is optional: the manual completion path is
+    the supported fallback. The exception is raised only
+    when the caller asks for synthesis AND names at least
+    one still-unlocked take-level descriptive choice AND
+    no ``writer`` callable was supplied. The message names
+    the take and the missing callable so a caller (a route
+    layer, a test) can react specifically.
+    """
+
+
+class WriterOutputInvalid(PreparationError):
+    """The writer returned a value the contract does not accept.
+
+    The refusal names the offending key, the value the
+    writer returned, and the rule the value violated (a
+    closed allowlist, a string shape, an unresolved
+    placeholder, an attempt to rewrite a forbidden field).
+    A refused output is never persisted, and the take is
+    left in the same state the caller found it. A future
+    route layer maps the exception to a 422 body the
+    operator can read.
+    """
+
+
+# The single explicit version string the provenance records
+# when a writer synthesis is persisted. A future widening of
+# the writer request/response shape bumps this string and the
+# snapshot row the existing schema already pins through its
+# mapping_version / compiler_version columns reads it the
+# same way it reads the preparation version. The value is
+# the single source of truth a test, a UI message or a
+# code review can read.
+WRITER_SYNTHESIS_VERSION: str = "writer-synthesis-v1"
+
+
+# The closed allowlist of fields a writer synthesis is ever
+# allowed to fill. The set is exactly the four
+# take-level descriptive choices the spec names for take
+# variation; identity, look, initial wardrobe, effective
+# wardrobe, the four take choices once the take has
+# established them, and every resource, snapshot, plan or
+# adaptation field is OUTSIDE this set by construction. The
+# validator refuses every other key by name, so a writer
+# response that tries to rewrite anything outside the set is
+# the same refusal the manual completion path raises.
+WRITER_ALLOWED_FIELDS: frozenset[str] = TAKE_DESCRIPTIVE_CHOICES
+
+
+# The closed allowlist of keys a writer REQUEST may carry.
+# The request is the structured payload the layer hands to
+# the writer callable; it is JSON-serialisable, has no
+# wall-clock timestamps, and exposes only the four names
+# below. A writer that asks for a wider set is a contract
+# change. The keys are:
+#
+#   * ``requested_fields`` — the closed allowlist the writer
+#     is asked to fill, in the order the synthesis is to
+#     produce them. The order is the canonical sort order
+#     ``compute_unlocked_fields`` returns;
+#   * ``effective_state`` — a frozen view of the take's
+#     authoritative ``look``, ``initial_wardrobe`` and
+#     ``wardrobe`` the resolver computed. The values are
+#     included as context, never as fields the writer may
+#     fill. The layer reads them back from the
+#     writer's response unchanged;
+#   * ``resource_descriptive_inputs`` — the resource-side
+#     descriptive inputs the preparation already collected.
+#     Each entry is the resource's triple, kind and a dict
+#     of its descriptive fields, so the writer can ground
+#     its output in what the source actually said. The
+#     writer cannot rewrite these values; it can only
+#     consume them as context;
+#   * ``writer_guidance`` — the bounded reference data the
+#     preparation contract classified as ``writer_guidance``
+#     for every selected resource. A future caller that
+#     wants to widen the writer's context reads this list
+#     verbatim; the synthesis step does not invent a
+#     second vocabulary.
+WRITER_REQUEST_KEYS: frozenset[str] = frozenset({
+    "requested_fields",
+    "effective_state",
+    "resource_descriptive_inputs",
+    "writer_guidance",
+})
+
+
+# The closed allowlist of keys a writer RESPONSE may carry.
+# The response is a flat dict the validator examines; every
+# other key is refused. The set is a subset of
+# ``WRITER_ALLOWED_FIELDS`` chosen by the request, so a
+# response that pretends to fill a key the request did not
+# name is the same refusal the manual completion path
+# raises.
+WRITER_RESPONSE_KEYS: frozenset[str] = frozenset(WRITER_ALLOWED_FIELDS)
+
+
+# The single explicit string the provenance records for a
+# take whose synthesis was the manual fallback. A future
+# task that widens the writer surface bumps the synthesis
+# version, not this string; this string is the row's
+# statement of "the writer was not invoked for this take".
+WRITER_KIND_NONE: str = "none"
+
+
+# The single explicit string the provenance records for a
+# take whose synthesis was driven by a writer callable. The
+# row's provenance also carries the input and output, so a
+# reviewer can read what was sent and what came back without
+# re-running the synthesis.
+WRITER_KIND_ASSISTANT: str = "assistant"
+
+
+# The single explicit string the provenance records for a
+# take whose unlocked fields were filled in by the manual
+# completion path. The string is the row's statement of
+# "no writer was used, the operator typed the values".
+WRITER_KIND_MANUAL: str = "manual"
 
 
 # -- Task 4.2: review state vocabulary ------------------------------------
@@ -2522,3 +2647,1034 @@ def assemble_adapted_clauses(
                     clauses.append(text)
 
     return ". ".join(clauses)
+
+
+# -- Task 4.3: optional assistant synthesis -------------------------------
+
+
+# A single explicit callable alias for the writer signature
+# the layer exposes. A test, a route handler or a CLI caller
+# passes a function ``writer(request: dict) -> dict``; the
+# layer builds the request, calls the writer, and validates
+# the response. The alias is the single source of truth a
+# type checker, a docstring or a future refactor reads.
+WriterCallable = Callable[[dict], dict]
+
+
+def compute_unlocked_fields(preparation: dict) -> list[str]:
+    """Return the take-level descriptive choices still unlocked.
+
+    An "unlocked" field is a name in
+    ``TAKE_DESCRIPTIVE_CHOICES`` the take did NOT
+    establish AND the manual completion did NOT fill. The
+    synthesis step fills ONLY this set; a take that has
+    every choice set has an empty unlocked list and the
+    writer is not invoked at all. The list is returned in
+    canonical alphabetical order so two calls with the
+    same preparation return the same list, byte-for-byte,
+    and the request the writer receives is the one a test
+    or a code review can read.
+
+    The function is pure: it does not consult a wall
+    clock, does not write to the database, and does not
+    call the writer. The decision it makes is a structural
+    one on the preparation the layer already built.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    effective = preparation.get("effective_take_choices") or {}
+    if not isinstance(effective, dict):
+        raise PreparationArgumentError(
+            f"effective_take_choices must be a dict, got "
+            f"{type(effective).__name__}"
+        )
+    unlocked: list[str] = []
+    for name in sorted(TAKE_DESCRIPTIVE_CHOICES):
+        if name in effective:
+            continue
+        if not isinstance(effective.get(name), str) or not effective.get(name):
+            unlocked.append(name)
+    return unlocked
+
+
+def _snapshot_effective_state(preparation: dict) -> dict:
+    """Return the frozen effective state the writer request exposes.
+
+    The snapshot is the take's authoritative ``look``,
+    ``initial_wardrobe`` and per-take ``wardrobe`` the
+    resolver computed, copied into a fresh dict. The values
+    are passed to the writer as context only; the writer
+    cannot rewrite them, the validator refuses any response
+    that pretends to, and the snapshot is the same dict
+    the prepared_take's ``effective_state`` column will
+    later store. The function is pure.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    state = preparation.get("effective_state") or {}
+    if not isinstance(state, dict):
+        raise PreparationArgumentError(
+            f"effective_state must be a dict, got "
+            f"{type(state).__name__}"
+        )
+    out: dict = {}
+    for key in sorted(state.keys()):
+        value = state[key]
+        if isinstance(value, str):
+            out[key] = value
+    return out
+
+
+def _snapshot_resource_descriptive_inputs(
+    preparation: dict,
+) -> list[dict]:
+    """Return the resource-side descriptive inputs the writer may consume.
+
+    Each entry is a stable, JSON-serialisable dict with
+    the resource's immutable revision triple, its kind,
+    and a sorted-key dict of the resource-side
+    ``descriptive_input`` fields the contract classified
+    for the kind. The values are passed verbatim, the
+    field set is closed by the contract, and the writer
+    consumes them as context, never as a fillable field.
+    The list is sorted by the immutable triple so two
+    calls return the same order.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    out: list[dict] = []
+    for entry in preparation.get("resource_inputs", []):
+        if not isinstance(entry, dict):
+            continue
+        triple = (
+            str(entry.get("library_key", "")),
+            str(entry.get("source_id", "")),
+            str(entry.get("content_digest", "")),
+        )
+        descriptive = entry.get("descriptive_inputs") or {}
+        if not isinstance(descriptive, dict):
+            continue
+        sorted_descriptive: dict = {}
+        for field_name in sorted(descriptive.keys()):
+            value = descriptive[field_name]
+            if isinstance(value, str):
+                sorted_descriptive[str(field_name)] = value
+            elif isinstance(value, list):
+                sorted_descriptive[str(field_name)] = [
+                    item for item in value if isinstance(item, str)
+                ]
+        out.append({
+            "library_key": triple[0],
+            "source_id": triple[1],
+            "content_digest": triple[2],
+            "kind": str(entry.get("kind", "")),
+            "descriptive_inputs": sorted_descriptive,
+        })
+    out.sort(key=lambda item: (
+        item["library_key"], item["source_id"], item["content_digest"],
+    ))
+    return out
+
+
+def _snapshot_writer_guidance(preparation: dict) -> list[dict]:
+    """Return the writer guidance the request exposes to the writer.
+
+    The snapshot is the bounded reference data the
+    preparation contract classified as
+    ``writer_guidance`` for every selected resource, copied
+    into a list of stable dicts the writer can consume.
+    The values are passed verbatim, the structure is the
+    one ``_collect_writer_guidance`` produces, and the
+    list is sorted by the resource triple so two calls
+    return the same order. The guidance is DATA, never an
+    instruction: the writer consumes it as context and the
+    validator refuses any response that pretends to act on
+    it as a creative lever.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    guidance = preparation.get("writer_guidance") or {}
+    if not isinstance(guidance, dict):
+        raise PreparationArgumentError(
+            f"writer_guidance must be a dict, got "
+            f"{type(guidance).__name__}"
+        )
+    out: list[dict] = []
+    for key in sorted(guidance.keys()):
+        item = guidance[key]
+        if not isinstance(item, dict):
+            continue
+        out.append({
+            "library_key": str(item.get("library_key", "")),
+            "source_id": str(item.get("source_id", "")),
+            "content_digest": str(item.get("content_digest", "")),
+            "field_name": str(item.get("field_name", "")),
+            "value": item.get("value"),
+        })
+    return out
+
+
+def assemble_writer_request(
+    preparation: dict,
+    unlocked: list[str] | None = None,
+) -> dict:
+    """Build the deterministic writer request the synthesis will send.
+
+    The request is a flat dict whose keys are exactly the
+    four names in ``WRITER_REQUEST_KEYS``. The values are:
+
+      * ``requested_fields`` — the sorted list of unlocked
+        take-level descriptive choices the writer may
+        fill. The list is in canonical alphabetical order
+        and matches the list the function
+        ``compute_unlocked_fields`` returns. A request that
+        carries no unlocked fields is the "no writer call"
+        case the orchestrator short-circuits on;
+      * ``effective_state`` — the frozen view of the
+        take's authoritative look, initial wardrobe and
+        per-take effective wardrobe. The values are
+        passed as context only; the validator refuses any
+        response that pretends to rewrite them;
+      * ``resource_descriptive_inputs`` — the list of
+        resource-side descriptive inputs the contract
+        classified for every selected resource. The list
+        is sorted by the immutable revision triple and
+        every entry is a fresh dict the writer can read;
+      * ``writer_guidance`` — the bounded reference data
+        the preparation contract classified as
+        ``writer_guidance``. The list is sorted by
+        triple+field and every value is the verbatim
+        source the contract stored.
+
+    The function does not consult a wall clock and does
+    not call the writer. Two calls with the same
+    preparation and the same ``unlocked`` argument return
+    the same dict, byte-for-byte.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    if unlocked is None:
+        unlocked = compute_unlocked_fields(preparation)
+    if not isinstance(unlocked, list):
+        raise PreparationArgumentError(
+            f"unlocked must be a list, got "
+            f"{type(unlocked).__name__}"
+        )
+    for name in unlocked:
+        if name not in WRITER_ALLOWED_FIELDS:
+            raise PreparationArgumentError(
+                f"unlocked entry {name!r} is not an allowed "
+                f"writer field; allowed: "
+                f"{sorted(WRITER_ALLOWED_FIELDS)}"
+            )
+    requested = sorted(unlocked)
+    return {
+        "requested_fields": list(requested),
+        "effective_state": _snapshot_effective_state(preparation),
+        "resource_descriptive_inputs": (
+            _snapshot_resource_descriptive_inputs(preparation)
+        ),
+        "writer_guidance": _snapshot_writer_guidance(preparation),
+    }
+
+
+def _coerce_writer_response(response: Any) -> dict:
+    """Coerce a writer response into the dict shape the validator expects.
+
+    A response is accepted as a dict the validator can
+    read directly, or as an iterable of ``(key, value)``
+    pairs the function turns into a dict. A response of
+    any other shape is refused. The coercion is strict on
+    purpose: a writer that returns ``None``, a list of
+    strings, or a JSON string the caller is supposed to
+    parse is a contract error the caller is told about
+    before the validator runs.
+    """
+    if isinstance(response, dict):
+        return response
+    if isinstance(response, (list, tuple)):
+        out: dict = {}
+        for item in response:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise WriterOutputInvalid(
+                    f"writer response iterable entries must be "
+                    f"length-2 pairs, got {type(item).__name__}"
+                )
+            key, value = item
+            if not isinstance(key, str) or not key:
+                raise WriterOutputInvalid(
+                    f"writer response pair key must be a non-empty "
+                    f"string, got {key!r}"
+                )
+            out[key] = value
+        return out
+    raise WriterOutputInvalid(
+        f"writer response must be a dict or an iterable of "
+        f"(key, value) pairs, got {type(response).__name__}"
+    )
+
+
+def validate_writer_output(
+    response: Any,
+    preparation: dict,
+    unlocked: list[str] | None = None,
+) -> dict:
+    """Return a validated, normalized writer response for the take.
+
+    The response is the writer's verbatim answer. The
+    function refuses it under any of the following rules,
+    which mirror the contract the manual completion path
+    already enforces:
+
+      * the response must be a dict (or an iterable of
+        ``(key, value)`` pairs the function turns into a
+        dict); any other shape is refused by name;
+      * every key the response carries MUST be in
+        ``WRITER_RESPONSE_KEYS`` (the four
+        take-level descriptive choices). A response that
+        pretends to fill ``look``, ``initial_wardrobe``,
+        ``wardrobe``, ``identity``, ``id``, ``library`` or
+        any other fixed session state is refused because
+        those fields are not writer-fillable by
+        construction;
+      * the response MUST be a subset of the
+        ``unlocked`` list. A response that fills a field
+        the take already established is a contract
+        violation the manual completion path would
+        refuse the same way;
+      * every value MUST be a non-empty string. None,
+        empty strings, lists, dicts, numbers are refused
+        by name;
+      * every value MUST NOT carry an unresolved
+        template placeholder. The check uses the same
+        ``{name}`` syntax ``backend.importer`` already
+        publishes, so the repository owns a single
+        placeholder vocabulary. A placeholder found in a
+        writer value is the same block on finalization
+        the manual completion path raises.
+
+    The function returns a fresh dict in canonical
+    alphabetical key order, with the writer's
+    byte-for-byte values, when the input is valid. It
+    does not write to the database, does not consult a
+    wall clock, and does not change the preparation. A
+    refused response is the surface the route layer
+    maps to a 422.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    if unlocked is None:
+        unlocked = compute_unlocked_fields(preparation)
+    if not isinstance(unlocked, list):
+        raise PreparationArgumentError(
+            f"unlocked must be a list, got "
+            f"{type(unlocked).__name__}"
+        )
+    allowed_for_take = {
+        str(name) for name in unlocked if isinstance(name, str)
+    }
+    if not allowed_for_take:
+        raise WriterOutputInvalid(
+            f"writer response received but no take-level "
+            f"descriptive choice is unlocked; the response is "
+            f"refused because there is nothing for the writer "
+            f"to fill"
+        )
+    coerced = _coerce_writer_response(response)
+
+    extra_keys = sorted(
+        key for key in coerced.keys() if key not in WRITER_RESPONSE_KEYS
+    )
+    if extra_keys:
+        raise WriterOutputInvalid(
+            f"writer response carries keys outside the closed "
+            f"allowlist: {extra_keys!r}; the writer may only "
+            f"fill take-level descriptive choices "
+            f"({sorted(WRITER_ALLOWED_FIELDS)}) and the closed "
+            f"response set is {sorted(WRITER_RESPONSE_KEYS)}; "
+            f"identity, look, initial_wardrobe, wardrobe, "
+            f"resource selections, adaptations, snapshots and "
+            f"plan keys are NOT reachable through the writer"
+        )
+    unexpected_unlocked = sorted(
+        key for key in coerced.keys() if key not in allowed_for_take
+    )
+    if unexpected_unlocked:
+        raise WriterOutputInvalid(
+            f"writer response carries values for fields the "
+            f"take already establishes: {unexpected_unlocked!r}; "
+            f"the writer is asked only for the unlocked set "
+            f"{sorted(allowed_for_take)}; an attempt to fill an "
+            f"already-fixed choice is refused the same way "
+            f"manual completion refuses an override"
+        )
+    normalized: dict[str, str] = {}
+    for key in sorted(coerced.keys()):
+        value = coerced[key]
+        if not isinstance(value, str) or not value.strip():
+            raise WriterOutputInvalid(
+                f"writer response value for {key!r} must be a "
+                f"non-empty string, got {type(value).__name__}"
+            )
+        standing = _placeholder_names_in(value)
+        if standing:
+            raise WriterOutputInvalid(
+                f"writer response value for {key!r} still carries "
+                f"unresolved placeholders {standing!r}; a "
+                f"placeholder must be filled before the take is "
+                f"finalizable"
+            )
+        normalized[key] = value
+    missing = sorted(allowed_for_take.difference(coerced))
+    if missing:
+        raise WriterOutputInvalid(
+            f"writer response is incomplete; requested fields are "
+            f"{sorted(allowed_for_take)!r} and missing fields are {missing!r}"
+        )
+    return normalized
+
+
+def apply_writer_values(
+    preparation: dict,
+    values: Mapping[str, str],
+) -> dict:
+    """Return a preparation with the writer values merged into the take choices.
+
+    The function is pure: it returns a fresh dict that
+    shares the rest of the preparation's surface with the
+    input. The merge rule is "writer values fill the
+    unlocked slots only": a value the take already
+    establishes is preserved, the manual completion
+    values the caller already supplied are preserved,
+    and a writer value lands in the merged
+    ``effective_take_choices`` exactly when the field was
+    unlocked at request time. The provenance gets a
+    ``writer_synthesis`` block the persistence path
+    reads; the block is the same shape
+    ``record_writer_synthesis`` writes, so a future load
+    of the persisted row rebuilds the same view.
+
+    The function is the single source of truth for the
+    merge the orchestrator runs after a successful writer
+    call. The same merge is what the downstream pipeline
+    reads back from the prepared_take row.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got "
+            f"{type(preparation).__name__}"
+        )
+    if not isinstance(values, Mapping):
+        raise PreparationArgumentError(
+            f"values must be a mapping, got {type(values).__name__}"
+        )
+    unlocked = set(compute_unlocked_fields(preparation))
+    merged_effective: dict[str, str] = {}
+    for name in sorted(TAKE_DESCRIPTIVE_CHOICES):
+        existing = preparation.get("effective_take_choices") or {}
+        if not isinstance(existing, dict):
+            existing = {}
+        if name in existing and isinstance(existing[name], str) and existing[name]:
+            merged_effective[name] = existing[name]
+            continue
+        if name in values and name in unlocked:
+            merged_effective[name] = str(values[name])
+    out = dict(preparation)
+    out["effective_take_choices"] = merged_effective
+    return out
+
+
+def _writer_synthesis_block(
+    *,
+    kind: str,
+    requested_fields: list[str],
+    writer_input: dict | None,
+    writer_output: dict | None,
+) -> dict:
+    """Build the ``writer_synthesis`` block the provenance stores.
+
+    The block is the single shape the persistence path
+    serialises and the load path reads back. The values
+    are sorted alphabetically and the requested-field
+    list is sorted alphabetically so two calls with the
+    same arguments return the same block, byte-for-byte.
+    A ``none`` kind carries the request and response as
+    ``None`` so the row's statement of "no writer was
+    used" is unambiguous on read; an ``assistant`` kind
+    carries the verbatim input and output the writer
+    saw; a ``manual`` kind carries ``None`` for both
+    because the operator typed the values and there is
+    no assistant round-trip to record.
+    """
+    if kind not in (WRITER_KIND_NONE, WRITER_KIND_ASSISTANT, WRITER_KIND_MANUAL):
+        raise PreparationArgumentError(
+            f"writer synthesis kind must be one of "
+            f"{[WRITER_KIND_NONE, WRITER_KIND_ASSISTANT, WRITER_KIND_MANUAL]!r}, "
+            f"got {kind!r}"
+        )
+    return {
+        "version": WRITER_SYNTHESIS_VERSION,
+        "kind": kind,
+        "requested_fields": sorted(requested_fields),
+        "writer_input": writer_input,
+        "writer_output": writer_output,
+    }
+
+
+def _decode_writing_in_provenance(
+    snapshot: Mapping[str, Any],
+) -> dict | None:
+    """Return the ``writer_synthesis`` block of a snapshot's provenance.
+
+    The provenance may be a JSON string, a dict, or
+    absent. The function returns the block when the
+    snapshot is a dict and the provenance carries one;
+    ``None`` when the snapshot is not a dict, the
+    provenance is not a dict, or the block is missing.
+    A block whose version does not match
+    ``WRITER_SYNTHESIS_VERSION`` is returned as-is and
+    the caller decides what to do (a future widening
+    reads the version and refuses an unknown block).
+    """
+    if not isinstance(snapshot, Mapping):
+        return None
+    provenance = snapshot.get("provenance")
+    if isinstance(provenance, str):
+        try:
+            provenance = json.loads(provenance)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(provenance, Mapping):
+        return None
+    block = provenance.get("writer_synthesis")
+    if not isinstance(block, Mapping):
+        return None
+    return dict(block)
+
+
+def _row_writer_synthesis(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+) -> dict | None:
+    """Return the ``writer_synthesis`` block a prepared_take row carries.
+
+    The function reads the immutable revision triple the
+    caller named and decodes the ``provenance`` JSON the
+    prepared_take row stored. The function reads the row
+    regardless of status (including ``pending``) and
+    returns ``None`` when the row is absent or the block
+    is missing.
+    """
+    row = session_plan._prepared_take_row(  # noqa: SLF001
+        session_id, plan_revision, take_id,
+    )
+    if row is None:
+        return None
+    return _decode_writing_in_provenance(row)
+
+
+def _merge_provenance_writer_synthesis(
+    provenance: Mapping[str, Any] | None,
+    block: Mapping[str, Any],
+) -> dict:
+    """Return a fresh provenance dict with the writer block merged in.
+
+    The merge rule is: every key the input provenance
+    already has is preserved, and a single
+    ``writer_synthesis`` key is set to ``block`` so the
+    next read of the row returns the block unchanged.
+    The function is the single source of truth the
+    synthesis persistence path uses; the orchestrator
+    always passes the same block shape regardless of the
+    synthesis kind.
+    """
+    out: dict = {}
+    if isinstance(provenance, Mapping):
+        for key in sorted(provenance.keys()):
+            value = provenance[key]
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                out[str(key)] = value
+            elif isinstance(value, list):
+                out[str(key)] = list(value)
+            elif isinstance(value, dict):
+                out[str(key)] = json.loads(json.dumps(value, sort_keys=True))
+    out["writer_synthesis"] = json.loads(
+        json.dumps(dict(block), sort_keys=True)
+    )
+    return out
+
+
+def synthesize_unlocked_fields(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    *,
+    writer: WriterCallable | None = None,
+    manual_completion: Mapping[str, str] | None = None,
+    persist: bool = True,
+) -> dict:
+    """Run optional assistant synthesis for the take's unlocked choices.
+
+    The function is the single entry point a route layer,
+    a CLI tool or a test calls to drive task 4.3. It
+    composes the existing preparation layer with the
+    ``session_plan`` persistence pipeline and the
+    optional writer callable the caller supplies.
+
+    The flow, in order, is:
+
+      1. Load the immutable revision triple the caller
+         named. The validation runs the same checks
+         ``session_plan._load_current_resource_plan``
+         already enforces (mode, plan revision, take
+         id), so a refused target is the same refusal the
+         rest of the layer surfaces.
+
+      2. Read the prepared_take row the existing pipeline
+         has for the triple. When the row exists AND is
+         in ``ready`` or ``generated`` status, the
+         function returns the persisted snapshot's
+         preparation view WITHOUT calling the writer.
+         The "no new writer request" property the spec
+         requires is the same return path: the
+         preparation the function returns carries the
+         writer_synthesis block the row stored, and the
+         ``writer_reused`` flag in the return dict names
+         the path that ran.
+
+      3. Build the deterministic preparation
+         (``prepare_take_inputs``). The same
+         ``manual_completion`` argument the manual
+         path accepts is honoured here, so a caller
+         that mixes manual values and a writer request
+         gets the same merge the manual path runs.
+
+      4. Compute the unlocked field list. When the list
+         is empty, the function persists a snapshot
+         whose ``writer_synthesis.kind`` is
+         ``WRITER_KIND_NONE`` (the row's statement of
+         "the writer was not invoked") and returns the
+         resulting preparation WITHOUT calling the
+         writer. A caller that asks for synthesis and
+         gets nothing to fill is the success case the
+         spec calls out: zero calls to the writer for a
+         take that already had every choice set.
+
+      5. When the unlocked list is non-empty AND the
+         caller did NOT supply a writer callable, the
+         function raises ``WriterUnavailableError``.
+         The manual path is the supported fallback; a
+         caller that forgets to wire the writer gets a
+         readable refusal rather than a silent skip.
+
+      6. When the unlocked list is non-empty AND the
+         caller supplied a writer callable, the
+         function builds the deterministic request,
+         calls the writer, validates the response, and
+         merges the validated values into the
+         preparation.
+
+      7. When ``persist`` is True (the default), the
+         persistence flow ensures the row exists in
+         ``pending`` status via
+         ``session_plan.begin_preparation`` (creating
+         or preserving pending) and calls
+         ``session_plan.record_writer_synthesis`` to
+         persist the writer_synthesis block while
+         maintaining ``pending`` status. The same
+         ``PreparedTakePersistenceError`` the existing
+         pipeline raises propagates here unchanged, so
+         a transient persistence failure is never
+         reported as a successful synthesis.
+
+    The function returns a dict with the same top-level
+    shape the existing tests already assert, plus three
+    task-4.3-only fields:
+
+      * ``writer_synthesis`` — the block the persistence
+        path stored. A caller that wants the round-trip
+        view reads this from the function's return;
+      * ``writer_reused`` — True when step 2 took the
+        no-new-writer-call short-circuit, False when
+        the function actually ran the synthesis. A test
+        asserts this with a spied writer whose call
+        count must stay at zero on the reuse path;
+      * ``writer_invoked`` — True when the function
+        actually called the writer. The two booleans
+        are independent on purpose: a take that is
+        ready and a take that has nothing to fill both
+        return ``writer_invoked=False``, but the first
+        sets ``writer_reused=True`` and the second
+        sets it False.
+
+    The function does not consult a wall clock and does
+    not depend on the network. Two calls with the same
+    arguments and the same writer return the same dict
+    modulo the persisted row's ``updated_at`` and
+    ``id`` columns, which the layer deliberately
+    returns verbatim.
+    """
+    if not isinstance(session_id, int) or isinstance(session_id, bool):
+        raise PreparationArgumentError(
+            f"session_id must be an int, got {type(session_id).__name__}"
+        )
+    if not isinstance(plan_revision, int) or isinstance(plan_revision, bool):
+        raise PreparationArgumentError(
+            f"plan_revision must be an int, got "
+            f"{type(plan_revision).__name__}"
+        )
+    if not isinstance(take_id, str) or not take_id:
+        raise PreparationArgumentError(
+            f"take_id must be a non-empty string, got {take_id!r}"
+        )
+    if writer is not None and not callable(writer):
+        raise PreparationArgumentError(
+            f"writer must be callable or None, got "
+            f"{type(writer).__name__}"
+        )
+
+    actual_revision, _ = session_plan._load_current_resource_plan(  # noqa: SLF001
+        session_id,
+    )
+    if actual_revision != plan_revision:
+        raise PreparationError(
+            f"session {session_id} plan revision is "
+            f"{actual_revision}, requested synthesis revision is "
+            f"{plan_revision}"
+        )
+
+    existing_row = session_plan._prepared_take_row(  # noqa: SLF001
+        session_id, plan_revision, take_id,
+    )
+    if existing_row is not None and (
+        existing_row["status"] == session_plan.PREPARED_TAKE_STATUS_GENERATED
+        or (
+            existing_row["status"] == session_plan.PREPARED_TAKE_STATUS_READY
+            and isinstance(existing_row["final_prompt"], str)
+            and existing_row["final_prompt"].strip()
+        )
+    ):
+        persisted = session_plan._decode_prepared_take(  # noqa: SLF001
+            existing_row,
+        )
+        block = _decode_writing_in_provenance(persisted)
+        effective_state = persisted.get("effective_state") or {}
+        if not isinstance(effective_state, dict):
+            effective_state = {}
+        return {
+            "session_id": session_id,
+            "plan_revision": plan_revision,
+            "take_id": take_id,
+            "composition_mode": session_plan.MODE_RESOURCE_V1,
+            "persisted": True,
+            "writer_reused": True,
+            "writer_invoked": False,
+            "writer_synthesis": block,
+            "effective_take_choices": dict(
+                effective_state.get("take_choices") or {}
+            ),
+            "status": persisted.get("status", ""),
+            "snapshot": persisted,
+        }
+
+    preparation = prepare_take_inputs(
+        session_id, plan_revision, take_id,
+        manual_completion=manual_completion,
+    )
+    unlocked = compute_unlocked_fields(preparation)
+
+    if not unlocked:
+        final_preparation = apply_writer_values(preparation, {})
+        block = _writer_synthesis_block(
+            kind=WRITER_KIND_NONE,
+            requested_fields=[],
+            writer_input=None,
+            writer_output=None,
+        )
+        snapshot = None
+        if persist:
+            snapshot = _persist_synthesis(
+                session_id, plan_revision, take_id,
+                final_preparation, block,
+            )
+        return {
+            "session_id": session_id,
+            "plan_revision": plan_revision,
+            "take_id": take_id,
+            "composition_mode": session_plan.MODE_RESOURCE_V1,
+            "persisted": persist,
+            "writer_reused": False,
+            "writer_invoked": False,
+            "writer_synthesis": block,
+            "effective_take_choices": dict(
+                final_preparation.get("effective_take_choices") or {}
+            ),
+            "unlocked_fields": [],
+            "snapshot": snapshot,
+        }
+
+    if writer is None:
+        raise WriterUnavailableError(
+            f"session {session_id} take {take_id!r} has "
+            f"unlocked descriptive choices "
+            f"{sorted(unlocked)!r} but no writer callable was "
+            f"supplied; the manual completion path is the "
+            f"supported fallback; pass a writer or supply "
+            f"manual_completion for these fields"
+        )
+
+    request = assemble_writer_request(preparation, unlocked=unlocked)
+    # The pending marker is created BEFORE the writer
+    # call so a writer that fails before answering
+    # leaves the take recoverable: the row is on
+    # disk in ``pending`` status, the failure is
+    # visible, and a retry can attach a fresh
+    # synthesis to the same row. The call uses the
+    # existing ``begin_preparation`` path, which
+    # commits its own transaction, so the row is
+    # visible regardless of what the writer does
+    # next.
+    if persist:
+        session_plan.begin_preparation(
+            session_id, plan_revision, take_id,
+        )
+    try:
+        response = writer(request)
+    except Exception as exc:
+        # The writer's exception is wrapped in the
+        # persistence-layer's error class so the
+        # failure surfaces through the same error
+        # channel the rest of the pipeline uses. The
+        # ``begin_preparation`` call above already
+        # committed; the pending row is on disk and
+        # the take is recoverable.
+        raise PreparedTakePersistenceError(
+            f"writer for take {take_id!r} plan revision "
+            f"{plan_revision} raised before answering: "
+            f"{exc}"
+        ) from exc
+    validated = validate_writer_output(
+        response, preparation, unlocked=unlocked,
+    )
+    final_preparation = apply_writer_values(preparation, validated)
+    block = _writer_synthesis_block(
+        kind=WRITER_KIND_ASSISTANT,
+        requested_fields=request["requested_fields"],
+        writer_input=request,
+        writer_output=validated,
+    )
+    snapshot = None
+    if persist:
+        snapshot = _persist_synthesis_after_pending(
+            session_id, plan_revision, take_id,
+            final_preparation, block,
+        )
+    return {
+        "session_id": session_id,
+        "plan_revision": plan_revision,
+        "take_id": take_id,
+        "composition_mode": session_plan.MODE_RESOURCE_V1,
+        "persisted": persist,
+        "writer_reused": False,
+        "writer_invoked": True,
+        "writer_synthesis": block,
+        "effective_take_choices": dict(
+            final_preparation.get("effective_take_choices") or {}
+        ),
+        "unlocked_fields": list(validated.keys()),
+        "snapshot": snapshot,
+    }
+
+
+def _persist_synthesis_after_pending(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    preparation: dict,
+    block: Mapping[str, Any],
+) -> dict:
+    """Update a recoverable pending row with the writer synthesis block.
+
+    The ``begin_preparation`` step is the caller's
+    responsibility: the orchestrator runs it BEFORE
+    the writer call so a writer that fails leaves the
+    take recoverable. This helper is the second step
+    of that flow: it composes the
+    effective_state / provenance the writer filled in
+    and runs ``session_plan.record_writer_synthesis``
+    (the task-4.3-specific helper) so a final_prompt
+    is NOT required. The same
+    ``PreparedTakePersistenceError`` path the existing
+    tests already cover propagates here unchanged, so
+    a transient persistence failure is never reported
+    as a successful synthesis. The provenance the
+    prepared_take row stores carries the
+    writer_synthesis block, the effective_state
+    carries the writer-merged take choices under the
+    ``take_choices`` key the future 4.4 layer reads,
+    and the snapshot updates the recoverable
+    preparation and remains in ``pending`` status.
+    """
+    effective_state = dict(preparation.get("effective_state") or {})
+    effective_state["take_choices"] = dict(
+        preparation.get("effective_take_choices") or {}
+    )
+    existing = session_plan._prepared_take_row(  # noqa: SLF001
+        session_id, plan_revision, take_id,
+    )
+    provenance: dict = {}
+    if existing is not None:
+        try:
+            raw = existing.get("provenance")
+            if isinstance(raw, str) and raw:
+                provenance = json.loads(raw)
+            elif isinstance(raw, dict):
+                provenance = dict(raw)
+        except json.JSONDecodeError:
+            provenance = {}
+    merged_provenance = _merge_provenance_writer_synthesis(
+        provenance, block,
+    )
+    try:
+        return session_plan.record_writer_synthesis(
+            session_id, plan_revision, take_id,
+            effective_state=effective_state,
+            mapping_version=MAPPING_VERSION,
+            compiler_version=COMPILER_VERSION,
+            provenance=merged_provenance,
+        )
+    except (
+        session_plan.PlanValidationError,
+        session_plan.PlanRevisionStale,
+        session_plan.PreparedTakeConflict,
+        session_plan.SessionNotInResourceMode,
+        session_plan.SessionNotFound,
+        session_plan.PreparedTakePersistenceError,
+    ):
+        raise
+    except Exception as exc:
+        raise PreparedTakePersistenceError(
+            f"could not persist writer synthesis for take "
+            f"{take_id!r} plan revision {plan_revision}: {exc}"
+        ) from exc
+
+
+def _persist_synthesis(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    preparation: dict,
+    block: Mapping[str, Any],
+) -> dict:
+    """Persist a synthesis that has no writer call to make.
+
+    The "no unlocked fields" case (every choice set
+    already) is the path that NEVER calls the writer
+    but still needs to record the row's statement of
+    "the writer was not invoked". The flow is the
+    same begin / pending synthesis the writer path
+    runs, and the provenance carries the same block shape
+    the writer path uses (``kind: "none"``). A
+    caller that asks for synthesis on a take with
+    no unlocked fields gets the same persistence
+    semantics a caller that asked the writer does.
+    """
+    try:
+        with db.transaction():
+            session_plan.begin_preparation(
+                session_id, plan_revision, take_id,
+            )
+            effective_state = dict(preparation.get("effective_state") or {})
+            effective_state["take_choices"] = dict(
+                preparation.get("effective_take_choices") or {}
+            )
+            existing = session_plan._prepared_take_row(  # noqa: SLF001
+                session_id, plan_revision, take_id,
+            )
+            provenance: dict = {}
+            if existing is not None:
+                try:
+                    raw = existing.get("provenance")
+                    if isinstance(raw, str) and raw:
+                        provenance = json.loads(raw)
+                    elif isinstance(raw, dict):
+                        provenance = dict(raw)
+                except json.JSONDecodeError:
+                    provenance = {}
+            merged_provenance = _merge_provenance_writer_synthesis(
+                provenance, block,
+            )
+            return session_plan.record_writer_synthesis(
+                session_id, plan_revision, take_id,
+                effective_state=effective_state,
+                mapping_version=MAPPING_VERSION,
+                compiler_version=COMPILER_VERSION,
+                provenance=merged_provenance,
+            )
+    except (
+        session_plan.PlanValidationError,
+        session_plan.PlanRevisionStale,
+        session_plan.PreparedTakeConflict,
+        session_plan.SessionNotInResourceMode,
+        session_plan.SessionNotFound,
+        session_plan.PreparedTakePersistenceError,
+    ):
+        raise
+    except Exception as exc:
+        raise PreparedTakePersistenceError(
+            f"could not persist writer synthesis for take "
+            f"{take_id!r} plan revision {plan_revision}: {exc}"
+        ) from exc
+
+
+def load_writer_synthesis(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+) -> dict | None:
+    """Return the persisted writer_synthesis block for the triple.
+
+    The function is the single read path a UI review
+    screen, a future task 4.4 or a future task 5.4 calls
+    to surface what the writer saw and what it answered
+    for the take. The block is the same one
+    ``_writer_synthesis_block`` builds, the same one
+    ``_merge_provenance_writer_synthesis`` writes, and
+    the same one the orchestrator returns. A triple
+    that has no row, or a row whose provenance carries
+    no block, reads as ``None``; a row in ``pending``
+    status with a persisted block returns the block.
+    """
+    if not isinstance(session_id, int) or isinstance(session_id, bool):
+        raise PreparationArgumentError(
+            f"session_id must be an int, got {type(session_id).__name__}"
+        )
+    if not isinstance(plan_revision, int) or isinstance(plan_revision, bool):
+        raise PreparationArgumentError(
+            f"plan_revision must be an int, got "
+            f"{type(plan_revision).__name__}"
+        )
+    if not isinstance(take_id, str) or not take_id:
+        raise PreparationArgumentError(
+            f"take_id must be a non-empty string, got {take_id!r}"
+        )
+    return _row_writer_synthesis(session_id, plan_revision, take_id)

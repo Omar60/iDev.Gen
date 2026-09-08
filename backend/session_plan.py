@@ -1152,6 +1152,107 @@ def recover_preparation(session_id: int) -> dict:
     }
 
 
+def record_writer_synthesis(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    *,
+    effective_state: Any,
+    mapping_version: str,
+    compiler_version: str,
+    provenance: Any,
+) -> dict:
+    """Persist the writer synthesis block on a pending prepared_take row.
+
+    Writer data is resumable preparation state, not a final prompt. The
+    atomic update keeps the row pending; ``complete_preparation`` is the
+    only transition to ready.
+
+    The write runs inside the same ``db.transaction``
+    block the rest of the pipeline uses. The single
+    UPDATE targets the exact pending row the
+    ``begin_preparation`` step created and the future
+    ``complete_preparation`` step will overwrite; the
+    WHERE clause pins the status so a second review
+    that lands on a row already in ``ready`` /
+    ``generated`` / ``invalidated`` status is refused
+    with the same ``PreparedTakeConflict`` the
+    existing pipeline raises. A row that does not
+    exist at all is also refused: the
+    ``begin_preparation`` call that task 4.3 runs
+    before this one is the only path that creates the
+    pending row the function expects to find, and a
+    missing row is the boundary case the function
+    turns into ``PreparedTakePersistenceError``.
+
+    The function returns the persisted row the same
+    way ``complete_preparation`` does, with the
+    ``writer_synthesis`` block intact inside the
+    ``provenance`` JSON column. A future
+    ``load_writer_synthesis`` call reads the same
+    block back, byte-for-byte, the same way the
+    orchestrator task 4.3 owns reads it.
+    """
+    if not isinstance(mapping_version, str):
+        raise PlanValidationError("mapping_version must be a string")
+    if not mapping_version.strip():
+        raise PlanValidationError("mapping_version must be a non-empty string")
+    if not isinstance(compiler_version, str):
+        raise PlanValidationError("compiler_version must be a string")
+    if not compiler_version.strip():
+        raise PlanValidationError("compiler_version must be a non-empty string")
+    encoded_state = _encode_snapshot_json(effective_state, "effective_state")
+    encoded_provenance = _encode_snapshot_json(provenance, "provenance")
+    try:
+        with db.transaction():
+            _validate_preparation_target(session_id, plan_revision, take_id)
+            existing = _prepared_take_row(session_id, plan_revision, take_id)
+            if existing is None:
+                raise PreparedTakeConflict(
+                    f"prepared take {take_id!r} at plan revision "
+                    f"{plan_revision} has no pending row to attach the "
+                    f"writer synthesis to; begin_preparation must run "
+                    f"first"
+                )
+            if existing["status"] != PREPARED_TAKE_STATUS_PENDING:
+                raise PreparedTakeConflict(
+                    f"prepared take {take_id!r} at plan revision "
+                    f"{plan_revision} is in {existing['status']!r} status; "
+                    f"writer synthesis is only recorded on pending rows, "
+                    f"and a row that is already ready, generated or "
+                    f"invalidated is history"
+                )
+            now = db.now()
+            db.run(
+                "UPDATE prepared_take SET effective_state = ?, "
+                "mapping_version = ?, compiler_version = ?, "
+                "provenance = ?, updated_at = ? "
+                "WHERE id = ? AND status = ?",
+                encoded_state, mapping_version, compiler_version,
+                encoded_provenance, now,
+                existing["id"], PREPARED_TAKE_STATUS_PENDING,
+            )
+            row = _prepared_take_row(session_id, plan_revision, take_id)
+            if row is None or row["status"] != PREPARED_TAKE_STATUS_PENDING:
+                raise PreparedTakePersistenceError(
+                    f"prepared take {take_id!r} did not remain pending "
+                    f"after the writer synthesis write"
+                )
+            return _decode_prepared_take(row)
+    except (
+        SessionNotFound,
+        SessionNotInResourceMode,
+        PlanRevisionStale,
+        PlanValidationError,
+        PreparedTakeConflict,
+        PreparedTakePersistenceError,
+    ):
+        raise
+    except Exception as exc:
+        raise PreparedTakePersistenceError(
+            f"could not persist writer synthesis for prepared take "
+            f"{take_id!r}: {exc}"
+        ) from exc
 def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
     """Save a draft plan with a compare-and-swap on the revision.
 

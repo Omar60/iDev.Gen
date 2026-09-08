@@ -4131,3 +4131,1276 @@ class Test42ExposedHelpers:
         assert "look" in (
             resource_preparation.ADAPTATION_FORBIDDEN_FIELDS
         )
+
+
+# ---- 17. Task 4.3: optional assistant synthesis -------------------------
+
+
+# A minimal fake writer the test module can inspect: the
+# spy records every call (input + return value the test
+# named) and exposes ``call_count`` so the reuse property
+# the spec calls out ("a finalized take MUST NOT trigger a
+# new writer request") has a single attribute to read. The
+# fake returns whatever the test wired it to return; a test
+# that wants to exercise the success path wires
+# ``return_value={...}`` and a test that wants to exercise
+# the failure path wires ``raise=ValueError(...)``. The
+# fake is the single source of truth a test, a code review
+# or a future refactor reads.
+class _FakeWriter:
+    def __init__(
+        self, return_value: dict | None = None,
+        *, raise_on_call: Exception | None = None,
+    ) -> None:
+        self.return_value = return_value or {}
+        self._raise_on_call = raise_on_call
+        self.call_count = 0
+        self.calls: list[dict] = []
+
+    def __call__(self, request: dict) -> dict:
+        self.call_count += 1
+        self.calls.append(request)
+        if self._raise_on_call is not None:
+            raise self._raise_on_call
+        return self.return_value
+
+
+def _plan_with_rooms_take(
+    isolated_db,
+    *,
+    revision_payload: dict = INV_ROOMS_PAYLOAD,
+    library_key: str = "inv_rooms_synth",
+    source_id: str = "inv_room_synth",
+    take_id: str = "take-001",
+    take_choices: dict | None = None,
+    wardrobe: str = INV_WARDROBE,
+    look: str = INV_LOOK,
+) -> tuple[int, dict]:
+    """A minimal resource-v1 plan wired to a single rooms revision.
+
+    The helper is the smallest setup a 4.3 test needs:
+    a session, a saved draft, and a single take. The
+    caller controls the take's descriptive choices (some
+    tests pass all four, some pass one, some pass none)
+    so the unlocked-field computation and the writer
+    request shape have a small surface to read.
+    """
+    setup_session(isolated_db)
+    revision = _build_revision(library_key, source_id, revision_payload)
+    if take_choices is None:
+        take_choices = {
+            "camera": "a 35mm prime at chest height",
+            "framing": "waist up",
+            "pose": "standing square to the camera",
+            "expression": "a slight smile",
+        }
+    plan = {
+        "version": "resource-v1",
+        "look": look,
+        "initial_wardrobe": wardrobe,
+        "takes": [{"take_id": take_id, **take_choices}],
+        "selected_resources": [{
+            "library_key": revision["library_key"],
+            "source_id": revision["source_id"],
+            "content_digest": revision["content_digest"],
+        }],
+        "wardrobe_changes": [],
+    }
+    session_plan.save_draft(
+        _CURRENT_SESSION[0], plan, expected_revision=0,
+    )
+    return _CURRENT_SESSION[0], revision
+
+
+class TestWriterVocabularyIsClosed:
+    """The new module exposes a closed vocabulary, not a parameter soup.
+
+    The allowlists the synthesis step reads are the same
+    closed sets a code review or a future refactor
+    expects: a single string constant for the synthesis
+    version, a single frozenset for the writer's allowed
+    field names, a single frozenset for the request keys,
+    a single frozenset for the response keys, and three
+    explicit kind strings. A test that pins the shape of
+    those constants catches an accidental widening
+    before it ships.
+    """
+
+    def test_writer_synthesis_version_is_a_string(self):
+        assert isinstance(
+            resource_preparation.WRITER_SYNTHESIS_VERSION, str,
+        )
+        assert resource_preparation.WRITER_SYNTHESIS_VERSION
+
+    def test_writer_allowed_fields_matches_take_descriptive_choices(self):
+        assert (
+            resource_preparation.WRITER_ALLOWED_FIELDS
+            == resource_preparation.TAKE_DESCRIPTIVE_CHOICES
+        )
+
+    def test_writer_request_keys_is_a_closed_allowlist(self):
+        assert isinstance(
+            resource_preparation.WRITER_REQUEST_KEYS, frozenset,
+        )
+        assert resource_preparation.WRITER_REQUEST_KEYS == frozenset({
+            "requested_fields",
+            "effective_state",
+            "resource_descriptive_inputs",
+            "writer_guidance",
+        })
+
+    def test_writer_response_keys_is_a_closed_allowlist(self):
+        assert isinstance(
+            resource_preparation.WRITER_RESPONSE_KEYS, frozenset,
+        )
+        assert (
+            resource_preparation.WRITER_RESPONSE_KEYS
+            == resource_preparation.TAKE_DESCRIPTIVE_CHOICES
+        )
+
+    def test_kind_constants_are_distinct(self):
+        kinds = {
+            resource_preparation.WRITER_KIND_NONE,
+            resource_preparation.WRITER_KIND_ASSISTANT,
+            resource_preparation.WRITER_KIND_MANUAL,
+        }
+        assert len(kinds) == 3
+
+
+class TestComputeUnlockedFields:
+    """The unlocked set is the only set the writer is asked to fill."""
+
+    def test_take_with_every_choice_set_has_no_unlocked_fields(
+        self, isolated_db,
+    ):
+        """A take that already establishes camera, framing,
+        pose and expression has an empty unlocked set, so
+        the writer is not invoked at all. The spec calls
+        this out as case 1 in the minimum edge-cases list."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={
+                "camera": "a 35mm prime",
+                "framing": "waist up",
+                "pose": "standing square",
+                "expression": "a slight smile",
+            },
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        assert (
+            resource_preparation.compute_unlocked_fields(prep) == []
+        )
+
+    def test_take_with_only_camera_set_has_three_unlocked_fields(
+        self, isolated_db,
+    ):
+        """A take that establishes only ``camera`` has the
+        other three choices unlocked, and the request to
+        the writer names exactly those three. The spec
+        calls this out as case 2 in the minimum edge-cases
+        list."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={
+                "camera": "a 35mm prime",
+            },
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        assert (
+            resource_preparation.compute_unlocked_fields(prep)
+            == ["expression", "framing", "pose"]
+        )
+
+    def test_take_with_no_choices_set_has_all_four_unlocked(
+        self, isolated_db,
+    ):
+        """A take that does NOT establish any of the four
+        descriptive choices leaves the full set unlocked.
+        The writer is asked for every one of them in the
+        canonical sort order."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        assert (
+            resource_preparation.compute_unlocked_fields(prep)
+            == ["camera", "expression", "framing", "pose"]
+        )
+
+    def test_manual_completion_fills_unlocked_set(self, isolated_db):
+        """A manual completion supplied to
+        ``prepare_take_inputs`` reduces the unlocked set:
+        a value the operator typed in is no longer a
+        candidate the writer may fill. The two paths
+        share the same source of truth."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+            manual_completion={"framing": "tight on the eyes"},
+        )
+        # The take establishes ``camera``; the manual
+        # completion fills ``framing``. Two of the four
+        # remain unlocked, in canonical order.
+        assert (
+            resource_preparation.compute_unlocked_fields(prep)
+            == ["expression", "pose"]
+        )
+
+    def test_unlocked_set_is_deterministic(self, isolated_db):
+        """Two calls with the same preparation return the
+        same list, byte-for-byte, in the same order. The
+        sort is alphabetical so a test or a code review
+        can read the result without consulting a wall
+        clock."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        first = resource_preparation.compute_unlocked_fields(prep)
+        second = resource_preparation.compute_unlocked_fields(prep)
+        assert first == second
+
+
+class TestAssembleWriterRequest:
+    """The writer request is a deterministic, bounded data structure.
+
+    The request exposes only the four names the contract
+    publishes; every other key the writer might want is
+    absent. A test that pins the shape of the request is
+    what keeps a future widening of the writer's context
+    a code change the tests will surface.
+    """
+
+    def test_request_carries_only_the_closed_allowlist_keys(
+        self, isolated_db,
+    ):
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        unlocked = resource_preparation.compute_unlocked_fields(prep)
+        request = resource_preparation.assemble_writer_request(
+            prep, unlocked=unlocked,
+        )
+        assert set(request.keys()) == (
+            resource_preparation.WRITER_REQUEST_KEYS
+        )
+
+    def test_requested_fields_match_the_unlocked_set(
+        self, isolated_db,
+    ):
+        """A take that has only ``camera`` set produces a
+        request whose ``requested_fields`` names the
+        other three. The writer receives a request that
+        names exactly the unlocked set; the spec's
+        "only-ask-for-unlocked" rule is the same return
+        value."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        request = resource_preparation.assemble_writer_request(prep)
+        assert request["requested_fields"] == [
+            "expression", "framing", "pose",
+        ]
+
+    def test_effective_state_exposes_only_frozen_session_state(
+        self, isolated_db,
+    ):
+        """The ``effective_state`` block the writer sees
+        is the take's authoritative look, initial wardrobe
+        and per-take wardrobe. The writer receives these
+        values as context, not as fillable fields, and the
+        validator refuses any response that pretends to
+        rewrite them."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        request = resource_preparation.assemble_writer_request(prep)
+        state = request["effective_state"]
+        assert state["look"] == INV_LOOK
+        assert state["initial_wardrobe"] == INV_WARDROBE
+        assert state["wardrobe"] == INV_WARDROBE
+
+    def test_resource_descriptive_inputs_appear_in_the_request(
+        self, isolated_db,
+    ):
+        """The request carries the resource-side
+        descriptive inputs the contract classified for
+        every selected resource, sorted by the immutable
+        triple. The writer consumes them as context, and
+        the validator refuses any response that pretends
+        to rewrite a resource-side field."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        request = resource_preparation.assemble_writer_request(prep)
+        inputs = request["resource_descriptive_inputs"]
+        assert len(inputs) == 1
+        entry = inputs[0]
+        assert entry["kind"] == "rooms"
+        assert "label" in entry["descriptive_inputs"]
+        assert entry["descriptive_inputs"]["label"] == (
+            INV_ROOMS_PAYLOAD["label"]
+        )
+
+    def test_request_is_deterministic(self, isolated_db):
+        """Two calls with the same preparation return the
+        same request, byte-for-byte. A test or a code
+        review can read the result without consulting a
+        wall clock or the network."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        first = resource_preparation.assemble_writer_request(prep)
+        second = resource_preparation.assemble_writer_request(prep)
+        assert first == second
+
+    def test_request_can_be_called_with_explicit_unlocked(
+        self, isolated_db,
+    ):
+        """The ``unlocked`` argument lets a caller that
+        already computed the set skip the recomputation.
+        The result is the same as the implicit call when
+        the same list is passed in."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        unlocked = ["expression", "framing", "pose"]
+        request = resource_preparation.assemble_writer_request(
+            prep, unlocked=unlocked,
+        )
+        assert request["requested_fields"] == [
+            "expression", "framing", "pose",
+        ]
+
+    def test_request_rejects_unlocked_entries_outside_the_allowlist(
+        self, isolated_db,
+    ):
+        """The ``unlocked`` argument is a closed list: a
+        caller that names ``look`` or ``wardrobe`` is
+        refused because the closed allowlist the
+        synthesis enforces does not include them. The
+        refusal names the offending name so a test or a
+        code review can find the call site."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        with pytest.raises(
+            resource_preparation.PreparationArgumentError,
+        ):
+            resource_preparation.assemble_writer_request(
+                prep, unlocked=["look"],
+            )
+
+
+class TestValidateWriterOutput:
+    """The writer response is untrusted and validated strictly.
+
+    The validator mirrors the contract the manual
+    completion path already enforces: a closed
+    allowlist, a string shape on every value, no
+    unresolved placeholders, no attempt to fill a field
+    the take already establishes, no attempt to
+    rewrite a forbidden fixed field. A refused response
+    is the surface a route layer maps to a 422; a
+    silent accept is the bug the spec is built to
+    prevent.
+    """
+
+    def test_valid_response_is_normalized(self, isolated_db):
+        """A response that fills only the unlocked set
+        with non-empty strings is accepted and returned
+        in canonical alphabetical order, with the
+        writer's byte-for-byte values preserved."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        unlocked = resource_preparation.compute_unlocked_fields(prep)
+        response = {
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+            "expression": "eyes closed",
+        }
+        validated = resource_preparation.validate_writer_output(
+            response, prep, unlocked=unlocked,
+        )
+        assert validated == {
+            "expression": "eyes closed",
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+        }
+
+    @pytest.mark.parametrize("response", [{}, {"framing": "tight"}])
+    def test_partial_or_empty_response_is_refused(self, isolated_db, response):
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        with pytest.raises(resource_preparation.WriterOutputInvalid):
+            resource_preparation.validate_writer_output(response, prep)
+
+    def test_response_with_a_field_outside_the_allowlist_is_refused(
+        self, isolated_db,
+    ):
+        """A response that pretends to fill ``look`` (a
+        fixed session field the writer is not allowed to
+        touch) is refused by name. The spec calls this
+        out as case 5 in the minimum edge-cases list:
+        "writer output contains an unknown or locked
+        field: refused without saving a false
+        preparation"."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        unlocked = resource_preparation.compute_unlocked_fields(prep)
+        with pytest.raises(
+            resource_preparation.WriterOutputInvalid,
+        ) as excinfo:
+            resource_preparation.validate_writer_output(
+                {"look": "an invented look"},
+                prep, unlocked=unlocked,
+            )
+        assert "look" in str(excinfo.value)
+
+    def test_response_with_an_unknown_field_is_refused(
+        self, isolated_db,
+    ):
+        """A response that introduces a name the
+        contract does not name (``mood_anchor``) is
+        refused because the closed allowlist the
+        synthesis enforces is the four take-level
+        descriptive choices. A writer that pretends to
+        add a custom field is a contract violation."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        unlocked = resource_preparation.compute_unlocked_fields(prep)
+        with pytest.raises(
+            resource_preparation.WriterOutputInvalid,
+        ):
+            resource_preparation.validate_writer_output(
+                {"framing": "tight", "mood_anchor": "warm"},
+                prep, unlocked=unlocked,
+            )
+
+    def test_response_filling_an_already_set_field_is_refused(
+        self, isolated_db,
+    ):
+        """A response that fills ``camera`` (a field the
+        take already established) is refused the same
+        way the manual completion path refuses an
+        override. The writer is asked for the unlocked
+        set only."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        unlocked = resource_preparation.compute_unlocked_fields(prep)
+        with pytest.raises(
+            resource_preparation.WriterOutputInvalid,
+        ):
+            resource_preparation.validate_writer_output(
+                {"camera": "an 85mm prime"},
+                prep, unlocked=unlocked,
+            )
+
+    def test_response_with_a_non_string_value_is_refused(
+        self, isolated_db,
+    ):
+        """A response whose value is not a non-empty
+        string is refused by name. The validator is
+        strict on type, the same way the manual
+        completion path is strict on type."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        unlocked = resource_preparation.compute_unlocked_fields(prep)
+        with pytest.raises(
+            resource_preparation.WriterOutputInvalid,
+        ):
+            resource_preparation.validate_writer_output(
+                {"framing": ["tight on the eyes"]},
+                prep, unlocked=unlocked,
+            )
+
+    def test_response_with_an_unresolved_placeholder_is_refused(
+        self, isolated_db,
+    ):
+        """A response whose value still carries an
+        unresolved template placeholder is refused
+        because the same ``{name}`` syntax the manual
+        completion path refuses blocks finalization. The
+        spec calls this out as case 6: "writer output
+        contains an unresolved placeholder: cannot be
+        considered finalizable"."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        unlocked = resource_preparation.compute_unlocked_fields(prep)
+        with pytest.raises(
+            resource_preparation.WriterOutputInvalid,
+        ) as excinfo:
+            resource_preparation.validate_writer_output(
+                {"framing": "tight on the {body_part}"},
+                prep, unlocked=unlocked,
+            )
+        assert "body_part" in str(excinfo.value)
+
+    def test_response_with_a_wrong_type_is_refused(self, isolated_db):
+        """A response that is not a dict (a string, a
+        list of strings, a number) is refused by name.
+        The validator does not coerce; a writer that
+        answers in prose is a contract error the caller
+        is told about before the validation runs."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        unlocked = resource_preparation.compute_unlocked_fields(prep)
+        with pytest.raises(
+            resource_preparation.WriterOutputInvalid,
+        ):
+            resource_preparation.validate_writer_output(
+                "a prose answer the caller forgot to parse",
+                prep, unlocked=unlocked,
+            )
+
+    def test_response_with_no_unlocked_fields_is_refused(
+        self, isolated_db,
+    ):
+        """A response received while the take has no
+        unlocked field is refused because there is
+        nothing for the writer to fill. A writer that
+        returns a value when nothing is unlocked is a
+        contract error the caller is told about."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={
+                "camera": "a 35mm prime",
+                "framing": "waist up",
+                "pose": "standing square",
+                "expression": "a slight smile",
+            },
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        with pytest.raises(
+            resource_preparation.WriterOutputInvalid,
+        ):
+            resource_preparation.validate_writer_output(
+                {"framing": "tight on the eyes"},
+                prep,
+            )
+
+    def test_response_pairs_iterable_is_accepted(self, isolated_db):
+        """A response delivered as an iterable of
+        ``(key, value)`` pairs is coerced into a dict the
+        validator can read. The same coercion is what
+        the existing ``_coerce_writer_response`` does,
+        and a test that pins this path is what keeps
+        a future widening of the writer transport
+        a code change the tests will surface."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        unlocked = resource_preparation.compute_unlocked_fields(prep)
+        response = [
+            ("framing", "tight on the eyes"),
+            ("pose", "leaning on the chair"),
+            ("expression", "eyes closed"),
+        ]
+        validated = resource_preparation.validate_writer_output(
+            response, prep, unlocked=unlocked,
+        )
+        assert validated == {
+            "expression": "eyes closed",
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+        }
+
+
+class TestApplyWriterValues:
+    """The merge rules are the same ones the manual path enforces.
+
+    Writer values fill ONLY the unlocked slots; a value
+    the take already established is preserved, and the
+    manual completion values the caller already supplied
+    are preserved. A test that pins the merge is what
+    keeps identity, look and effective wardrobe
+    authoritative, the rule the spec calls out by name.
+    """
+
+    def test_writer_values_fill_unlocked_slots(self, isolated_db):
+        """Writer values land in the merged
+        ``effective_take_choices`` for the unlocked
+        slots only. The take's own choices are
+        preserved."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        merged = resource_preparation.apply_writer_values(
+            prep, {"framing": "tight on the eyes"},
+        )
+        assert merged["effective_take_choices"]["camera"] == (
+            "a 35mm prime"
+        )
+        assert merged["effective_take_choices"]["framing"] == (
+            "tight on the eyes"
+        )
+        assert "pose" not in merged["effective_take_choices"]
+        assert "expression" not in merged["effective_take_choices"]
+
+    def test_writer_cannot_overwrite_a_take_choice(self, isolated_db):
+        """A writer value that names an already-set field
+        is silently dropped by the merge: the unlocked
+        set is what the merge reads, so the
+        already-set field is preserved. The validator
+        is the surface that refuses the response
+        before the merge runs."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        merged = resource_preparation.apply_writer_values(
+            prep, {"camera": "an 85mm prime"},
+        )
+        assert merged["effective_take_choices"]["camera"] == (
+            "a 35mm prime"
+        )
+
+    def test_merge_does_not_change_effective_state(self, isolated_db):
+        """The merge touches only the take-choice bucket;
+        the authoritative effective_state the resolver
+        computed is byte-for-byte unchanged. Identity,
+        look and effective wardrobe are not reachable
+        through the writer."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        merged = resource_preparation.apply_writer_values(
+            prep, {"framing": "tight on the eyes"},
+        )
+        assert (
+            merged["effective_state"]["look"]
+            == prep["effective_state"]["look"]
+        )
+        assert (
+            merged["effective_state"]["wardrobe"]
+            == prep["effective_state"]["wardrobe"]
+        )
+        assert (
+            merged["effective_state"]["initial_wardrobe"]
+            == prep["effective_state"]["initial_wardrobe"]
+        )
+
+
+class TestSynthesizeOrchestrator:
+    """The orchestrator wires the helpers into a single end-to-end flow.
+
+    These tests walk the layer's public surface the way
+    a route handler would: ``synthesize_unlocked_fields``
+    is called, the writer spy is inspected, the persisted
+    row is read back, and the round-trip property the
+    spec names ("writer input/output are persisted and
+    are recoverable") is asserted on a closed database.
+    """
+
+    def test_take_with_every_choice_set_does_not_call_the_writer(
+        self, isolated_db,
+    ):
+        """A take that has every descriptive choice set
+        has no unlocked fields, the orchestrator does
+        not invoke the writer, and the persisted row
+        carries a ``kind: "none"`` block. The spec
+        calls this out as case 1: "all fields are
+        already complete: zero calls to the writer"."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={
+                "camera": "a 35mm prime",
+                "framing": "waist up",
+                "pose": "standing square",
+                "expression": "a slight smile",
+            },
+        )
+        writer = _FakeWriter(return_value={"framing": "tight"})
+        result = resource_preparation.synthesize_unlocked_fields(
+            _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+        )
+        assert writer.call_count == 0
+        assert result["writer_invoked"] is False
+        assert result["writer_synthesis"]["kind"] == (
+            resource_preparation.WRITER_KIND_NONE
+        )
+        assert result["writer_synthesis"]["writer_input"] is None
+        assert result["writer_synthesis"]["writer_output"] is None
+        assert result["unlocked_fields"] == []
+
+    def test_synthesis_fills_unlocked_fields_and_persists_input_output(
+        self, isolated_db,
+    ):
+        """The full happy path: the take has only
+        ``camera`` set, the writer fills the other three,
+        the orchestrator persists the writer input and
+        output, and a second round-trip read returns
+        the same block. The spec calls this out as
+        case 9: "close and reopen recovers writer
+        input/output"."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(return_value={
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+            "expression": "eyes closed",
+        })
+        result = resource_preparation.synthesize_unlocked_fields(
+            _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+        )
+        # The writer was called exactly once.
+        assert writer.call_count == 1
+        # The result is the success shape the spec names.
+        assert result["writer_invoked"] is True
+        assert result["writer_reused"] is False
+        # Synthesis is resumable state, not finalization.
+        assert result["snapshot"]["status"] == "pending"
+        # Writer input and output survived the round-trip.
+        block = result["writer_synthesis"]
+        assert block["kind"] == (
+            resource_preparation.WRITER_KIND_ASSISTANT
+        )
+        assert block["writer_output"] == {
+            "expression": "eyes closed",
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+        }
+        # The merged take choices the orchestrator
+        # returns include the writer's values for the
+        # unlocked slots and the take's own value for
+        # ``camera``.
+        effective = result["effective_take_choices"]
+        assert effective["camera"] == "a 35mm prime"
+        assert effective["framing"] == "tight on the eyes"
+        assert effective["pose"] == "leaning on the chair"
+        assert effective["expression"] == "eyes closed"
+        # A second read of the row returns the same
+        # block: the round-trip property the spec
+        # names.
+        persisted = resource_preparation.load_writer_synthesis(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        assert persisted is not None
+        assert persisted["kind"] == (
+            resource_preparation.WRITER_KIND_ASSISTANT
+        )
+        assert persisted["writer_output"] == block["writer_output"]
+        assert persisted["writer_input"]["requested_fields"] == [
+            "expression", "framing", "pose",
+        ]
+        recovery = session_plan.recover_preparation(_CURRENT_SESSION[0])
+        assert recovery["completed"] == []
+        assert recovery["incomplete"] == [
+            {"take_id": "take-001", "status": "pending"},
+        ]
+
+    def test_finalized_take_reuses_persisted_synthesis_without_calling_writer(
+        self, isolated_db,
+    ):
+        """The "no new writer request on a finalized
+        take" property the spec calls out as case 10 is
+        the orchestrator's reuse short-circuit. A
+        second call with a spied writer whose
+        ``call_count`` must stay at zero proves the
+        property at the level the test will surface a
+        regression: the writer callable is wired, the
+        function is called, and the spy records zero
+        invocations."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(return_value={
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+            "expression": "eyes closed",
+        })
+        first = resource_preparation.synthesize_unlocked_fields(
+            _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+        )
+        assert first["writer_invoked"] is True
+        assert writer.call_count == 1
+        session_plan.complete_preparation(
+            _CURRENT_SESSION[0], 1, "take-001",
+            final_prompt="an invented finalized prompt",
+            effective_state=first["snapshot"]["effective_state"],
+            mapping_version=first["snapshot"]["mapping_version"],
+            compiler_version=first["snapshot"]["compiler_version"],
+            provenance=first["snapshot"]["provenance"],
+        )
+        # The second call. The writer is the same
+        # object, so the spy would see a second call
+        # if the orchestrator did not short-circuit.
+        # A take in ``ready`` status must reuse the
+        # persisted result.
+        second = resource_preparation.synthesize_unlocked_fields(
+            _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+        )
+        assert writer.call_count == 1, (
+            "a finalized take MUST NOT trigger a new "
+            "writer request; the spec's case 10"
+        )
+        assert second["writer_reused"] is True
+        assert second["writer_invoked"] is False
+        assert second["writer_synthesis"]["writer_output"] == (
+            first["writer_synthesis"]["writer_output"]
+        )
+        assert second["effective_take_choices"] == (
+            first["effective_take_choices"]
+        )
+
+    def test_unlocked_but_no_writer_raises_writer_unavailable(
+        self, isolated_db,
+    ):
+        """When the take has unlocked fields AND no
+        writer callable was supplied, the function
+        raises ``WriterUnavailableError``. The manual
+        path is the supported fallback; the spec calls
+        this out as the "assistant not available" case
+        (no configuration, no endpoint)."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        with pytest.raises(
+            resource_preparation.WriterUnavailableError,
+        ):
+            resource_preparation.synthesize_unlocked_fields(
+                _CURRENT_SESSION[0], 1, "take-001",
+                writer=None,
+            )
+
+    def test_manual_completion_skips_the_writer_when_all_unlocked_filled(
+        self, isolated_db,
+    ):
+        """The manual path is the supported fallback
+        when the writer is unavailable. A caller that
+        supplies ``manual_completion`` for every
+        unlocked field and no writer callable must NOT
+        see a refusal: the manual values fill the
+        unlocked slots and the orchestrator persists
+        a ``kind: "none"`` block. The spec calls this
+        out as case 11: "manual flow works without a
+        configured assistant"."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        result = resource_preparation.synthesize_unlocked_fields(
+            _CURRENT_SESSION[0], 1, "take-001",
+            writer=None,
+            manual_completion={
+                "framing": "tight on the eyes",
+                "pose": "leaning on the chair",
+                "expression": "eyes closed",
+            },
+        )
+        assert result["writer_invoked"] is False
+        assert result["writer_synthesis"]["kind"] == (
+            resource_preparation.WRITER_KIND_NONE
+        )
+        effective = result["effective_take_choices"]
+        assert effective["camera"] == "a 35mm prime"
+        assert effective["framing"] == "tight on the eyes"
+        assert effective["pose"] == "leaning on the chair"
+        assert effective["expression"] == "eyes closed"
+
+    def test_writer_output_outside_the_contract_is_refused_without_saving(
+        self, isolated_db,
+    ):
+        """A writer that returns a forbidden field is
+        refused with ``WriterOutputInvalid`` and the
+        prepared_take row is left in the same pending
+        state the function found it. The spec calls
+        this out as case 5: "writer output contains an
+        unknown or locked field: refused without
+        saving a false preparation"."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(
+            return_value={"look": "an invented look"},
+        )
+        with pytest.raises(
+            resource_preparation.WriterOutputInvalid,
+        ):
+            resource_preparation.synthesize_unlocked_fields(
+                _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+            )
+        # No ready row was written; the table only
+        # carries the pending row the begin step left
+        # behind, which is the boundary case the spec
+        # names: "no false completed preparation".
+        n = db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take "
+            "WHERE session_id = ? AND plan_revision = 1 "
+            "AND take_id = 'take-001' AND status = 'ready'",
+            _CURRENT_SESSION[0],
+        )["n"]
+        assert n == 0
+
+    def test_writer_output_with_unresolved_placeholder_is_refused(
+        self, isolated_db,
+    ):
+        """A writer value that still carries a
+        ``{name}`` placeholder is refused the same
+        way the manual completion path refuses one.
+        The spec calls this out as case 6: "writer
+        output contains an unresolved placeholder:
+        cannot be considered finalizable"."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(
+            return_value={"framing": "tight on the {body_part}"},
+        )
+        with pytest.raises(
+            resource_preparation.WriterOutputInvalid,
+        ):
+            resource_preparation.synthesize_unlocked_fields(
+                _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+            )
+        n = db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take "
+            "WHERE session_id = ? AND plan_revision = 1 "
+            "AND take_id = 'take-001' AND status = 'ready'",
+            _CURRENT_SESSION[0],
+        )["n"]
+        assert n == 0
+
+    def test_writer_failure_propagates_and_take_stays_recoverable(
+        self, isolated_db,
+    ):
+        """A writer that raises before answering leaves
+        the take recoverable: the begin_preparation
+        call already created a pending row, the
+        writer's exception propagates as a
+        ``PreparedTakePersistenceError`` (the same
+        surface the existing persistence path uses),
+        and the operator can retry the synthesis on
+        the same take without rewriting the
+        snapshot. The spec calls this out as case 7:
+        "writer fails before responding: take remains
+        recoverable/incomplete and the failure is
+        visible"."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(
+            raise_on_call=ValueError("invented assistant outage"),
+        )
+        with pytest.raises(
+            session_plan.PreparedTakePersistenceError,
+        ):
+            resource_preparation.synthesize_unlocked_fields(
+                _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+            )
+        # The pending row the begin step wrote is
+        # still on disk: the failure was visible, the
+        # take is recoverable, and no false ``ready``
+        # row was written.
+        row = db.one(
+            "SELECT status FROM prepared_take "
+            "WHERE session_id = ? AND plan_revision = 1 "
+            "AND take_id = 'take-001'",
+            _CURRENT_SESSION[0],
+        )
+        assert row is not None
+        assert row["status"] == "pending"
+        n_ready = db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take "
+            "WHERE session_id = ? AND plan_revision = 1 "
+            "AND take_id = 'take-001' AND status = 'ready'",
+            _CURRENT_SESSION[0],
+        )["n"]
+        assert n_ready == 0
+
+    def test_persistence_failure_does_not_announce_success(
+        self, isolated_db,
+    ):
+        """A persistence failure during
+        ``record_writer_synthesis`` propagates as the
+        same ``PreparedTakePersistenceError`` the
+        existing tests already cover, so the
+        orchestrator never returns a ``ready``
+        snapshot it did not actually persist. The spec
+        calls this out as case 8: "persistence
+        failure of the result: success is not
+        announced"."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(return_value={
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+            "expression": "eyes closed",
+        })
+
+        real_record = session_plan.record_writer_synthesis
+
+        def _failing_record(*args, **kwargs):
+            raise session_plan.PreparedTakePersistenceError(
+                "invented persistence outage"
+            )
+
+        session_plan.record_writer_synthesis = _failing_record
+        try:
+            with pytest.raises(
+                session_plan.PreparedTakePersistenceError,
+            ):
+                resource_preparation.synthesize_unlocked_fields(
+                    _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+                )
+        finally:
+            session_plan.record_writer_synthesis = real_record
+        # No ready row was written.
+        n = db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take "
+            "WHERE session_id = ? AND plan_revision = 1 "
+            "AND take_id = 'take-001' AND status = 'ready'",
+            _CURRENT_SESSION[0],
+        )["n"]
+        assert n == 0
+
+    def test_writer_guidance_does_not_become_a_final_clause(
+        self, isolated_db,
+    ):
+        """The spec calls out case 12:
+        "writer_guidance remains bounded data and
+        does not accidentally become a final
+        clause". The writer's request carries the
+        guidance as context, the validate step
+        refuses any response that pretends to
+        rewrite a resource-side field, and the
+        ``assemble_descriptive_clauses`` step the
+        finalisation reads does NOT include the
+        guidance values in the clause set."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(return_value={
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+            "expression": "eyes closed",
+        })
+        result = resource_preparation.synthesize_unlocked_fields(
+            _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+        )
+        # The request the writer saw carries the
+        # guidance under the ``writer_guidance``
+        # key. The actual guidance values come from
+        # INV_ROOMS_PAYLOAD's ``camera_anchor`` and
+        # ``mood_warm`` fields.
+        request = result["writer_synthesis"]["writer_input"]
+        guidance = request["writer_guidance"]
+        guidance_field_names = {item["field_name"] for item in guidance}
+        assert "camera_anchor" in guidance_field_names
+        assert "mood_warm" in guidance_field_names
+        # The ``assemble_descriptive_clauses`` step
+        # the layer exposes does NOT include the
+        # guidance in the clause set the final
+        # prompt is built from. The resource's
+        # ``label`` IS in the clause set (a normal
+        # descriptive input), the guidance value is
+        # NOT.
+        prep = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        clauses = resource_preparation.assemble_descriptive_clauses(prep)
+        for item in guidance:
+            assert item["value"] not in clauses, (
+                f"writer guidance value {item['value']!r} leaked "
+                f"into the descriptive clause set; the spec's "
+                f"case 12"
+            )
+        assert INV_ROOMS_PAYLOAD["label"] in clauses
+
+    def test_full_flow_close_reopen_reuse(
+        self, isolated_db,
+    ):
+        """The single end-to-end test the spec calls
+        out: prepare, synthesize, persist, reopen,
+        reuse. The take has only ``camera`` set, the
+        writer fills the other three, the row is
+        persisted, the same row is read back from
+        disk after the operator closes and reopens
+        the session, and a second call to
+        ``synthesize_unlocked_fields`` reuses the
+        persisted result with the writer spy
+        recording zero new invocations. The test
+        exercises the full pipeline a UI review
+        screen and a future task 4.4 will use, so a
+        regression on the round-trip is the regression
+        the spec is built to catch."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(return_value={
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+            "expression": "eyes closed",
+        })
+        # First call: prepare, synthesize, persist.
+        first = resource_preparation.synthesize_unlocked_fields(
+            _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+        )
+        assert first["writer_invoked"] is True
+        assert first["snapshot"]["status"] == "pending"
+        assert writer.call_count == 1
+        # Close the session, reopen it. The helper
+        # only closes the SQLite connection the
+        # isolated_db fixture owns; the next
+        # ``prepare_take_inputs`` call re-opens
+        # the same file and the prepared_take row
+        # is read back from disk.
+        _close_silently()
+        _open(Path(str(isolated_db)))
+        # Read the persisted block from disk. The
+        # block is the one the orchestrator wrote.
+        persisted = resource_preparation.load_writer_synthesis(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        assert persisted is not None
+        assert persisted["kind"] == (
+            resource_preparation.WRITER_SYNTHESIS_ASSISTANT
+        ) if hasattr(
+            resource_preparation, "WRITER_SYNTHESIS_ASSISTANT"
+        ) else persisted["kind"] == (
+            resource_preparation.WRITER_KIND_ASSISTANT
+        )
+        assert persisted["writer_output"] == {
+            "expression": "eyes closed",
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+        }
+        pending = session_plan._prepared_take_row(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        assert pending is not None
+        completed = session_plan.complete_preparation(
+            _CURRENT_SESSION[0], 1, "take-001",
+            final_prompt="an invented finalized prompt",
+            effective_state=json.loads(pending["effective_state"]),
+            mapping_version=pending["mapping_version"],
+            compiler_version=pending["compiler_version"],
+            provenance=json.loads(pending["provenance"]),
+        )
+        assert completed["status"] == "ready"
+        # Second call: reuse. The writer spy
+        # records zero new invocations. The
+        # orchestrator's reuse short-circuit is the
+        # boundary the spec calls out as case 10.
+        second = resource_preparation.synthesize_unlocked_fields(
+            _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+        )
+        assert writer.call_count == 1, (
+            "a finalized take reopened from disk MUST "
+            "NOT trigger a new writer request; the "
+            "spec's case 10"
+        )
+        assert second["writer_reused"] is True
+        assert second["writer_invoked"] is False
+        assert second["effective_take_choices"] == (
+            first["effective_take_choices"]
+        )
+
+    def test_persist_false_skips_the_database_write(
+        self, isolated_db,
+    ):
+        """The ``persist`` argument lets a caller that
+        wants to preview the synthesis skip the
+        database write. The orchestrator still calls
+        the writer and validates the response, but no
+        prepared_take row is created. A test that
+        pins this path is what keeps a future
+        preview-only caller a code change the tests
+        will surface."""
+        _plan_with_rooms_take(
+            isolated_db, take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(return_value={
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+            "expression": "eyes closed",
+        })
+        result = resource_preparation.synthesize_unlocked_fields(
+            _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+            persist=False,
+        )
+        assert result["writer_invoked"] is True
+        assert result["persisted"] is False
+        n = db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take "
+            "WHERE session_id = ? AND plan_revision = 1 "
+            "AND take_id = 'take-001'",
+            _CURRENT_SESSION[0],
+        )["n"]
+        assert n == 0
+        # The writer was still called exactly once:
+        # ``persist`` only gates the database write.
+        assert writer.call_count == 1
