@@ -959,7 +959,7 @@ def _prepared_take_row(
 def _encode_snapshot_json(value: Any, field_name: str) -> str:
     try:
         return json.dumps(
-            value, ensure_ascii=False, separators=(",", ":"),
+            value, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
         )
     except (TypeError, ValueError) as exc:
         raise PlanValidationError(
@@ -1013,6 +1013,24 @@ def begin_preparation(
         ) from exc
 
 
+def _snapshots_equal(current: tuple, desired: tuple) -> bool:
+    """Compare snapshot tuples with semantic JSON equality for JSON columns."""
+    if current == desired:
+        return True
+    if len(current) != len(desired):
+        return False
+    if current[0] != desired[0] or current[2] != desired[2] or current[3] != desired[3]:
+        return False
+    try:
+        cur_state = json.loads(current[1]) if isinstance(current[1], str) else current[1]
+        des_state = json.loads(desired[1]) if isinstance(desired[1], str) else desired[1]
+        cur_prov = json.loads(current[4]) if isinstance(current[4], str) else current[4]
+        des_prov = json.loads(desired[4]) if isinstance(desired[4], str) else desired[4]
+        return cur_state == des_state and cur_prov == des_prov
+    except Exception:
+        return False
+
+
 def complete_preparation(
     session_id: int,
     plan_revision: int,
@@ -1062,7 +1080,7 @@ def complete_preparation(
                 existing["provenance"],
             )
             if existing["status"] != PREPARED_TAKE_STATUS_PENDING:
-                if current_snapshot == desired:
+                if _snapshots_equal(current_snapshot, desired):
                     return _decode_prepared_take(existing)
                 raise PreparedTakeConflict(
                     f"prepared take {take_id!r} at plan revision {plan_revision} "

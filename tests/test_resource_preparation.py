@@ -5404,3 +5404,640 @@ class TestSynthesizeOrchestrator:
         # The writer was still called exactly once:
         # ``persist`` only gates the database write.
         assert writer.call_count == 1
+
+
+# ---- Task 4.4: exact final prompt snapshot and immutable finalization ----
+
+
+class TestTask44FinalizeTakePreparation:
+    """Tests for task 4.4 of adopt-resource-session-planning.
+
+    Verifies deterministic prompt composition, atomic snapshot finalization,
+    source and translation immutability, writer reuse, and conflict/placeholder
+    gates.
+    """
+
+    def test_valid_preparation_finalizes_and_preserves_exact_prompt(
+        self, isolated_db,
+    ):
+        sid, revision = _plan_with_rooms_take(
+            isolated_db,
+            take_choices={
+                "camera": "a 35mm prime at chest height",
+                "framing": "waist up",
+                "pose": "standing square to the camera",
+                "expression": "a slight smile",
+            },
+            wardrobe=INV_WARDROBE,
+            look=INV_LOOK,
+        )
+        db.run(
+            "UPDATE model SET trigger = ?, base_positive = ? "
+            "WHERE id = (SELECT model_id FROM session WHERE id = ?)",
+            "ada character", "masterpiece photograph, high quality", sid,
+        )
+        snapshot = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        assert snapshot["status"] == "ready"
+        final_prompt = snapshot["final_prompt"]
+        assert final_prompt.startswith("ada character. masterpiece photograph, high quality. ")
+        assert INV_LOOK in final_prompt
+        assert INV_WARDROBE in final_prompt
+        assert "a 35mm prime at chest height" in final_prompt
+        assert "standing square to the camera" in final_prompt
+
+        row = db.one(
+            "SELECT final_prompt, status FROM prepared_take "
+            "WHERE session_id = ? AND plan_revision = 1 AND take_id = 'take-001'",
+            sid,
+        )
+        assert row is not None
+        assert row["status"] == "ready"
+        assert row["final_prompt"] == final_prompt
+
+    def test_persisted_snapshot_contains_exact_resource_revisions_and_versions(
+        self, isolated_db,
+    ):
+        sid, revision = _plan_with_rooms_take(isolated_db)
+        snapshot = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        assert snapshot["mapping_version"] == resource_preparation.MAPPING_VERSION
+        assert snapshot["compiler_version"] == resource_preparation.COMPILER_VERSION
+
+        provenance = snapshot["provenance"]
+        assert provenance["preparation_version"] == resource_preparation.PREPARATION_VERSION
+        assert provenance["mapping_version"] == resource_preparation.MAPPING_VERSION
+        assert provenance["compiler_version"] == resource_preparation.COMPILER_VERSION
+
+        selected_revisions = provenance["selected_resource_revisions"]
+        assert len(selected_revisions) == 1
+        assert selected_revisions[0]["library_key"] == revision["library_key"]
+        assert selected_revisions[0]["source_id"] == revision["source_id"]
+        assert selected_revisions[0]["content_digest"] == revision["content_digest"]
+        assert selected_revisions[0]["kind"] == "rooms"
+
+        field_mappings = provenance["field_mappings"]
+        assert "rooms" in field_mappings
+
+    def test_relevant_adaptations_are_bound_to_snapshot(
+        self, isolated_db,
+    ):
+        setup_session(isolated_db)
+        rev = _store_fused_revision(
+            isolated_db, "inv_fused_adapt", "inv_fused_one", INV_FUSED_INCOMPATIBLE_PAYLOAD,
+        )
+        plan = {
+            "version": "resource-v1",
+            "look": INV_LOOK,
+            "initial_wardrobe": INV_WARDROBE,
+            "takes": [{
+                "take_id": "take-001",
+                "camera": "a 35mm prime",
+                "framing": "waist up",
+                "pose": "standing",
+                "expression": "neutral",
+            }],
+            "selected_resources": [{
+                "library_key": rev["library_key"],
+                "source_id": rev["source_id"],
+                "content_digest": rev["content_digest"],
+            }],
+            "wardrobe_changes": [],
+        }
+        session_plan.save_draft(_CURRENT_SESSION[0], plan, expected_revision=0)
+
+        adapted_text = (
+            "She stands in the tall studio wearing a thin grey linen shirt "
+            "and dark cotton trousers, sleeves rolled up. Bare feet."
+        )
+        resource_preparation.record_take_adaptation(
+            _CURRENT_SESSION[0], 1, "take-001",
+            {
+                "library_key": rev["library_key"],
+                "source_id": rev["source_id"],
+                "content_digest": rev["content_digest"],
+                "resource_field": "prompt",
+                "adapted_value": adapted_text,
+            },
+        )
+
+        snapshot = resource_preparation.finalize_take_preparation(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        assert snapshot["status"] == "ready"
+        assert adapted_text in snapshot["final_prompt"]
+        assert "heavy red wool coat" not in snapshot["final_prompt"]
+
+        bound_adaptations = snapshot["provenance"]["adaptations"]
+        assert len(bound_adaptations) == 1
+        assert bound_adaptations[0]["resource_field"] == "prompt"
+        assert bound_adaptations[0]["adapted_value"] == adapted_text
+
+    def test_writer_input_output_provenance_associated_with_final_preparation(
+        self, isolated_db,
+    ):
+        sid, revision = _plan_with_rooms_take(
+            isolated_db,
+            take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(return_value={
+            "framing": "tight on face",
+            "pose": "leaning against wall",
+            "expression": "quiet glance",
+        })
+        snapshot = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001", writer=writer,
+        )
+        assert writer.call_count == 1
+        assert snapshot["status"] == "ready"
+        assert "tight on face" in snapshot["final_prompt"]
+        assert "leaning against wall" in snapshot["final_prompt"]
+        assert "quiet glance" in snapshot["final_prompt"]
+
+        synth_block = snapshot["provenance"]["writer_synthesis"]
+        assert synth_block["kind"] == resource_preparation.WRITER_KIND_ASSISTANT
+        assert synth_block["writer_output"] == {
+            "expression": "quiet glance",
+            "framing": "tight on face",
+            "pose": "leaning against wall",
+        }
+        assert synth_block["writer_input"]["requested_fields"] == [
+            "expression", "framing", "pose",
+        ]
+
+    def test_manual_route_finalizes_without_writer(
+        self, isolated_db,
+    ):
+        sid, revision = _plan_with_rooms_take(
+            isolated_db,
+            take_choices={"camera": "a 35mm prime"},
+        )
+        snapshot = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+            manual_completion={
+                "framing": "wide angle",
+                "pose": "seated on stool",
+                "expression": "calm",
+            },
+            writer=None,
+        )
+        assert snapshot["status"] == "ready"
+        assert "wide angle" in snapshot["final_prompt"]
+        assert "seated on stool" in snapshot["final_prompt"]
+        assert "calm" in snapshot["final_prompt"]
+
+        synth_block = snapshot["provenance"]["writer_synthesis"]
+        assert synth_block["kind"] == resource_preparation.WRITER_KIND_MANUAL
+        assert synth_block["writer_input"] is None
+        assert synth_block["writer_output"] is None
+
+    def test_source_refresh_does_not_change_finalized_prompt_or_provenance(
+        self, isolated_db,
+    ):
+        sid, revision = _plan_with_rooms_take(isolated_db)
+        snapshot_before = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        original_prompt = snapshot_before["final_prompt"]
+        original_digest = revision["content_digest"]
+
+        # Simulate source refresh: create a new revision with new content
+        new_payload = {
+            **INV_ROOMS_PAYLOAD,
+            "scene_theme": "a completely different revamped theme",
+        }
+        new_rev_id = resource_store.record_revision(
+            revision["library_id"], revision["source_id"], new_payload,
+        )
+        new_rev = resource_store.get_revision(revision_id=new_rev_id)
+        assert new_rev["content_digest"] != original_digest
+
+        # Query/re-finalize the prepared take
+        snapshot_after = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        assert snapshot_after["final_prompt"] == original_prompt
+        assert "completely different revamped theme" not in snapshot_after["final_prompt"]
+        revs = snapshot_after["provenance"]["selected_resource_revisions"]
+        assert revs[0]["content_digest"] == original_digest
+
+    def test_modifying_or_adding_translations_does_not_change_finalized_snapshot(
+        self, isolated_db,
+    ):
+        sid, revision = _plan_with_rooms_take(isolated_db)
+        snapshot_before = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        original_prompt = snapshot_before["final_prompt"]
+
+        # Mutate translation on the asset_revision table
+        db.run(
+            "UPDATE asset_revision SET translation = ? WHERE id = ?",
+            json.dumps({"room_scene": "translated modified room"}),
+            revision["revision_id"],
+        )
+
+        snapshot_after = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        assert snapshot_after["final_prompt"] == original_prompt
+        assert "translated modified room" not in snapshot_after["final_prompt"]
+
+    def test_changing_writer_does_not_reinvoke_writer_nor_rewrite_prompt(
+        self, isolated_db,
+    ):
+        sid, revision = _plan_with_rooms_take(
+            isolated_db,
+            take_choices={"camera": "a 35mm prime"},
+        )
+        writer1 = _FakeWriter(return_value={
+            "framing": "medium shot",
+            "pose": "arms crossed",
+            "expression": "serious",
+        })
+        first = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001", writer=writer1,
+        )
+        assert writer1.call_count == 1
+        original_prompt = first["final_prompt"]
+
+        writer2 = _FakeWriter(return_value={
+            "framing": "extreme close-up",
+            "pose": "running fast",
+            "expression": "surprised",
+        })
+        second = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001", writer=writer2,
+        )
+        assert writer2.call_count == 0
+        assert second["final_prompt"] == original_prompt
+        assert "extreme close-up" not in second["final_prompt"]
+
+    def test_ready_take_reused_does_not_call_writer(
+        self, isolated_db,
+    ):
+        sid, revision = _plan_with_rooms_take(isolated_db)
+        first = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        assert first["status"] == "ready"
+
+        writer = _FakeWriter(return_value={"framing": "tight"})
+        second = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001", writer=writer,
+        )
+        assert writer.call_count == 0
+        assert second["id"] == first["id"]
+
+    def test_generated_take_retains_historical_protection(
+        self, isolated_db,
+    ):
+        sid, revision = _plan_with_rooms_take(isolated_db)
+        snapshot = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        # Transition row to generated
+        db.run(
+            "UPDATE prepared_take SET status = 'generated' WHERE id = ?",
+            snapshot["id"],
+        )
+        reused = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        assert reused["status"] == "generated"
+        assert reused["final_prompt"] == snapshot["final_prompt"]
+
+        # Attempting to finalize with conflicting manual choices is rejected
+        with pytest.raises(session_plan.PreparedTakeConflict) as exc_info:
+            resource_preparation.finalize_take_preparation(
+                sid, 1, "take-001",
+                manual_completion={"camera": "a telephoto lens"},
+            )
+        assert "immutable generated history" in str(exc_info.value)
+
+    def test_identical_finalization_is_idempotent(
+        self, isolated_db,
+    ):
+        sid, revision = _plan_with_rooms_take(isolated_db)
+        first = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        second = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        assert first["id"] == second["id"]
+        assert first["final_prompt"] == second["final_prompt"]
+        count = db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take "
+            "WHERE session_id = ? AND plan_revision = 1 AND take_id = 'take-001'",
+            sid,
+        )["n"]
+        assert count == 1
+
+    def test_overwriting_finalized_history_with_different_values_is_rejected(
+        self, isolated_db,
+    ):
+        sid, revision = _plan_with_rooms_take(isolated_db)
+        snapshot = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        # Attempt to overwrite with different manual completion
+        with pytest.raises(session_plan.PreparedTakeConflict) as exc_info:
+            resource_preparation.finalize_take_preparation(
+                sid, 1, "take-001",
+                manual_completion={"camera": "conflicting lens"},
+            )
+        assert "immutable ready history" in str(exc_info.value)
+
+        # Attempt to overwrite with conflicting adaptations
+        different_adaptation = [{
+            "library_key": revision["library_key"],
+            "source_id": revision["source_id"],
+            "content_digest": revision["content_digest"],
+            "resource_field": "prompt",
+            "adapted_value": "different text",
+        }]
+        with pytest.raises(session_plan.PreparedTakeConflict) as exc_info2:
+            resource_preparation.finalize_take_preparation(
+                sid, 1, "take-001",
+                adaptations=different_adaptation,
+            )
+        assert "immutable ready history" in str(exc_info2.value)
+
+    def test_unresolved_conflicts_block_finalization(
+        self, isolated_db,
+    ):
+        setup_session(isolated_db)
+        rev = _store_fused_revision(
+            isolated_db, "inv_fused_conflict", "inv_fused_one", INV_FUSED_INCOMPATIBLE_PAYLOAD,
+        )
+        plan = {
+            "version": "resource-v1",
+            "look": INV_LOOK,
+            "initial_wardrobe": INV_WARDROBE,
+            "takes": [{
+                "take_id": "take-001",
+                "camera": "a 35mm prime",
+                "framing": "waist up",
+                "pose": "standing",
+                "expression": "neutral",
+            }],
+            "selected_resources": [{
+                "library_key": rev["library_key"],
+                "source_id": rev["source_id"],
+                "content_digest": rev["content_digest"],
+            }],
+            "wardrobe_changes": [],
+        }
+        session_plan.save_draft(_CURRENT_SESSION[0], plan, expected_revision=0)
+
+        with pytest.raises(resource_preparation.ConflictUnresolvedError) as exc_info:
+            resource_preparation.finalize_take_preparation(
+                _CURRENT_SESSION[0], 1, "take-001",
+            )
+        assert "unresolved conflict" in str(exc_info.value)
+
+        count = db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take "
+            "WHERE session_id = ? AND status = 'ready'",
+            _CURRENT_SESSION[0],
+        )["n"]
+        assert count == 0
+
+    def test_unresolved_placeholders_block_finalization(
+        self, isolated_db,
+    ):
+        setup_session(isolated_db)
+        rev = _store_fused_revision(
+            isolated_db, "inv_fused_ph", "inv_fused_one", INV_FUSED_PLACEHOLDER_PAYLOAD,
+        )
+        plan = {
+            "version": "resource-v1",
+            "look": INV_LOOK,
+            "initial_wardrobe": INV_WARDROBE,
+            "takes": [{
+                "take_id": "take-001",
+                "camera": "a 35mm prime",
+                "framing": "waist up",
+                "pose": "standing",
+                "expression": "neutral",
+            }],
+            "selected_resources": [{
+                "library_key": rev["library_key"],
+                "source_id": rev["source_id"],
+                "content_digest": rev["content_digest"],
+            }],
+            "wardrobe_changes": [],
+        }
+        session_plan.save_draft(_CURRENT_SESSION[0], plan, expected_revision=0)
+
+        with pytest.raises(resource_preparation.PlaceholderUnresolvedError) as exc_info:
+            resource_preparation.finalize_take_preparation(
+                _CURRENT_SESSION[0], 1, "take-001",
+            )
+        assert "unresolved placeholder" in str(exc_info.value)
+
+        count = db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take "
+            "WHERE session_id = ? AND status = 'ready'",
+            _CURRENT_SESSION[0],
+        )["n"]
+        assert count == 0
+
+    def test_failure_before_completion_leaves_take_recoverable_in_pending(
+        self, isolated_db,
+    ):
+        setup_session(isolated_db)
+        rev = _store_fused_revision(
+            isolated_db, "inv_fused_recov", "inv_fused_one", INV_FUSED_INCOMPATIBLE_PAYLOAD,
+        )
+        plan = {
+            "version": "resource-v1",
+            "look": INV_LOOK,
+            "initial_wardrobe": INV_WARDROBE,
+            "takes": [{
+                "take_id": "take-001",
+                "camera": "a 35mm prime",
+            }],
+            "selected_resources": [{
+                "library_key": rev["library_key"],
+                "source_id": rev["source_id"],
+                "content_digest": rev["content_digest"],
+            }],
+            "wardrobe_changes": [],
+        }
+        session_plan.save_draft(_CURRENT_SESSION[0], plan, expected_revision=0)
+
+        writer = _FakeWriter(return_value={
+            "framing": "waist up",
+            "pose": "standing",
+            "expression": "neutral",
+        })
+        synth = resource_preparation.synthesize_unlocked_fields(
+            _CURRENT_SESSION[0], 1, "take-001", writer=writer,
+        )
+        assert synth["snapshot"]["status"] == "pending"
+
+        with pytest.raises(resource_preparation.ConflictUnresolvedError):
+            resource_preparation.finalize_take_preparation(
+                _CURRENT_SESSION[0], 1, "take-001",
+            )
+
+        recovery = session_plan.recover_preparation(_CURRENT_SESSION[0])
+        assert recovery["completed"] == []
+        assert len(recovery["incomplete"]) == 1
+        assert recovery["incomplete"][0] == {"take_id": "take-001", "status": "pending"}
+
+    def test_explicit_trigger_in_take_clauses_is_substituted_and_not_prepended(
+        self, isolated_db,
+    ):
+        sid = setup_session(isolated_db)
+        db.run(
+            "UPDATE model SET trigger = ?, base_positive = ? "
+            "WHERE id = (SELECT model_id FROM session WHERE id = ?)",
+            "ada character", "masterpiece photo", sid,
+        )
+        plan = {
+            "version": "resource-v1",
+            "look": "studio lighting",
+            "initial_wardrobe": "simple shirt",
+            "takes": [{
+                "take_id": "take-001",
+                "camera": "close up of {trigger} looking directly at camera",
+                "framing": "tight",
+                "pose": "standing",
+                "expression": "smiling",
+            }],
+            "selected_resources": [],
+            "wardrobe_changes": [],
+        }
+        session_plan.save_draft(sid, plan, expected_revision=0)
+
+        snapshot = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        final_prompt = snapshot["final_prompt"]
+        assert not final_prompt.startswith("ada character. ")
+        assert "close up of ada character looking directly at camera" in final_prompt
+        assert final_prompt.count("ada character") == 1
+
+    def test_pending_assisted_take_rejects_conflicting_manual_completion_and_preserves_pending(
+        self, isolated_db,
+    ):
+        """Resuming a pending take with existing assistant synthesis rejects conflicting
+        manual_completion (including whitespace-differing values like ' leaning on the chair '
+        vs 'leaning on the chair') to prevent provenance contradictions, leaving the pending row
+        intact, unfinalized, and recoverable."""
+        sid, revision = _plan_with_rooms_take(
+            isolated_db,
+            take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(return_value={
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+            "expression": "eyes closed",
+        })
+        # 1. Synthesize unlocked fields with writer; persist=True creates pending row
+        synth_result = resource_preparation.synthesize_unlocked_fields(
+            sid, 1, "take-001", writer=writer, persist=True,
+        )
+        assert synth_result["writer_invoked"] is True
+        assert synth_result["persisted"] is True
+
+        # Verify it is in pending status with writer output recorded
+        pending_before = session_plan._prepared_take_row(sid, 1, "take-001")
+        assert pending_before is not None
+        assert pending_before["status"] == session_plan.PREPARED_TAKE_STATUS_PENDING
+        decoded_pending_before = session_plan._decode_prepared_take(pending_before)
+        assert (
+            decoded_pending_before["effective_state"]["take_choices"]["pose"]
+            == "leaning on the chair"
+        )
+        assert (
+            decoded_pending_before["provenance"]["writer_synthesis"]["writer_output"]["pose"]
+            == "leaning on the chair"
+        )
+
+        # 2. Attempt to resume/finalize with whitespace-differing manual_completion
+        # (" leaning on the chair " vs "leaning on the chair")
+        with pytest.raises(session_plan.PreparedTakeConflict) as exc_info:
+            resource_preparation.finalize_take_preparation(
+                sid, 1, "take-001",
+                manual_completion={"pose": " leaning on the chair "},
+            )
+        assert "conflicts with requested manual_completion" in str(exc_info.value)
+        assert "pose" in str(exc_info.value)
+
+        # 3. Verify pending row in database remains intact, unchanged, and in pending status
+        pending_after = session_plan._prepared_take_row(sid, 1, "take-001")
+        assert pending_after is not None
+        assert pending_after["status"] == session_plan.PREPARED_TAKE_STATUS_PENDING
+        decoded_pending_after = session_plan._decode_prepared_take(pending_after)
+        assert decoded_pending_after["effective_state"] == decoded_pending_before["effective_state"]
+        assert decoded_pending_after["provenance"] == decoded_pending_before["provenance"]
+
+        # Verify take was not finalized
+        ready_count = db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take "
+            "WHERE session_id = ? AND status = 'ready'",
+            sid,
+        )["n"]
+        assert ready_count == 0
+
+        # Also verify another distinct conflicting value is rejected
+        with pytest.raises(session_plan.PreparedTakeConflict):
+            resource_preparation.finalize_take_preparation(
+                sid, 1, "take-001",
+                manual_completion={"pose": "standing tall by the window"},
+            )
+
+        # 4. Verify take is still recoverable and can be finalized without conflicting override
+        snapshot = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+        )
+        assert snapshot["status"] == "ready"
+        assert "leaning on the chair" in snapshot["final_prompt"]
+        assert "standing tall by the window" not in snapshot["final_prompt"]
+        assert (
+            snapshot["effective_state"]["take_choices"]["pose"]
+            == "leaning on the chair"
+        )
+        assert (
+            snapshot["provenance"]["writer_synthesis"]["writer_output"]["pose"]
+            == "leaning on the chair"
+        )
+
+    def test_pending_assisted_take_accepts_matching_manual_completion_without_conflict(
+        self, isolated_db,
+    ):
+        """Resuming a pending take with matching manual_completion succeeds cleanly and
+        maintains complete congruence between provenance, effective_state, and final_prompt."""
+        sid, revision = _plan_with_rooms_take(
+            isolated_db,
+            take_choices={"camera": "a 35mm prime"},
+        )
+        writer = _FakeWriter(return_value={
+            "framing": "tight on the eyes",
+            "pose": "leaning on the chair",
+            "expression": "eyes closed",
+        })
+        resource_preparation.synthesize_unlocked_fields(
+            sid, 1, "take-001", writer=writer, persist=True,
+        )
+
+        snapshot = resource_preparation.finalize_take_preparation(
+            sid, 1, "take-001",
+            manual_completion={"pose": "leaning on the chair"},
+        )
+        assert snapshot["status"] == "ready"
+        assert "leaning on the chair" in snapshot["final_prompt"]
+        assert (
+            snapshot["provenance"]["writer_synthesis"]["writer_output"]["pose"]
+            == "leaning on the chair"
+        )
+        assert (
+            snapshot["effective_state"]["take_choices"]["pose"]
+            == "leaning on the chair"
+        )

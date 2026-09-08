@@ -341,6 +341,16 @@ class PlaceholderUnresolvedError(PreparationError):
     """
 
 
+class ConflictUnresolvedError(PreparationError):
+    """An open structural conflict blocks take finalization.
+
+    The refusal names the resource, the field, the conflicting tokens,
+    and the rule that requires human review. Raised when take finalization
+    is attempted on a take that still carries an unadapted conflict.
+    The source value is NEVER modified by the check.
+    """
+
+
 # -- Task 4.3: writer synthesis vocabulary --------------------------------
 
 
@@ -1959,6 +1969,39 @@ def assert_no_unresolved_placeholders(
         f"{{{first['placeholder']}}}; "
         f"a placeholder must be filled before the take is "
         f"finalizable; total standing placeholders: {len(findings)}"
+    )
+
+
+def assert_no_open_conflicts(
+    preparation: dict,
+    *,
+    adaptations: list[dict] | None = None,
+) -> None:
+    """Raise ``ConflictUnresolvedError`` if the take carries any open conflict.
+
+    The function is the single call task 4.4 (or a UI review screen)
+    makes to decide whether unresolved conflicts block take finalization.
+    It builds the review state with the applicable adaptations and inspects
+    open conflicts. When an adaptation resolves the conflict on the exact
+    revision triple and field, the conflict is considered resolved. If any
+    conflict remains open, this exception is raised. The source value is
+    NEVER modified by the check.
+    """
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got {type(preparation).__name__}"
+        )
+    review = build_review_state(preparation, adaptations=adaptations)
+    open_conflicts = review.get("conflicts", [])
+    if not open_conflicts:
+        return
+    first = open_conflicts[0]
+    raise ConflictUnresolvedError(
+        f"take {preparation.get('take_id')!r} carries unresolved conflict on "
+        f"resource {first.get('library_key')!r}/{first.get('source_id')!r} "
+        f"field {first.get('resource_field')!r}: {first.get('message')}; "
+        f"a reviewed adaptation or different resource is required before finalization; "
+        f"total open conflicts: {len(open_conflicts)}"
     )
 
 
@@ -3678,3 +3721,351 @@ def load_writer_synthesis(
             f"take_id must be a non-empty string, got {take_id!r}"
         )
     return _row_writer_synthesis(session_id, plan_revision, take_id)
+
+
+# -- Task 4.4: exact final prompt and take finalization --------------------
+
+
+def _join_prompt_sentences(*parts: str) -> str:
+    """Join prompt clauses with full stops following repo invariants."""
+    out: list[str] = []
+    for part in parts:
+        part = part.strip().strip(",").strip()
+        if not part:
+            continue
+        out.append(part if part[-1] in ".!?" else f"{part}.")
+    return ("\n\n" if any("\n" in p for p in out) else " ").join(out)
+
+
+def _load_model_for_session(session_id: int) -> dict[str, str]:
+    """Return trigger and base_positive for the model bound to the session."""
+    session = db.one("SELECT id, model_id FROM session WHERE id = ?", session_id)
+    if session is None:
+        return {"trigger": "", "base_positive": ""}
+    model_id = session.get("model_id")
+    if not model_id:
+        return {"trigger": "", "base_positive": ""}
+    model = db.one(
+        "SELECT id, trigger, base_positive FROM model WHERE id = ?",
+        model_id,
+    )
+    if model is None:
+        return {"trigger": "", "base_positive": ""}
+    return {
+        "trigger": str(model.get("trigger") or "").strip(),
+        "base_positive": str(model.get("base_positive") or "").strip(),
+    }
+
+
+def compose_final_prompt(
+    session_id: int,
+    preparation: dict,
+    *,
+    adaptations: list[dict] | None = None,
+) -> str:
+    """Compose the exact deterministic final prompt for a take.
+
+    The final prompt combines:
+      1. trigger (from the session's bound model)
+      2. base_positive (from the session's bound model)
+      3. look (from the plan's effective state)
+      4. wardrobe (from the take's effective wardrobe)
+      5. adapted take clauses (from assemble_adapted_clauses)
+
+    If {trigger} is present in the take clauses, it is substituted in-place
+    and not prepended at the start. Clauses are joined with full stops.
+    """
+    if not isinstance(session_id, int) or isinstance(session_id, bool):
+        raise PreparationArgumentError(
+            f"session_id must be an int, got {type(session_id).__name__}"
+        )
+    if not isinstance(preparation, dict):
+        raise PreparationArgumentError(
+            f"preparation must be a dict, got {type(preparation).__name__}"
+        )
+
+    model = _load_model_for_session(session_id)
+    trigger = model.get("trigger", "").strip()
+    base_positive = model.get("base_positive", "").strip()
+
+    effective_state = preparation.get("effective_state") or {}
+    look = str(effective_state.get("look") or "").strip()
+    wardrobe = str(effective_state.get("wardrobe") or "").strip()
+
+    take_clauses = assemble_adapted_clauses(
+        preparation, adaptations=adaptations,
+    ).strip()
+
+    if "{trigger}" in take_clauses:
+        take_clauses = take_clauses.replace("{trigger}", trigger)
+        parts = [base_positive, look, wardrobe, take_clauses]
+    else:
+        parts = [trigger, base_positive, look, wardrobe, take_clauses]
+
+    final_prompt = _join_prompt_sentences(*parts)
+    if not final_prompt:
+        raise PreparationError(
+            f"final prompt composed for take {preparation.get('take_id')!r} "
+            f"is empty"
+        )
+    return final_prompt
+
+
+def finalize_take_preparation(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    *,
+    manual_completion: Mapping[str, str] | None = None,
+    adaptations: list[dict] | None = None,
+    writer: WriterCallable | None = None,
+) -> dict:
+    """Atomically finalize take preparation into an immutable snapshot.
+
+    The function is the single high-level entry point for task 4.4:
+      1. Validates arguments and checks that the requested session,
+         plan revision and take_id are authoritative.
+      2. If the take snapshot is already ready or generated:
+         - Verifies requested parameters against the finalized snapshot.
+         - Does NOT invoke the writer or re-query source revisions.
+         - Returns the existing decoded snapshot if compatible / identical.
+         - Raises PreparedTakeConflict if caller attempts to change it.
+      3. Recovers any prior writer synthesis from pending state if present,
+         or applies manual_completion, or runs writer synthesis if unlocked.
+      4. Validates pre-conditions:
+         - No open structural conflicts (raises ConflictUnresolvedError).
+         - No unresolved template placeholders (raises PlaceholderUnresolvedError).
+         - No remaining unlocked fields (raises PreparationArgumentError).
+      5. Builds the exact final prompt deterministically via compose_final_prompt.
+      6. Builds the effective state and frozen provenance (selected resource
+         revisions, versions, field mappings, adaptations, writer input/output).
+      7. Persists the snapshot atomically via complete_preparation.
+      8. Returns the decoded ready snapshot.
+    """
+    if not isinstance(session_id, int) or isinstance(session_id, bool):
+        raise PreparationArgumentError(
+            f"session_id must be an int, got {type(session_id).__name__}"
+        )
+    if not isinstance(plan_revision, int) or isinstance(plan_revision, bool):
+        raise PreparationArgumentError(
+            f"plan_revision must be an int, got {type(plan_revision).__name__}"
+        )
+    if not isinstance(take_id, str) or not take_id:
+        raise PreparationArgumentError(
+            f"take_id must be a non-empty string, got {take_id!r}"
+        )
+    if manual_completion is not None and not isinstance(manual_completion, Mapping):
+        raise PreparationArgumentError(
+            f"manual_completion must be a mapping or None, got {type(manual_completion).__name__}"
+        )
+    if adaptations is not None and not isinstance(adaptations, list):
+        raise PreparationArgumentError(
+            f"adaptations must be a list or None, got {type(adaptations).__name__}"
+        )
+    if writer is not None and not callable(writer):
+        raise PreparationArgumentError(
+            f"writer must be callable or None, got {type(writer).__name__}"
+        )
+
+    # 1. Authoritative plan validation
+    actual_revision, plan = session_plan._load_current_resource_plan(session_id)  # noqa: SLF001
+    if actual_revision != plan_revision:
+        raise session_plan.PlanRevisionStale(
+            f"session {session_id} plan revision is {actual_revision}, "
+            f"requested finalization revision is {plan_revision}"
+        )
+    take_ids = {
+        t.get("take_id") for t in plan.get("takes", []) if isinstance(t, dict)
+    }
+    if take_id not in take_ids:
+        raise session_plan.PlanValidationError(
+            f"take_id {take_id!r} is not present in plan revision {plan_revision}"
+        )
+
+    # 2. Check existing row in prepared_take
+    existing_row = session_plan._prepared_take_row(  # noqa: SLF001
+        session_id, plan_revision, take_id,
+    )
+    if existing_row is not None:
+        if existing_row["status"] == session_plan.PREPARED_TAKE_STATUS_INVALIDATED:
+            raise session_plan.PreparedTakeConflict(
+                f"prepared take {take_id!r} at plan revision {plan_revision} "
+                f"is invalidated history"
+            )
+        if existing_row["status"] in (
+            session_plan.PREPARED_TAKE_STATUS_READY,
+            session_plan.PREPARED_TAKE_STATUS_GENERATED,
+        ):
+            decoded = session_plan._decode_prepared_take(existing_row)  # noqa: SLF001
+            # Reuse existing snapshot without invoking writer again
+            if manual_completion:
+                eff_saved = (decoded.get("effective_state") or {}).get("take_choices") or {}
+                for k, v in manual_completion.items():
+                    if k in eff_saved and eff_saved[k] != v:
+                        raise session_plan.PreparedTakeConflict(
+                            f"prepared take {take_id!r} at plan revision {plan_revision} "
+                            f"is immutable {existing_row['status']} history and differs "
+                            f"from requested manual_completion for {k!r}"
+                        )
+            if adaptations is not None:
+                saved_adaptations = (decoded.get("provenance") or {}).get("adaptations") or []
+                canonical_new = json.dumps(adaptations, sort_keys=True)
+                canonical_saved = json.dumps(saved_adaptations, sort_keys=True)
+                if canonical_new != canonical_saved:
+                    raise session_plan.PreparedTakeConflict(
+                        f"prepared take {take_id!r} at plan revision {plan_revision} "
+                        f"is immutable {existing_row['status']} history and differs "
+                        f"from requested adaptations"
+                    )
+            return decoded
+
+    # 3. Recover prior writer synthesis from pending row if available
+    prior_writer_block = None
+    prior_take_choices = None
+    if existing_row is not None and existing_row["status"] == session_plan.PREPARED_TAKE_STATUS_PENDING:
+        decoded_pending = session_plan._decode_prepared_take(existing_row)  # noqa: SLF001
+        prior_writer_block = _decode_writing_in_provenance(decoded_pending)
+        eff = decoded_pending.get("effective_state") or {}
+        if isinstance(eff, dict) and isinstance(eff.get("take_choices"), dict):
+            prior_take_choices = eff["take_choices"]
+
+    # 4. Build base preparation (validates manual_completion without writing to database)
+    preparation = prepare_take_inputs(
+        session_id, plan_revision, take_id,
+        manual_completion=manual_completion,
+    )
+    validated_manual = (
+        preparation.get("manual_completion", {}).get("descriptive_inputs") or {}
+    )
+    if prior_take_choices and validated_manual:
+        for k, v in validated_manual.items():
+            if k in prior_take_choices and prior_take_choices[k] != v:
+                raise session_plan.PreparedTakeConflict(
+                    f"prepared take {take_id!r} at plan revision {plan_revision} "
+                    f"has pending synthesis for {k!r} ({prior_take_choices[k]!r}) "
+                    f"which conflicts with requested manual_completion ({v!r}); "
+                    f"incompatible overwrite is rejected to preserve provenance integrity"
+                )
+
+    if prior_take_choices:
+        eff_choices = preparation.get("effective_take_choices") or {}
+        for k, v in prior_take_choices.items():
+            if (k not in eff_choices or not eff_choices[k]) and isinstance(v, str) and v:
+                eff_choices[k] = v
+
+    # 5. Handle unlocked fields
+    unlocked = compute_unlocked_fields(preparation)
+    writer_block = None
+    if unlocked:
+        if writer is not None:
+            synth_res = synthesize_unlocked_fields(
+                session_id, plan_revision, take_id,
+                writer=writer,
+                manual_completion=manual_completion,
+                persist=True,
+            )
+            preparation = apply_writer_values(preparation, synth_res["effective_take_choices"])
+            writer_block = synth_res["writer_synthesis"]
+        else:
+            raise PreparationArgumentError(
+                f"session {session_id} take {take_id!r} has unlocked descriptive choices "
+                f"{sorted(unlocked)!r}; supply manual_completion or provide a writer callable"
+            )
+    else:
+        if prior_writer_block is not None:
+            writer_block = prior_writer_block
+        elif manual_completion:
+            writer_block = _writer_synthesis_block(
+                kind=WRITER_KIND_MANUAL,
+                requested_fields=[],
+                writer_input=None,
+                writer_output=None,
+            )
+        else:
+            writer_block = _writer_synthesis_block(
+                kind=WRITER_KIND_NONE,
+                requested_fields=[],
+                writer_input=None,
+                writer_output=None,
+            )
+
+    # 6. Resolve and validate adaptations
+    validated_adaptations: list[dict] = []
+    if adaptations is None:
+        persisted = load_take_adaptations(session_id, plan_revision, take_id)
+        applicable = _applicable_adaptations(preparation, persisted)
+        validated_adaptations = [
+            {
+                "library_key": str(item["library_key"]),
+                "source_id": str(item["source_id"]),
+                "content_digest": str(item["content_digest"]),
+                "resource_field": str(item["resource_field"]),
+                "adapted_value": str(item["adapted_value"]),
+            }
+            for item in applicable
+        ]
+    else:
+        for index, raw in enumerate(adaptations):
+            try:
+                val = validate_adaptation(raw, preparation)
+            except (AdaptationError, PlaceholderUnresolvedError) as exc:
+                raise type(exc)(f"adaptations[{index}] is not acceptable: {exc}") from exc
+            validated_adaptations.append(val)
+
+    # 7. Check pre-conditions (conflicts and placeholders)
+    assert_no_open_conflicts(preparation, adaptations=adaptations)
+    assert_no_unresolved_placeholders(preparation, adaptations=adaptations)
+
+    # 8. Compose deterministic final prompt
+    final_prompt = compose_final_prompt(session_id, preparation, adaptations=adaptations)
+
+    # 9. Construct effective state and immutable provenance
+    effective_state = dict(preparation.get("effective_state") or {})
+    effective_state["take_choices"] = dict(preparation.get("effective_take_choices") or {})
+
+    selected_resource_revisions = [
+        {
+            "library_key": entry.get("library_key", ""),
+            "source_id": entry.get("source_id", ""),
+            "content_digest": entry.get("content_digest", ""),
+            "kind": entry.get("kind", ""),
+        }
+        for entry in preparation.get("resource_inputs", [])
+        if isinstance(entry, dict)
+    ]
+    selected_resource_revisions.sort(key=lambda item: (
+        item["library_key"], item["source_id"], item["content_digest"],
+    ))
+
+    field_mappings: dict[str, Any] = {}
+    for entry in preparation.get("resource_inputs", []):
+        kind = entry.get("kind", "")
+        if kind and kind not in field_mappings:
+            field_mappings[kind] = resource_prompts.mapping_for_kind(kind)
+
+    provenance = {
+        "preparation_version": PREPARATION_VERSION,
+        "mapping_version": MAPPING_VERSION,
+        "compiler_version": COMPILER_VERSION,
+        "module": "backend.resource_preparation",
+        "session_id": session_id,
+        "plan_revision": plan_revision,
+        "take_id": take_id,
+        "selected_resource_revisions": selected_resource_revisions,
+        "field_mappings": field_mappings,
+        "adaptations": validated_adaptations,
+        "writer_synthesis": writer_block,
+    }
+
+    # 10. Persist atomically
+    session_plan.begin_preparation(session_id, plan_revision, take_id)
+    return session_plan.complete_preparation(
+        session_id,
+        plan_revision,
+        take_id,
+        final_prompt=final_prompt,
+        effective_state=effective_state,
+        mapping_version=MAPPING_VERSION,
+        compiler_version=COMPILER_VERSION,
+        provenance=provenance,
+    )
