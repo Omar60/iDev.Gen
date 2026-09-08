@@ -1900,3 +1900,552 @@ class TestSessionPlanService:
         }).json()["id"]
         assert session_plan.get_draft(sid) is None
         assert session_plan.current_revision(sid) == 0
+
+
+# =====================================================================
+# 8. Effective-wardrobe resolution (task 3.2 of
+# ``adopt-resource-session-planning``). The resolver is a pure function
+# of a validated resource-v1 plan. The eight tests below pin the rules
+# the spec names for the task:
+#
+#   1. Constant default wardrobe: every take inherits
+#      ``initial_wardrobe`` when there are no wardrobe changes.
+#   2. A jacket added with ``from_here`` at take seven: takes one
+#      through six keep the prior wardrobe, take seven onward
+#      inherits the jacket.
+#   3. An isolated ``this_take`` override: the named take switches
+#      wardrobe; the following take inherits the prior persistent
+#      state, not the override.
+#   4. Removing a change through a later CAS save: the resolver
+#      returns to the inherited state for the take that lost its
+#      change.
+#   5. Reordering takes across a persistent-change boundary: the
+#      change follows its stable ``take_id``; the new order changes
+#      who inherits what.
+#   6. Multiple persistent changes and a one-take override
+#      alongside them: each ``from_here`` supersedes the previous
+#      one; a ``this_take`` between two persistent changes applies
+#      to its take only.
+#   7. Duplicate wardrobe-change events for one stable take ID are
+#      refused at the validation boundary; no partial row is
+#      written.
+#   8. Existing legacy composition behavior is unchanged: a legacy
+#      session with a wardrobe override and an editing reference
+#      still composes the same prompts the baseline test pins.
+# =====================================================================
+
+
+class TestEffectiveWardrobeResolution:
+    """Service-level tests for ``resolve_effective_wardrobes`` and
+    the validation boundary that refuses duplicate events. The
+    resolver is pure: each test plants a plan dict and asserts the
+    dict the resolver returns, so a future change to the walk
+    surfaces here as a focused failure rather than a hidden
+    downstream prompt drift."""
+
+    def test_every_take_inherits_initial_wardrobe_with_no_changes(self):
+        """Test 1: constant default wardrobe. The plan's
+        ``initial_wardrobe`` is the wardrobe of every take, with no
+        changes to perturb the inherited state. Twelve takes is
+        the size the acceptance demonstration uses; the number is
+        arbitrary, the rule is "every take inherits the default"."""
+        plan = {
+            "version": "resource-v1",
+            "look": "an invented look",
+            "initial_wardrobe": INV_WARDROBE,
+            "takes": [
+                {"take_id": f"inv_take_{i:03d}"} for i in range(1, 13)
+            ],
+            "selected_resources": [],
+            "wardrobe_changes": [],
+        }
+        effective = session_plan.resolve_effective_wardrobes(plan)
+        assert len(effective) == 12
+        for i in range(1, 13):
+            assert effective[f"inv_take_{i:03d}"] == INV_WARDROBE, (
+                f"take {i:03d} must inherit initial_wardrobe; got "
+                f"{effective[f'inv_take_{i:03d}']!r}"
+            )
+
+    def test_a_jacket_added_with_from_here_at_take_seven(
+        self, client, seeded,
+    ):
+        """Test 2: a jacket added at take seven with ``from_here``
+        applies to take seven and every following take. Takes one
+        through six keep the prior wardrobe. The plan round-trips
+        through save and get, and the resolver reads the saved
+        plan."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "jacket at seven",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_jacket_seven", "inv_room_jacket_seven", INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        plan["takes"] = [
+            {"take_id": f"inv_take_{i:03d}", "label": f"frame {i}"}
+            for i in range(1, 13)
+        ]
+        plan["wardrobe_changes"] = [
+            {
+                "take_id": "inv_take_007",
+                "scope": "from_here",
+                "wardrobe": INV_WARDROBE_JACKET,
+            },
+        ]
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+
+        effective = session_plan.resolve_effective_wardrobes(
+            client.get(f"/api/sessions/{sid}/plan").json()["plan"],
+        )
+        # Takes one through six: initial wardrobe.
+        for i in range(1, 7):
+            assert effective[f"inv_take_{i:03d}"] == INV_WARDROBE, (
+                f"take {i:03d} must keep initial_wardrobe before the "
+                f"change; got {effective[f'inv_take_{i:03d}']!r}"
+            )
+        # Takes seven through twelve: jacket.
+        for i in range(7, 13):
+            assert effective[f"inv_take_{i:03d}"] == INV_WARDROBE_JACKET, (
+                f"take {i:03d} must inherit the jacket from the "
+                f"persistent change; got {effective[f'inv_take_{i:03d}']!r}"
+            )
+
+    def test_an_isolated_this_take_override_does_not_alter_following_takes(
+        self, client, seeded,
+    ):
+        """Test 3: a one-take override applies to its take only.
+        The following take inherits the prior persistent state,
+        which (in this plan) is the initial wardrobe. The
+        override is a perturbation, not a step in a walk."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "one take override",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_one_take", "inv_room_one_take", INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        plan["takes"] = [
+            {"take_id": f"inv_take_{i:03d}"} for i in range(1, 7)
+        ]
+        # The override is on take 4; takes 5 and 6 must see the
+        # initial wardrobe, NOT the override.
+        plan["wardrobe_changes"] = [
+            {
+                "take_id": "inv_take_004",
+                "scope": "this_take",
+                "wardrobe": INV_WARDROBE_JACKET,
+            },
+        ]
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+
+        effective = session_plan.resolve_effective_wardrobes(
+            client.get(f"/api/sessions/{sid}/plan").json()["plan"],
+        )
+        # Take 4: the override.
+        assert effective["inv_take_004"] == INV_WARDROBE_JACKET
+        # Take 5: NOT the override. Inherited state, which is
+        # still the initial wardrobe because no ``from_here``
+        # advanced it.
+        assert effective["inv_take_005"] == INV_WARDROBE, (
+            f"take 5 must inherit the prior persistent state, not "
+            f"take 4's override; got {effective['inv_take_005']!r}"
+        )
+        # Belt and braces for take 6 too.
+        assert effective["inv_take_006"] == INV_WARDROBE
+
+    def test_removing_a_change_through_a_later_cas_save_restores_inherited(
+        self, client, seeded,
+    ):
+        """Test 4: a saved change is removed by re-saving the
+        plan without it. The CAS path bumps the revision, the
+        new plan has no changes, and the resolver returns to
+        the inherited state for every take — including the
+        takes that used to inherit the now-removed change."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "remove a change via CAS",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_remove_change", "inv_room_remove_change",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        plan["takes"] = [
+            {"take_id": f"inv_take_{i:03d}"} for i in range(1, 6)
+        ]
+        plan["wardrobe_changes"] = [
+            {
+                "take_id": "inv_take_003",
+                "scope": "from_here",
+                "wardrobe": INV_WARDROBE_JACKET,
+            },
+        ]
+        # First save: the change is in place. The resolver
+        # returns the jacket for takes 3 through 5.
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+        first_effective = session_plan.resolve_effective_wardrobes(
+            client.get(f"/api/sessions/{sid}/plan").json()["plan"],
+        )
+        assert first_effective["inv_take_001"] == INV_WARDROBE
+        assert first_effective["inv_take_002"] == INV_WARDROBE
+        assert first_effective["inv_take_003"] == INV_WARDROBE_JACKET
+        assert first_effective["inv_take_004"] == INV_WARDROBE_JACKET
+        assert first_effective["inv_take_005"] == INV_WARDROBE_JACKET
+
+        # Second save: drop the change, keep the rest. The
+        # expected revision is 1; the new revision is 2.
+        revised = {**plan, "wardrobe_changes": []}
+        second = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": revised, "expected_revision": 1},
+        )
+        assert second.status_code == 200, second.text
+        assert second.json() == {"plan_revision": 2}
+        # The resolver returns to the inherited state for
+        # every take. The takes that USED to inherit the
+        # jacket now inherit the initial wardrobe; the take
+        # whose change was removed is also back to the
+        # inherited state. The order is what makes the rule
+        # "removing a change restores the applicable
+        # inherited wardrobe" concrete.
+        second_effective = session_plan.resolve_effective_wardrobes(
+            client.get(f"/api/sessions/{sid}/plan").json()["plan"],
+        )
+        for i in range(1, 6):
+            assert second_effective[f"inv_take_{i:03d}"] == INV_WARDROBE, (
+                f"after removing the change, take {i:03d} must inherit "
+                f"initial_wardrobe; got {second_effective[f'inv_take_{i:03d}']!r}"
+            )
+
+    def test_reordering_takes_moves_the_persistent_change_with_the_take(
+        self, client, seeded,
+    ):
+        """Test 5: reordering takes across a persistent-change
+        boundary changes who inherits what. The change follows
+        the stable ``take_id``, not the position; the resolver
+        walks the NEW order, so a take that was once before
+        the change is now after it (or vice versa) and
+        inherits accordingly."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "reorder across a change",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_reorder_change", "inv_room_reorder_change",
+            INV_ROOM_PAYLOAD,
+        )
+        # Three takes; the change sits on inv_take_002.
+        plan = _build_plan(revision)
+        plan["takes"] = [
+            {"take_id": "inv_take_001"},
+            {"take_id": "inv_take_002"},
+            {"take_id": "inv_take_003"},
+        ]
+        plan["wardrobe_changes"] = [
+            {
+                "take_id": "inv_take_002",
+                "scope": "from_here",
+                "wardrobe": INV_WARDROBE_JACKET,
+            },
+        ]
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+        # Before the reorder: take 1 is initial, takes 2 and 3
+        # are jacket (the persistent change advanced the
+        # inherited state at take 2).
+        before = session_plan.resolve_effective_wardrobes(
+            client.get(f"/api/sessions/{sid}/plan").json()["plan"],
+        )
+        assert before == {
+            "inv_take_001": INV_WARDROBE,
+            "inv_take_002": INV_WARDROBE_JACKET,
+            "inv_take_003": INV_WARDROBE_JACKET,
+        }
+
+        # Reorder: take 2 first, then take 1, then take 3.
+        # The change follows take 2; the resolver walks the
+        # new order, so take 1 is now AFTER the change and
+        # inherits the jacket.
+        reordered = {
+            **plan,
+            "takes": [
+                {"take_id": "inv_take_002"},
+                {"take_id": "inv_take_001"},
+                {"take_id": "inv_take_003"},
+            ],
+        }
+        second = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": reordered, "expected_revision": 1},
+        )
+        assert second.status_code == 200, second.text
+        after = session_plan.resolve_effective_wardrobes(
+            client.get(f"/api/sessions/{sid}/plan").json()["plan"],
+        )
+        assert after == {
+            "inv_take_002": INV_WARDROBE_JACKET,
+            "inv_take_001": INV_WARDROBE_JACKET,
+            "inv_take_003": INV_WARDROBE_JACKET,
+        }, (
+            f"after the reorder, every take is at or after the "
+            f"persistent change; expected all three to inherit "
+            f"the jacket, got {after!r}"
+        )
+
+    def test_multiple_persistent_changes_and_a_one_take_override(
+        self, client, seeded,
+    ):
+        """Test 6: a plan with multiple ``from_here`` events
+        AND a one-take override between two of them. Each
+        ``from_here`` supersedes the previous; the one-take
+        override is a perturbation between two persistent
+        states and does not advance the inherited state. The
+        resolver walks the ten takes in order."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "multiple persistent + override",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_multi_change", "inv_room_multi_change",
+            INV_ROOM_PAYLOAD,
+        )
+        # Three wardrobe strings so the test distinguishes the
+        # state transitions clearly.
+        W_JACKET = INV_WARDROBE_JACKET
+        W_COAT = (
+            "a heavy dark wool coat over a thin grey linen shirt, dark "
+            "cotton trousers, bare feet"
+        )
+        W_SCARF = (
+            "a thin grey linen shirt, dark cotton trousers, bare feet, "
+            "a thin red scarf knotted at her throat"
+        )
+        plan = _build_plan(revision)
+        plan["takes"] = [
+            {"take_id": f"inv_take_{i:03d}"} for i in range(1, 11)
+        ]
+        plan["wardrobe_changes"] = [
+            {"take_id": "inv_take_003", "scope": "from_here", "wardrobe": W_JACKET},
+            {"take_id": "inv_take_006", "scope": "from_here", "wardrobe": W_COAT},
+            {"take_id": "inv_take_008", "scope": "this_take", "wardrobe": W_SCARF},
+        ]
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+
+        effective = session_plan.resolve_effective_wardrobes(
+            client.get(f"/api/sessions/{sid}/plan").json()["plan"],
+        )
+        # 1, 2: initial.
+        for i in (1, 2):
+            assert effective[f"inv_take_{i:03d}"] == INV_WARDROBE
+        # 3, 4, 5: jacket (the first persistent change).
+        for i in (3, 4, 5):
+            assert effective[f"inv_take_{i:03d}"] == W_JACKET
+        # 6, 7: coat (the second persistent change supersedes
+        # the jacket from take 6 onward).
+        for i in (6, 7):
+            assert effective[f"inv_take_{i:03d}"] == W_COAT
+        # 8: the one-take override. Take 8 sees the scarf, NOT
+        # the coat. The inherited state stays at "coat" so
+        # take 9 inherits the coat.
+        assert effective["inv_take_008"] == W_SCARF
+        # 9, 10: the override was a perturbation; the
+        # inherited state is back to "coat".
+        for i in (9, 10):
+            assert effective[f"inv_take_{i:03d}"] == W_COAT, (
+                f"the one-take override on take 8 must not advance "
+                f"the inherited state; take {i:03d} should still "
+                f"inherit the coat, got {effective[f'inv_take_{i:03d}']!r}"
+            )
+
+    def test_duplicate_wardrobe_change_events_are_refused_at_validation(
+        self, client, seeded,
+    ):
+        """Test 7: a plan with two ``wardrobe_changes`` events
+        for the same ``take_id`` is refused at the validation
+        boundary (the same boundary ``save_draft`` uses). The
+        API maps the refusal to a 422, the stored plan is
+        byte-for-byte unchanged, and no ``session_plan`` row
+        is written."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "duplicate change refused",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_duplicate", "inv_room_duplicate", INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        plan["takes"] = [
+            {"take_id": f"inv_take_{i:03d}"} for i in range(1, 4)
+        ]
+        # Two events for inv_take_002: one this_take, one
+        # from_here. Both target the same stable take_id.
+        plan["wardrobe_changes"] = [
+            {
+                "take_id": "inv_take_002",
+                "scope": "this_take",
+                "wardrobe": INV_WARDROBE,
+            },
+            {
+                "take_id": "inv_take_002",
+                "scope": "from_here",
+                "wardrobe": INV_WARDROBE_JACKET,
+            },
+        ]
+        # The service layer refuses with PlanValidationError;
+        # the validation message names the offending take_id
+        # so the operator can fix the draft.
+        with pytest.raises(session_plan.PlanValidationError) as exc:
+            session_plan.resolve_effective_wardrobes(plan)
+        assert "inv_take_002" in str(exc.value), str(exc.value)
+        assert "more than one" in str(exc.value), str(exc.value)
+        # And the save through the route is also refused. The
+        # error class the route uses is the same one.
+        resp = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert resp.status_code == 422, resp.text
+        assert "inv_take_002" in resp.json()["detail"], resp.text
+        # No partial persistence: the session has no plan row
+        # and the resolver never ran on a stored draft.
+        n = db.one(
+            "SELECT COUNT(*) AS n FROM session_plan WHERE session_id=?",
+            sid,
+        )["n"]
+        assert n == 0, (
+            "a refused save must not leave a half-written plan "
+            "row behind"
+        )
+
+    def test_legacy_composition_remains_unchanged_after_3_2(
+        self, client, seeded,
+    ):
+        """Test 8: the new resolver and the duplicate-event
+        validation do not touch the legacy composition path.
+        A legacy session (no ``composition_mode``) still
+        composes its shots through the existing ``_expand_shots``
+        path. The assertion is a small, byte-for-byte check
+        that the trigger, base, look, wardrobe and take
+        prompt are joined the same way the 1.3 baseline pins
+        on a different fixture, with the same explicit
+        ``{trigger}`` placeholder rule."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "legacy still composes",
+            "look": INV_LOOK,
+            "wardrobe": INV_WARDROBE,
+            "shots": [
+                # Standard take: full composition.
+                {
+                    "label": "wide",
+                    "prompt": (
+                        "standing square to the camera with her hands "
+                        "at her sides, full body in frame."
+                    ),
+                },
+                # Take with its own wardrobe: take wins, session's
+                # wardrobe does not appear in the same line.
+                {
+                    "label": "jacket on",
+                    "prompt": (
+                        "turned three quarters to the camera, one hand "
+                        "on her hip, the other raised to her collar."
+                    ),
+                    "wardrobe": (
+                        "the same grey linen shirt, dark cotton "
+                        "trousers, a loose dark jacket over the shirt, "
+                        "bare feet"
+                    ),
+                },
+                # Explicit {trigger} placeholder: NOT prepended a
+                # second time. The {trigger} text is in the take
+                # itself, so the composer does not double it.
+                {
+                    "label": "explicit trigger",
+                    "prompt": (
+                        "close-up of {trigger}, the camera centred on "
+                        "her face."
+                    ),
+                },
+            ],
+        }).json()["id"]
+        full = client.get(f"/api/sessions/{sid}").json()
+        by_label = {s["shot_label"]: s for s in full["shots"]}
+        # The session's mode is still legacy: no
+        # ``composition_mode`` key in settings.
+        row = db.one("SELECT settings FROM session WHERE id=?", sid)
+        settings = json.loads(row["settings"])
+        assert "composition_mode" not in settings, (
+            f"legacy session must not carry composition_mode in "
+            f"settings after 3.2; got {settings!r}"
+        )
+        # INV_LOOK already ends with a full stop, so the
+        # composer's _sentences does not append another. The
+        # baseline 1.3 test pins the same rule with a non-
+        # terminating look, so this test also exercises the
+        # "the look already has its own punctuation, leave it
+        # alone" branch.
+        # Standard take: trigger + base + look + wardrobe + take.
+        assert by_label["wide"]["prompt"] == (
+            "4da woman. photo, 35mm. " + INV_LOOK + " " + INV_WARDROBE + ". "
+            "standing square to the camera with her hands at her "
+            "sides, full body in frame."
+        ), (
+            f"legacy text-to-image composition drifted; got "
+            f"{by_label['wide']['prompt']!r}"
+        )
+        # Per-take wardrobe: the take's wins, the session's
+        # does not appear in the same line.
+        assert by_label["jacket on"]["prompt"] == (
+            "4da woman. photo, 35mm. " + INV_LOOK + " "
+            "the same grey linen shirt, dark cotton trousers, a "
+            "loose dark jacket over the shirt, bare feet. "
+            "turned three quarters to the camera, one hand on her "
+            "hip, the other raised to her collar."
+        ), (
+            f"per-take wardrobe override drifted; got "
+            f"{by_label['jacket on']['prompt']!r}"
+        )
+        assert INV_WARDROBE not in by_label["jacket on"]["prompt"]
+        # Explicit {trigger}: not prepended a second time.
+        assert by_label["explicit trigger"]["prompt"] == (
+            "photo, 35mm. " + INV_LOOK + " " + INV_WARDROBE + ". "
+            "close-up of 4da woman, the camera centred on her face."
+        ), (
+            f"explicit {{trigger}} placeholder was not honoured; got "
+            f"{by_label['explicit trigger']['prompt']!r}"
+        )
+        # The negative is still inherited from the model.
+        for label, shot in by_label.items():
+            assert shot["negative"] == "blurry", (
+                f"shot {label!r} has negative {shot['negative']!r}, "
+                f"expected 'blurry'"
+            )

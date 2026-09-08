@@ -24,9 +24,11 @@ app call against. Its contract is deliberately narrow:
     ``resource-v1`` composition mode. Legacy sessions cannot reach
     ``save_draft`` because the route refuses the request first.
 
-What this module does NOT do: it does not resolve effective wardrobe
-state, prepare prompts, queue shots, or invent take fields beyond the
-stable take IDs. Those are 3.2 and later tasks. The draft is data only.
+What this module does NOT do: it does not prepare prompts, queue
+shots, or invent take fields beyond the stable take IDs. Those are
+later tasks. 3.2 adds the effective-wardrobe resolver, which is a
+pure function of a validated plan; legacy wardrobe composition and
+legacy sessions remain untouched.
 """
 from __future__ import annotations
 
@@ -205,6 +207,17 @@ def validate_draft(plan: Any) -> dict:
             f"plan.wardrobe_changes must be a list, got "
             f"{type(changes).__name__}"
         )
+    # Two wardrobe-change events for the same stable take ID are
+    # ambiguous: the resolver walks the ordered takes and looks up
+    # ``wardrobe_changes`` by take_id, so two events for one take
+    # would either silently override each other or be picked by
+    # array order — the bug the spec calls out in
+    # "Reject two wardrobe changes for the same take_id as
+    # ambiguous during draft validation; do not rely on array
+    # ordering to choose one." The set is built while iterating so
+    # the first duplicate carries the offending index and the
+    # take_id the operator can search the draft for.
+    seen_change_take_ids: set[str] = set()
     normalized_changes: list[dict] = []
     for index, change in enumerate(changes):
         if not isinstance(change, dict):
@@ -218,6 +231,15 @@ def validate_draft(plan: Any) -> dict:
                 f"plan.wardrobe_changes[{index}].take_id "
                 f"{change_take_id!r} does not match any take in plan.takes"
             )
+        if change_take_id in seen_change_take_ids:
+            raise PlanValidationError(
+                f"plan.wardrobe_changes[{index}].take_id "
+                f"{change_take_id!r} has more than one wardrobe-change "
+                f"event; the resolver cannot pick one without an "
+                f"ambiguous array-order tie-break. Remove the duplicate "
+                f"event so each take has at most one wardrobe change."
+            )
+        seen_change_take_ids.add(change_take_id)
         scope = change.get("scope")
         if scope not in VALID_WARDROBE_SCOPES:
             raise PlanValidationError(
@@ -289,6 +311,100 @@ def validate_selected_resources(selected: list[dict]) -> None:
                 f"content_digest={content_digest!r}: no immutable "
                 f"asset_revision row matches this triple"
             )
+
+
+# -- Effective-wardrobe resolution (task 3.2) ----------------------------
+
+
+def resolve_effective_wardrobes(plan: Any) -> dict[str, str]:
+    """Walk a validated plan and return each take's effective wardrobe.
+
+    The resolver is a pure function of a resource-v1 plan. It is the
+    small, deterministic core the spec names for task 3.2; the draft
+    is data and the resolver turns that data into per-take state.
+
+    Resolution rules, in this order:
+
+      1. The inherited wardrobe starts as ``plan.initial_wardrobe``.
+         With no ``wardrobe_changes`` at all, every take inherits
+         this default.
+
+      2. A change with ``scope == "this_take"`` applies to its named
+         take only. The inherited wardrobe is NOT advanced; the
+         following take inherits whatever the prior inherited state
+         was. A one-take override is an isolated perturbation, never
+         a step in a walk.
+
+      3. A change with ``scope == "from_here"`` applies to its named
+         take and every following take, until a later
+         ``from_here`` supersedes it. The change is what the spec
+         calls a "persistent" change, and the inherited wardrobe is
+         updated in place as the walk crosses it. Two
+         ``from_here`` events in the same plan are not
+         contradictory: the later one wins from its take onward,
+         which is the natural reading of "until another explicit
+         change".
+
+      4. The walk follows the CURRENT order of ``plan.takes``. The
+         resolver does NOT sort, does NOT look at numeric suffixes,
+         and does NOT remember old positions. A wardrobe change
+         follows its stable ``take_id`` to wherever that take now
+         sits. Removing a previously saved change and re-saving the
+         draft through the existing CAS path leaves that take with
+         whatever the prior inherited state now is, which is the
+         "removing a change restores the inherited wardrobe" rule.
+
+    The function is pure: it does no I/O, holds no state between
+    calls, and returns a fresh dict each time. The caller is
+    expected to pass a draft that has been read through
+    ``get_draft``; this function runs ``validate_draft`` itself so
+    a refused walk and a refused save share one error class. Two
+    wardrobe changes for the same ``take_id`` are refused at the
+    validation boundary so the resolver never has to pick one by
+    array order.
+    """
+    validated = validate_draft(plan)
+    initial = validated["initial_wardrobe"]
+    takes = validated["takes"]
+    changes_by_take: dict[str, dict] = {
+        change["take_id"]: change for change in validated["wardrobe_changes"]
+    }
+
+    effective: dict[str, str] = {}
+    inherited = initial
+    for take in takes:
+        take_id = take["take_id"]
+        change = changes_by_take.get(take_id)
+        if change is None:
+            effective[take_id] = inherited
+            continue
+        scope = change["scope"]
+        if scope == WARDROBE_SCOPE_THIS_TAKE:
+            # One-take override: applies here, leaves the inherited
+            # state untouched so the next take sees what came
+            # before this one. This is the rule the spec calls out
+            # in the "One-take override" scenario.
+            effective[take_id] = change["wardrobe"]
+        elif scope == WARDROBE_SCOPE_FROM_HERE:
+            # Persistent change: applies here AND advances the
+            # inherited state so every following take picks it up
+            # until a later ``from_here`` supersedes it.
+            inherited = change["wardrobe"]
+            effective[take_id] = inherited
+        else:
+            # ``validate_draft`` already refused any other scope;
+            # this branch is unreachable in a validated plan and
+            # exists only to make the walk exhaustive for a reader
+            # who reads the function without reading the
+            # validation. The error names the scope so a future
+            # caller that bypasses ``validate_draft`` gets a
+            # readable message rather than a silent skip.
+            raise PlanValidationError(
+                f"resolve_effective_wardrobes encountered wardrobe_changes "
+                f"with an unrecognised scope {scope!r} on take_id "
+                f"{take_id!r}; validate_draft must be called first"
+            )
+    return effective
 
 
 # -- Persistence ------------------------------------------------------------
