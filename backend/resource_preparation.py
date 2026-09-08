@@ -1150,7 +1150,10 @@ def prepare_take_inputs(
         "resource_inputs": resource_entries,
         "writer_guidance": _collect_writer_guidance(resource_entries),
         "provenance": provenance,
+        "reference": bool(take.get("reference", False)),
     }
+    if "prompt" in take and isinstance(take["prompt"], str) and take["prompt"].strip():
+        preparation["prompt"] = str(take["prompt"]).strip()
     # Task 4.2: the review state is computed from the
     # preparation the same way a UI or a future task 4.4
     # would compute it. The initial state has no
@@ -2689,6 +2692,11 @@ def assemble_adapted_clauses(
                 if text:
                     clauses.append(text)
 
+    if not clauses and preparation.get("prompt"):
+        return str(preparation["prompt"]).strip()
+    if preparation.get("prompt") and str(preparation["prompt"]).strip() not in clauses:
+        clauses.append(str(preparation["prompt"]).strip())
+
     return ". ".join(clauses)
 
 
@@ -3774,6 +3782,13 @@ def compose_final_prompt(
 
     If {trigger} is present in the take clauses, it is substituted in-place
     and not prepended at the start. Clauses are joined with full stops.
+
+    Canonical reference rules:
+      - Text-to-image (reference=False): full composed prompt.
+      - Reference + workflow kind 'edit' (or empty/no kind): bare instruction only;
+        trigger, base_positive, look and wardrobe are omitted.
+      - Reference + workflow kind 'guide': full composed prompt with trigger,
+        base_positive, look and wardrobe exactly once.
     """
     if not isinstance(session_id, int) or isinstance(session_id, bool):
         raise PreparationArgumentError(
@@ -3784,6 +3799,38 @@ def compose_final_prompt(
             f"preparation must be a dict, got {type(preparation).__name__}"
         )
 
+    take_clauses = assemble_adapted_clauses(
+        preparation, adaptations=adaptations,
+    ).strip()
+
+    is_reference = bool(preparation.get("reference", False))
+    if not is_reference and "take_id" in preparation:
+        take_id = preparation.get("take_id")
+        try:
+            _, plan = session_plan._load_current_resource_plan(session_id)
+            for t in plan.get("takes", []):
+                if isinstance(t, dict) and t.get("take_id") == take_id:
+                    is_reference = bool(t.get("reference", False))
+                    break
+        except Exception:
+            pass
+
+    if is_reference:
+        ref_kind = (db.one(
+            "SELECT w.kind AS kind FROM session s "
+            "LEFT JOIN workflow w ON w.id = s.reference_workflow_id "
+            "WHERE s.id = ?",
+            session_id,
+        ) or {})["kind"] or ""
+        if ref_kind != "guide":
+            final_prompt = take_clauses
+            if not final_prompt:
+                raise PreparationError(
+                    f"final prompt composed for take {preparation.get('take_id')!r} "
+                    f"is empty"
+                )
+            return final_prompt
+
     model = _load_model_for_session(session_id)
     trigger = model.get("trigger", "").strip()
     base_positive = model.get("base_positive", "").strip()
@@ -3791,10 +3838,6 @@ def compose_final_prompt(
     effective_state = preparation.get("effective_state") or {}
     look = str(effective_state.get("look") or "").strip()
     wardrobe = str(effective_state.get("wardrobe") or "").strip()
-
-    take_clauses = assemble_adapted_clauses(
-        preparation, adaptations=adaptations,
-    ).strip()
 
     if "{trigger}" in take_clauses:
         take_clauses = take_clauses.replace("{trigger}", trigger)
@@ -3954,7 +3997,17 @@ def finalize_take_preparation(
                 eff_choices[k] = v
 
     # 5. Handle unlocked fields
-    unlocked = compute_unlocked_fields(preparation)
+    is_reference = bool(preparation.get("reference", False))
+    ref_kind = ""
+    if is_reference:
+        ref_kind = (db.one(
+            "SELECT w.kind AS kind FROM session s "
+            "LEFT JOIN workflow w ON w.id = s.reference_workflow_id "
+            "WHERE s.id = ?",
+            session_id,
+        ) or {})["kind"] or ""
+
+    unlocked = [] if (is_reference and ref_kind != "guide") else compute_unlocked_fields(preparation)
     writer_block = None
     if unlocked:
         if writer is not None:

@@ -10,6 +10,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+import threading
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS workflow (
@@ -523,6 +524,26 @@ CREATE TABLE IF NOT EXISTS prepared_take (
     CHECK (status IN ('pending', 'ready', 'invalidated', 'generated'))
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS ix_prepared_take_linked_shot
+    ON prepared_take(linked_shot_id)
+    WHERE linked_shot_id IS NOT NULL;
+
+-- Immutability guard for generated prepared_take rows (task 4.5 of
+-- ``adopt-resource-session-planning``). Once a prepared take has been
+-- submitted and marked ``generated`` with a linked shot ID, its identity,
+-- final prompt, effective state, versions and provenance represent
+-- immutable generation history. Direct SQL UPDATEs targeting these
+-- columns on a generated row are aborted at the SQL level to protect
+-- provenance and snapshot integrity.
+CREATE TRIGGER IF NOT EXISTS prepared_take_protect_generated
+BEFORE UPDATE OF id, session_id, plan_revision, take_id, final_prompt, effective_state, mapping_version, compiler_version, provenance, status
+ON prepared_take
+FOR EACH ROW
+WHEN OLD.status = 'generated'
+BEGIN
+  SELECT RAISE(ABORT, 'prepared_take in generated status is immutable history: identity, status, final_prompt, effective_state, mapping_version, compiler_version and provenance cannot be rewritten after submission.');
+END;
+
 -- Reviewed adaptations of resource-v1 take descriptive inputs
 -- (task 4.2 of ``adopt-resource-session-planning``). One row
 -- per accepted (session, plan_revision, take_id, resource
@@ -629,6 +650,7 @@ _conn: sqlite3.Connection | None = None
 # the inner block's work, and a rollback in the inner block re-raises
 # and undoes both.
 _tx_depth: int = 0
+_tx_lock = threading.RLock()
 
 
 @contextlib.contextmanager
@@ -641,35 +663,30 @@ def transaction():
     re-entrant: a nested ``with db.transaction()`` participates in
     the outer transaction, and only the outermost block issues the
     final COMMIT or ROLLBACK.
-
-    This is the small additive change task 2.3 needs. The default
-    one-statement ``db.run`` behavior is preserved for every caller
-    that does not use the context manager (the resource import
-    wraps ``resource_store.record_revision`` calls in a transaction
-    so a simulated persistence failure rolls back the entire
-    accepted set, not just the row that failed).
     """
     global _tx_depth
-    c = conn()
-    if _tx_depth == 0:
-        c.execute("BEGIN IMMEDIATE")
-    _tx_depth += 1
-    try:
-        yield
-    except BaseException:
-        if _tx_depth == 1:
-            try:
-                c.execute("ROLLBACK")
-            except sqlite3.Error:
-                # The connection may already be in a broken state;
-                # surface the original exception, not the rollback error.
-                pass
-        _tx_depth -= 1
-        raise
-    else:
-        if _tx_depth == 1:
-            c.execute("COMMIT")
-        _tx_depth -= 1
+    with _tx_lock:
+        c = conn()
+        if _tx_depth == 0:
+            c.execute("BEGIN IMMEDIATE")
+        _tx_depth += 1
+        try:
+            yield
+        except BaseException:
+            if _tx_depth == 1:
+                try:
+                    c.execute("ROLLBACK")
+                except sqlite3.Error:
+                    # The connection may already be in a broken state;
+                    # surface the original exception, not the rollback error.
+                    pass
+            _tx_depth -= 1
+            raise
+        else:
+            if _tx_depth == 1:
+                c.execute("COMMIT")
+            _tx_depth -= 1
+
 
 
 def now() -> str:

@@ -7480,3 +7480,236 @@ def test_every_seed_import_route_has_a_button_on_some_screen():
     assert not missing, (
         f"seed import routes with no caller in frontend/src: {missing}. "
         "A store the operator cannot fill from a screen is a store filled by curl.")
+
+
+def test_api_submit_prepared_take_success_and_retry(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "res-api-submit",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+
+    plan = {
+        "version": "resource-v1",
+        "look": "invented look",
+        "initial_wardrobe": "dark trousers",
+        "takes": [
+            {"take_id": "take-01", "label": "first take", "negative": "low quality"},
+            {"take_id": "take-02", "label": "second take"},
+        ],
+        "selected_resources": [],
+        "wardrobe_changes": [],
+    }
+    assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+
+    snapshot = {
+        "final_prompt": "4da woman. photo, 35mm. invented look. dark trousers. standing.",
+        "effective_state": {"wardrobe": ["dark trousers"]},
+        "mapping_version": "m1",
+        "compiler_version": "c1",
+        "provenance": {"source": "test"},
+    }
+    assert client.post(
+        f"/api/sessions/{sid}/plan/preparations/begin",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    ).status_code == 200
+    assert client.post(
+        f"/api/sessions/{sid}/plan/preparations/complete",
+        json={"plan_revision": 1, "take_id": "take-01", **snapshot},
+    ).status_code == 200
+
+    # 1. Valid submit
+    r = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "generated"
+    shot_id = body["shot_id"]
+    assert body["linked_shot_id"] == shot_id
+    assert body["final_prompt"] == snapshot["final_prompt"]
+
+    shots = db.q("SELECT * FROM shot WHERE session_id = ?", sid)
+    assert len(shots) == 1
+    assert shots[0]["id"] == shot_id
+    assert shots[0]["prompt"] == snapshot["final_prompt"]
+    assert shots[0]["negative"] == "low quality"
+
+    # 2. Retry identical submit -> returns same shot, no second shot
+    r_retry = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert r_retry.status_code == 200, r_retry.text
+    assert r_retry.json()["shot_id"] == shot_id
+    assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 1
+
+
+def test_api_submit_errors_stale_invalid_and_incompatible(client, seeded):
+    r = client.post(
+        "/api/sessions/999999/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert r.status_code == 404
+
+    legacy_sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "legacy-session",
+    }).json()["id"]
+    r = client.post(
+        f"/api/sessions/{legacy_sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert r.status_code == 400
+
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "res-api-errors",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+    plan = {
+        "version": "resource-v1",
+        "look": "look",
+        "initial_wardrobe": "suit",
+        "takes": [{"take_id": "take-01"}, {"take_id": "take-02"}],
+        "selected_resources": [],
+        "wardrobe_changes": [],
+    }
+    assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+
+    r = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-not-in-plan"},
+    )
+    assert r.status_code == 422
+
+    r = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert r.status_code == 409
+
+    assert client.post(
+        f"/api/sessions/{sid}/plan/preparations/begin",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    ).status_code == 200
+    r = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert r.status_code == 409
+
+    snapshot = {
+        "final_prompt": "finalized prompt",
+        "effective_state": {},
+        "mapping_version": "m1",
+        "compiler_version": "c1",
+        "provenance": {},
+    }
+    assert client.post(
+        f"/api/sessions/{sid}/plan/preparations/complete",
+        json={"plan_revision": 1, "take_id": "take-01", **snapshot},
+    ).status_code == 200
+
+    plan2 = {**plan, "look": "new look"}
+    assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan2, "expected_revision": 1}).status_code == 200
+    r = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert r.status_code == 409
+
+    db.run("INSERT INTO prepared_take (session_id, plan_revision, take_id, status, final_prompt, created_at, updated_at) VALUES (?, 2, 'take-01', 'invalidated', 'p', ?, ?)", sid, db.now(), db.now())
+    r = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 2, "take_id": "take-01"},
+    )
+    assert r.status_code == 409
+
+    db.run("INSERT INTO prepared_take (session_id, plan_revision, take_id, status, final_prompt, created_at, updated_at) VALUES (?, 2, 'take-02', 'ready', '', ?, ?)", sid, db.now(), db.now())
+    r = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 2, "take_id": "take-02"},
+    )
+    assert r.status_code == 422
+
+
+def test_api_submit_rejects_invalid_take_metadata_with_422(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "res-api-invalid-meta",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+    plan = {
+        "version": "resource-v1",
+        "look": "look",
+        "initial_wardrobe": "suit",
+        "takes": [
+            {"take_id": "take-bad-seed", "seed": "bad_seed"},
+            {"take_id": "take-bad-ref", "reference": "yes"},
+            {"take_id": "take-bad-strength", "reference_strength": "heavy"},
+            {"take_id": "take-bad-label", "label": 999},
+        ],
+        "selected_resources": [],
+        "wardrobe_changes": [],
+    }
+    assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+
+    snapshot = {
+        "final_prompt": "finalized prompt",
+        "effective_state": {},
+        "mapping_version": "m1",
+        "compiler_version": "c1",
+        "provenance": {},
+    }
+    for take_id in ("take-bad-seed", "take-bad-ref", "take-bad-strength", "take-bad-label"):
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": take_id},
+        ).status_code == 200
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": take_id, **snapshot},
+        ).status_code == 200
+
+    # 1. Non-integer seed
+    r1 = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-bad-seed"},
+    )
+    assert r1.status_code == 422
+    assert "field 'seed' must be an integer" in r1.json()["detail"]
+
+    # 2. Non-boolean reference
+    r2 = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-bad-ref"},
+    )
+    assert r2.status_code == 422
+    assert "field 'reference' must be a boolean" in r2.json()["detail"]
+
+    # 3. Non-float reference_strength
+    r3 = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-bad-strength"},
+    )
+    assert r3.status_code == 422
+    assert "field 'reference_strength' must be a float or None" in r3.json()["detail"]
+
+    # 4. Non-string label
+    r4 = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-bad-label"},
+    )
+    assert r4.status_code == 422
+    assert "field 'label' must be a string" in r4.json()["detail"]
+
+    # Verify all snapshots remain ready and linked_shot_id is None
+    for take_id in ("take-bad-seed", "take-bad-ref", "take-bad-strength", "take-bad-label"):
+        row = db.one("SELECT status, linked_shot_id FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, take_id)
+        assert row["status"] == "ready"
+        assert row["linked_shot_id"] is None
+
+    # Verify no shots created
+    assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0

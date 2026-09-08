@@ -1906,6 +1906,30 @@ def complete_plan_preparation(sid: int, p: PreparedTakeCompleteIn):
         raise _prepared_take_http_error(exc)
 
 
+class PreparedTakeSubmitIn(BaseModel):
+    plan_revision: int
+    take_id: str
+
+
+@app.post("/api/sessions/{sid}/plan/preparations/submit")
+def submit_plan_preparation(sid: int, p: PreparedTakeSubmitIn):
+    """Atomically submit one ready preparation snapshot to shot creation and queue."""
+    try:
+        return session_plan.submit_prepared_take(
+            sid, p.plan_revision, p.take_id,
+        )
+    except (
+        session_plan.PlanValidationError,
+        session_plan.PlanRevisionStale,
+        session_plan.PreparedTakeConflict,
+        session_plan.SessionNotInResourceMode,
+        session_plan.SessionNotFound,
+        session_plan.PreparedTakePersistenceError,
+    ) as exc:
+        raise _prepared_take_http_error(exc)
+
+
+
 @app.post("/api/sessions/{sid}/plan")
 def save_plan_draft(sid: int, p: PlanDraftIn):
     """Save a resource-v1 plan draft with compare-and-swap.

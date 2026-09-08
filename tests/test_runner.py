@@ -6,7 +6,9 @@ import json
 import pytest
 
 import db
+import resource_preparation
 import runner as runner_mod
+import session_plan
 from conftest import EDIT_GRAPH, GRAPH
 
 
@@ -536,3 +538,288 @@ def test_a_take_that_has_run_keeps_the_reference_it_ran_with(client, make_runner
 def test_patching_a_shot_that_does_not_exist_is_a_404(client):
     """It answered 200 with a null body, so a typo in an id read as success."""
     assert client.patch("/api/shots/999999", json={"rating": 3}).status_code == 404
+
+
+def _setup_finalized_resource_take(client, *, trigger="4da woman",
+                                   base_positive="photo, 35mm",
+                                   look="cinematic evening light",
+                                   final_prompt="4da woman. photo, 35mm. cinematic evening light. dark tailored suit. sitting by window.",
+                                   settings=None):
+    wf = client.post("/api/workflows", json={"name": f"wf-res-{db.now()}", "graph": GRAPH}).json()
+    model_payload = {
+        "name": f"model-res-{db.now()}",
+        "lora_name": "characters/ada.safetensors",
+        "trigger": trigger,
+        "base_positive": base_positive,
+        "base_negative": "blurry",
+        "workflow_id": wf["id"],
+        "settings": {"width": 832, "height": 1216, "steps": 8, "cfg": 1.0},
+    }
+    mid = client.post("/api/models", json=model_payload).json()["id"]
+    session_payload = {
+        "model_id": mid,
+        "name": f"res-session-{db.now()}",
+        "composition_mode": "resource-v1",
+        "look": look,
+        "settings": settings or {"lora_strength": 0.85},
+    }
+    sid = client.post("/api/sessions", json=session_payload).json()["id"]
+    plan = {
+        "version": "resource-v1",
+        "look": look,
+        "initial_wardrobe": "dark tailored suit",
+        "takes": [{"take_id": "take-01", "label": "invented take 01"}],
+        "selected_resources": [],
+        "wardrobe_changes": [],
+    }
+    r_plan = client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0})
+    assert r_plan.status_code == 200, r_plan.text
+
+    client.post(f"/api/sessions/{sid}/plan/preparations/begin",
+                json={"plan_revision": 1, "take_id": "take-01"})
+    client.post(f"/api/sessions/{sid}/plan/preparations/complete", json={
+        "plan_revision": 1,
+        "take_id": "take-01",
+        "final_prompt": final_prompt,
+        "effective_state": {"wardrobe": ["dark tailored suit"]},
+        "mapping_version": "v1",
+        "compiler_version": "v1",
+        "provenance": {"take_id": "take-01"},
+    })
+    return sid, mid, wf["id"]
+
+
+def test_resource_take_runs_with_exact_final_prompt_and_no_double_prefix(client, make_runner):
+    """A finalized prepared take contains the complete compiled prompt.
+    When submitted to the queue and executed by the runner, it must run
+    verbatim: trigger, base_positive, and look must appear exactly once
+    without double-prefixing or re-composition."""
+    final_prompt = "4da woman. photo, 35mm. cinematic evening light. dark tailored suit. sitting by window."
+    sid, mid, wfid = _setup_finalized_resource_take(
+        client,
+        trigger="4da woman",
+        base_positive="photo, 35mm",
+        look="cinematic evening light",
+        final_prompt=final_prompt,
+    )
+    submit_res = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert submit_res.status_code == 200, submit_res.text
+    shot_id = submit_res.json()["shot_id"]
+
+    shot = db.one("SELECT * FROM shot WHERE id=?", shot_id)
+    assert shot["prompt"] == final_prompt
+
+    r, fake = make_runner()
+    asyncio.run(r._run_session(sid))
+
+    assert len(fake.graphs) == 1
+    g = fake.graphs[0]
+    prompt_text = g["3"]["inputs"]["text"]
+    assert prompt_text == final_prompt
+    assert prompt_text.count("4da woman") == 1
+    assert prompt_text.count("photo, 35mm") == 1
+    assert prompt_text.count("cinematic evening light") == 1
+
+    shot = db.one("SELECT * FROM shot WHERE id=?", shot_id)
+    assert shot["status"] == "done"
+    assert (r.sessions_dir / str(sid) / shot["filename"]).exists()
+    assert db.one("SELECT status FROM session WHERE id=?", sid)["status"] == "done"
+
+
+def test_resource_take_submission_never_re_executes_writer_and_ignores_subsequent_changes(client, make_runner):
+    """Submitting an already finalized take must never re-invoke the writer or
+    re-derive the prompt from current model or session settings. Mutating model,
+    session, or plan afterwards must not affect the frozen prompt, and repeated
+    submissions must return the existing shot idempotently."""
+    frozen_prompt = "frozen compiled prompt exactly as prepared"
+    sid, mid, wfid = _setup_finalized_resource_take(
+        client,
+        trigger="original trigger",
+        base_positive="original base",
+        look="original look",
+        final_prompt=frozen_prompt,
+    )
+
+    # Mutate model and session in the database before submission.
+    db.run("UPDATE model SET trigger='MUTATED_TRIGGER', base_positive='MUTATED_BASE' WHERE id=?", mid)
+    db.run("UPDATE session SET look='MUTATED_LOOK' WHERE id=?", sid)
+
+    # First submission
+    sub1 = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert sub1.status_code == 200, sub1.text
+    shot_id = sub1.json()["shot_id"]
+
+    shot = db.one("SELECT * FROM shot WHERE id=?", shot_id)
+    assert shot["prompt"] == frozen_prompt
+    assert "MUTATED" not in shot["prompt"]
+
+    # Retry submission (idempotent: no new shot created)
+    sub2 = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert sub2.status_code == 200, sub2.text
+    assert sub2.json()["shot_id"] == shot_id
+    assert len(db.q("SELECT id FROM shot WHERE session_id=?", sid)) == 1
+
+    # Run session through the runner and verify graph prompt
+    r, fake = make_runner()
+    asyncio.run(r._run_session(sid))
+    assert len(fake.graphs) == 1
+    g = fake.graphs[0]
+    assert g["3"]["inputs"]["text"] == frozen_prompt
+    assert "MUTATED" not in g["3"]["inputs"]["text"]
+
+
+def test_resource_take_respects_workflow_kind_for_edit_guide_and_t2i(client, make_runner):
+    """The runner's reference and graph kind invariants apply identically to
+    shots submitted from resource-v1 sessions via finalize_take_preparation and
+    submit_prepared_take:
+    - Text-to-image (use_reference=0) keeps checkpoint and character LoRA, and
+      runs with the full composed prompt.
+    - An edit graph (wf.kind != 'guide') with use_reference=1 drops checkpoint
+      and character LoRA to preserve the edit workflow's own nodes, and runs
+      with bare instruction prompt.
+    - A guide graph (wf.kind == 'guide') with use_reference=1 keeps checkpoint
+      and character LoRA since it paints from noise, and runs with the full prompt.
+    """
+    edit_wf = client.post("/api/workflows", json={"name": f"wf-res-edit-{db.now()}", "graph": EDIT_GRAPH}).json()
+    db.run("UPDATE workflow SET kind='edit' WHERE id=?", edit_wf["id"])
+
+    wf = client.post("/api/workflows", json={"name": f"wf-res-t2i-{db.now()}", "graph": GRAPH}).json()
+    model_payload = {
+        "name": f"model-res-{db.now()}",
+        "lora_name": "characters/ada.safetensors",
+        "trigger": "4da woman",
+        "base_positive": "photo, 35mm",
+        "base_negative": "blurry",
+        "workflow_id": wf["id"],
+        "settings": {"width": 832, "height": 1216, "steps": 8, "cfg": 1.0},
+    }
+    mid = client.post("/api/models", json=model_payload).json()["id"]
+
+    session_payload = {
+        "model_id": mid,
+        "name": f"res-session-{db.now()}",
+        "composition_mode": "resource-v1",
+        "look": "cinematic evening light",
+        "reference_workflow_id": edit_wf["id"],
+        "settings": {"checkpoint": "chosen_model.safetensors", "lora_strength": 0.88},
+    }
+    sid = client.post("/api/sessions", json=session_payload).json()["id"]
+
+    plan = {
+        "version": "resource-v1",
+        "look": "cinematic evening light",
+        "initial_wardrobe": "dark tailored suit",
+        "takes": [
+            {
+                "take_id": "take-t2i",
+                "label": "anchor shot",
+                "camera": "eye level",
+                "framing": "medium shot",
+                "pose": "sitting by window",
+                "expression": "thoughtful",
+                "reference": False,
+            },
+            {
+                "take_id": "take-edit",
+                "label": "edit shot",
+                "prompt": "remove the jacket",
+                "reference": True,
+            },
+            {
+                "take_id": "take-guide",
+                "label": "guide shot",
+                "camera": "eye level",
+                "framing": "medium shot",
+                "pose": "standing pose",
+                "expression": "thoughtful",
+                "reference": True,
+            },
+        ],
+        "selected_resources": [],
+        "wardrobe_changes": [],
+    }
+    assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+
+    r, fake = make_runner()
+
+    # 1. Text-to-image run: keeps checkpoint and character LoRA, full composed prompt
+    snap_t2i = resource_preparation.finalize_take_preparation(sid, 1, "take-t2i")
+    assert snap_t2i["status"] == "ready"
+    assert "4da woman" in snap_t2i["final_prompt"]
+    assert "photo, 35mm" in snap_t2i["final_prompt"]
+    assert "cinematic evening light" in snap_t2i["final_prompt"]
+    assert "dark tailored suit" in snap_t2i["final_prompt"]
+    assert "sitting by window" in snap_t2i["final_prompt"]
+
+    sub_t2i = session_plan.submit_prepared_take(sid, 1, "take-t2i")
+    t2i_shot_id = sub_t2i["shot_id"]
+    shot_t2i = db.one("SELECT * FROM shot WHERE id=?", t2i_shot_id)
+    assert shot_t2i["use_reference"] == 0
+    assert shot_t2i["prompt"] == snap_t2i["final_prompt"]
+
+    asyncio.run(r._run_session(sid))
+    assert len(fake.graphs) == 1
+    g_t2i = fake.graphs[0]
+    assert g_t2i["1"]["inputs"]["ckpt_name"] == "chosen_model.safetensors"
+    assert g_t2i["2"]["inputs"]["lora_name"] == "characters/ada.safetensors"
+    assert g_t2i["2"]["inputs"]["strength_model"] == 0.88
+    assert g_t2i["3"]["inputs"]["text"] == snap_t2i["final_prompt"]
+    assert db.one("SELECT status FROM shot WHERE id=?", t2i_shot_id)["status"] == "done"
+    db.run("UPDATE session SET anchor_shot_ids=? WHERE id=?", f"[{t2i_shot_id}]", sid)
+
+    # 2. Reference take with edit workflow: drops checkpoint & character LoRA, bare instruction prompt
+    snap_edit = resource_preparation.finalize_take_preparation(sid, 1, "take-edit")
+    assert snap_edit["status"] == "ready"
+    assert snap_edit["final_prompt"] == "remove the jacket"
+    assert "4da woman" not in snap_edit["final_prompt"]
+    assert "cinematic evening light" not in snap_edit["final_prompt"]
+    assert "dark tailored suit" not in snap_edit["final_prompt"]
+
+    sub_edit = session_plan.submit_prepared_take(sid, 1, "take-edit")
+    edit_shot_id = sub_edit["shot_id"]
+    shot_edit = db.one("SELECT * FROM shot WHERE id=?", edit_shot_id)
+    assert shot_edit["use_reference"] == 1
+    assert shot_edit["prompt"] == "remove the jacket"
+
+    asyncio.run(r._run_session(sid))
+    assert len(fake.graphs) == 2
+    g_edit = fake.graphs[1]
+    # Checkpoint is edit.safetensors (the workflow's own), not chosen_model.safetensors
+    assert g_edit["1"]["inputs"]["ckpt_name"] == "edit.safetensors"
+    assert "2" in g_edit and g_edit["2"]["class_type"] == "LoadImage"
+    assert g_edit["3"]["inputs"]["text"] == "remove the jacket"
+    assert db.one("SELECT status FROM shot WHERE id=?", edit_shot_id)["status"] == "done"
+
+    # 3. Reference take with guide workflow: keeps checkpoint and character LoRA, full composed prompt
+    db.run("UPDATE workflow SET kind='guide' WHERE id=?", edit_wf["id"])
+
+    snap_guide = resource_preparation.finalize_take_preparation(sid, 1, "take-guide")
+    assert snap_guide["status"] == "ready"
+    assert snap_guide["final_prompt"].count("4da woman") == 1
+    assert snap_guide["final_prompt"].count("photo, 35mm") == 1
+    assert snap_guide["final_prompt"].count("cinematic evening light") == 1
+    assert snap_guide["final_prompt"].count("dark tailored suit") == 1
+    assert "standing pose" in snap_guide["final_prompt"]
+
+    sub_guide = session_plan.submit_prepared_take(sid, 1, "take-guide")
+    guide_shot_id = sub_guide["shot_id"]
+    shot_guide = db.one("SELECT * FROM shot WHERE id=?", guide_shot_id)
+    assert shot_guide["use_reference"] == 1
+    assert shot_guide["prompt"] == snap_guide["final_prompt"]
+
+    asyncio.run(r._run_session(sid))
+    assert len(fake.graphs) == 3
+    g_guide = fake.graphs[2]
+    # Guide workflow keeps the session/model checkpoint
+    assert g_guide["1"]["inputs"]["ckpt_name"] == "chosen_model.safetensors"
+    assert g_guide["3"]["inputs"]["text"] == snap_guide["final_prompt"]
+    assert db.one("SELECT status FROM shot WHERE id=?", guide_shot_id)["status"] == "done"

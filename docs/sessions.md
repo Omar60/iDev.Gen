@@ -1269,13 +1269,31 @@ exactly `(session_id, plan_revision, take_id)`: the session must exist, use
 resource mode, the revision must still be current, and the take id must exist in
 that revision.
 
-Preparation uses two writes:
+Preparation lifecycle:
 
 - `POST /api/sessions/{sid}/plan/preparations/begin` records the take as
-  `pending` before lengthy preparation work starts.
+  `pending` before preparation work starts.
 - `POST /api/sessions/{sid}/plan/preparations/complete` atomically changes that
   pending row to `ready` while saving `final_prompt`, `effective_state`,
   `mapping_version`, `compiler_version`, and `provenance` together.
+- `POST /api/sessions/{sid}/plan/preparations/submit` atomically submits one
+  `ready` preparation snapshot to existing shot creation and the serial queue:
+  - It creates a pending shot row and transitions the snapshot from `ready` to
+    `generated` while recording `linked_shot_id`.
+  - Uniqueness per preparation revision is strictly enforced: submitting the
+    same prepared revision multiple times (including retries) produces at most
+    one shot and returns the existing linked snapshot idempotently.
+  - The shot uses the frozen `final_prompt` directly without re-composing
+    trigger, base prompt, look, or wardrobe.
+  - Submitting creates the shot in `pending` status; executing ComfyUI work
+    still requires launching the session via `POST /api/sessions/{sid}/run`.
+  - Canonical reference rules apply by workflow kind: a text-to-image take
+    (`reference: false`) submits with `use_reference=0`. A reference take
+    (`reference: true`, `use_reference=1`) follows the workflow's kind:
+    an edit graph (`kind != 'guide'`) runs with a bare instruction prompt and
+    drops the session checkpoint and character LoRA to preserve the workflow's
+    own nodes; a guide graph (`kind == 'guide'`) paints from noise, so it retains
+    the full prompt and keeps the session checkpoint and character LoRA.
 
 `GET /api/sessions/{sid}/plan` includes a `preparation` object. Its `completed`
 list contains current-revision `ready` and `generated` snapshots. Its
@@ -1292,12 +1310,10 @@ revision keeps the existing invalidation rule: only older `pending` and `ready`
 rows are invalidated; `generated`, already-invalidated, and rows already keyed
 to the new revision are left intact.
 
-If persistence fails while finalizing a take, the request returns an error and
-the transaction rolls back. The interrupted row remains resumable instead of
-being exposed as `ready`, and previously completed snapshots remain unchanged.
-These routes do not compile prompts, submit jobs, queue ComfyUI work, or adapt
-conflicts. Legacy sessions are refused by the resource-plan routes and keep
-their existing composition behavior.
+If persistence fails while finalizing or submitting a take, the request returns
+an error and the transaction rolls back. The interrupted row remains resumable,
+and previously completed snapshots remain unchanged. Legacy sessions are refused
+by the resource-plan routes and keep their existing composition behavior.
 
 ### Which rooms this run would refuse
 

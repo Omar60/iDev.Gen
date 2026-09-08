@@ -1434,3 +1434,249 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
         # reaches this call.
         invalidate_ungenerated_prepared_takes(session_id, new_revision)
     return {"plan_revision": new_revision, "conflicts": conflicts}
+
+
+def _update_session_origin(session_id: int, kind: str) -> None:
+    """Stamp session.origin for the path that just wrote a shot."""
+    session = db.one("SELECT origin FROM session WHERE id = ?", session_id)
+    if not session:
+        return
+    current = session.get("origin") or ""
+    if not current:
+        db.run("UPDATE session SET origin = ? WHERE id = ?", kind, session_id)
+    elif current != kind and current != "mixed":
+        db.run("UPDATE session SET origin = 'mixed' WHERE id = ?", session_id)
+
+
+def _validate_take_submission_fields(take_def: dict, take_id: str) -> dict:
+    """Validate all take fields consumed by submission against ShotIn semantics.
+
+    Compatible with ShotIn:
+      - label: str (default take_id)
+      - negative: str | None (default session/model negative)
+      - reference: bool (strictly boolean, default False)
+      - reference_strength: float | None (strictly float or int, not bool)
+      - seed: int (strictly int, not bool, default 0)
+
+    Raises PlanValidationError (HTTP 422) if any field has an incompatible type.
+    """
+    label = take_def.get("label")
+    if label is not None and not isinstance(label, str):
+        raise PlanValidationError(
+            f"take {take_id!r} field 'label' must be a string, got {type(label).__name__}"
+        )
+
+    negative = take_def.get("negative")
+    if negative is not None and not isinstance(negative, str):
+        raise PlanValidationError(
+            f"take {take_id!r} field 'negative' must be a string, got {type(negative).__name__}"
+        )
+
+    reference = take_def.get("reference")
+    if reference is not None:
+        if not isinstance(reference, bool):
+            raise PlanValidationError(
+                f"take {take_id!r} field 'reference' must be a boolean, got {type(reference).__name__}"
+            )
+    else:
+        reference = False
+
+    reference_strength = take_def.get("reference_strength")
+    if reference_strength is not None:
+        if isinstance(reference_strength, bool) or not isinstance(reference_strength, (int, float)):
+            raise PlanValidationError(
+                f"take {take_id!r} field 'reference_strength' must be a float or None, got {type(reference_strength).__name__}"
+            )
+        reference_strength = float(reference_strength)
+
+    seed = take_def.get("seed")
+    if seed is not None:
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise PlanValidationError(
+                f"take {take_id!r} field 'seed' must be an integer, got {type(seed).__name__}"
+            )
+    else:
+        seed = 0
+
+    return {
+        "label": label if label is not None else take_id,
+        "negative": negative,
+        "reference": reference,
+        "reference_strength": reference_strength,
+        "seed": seed,
+    }
+
+
+def submit_prepared_take(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+) -> dict:
+    """Submit a finalized prepared take to shot creation and the serial queue.
+
+    Task 4.5 of ``adopt-resource-session-planning``.
+
+    Connects a finalized, ready prepared take to existing shot creation and
+    the serial queue. Preserves uniqueness per preparation revision:
+    submitting the same prepared revision multiple times (including concurrent
+    calls or HTTP retries) produces exactly one shot row and returns the
+    already linked snapshot.
+
+    The final prompt stored in ``prepared_take.final_prompt`` is sent directly
+    to the shot row without re-composing trigger, base prompt or look.
+    """
+    if not isinstance(plan_revision, int):
+        raise PlanValidationError(
+            f"plan_revision must be an integer, got {type(plan_revision).__name__}"
+        )
+    if plan_revision <= 0:
+        raise PlanValidationError("plan_revision must be greater than zero")
+    if not isinstance(take_id, str) or not take_id.strip():
+        raise PlanValidationError("take_id must be a non-empty string")
+
+    try:
+        with db.transaction():
+            session = db.one("SELECT id, settings, model_id FROM session WHERE id = ?", session_id)
+            if session is None:
+                raise SessionNotFound(f"session {session_id} not found")
+            mode = read_composition_mode(session["settings"])
+            if mode != MODE_RESOURCE_V1:
+                raise SessionNotInResourceMode(
+                    f"session {session_id} composition_mode is {mode!r}, "
+                    f"expected {MODE_RESOURCE_V1!r}"
+                )
+
+            current_rev, plan = _load_current_resource_plan(session_id)
+            if current_rev != plan_revision:
+                raise PlanRevisionStale(
+                    f"session {session_id} plan revision is {current_rev}, "
+                    f"requested submission revision is {plan_revision}"
+                )
+            take_ids = {
+                t.get("take_id")
+                for t in plan.get("takes", [])
+                if isinstance(t, dict)
+            }
+            if take_id not in take_ids:
+                raise PlanValidationError(
+                    f"take_id {take_id!r} is not present in plan revision {plan_revision}"
+                )
+            take_def = next(
+                (t for t in plan.get("takes", []) if isinstance(t, dict) and t.get("take_id") == take_id),
+                None,
+            )
+            if take_def is None:
+                raise PlanValidationError(
+                    f"take_id {take_id!r} is not present in plan revision {plan_revision}"
+                )
+            validated_fields = _validate_take_submission_fields(take_def, take_id)
+
+            existing = _prepared_take_row(session_id, plan_revision, take_id)
+            if existing is None:
+                raise PreparedTakeConflict(
+                    f"prepared take {take_id!r} at plan revision {plan_revision} "
+                    f"has no prepared row; finalize it first"
+                )
+
+            # Idempotent retry: return existing shot if already generated
+            if existing["status"] == PREPARED_TAKE_STATUS_GENERATED:
+                linked_id = existing["linked_shot_id"]
+                if linked_id is not None:
+                    shot = db.one("SELECT id FROM shot WHERE id = ?", linked_id)
+                    if shot is not None:
+                        decoded = _decode_prepared_take(existing)
+                        decoded["shot_id"] = linked_id
+                        return decoded
+                raise PreparedTakePersistenceError(
+                    f"prepared take {take_id!r} is marked generated but linked shot {linked_id} is missing"
+                )
+
+            if existing["status"] == PREPARED_TAKE_STATUS_INVALIDATED:
+                raise PreparedTakeConflict(
+                    f"prepared take {take_id!r} at plan revision {plan_revision} "
+                    f"is invalidated history"
+                )
+
+            if existing["status"] != PREPARED_TAKE_STATUS_READY:
+                raise PreparedTakeConflict(
+                    f"prepared take {take_id!r} at plan revision {plan_revision} "
+                    f"is in {existing['status']!r} status and not ready for submission"
+                )
+
+            final_prompt = existing["final_prompt"]
+            if not isinstance(final_prompt, str) or not final_prompt.strip():
+                raise PlanValidationError(
+                    f"prepared take {take_id!r} has invalid or empty final_prompt"
+                )
+
+            model = db.one("SELECT base_negative FROM model WHERE id = ?", session["model_id"])
+            base_negative = model["base_negative"] if model else ""
+
+            shot_index = db.one(
+                "SELECT COALESCE(MAX(shot_index), -1) AS m FROM shot WHERE session_id = ?",
+                session_id,
+            )["m"] + 1
+
+            shot_label = validated_fields["label"]
+            negative = validated_fields["negative"] if validated_fields["negative"] is not None else base_negative
+            use_ref = 1 if validated_fields["reference"] else 0
+            ref_strength = validated_fields["reference_strength"]
+            seed = validated_fields["seed"]
+
+            now = db.now()
+            shot_id = db.run(
+                "INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative, "
+                "use_reference, reference_strength, seed, status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                session_id,
+                shot_index,
+                shot_label,
+                final_prompt,
+                negative,
+                use_ref,
+                ref_strength,
+                seed,
+                now,
+            )
+
+            db.run(
+                "UPDATE prepared_take SET status = ?, linked_shot_id = ?, updated_at = ? "
+                "WHERE id = ? AND status = ? AND linked_shot_id IS NULL",
+                PREPARED_TAKE_STATUS_GENERATED,
+                shot_id,
+                now,
+                existing["id"],
+                PREPARED_TAKE_STATUS_READY,
+            )
+
+            updated = _prepared_take_row(session_id, plan_revision, take_id)
+            if (
+                updated is None
+                or updated["status"] != PREPARED_TAKE_STATUS_GENERATED
+                or updated["linked_shot_id"] != shot_id
+            ):
+                raise PreparedTakePersistenceError(
+                    f"could not link prepared take {take_id!r} to shot {shot_id}"
+                )
+
+            session_row = db.one("SELECT status FROM session WHERE id = ?", session_id)
+            if session_row and session_row["status"] in ("done", "cancelled", "failed"):
+                db.run("UPDATE session SET status = 'draft' WHERE id = ?", session_id)
+            _update_session_origin(session_id, "written")
+
+            decoded = _decode_prepared_take(updated)
+            decoded["shot_id"] = shot_id
+            return decoded
+    except (
+        SessionNotFound,
+        SessionNotInResourceMode,
+        PlanRevisionStale,
+        PlanValidationError,
+        PreparedTakeConflict,
+        PreparedTakePersistenceError,
+    ):
+        raise
+    except Exception as exc:
+        raise PreparedTakePersistenceError(
+            f"could not submit prepared take {take_id!r}: {exc}"
+        ) from exc

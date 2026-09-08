@@ -4340,3 +4340,362 @@ class TestPreparedTakePersistenceAndRecovery:
         assert [row["take_id"] for row in resumed["incomplete"]] == [
             "resume-02", "resume-01",
         ]
+
+
+class TestSubmitPreparedTake:
+    def test_finalized_take_submits_to_single_shot_and_enters_generated_status(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "submit finalized take")
+        plan = _task34_plan(3)
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+
+        snapshot = _task34_snapshot(1)
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        ).status_code == 200
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-01", **snapshot},
+        ).status_code == 200
+
+        before = _task34_raw_prepared(sid, 1, "resume-01")
+        assert before is not None
+        assert before["status"] == "ready"
+        assert before["linked_shot_id"] is None
+
+        result = session_plan.submit_prepared_take(sid, 1, "resume-01")
+        assert result["status"] == "generated"
+        assert isinstance(result["shot_id"], int)
+        assert result["linked_shot_id"] == result["shot_id"]
+        assert result["take_id"] == "resume-01"
+        assert result["plan_revision"] == 1
+
+        raw = _task34_raw_prepared(sid, 1, "resume-01")
+        assert raw is not None
+        assert raw["status"] == "generated"
+        assert raw["linked_shot_id"] == result["shot_id"]
+        assert raw["final_prompt"] == snapshot["final_prompt"]
+        assert json.loads(raw["effective_state"]) == snapshot["effective_state"]
+        assert raw["mapping_version"] == snapshot["mapping_version"]
+        assert raw["compiler_version"] == snapshot["compiler_version"]
+        assert json.loads(raw["provenance"]) == snapshot["provenance"]
+
+        shots = db.q("SELECT * FROM shot WHERE session_id = ?", sid)
+        assert len(shots) == 1
+        shot = shots[0]
+        assert shot["id"] == result["shot_id"]
+        assert shot["status"] == "pending"
+        assert shot["prompt"] == snapshot["final_prompt"]
+        assert shot["shot_label"] == "invented take 01"
+
+    def test_submit_retry_returns_existing_shot_and_creates_no_second_shot(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "submit retry idempotence")
+        plan = _task34_plan(2)
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+
+        snapshot = _task34_snapshot(1)
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        ).status_code == 200
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-01", **snapshot},
+        ).status_code == 200
+
+        first = session_plan.submit_prepared_take(sid, 1, "resume-01")
+        first_shot_id = first["shot_id"]
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 1
+
+        second = session_plan.submit_prepared_take(sid, 1, "resume-01")
+        assert second["shot_id"] == first_shot_id
+        assert second["linked_shot_id"] == first_shot_id
+        assert second["status"] == "generated"
+
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 1
+
+    def test_concurrent_submissions_produce_exactly_one_shot(
+        self, client, seeded,
+    ):
+        import concurrent.futures
+
+        sid = _task34_resource_session(client, seeded, "concurrent submission")
+        plan = _task34_plan(2)
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+
+        snapshot = _task34_snapshot(1)
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        ).status_code == 200
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-01", **snapshot},
+        ).status_code == 200
+
+        results = []
+        errors = []
+
+        def call_submit():
+            try:
+                res = session_plan.submit_prepared_take(sid, 1, "resume-01")
+                results.append(res)
+            except Exception as exc:
+                errors.append(exc)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(call_submit), executor.submit(call_submit)]
+            concurrent.futures.wait(futures)
+
+        assert len(errors) == 0
+        assert len(results) == 2
+        assert results[0]["shot_id"] == results[1]["shot_id"]
+
+        shots = db.q("SELECT * FROM shot WHERE session_id = ?", sid)
+        assert len(shots) == 1
+        assert shots[0]["id"] == results[0]["shot_id"]
+
+    def test_stale_revision_cannot_submit(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "stale revision refusal")
+        plan = _task34_plan(2)
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+
+        snapshot = _task34_snapshot(1)
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        ).status_code == 200
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-01", **snapshot},
+        ).status_code == 200
+
+        edited = {**plan, "look": "updated look for revision two"}
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": edited, "expected_revision": 1},
+        ).status_code == 200
+
+        with pytest.raises(session_plan.PlanRevisionStale, match="plan revision is 2"):
+            session_plan.submit_prepared_take(sid, 1, "resume-01")
+
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+
+    def test_invalidated_and_pending_takes_refuse_submission(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "invalid and pending refusal")
+        plan = _task34_plan(3)
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        ).status_code == 200
+
+        with pytest.raises(session_plan.PreparedTakeConflict, match="is in 'pending' status and not ready"):
+            session_plan.submit_prepared_take(sid, 1, "resume-01")
+
+        _plant_prepared_take(sid, 1, "resume-02", status="invalidated")
+        with pytest.raises(session_plan.PreparedTakeConflict, match="is invalidated history"):
+            session_plan.submit_prepared_take(sid, 1, "resume-02")
+
+        with pytest.raises(session_plan.PreparedTakeConflict, match="has no prepared row"):
+            session_plan.submit_prepared_take(sid, 1, "resume-03")
+
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+
+    def test_nonexistent_and_incompatible_sessions_refused(
+        self, client, seeded,
+    ):
+        with pytest.raises(session_plan.SessionNotFound):
+            session_plan.submit_prepared_take(999999, 1, "resume-01")
+
+        legacy_sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "legacy session",
+        }).json()["id"]
+
+        with pytest.raises(session_plan.SessionNotInResourceMode):
+            session_plan.submit_prepared_take(legacy_sid, 1, "resume-01")
+
+        sid = _task34_resource_session(client, seeded, "unknown take refusal")
+        plan = _task34_plan(2)
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+
+        with pytest.raises(session_plan.PlanValidationError, match="not present in plan"):
+            session_plan.submit_prepared_take(sid, 1, "take-does-not-exist")
+
+    def test_corrupted_empty_final_prompt_refused(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "corrupted prompt refusal")
+        plan = _task34_plan(2)
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+
+        db.run(
+            "INSERT INTO prepared_take (session_id, plan_revision, take_id, status, final_prompt, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'ready', '', ?, ?)",
+            sid, 1, "resume-01", db.now(), db.now(),
+        )
+
+        with pytest.raises(session_plan.PlanValidationError, match="invalid or empty final_prompt"):
+            session_plan.submit_prepared_take(sid, 1, "resume-01")
+
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+
+    def test_transition_failure_rolls_back_atomically(
+        self, client, seeded, monkeypatch,
+    ):
+        sid = _task34_resource_session(client, seeded, "atomic rollback on failure")
+        plan = _task34_plan(2)
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+
+        snapshot = _task34_snapshot(1)
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        ).status_code == 200
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-01", **snapshot},
+        ).status_code == 200
+
+        original_run = db.run
+
+        def fail_update(sql: str, *args):
+            if sql.startswith("UPDATE prepared_take SET status = ?, linked_shot_id = ?"):
+                raise sqlite3.OperationalError("simulated crash during link update")
+            return original_run(sql, *args)
+
+        monkeypatch.setattr(db, "run", fail_update)
+
+        with pytest.raises(session_plan.PreparedTakePersistenceError, match="simulated crash"):
+            session_plan.submit_prepared_take(sid, 1, "resume-01")
+
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+        raw = _task34_raw_prepared(sid, 1, "resume-01")
+        assert raw["status"] == "ready"
+        assert raw["linked_shot_id"] is None
+
+    def test_uniqueness_constraint_and_immutability_enforced_by_persistence_layer(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "persistence constraints")
+        plan = _task34_plan(2)
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+
+        snapshot1 = _task34_snapshot(1)
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        ).status_code == 200
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-01", **snapshot1},
+        ).status_code == 200
+
+        sub1 = session_plan.submit_prepared_take(sid, 1, "resume-01")
+        shot_id1 = sub1["shot_id"]
+
+        db.run(
+            "INSERT INTO prepared_take (session_id, plan_revision, take_id, status, final_prompt, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'ready', 'another prompt', ?, ?)",
+            sid, 1, "resume-02", db.now(), db.now(),
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed: prepared_take.linked_shot_id"):
+            db.run("UPDATE prepared_take SET linked_shot_id = ? WHERE take_id = 'resume-02'", shot_id1)
+
+        with pytest.raises((sqlite3.IntegrityError, sqlite3.OperationalError), match="prepared_take in generated status is immutable history"):
+            db.run("UPDATE prepared_take SET final_prompt = 'tampered' WHERE take_id = 'resume-01'")
+
+    def test_submit_rejects_invalid_take_metadata_leaving_snapshot_ready(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "metadata validation")
+        plan = {
+            "version": "resource-v1",
+            "look": "studio",
+            "initial_wardrobe": "suit",
+            "takes": [
+                {"take_id": "take-bad-seed", "seed": "bad_seed"},
+                {"take_id": "take-bad-ref", "reference": "yes"},
+                {"take_id": "take-bad-strength", "reference_strength": "heavy"},
+                {"take_id": "take-bad-label", "label": 999},
+            ],
+            "selected_resources": [],
+            "wardrobe_changes": [],
+        }
+        client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0})
+
+        # Plant ready rows for each
+        _plant_prepared_take(sid, 1, "take-bad-seed", status="ready")
+        _plant_prepared_take(sid, 1, "take-bad-ref", status="ready")
+        _plant_prepared_take(sid, 1, "take-bad-strength", status="ready")
+        _plant_prepared_take(sid, 1, "take-bad-label", status="ready")
+
+        # 1. Non-integer seed
+        with pytest.raises(session_plan.PlanValidationError, match="field 'seed' must be an integer"):
+            session_plan.submit_prepared_take(sid, 1, "take-bad-seed")
+        snap = db.one("SELECT status, linked_shot_id FROM prepared_take WHERE session_id = ? AND take_id = 'take-bad-seed'", sid)
+        assert snap["status"] == "ready"
+        assert snap["linked_shot_id"] is None
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+
+        # 2. Non-boolean reference
+        with pytest.raises(session_plan.PlanValidationError, match="field 'reference' must be a boolean"):
+            session_plan.submit_prepared_take(sid, 1, "take-bad-ref")
+        snap = db.one("SELECT status, linked_shot_id FROM prepared_take WHERE session_id = ? AND take_id = 'take-bad-ref'", sid)
+        assert snap["status"] == "ready"
+        assert snap["linked_shot_id"] is None
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+
+        # 3. Non-float reference_strength
+        with pytest.raises(session_plan.PlanValidationError, match="field 'reference_strength' must be a float or None"):
+            session_plan.submit_prepared_take(sid, 1, "take-bad-strength")
+        snap = db.one("SELECT status, linked_shot_id FROM prepared_take WHERE session_id = ? AND take_id = 'take-bad-strength'", sid)
+        assert snap["status"] == "ready"
+        assert snap["linked_shot_id"] is None
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+
+        # 4. Non-string label
+        with pytest.raises(session_plan.PlanValidationError, match="field 'label' must be a string"):
+            session_plan.submit_prepared_take(sid, 1, "take-bad-label")
+        snap = db.one("SELECT status, linked_shot_id FROM prepared_take WHERE session_id = ? AND take_id = 'take-bad-label'", sid)
+        assert snap["status"] == "ready"
+        assert snap["linked_shot_id"] is None
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0

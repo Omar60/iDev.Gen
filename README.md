@@ -298,8 +298,19 @@ missing takes as resumable; it does not regenerate anything during the read.
 Completed or invalidated snapshots are history. Repeating the exact completed
 snapshot is idempotent, while an attempt to replace it with different data is
 refused. Persistence failures are returned as errors and leave interrupted work
-pending without discarding already completed snapshots. Legacy sessions do not
-use these plan-preparation routes. See [sessions](docs/sessions.md#resource-plan-preparation).
+pending without discarding already completed snapshots.
+
+`POST /api/sessions/{sid}/plan/preparations/submit` submits a `ready` snapshot
+to existing shot creation and the serial queue, transitioning the take to
+`generated` and recording its linked shot id. Submissions are unique per
+prepared revision: retries return the existing shot without creating duplicates.
+The shot carries the frozen prompt directly without re-composition. Queue
+execution in ComfyUI still requires launching the session with
+`POST /api/sessions/{sid}/run`. Graph-kind rules govern reference takes: an edit
+graph runs bare instructions without base model or character LoRA, while a guide
+graph preserves the composed prompt and model conditioning. Legacy sessions do
+not use these plan-preparation routes. See
+[sessions](docs/sessions.md#resource-plan-preparation).
 
 ## How a run works
 
