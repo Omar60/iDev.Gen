@@ -29,6 +29,48 @@ shots, or invent take fields beyond the stable take IDs. Those are
 later tasks. 3.2 adds the effective-wardrobe resolver, which is a
 pure function of a validated plan; legacy wardrobe composition and
 legacy sessions remain untouched.
+
+Task 3.3 adds three small pieces on top of the 3.1 surface:
+
+  * A structural-conflict detector
+    (``detect_resource_constant_conflicts``) that walks every
+    selected resource's payload through
+    ``resource_prompts.PREPARATION_FIELD_MAPPING`` and emits one
+    neutral marker per non-empty ``descriptive_input`` field. The
+    marker is a single neutral kind regardless of the field name
+    or the value's content. The marker shows whichever of the
+    plan's ``look`` and ``initial_wardrobe`` is set — both or
+    one — and explicitly declares that human review is
+    required; the detector does NOT decide by content whether a
+    field competes with the look or with the initial_wardrobe.
+    The plan keeps ONLY the immutable revision triple
+    (``library_key``, ``source_id``, ``content_digest``); the
+    payload itself lives in ``asset_revision.payload`` and is
+    NOT carried in the plan, in any provenance field, or in the
+    session row.
+
+  * An explicit-invalidation pass that runs at the end of every
+    successful ``save_draft``. On a successful save, every
+    prepared_take row for the session whose status is ``pending``
+    or ``ready`` AND whose ``plan_revision`` differs from the new
+    plan revision is transitioned to ``invalidated`` — those are
+    ungenerated work that was prepared under a now-stale plan
+    revision. Rows in ``pending`` or ``ready`` that already sit at
+    the new plan revision are preserved (a future task 3.4 may
+    write such rows and the pass must not invalidate them).
+    Rows already in ``generated`` or ``invalidated`` status are
+    immutable history: the pass leaves them alone and never
+    rewrites their prompt, provenance or linked shot.
+
+  * A "constants are frozen after a generated take" guard. Once
+    a session has at least one prepared_take in ``generated``
+    status, a save that changes the look, the initial wardrobe,
+    or the selected resources is refused with
+    ``PlanConstantsFrozenAfterGenerated``. The refusal leaves the
+    existing plan row, the existing prepared_take rows, and every
+    linked shot byte-for-byte unchanged. Wardrobe changes and take
+    reorders are not constant changes; they are still allowed and
+    they still invalidate ungenerated rows.
 """
 from __future__ import annotations
 
@@ -94,6 +136,26 @@ class SessionNotFound(Exception):
 
     Surfaced separately from the not-in-resource-mode error so a 404
     is mapped to a 404 and not a 400.
+    """
+
+
+class PlanConstantsFrozenAfterGenerated(Exception):
+    """The save would change constants after a take is generated.
+
+    Resource-v1 binds the session's identity to its model and its
+    look to the plan's ``look`` field. Once a prepared_take has
+    been generated, those constants are history: a later save
+    that rewrites ``look``, ``initial_wardrobe`` or
+    ``selected_resources`` would silently pretend a finished
+    photograph used a state it did not. The guard refuses the
+    save before any write, leaves the existing plan row and every
+    prepared_take row byte-for-byte unchanged, and asks the
+    operator to start a new session for a new look.
+
+    Wardrobe changes and take reorders are NOT constant changes:
+    they remain legal after a generated take, and they still
+    invalidate ungenerated prepared_take rows through the same
+    pass the rest of the saves run.
     """
 
 
@@ -407,6 +469,326 @@ def resolve_effective_wardrobes(plan: Any) -> dict[str, str]:
     return effective
 
 
+# -- 3.3: constant/look conflicts and explicit invalidation ---------------
+
+
+# The four status values the ``prepared_take.status`` column accepts.
+# The CHECK constraint in the schema is the source of truth, but a
+# Python constant keeps the service-level reads in lockstep with the
+# SQL CHECK so a future column widening does not silently add a fifth
+# value here without also widening the constraint. The
+# ``invalidate_ungenerated_prepared_takes`` pass owns the
+# ``pending`` → ``invalidated`` and ``ready`` → ``invalidated``
+# transitions directly inside its SQL pass; there is no Python-level
+# set that aggregates them — the SQL pass is the single source of
+# truth for the invalidation rule. On every successful save, only
+# the prepared_take rows for the session whose status is ``pending``
+# or ``ready`` AND whose ``plan_revision`` differs from the new
+# plan revision are transitioned to ``invalidated``; rows in
+# ``pending`` or ``ready`` that already sit at the new plan
+# revision are preserved (a future task 3.4 may write such rows
+# and the pass must not invalidate them). Rows in ``generated`` or
+# ``invalidated`` are immutable history and the pass leaves them
+# alone.
+PREPARED_TAKE_STATUS_PENDING = "pending"
+PREPARED_TAKE_STATUS_READY = "ready"
+PREPARED_TAKE_STATUS_INVALIDATED = "invalidated"
+PREPARED_TAKE_STATUS_GENERATED = "generated"
+
+
+def detect_resource_constant_conflicts(plan: dict) -> list[dict]:
+    """Emit a neutral structural marker for every non-empty ``descriptive_input``
+    the selected resources carry, against the plan's fixed constants.
+
+    The detector walks every selected resource's payload and reads
+    ``resource_prompts.PREPARATION_FIELD_MAPPING[kind]`` to decide
+    which field names the contract classifies as
+    ``descriptive_input`` — the role whose values are eligible to
+    land in a prompt. The contract is the single source of truth
+    for the field set: a future widening of the vocabulary
+    (``fused_scenes`` already has a wider set than ``rooms``) is
+    picked up automatically. Fields with other roles
+    (``identity``, ``selection_metadata``, ``writer_guidance``,
+    ``intentionally_unused``) are not eligible to compete with
+    the plan's constants because the preparation contract does
+    not use them as prompt content, and the detector does not
+    look at them. Auxiliary kinds (``translation_map``,
+    ``cut_map``, ``mined_families``, ``mined_labels``) and any
+    unknown kind are skipped silently because the preparation
+    contract publishes no ``descriptive_input`` for them.
+
+    The detector does NOT decide by content whether a field
+    competes with the plan's ``look`` or with the plan's
+    ``initial_wardrobe``. The marker is a single neutral kind —
+    ``resource_descriptive_vs_plan_constants`` — regardless of
+    the field name or the value's content. The plan's constants
+    are what they are: a scene-theme that mentions "a linen
+    curtain" and a uniform-fit field that mentions "a dark
+    wool suit" are both descriptive inputs; the detector shows
+    the value alongside whichever of the plan's
+    ``look``/``initial_wardrobe`` is set, and asks for human
+    review. The marker says so explicitly: human review is
+    required, the detector does not classify the field by its
+    content, and a future task decides which side the value
+    helps (or whether the value is dropped).
+
+    The value is preserved verbatim, in the type the resource
+    carries. A string is preserved as a string; a JSON list
+    (e.g. ``tags``) is preserved as a list. The detector does
+    not coerce, summarize, or string-format the value: a
+    preparation task downstream reads the marker and the asset
+    revision's payload together, and a coerced value would
+    lose the structure a list carries (an array of category
+    tags is a different shape from a paragraph of prose that
+    happens to mention those words).
+
+    A marker is emitted ONLY when at least one of the plan's
+    constants (``look`` or ``initial_wardrobe``) is set. An
+    empty ``look`` and an empty ``initial_wardrobe`` is the
+    "no constant yet" state, and a marker with neither side
+    shown would not tell the operator anything. The detector
+    is conservative: when nothing is fixed, the resource's
+    descriptive input is recorded only in
+    ``asset_revision.payload`` (the plan does NOT carry the
+    payload, only the immutable revision reference) and the
+    save proceeds without a marker.
+
+    The marker shape:
+
+      * ``kind`` — a single neutral value
+        (``resource_descriptive_vs_plan_constants``)
+        regardless of field name or content.
+      * ``library_key`` / ``source_id`` / ``content_digest`` —
+        the selected resource triple the marker names. The
+        plan's reference to the resource is the triple; the
+        payload itself lives in ``asset_revision`` and is
+        looked up by the detector for this pass.
+      * ``resource_field`` — the descriptive_input field name
+        (from the preparation contract).
+      * ``resource_value`` — the COMPLETE value the resource
+        carries, preserved verbatim. A string is a string; a
+        list is a list. The detector does NOT coerce, truncate,
+        or summarize.
+      * ``plan_look`` — the plan's ``look`` if set; omitted
+        otherwise.
+      * ``plan_initial_wardrobe`` — the plan's
+        ``initial_wardrobe`` if set; omitted otherwise.
+      * ``message`` — a human-readable sentence that names
+        the field, both sides, and the human-review rule. The
+        detector does not claim to classify the field by
+        content; a future task or the operator decides.
+    """
+    # Import inside the function: resource_prompts is a sibling
+    # and importing at module-load time would create a cycle if
+    # resource_prompts ever imports session_plan. The import is
+    # cheap (already-loaded module) and PREPARATION_FIELD_MAPPING
+    # and ROLE_DESCRIPTIVE_INPUT are the source of truth for
+    # which fields this detector looks at.
+    import resource_prompts
+
+    conflicts: list[dict] = []
+    plan_look = plan.get("look", "") or ""
+    plan_initial_wardrobe = plan.get("initial_wardrobe", "") or ""
+
+    # The plan's reference to the resource is the immutable
+    # revision triple; the payload is fetched from
+    # ``asset_revision`` here and is NOT carried in the plan
+    # JSON or in any provenance field. The detector's job is to
+    # surface the structural fact that the resource carries a
+    # descriptive input; the value itself stays in
+    # ``asset_revision.payload`` for the future preparation
+    # task to read.
+    for sel in plan.get("selected_resources", []):
+        library_key = sel["library_key"]
+        source_id = sel["source_id"]
+        content_digest = sel["content_digest"]
+        library = db.one(
+            "SELECT id, kind FROM resource_library WHERE library_key = ?",
+            library_key,
+        )
+        if library is None:
+            # ``validate_selected_resources`` already refused a
+            # plan that names a missing library; a row that
+            # somehow vanished between validation and this
+            # pass is treated as "no marker" rather than as a
+            # second refusal. The CAS check still guards the
+            # write.
+            continue
+        kind = library["kind"]
+        field_mapping = resource_prompts.PREPARATION_FIELD_MAPPING.get(kind)
+        if field_mapping is None:
+            continue
+        revision = db.one(
+            "SELECT payload FROM asset_revision "
+            "WHERE library_id = ? AND source_id = ? AND content_digest = ?",
+            library["id"], source_id, content_digest,
+        )
+        if revision is None:
+            continue
+        try:
+            payload = json.loads(revision["payload"])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for field_name, mapping in field_mapping.items():
+            if mapping.get("role") != resource_prompts.ROLE_DESCRIPTIVE_INPUT:
+                continue
+            if field_name not in payload:
+                continue
+            value = payload[field_name]
+            # The value is preserved verbatim. A None, an empty
+            # string, or an empty list is "no value" and
+            # produces no marker; a non-empty string and a
+            # non-empty list both produce one. A future
+            # preparation task reads the value as the resource
+            # wrote it.
+            if value is None:
+                continue
+            if isinstance(value, str) and not value:
+                continue
+            if isinstance(value, list) and not value:
+                continue
+            # No fixed plan constants → no marker. The
+            # "no constant yet" state has nothing to surface
+            # against.
+            if not plan_look and not plan_initial_wardrobe:
+                continue
+            marker: dict = {
+                "kind": "resource_descriptive_vs_plan_constants",
+                "library_key": library_key,
+                "source_id": source_id,
+                "content_digest": content_digest,
+                "resource_field": field_name,
+                "resource_value": value,
+            }
+            if plan_look:
+                marker["plan_look"] = plan_look
+            if plan_initial_wardrobe:
+                marker["plan_initial_wardrobe"] = plan_initial_wardrobe
+            sides: list[str] = []
+            if plan_look:
+                sides.append("look")
+            if plan_initial_wardrobe:
+                sides.append("initial_wardrobe")
+            sides_text = " and ".join(sides)
+            verb = "is" if len(sides) == 1 else "are"
+            marker["message"] = (
+                f"selected resource {library_key}/{source_id} carries a "
+                f"descriptive input in field {field_name!r}; the "
+                f"plan's {sides_text} {verb} the fixed constant(s); "
+                f"both are recorded; human review is required; the "
+                f"detector does NOT decide by content whether this "
+                f"field competes with the look or with the "
+                f"initial_wardrobe"
+            )
+            conflicts.append(marker)
+    return conflicts
+
+
+def _plan_constants_changed(old_plan: dict, new_plan: dict) -> bool:
+    """Return True if the new plan changes the session's constants.
+
+    The three fields the spec binds to the session's identity are
+    ``look``, ``initial_wardrobe`` and ``selected_resources``. A
+    change to any of them is a constant change. Other fields —
+    ``wardrobe_changes`` and ``takes`` order or content — are
+    explicit per-take decisions and are not constant changes; they
+    remain editable after a generated take and they still
+    invalidate ungenerated prepared_take rows.
+
+    The function compares structurally. Two ``selected_resources``
+    lists are equal when they carry the same triples in the same
+    order, which is what the validator's normalization guarantees
+    (the validator builds the list in the order the caller wrote
+    it, so the order is the operator's). Reordering the
+    ``selected_resources`` list is a constant change because the
+    list is the operator's statement of "these resources bound
+    the session's identity, in this order"; a save that reorders
+    it is a different statement.
+    """
+    if old_plan.get("look", "") != new_plan.get("look", ""):
+        return True
+    if old_plan.get("initial_wardrobe", "") != new_plan.get(
+        "initial_wardrobe", "",
+    ):
+        return True
+    if old_plan.get("selected_resources", []) != new_plan.get(
+        "selected_resources", [],
+    ):
+        return True
+    return False
+
+
+def has_generated_take(session_id: int) -> bool:
+    """Return True if the session has any prepared_take in ``generated`` status.
+
+    A generated prepared_take is a row whose ``linked_shot_id``
+    points at a queued or finished shot: that row, and the
+    shot it points at, are history. The check is a single
+    indexed SELECT on the (session_id, status) pair, which the
+    schema's foreign-key index serves. A session that has never
+    prepared a take reads as False, and a session whose only
+    prepared takes are in ``pending`` or ``ready`` also reads as
+    False — those are ungenerated work, not history.
+    """
+    row = db.one(
+        "SELECT 1 AS x FROM prepared_take "
+        "WHERE session_id = ? AND status = ? LIMIT 1",
+        session_id, PREPARED_TAKE_STATUS_GENERATED,
+    )
+    return row is not None
+
+
+def invalidate_ungenerated_prepared_takes(
+    session_id: int, kept_plan_revision: int,
+) -> None:
+    """Mark every ungenerated prepared_take row for the session as ``invalidated``.
+
+    The pass is the single implementation called by
+    ``save_draft``. It targets rows whose status is ``pending`` or
+    ``ready`` — ungenerated work that was prepared under a now-
+    stale plan revision. A row at the new plan revision is left
+    alone (the kept revision is the one a future task will write
+    fresh prepared_take rows under). Rows already in
+    ``invalidated`` or ``generated`` status are history and the
+    pass does not touch them; rewriting a generated row's status
+    would silently pretend the linked shot was no longer linked,
+    and rewriting a generated row's prompt or provenance would
+    silently pretend a finished photograph used a state it did
+    not.
+
+    The function returns nothing on purpose: a row-count
+    derivation is not part of the contract, the tests assert the
+    row state directly, and any "how many rows were invalidated
+    on this call" derivation can be done by the caller with a
+    deterministic SELECT outside the transaction. A return value
+    that was tied to a SELECT inside the same transaction would
+    either be racy (counting the rows the UPDATE just changed on
+    a future call) or rely on a side channel (the ``updated_at``
+    timestamp) that is not part of the row's identity.
+
+    The pass is safe to run when no rows match: a session with
+    no prepared_take rows is a legal state, and the UPDATE
+    succeeds without raising. The caller (``save_draft``) wraps
+    the call in the same transaction as the plan write so a
+    refused save is the only path that could leave the table in
+    an inconsistent state — and a refused save never reaches
+    this function.
+    """
+    now = db.now()
+    db.run(
+        "UPDATE prepared_take "
+        "SET status = ?, updated_at = ? "
+        "WHERE session_id = ? "
+        "AND status IN (?, ?) "
+        "AND plan_revision != ?",
+        PREPARED_TAKE_STATUS_INVALIDATED, now, session_id,
+        PREPARED_TAKE_STATUS_PENDING, PREPARED_TAKE_STATUS_READY,
+        kept_plan_revision,
+    )
+
+
 # -- Persistence ------------------------------------------------------------
 
 
@@ -477,10 +859,10 @@ def get_draft(session_id: int) -> dict | None:
     }
 
 
-def save_draft(session_id: int, plan: Any, expected_revision: int) -> int:
+def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
     """Save a draft plan with a compare-and-swap on the revision.
 
-    The save runs four steps, in this order:
+    The save runs five steps, in this order:
 
       1. Confirm the session exists and is in ``resource-v1`` mode. A
          missing session raises ``SessionNotFound``; a session in any
@@ -494,20 +876,52 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> int:
          ``PlanValidationError``. Validation runs BEFORE the database
          is touched.
 
-      3. Inside a SQLite transaction (``BEGIN IMMEDIATE``), read the
+      3. Compute structural conflicts between the plan's look and the
+         selected resources. The detector runs over the validated plan
+         and returns a list of markers naming each resource that
+         carries descriptive fields competing with the plan's look.
+         The plan's look is the authoritative constant; the resource
+         is recorded in provenance; neither is silently overwritten.
+
+      4. Inside a SQLite transaction (``BEGIN IMMEDIATE``), read the
          current revision and compare it to ``expected_revision``. A
          mismatch raises ``PlanRevisionStale`` and the transaction
+         rolls back without writing anything. With the read in hand,
+         compare the new plan's constants (``look``,
+         ``initial_wardrobe``, ``selected_resources``) against the
+         stored plan; a constant change while the session has a
+         prepared_take in ``generated`` status raises
+         ``PlanConstantsFrozenAfterGenerated`` and the transaction
          rolls back without writing anything.
 
-      4. Otherwise, INSERT a new row (when the session had no plan) or
-         UPDATE the existing one with ``plan_revision + 1``. The
-         transaction commits on exit.
+      5. INSERT a new row (when the session had no plan) or UPDATE
+         the existing one with ``plan_revision + 1``. The conflicts
+         are written into the plan JSON under a ``conflicts`` key
+         so a later GET returns them alongside the draft. In the
+         same transaction, every prepared_take row for the session
+         whose status is ``pending`` or ``ready`` and whose
+         ``plan_revision`` differs from the new revision is moved
+         to ``invalidated``. Rows already in ``generated`` or
+         ``invalidated`` are immutable history and are not
+         touched. The transaction commits on exit.
 
-    Returns the new ``plan_revision``. The CAS check plus the
-    transaction wrap together are what pin "a stale save must not
-    overwrite a newer draft" to the schema: there is no path in this
-    function that bumps a revision by more than one, and there is no
-    path that writes without first comparing.
+    Returns a dict with two keys:
+
+      * ``plan_revision`` — the new integer revision the caller
+        must echo on the next save;
+      * ``conflicts`` — the list of conflict markers computed in
+        step 3. An empty list is a normal answer: a plan with no
+        selected resources, or with only auxiliary resources,
+        produces no conflicts.
+
+    The CAS check plus the transaction wrap together are what pin
+    "a stale save must not overwrite a newer draft" to the schema:
+    there is no path in this function that bumps a revision by
+    more than one, and there is no path that writes without first
+    comparing. The constant-change guard is what pins "a finished
+    photograph's identity is history": a refused save leaves the
+    plan row, every prepared_take row, and every linked shot
+    byte-for-byte unchanged.
     """
     session = db.one(
         "SELECT id, settings FROM session WHERE id = ?",
@@ -525,14 +939,25 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> int:
     validated = validate_draft(plan)
     validate_selected_resources(validated["selected_resources"])
 
+    # Step 3: structural conflicts. The detector reads each
+    # selected asset_revision out of the database, so it runs
+    # BEFORE the write transaction (no point taking the write
+    # lock for nothing) but AFTER the database-shape validation.
+    # The list is empty when the plan has no selected resources
+    # or when every selected resource is auxiliary.
+    conflicts = detect_resource_constant_conflicts(validated)
+    plan_with_conflicts = dict(validated)
+    plan_with_conflicts["conflicts"] = conflicts
+
     encoded = json.dumps(
-        validated, ensure_ascii=False, separators=(",", ":"),
+        plan_with_conflicts, ensure_ascii=False, separators=(",", ":"),
     )
     now = db.now()
 
     with db.transaction():
         current = db.one(
-            "SELECT plan_revision FROM session_plan WHERE session_id = ?",
+            "SELECT plan_revision, plan_json FROM session_plan "
+            "WHERE session_id = ?",
             session_id,
         )
         actual = 0 if current is None else int(current["plan_revision"])
@@ -542,6 +967,33 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> int:
                 f"expected {expected_revision}; refusing to overwrite "
                 f"newer draft"
             )
+        # Step 4: constant-change guard. The comparison strips the
+        # ``conflicts`` key the prior save may have written so a
+        # re-save of the same draft (which is a legal CAS bump)
+        # does not read as a constant change.
+        if current is not None:
+            try:
+                old_plan = json.loads(current["plan_json"])
+            except json.JSONDecodeError:
+                old_plan = {}
+            if not isinstance(old_plan, dict):
+                old_plan = {}
+            old_compare = {
+                key: value for key, value in old_plan.items()
+                if key != "conflicts"
+            }
+            new_compare = {
+                key: value for key, value in validated.items()
+                if key != "conflicts"
+            }
+            if _plan_constants_changed(old_compare, new_compare):
+                if has_generated_take(session_id):
+                    raise PlanConstantsFrozenAfterGenerated(
+                        f"session {session_id} has at least one generated "
+                        f"prepared_take; constants (look, initial_wardrobe, "
+                        f"selected_resources) cannot be changed. Start a "
+                        f"new session for a new look."
+                    )
         new_revision = actual + 1
         if actual == 0:
             db.run(
@@ -556,4 +1008,17 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> int:
                 "updated_at = ? WHERE session_id = ?",
                 new_revision, encoded, now, session_id,
             )
-    return new_revision
+        # Step 5: explicit invalidation. The pass is the single
+        # implementation ``invalidate_ungenerated_prepared_takes``
+        # owns; calling it from here keeps the invalidation SQL
+        # in one place and the test for "ungenerated rows were
+        # invalidated" reads against the same function the
+        # production save calls. Generated and already-
+        # invalidated rows are history; the WHERE clause in the
+        # pass leaves them alone. Running the pass inside the
+        # same transaction as the plan write means a refused
+        # save is the only path that could leave the table in
+        # an inconsistent state, and a refused save never
+        # reaches this call.
+        invalidate_ungenerated_prepared_takes(session_id, new_revision)
+    return {"plan_revision": new_revision, "conflicts": conflicts}

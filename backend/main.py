@@ -1841,21 +1841,57 @@ def save_plan_draft(sid: int, p: PlanDraftIn):
     and the CAS check live in one place. Errors are mapped to HTTP
     codes by the table at the bottom of this route — a typo or a
     missing revision is a 422, a stale revision is a 409, a wrong
-    mode is a 400, a missing session is a 404.
+    mode is a 400, a missing session is a 404, a constant change
+    after a generated take is a 409.
+
+    The response carries two fields beyond the previous shape:
+
+      * ``plan_revision`` — the new integer revision the caller
+        must echo on the next save;
+      * ``conflicts`` — the list of structural conflict markers
+        the detector computed for this save. The detector is
+        ``session_plan.detect_resource_constant_conflicts``:
+        it walks every selected resource's payload through
+        ``resource_prompts.PREPARATION_FIELD_MAPPING`` and
+        emits one neutral marker per non-empty
+        ``descriptive_input`` field. The marker is a single
+        neutral kind regardless of the field name or the
+        value's content. A plan that selects no resources,
+        or only auxiliary resources, returns an empty list.
+        A plan with no fixed plan constant (empty ``look``
+        and empty ``initial_wardrobe``) also returns an
+        empty list — there is nothing to surface the
+        resource's descriptive input against. When at least
+        one constant is set, the marker shows whichever of
+        ``plan_look`` and ``plan_initial_wardrobe`` is set
+        (both or one) and the message declares that human
+        review is required; the detector does NOT decide by
+        content whether a field competes with the look or
+        with the initial_wardrobe. The plan keeps ONLY the
+        immutable revision triple
+        (``library_key``, ``source_id``, ``content_digest``);
+        the payload itself lives in ``asset_revision.payload``
+        and is NOT carried in the plan, in any provenance
+        field, or in the session row.
     """
     try:
-        new_revision = session_plan.save_draft(
+        result = session_plan.save_draft(
             sid, p.plan, p.expected_revision,
         )
     except session_plan.PlanValidationError as exc:
         raise HTTPException(422, str(exc))
     except session_plan.PlanRevisionStale as exc:
         raise HTTPException(409, str(exc))
+    except session_plan.PlanConstantsFrozenAfterGenerated as exc:
+        raise HTTPException(409, str(exc))
     except session_plan.SessionNotInResourceMode as exc:
         raise HTTPException(400, str(exc))
     except session_plan.SessionNotFound as exc:
         raise HTTPException(404, str(exc))
-    return {"plan_revision": new_revision}
+    return {
+        "plan_revision": result["plan_revision"],
+        "conflicts": result["conflicts"],
+    }
 
 
 @app.get("/api/sessions/{sid}/plan")

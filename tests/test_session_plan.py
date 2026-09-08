@@ -347,7 +347,9 @@ class TestResourceV1DraftRoundTrip:
             json={"plan": plan, "expected_revision": 0},
         )
         assert save_resp.status_code == 200, save_resp.text
-        assert save_resp.json() == {"plan_revision": 1}, save_resp.text
+        result = save_resp.json()
+        assert result["plan_revision"] == 1
+        assert isinstance(result["conflicts"], list)
 
         # Read it back. The take IDs and order are preserved
         # verbatim; the selected resource is identified by the
@@ -411,7 +413,9 @@ class TestResourceV1DraftRoundTrip:
             f"/api/sessions/{sid}/plan",
             json={"plan": first, "expected_revision": 0},
         )
-        assert first_save.json() == {"plan_revision": 1}
+        result = first_save.json()
+        assert result["plan_revision"] == 1
+        assert isinstance(result["conflicts"], list)
 
         # Reorder: take-003 first. The wardrobe change that
         # originally named take-003 still names take-003; the
@@ -430,7 +434,9 @@ class TestResourceV1DraftRoundTrip:
             json={"plan": reordered, "expected_revision": 1},
         )
         assert second_save.status_code == 200, second_save.text
-        assert second_save.json() == {"plan_revision": 2}, second_save.text
+        result = second_save.json()
+        assert result["plan_revision"] == 2
+        assert isinstance(result["conflicts"], list)
 
         got = client.get(f"/api/sessions/{sid}/plan").json()
         assert got["plan_revision"] == 2
@@ -471,7 +477,9 @@ class TestCompareAndSwap:
             f"/api/sessions/{sid}/plan",
             json={"plan": first_plan, "expected_revision": 0},
         )
-        assert first_save.json() == {"plan_revision": 1}
+        result = first_save.json()
+        assert result["plan_revision"] == 1
+        assert isinstance(result["conflicts"], list)
 
         # A second save at the SAME revision: legal, bumps to 2.
         second_plan = _build_plan(
@@ -482,7 +490,9 @@ class TestCompareAndSwap:
             json={"plan": second_plan, "expected_revision": 1},
         )
         assert second_save.status_code == 200, second_save.text
-        assert second_save.json() == {"plan_revision": 2}
+        result = second_save.json()
+        assert result["plan_revision"] == 2
+        assert isinstance(result["conflicts"], list)
 
         # A third save with expected_revision 0 (stale — current is
         # 2). Must be refused with 409.
@@ -561,8 +571,12 @@ class TestCompareAndSwap:
             f"/api/sessions/{sid_b}/plan",
             json={"plan": plan, "expected_revision": 0},
         )
-        assert ra.json() == {"plan_revision": 1}
-        assert rb.json() == {"plan_revision": 1}
+        ra_result = ra.json()
+        assert ra_result["plan_revision"] == 1
+        assert isinstance(ra_result["conflicts"], list)
+        rb_result = rb.json()
+        assert rb_result["plan_revision"] == 1
+        assert isinstance(rb_result["conflicts"], list)
 
 
 # =====================================================================
@@ -1782,13 +1796,22 @@ class TestSessionPlanService:
             INV_ROOM_PAYLOAD,
         )
         plan = _build_plan(revision)
-        # Direct call: returns the new revision.
-        new_rev = session_plan.save_draft(sid, plan, expected_revision=0)
-        assert new_rev == 1
+        # Direct call: returns a dict with the new revision and
+        # the computed conflicts list. The 3.3 tests pin the
+        # conflict content; here we just confirm the service
+        # returns the new shape.
+        result = session_plan.save_draft(sid, plan, expected_revision=0)
+        assert result["plan_revision"] == 1
+        assert isinstance(result["conflicts"], list)
         # And the row is readable through the same service.
         draft = session_plan.get_draft(sid)
         assert draft["plan_revision"] == 1
         assert draft["plan"]["version"] == "resource-v1"
+        # The plan JSON the save wrote carries the conflicts
+        # under a top-level key so a later GET returns them
+        # alongside the draft.
+        assert "conflicts" in draft["plan"]
+        assert isinstance(draft["plan"]["conflicts"], list)
 
     def test_save_draft_raises_on_stale_revision(
         self, client, seeded,
@@ -2118,7 +2141,9 @@ class TestEffectiveWardrobeResolution:
             json={"plan": revised, "expected_revision": 1},
         )
         assert second.status_code == 200, second.text
-        assert second.json() == {"plan_revision": 2}
+        result = second.json()
+        assert result["plan_revision"] == 2
+        assert isinstance(result["conflicts"], list)
         # The resolver returns to the inherited state for
         # every take. The takes that USED to inherit the
         # jacket now inherit the initial wardrobe; the take
@@ -2449,3 +2474,1413 @@ class TestEffectiveWardrobeResolution:
                 f"shot {label!r} has negative {shot['negative']!r}, "
                 f"expected 'blurry'"
             )
+
+
+# =====================================================================
+# 9. Constant identity/look and explicit preparation invalidation
+# (task 3.3 of ``adopt-resource-session-planning``).
+#
+# The contract 3.3 pins:
+#
+#   * A resource-v1 plan's ``look`` is the authoritative constant for
+#     the session's place and lighting. A selected ``rooms`` or
+#     ``fused_scenes`` resource that carries its own descriptive
+#     fields (``label``, ``scene_theme``, ``prompt``) is recorded in
+#     provenance but does NOT silently replace the plan's look. The
+#     conflict is surfaced in the save response so a frontend can
+#     show it before preparation.
+#
+#   * A draft edit (a successful save) explicitly invalidates every
+#     ``prepared_take`` row for the session that is in ``pending`` or
+#     ``ready`` status, except rows already at the new plan revision.
+#     Rows in ``generated`` or ``invalidated`` status are immutable
+#     history; the pass leaves them alone, their ``final_prompt``,
+#     ``provenance`` and ``linked_shot_id`` are byte-for-byte
+#     unchanged.
+#
+#   * Once a session has at least one prepared_take in ``generated``
+#     status, a save that changes the look, the initial wardrobe, or
+#     the selected resources is refused with
+#     ``PlanConstantsFrozenAfterGenerated``. The refusal leaves every
+#     row byte-for-byte unchanged. Wardrobe changes and take
+#     reorders are not constant changes; they remain legal and they
+#     still invalidate ungenerated rows.
+#
+#   * Legacy composition (no ``composition_mode``) is unchanged: a
+#     legacy session still composes its shots through
+#     ``_expand_shots`` and refuses the plan routes.
+# =====================================================================
+
+
+# A second resource payload for the 3.3 conflict tests: a rooms entry
+# whose ``label`` and ``scene_theme`` are visibly different from
+# ``INV_LOOK`` so the structural conflict is well-formed and a
+# future change to the plan's look does not silently erase the
+# resource's content.
+INV_ROOMS_CONFLICT_LABEL = "an invented forest clearing at noon"
+INV_ROOMS_CONFLICT_THEME = (
+    "An open clearing in a thin birch wood. The canopy is high and "
+    "broken; the ground is dry pine needles. A single flat stone "
+    "sits at the centre. The light comes straight down and casts no "
+    "shadows."
+)
+
+# A fused_scenes payload for the same purpose: it carries its own
+# ``prompt`` that names a different place from the plan's look.
+INV_FUSED_PROMPT = (
+    "A tall white room with a single window at the back. The floor "
+    "is pale concrete, the walls are bare. The light is a flat, even "
+    "north-facing glow with no warm tones."
+)
+INV_FUSED_PAYLOAD = {
+    "id": "inv_fused_studio_white",
+    "label": "an invented white room",
+    "prompt": INV_FUSED_PROMPT,
+    "tags": ["indoor", "studio", "white"],
+    "weight": 1.0,
+}
+
+
+def _build_fused_revision(library_key: str, source_id: str, payload: dict) -> dict:
+    """Like ``_build_revision`` but registers a ``fused_scenes`` library
+    so the conflict detector picks the right scene kind."""
+    library_id = resource_store.ensure_library(library_key, kind="fused_scenes")
+    revision_id = resource_store.record_revision(library_id, source_id, payload)
+    revision = resource_store.get_revision(revision_id=revision_id)
+    assert revision is not None
+    return {
+        "library_id": library_id,
+        "library_key": library_key,
+        "source_id": source_id,
+        "content_digest": revision["content_digest"],
+        "revision_id": revision_id,
+    }
+
+
+def _plant_prepared_take(
+    session_id: int, plan_revision: int, take_id: str, *,
+    status: str = "ready", linked_shot_id: int | None = None,
+    final_prompt: str = "a prepared prompt",
+) -> int:
+    """Plant a prepared_take row directly for a test.
+
+    The resource-v1 path does not expose a "prepare a take" endpoint
+    yet (3.4 / 4.x will); the 3.3 tests need rows in every state
+    to pin the invalidation rules, and direct SQL is the only way
+    to land the seed deterministically. Returns the new row id.
+    """
+    now = db.now()
+    return db.run(
+        "INSERT INTO prepared_take "
+        "(session_id, plan_revision, take_id, final_prompt, "
+        "effective_state, mapping_version, compiler_version, "
+        "provenance, status, linked_shot_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        session_id, plan_revision, take_id, final_prompt,
+        "{}", "v-test", "v-test", "{}", status, linked_shot_id, now, now,
+    )
+
+
+def _plant_shot(session_id: int, prompt: str = "a shot prompt") -> int:
+    """Plant a minimal shot row for a test. Returns the new shot id."""
+    now = db.now()
+    return db.run(
+        "INSERT INTO shot (session_id, prompt, status, created_at) "
+        "VALUES (?, ?, 'done', ?)",
+        session_id, prompt, now,
+    )
+
+
+def _prepared_take_rows(session_id: int) -> list[dict]:
+    """Return every prepared_take row for the session, ordered by id."""
+    return list(db.q(
+        "SELECT id, take_id, plan_revision, status, final_prompt, "
+        "linked_shot_id "
+        "FROM prepared_take WHERE session_id = ? ORDER BY id",
+        session_id,
+    ))
+
+
+class TestConstantsIdentityAndExplicitInvalidation:
+    """Resource-v1 plans must keep the session's identity/look
+    constant against contradicting resource suggestions, must
+    explicitly invalidate ungenerated prepared_take rows on every
+    successful save, and must refuse constant changes after a take
+    has been generated. The suite pins the five invariants the spec
+    names for 3.3."""
+
+    # --- 9.1 Source suggestion does not silently overwrite the look ----
+
+    def test_a_rooms_resource_does_not_silently_overwrite_the_plan_look(
+        self, client, seeded,
+    ):
+        """A rooms resource that carries its own ``label`` and
+        ``scene_theme`` does NOT replace the plan's look. The plan's
+        look is preserved; the conflict is shown in the save
+        response; the resource's content is recorded in provenance
+        via the persisted ``selected_resources`` triple. Neither
+        choice is silently overwritten.
+        """
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "rooms resource vs look",
+            "composition_mode": "resource-v1",
+            "look": INV_LOOK,
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_resource_vs_look",
+            "inv_room_resource_vs_look",
+            {
+                **INV_ROOM_PAYLOAD,
+                "label": INV_ROOMS_CONFLICT_LABEL,
+                "scene_theme": INV_ROOMS_CONFLICT_THEME,
+            },
+        )
+        plan = _build_plan(revision)
+
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+        body = save.json()
+        assert body["plan_revision"] == 1
+
+        # The conflict list is non-empty and names the resource
+        # by its triple. The plan's look is preserved verbatim.
+        # The detector walks every descriptive_input field the
+        # contract publishes for the resource's kind and produces
+        # one neutral marker per non-empty field; a rooms
+        # resource with both ``label`` and ``scene_theme`` set
+        # produces two markers, each naming the offending field
+        # and the value it carried. The marker is a single
+        # neutral kind regardless of field or content; it does
+        # NOT decide by content whether the value competes with
+        # look or wardrobe.
+        conflicts = body["conflicts"]
+        assert isinstance(conflicts, list) and conflicts, (
+            f"a rooms resource with its own label and scene_theme "
+            f"must surface structural conflicts; got {conflicts!r}"
+        )
+        # Group by field so the assertion is robust to the order
+        # the detector iterates the contract.
+        by_field = {m["resource_field"]: m for m in conflicts}
+        assert set(by_field) >= {"label", "scene_theme"}, (
+            f"both label and scene_theme must surface; got {set(by_field)!r}"
+        )
+        for marker in conflicts:
+            assert marker["kind"] == (
+                "resource_descriptive_vs_plan_constants"
+            ), (
+                f"the marker kind is the single neutral value; got "
+                f"{marker['kind']!r}"
+            )
+            assert marker["library_key"] == "inv_rooms_resource_vs_look"
+            assert marker["source_id"] == "inv_room_resource_vs_look"
+            assert marker["content_digest"] == revision["content_digest"]
+            # The plan's look is shown because the plan set it;
+            # the plan's initial_wardrobe is shown too because
+            # ``_build_plan`` defaults it. The marker carries
+            # both sides — neither is silently rewritten.
+            assert marker["plan_look"] == INV_LOOK
+            assert marker["plan_initial_wardrobe"] == INV_WARDROBE
+            # The message is explicit about the human-review
+            # rule and the no-content-classification rule.
+            assert "human review is required" in marker["message"]
+            assert (
+                "does NOT decide by content" in marker["message"]
+            )
+        # The two specific fields the resource carries are
+        # surfaced with their values, so the operator can see
+        # exactly what the resource said.
+        assert by_field["label"]["resource_value"] == INV_ROOMS_CONFLICT_LABEL
+        assert by_field["scene_theme"]["resource_value"] == (
+            INV_ROOMS_CONFLICT_THEME
+        )
+
+        # The plan's look is unchanged. A GET round-trip reads
+        # back the exact ``look`` the caller saved, and the
+        # selected_resources triple still identifies the
+        # resource — neither side was rewritten.
+        got = client.get(f"/api/sessions/{sid}/plan").json()
+        assert got["plan"]["look"] == INV_LOOK
+        assert got["plan"]["selected_resources"] == [
+            {
+                "library_key": "inv_rooms_resource_vs_look",
+                "source_id": "inv_room_resource_vs_look",
+                "content_digest": revision["content_digest"],
+            },
+        ]
+        # The plan JSON the GET returns carries the conflicts
+        # alongside the draft.
+        assert got["plan"].get("conflicts") == conflicts
+
+    def test_a_fused_scenes_resource_does_not_silently_overwrite_the_plan_look(
+        self, client, seeded,
+    ):
+        """A ``fused_scenes`` resource carries its own ``prompt``
+        (free prose). The same rule applies: the plan's look
+        wins, the resource's prompt is recorded, the conflict is
+        shown. The detector is structural and neutral: it walks
+        every ``descriptive_input`` field the contract publishes
+        for the kind and produces a marker per non-empty field.
+        The marker is the same single neutral kind regardless
+        of field name or content."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "fused resource vs look",
+            "composition_mode": "resource-v1",
+            "look": INV_LOOK,
+        }).json()["id"]
+        revision = _build_fused_revision(
+            "inv_fused_resource_vs_look",
+            "inv_fused_resource_vs_look",
+            INV_FUSED_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        # Strip the wardrobe change from the default fixture so
+        # the test is not also asserting the 3.2 behaviour; the
+        # 3.3 invariant under test is "no silent overwrite of the
+        # look by a fused_scenes resource".
+        plan["wardrobe_changes"] = []
+
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+        body = save.json()
+        assert body["plan_revision"] == 1
+
+        # The fused_scenes contract names ``prompt`` and
+        # ``label`` (and ``scene_theme``, ``tags``) as
+        # descriptive_input fields. The fixture sets ``prompt``
+        # and ``label``; the detector surfaces both. The marker
+        # is per-field, not per-resource, and the kind is a
+        # single neutral value.
+        conflicts = body["conflicts"]
+        assert conflicts, (
+            f"a fused_scenes resource with its own prompt must "
+            f"surface at least one structural conflict; got "
+            f"{conflicts!r}"
+        )
+        by_field = {m["resource_field"]: m for m in conflicts}
+        for marker in conflicts:
+            assert marker["kind"] == (
+                "resource_descriptive_vs_plan_constants"
+            )
+            assert marker["library_key"] == "inv_fused_resource_vs_look"
+            assert marker["plan_look"] == INV_LOOK
+            assert "human review is required" in marker["message"]
+        assert by_field["prompt"]["resource_value"] == INV_FUSED_PROMPT
+        assert by_field["label"]["resource_value"] == "an invented white room"
+        # The plan's look is unchanged.
+        got = client.get(f"/api/sessions/{sid}/plan").json()
+        assert got["plan"]["look"] == INV_LOOK
+
+    def test_no_conflict_is_reported_when_no_plan_constant_is_set(
+        self, client, seeded,
+    ):
+        """A draft with both ``look`` and ``initial_wardrobe`` empty
+        is the "no fixed constant yet" state; there is nothing for
+        a resource to compete with, so the detector returns an
+        empty list. A later task that sets a constant is the
+        natural place for a marker to appear."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "no fixed constant no marker",
+            "composition_mode": "resource-v1",
+            "look": "",
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_no_constant",
+            "inv_room_no_constant",
+            {
+                **INV_ROOM_PAYLOAD,
+                "label": INV_ROOMS_CONFLICT_LABEL,
+                "scene_theme": INV_ROOMS_CONFLICT_THEME,
+            },
+        )
+        plan = _build_plan(revision)
+        # Wipe BOTH constants: no look, no initial_wardrobe.
+        plan["look"] = ""
+        plan["initial_wardrobe"] = ""
+        # Drop the wardrobe change so the test is not also
+        # asserting 3.2 behaviour.
+        plan["wardrobe_changes"] = []
+
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+        body = save.json()
+        assert body["plan_revision"] == 1
+        # No marker: no fixed plan constant, nothing to
+        # surface the resource's descriptive input against.
+        assert body["conflicts"] == []
+
+    def test_auxiliary_resources_never_produce_a_conflict(
+        self, client, seeded,
+    ):
+        """Auxiliary kinds (translation_map, cut_map, mined_families,
+        mined_labels) carry no descriptive input. Selecting one
+        alongside a non-empty look is NOT a conflict — the
+        resource has no scene description that would compete with
+        the look. The detector skips these kinds silently."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "auxiliary resource never conflicts",
+            "composition_mode": "resource-v1",
+            "look": INV_LOOK,
+        }).json()["id"]
+        # A translation_map auxiliary entry. Carries no
+        # ``label``/``scene_theme``/``prompt`` (those are scene
+        # fields); only record-shape payload.
+        library_id = resource_store.ensure_library(
+            "inv_translation_map_aux", kind="translation_map",
+        )
+        revision_id = resource_store.record_revision(
+            library_id,
+            "inv_translation_map_aux",
+            {
+                "fields": [
+                    {"source": "uninvented-source", "translation": "an invented English line"},
+                ],
+            },
+        )
+        aux_revision = resource_store.get_revision(revision_id=revision_id)
+        assert aux_revision is not None
+        # Plan selects ONLY the auxiliary resource.
+        plan = _build_plan({
+            "library_key": "inv_translation_map_aux",
+            "source_id": "inv_translation_map_aux",
+            "content_digest": aux_revision["content_digest"],
+        })
+        plan["wardrobe_changes"] = []
+
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+        body = save.json()
+        # The auxiliary resource carries no descriptive input
+        # that would compete with the look. No conflict.
+        assert body["conflicts"] == []
+
+    def test_a_structured_value_like_tags_list_is_preserved_in_full_in_the_marker(
+        self, client, seeded,
+    ):
+        """A JSON-shaped ``descriptive_input`` (a list, not a
+        string) is preserved verbatim in the marker. The detector
+        does not coerce, summarize, or string-format the value:
+        a list of category tags is a different shape from a
+        paragraph of prose, and a future preparation task reads
+        the value as the resource wrote it. The plan's constants
+        are shown alongside; the marker declares human review.
+        """
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "structured tags list preserved",
+            "composition_mode": "resource-v1",
+            "look": INV_LOOK,
+            "wardrobe": INV_WARDROBE,
+        }).json()["id"]
+        # A rooms resource whose ``tags`` field is a JSON list
+        # of category tags. The contract classifies ``tags`` as
+        # ``descriptive_input`` for ``rooms``; the detector
+        # must surface the field as a marker, with the list
+        # preserved verbatim.
+        revision = _build_revision(
+            "inv_rooms_tags_list_preserved",
+            "inv_room_tags_list_preserved",
+            {
+                **INV_ROOM_PAYLOAD,
+                "label": "a plain descriptive label",
+                "scene_theme": "a plain descriptive theme",
+                "tags": [
+                    "indoor", "studio", "morning",
+                    "low-key", "north-facing-window",
+                ],
+            },
+        )
+        plan = _build_plan(revision)
+        plan["wardrobe_changes"] = []
+
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+        body = save.json()
+        by_field = {m["resource_field"]: m for m in body["conflicts"]}
+        assert "tags" in by_field, (
+            f"a tags list must surface as a structural conflict; "
+            f"got fields={set(by_field)!r}"
+        )
+        marker = by_field["tags"]
+        # The marker is the single neutral kind, regardless of
+        # the value's shape.
+        assert marker["kind"] == "resource_descriptive_vs_plan_constants"
+        # The list is preserved verbatim: same length, same
+        # order, same strings. The detector does NOT coerce the
+        # list into a comma-joined string or a stringified
+        # version.
+        assert marker["resource_value"] == [
+            "indoor", "studio", "morning",
+            "low-key", "north-facing-window",
+        ], (
+            f"the tags list was not preserved verbatim; got "
+            f"{marker['resource_value']!r}"
+        )
+        # The plan's constants are shown because the plan set
+        # both; the marker names both sides, not just one.
+        assert marker["plan_look"] == INV_LOOK
+        assert marker["plan_initial_wardrobe"] == INV_WARDROBE
+        # The human-review message.
+        assert "human review is required" in marker["message"]
+
+        # The plan's constants are preserved verbatim. The
+        # triple in ``selected_resources`` is the only
+        # reference to the resource the plan carries; the
+        # full payload (including the tags list) stays in
+        # ``asset_revision.payload``.
+        got = client.get(f"/api/sessions/{sid}/plan").json()
+        assert got["plan"]["look"] == INV_LOOK
+        assert got["plan"]["initial_wardrobe"] == INV_WARDROBE
+        # The plan does NOT carry the payload; only the
+        # immutable revision triple.
+        assert got["plan"]["selected_resources"] == [
+            {
+                "library_key": "inv_rooms_tags_list_preserved",
+                "source_id": "inv_room_tags_list_preserved",
+                "content_digest": revision["content_digest"],
+            },
+        ]
+        assert "tags" not in got["plan"], (
+            "the plan must not carry the resource payload; "
+            "tags is a resource field, not a plan field"
+        )
+        # The payload is in asset_revision. A future
+        # preparation task reads it from there.
+        payload = json.loads(db.one(
+            "SELECT payload FROM asset_revision "
+            "WHERE library_id = ? AND source_id = ? AND "
+            "content_digest = ?",
+            revision["library_id"], revision["source_id"],
+            revision["content_digest"],
+        )["payload"])
+        assert payload["tags"] == [
+            "indoor", "studio", "morning",
+            "low-key", "north-facing-window",
+        ]
+
+    def test_scene_prose_with_material_words_does_not_classify_as_clothing(
+        self, client, seeded,
+    ):
+        """Scene prose that mentions fabric or material words
+        (``linen curtains``, ``leather sofa``) is NOT classified
+        as a wardrobe conflict by the detector. The detector
+        does not look at content: it surfaces a single neutral
+        marker for every non-empty ``descriptive_input``,
+        regardless of whether the words sound like clothing.
+        A human reads the marker and decides. The marker names
+        BOTH plan constants and the field's full value."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "scene prose with material words",
+            "composition_mode": "resource-v1",
+            "look": INV_LOOK,
+            "wardrobe": INV_WARDROBE,
+        }).json()["id"]
+        # A rooms resource whose scene_theme mentions fabric
+        # and material words that COULD be misread as clothing
+        # prose by a content-based classifier. The detector
+        # does not look at content; the marker is the single
+        # neutral kind.
+        revision = _build_revision(
+            "inv_rooms_scene_materials",
+            "inv_room_scene_materials",
+            {
+                **INV_ROOM_PAYLOAD,
+                "label": "a plain descriptive label",
+                "scene_theme": (
+                    "a quiet room with linen curtains by the window, "
+                    "a leather sofa in the corner, a wool blanket "
+                    "draped over the arm"
+                ),
+            },
+        )
+        plan = _build_plan(revision)
+        plan["wardrobe_changes"] = []
+
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+        body = save.json()
+        by_field = {m["resource_field"]: m for m in body["conflicts"]}
+        scene_marker = by_field["scene_theme"]
+        # Single neutral kind — NOT a wardrobe-specific kind.
+        # The detector does not claim the value competes
+        # exclusively with the plan's initial_wardrobe; it
+        # shows both sides and asks for human review.
+        assert scene_marker["kind"] == (
+            "resource_descriptive_vs_plan_constants"
+        )
+        # Both plan constants are visible in the same marker.
+        assert scene_marker["plan_look"] == INV_LOOK
+        assert scene_marker["plan_initial_wardrobe"] == INV_WARDROBE
+        # The full value is preserved verbatim — the detector
+        # does not redact material words, does not split on
+        # them, does not rewrite them. The operator reads the
+        # whole sentence and decides.
+        assert scene_marker["resource_value"] == (
+            "a quiet room with linen curtains by the window, "
+            "a leather sofa in the corner, a wool blanket "
+            "draped over the arm"
+        )
+        # The message states the human-review rule and the
+        # no-content-classification rule.
+        assert "human review is required" in scene_marker["message"]
+        assert "does NOT decide by content" in scene_marker["message"]
+
+    def test_uniform_fit_value_is_visible_alongside_the_fixed_wardrobe(
+        self, client, seeded,
+    ):
+        """The contract publishes ``uniform_fit`` as a
+        ``descriptive_input`` for ``rooms``. A non-empty value
+        is surfaced as a neutral marker. The marker shows the
+        plan's fixed ``initial_wardrobe`` alongside the value;
+        the marker does NOT claim the value replaces the
+        wardrobe — it asks for human review and the detector
+        does not classify the value by content."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "uniform_fit visible alongside wardrobe",
+            "composition_mode": "resource-v1",
+            "look": INV_LOOK,
+            "wardrobe": INV_WARDROBE,
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_uniform_fit_visible",
+            "inv_room_uniform_fit_visible",
+            {
+                **INV_ROOM_PAYLOAD,
+                "label": "a plain descriptive label",
+                "scene_theme": "a plain descriptive theme",
+                "uniform_fit": (
+                    "a dark wool suit with shoulder pads, a stiff "
+                    "white shirt, polished black shoes"
+                ),
+            },
+        )
+        plan = _build_plan(revision)
+        plan["wardrobe_changes"] = []
+
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+        body = save.json()
+        by_field = {m["resource_field"]: m for m in body["conflicts"]}
+        # The uniform_fit field produces a marker. The marker
+        # shows the value and the plan's initial_wardrobe; the
+        # operator decides what to do.
+        assert "uniform_fit" in by_field, (
+            f"a uniform_fit value must surface as a marker; "
+            f"got fields={set(by_field)!r}"
+        )
+        marker = by_field["uniform_fit"]
+        # Single neutral kind — the marker does NOT claim the
+        # value competes with the wardrobe exclusively. The
+        # detector does not classify by content.
+        assert marker["kind"] == (
+            "resource_descriptive_vs_plan_constants"
+        )
+        # The value is preserved verbatim.
+        assert marker["resource_value"] == (
+            "a dark wool suit with shoulder pads, a stiff "
+            "white shirt, polished black shoes"
+        )
+        # The plan's fixed wardrobe is shown alongside. The
+        # operator sees BOTH sides — what the resource
+        # suggested and what the plan holds constant.
+        assert marker["plan_initial_wardrobe"] == INV_WARDROBE
+        assert marker["plan_look"] == INV_LOOK
+        # The human-review message.
+        assert "human review is required" in marker["message"]
+        assert "does NOT decide by content" in marker["message"]
+
+        # The plan's constants are preserved verbatim. The
+        # resource's uniform_fit value does NOT overwrite the
+        # plan's initial_wardrobe; the plan only carries the
+        # immutable revision triple, and the payload stays in
+        # ``asset_revision.payload``.
+        got = client.get(f"/api/sessions/{sid}/plan").json()
+        assert got["plan"]["look"] == INV_LOOK
+        assert got["plan"]["initial_wardrobe"] == INV_WARDROBE
+        assert "uniform_fit" not in got["plan"]
+        payload = json.loads(db.one(
+            "SELECT payload FROM asset_revision "
+            "WHERE library_id = ? AND source_id = ? AND "
+            "content_digest = ?",
+            revision["library_id"], revision["source_id"],
+            revision["content_digest"],
+        )["payload"])
+        assert payload["uniform_fit"] == (
+            "a dark wool suit with shoulder pads, a stiff "
+            "white shirt, polished black shoes"
+        )
+
+    def test_a_resource_identity_suggestion_never_modifies_session_model_id(
+        self, client, seeded,
+    ):
+        """A resource that carries identity-related fields the
+        contract declares for ``rooms`` (``profile`` and
+        ``body_profile``) does NOT modify the session's
+        ``model_id``. The session's ``model_id`` is the
+        character binding; a plan save — including a save that
+        selects a resource naming a different character — leaves
+        it byte-for-byte unchanged. The plan carries only the
+        immutable revision triple; the payload (including any
+        ``profile``/``body_profile`` the resource carries)
+        stays in ``asset_revision.payload`` and is not echoed
+        into the plan, the session row, or the model row.
+
+        The detector only iterates ``descriptive_input``
+        fields; the contract does not classify ``profile`` or
+        ``body_profile`` as ``descriptive_input`` for ``rooms``,
+        so the detector does not surface a marker for them and
+        a future preparation task reads them from the
+        revision's payload, not from the plan."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "resource identity suggestion preserved",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        # Capture the model_id, trigger and name before the
+        # save. The assertion is a byte-for-byte check on the
+        # row the session create call wrote, plus the trigger
+        # string the model row carries (the model_id is the
+        # binding; the trigger is the human-readable label).
+        before = db.one(
+            "SELECT s.model_id AS model_id, m.trigger AS trigger, "
+            "m.name AS name "
+            "FROM session s JOIN model m ON s.model_id = m.id "
+            "WHERE s.id = ?",
+            sid,
+        )
+        # A rooms resource that names a different character in
+        # the identity-related fields the contract declares for
+        # ``rooms``. The plan route does not accept a
+        # ``model_id`` field at all; the character is set on
+        # session create and never rewritten by a plan save.
+        revision = _build_revision(
+            "inv_rooms_identity_suggestion",
+            "inv_room_identity_suggestion",
+            {
+                **INV_ROOM_PAYLOAD,
+                "profile": "an entirely different body profile",
+                "body_profile": "a different body shape",
+            },
+        )
+        plan = _build_plan(revision)
+        plan["wardrobe_changes"] = []
+
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+
+        # The session's model_id is byte-for-byte the same.
+        # The plan save did not move the character identity.
+        # The trigger and the model's human-readable name are
+        # also unchanged.
+        after = db.one(
+            "SELECT s.model_id AS model_id, m.trigger AS trigger, "
+            "m.name AS name "
+            "FROM session s JOIN model m ON s.model_id = m.id "
+            "WHERE s.id = ?",
+            sid,
+        )
+        assert after["model_id"] == before["model_id"], (
+            f"the session's model_id was rewritten by a plan "
+            f"save; before={before['model_id']!r}, "
+            f"after={after['model_id']!r}"
+        )
+        assert after["trigger"] == before["trigger"]
+        assert after["name"] == before["name"]
+
+        # The detector did not surface a marker for the
+        # identity-related fields. The contract does not
+        # classify them as ``descriptive_input``; they are
+        # carried in the resource's payload, which lives in
+        # ``asset_revision.payload`` and is read from there by
+        # a future preparation task.
+        body = save.json()
+        for marker in body["conflicts"]:
+            assert marker.get("resource_field") not in (
+                "profile", "body_profile",
+            ), (
+                f"a non-descriptive_input field was surfaced as "
+                f"a conflict; got {marker!r}"
+            )
+
+        # The plan's selected_resources triple is the only
+        # reference to the resource the plan carries. The
+        # payload stays in asset_revision.
+        got = client.get(f"/api/sessions/{sid}/plan").json()
+        assert got["plan"]["selected_resources"] == [
+            {
+                "library_key": "inv_rooms_identity_suggestion",
+                "source_id": "inv_room_identity_suggestion",
+                "content_digest": revision["content_digest"],
+            },
+        ]
+        assert "profile" not in got["plan"]
+        assert "body_profile" not in got["plan"]
+        payload = json.loads(db.one(
+            "SELECT payload FROM asset_revision "
+            "WHERE library_id = ? AND source_id = ? AND "
+            "content_digest = ?",
+            revision["library_id"], revision["source_id"],
+            revision["content_digest"],
+        )["payload"])
+        assert payload["profile"] == "an entirely different body profile"
+        assert payload["body_profile"] == "a different body shape"
+
+    # --- 9.2 Draft edit invalidates ungenerated prepared_takes -------
+
+    def test_a_draft_edit_invalidates_only_ungenerated_prepared_takes(
+        self, client, seeded,
+    ):
+        """A successful save explicitly invalidates every prepared_take
+        row for the session in ``pending`` or ``ready`` status, and
+        leaves ``generated`` and ``invalidated`` rows untouched. The
+        pass runs inside the same transaction as the plan write so a
+        refused save is the only path that could leave the table in
+        an inconsistent state — and a refused save never reaches it.
+        """
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "draft edit invalidates ungenerated",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        # First save: the draft. The revision is now 1.
+        revision = _build_revision(
+            "inv_rooms_draft_invalidation",
+            "inv_room_draft_invalidation",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["plan_revision"] == 1
+
+        # Plant one row per status, all at plan_revision 1
+        # (the current revision). The second save will bump to
+        # revision 2; the invalidation pass will then target
+        # these rows because their plan_revision differs from 2.
+        shot_id = _plant_shot(sid)
+        ready_id = _plant_prepared_take(
+            sid, 1, "inv_take_ready", status="ready",
+        )
+        pending_id = _plant_prepared_take(
+            sid, 1, "inv_take_pending", status="pending",
+        )
+        generated_id = _plant_prepared_take(
+            sid, 1, "inv_take_generated", status="generated",
+            linked_shot_id=shot_id,
+            final_prompt="the final prompt used for the generated take",
+        )
+        already_invalidated_id = _plant_prepared_take(
+            sid, 1, "inv_take_invalidated", status="invalidated",
+        )
+
+        # Second save: same plan, no constant change. The
+        # invalidation pass marks the ungenerated rows.
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 1},
+        )
+        assert save.status_code == 200, save.text
+        assert save.json()["plan_revision"] == 2
+
+        # The ungenerated rows moved to ``invalidated``. The
+        # generated row stays in ``generated`` with its prompt and
+        # linked_shot_id unchanged. The already-invalidated row
+        # stays as it was.
+        rows_by_take = {
+            row["take_id"]: row
+            for row in _prepared_take_rows(sid)
+        }
+        assert rows_by_take["inv_take_ready"]["status"] == "invalidated"
+        assert rows_by_take["inv_take_pending"]["status"] == "invalidated"
+        assert rows_by_take["inv_take_generated"]["status"] == "generated"
+        assert rows_by_take["inv_take_generated"]["final_prompt"] == (
+            "the final prompt used for the generated take"
+        )
+        assert rows_by_take["inv_take_generated"]["linked_shot_id"] == shot_id
+        assert rows_by_take["inv_take_invalidated"]["status"] == "invalidated"
+        # The row ids are preserved: the pass is status-only, no
+        # delete, no rewrite of the snapshot.
+        assert rows_by_take["inv_take_ready"]["id"] == ready_id
+        assert rows_by_take["inv_take_pending"]["id"] == pending_id
+        assert rows_by_take["inv_take_generated"]["id"] == generated_id
+        assert (
+            rows_by_take["inv_take_invalidated"]["id"] == already_invalidated_id
+        )
+
+    def test_a_queued_or_generated_snapshot_remains_unchanged_after_a_draft_edit(
+        self, client, seeded,
+    ):
+        """A generated prepared_take and the shot it points at are
+        history. A later draft edit MUST NOT rewrite the row's
+        prompt, status, or linked_shot_id, and MUST NOT touch the
+        linked shot. The pass targets only the ungenerated rows.
+        """
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "generated snapshot immutable",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        # First save: the draft. Revision 1.
+        revision = _build_revision(
+            "inv_rooms_generated_immutable",
+            "inv_room_generated_immutable",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["plan_revision"] == 1
+
+        # Plant a finished shot the prepared_take will point at,
+        # and a generated prepared_take row at the current
+        # revision (1). The next save bumps to revision 2 and
+        # the invalidation pass targets rows that are NOT at 2;
+        # the generated row must remain untouched.
+        shot_id = _plant_shot(
+            sid, prompt="a finished photograph prompt",
+        )
+        original_shot = db.one(
+            "SELECT prompt, status FROM shot WHERE id = ?", shot_id,
+        )
+        prepared_id = _plant_prepared_take(
+            sid, 1, "inv_take_generated",
+            status="generated", linked_shot_id=shot_id,
+            final_prompt="a finalized, generated prompt",
+        )
+        original_prepared = db.one(
+            "SELECT take_id, plan_revision, status, final_prompt, "
+            "linked_shot_id, effective_state, provenance, "
+            "mapping_version, compiler_version "
+            "FROM prepared_take WHERE id = ?",
+            prepared_id,
+        )
+
+        # Second save: a real draft edit. The wardrobe change is
+        # NOT a constant change, so the constant-change guard
+        # does not fire; the invalidation pass targets the
+        # generated row, but the pass must leave generated rows
+        # untouched.
+        edited_plan = {
+            **plan,
+            "wardrobe_changes": [
+                {
+                    "take_id": "take-002",
+                    "scope": "this_take",
+                    "wardrobe": INV_WARDROBE_JACKET,
+                },
+            ],
+        }
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": edited_plan, "expected_revision": 1},
+        )
+        assert save.status_code == 200, save.text
+        assert save.json()["plan_revision"] == 2
+
+        # The generated prepared_take row is byte-for-byte the
+        # same: status, plan_revision, final_prompt,
+        # linked_shot_id, effective_state, provenance, mapping
+        # version, compiler version — all unchanged.
+        after_prepared = db.one(
+            "SELECT take_id, plan_revision, status, final_prompt, "
+            "linked_shot_id, effective_state, provenance, "
+            "mapping_version, compiler_version "
+            "FROM prepared_take WHERE id = ?",
+            prepared_id,
+        )
+        assert after_prepared == original_prepared, (
+            f"a generated prepared_take was rewritten by a draft "
+            f"edit; before={original_prepared!r}, after={after_prepared!r}"
+        )
+        # The linked shot is also unchanged. The new save did not
+        # touch its prompt or status.
+        after_shot = db.one(
+            "SELECT prompt, status FROM shot WHERE id = ?", shot_id,
+        )
+        assert after_shot == original_shot, (
+            f"a linked shot was rewritten by a draft edit; "
+            f"before={original_shot!r}, after={after_shot!r}"
+        )
+
+    # --- 9.3 Boundary after a generated take: constant change refused ---
+
+    def test_constant_change_is_refused_after_a_generated_take(
+        self, client, seeded,
+    ):
+        """Once a session has a generated prepared_take, a save
+        that changes ``look`` is refused with
+        ``PlanConstantsFrozenAfterGenerated``. The refusal leaves
+        the plan row, every prepared_take row, and every linked
+        shot byte-for-byte unchanged."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "constant change refused after generated",
+            "composition_mode": "resource-v1",
+            "look": INV_LOOK,
+        }).json()["id"]
+        # Plant a generated row. This is the row that pins
+        # "the session has history".
+        shot_id = _plant_shot(sid)
+        _plant_prepared_take(
+            sid, 1, "inv_take_generated", status="generated",
+            linked_shot_id=shot_id, final_prompt="a finalized prompt",
+        )
+        # First save: the draft. Constants are set here.
+        revision = _build_revision(
+            "inv_rooms_constant_frozen",
+            "inv_room_constant_frozen",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["plan_revision"] == 1
+        # Capture the stored state before the refused save.
+        plan_row_before = db.one(
+            "SELECT plan_revision, plan_json FROM session_plan "
+            "WHERE session_id = ?",
+            sid,
+        )
+        prepared_before = db.one(
+            "SELECT status, final_prompt, linked_shot_id "
+            "FROM prepared_take WHERE session_id = ? "
+            "AND take_id = 'inv_take_generated'",
+            sid,
+        )
+        shot_before = db.one(
+            "SELECT prompt, status FROM shot WHERE id = ?", shot_id,
+        )
+
+        # Second save: change the look. Must be refused with 409
+        # and a readable error that names the rule.
+        changed_look_plan = {**plan, "look": INV_LOOK + " (a new description)"}
+        refused = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={
+                "plan": changed_look_plan,
+                "expected_revision": 1,
+            },
+        )
+        assert refused.status_code == 409, refused.text
+        detail = refused.json()["detail"]
+        assert "look" in detail
+        assert "initial_wardrobe" in detail
+        assert "selected_resources" in detail
+        assert "generated" in detail
+        # The plan row, the generated prepared_take row, and the
+        # linked shot are all byte-for-byte unchanged. No
+        # partial mutation, no half-bumped revision.
+        plan_row_after = db.one(
+            "SELECT plan_revision, plan_json FROM session_plan "
+            "WHERE session_id = ?",
+            sid,
+        )
+        assert plan_row_after == plan_row_before, (
+            f"a refused save mutated the plan row; "
+            f"before={plan_row_before!r}, after={plan_row_after!r}"
+        )
+        prepared_after = db.one(
+            "SELECT status, final_prompt, linked_shot_id "
+            "FROM prepared_take WHERE session_id = ? "
+            "AND take_id = 'inv_take_generated'",
+            sid,
+        )
+        assert prepared_after == prepared_before
+        shot_after = db.one(
+            "SELECT prompt, status FROM shot WHERE id = ?", shot_id,
+        )
+        assert shot_after == shot_before
+
+    def test_initial_wardrobe_change_is_refused_after_a_generated_take(
+        self, client, seeded,
+    ):
+        """The constant-change guard covers ``initial_wardrobe``
+        as well. Once a take is generated, the session's starting
+        outfit is history: rewriting it would silently pretend a
+        finished photograph used a state it did not."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "initial wardrobe change refused",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        _plant_prepared_take(
+            sid, 1, "inv_take_generated", status="generated",
+            linked_shot_id=_plant_shot(sid),
+        )
+        revision = _build_revision(
+            "inv_rooms_initial_frozen",
+            "inv_room_initial_frozen",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+
+        changed = {
+            **plan,
+            "initial_wardrobe": (
+                "a thin black wool jumper, dark cotton trousers, bare feet"
+            ),
+        }
+        refused = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": changed, "expected_revision": 1},
+        )
+        assert refused.status_code == 409, refused.text
+        assert "initial_wardrobe" in refused.json()["detail"]
+
+    def test_selected_resources_change_is_refused_after_a_generated_take(
+        self, client, seeded,
+    ):
+        """The constant-change guard covers ``selected_resources``.
+        A save that swaps the bound resource triple (the scene
+        identity) after a take has been generated is refused.
+        Adding a NEW resource to the list is also a constant
+        change because the list is the operator's statement of
+        "these resources bind the session's identity"."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "selected resources change refused",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        _plant_prepared_take(
+            sid, 1, "inv_take_generated", status="generated",
+            linked_shot_id=_plant_shot(sid),
+        )
+        revision = _build_revision(
+            "inv_rooms_selected_frozen",
+            "inv_room_selected_frozen",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+
+        # A second rooms resource to add to the list. The save
+        # adds it; the resulting plan has TWO selected resources
+        # and the new one is a constant change.
+        second_revision = _build_revision(
+            "inv_rooms_selected_frozen_other",
+            "inv_room_selected_frozen_other",
+            {**INV_ROOM_PAYLOAD, "label": "second invented room"},
+        )
+        changed = {
+            **plan,
+            "selected_resources": [
+                {
+                    "library_key": revision["library_key"],
+                    "source_id": revision["source_id"],
+                    "content_digest": revision["content_digest"],
+                },
+                {
+                    "library_key": second_revision["library_key"],
+                    "source_id": second_revision["source_id"],
+                    "content_digest": second_revision["content_digest"],
+                },
+            ],
+        }
+        refused = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": changed, "expected_revision": 1},
+        )
+        assert refused.status_code == 409, refused.text
+        assert "selected_resources" in refused.json()["detail"]
+
+    def test_wardrobe_change_remains_allowed_after_a_generated_take(
+        self, client, seeded,
+    ):
+        """Wardrobe changes are NOT constant changes. After a take
+        is generated, a save that only edits ``wardrobe_changes``
+        is allowed; the ungenerated rows get invalidated; the
+        generated row stays. This is the spec's "wardrobe
+        changes remain possible through new reviewed take
+        revisions" rule."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "wardrobe change allowed after generated",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        # First save: the draft. Revision 1.
+        revision = _build_revision(
+            "inv_rooms_wardrobe_allowed",
+            "inv_room_wardrobe_allowed",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["plan_revision"] == 1
+
+        # Plant the generated and ungenerated rows at the
+        # current revision (1).
+        _plant_prepared_take(
+            sid, 1, "inv_take_generated", status="generated",
+            linked_shot_id=_plant_shot(sid),
+            final_prompt="a finalized prompt",
+        )
+        ungenerated_id = _plant_prepared_take(
+            sid, 1, "inv_take_ungenerated", status="ready",
+        )
+
+        # Second save: a wardrobe change on take-002 only. NOT
+        # a constant change (the look, initial_wardrobe, and
+        # selected_resources are unchanged). The save is
+        # accepted; the ungenerated row is invalidated; the
+        # generated row is history.
+        edited = {**plan, "wardrobe_changes": [
+            {
+                "take_id": "take-002",
+                "scope": "this_take",
+                "wardrobe": INV_WARDROBE_JACKET,
+            },
+        ]}
+        second = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": edited, "expected_revision": 1},
+        )
+        assert second.status_code == 200, second.text
+        body = second.json()
+        assert body["plan_revision"] == 2
+
+        # The generated row is still ``generated`` and the
+        # ungenerated row moved to ``invalidated``.
+        rows = _prepared_take_rows(sid)
+        by_take = {row["take_id"]: row for row in rows}
+        assert by_take["inv_take_generated"]["status"] == "generated"
+        assert by_take["inv_take_generated"]["final_prompt"] == (
+            "a finalized prompt"
+        )
+        assert by_take["inv_take_ungenerated"]["status"] == "invalidated"
+        # The ungenerated row's id is preserved (the pass is
+        # status-only, no delete, no rewrite of the snapshot).
+        assert by_take["inv_take_ungenerated"]["id"] == ungenerated_id
+
+    def test_take_reorder_remains_allowed_after_a_generated_take(
+        self, client, seeded,
+    ):
+        """Reordering the takes list is NOT a constant change.
+        A save that only changes take order is allowed after a
+        generated take; the ungenerated rows are invalidated."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "take reorder allowed after generated",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        # First save: the draft. Revision 1.
+        revision = _build_revision(
+            "inv_rooms_reorder_allowed",
+            "inv_room_reorder_allowed",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["plan_revision"] == 1
+
+        # Plant the rows at the current revision (1).
+        _plant_prepared_take(
+            sid, 1, "inv_take_generated", status="generated",
+            linked_shot_id=_plant_shot(sid),
+        )
+        _plant_prepared_take(
+            sid, 1, "inv_take_ungenerated", status="ready",
+        )
+
+        # Reorder the takes: take-003 first, then 001, 002.
+        reordered = {
+            **plan,
+            "takes": [
+                {"take_id": "take-003", "label": "jacket on"},
+                {"take_id": "take-001", "label": "wide"},
+                {"take_id": "take-002", "label": "close-up"},
+            ],
+        }
+        second = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": reordered, "expected_revision": 1},
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["plan_revision"] == 2
+        # The ungenerated row was invalidated; the generated row
+        # is history.
+        by_take = {row["take_id"]: row for row in _prepared_take_rows(sid)}
+        assert by_take["inv_take_generated"]["status"] == "generated"
+        assert by_take["inv_take_ungenerated"]["status"] == "invalidated"
+
+    def test_a_save_with_no_prepared_takes_does_not_error(
+        self, client, seeded,
+    ):
+        """A session with no prepared_take rows at all is the
+        natural state for a draft that has not been prepared yet.
+        Saving a plan must succeed and the invalidation pass must
+        update zero rows without raising. This is the
+        "no-op invalidation" boundary case."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "save with no prepared takes",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_no_prepared",
+            "inv_room_no_prepared",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save.status_code == 200, save.text
+        assert save.json()["plan_revision"] == 1
+        n = db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take "
+            "WHERE session_id = ?",
+            sid,
+        )["n"]
+        assert n == 0, "no prepared_take rows should exist for this session"
+
+    # --- 9.4 Legacy composition remains unchanged after 3.3 -------
+
+    def test_legacy_composition_remains_unchanged_after_3_3(
+        self, client, seeded,
+    ):
+        """A legacy session (no ``composition_mode``) still
+        composes its shots through ``_expand_shots`` after the
+        3.3 invalidation pass and conflict detector were added.
+        The plan routes still refuse a legacy session. The
+        new ``conflicts`` field is not surfaced (legacy sessions
+        do not reach the resource-v1 path at all)."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "legacy still composes after 3.3",
+            "look": INV_LOOK,
+            "wardrobe": INV_WARDROBE,
+            "shots": [
+                {"label": "wide", "prompt": "standing square to the camera"},
+            ],
+        }).json()["id"]
+        # No composition_mode in settings.
+        row = db.one("SELECT settings FROM session WHERE id = ?", sid)
+        settings = json.loads(row["settings"])
+        assert "composition_mode" not in settings
+
+        # Plan routes are still refused on a legacy session.
+        plan_resp = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": {"version": "resource-v1", "look": "x",
+                            "initial_wardrobe": "y", "takes": [
+                                {"take_id": "t1"}],
+                            "selected_resources": [],
+                            "wardrobe_changes": []},
+                  "expected_revision": 0},
+        )
+        assert plan_resp.status_code == 400, plan_resp.text
+        # The session's shot is composed the same way the
+        # baseline test pins: trigger + base + look + wardrobe +
+        # take, joined with full stops.
+        full = client.get(f"/api/sessions/{sid}").json()
+        assert full["look"] == INV_LOOK
+        assert full["wardrobe"] == INV_WARDROBE
+        assert len(full["shots"]) == 1
+        assert "INV_LOOK" in full["shots"][0]["prompt"] or full["shots"][0][
+            "prompt"
+        ].startswith("4da woman. photo, 35mm. " + INV_LOOK), (
+            f"legacy composition drifted after 3.3; got "
+            f"{full['shots'][0]['prompt']!r}"
+        )
+
+    # --- 9.5 Constant-frozen guard at the service layer -----------
+
+    def test_save_draft_refuses_a_constant_change_with_a_readable_error(
+        self, client, seeded,
+    ):
+        """Service-level guard. The plan-route maps the error to a
+        409, but the service-layer test pins the exception class
+        and the message so a future refactor of the HTTP layer
+        cannot silently change the contract."""
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "service-level constant guard",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        _plant_prepared_take(
+            sid, 1, "inv_take_generated", status="generated",
+            linked_shot_id=_plant_shot(sid),
+        )
+        revision = _build_revision(
+            "inv_rooms_service_constant",
+            "inv_room_service_constant",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        first = session_plan.save_draft(sid, plan, expected_revision=0)
+        assert first["plan_revision"] == 1
+
+        # Direct call with a different look raises the named
+        # error class.
+        with pytest.raises(
+            session_plan.PlanConstantsFrozenAfterGenerated,
+        ) as exc:
+            session_plan.save_draft(
+                sid,
+                {**plan, "look": "a different look that breaks the rule"},
+                expected_revision=1,
+            )
+        message = str(exc.value)
+        assert "look" in message
+        assert "initial_wardrobe" in message
+        assert "selected_resources" in message
+        # The plan is unchanged: the refusal is before the write.
+        draft = session_plan.get_draft(sid)
+        assert draft["plan_revision"] == 1
+        assert draft["plan"]["look"] == INV_LOOK
