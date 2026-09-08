@@ -440,6 +440,88 @@ ON asset_revision
 BEGIN
   SELECT RAISE(ABORT, 'asset_revision is immutable: id, library_id, source_id, content_digest, payload and created_at cannot be rewritten after the row is written. Only translation and coverage remain independently writable.');
 END;
+
+-- Resource-v1 session plan drafts. One current draft per session, with a
+-- monotonically increasing `plan_revision` that a compare-and-swap save
+-- uses to refuse a stale browser save. The JSON in `plan_json` is the
+-- validated draft: stable take IDs, ordered take definitions, constant
+-- look, initial wardrobe, selected immutable asset revisions, and
+-- explicit wardrobe-change events. The draft is data only in 3.1 —
+-- effective wardrobe resolution and prompt preparation live in 3.2 and
+-- later tasks.
+--
+-- The UNIQUE on `session_id` is what pins the "one current draft" rule:
+-- a session can have at most one row here, and the CAS write either
+-- updates that one row or refuses the save on a stale revision. No
+-- second row is ever inserted for the same session.
+--
+-- Additive on purpose: legacy sessions and legacy plans (which never
+-- lived in this table) are untouched, the CREATE TABLE IF NOT EXISTS
+-- makes the migration safe to run repeatedly, and `ON DELETE CASCADE`
+-- keeps the table tidy when a session is dropped.
+CREATE TABLE IF NOT EXISTS session_plan (
+    id            INTEGER PRIMARY KEY,
+    session_id    INTEGER NOT NULL UNIQUE REFERENCES session(id) ON DELETE CASCADE,
+    mode          TEXT NOT NULL,
+    plan_revision INTEGER NOT NULL,
+    plan_json     TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    CHECK (plan_revision > 0)
+);
+
+-- Prepared-take snapshots for the resource-v1 path (task 3.1,
+-- design.md:33). One row per (session, plan_revision, take_id)
+-- triple, written by a future preparation task (3.2 / 4.x) and
+-- read back when the take is submitted to the runner. The row
+-- carries the final prompt, the effective state the prompt was
+-- resolved from, the resource-mapping and compiler versions that
+-- produced it, the source revisions the prompt cites, the take's
+-- status, and an optional link to a shot row that has already
+-- been queued or generated.
+--
+-- The composite UNIQUE on (session_id, plan_revision, take_id) is
+-- what pins the "one snapshot per take per plan revision" rule: a
+-- future re-prepare for the same take under a new plan revision
+-- creates a new immutable row alongside the prior one, the same
+-- way ``asset_revision`` does for refreshed source content, and a
+-- stale prepare for the same triple is refused at the SQL level.
+--
+-- The session_id foreign key CASCADEs because a deleted session
+-- takes its preparation history with it. The linked_shot_id
+-- foreign key SETs NULL because a finished shot is history even
+-- when the operator rolls the row back: the prepared snapshot
+-- keeps the prompt and the provenance, and only the soft link
+-- drops. Status names the four states 3.1 reserves for the
+-- future preparation and submission flow: ``pending`` (created,
+-- not finalized), ``ready`` (finalized, awaiting submission),
+-- ``invalidated`` (superseded by a later plan revision), and
+-- ``generated`` (submitted, the linked_shot_id points at the
+-- queued or done shot). 3.1 only writes the table; 3.2 / 4.x
+-- drives the writes.
+--
+-- Additive on purpose: the CREATE TABLE IF NOT EXISTS makes the
+-- migration safe to run repeatedly, no existing table is touched,
+-- and every legacy row survives.
+CREATE TABLE IF NOT EXISTS prepared_take (
+    id                INTEGER PRIMARY KEY,
+    session_id        INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    plan_revision     INTEGER NOT NULL,
+    take_id           TEXT NOT NULL,
+    final_prompt      TEXT NOT NULL DEFAULT '',
+    effective_state   TEXT NOT NULL DEFAULT '{}',
+    mapping_version   TEXT NOT NULL DEFAULT '',
+    compiler_version  TEXT NOT NULL DEFAULT '',
+    provenance        TEXT NOT NULL DEFAULT '{}',
+    status            TEXT NOT NULL DEFAULT 'pending',
+    linked_shot_id    INTEGER REFERENCES shot(id) ON DELETE SET NULL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE (session_id, plan_revision, take_id),
+    CHECK (plan_revision > 0),
+    CHECK (take_id <> ''),
+    CHECK (status IN ('pending', 'ready', 'invalidated', 'generated'))
+);
 """
 
 _conn: sqlite3.Connection | None = None

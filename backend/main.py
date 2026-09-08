@@ -43,6 +43,7 @@ from backend.importer import TranslationMissingError, import_source
 from backend.room_registry import DEFAULT_ROOM_LIBRARIES, available_rooms
 from backend.mining import combination_breakage, load_mined_combinations
 from backend import resource_service
+from backend import session_plan
 from backend.resource_import import CommitAborted, StaleFingerprintError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -177,6 +178,15 @@ class SessionIn(BaseModel):
     # `look` above carries the whole text either way, so nothing downstream
     # reads this to compose with. Empty is a look somebody typed.
     room_key: str = ""
+    # Which session-composition contract the session opts into (task
+    # 3.1). Empty is the legacy default and keeps every existing code
+    # path unchanged. ``"resource-v1"`` selects the new path: a draft
+    # plan is added through ``/api/sessions/{sid}/plan`` and the
+    # measured-catalogue gate plus the legacy ``_expand_shots`` call
+    # are skipped at create time. The route refuses any value other
+    # than ``""`` or ``"resource-v1"`` so a typo cannot silently
+    # change the contract.
+    composition_mode: str = ""
 
 
 class ComposeIn(BaseModel):
@@ -273,6 +283,14 @@ class SessionPatch(BaseModel):
     # makes "the text survives a detach" structural rather than a rule the
     # route has to remember.
     room_key: str | None = None
+    # Switching the session's composition contract (task 3.1). The empty
+    # string reverts a session to the legacy path. ``"resource-v1"``
+    # opts the session into the resource-v1 path. Any other value is
+    # refused at the route, so a typo cannot land a session in an
+    # unknown mode. The actual draft plan is NOT carried by this PATCH
+    # — it is added through ``/api/sessions/{sid}/plan`` with its own
+    # CAS revision.
+    composition_mode: str | None = None
 
 
 class ShotPatch(BaseModel):
@@ -1534,6 +1552,15 @@ def _resolve_session_checkpoint(workflow_id, settings, explicit=""):
     return graph_checkpoint(wf.get("graph") or {}, wf.get("node_map"))
 
 
+# The composition modes the routes accept on session create and patch.
+# Empty is the legacy default and is the answer for every existing
+# session; ``"resource-v1"`` selects the new path task 3.1 introduces.
+# A typo here would land a session in an unknown mode and silently
+# change every downstream dispatch, so the route validates the value
+# against this set rather than treating it as a free string.
+VALID_COMPOSITION_MODES: frozenset[str] = frozenset({"", session_plan.MODE_RESOURCE_V1})
+
+
 @app.post("/api/sessions")
 def create_session(s: SessionIn):
     model = db.one("SELECT * FROM model WHERE id=?", s.model_id)
@@ -1541,11 +1568,60 @@ def create_session(s: SessionIn):
         raise HTTPException(404, "model not found")
     if not (s.workflow_id or model["workflow_id"]):
         raise HTTPException(400, "neither the session nor the model has a workflow assigned")
+    if s.composition_mode not in VALID_COMPOSITION_MODES:
+        raise HTTPException(
+            400,
+            f"composition_mode must be one of {sorted(VALID_COMPOSITION_MODES)}, "
+            f"got {s.composition_mode!r}",
+        )
+    # Reserved-field guard: `composition_mode` lives on the top-level
+    # SessionIn field, not in the free-form `settings` dict. A
+    # payload that injects it through `settings` would otherwise set
+    # the mode without going through the top-level validation, which
+    # is how a "top-level says legacy, settings says resource-v1"
+    # hybrid could land. The check refuses the request outright: a
+    # silent strip would let the rest of the body through and the
+    # hybrid would survive, and there is no later point that catches
+    # the split — the dispatch only reads the merged settings.
+    if isinstance(s.settings, dict) and "composition_mode" in s.settings:
+        raise HTTPException(
+            400,
+            "composition_mode is a reserved field; set it through the "
+            "top-level SessionIn.composition_mode field, not through "
+            "the settings dict",
+        )
 
     settings = {"width": 1024, "height": 1024, "steps": 8, "cfg": 1.0,
                 "lora_strength": model["lora_strength"]}
-    settings.update(json.loads(model["settings"] or "{}"))
+    # `composition_mode` is a session-only field. The model row's
+    # settings can carry anything an operator typed in, and a key
+    # named `composition_mode` has no meaning on a model — the top-
+    # level ``SessionIn.composition_mode`` is the only create-time
+    # source of the session's mode. Strip the reserved key from the
+    # inherited set so a pre-existing model whose settings JSON
+    # happens to carry it cannot bleed the mode into a newly created
+    # session. The model row is NOT rewritten: only the dict this
+    # create call merges is filtered, and the rule is structural
+    # rather than a one-off migration.
+    inherited_model_settings = json.loads(model["settings"] or "{}")
+    if not isinstance(inherited_model_settings, dict):
+        inherited_model_settings = {}
+    inherited_model_settings = {
+        key: value
+        for key, value in inherited_model_settings.items()
+        if key != "composition_mode"
+    }
+    settings.update(inherited_model_settings)
     settings.update(s.settings)
+    # The mode lives in the session's settings JSON, not on a
+    # dedicated column: a legacy session has no key at all, and a
+    # resource-v1 session carries the value alongside its other
+    # resolved settings. Persisting the key only when the value is
+    # non-empty is what keeps a legacy session's stored settings
+    # byte-for-byte equal to the pre-3.1 shape — the empty default
+    # is the default.
+    if s.composition_mode:
+        settings["composition_mode"] = s.composition_mode
 
     # The session's effective checkpoint: explicit body field, then
     # settings.checkpoint, then the workflow's own loader. The function
@@ -1554,39 +1630,50 @@ def create_session(s: SessionIn):
     checkpoint = _resolve_session_checkpoint(
         s.workflow_id or model["workflow_id"], settings, s.checkpoint)
 
-    if s.manner and s.shots:
-        cam_count = db.one(
-            "SELECT COUNT(*) AS n FROM component WHERE slot='camera' AND manner=? AND retired_at IS NULL",
-            s.manner,
-        )["n"]
-        if cam_count == 0:
-            raise HTTPException(
-                422,
-                f"session creation refused: camera catalogue is empty for manner {s.manner!r}; "
-                f"import the measured catalogue via /api/components/import or add components before creating sessions",
-            )
-        kiss_map = {"directed": "front-direct", "candid": "front-arm-length", "selfie": "front-arm-length"}
-        kiss_cam_key = kiss_map.get(s.manner, "front-direct")
-        has_kiss_cam = db.one(
-            "SELECT 1 FROM component WHERE slot='camera' AND manner=? AND concept_key=? AND retired_at IS NULL",
-            s.manner, kiss_cam_key,
-        )
-        if not has_kiss_cam:
-            # `shot.prompt` and nothing else: `ShotIn` has no `take` field, so the
-            # second half of this test used to raise AttributeError on every shot
-            # whose prompt did NOT say "kiss" — the `or` short-circuits, so the
-            # only sessions that survived were the ones this guard exists to
-            # refuse. It made every shoot script a 500 while the app, which
-            # creates sessions with an empty shot list and composes after, never
-            # saw it.
-            is_kiss_session = any(
-                "kiss" in (shot.prompt or "").lower() for shot in s.shots
-            ) if s.shots else False
-            if is_kiss_session:
+    # The measured-catalogue gate is the legacy contract: a session
+    # that draws a (camera, act, framing) trio from the catalogue must
+    # have a measured manner AND a non-empty camera catalogue for it.
+    # A resource-v1 session does NOT draw from the measured catalogue
+    # (its camera/pose/expression is set per take in a future task), so
+    # the gate is irrelevant to it and would otherwise block a draft
+    # that intentionally has no measured entries. Skipping the gate is
+    # the structural guarantee "resource-v1 persistence does not
+    # invoke measured-catalogue gates" — the alternative would be a
+    # silent coupling between draft creation and the catalogue.
+    if s.composition_mode != session_plan.MODE_RESOURCE_V1:
+        if s.manner and s.shots:
+            cam_count = db.one(
+                "SELECT COUNT(*) AS n FROM component WHERE slot='camera' AND manner=? AND retired_at IS NULL",
+                s.manner,
+            )["n"]
+            if cam_count == 0:
                 raise HTTPException(
                     422,
-                    f"session creation refused: kiss frame requires camera {kiss_cam_key!r} in catalogue for manner {s.manner!r}",
+                    f"session creation refused: camera catalogue is empty for manner {s.manner!r}; "
+                    f"import the measured catalogue via /api/components/import or add components before creating sessions",
                 )
+            kiss_map = {"directed": "front-direct", "candid": "front-arm-length", "selfie": "front-arm-length"}
+            kiss_cam_key = kiss_map.get(s.manner, "front-direct")
+            has_kiss_cam = db.one(
+                "SELECT 1 FROM component WHERE slot='camera' AND manner=? AND concept_key=? AND retired_at IS NULL",
+                s.manner, kiss_cam_key,
+            )
+            if not has_kiss_cam:
+                # `shot.prompt` and nothing else: `ShotIn` has no `take` field, so the
+                # second half of this test used to raise AttributeError on every shot
+                # whose prompt did NOT say "kiss" — the `or` short-circuits, so the
+                # only sessions that survived were the ones this guard exists to
+                # refuse. It made every shoot script a 500 while the app, which
+                # creates sessions with an empty shot list and composes after, never
+                # saw it.
+                is_kiss_session = any(
+                    "kiss" in (shot.prompt or "").lower() for shot in s.shots
+                ) if s.shots else False
+                if is_kiss_session:
+                    raise HTTPException(
+                        422,
+                        f"session creation refused: kiss frame requires camera {kiss_cam_key!r} in catalogue for manner {s.manner!r}",
+                    )
 
     sid = db.run(
         """INSERT INTO session (model_id, name, look, wardrobe, workflow_id,
@@ -1597,7 +1684,14 @@ def create_session(s: SessionIn):
         json.dumps(_valid_anchors(s.anchor_shot_ids)), json.dumps(settings),
         s.manner, checkpoint, s.room_key.strip(), db.now(),
     )
-    _expand_shots(sid, model, _look_for(settings, s.look), s.wardrobe, s.shots, s.seed_mode, s.seed)
+    # ``_expand_shots`` is the legacy shot expansion: it composes the
+    # session's look/wardrobe into each take's prompt and writes the
+    # row. A resource-v1 session carries its look/wardrobe on the
+    # plan, not on a list of takes at create time, so the legacy
+    # expansion is skipped. The plan is added later through
+    # ``/api/sessions/{sid}/plan``.
+    if s.composition_mode != session_plan.MODE_RESOURCE_V1:
+        _expand_shots(sid, model, _look_for(settings, s.look), s.wardrobe, s.shots, s.seed_mode, s.seed)
     return {"id": sid}
 
 
@@ -1616,6 +1710,58 @@ def update_session(sid: int, p: SessionPatch):
     row = db.one("SELECT * FROM session WHERE id=?", sid)
     if not row:
         raise HTTPException(404, "session not found")
+    # Reserved-field guard, the PATCH mirror of the create_session
+    # check. A PATCH that injects the mode through `settings` would
+    # write the key into the merged settings without going through
+    # the top-level validation, which is the same hybrid-bypass the
+    # create path refuses. The check runs before the orphan-plan
+    # guard and before any settings write, so a refused PATCH leaves
+    # every row — settings, plan, plan_revision — byte-for-byte
+    # unchanged.
+    if p.settings is not None and isinstance(p.settings, dict) and "composition_mode" in p.settings:
+        raise HTTPException(
+            400,
+            "composition_mode is a reserved field; set it through the "
+            "top-level SessionPatch.composition_mode field, not through "
+            "the settings dict",
+        )
+    if p.composition_mode is not None:
+        if p.composition_mode not in VALID_COMPOSITION_MODES:
+            raise HTTPException(
+                400,
+                f"composition_mode must be one of {sorted(VALID_COMPOSITION_MODES)}, "
+                f"got {p.composition_mode!r}",
+            )
+        # Switching the mode of a session that already carries a
+        # resource-v1 plan would orphan that plan, so the route refuses
+        # the change rather than rewriting it silently. A legacy
+        # session with no plan can flip in either direction: it has
+        # nothing to orphan. The current mode is read from the
+        # session's settings JSON, since that is where the value lives
+        # at rest.
+        current_mode = session_plan.read_composition_mode(row["settings"])
+        if current_mode != p.composition_mode and session_plan.current_revision(sid) > 0:
+            raise HTTPException(
+                400,
+                "composition_mode cannot be changed while a resource-v1 "
+                "draft plan is saved; clear the plan first",
+            )
+    # Compute the merged settings ONCE, so a PATCH that sends both
+    # ``settings`` and ``composition_mode`` lands as one UPDATE rather
+    # than two. The mode is merged into the same dict the rest of the
+    # session's resolved settings live in; an empty mode removes the
+    # key, so a legacy session does not carry the field at all.
+    new_settings: dict | None = None
+    if p.settings is not None:
+        new_settings = json.loads(row["settings"] or "{}")
+        new_settings.update(p.settings)
+    if p.composition_mode is not None:
+        if new_settings is None:
+            new_settings = json.loads(row["settings"] or "{}")
+        if p.composition_mode == "":
+            new_settings.pop("composition_mode", None)
+        else:
+            new_settings["composition_mode"] = p.composition_mode
     if p.name is not None:
         db.run("UPDATE session SET name=? WHERE id=?", p.name, sid)
     if p.wardrobe is not None:
@@ -1624,9 +1770,14 @@ def update_session(sid: int, p: SessionPatch):
         db.run("UPDATE session SET wardrobe=? WHERE id=?", p.wardrobe, sid)
     if p.workflow_id is not None:
         db.run("UPDATE session SET workflow_id=? WHERE id=?", p.workflow_id or None, sid)
-    if p.settings is not None:
+    if new_settings is not None:
         db.run("UPDATE session SET settings=? WHERE id=?",
-               json.dumps({**json.loads(row["settings"] or "{}"), **p.settings}), sid)
+               json.dumps(new_settings), sid)
+        # Refresh the row so the checkpoint re-derivation below
+        # reads the merged settings, not the row as it stood
+        # before the PATCH landed. The same trick ``_resolve_session_checkpoint``
+        # relies on for the workflow-swap path.
+        row = db.one("SELECT * FROM session WHERE id=?", sid)
     # Re-derive the session's effective checkpoint when the source of
     # truth changed: a workflow swap, a settings.checkpoint override
     # move, or both. Without this, the cell table key stays on the old
@@ -1666,6 +1817,73 @@ def update_session(sid: int, p: SessionPatch):
                json.dumps(_clean_tags(p.tags)), sid)
     return db.jload(db.one("SELECT * FROM session WHERE id=?", sid),
                     "settings", "anchor_shot_ids", "tags")
+
+
+class PlanDraftIn(BaseModel):
+    """The body of a resource-v1 plan save.
+
+    ``plan`` is the validated draft: ``version``, ``look``,
+    ``initial_wardrobe``, ``takes``, ``selected_resources`` and
+    ``wardrobe_changes``. ``expected_revision`` is the compare-and-swap
+    token the caller last read; a stale value is refused with 409
+    without mutating the row.
+    """
+    plan: dict
+    expected_revision: int = 0
+
+
+@app.post("/api/sessions/{sid}/plan")
+def save_plan_draft(sid: int, p: PlanDraftIn):
+    """Save a resource-v1 plan draft with compare-and-swap.
+
+    The route is the only path that writes to ``session_plan``: every
+    save flows through ``session_plan.save_draft`` so the validation
+    and the CAS check live in one place. Errors are mapped to HTTP
+    codes by the table at the bottom of this route — a typo or a
+    missing revision is a 422, a stale revision is a 409, a wrong
+    mode is a 400, a missing session is a 404.
+    """
+    try:
+        new_revision = session_plan.save_draft(
+            sid, p.plan, p.expected_revision,
+        )
+    except session_plan.PlanValidationError as exc:
+        raise HTTPException(422, str(exc))
+    except session_plan.PlanRevisionStale as exc:
+        raise HTTPException(409, str(exc))
+    except session_plan.SessionNotInResourceMode as exc:
+        raise HTTPException(400, str(exc))
+    except session_plan.SessionNotFound as exc:
+        raise HTTPException(404, str(exc))
+    return {"plan_revision": new_revision}
+
+
+@app.get("/api/sessions/{sid}/plan")
+def get_plan_draft(sid: int):
+    """Return the current resource-v1 plan draft.
+
+    A session with no row in ``session_plan`` reads as a 404: legacy
+    sessions have no plan, and a resource-v1 session that has not
+    saved a draft yet is also no-row. The route refuses to fabricate
+    a default draft, because a fabricated default would let a
+    client confuse "no plan" with "empty plan". The mode check
+    reads from the session's settings JSON, where the value lives
+    at rest, not from a dedicated column.
+    """
+    row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
+    if row is None:
+        raise HTTPException(404, "session not found")
+    mode = session_plan.read_composition_mode(row["settings"])
+    if mode != session_plan.MODE_RESOURCE_V1:
+        raise HTTPException(
+            400,
+            f"session {sid} composition_mode is {mode!r}, expected "
+            f"{session_plan.MODE_RESOURCE_V1!r}",
+        )
+    draft = session_plan.get_draft(sid)
+    if draft is None:
+        raise HTTPException(404, "no plan draft for this session")
+    return draft
 
 
 def _valid_anchors(ids: list[int]) -> list[int]:
