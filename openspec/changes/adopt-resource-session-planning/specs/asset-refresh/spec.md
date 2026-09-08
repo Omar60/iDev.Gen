@@ -50,7 +50,7 @@ refused, naming what it could not identify, and SHALL write nothing.
 - **WHEN** a source declared as carrying material this project does not adopt is uploaded
 - **THEN** it is refused with that reason, distinct from an unidentified file, and nothing is written
 
-### Requirement: Translation runs before anything is written
+### Requirement: Refusal and translation run before anything is written
 
 These requirements apply to the legacy room-seed import path. The database resource import path SHALL instead follow resource-store, including complete private payload retention, explicit readiness and source revision preservation. The import-side refusal of prohibited content is no longer in force on either path. Translation readiness and destination handling are path-specific.
 
@@ -72,6 +72,10 @@ was.
 #### Scenario: Completing the map and uploading again
 - **WHEN** the listed strings are added to the map and the same file is uploaded
 - **THEN** the import proceeds
+
+#### Scenario: A refused entry in an uploaded source
+- **WHEN** an uploaded source contains an entry that the retired import-side content rule would have refused
+- **THEN** the entry follows the declared handler and translation path and is not filtered by content
 
 ### Requirement: A refresh preserves what has been measured
 

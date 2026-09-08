@@ -219,21 +219,21 @@
   > - `python -m pytest tests/test_shoot_checks.py` (36 pass;
   >   no control characters, no trailing whitespace in the new files)
   > - `git diff --check` is clean (no whitespace errors)
-- [ ] 2.2 Implement shared resource parsing before persistence, retaining accepted unfamiliar fields and reporting unsupported shapes; verify invented fixtures cover fused records, auxiliary files and malformed input, and that no source entry is filtered out of the database or the import report by content.
-- [ ] 2.3 Implement preview and atomic commit bound to source fingerprints; verify changed-source rejection, duplicate-ID reporting, simulated transaction failure rollback and count reconciliation across all outcomes.
-- [ ] 2.4 Implement translation-pending readiness separately from original payload retention; verify accepted untranslated data stays private, English output readiness is enforced and legacy translation-first imports retain their behavior.
-- [ ] 2.5 Add resource list/detail and import operations plus a CLI entry using the same service; verify both entry points produce equal revisions and reports and source refresh does not mutate previous snapshots or evidence.
+- [x] 2.2 Implement shared resource parsing before persistence, retaining accepted unfamiliar fields and reporting unsupported shapes; verify invented fixtures cover fused records, auxiliary files and malformed input, and that no source entry is filtered out of the database or the import report by content.
+- [x] 2.3 Implement preview and atomic commit bound to source fingerprints; verify changed-source rejection, duplicate-ID reporting, simulated transaction failure rollback and count reconciliation across all outcomes.
+- [x] 2.4 Implement translation-pending readiness separately from original payload retention; verify accepted untranslated data stays private, English output readiness is enforced and legacy translation-first imports retain their behavior.
+- [x] 2.5 Add resource list/detail and import operations plus a CLI entry using the same service; verify both entry points produce equal revisions and reports and source refresh does not mutate previous snapshots or evidence.
 
 ## 3. Session state and persistence
 
-- [ ] 3.1 Add explicit resource composition mode, session-plan persistence and prepared-take snapshots with stable take IDs; verify absent mode keeps legacy behavior and stale draft revisions cannot overwrite newer saves.
-- [ ] 3.2 Implement effective wardrobe resolution with this-take and from-here changes; verify constant defaults, a jacket from take seven, isolated overrides, removal of a change and reorder across change boundaries.
-- [ ] 3.3 Enforce constant identity/look and explicit preparation invalidation; verify source suggestions cannot overwrite fixed choices and queued/generated snapshots remain intact after draft edits.
-- [ ] 3.4 Persist each completed preparation and mark interrupted work resumable; verify reopening after three of twelve takes retains those results and resumes only incomplete work, including visible persistence failures.
+- [x] 3.1 Add explicit resource composition mode, session-plan persistence and prepared-take snapshots with stable take IDs; verify absent mode keeps legacy behavior and stale draft revisions cannot overwrite newer saves.
+- [x] 3.2 Implement effective wardrobe resolution with this-take and from-here changes; verify constant defaults, a jacket from take seven, isolated overrides, removal of a change and reorder across change boundaries.
+- [x] 3.3 Enforce constant identity/look and explicit preparation invalidation; verify source suggestions cannot overwrite fixed choices and queued/generated snapshots remain intact after draft edits.
+- [x] 3.4 Persist each completed preparation and mark interrupted work resumable; verify reopening after three of twelve takes retains those results and resumes only incomplete work, including visible persistence failures.
 
 ## 4. Resource-based prompt preparation
 
-- [ ] 4.1 Implement deterministic preparation from declared resource mappings and effective state, with manual completion available without an assistant; verify unused metadata and source instructions never become accidental prompt clauses or executable instructions.
+- [x] 4.1 Implement deterministic preparation from declared resource mappings and effective state, with manual completion available without an assistant; verify unused metadata and source instructions never become accidental prompt clauses or executable instructions.
 - [ ] 4.2 Add visible conflict handling and separately stored adaptations for fused descriptions; verify original payload preservation, fixed wardrobe precedence and unresolved-placeholder refusal using invented non-explicit scenes.
 - [ ] 4.3 Integrate optional assistant synthesis for unlocked fields and save its inputs/outputs; verify fixed choices survive preparation and repeating a finalized take requires no new writer request.
 - [ ] 4.4 Save exact prompts with source and preparation versions; verify source refresh, translation edits and model-writer changes cannot rewrite an already finalized prompt.

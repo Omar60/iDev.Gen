@@ -16,6 +16,8 @@ config.json
 # teach one editor to read it are not.
 .claude/
 .agent/
+.agents/
+.codex/
 
 # Canvas state for the nodeterm session tool: machine paths, one per checkout.
 .nodeterm/
