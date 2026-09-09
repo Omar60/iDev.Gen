@@ -375,7 +375,40 @@
   > - `git diff --check` (clean: zero matches for `No newline`, `trailing whitespace`, `space before tab` or `indent` errors; only the Windows CRLF/LF informational warnings the rest of the working tree carries)
   > - `git status --short` shows exactly the five intended paths and no private artifact (`config.json`, `data/`, `frontend/dist/`, source corpus, images, operator paths): `M backend/resource_import.py`, `M backend/session_plan.py`, `M openspec/changes/adopt-resource-session-planning/tasks.md`, `M tests/test_session_plan.py`, `?? tests/test_resource_session_acceptance.py`.
 
-- [ ] 6.3 Deliver a private corpus coverage report from the actual operator-selected sources, accounting for every library and field without publishing source prose; verify every accepted supported resource has a declared use and every unsupported item remains explicitly reported. Do not call pending mapping work complete adoption.
+- [x] 6.3 Deliver a private corpus coverage report from the actual operator-selected sources, accounting for every library and field without publishing source prose; verify every accepted supported resource has a declared use and every unsupported item remains explicitly reported. Do not call pending mapping work complete adoption.
+
+  > 6.3 status: **complete.** The private corpus coverage and adoption
+  > report was implemented, verified against focused test fixtures, and
+  > executed directly on the operator-selected source libraries:
+  >
+  > - **Cross-referencing coverage layer (`backend/resource_coverage.py`)**:
+  >   - Implemented `build_coverage_report(ledger)` and `save_coverage_report(report, path)`.
+  >   - Reconciles every discovered file and field observation 1:1 against the preparation mapping contract (`backend.resource_prompts.classify_field`).
+  >   - Separates dispositions into `usable` (scene resources with all fields mapped), `auxiliary` (recognized pipeline resources), and `pending` (unsupported shapes, undeclared, non-adopted, or carrying unmapped fields).
+  >   - Separates retention capability (`usable_scene_resource`, `auxiliary_pipeline_data`, `not_adopted`, `unsupported_shape`, `undeclared`, `retained_structural`) from physical SQLite storage claims.
+  >   - Records `compiled_behavior` for `fused_scenes` as `unverified` without claiming external parity.
+  >   - Distinguishes `coverage_complete` from `adoption_complete`: `coverage_complete` is true when every discovered file and field is accounted for and all pending items have explicit reasons; `adoption_complete` is true only when coverage is complete and zero files or fields remain pending.
+  > - **Reproducible coverage CLI utility (`scripts/report_resource_coverage.py`)**:
+  >   - Provides a CLI accepting `source_dir`, `--aux-path` (repeatable `PATH:KIND`), `--output` (`-o`), `--json`, and `--quiet`.
+  >   - Connects `inventory_source_dir` directly to the coverage layer and writes the report to `data/resource-coverage-report.json`.
+  > - **Execution on actual operator corpus**:
+  >   - Discovered 9 files: 7 usable scene resources, 0 auxiliary resources, and 2 pending adoption resources.
+  >   - Discovered 79 field observations: 75 mapped, 4 unmapped, 38 intentionally unused with explicit reasons.
+  >   - The two pending files (`amateurs` with kind `body_profiles`, `celebrities` with kind `identities`) remain explicitly reported as `not_adopted` with their structural schemas and reasons intact.
+  >   - The 4 unmapped fields belong strictly to the 2 non-adopted libraries; all 7 usable scene libraries have 100% of their fields declared.
+  >   - Real execution outcomes: `coverage_complete = True`, `adoption_complete = False`.
+  >   - Report output was verified to be strictly untracked and gitignored under `data/`.
+  >   - Structural privacy verified: no absolute paths, no personal data, no CJK glyphs, and no source values or prose.
+  > - **Comprehensive test coverage (`tests/test_resource_coverage.py`)**:
+  >   - 18 dedicated unit and integration tests using invented English fixtures covering all dispositions, Windows drive letter aux-path parsing, unmapped detection, intentionally unused reasons, writer guidance name rules, fused scenes unverified behavior, auxiliary separation, empty ledger conservativism, count reconciliation, privacy scans, and CLI invocation.
+  >
+  > Verification commands and outcomes (all pass):
+  > - `python -m pytest tests/test_resource_coverage.py` (18 passed in 1.35s)
+  > - `python -m pytest tests/test_resource_coverage.py tests/test_resource_ledger.py tests/test_no_personal_data.py` (91 passed in 3.71s)
+  > - `python -m pytest tests/test_shoot_checks.py tests/test_no_personal_data.py` (46 passed in 7.03s)
+  > - `python -m pytest` (1286 passed, 0 failed in 71.85s)
+  > - `git diff --check` (clean)
+  > - `npx --yes @fission-ai/openspec validate adopt-resource-session-planning --strict` (valid)
 - [ ] 6.4 Update README and matching session/import/limitations documentation, including technical restrictions retired, original-language private storage, reference behavior and lack of pixel-level continuity guarantees; verify descriptions against delivered behavior.
 - [ ] 6.5 Run the complete backend suite with `python -m pytest`, frontend tests with `npm --prefix frontend test`, and production build with `npm --prefix frontend run build`; verify all pass, data/config/build outputs stay untracked and no new public artifact contains personal data or source corpus text.
 - [ ] 6.6 Validate the completed change with OpenSpec and review the acceptance evidence before enabling resource mode by default for new sessions; verify all tasks are supported by actual checks and legacy entry remains available.
