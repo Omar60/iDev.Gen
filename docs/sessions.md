@@ -1508,8 +1508,16 @@ cleaner when it is one or the other.
 
 ## Resource-based session drafts (resource-v1)
 
-A session can also be initialized from an accepted resource revision via the
-**Resources** browser (`#/resources`).
+**+ New session** from a model opens the **Resources** browser with that model
+preselected. The user then chooses an exact accepted revision marked `ready`
+and starts a `resource-v1` draft. Direct navigation to `#/resources` remains
+available and selects an existing model when possible.
+
+The explicit **Legacy session** action opens the previous measured-catalogue
+composer. The API contract also remains backward compatible: a create payload
+without `composition_mode` is legacy, existing legacy sessions are not
+migrated, and disabling `resource_planning_enabled` blocks resource writes
+without removing the legacy entry.
 
 Unlike legacy sessions which expand shots immediately upon creation and depend
 on the measured component catalogue, a `resource-v1` session draft:

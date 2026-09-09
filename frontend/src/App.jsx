@@ -104,7 +104,7 @@ export default function App() {
       <main>
         {view === 'model' && <ModelDetail id={Number(arg)} />}
         {view === 'session' && <SessionView id={Number(arg)} />}
-        {view === 'resources' && <Resources />}
+        {view === 'resources' && <Resources requestedModelId={arg} />}
         {view === 'judge' && <Judge />}
         {view === 'catalogue' && <Catalogue />}
         {view === 'rooms' && <RoomImport />}

@@ -8,9 +8,10 @@ import {
   checkReadiness,
   buildSessionDraftPayload,
   parsePreviewSummary,
+  selectAvailableModelId,
 } from '../resources.js'
 
-export default function Resources() {
+export default function Resources({ requestedModelId = '' }) {
   const [tab, setTab] = useState('inventory') // 'inventory' | 'import'
   const [libraries, setLibraries] = useState([])
   const [models, setModels] = useState([])
@@ -43,9 +44,7 @@ export default function Resources() {
       .then((data) => {
         const list = data || []
         setModels(list)
-        if (list.length > 0 && !selectedModelId) {
-          setSelectedModelId(String(list[0].id))
-        }
+        setSelectedModelId((current) => selectAvailableModelId(list, current || requestedModelId))
       })
       .catch(() => {})
   }
@@ -53,7 +52,7 @@ export default function Resources() {
   useEffect(() => {
     reloadLibraries()
     reloadModels()
-  }, [])
+  }, [requestedModelId])
 
   // Inspection drawer fetch
   const toggleDetail = async (libraryKey, revision) => {

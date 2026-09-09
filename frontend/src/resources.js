@@ -118,6 +118,25 @@ export function checkReadiness(revision) {
   }
 }
 
+/** Define the normal resource entry and the explicit legacy alternative. */
+export function sessionCreationActions(modelId) {
+  return {
+    primary: {
+      mode: 'resource-v1',
+      path: `/resources/${encodeURIComponent(String(modelId))}`,
+    },
+    legacy: { mode: 'legacy' },
+  }
+}
+
+/** Select a requested model only when it still exists, otherwise use a safe fallback. */
+export function selectAvailableModelId(models, requestedModelId = '') {
+  const available = models || []
+  const requested = String(requestedModelId || '')
+  const match = available.find((model) => String(model.id) === requested)
+  return String(match?.id ?? available[0]?.id ?? '')
+}
+
 /** Extract the exact immutable (library_key, source_id, content_digest) triple. */
 export function exactRevisionTriple(libraryKey, revision) {
   const libKey = String(libraryKey || '').trim()

@@ -21,6 +21,7 @@ import {
   allTags, filterRooms, guidanceLines, openingLook, pickerRooms, roomChoice,
   refillLook, roomOption, verdictLabel,
 } from '../rooms.js'
+import { sessionCreationActions } from '../resources.js'
 
 // A row says which manners its PLACE makes sense under, and most say "any" -
 // the register left the text in the split, so candid's bedroom is a bedroom and
@@ -86,6 +87,7 @@ export default function ModelDetail({ id }) {
   const ROOMS = pickerRooms(BUILT_IN, servedRooms)
   // The room the look came from, or nothing for a look somebody typed.
   const ROOM = ROOMS.find((r) => r.key === roomKey) || null
+  const sessionActions = sessionCreationActions(id)
 
   if (!model) return <p className="muted">{error || 'Loading…'}</p>
 
@@ -185,7 +187,8 @@ export default function ModelDetail({ id }) {
         <h1>{model.name}</h1>
         <div className="row">
           <button onClick={() => setEdit(edit ? null : { ...model })}>{edit ? 'Cancel' : 'Edit'}</button>
-          <button className="primary" onClick={startSession} disabled={!!newSession}>+ New session</button>
+          <button className="primary" onClick={() => go(sessionActions.primary.path)}>+ New session</button>
+          <button onClick={startSession} disabled={!!newSession}>Legacy session</button>
           <button className="danger" onClick={async () => {
             if (confirm(`Delete the model "${model.name}" and all its sessions?`)) {
               await api.del(`/api/models/${id}`); go('/models')
@@ -208,7 +211,7 @@ export default function ModelDetail({ id }) {
 
       {newSession && (
         <div className="panel" style={{ margin: '14px 0' }}>
-          <h3>New session</h3>
+          <h3>Legacy session</h3>
           <div className="row" style={{ marginBottom: 4 }}>
             {Object.entries(KINDS).map(([k, spec]) => (
               <button key={k} className={'chip' + (kind === k ? ' on' : '')}

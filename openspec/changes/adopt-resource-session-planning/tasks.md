@@ -492,4 +492,59 @@
   > - The complete backend suite kept the repository privacy and text-integrity guards green.
   > - `config.json`, private/generated `data/` outputs, and `frontend/dist/` remain ignored and untracked. Existing allowlisted public data seeds remain tracked and unchanged; no new tracked artifact contains source corpus text or personal data.
   > - No GPU, running ComfyUI instance, or network was used by the test suites.
-- [ ] 6.6 Validate the completed change with OpenSpec and review the acceptance evidence before enabling resource mode by default for new sessions; verify all tasks are supported by actual checks and legacy entry remains available.
+- [x] 6.6 Validate the completed change with OpenSpec and review the acceptance evidence before enabling resource mode by default for new sessions; verify all tasks are supported by actual checks and legacy entry remains available.
+
+  > 6.6 status: **complete.** The acceptance evidence was reviewed against the
+  > current implementation and runnable checks before changing the normal UI
+  > entry for a new session:
+  >
+  > - **Default and compatibility:** `+ New session` now routes from a model to
+  >   `#/resources/<model-id>`, where the model is selected only if it still
+  >   exists and otherwise falls back to an available model. The existing
+  >   composer remains available as the explicit `Legacy session` action.
+  >   Resources still requires an exact `ready` revision and creates the draft
+  >   through `buildSessionDraftPayload` with `composition_mode: "resource-v1"`.
+  >   `backend/main.py::SessionIn.composition_mode` remains `""`, so omitted
+  >   mode is legacy and operational rollback still leaves the legacy entry.
+  > - **New regression coverage:** `frontend/src/resources.test.js` structurally
+  >   verifies the primary resource and explicit legacy actions, requested-model
+  >   selection, invalid/direct-navigation fallback, zero-model handling, and
+  >   the existing exact-revision resource payload contract.
+  > - **Tasks 1.1-2.5 evidence:** resource inventory/mappings, legacy fixtures,
+  >   additive immutable storage, parsing, atomic import/readiness, service, and
+  >   CLI delivery were matched to `backend/resource_ledger.py`,
+  >   `backend/resource_prompts.py`, `backend/resource_store.py`,
+  >   `backend/resource_parser.py`, `backend/resource_import.py`,
+  >   `backend/resource_readiness.py`, `backend/resource_service.py`, and their
+  >   `test_resource_ledger`, `test_legacy_session_baseline`,
+  >   `test_resource_store`, `test_resource_parser`, `test_resource_import`, and
+  >   `test_resource_service` checks.
+  > - **Tasks 3.1-4.6 evidence:** mode dispatch, CAS plans, wardrobe resolution,
+  >   invalidation/recovery, deterministic preparation, adaptations, synthesis,
+  >   frozen provenance, unique submission, and catalogue isolation were matched
+  >   to `backend/session_plan.py`, `backend/resource_preparation.py`, the session
+  >   routes in `backend/main.py`, and `test_session_plan`,
+  >   `test_resource_preparation`, `test_resource_session_acceptance`, and
+  >   `test_legacy_session_baseline`.
+  > - **Tasks 5.1-6.5 evidence:** resource browsing/session review UI, wardrobe
+  >   controls, selected-take submission, backup/rollback, twelve-portrait
+  >   acceptance, coverage, and documentation were matched to
+  >   `frontend/src/views/Resources.jsx`, `frontend/src/views/SessionView.jsx`,
+  >   `frontend/src/resources.js`, `frontend/src/sessionPlan.js`,
+  >   `backend/backup.py`, `backend/resource_coverage.py`, their frontend tests,
+  >   and `test_backup_upgrade_rollback`, `test_resource_session_acceptance`,
+  >   `test_resource_coverage`, and `test_resource_service`.
+  > - **Fresh verification:** focused backend regressions passed (119 tests);
+  >   frontend tests passed (11 files, 256 tests); the production build passed
+  >   (60 modules, with the existing chunk-size warning); strict OpenSpec
+  >   validation passed; and the complete backend suite passed (1287 tests,
+  >   3 warnings). The first sandboxed backend run was not counted as product
+  >   evidence because esbuild was denied access to its temporary probes; the
+  >   same complete suite passed outside that sandbox restriction.
+  > - **Coverage truth preserved:** the verified report contract continues to
+  >   distinguish `coverage_complete = True` from
+  >   `adoption_complete = False`; no complete-corpus adoption is claimed.
+  > - **Integrity:** `git diff --check` is clean. The full suite kept privacy and
+  >   text-integrity checks green; no `config.json`, private/generated `data/`,
+  >   source corpus, image, operator path, or tracked `frontend/dist/` artifact
+  >   was added.

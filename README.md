@@ -147,6 +147,14 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
   session draft bound to an explicitly chosen character model, with no CLI or
   external scripts needed.
 
+From a model, **+ New session** is the normal entry to this resource-planning
+flow and keeps that model selected while the user chooses an exact `ready`
+resource revision. **Legacy session** opens the previous measured-catalogue
+composer explicitly. The API remains backward compatible: omitting
+`composition_mode` creates a legacy session, existing legacy sessions are not
+migrated, and disabling `resource_planning_enabled` leaves the legacy entry
+available.
+
 ### Database backup and operational rollback
 
 Before migrations or schema upgrades, create a verified WAL-consistent snapshot of the SQLite database:

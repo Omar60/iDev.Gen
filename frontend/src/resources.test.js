@@ -4,6 +4,8 @@ import {
   extractCategories,
   filterLibraries,
   checkReadiness,
+  sessionCreationActions,
+  selectAvailableModelId,
   exactRevisionTriple,
   buildSessionDraftPayload,
   parsePreviewSummary,
@@ -192,6 +194,30 @@ describe('resources module', () => {
       const verdict = checkReadiness(barePending)
       expect(verdict.isReady).toBe(false)
       expect(verdict.reasons).toContain('Revision is pending required translations or adaptations')
+    })
+  })
+
+  describe('session entry selection', () => {
+    const models = [
+      { id: 42, name: 'InventedModel' },
+      { id: 84, name: 'SecondModel' },
+    ]
+
+    it('uses resource planning as the normal entry and keeps legacy explicit', () => {
+      expect(sessionCreationActions(42)).toEqual({
+        primary: { mode: 'resource-v1', path: '/resources/42' },
+        legacy: { mode: 'legacy' },
+      })
+    })
+
+    it('selects an existing requested model', () => {
+      expect(selectAvailableModelId(models, '84')).toBe('84')
+    })
+
+    it('falls back safely when the requested model is invalid or absent', () => {
+      expect(selectAvailableModelId(models, '999')).toBe('42')
+      expect(selectAvailableModelId(models)).toBe('42')
+      expect(selectAvailableModelId([], '42')).toBe('')
     })
   })
 
