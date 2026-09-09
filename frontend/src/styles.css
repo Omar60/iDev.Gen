@@ -105,6 +105,12 @@ a.badge:hover { text-decoration: none; background: var(--panel-2); }
 .badge.running { color: var(--accent); border-color: var(--accent); }
 .badge.done { color: var(--good); border-color: var(--good); }
 .badge.failed { color: var(--bad); border-color: var(--bad); }
+.badge.ready { color: var(--good); border-color: var(--good); }
+.badge.pending { color: var(--warn); border-color: var(--warn); }
+.badge.new { color: var(--good); border-color: var(--good); }
+.badge.updated { color: var(--accent); border-color: var(--accent); }
+.badge.unchanged { color: var(--muted); border-color: var(--line); }
+.badge.unresolved { color: var(--bad); border-color: var(--bad); }
 
 .progress { height: 6px; background: var(--panel-2); border-radius: 99px; overflow: hidden; min-width: 160px; flex: 1; }
 .progress > div { height: 100%; background: var(--accent); transition: width .3s; }

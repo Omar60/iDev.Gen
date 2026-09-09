@@ -110,6 +110,19 @@ secret stays in the configured data directory and is never serialized. It
 expires after one day and is consumed by a successful commit, so do not move
 or edit the preview between preview and commit.
 
+The web UI provides a dedicated **Resources** view (`#/resources`):
+- **Inventory Browser**: Filter imported resources by free-text and data kind,
+  inspect readiness, exact immutable revision identities
+  (`library_key` + `source_id` + `content_digest`), and classified field roles
+  (`descriptive input`, `selection metadata`, `writer guidance`, `auxiliary data`,
+  `unused data`).
+- **Import Preview & Commit**: Input source file selections, run a preview to
+  verify all outcomes (`new`, `unchanged`, `updated`, `unresolved`, auxiliary,
+  duplicates, missing), and commit verified sets into SQLite.
+- **Start Session**: Ready and mapped revisions can start a `resource-v1`
+  session draft bound to an explicitly chosen character model, with no CLI or
+  external scripts needed.
+
 ## Library
 
 Sessions are reachable through the model that owns them — **Library** lists

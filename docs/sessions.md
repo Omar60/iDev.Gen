@@ -1484,6 +1484,24 @@ once both paths have written a row into it. Nothing stops you mixing them — th
 per-row record is what the judge reads — but a session shot for measurement is
 cleaner when it is one or the other.
 
+## Resource-based session drafts (resource-v1)
+
+A session can also be initialized from an accepted resource revision via the
+**Resources** browser (`#/resources`).
+
+Unlike legacy sessions which expand shots immediately upon creation, a
+`resource-v1` session draft:
+- Stores `composition_mode: "resource-v1"` on the session.
+- Binds character identity strictly to the user-selected model. Resource
+  identity suggestions cannot override the chosen character or session constants.
+- Attaches the selected resource via its exact immutable revision triple
+  (`library_key`, `source_id`, `content_digest`) persisted in a versioned
+  draft plan (`/api/sessions/{sid}/plan`).
+- Does not invoke legacy measured-catalogue gates at creation time.
+- Requires the resource revision to be marked `ready` by the backend. A pending
+  revision (e.g. missing required English translations) cannot start a draft,
+  and its specific blocking reasons are shown in the interface.
+
 ## Component Catalogue & Judging
 
 iDev.Gen manages prompt components across three slots (**camera**, **act**, **framing**) and three manners (**directed**, **candid**, **selfie**).

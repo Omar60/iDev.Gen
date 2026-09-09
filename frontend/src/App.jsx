@@ -12,6 +12,7 @@ import Slideshow from './views/Slideshow.jsx'
 import { Judge } from './views/Judge.jsx'
 import Catalogue from './views/Catalogue.jsx'
 import RoomImport from './views/RoomImport.jsx'
+import Resources from './views/Resources.jsx'
 
 // Hash router: three views plus one detail page. react-router would be a whole
 // dependency for what `location.hash` already does. The query string is
@@ -88,6 +89,7 @@ export default function App() {
         <nav>
           <a href="#/models">Models</a>
           <a href="#/sessions">Sessions</a>
+          <a href="#/resources">Resources</a>
           <a href="#/judge">Judge</a>
           <a href="#/catalogue">Catalogue</a>
           <a href="#/library">Library</a>
@@ -102,6 +104,7 @@ export default function App() {
       <main>
         {view === 'model' && <ModelDetail id={Number(arg)} />}
         {view === 'session' && <SessionView id={Number(arg)} />}
+        {view === 'resources' && <Resources />}
         {view === 'judge' && <Judge />}
         {view === 'catalogue' && <Catalogue />}
         {view === 'rooms' && <RoomImport />}
