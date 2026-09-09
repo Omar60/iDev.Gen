@@ -77,8 +77,32 @@ being broken. See [sessions](docs/sessions.md#composing-from-the-catalogue).
 ## Resource libraries
 
 The resource path keeps complete accepted entries and immutable revisions in the
-local SQLite database without changing the legacy Rooms import. The app exposes
-library and exact-revision inspection at `/api/resources/libraries` and
+local SQLite database without changing the legacy Rooms import. The SQLite
+resource database path (`/api/resources/...`) preserves accepted source entries
+in their original language as private local storage, keeping nested structures
+and original strings intact without flattening. The original payload is stored
+separately from English translations and derived field coverage.
+
+Lacking a required English translation does not discard or silently translate
+an accepted resource; instead, its preparation readiness remains pending until
+translated. Source payloads and private translations remain local and untracked;
+tracked code, UI, documentation, and tests remain strictly English-only.
+
+Fused scene resources can be stored complete in the resource database. Decomposing
+a fused scene into separate camera, act, and room components is required only
+when targeting legacy room seeds or measured component catalogue rows;
+decomposition is not a prerequisite for resource storage or resource-session
+preparation. Unresolved template placeholders in a stored fused scene remain
+retained in the source payload, but block final prompt preparation until
+explicitly resolved.
+
+Resource-based session drafts (`resource-v1`) do not depend on the measured
+component catalogue or catalogue cell uniqueness. Deliberate repetition of
+cameras or poses is fully supported, and an empty measured catalogue does not
+block resource draft creation or preparation.
+
+The app exposes library and exact-revision inspection at
+`/api/resources/libraries` and
 `/api/resources/revisions/{library_key}/{source_id}/{content_digest}`. Revision
 details include provenance, digests, translation, coverage and readiness; a
 digest is required so an older revision is never silently replaced by a newer
@@ -222,22 +246,24 @@ Editing that file by hand is still fine; restart afterwards.
 
 ## Rooms
 
-**Rooms** imports an external asset library into room seed files. Give it the
-folder holding the source JSON and the path to the translation map beside it;
-nothing is guessed and no example path is shipped, because both are paths on
-your own machine.
+**Rooms** describes the legacy seed import path that populates `room_libraries`
+and measured catalogue rows. It is distinct from the SQLite resource database
+path (`/api/resources/...`). Give it the folder holding the source JSON and the
+path to the translation map beside it; nothing is guessed and no example path is
+shipped, because both are paths on your own machine.
 
-The import is all or nothing. Refused libraries, refused entries and the
-translation lookup all run over the whole upload before a single seed file is
-touched, so an upload carrying one string the map does not cover writes
-nothing and comes back with every uncovered string listed by entry and field -
-a worklist for the translation map, not a warning. A successful import writes
-each seed file and registers it in `room_libraries` in the same operation:
+The import is all or nothing and translation-first. Refused libraries, refused
+entries and the translation lookup all run over the whole upload before a single
+seed file is touched, so an upload carrying one string the map does not cover
+writes nothing and comes back with every uncovered string listed by entry and
+field — a worklist for the translation map, not a warning. A successful import
+writes each seed file and registers it in `room_libraries` in the same operation:
 either half alone is the state the registry check refuses.
 
 A **fused** library — one whose entries name a camera position, an act and a
 room in a single string — is refused by Rooms and imported by
-`scripts/mine_perspective_scenes.py` instead. Stored whole, such an entry is a
+`scripts/mine_perspective_scenes.py` instead when preparing measured catalogue
+rows and room seeds. Stored whole in that legacy context, such an entry is a
 room that overrules the line's camera, so it is cut into one row per part first:
 the camera and the act land in the component catalogue as unverified rows and
 only the room part reaches a seed file. Where every cut falls is read from a
@@ -246,7 +272,10 @@ a family per entry and a judge label per row — three untracked files the opera
 writes, all of them beside the corpus and none of them in this repository. The
 combination each entry was split into is recorded in
 `data/mined-combinations-seed.json` as row keys and fingerprints, no prose, so
-the photograph the entry produced can be composed again by name.
+the photograph the entry produced can be composed again by name. (This
+curated decomposition is required strictly for measured catalogue and legacy
+seed outputs; the resource database path stores accepted fused resources intact
+without mandatory decomposition.)
 
 ## Writing the prompts
 
@@ -337,11 +366,29 @@ to existing shot creation and the serial queue, transitioning the take to
 prepared revision: retries return the existing shot without creating duplicates.
 The shot carries the frozen prompt directly without re-composition. Queue
 execution in ComfyUI still requires launching the session with
-`POST /api/sessions/{sid}/run`. Graph-kind rules govern reference takes: an edit
-graph runs bare instructions without base model or character LoRA, while a guide
-graph preserves the composed prompt and model conditioning. Legacy sessions do
-not use these plan-preparation routes. See
-[sessions](docs/sessions.md#resource-plan-preparation).
+`POST /api/sessions/{sid}/run`.
+
+Graph-kind rules govern reference takes and generation submission:
+- **Text-to-image** (`reference: false`): submits the full frozen prompt
+  without re-composing trigger, base prompt, look, or wardrobe, preserving the
+  session checkpoint and character LoRA.
+- **Reference edit** (`kind != 'guide'`): runs bare instructions without base
+  model, character LoRA, look, or wardrobe, allowing the editing workflow's
+  own nodes and reference photo to govern.
+- **Guided paint** (`kind == 'guide'`): paints from noise, retaining the full
+  composed prompt, session checkpoint, and character LoRA while using the
+  reference photo for conditioning.
+
+**Instructional continuity is not pixel-level continuity.** Persisting exact
+source revisions, deterministic effective wardrobes, and frozen final prompts
+guarantees reproducible instructions and state history across takes, but does
+not guarantee pixel-identical images or exact physical garment geometry (button
+count, seam placement, fabric drape) across renders. Words describe attributes,
+not exact pixels. Visual reference workflows remain available when an existing
+photograph must be held while modifying specific elements, but neither reference
+workflows nor text-to-image prompts provide pixel-perfect continuity or parity
+with external compiled rendering runtimes. Legacy sessions do not use these
+plan-preparation routes. See [sessions](docs/sessions.md#resource-plan-preparation).
 
 ## How a run works
 
@@ -392,7 +439,9 @@ row — `arrived N of M`, the cell state, contradictions counted apart. The
 never against the prompt wording.
 
 The store ships **empty**: press *Import Measured Catalogue* once, or composing
-and creating sessions refuse until it holds something.
+and creating legacy sessions refuse until it holds something. `resource-v1`
+session drafts do not require the measured catalogue and are not subject to this
+refusal or to catalogue cell uniqueness.
 
 The detail — the reading vocabulary, the two scopes, the pass refusal, the
 camera families an act carries — is in [judging](docs/judging.md) and

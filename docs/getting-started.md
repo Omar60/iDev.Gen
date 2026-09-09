@@ -71,13 +71,34 @@ untouched when you save, so a saved path does not delete what an import
 registered.
 
 A library whose entries fuse a camera position, an act and a room into one
-string is not imported here: it is cut into rows first, by
-`scripts/mine_perspective_scenes.py`, and only the room part of each entry
-reaches a seed file. See the Rooms section of the README.
+string is not imported here: it is cut into rows first by
+`scripts/mine_perspective_scenes.py` when preparing measured catalogue rows and
+room seeds, and only the room part of each entry reaches a seed file. (This
+decomposition applies strictly to measured catalogue and legacy seed
+destinations; see below for the resource database path).
 
 ## Resource import API and CLI
 
-Resource import is separate from the legacy room-seed route. The app exposes:
+Resource import is separate from the legacy room-seed route. The SQLite resource
+database path (`/api/resources/...`) preserves accepted source entries in their
+original language as private local storage in the SQLite database, keeping nested
+structures and original strings intact without flattening. The original payload
+is stored separately from English translations and derived field coverage.
+
+Lacking a required English translation does not discard or silently translate
+an accepted resource; instead, its preparation readiness remains pending until
+translated. Source payloads and private translations remain local and untracked;
+tracked code, UI, documentation, and tests remain strictly English-only.
+
+Fused scene resources can be stored complete in the resource database. Decomposing
+a fused scene into separate camera, act, and room components is required only
+when targeting legacy room seeds or measured component catalogue rows;
+decomposition is not a prerequisite for resource storage or resource-session
+preparation. Unresolved template placeholders in a stored fused scene remain
+retained in the source payload, but block final prompt preparation until
+explicitly resolved.
+
+The app exposes:
 
 - `GET /api/resources/libraries` for library and revision metadata.
 - `GET /api/resources/revisions/{library_key}/{source_id}/{content_digest}`
@@ -102,9 +123,12 @@ safe summary of counts, identifiers, classifications and digests; it does not
 contain source prose or machine paths. The serialized preview is an internal
 commit input with a one-time local attestation: its secret stays in the
 configured data directory, it expires after one day, and a successful commit
-consumes it. A changed or edited preview therefore requires a fresh preview.
-Resource readiness is translation-pending until required English fields are
-available; importing data does not automatically make it generation-ready.
+consumes it. A changed source requires a fresh preview. Re-importing a modified
+source creates an immutable new revision (`content_digest`); entries that
+disappear upstream are reported as missing in the import report rather than
+deleting previous revision history. Resource readiness is translation-pending
+until required English fields are available; importing data does not
+automatically make it generation-ready.
 
 ## Reaching the app from a phone
 

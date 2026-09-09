@@ -428,3 +428,32 @@ def test_resource_docs_describe_the_delivered_boundary():
         assert "local attestation" in document
         assert "resource libraries" in document
         assert "revisions" in document
+
+
+def test_resource_session_and_limitations_docs_describe_delivered_contracts():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    getting_started = (ROOT / "docs" / "getting-started.md").read_text(encoding="utf-8")
+    sessions = (ROOT / "docs" / "sessions.md").read_text(encoding="utf-8")
+    limitations = (ROOT / "docs" / "known-limitations.md").read_text(encoding="utf-8")
+
+    # Both README and getting-started distinguish the SQLite resource path and note original-language storage
+    for document in (readme, getting_started):
+        assert "original language" in document
+        assert "pending" in document
+        assert "fused" in document.lower()
+
+    # README and sessions document the three workflow kinds for reference/t2i submission
+    for document in (readme, sessions):
+        assert "Text-to-image" in document
+        assert "Reference edit" in document
+        assert "Guided paint" in document
+        assert "pixel-level continuity" in document
+
+    # Sessions explicitly documents catalogue independence and cell uniqueness retirement for resource-v1
+    assert "cell uniqueness" in sessions
+    assert "resource-v1" in sessions
+
+    # Known limitations documents lack of pixel continuity and pending untranslated resources
+    assert "pixel-level continuity" in limitations
+    assert "Untranslated resources remain pending" in limitations
+    assert "AmazingDraw" in limitations

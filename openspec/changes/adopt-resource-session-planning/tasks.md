@@ -409,6 +409,79 @@
   > - `python -m pytest` (1286 passed, 0 failed in 71.85s)
   > - `git diff --check` (clean)
   > - `npx --yes @fission-ai/openspec validate adopt-resource-session-planning --strict` (valid)
-- [ ] 6.4 Update README and matching session/import/limitations documentation, including technical restrictions retired, original-language private storage, reference behavior and lack of pixel-level continuity guarantees; verify descriptions against delivered behavior.
+- [x] 6.4 Update README and matching session/import/limitations documentation, including technical restrictions retired, original-language private storage, reference behavior and lack of pixel-level continuity guarantees; verify descriptions against delivered behavior.
+
+  > 6.4 status: **complete.** Documentation across `README.md`,
+  > `docs/getting-started.md`, `docs/sessions.md`, and
+  > `docs/known-limitations.md` was updated, synchronized, and verified
+  > against delivered production contracts and regression tests:
+  >
+  > - **Clear boundary between legacy Rooms and SQLite resource database**:
+  >   - `README.md` and `docs/getting-started.md` unequivocally distinguish
+  >     the legacy seed import path (`Rooms`, `room_libraries`,
+  >     translation-first all-or-nothing seed generation) from the SQLite
+  >     resource database path (`/api/resources/...`, `resource-store`,
+  >     immutable revisions keyed by `library_key`, `source_id`, `content_digest`).
+  > - **Original-language private local storage**:
+  >   - Documented that accepted source entries in the SQLite resource database
+  >     preserve their complete payload in the original language as private
+  >     local storage, keeping nested structures and original strings intact
+  >     without flattening.
+  >   - Documented that missing required English translations keeps the accepted
+  >     resource stored, but its preparation readiness remains `pending`
+  >     (no silent discard, no machine translation invented).
+  >   - Verified that tracked code, UI labels, documentation, test suites, and
+  >     public prompts remain strictly English-only with zero private corpus
+  >     prose or personal data.
+  > - **Technical restrictions retired for `resource-v1`**:
+  >   - Documented that `resource-v1` session drafts do not require the measured
+  >     component catalogue or catalogue imports to exist or prepare explicitly
+  >     specified takes; an empty catalogue does not block resource drafts.
+  >   - Documented that catalogue cell uniqueness rules do not govern
+  >     `resource-v1`: takes can deliberately repeat camera angles or poses
+  >     (e.g. twelve portraits with one camera varying expressions or poses).
+  >   - Documented that fused scene resources can be stored complete in the
+  >     resource database and used intact without prior decomposition;
+  >     curated decomposition into camera/act catalogue rows and room seeds is
+  >     required strictly for measured catalogue and legacy room seed outputs.
+  >   - Documented that unresolved template placeholders in stored fused
+  >     resources block prompt finalization until explicitly resolved.
+  >   - Scoped catalogue empty-slot 422 refusals strictly to legacy sessions
+  >     and catalogue-composed runs.
+  > - **Reference behavior governed by workflow graph kind**:
+  >   - Documented the three distinct submission paths:
+  >     1. Text-to-image (`reference: false`): submits with the full frozen
+  >        prompt without re-composing trigger, base prompt, look, or wardrobe;
+  >        preserves session checkpoint and character LoRA.
+  >     2. Reference edit (`reference: true`, `kind != 'guide'`): runs with a
+  >        bare instruction prompt, stripping trigger, base prompt, look, and
+  >        text-to-image wardrobe, dropping session checkpoint and character
+  >        LoRA to let the editing workflow's own nodes and reference image
+  >        govern.
+  >     3. Guided paint (`reference: true`, `kind == 'guide'`): paints from
+  >        noise conditioned by the reference image, keeping the full composed
+  >        prompt, session checkpoint, and character LoRA.
+  > - **Instructional continuity versus lack of pixel-level continuity**:
+  >   - Documented across `README.md`, `docs/sessions.md`, and
+  >     `docs/known-limitations.md` that reproducible prompts, effective
+  >     wardrobes, and immutable source revisions provide instructional and
+  >     state continuity across takes, but do NOT guarantee pixel-level
+  >     continuity or exact physical garment drape, seams, or buttons across
+  >     renders.
+  >   - Reaffirmed that words describe attributes rather than exact pixel
+  >     geometry; visual reference workflows remain available when holding an
+  >     existing photograph is needed, but neither text prompts nor reference
+  >     graphs promise pixel-perfect parity or AmazingDraw rendering parity.
+  > - **Automated documentation regression coverage**:
+  >   - Added `test_resource_session_and_limitations_docs_describe_delivered_contracts`
+  >     to `tests/test_resource_service.py` to pin the critical concepts across
+  >     all four documentation files.
+  >
+  > Verification commands and outcomes (all pass):
+  > - `python -m pytest tests/test_resource_service.py` (13 passed in 3.70s)
+  > - `python -m pytest tests/test_resource_store.py tests/test_resource_parser.py tests/test_session_plan.py tests/test_runner.py` (244 passed in 15.38s)
+  > - `python -m pytest tests/test_no_personal_data.py tests/test_shoot_checks.py` (46 passed in 4.78s)
+  > - `git diff --check` (clean)
+  > - `npx --yes @fission-ai/openspec validate adopt-resource-session-planning --strict` (valid)
 - [ ] 6.5 Run the complete backend suite with `python -m pytest`, frontend tests with `npm --prefix frontend test`, and production build with `npm --prefix frontend run build`; verify all pass, data/config/build outputs stay untracked and no new public artifact contains personal data or source corpus text.
 - [ ] 6.6 Validate the completed change with OpenSpec and review the acceptance evidence before enabling resource mode by default for new sessions; verify all tasks are supported by actual checks and legacy entry remains available.

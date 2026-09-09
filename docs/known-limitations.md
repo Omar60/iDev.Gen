@@ -71,6 +71,15 @@ discover them mid-shoot.
   a garment that is genuinely identical, work from the photo instead of from
   words: shoot it once and edit that frame (*Photo edit*), which is what
   reference takes are for.
+  In `resource-v1` sessions, exact plan provenance, deterministic prompt
+  composition and explicit wardrobe tracking provide reproducible instructions
+  and state history, but **not pixel-level continuity**. Describing the same
+  clothing does not guarantee identical garment geometry, drape, buttons or
+  seam alignment across different generations. Visual reference workflows
+  remain available when an existing photograph must be held while modifying
+  specific elements, but neither reference workflows nor text-to-image prompts
+  provide pixel-perfect continuity or parity with external compiled runtimes
+  (no AmazingDraw rendering parity).
 - **The first click on a local model pays for loading it.** An 8B vision model
   took over a minute to reach VRAM on a card ComfyUI had been using, before it
   had looked at the photo at all. The request waits five minutes before giving
@@ -105,9 +114,12 @@ discover them mid-shoot.
 
 - **The stores ship empty.** Nothing is imported on first run and nothing
   imports itself when a screen is opened. Press **Import Measured Catalogue**
-  on the Catalogue screen once; until then composing and creating a session
-  refuse with a 422 naming the empty slot and manner. The same screen carries
-  **Import Readings Seed** beside the base readings and **Import Wardrobe
+  on the Catalogue screen once; until then composing and creating a legacy
+  session refuse with a 422 naming the empty slot and manner. This refusal
+  applies strictly to legacy sessions and catalogue-composed runs; `resource-v1`
+  session drafts do not require the measured catalogue or cell uniqueness, and
+  can be created, edited and prepared with an empty catalogue. The same screen
+  carries **Import Readings Seed** beside the base readings and **Import Wardrobe
   Seed** in its own panel — a judging pass refuses a slot whose families have
   no reading, and an empty wardrobe leaves the outfit picker offering nothing.
   Rooms come in through the Rooms screen. **Every import is idempotent on the
@@ -142,3 +154,22 @@ discover them mid-shoot.
   row, all beside the source material on your own machine. None of it is
   guessed: a missing label refuses the whole import rather than deriving one
   from the wording.
+
+## Resource libraries and session planning
+
+- **Untranslated resources remain pending.** In the SQLite resource database path,
+  accepted entries can be preserved privately in their original language
+  separately from English translations. However, missing required English fields
+  marks readiness as pending: a pending resource cannot finalize takes or
+  generate prompts until translated. (By contrast, the legacy Rooms import is
+  translation-first and refuses to write any seed files if a string lacks a
+  translation.)
+- **Fused resources and placeholders.** Fused scene resources can be stored
+  complete in the resource database without decomposition, but unresolved
+  template placeholders block prompt finalization. Decomposing a fused scene
+  into camera/act catalogue rows and room seeds is required only when targeting
+  measured catalogue components or legacy room seeds.
+- **Instructional continuity is not pixel continuity.** Storing identical
+  source revisions, deterministic effective wardrobes, and frozen final prompts
+  maintains reproducible instructions and state history across takes, but does
+  not guarantee pixel-identical renders or exact garment drape and geometry.

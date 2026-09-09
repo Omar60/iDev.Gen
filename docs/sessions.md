@@ -1287,13 +1287,19 @@ Preparation lifecycle:
     trigger, base prompt, look, or wardrobe.
   - Submitting creates the shot in `pending` status; executing ComfyUI work
     still requires launching the session via `POST /api/sessions/{sid}/run`.
-  - Canonical reference rules apply by workflow kind: a text-to-image take
-    (`reference: false`) submits with `use_reference=0`. A reference take
-    (`reference: true`, `use_reference=1`) follows the workflow's kind:
-    an edit graph (`kind != 'guide'`) runs with a bare instruction prompt and
-    drops the session checkpoint and character LoRA to preserve the workflow's
-    own nodes; a guide graph (`kind == 'guide'`) paints from noise, so it retains
-    the full prompt and keeps the session checkpoint and character LoRA.
+  - Canonical reference rules apply by workflow graph kind, not simply by
+    whether a reference photo is attached:
+    - **Text-to-image** (`reference: false`, `use_reference=0`): submits the
+      full frozen final prompt directly without re-composing trigger, base
+      prompt, look, or wardrobe. Preserves the session checkpoint and character
+      LoRA.
+    - **Reference edit** (`reference: true`, `kind != 'guide'`): runs with a
+      bare instruction prompt, stripping trigger, base prompt, look, and
+      text-to-image wardrobe, and drops the session checkpoint and character
+      LoRA so the editing workflow's own model and reference image govern.
+    - **Guided paint** (`reference: true`, `kind == 'guide'`): paints from
+      noise, retaining the full composed prompt, session checkpoint, and
+      character LoRA while using the reference photo for conditioning.
 
 `GET /api/sessions/{sid}/plan` includes a `preparation` object. Its `completed`
 list contains current-revision `ready` and `generated` snapshots. Its
@@ -1314,6 +1320,22 @@ If persistence fails while finalizing or submitting a take, the request returns
 an error and the transaction rolls back. The interrupted row remains resumable,
 and previously completed snapshots remain unchanged. Legacy sessions are refused
 by the resource-plan routes and keep their existing composition behavior.
+
+### Instructional continuity versus visual continuity
+
+Persisting exact source revisions, deterministic effective wardrobes, and frozen
+final prompts guarantees reproducible instructions and state history across takes.
+This data reproducibility does not constitute a pixel-level continuity guarantee:
+
+- Generating from identical prompts or wardrobe descriptions does not guarantee
+  identical cloth geometry, seam alignment, button placement, or fabric drape
+  across seeds or runs. Words describe attributes, not exact pixel geometry.
+- Reference workflows (*Photo edit*) remain the available mechanism when an
+  existing photograph must be held while changing specific features, but even
+  reference workflows do not promise pixel-perfect continuity or parity with
+  external compiled runtimes (no AmazingDraw rendering parity).
+- Legacy sessions remain separate and continue to use the legacy composition
+  engine, immediate shot expansion, and catalogue requirements.
 
 ### Which rooms this run would refuse
 
@@ -1489,18 +1511,35 @@ cleaner when it is one or the other.
 A session can also be initialized from an accepted resource revision via the
 **Resources** browser (`#/resources`).
 
-Unlike legacy sessions which expand shots immediately upon creation, a
-`resource-v1` session draft:
+Unlike legacy sessions which expand shots immediately upon creation and depend
+on the measured component catalogue, a `resource-v1` session draft:
 - Stores `composition_mode: "resource-v1"` on the session.
 - Binds character identity strictly to the user-selected model. Resource
   identity suggestions cannot override the chosen character or session constants.
 - Attaches the selected resource via its exact immutable revision triple
   (`library_key`, `source_id`, `content_digest`) persisted in a versioned
   draft plan (`/api/sessions/{sid}/plan`).
-- Does not invoke legacy measured-catalogue gates at creation time.
+- Does not invoke legacy measured-catalogue gates at creation time or during
+  take preparation. An empty measured catalogue does not block draft creation
+  or take preparation.
+- Retires catalogue cell uniqueness rules: takes can deliberately repeat camera
+  angles or poses (for example, twelve portraits sharing a single camera with
+  varied poses and expressions).
+- Allows intact fused scene resources to be selected and prepared without
+  requiring prior decomposition into camera, act, and room catalogue rows.
+  Unresolved template placeholders in selected resources remain preserved in the
+  payload but block final prompt preparation until explicitly resolved.
 - Requires the resource revision to be marked `ready` by the backend. A pending
-  revision (e.g. missing required English translations) cannot start a draft,
-  and its specific blocking reasons are shown in the interface.
+  revision (e.g. missing required English translations) cannot start a draft or
+  prepare prompts, and its specific blocking reasons are shown in the interface.
+- Calculates effective clothing by walking ordered takes from the initial
+  wardrobe using explicit `this_take` or `from_here` scopes, rather than
+  inferring progression from garment list ordering.
+- Freezes the final prompt, effective state, and provenance in immutable
+  preparation snapshots that are submitted directly to the queue without
+  recomposition.
+- Preserves legacy sessions untouched: existing sessions continue using their
+  catalogue-dependent immediate-expansion and prompt composition behavior.
 
 ### Operational rollback and disabling resource mode
 
@@ -1553,7 +1592,7 @@ The Component Catalogue lists all components with their slot, manner, prompt wor
 - **Camera families on an act**: an `act` component carries the camera families it can be seen from, strongest first (`reverse` is `shoulder` and nothing else — 3/3 from behind her shoulder, 1/3 from the mirror and the overhead). The camera plan moves a planted arrangement onto the first of those families the manner's catalogue offers; an act with no families is left with the camera it was dealt.
 - **Evidence on the row**: each component shows `arrived N of M` with the cell state (`verified`, `dead`, `unknown`), or `not measured` when nothing has been judged against it. **Contradictions are counted apart from the other misses** — a cell that failed because the body and the camera disagree and one that failed by rendering a different component are two findings with two repairs, and one merged miss count sends you back to re-measure the same defect.
 - **Import Measured Set**: On a fresh install with an empty database, press **Import Measured Catalogue** to load the default measured components from `data/catalogue-seed.json`.
-- **Empty Catalogue Refusal**: Composing or creating a written session when the catalogue for that slot/manner is empty will return an explicit 422 refusal asking you to import or create components first.
+- **Empty Catalogue Refusal**: Composing or creating a written legacy session when the catalogue for that slot/manner is empty will return an explicit 422 refusal asking you to import or create components first. This restriction applies strictly to legacy sessions and catalogue-composed runs; `resource-v1` session drafts do not require the measured catalogue.
 
 ### Blind Judging (`#/judge`)
 Shots can be judged blindly on their slot execution:
