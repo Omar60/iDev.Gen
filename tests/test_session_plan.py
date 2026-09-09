@@ -54,6 +54,7 @@ from pathlib import Path
 import pytest
 
 import db
+import resource_preparation
 import resource_store
 import session_plan
 
@@ -4699,3 +4700,253 @@ class TestSubmitPreparedTake:
         assert snap["status"] == "ready"
         assert snap["linked_shot_id"] is None
         assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+
+
+# =====================================================================
+# 12. Scope measured-catalogue readiness and uniqueness checks to legacy paths (task 4.6).
+# =====================================================================
+
+
+class TestTwelvePortraitsOneCameraAndCatalogueScoping:
+    """Task 4.6 normative acceptance: resource-v1 sessions operate
+    independently of measured-catalogue readiness and uniqueness rules.
+
+    A resource session can plan, save, prepare and submit twelve
+    takes sharing the exact same camera with an empty measured
+    catalogue. Creative variety (poses, expressions) is decoupled
+    from catalogue measurement. Legacy endpoints still fail
+    appropriately when their required catalogue is empty.
+    """
+
+    def test_twelve_portraits_with_one_camera_accepted_with_empty_catalogue(
+        self, client, seeded,
+    ):
+        # 1. Start with an empty measured catalogue and empty cell table.
+        db.run("DELETE FROM component")
+        db.run("DELETE FROM cell")
+        assert db.one("SELECT COUNT(*) AS n FROM component")["n"] == 0
+        assert db.one("SELECT COUNT(*) AS n FROM cell")["n"] == 0
+
+        # 2. Create a resource-v1 session with a manner that would trigger
+        # the measured gate on legacy paths.
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "twelve portraits one camera",
+            "composition_mode": "resource-v1",
+            "manner": "directed",
+        }).json()["id"]
+
+        # 3. Build a plan with 12 distinct take_ids, identical camera,
+        # and varying poses/expressions.
+        shared_camera = "85mm portrait lens at eye level, shallow depth of field"
+        poses = [
+            "standing square to the camera",
+            "three-quarter turn facing left",
+            "three-quarter turn facing right",
+            "seated leaning slightly forward",
+            "hands resting lightly on thighs",
+            "head tilted slightly to the right",
+            "head tilted slightly to the left",
+            "arms crossed comfortably over chest",
+            "resting chin gently on knuckles",
+            "looking thoughtfully past the lens",
+            "standing relaxed with shoulders dropped",
+            "seated upright with hands clasped",
+        ]
+        expressions = [
+            "a calm, neutral expression",
+            "a subtle closed-lip smile",
+            "an introspective, quiet gaze",
+            "a warm, gentle expression",
+            "a serious, focused gaze",
+            "a slight, friendly grin",
+            "a contemplative look",
+            "a relaxed, composed expression",
+            "a hint of amusement in the eyes",
+            "a serene, steady gaze",
+            "a confident, subtle smile",
+            "a soft, engaged expression",
+        ]
+        takes = [
+            {
+                "take_id": f"portrait-{i:02d}",
+                "camera": shared_camera,
+                "framing": "head and shoulders portrait",
+                "pose": poses[i - 1],
+                "expression": expressions[i - 1],
+                "label": f"Portrait Take {i:02d}",
+            }
+            for i in range(1, 13)
+        ]
+        plan = {
+            "version": "resource-v1",
+            "look": "Soft natural studio light against a textured neutral wall.",
+            "initial_wardrobe": "dark wool coat over a simple white crewneck tee",
+            "takes": takes,
+            "selected_resources": [],
+            "wardrobe_changes": [],
+        }
+
+        # 4. Save the plan draft.
+        save_res = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert save_res.status_code == 200, save_res.text
+        assert save_res.json()["plan_revision"] == 1
+        assert save_res.json()["conflicts"] == []
+
+        # 5. Retrieve the draft and verify all 12 takes are intact and keep the camera.
+        draft_res = client.get(f"/api/sessions/{sid}/plan")
+        assert draft_res.status_code == 200
+        draft_data = draft_res.json()
+        assert len(draft_data["plan"]["takes"]) == 12
+        for take in draft_data["plan"]["takes"]:
+            assert take["camera"] == shared_camera
+
+        # 6. Finalize preparation for each of the 12 takes. No legacy readiness,
+        # cell check or camera uniqueness constraint intervenes.
+        for take in takes:
+            take_id = take["take_id"]
+            snapshot = resource_preparation.finalize_take_preparation(
+                sid, 1, take_id,
+            )
+            assert snapshot["status"] == "ready"
+            assert shared_camera in snapshot["final_prompt"]
+            assert take["pose"] in snapshot["final_prompt"]
+            assert take["expression"] in snapshot["final_prompt"]
+
+        # 7. Check database rows in prepared_take.
+        prepared_rows = db.q(
+            "SELECT take_id, status, final_prompt FROM prepared_take "
+            "WHERE session_id = ? AND plan_revision = 1 ORDER BY id ASC",
+            sid,
+        )
+        assert len(prepared_rows) == 12
+        assert all(r["status"] == "ready" for r in prepared_rows)
+        assert len({r["take_id"] for r in prepared_rows}) == 12
+
+        # 8. Submit each prepared take to shot creation.
+        for take in takes:
+            take_id = take["take_id"]
+            sub_res = client.post(
+                f"/api/sessions/{sid}/plan/preparations/submit",
+                json={"plan_revision": 1, "take_id": take_id},
+            )
+            assert sub_res.status_code == 200, sub_res.text
+            assert sub_res.json()["status"] == "generated"
+            assert "shot_id" in sub_res.json()
+
+        # 9. Verify that exactly 12 shots exist in pending state, all with the shared camera.
+        shots = db.q(
+            "SELECT id, shot_index, prompt, status FROM shot "
+            "WHERE session_id = ? ORDER BY shot_index ASC",
+            sid,
+        )
+        assert len(shots) == 12
+        assert all(s["status"] == "pending" for s in shots)
+        assert all(shared_camera in s["prompt"] for s in shots)
+
+        # 10. Measured catalogue and cell tables remained completely unpopulated.
+        assert db.one("SELECT COUNT(*) AS n FROM component")["n"] == 0
+        assert db.one("SELECT COUNT(*) AS n FROM cell")["n"] == 0
+
+    def test_repeated_creative_choices_allowed_but_duplicate_take_id_refused(
+        self, client, seeded,
+    ):
+        """Repeated creative choices (camera, pose, expression) are valid,
+        while duplicate take_id is strictly refused as an identity error.
+        """
+        sid = _task34_resource_session(client, seeded, "creative choices vs identity")
+
+        # Two takes sharing identical camera, pose and expression are accepted
+        # when their take_id values are distinct.
+        plan_valid = {
+            "version": "resource-v1",
+            "look": "studio look",
+            "initial_wardrobe": "dark blazer",
+            "takes": [
+                {
+                    "take_id": "portrait-alpha",
+                    "camera": "eye-level 50mm",
+                    "pose": "standing still",
+                    "expression": "neutral",
+                },
+                {
+                    "take_id": "portrait-beta",
+                    "camera": "eye-level 50mm",
+                    "pose": "standing still",
+                    "expression": "neutral",
+                },
+            ],
+            "selected_resources": [],
+            "wardrobe_changes": [],
+        }
+        res_valid = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan_valid, "expected_revision": 0},
+        )
+        assert res_valid.status_code == 200, res_valid.text
+
+        # Two takes sharing the SAME take_id are refused by draft validation.
+        plan_duplicate_id = {
+            "version": "resource-v1",
+            "look": "studio look",
+            "initial_wardrobe": "dark blazer",
+            "takes": [
+                {
+                    "take_id": "portrait-alpha",
+                    "camera": "eye-level 50mm",
+                    "pose": "standing still",
+                },
+                {
+                    "take_id": "portrait-alpha",
+                    "camera": "high-angle 35mm",
+                    "pose": "seated",
+                },
+            ],
+            "selected_resources": [],
+            "wardrobe_changes": [],
+        }
+        res_dup = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan_duplicate_id, "expected_revision": 1},
+        )
+        assert res_dup.status_code == 422, res_dup.text
+        assert "duplicate take_id" in res_dup.json()["detail"]
+
+    def test_legacy_empty_catalogue_still_refused_across_legacy_endpoints(
+        self, client, seeded,
+    ):
+        """Legacy endpoints require their measured catalogue and cell evidence
+        and continue to fail when those are empty."""
+        db.run("DELETE FROM component")
+        db.run("DELETE FROM cell")
+
+        # 1. Legacy create_session with manner and shots fails on empty camera catalogue.
+        resp_create = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "legacy empty catalogue guard",
+            "manner": "directed",
+            "shots": [{"prompt": "an invented shot prompt"}],
+        })
+        assert resp_create.status_code == 422, resp_create.text
+        assert "camera catalogue is empty" in resp_create.json()["detail"]
+
+        # 2. Legacy compose fails when cell evidence is absent.
+        legacy_sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "legacy session for compose",
+            "manner": "directed",
+            "checkpoint": "model.safetensors",
+        }).json()["id"]
+
+        resp_compose = client.post(f"/api/sessions/{legacy_sid}/compose", json={
+            "camera": {"key": "front-direct"},
+            "act": {"key": "standing"},
+            "framing": {"key": "waist-up"},
+            "count": 1,
+            "mode": "strict",
+        })
+        assert resp_compose.status_code == 422, resp_compose.text
+        assert "camera catalogue is empty" in resp_compose.json()["detail"]

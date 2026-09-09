@@ -238,7 +238,7 @@
 - [x] 4.3 Integrate optional assistant synthesis for unlocked fields and save its inputs/outputs; verify fixed choices survive preparation and repeating a finalized take requires no new writer request.
 - [x] 4.4 Save exact prompts with source and preparation versions; verify source refresh, translation edits and model-writer changes cannot rewrite an already finalized prompt.
 - [x] 4.5 Connect finalized takes to existing shot creation and serial queue with submission uniqueness; verify retries produce one shot, complete prompts are not prefixed twice, and graph-kind reference rules remain unchanged.
-- [ ] 4.6 Scope measured-catalogue readiness and uniqueness checks to legacy paths; verify resource drafts work with an empty measured catalogue and twelve intentional same-camera portraits are accepted while legacy checks still fail appropriately.
+- [x] 4.6 Scope measured-catalogue readiness and uniqueness checks to legacy paths; verify resource drafts work with an empty measured catalogue and twelve intentional same-camera portraits are accepted while legacy checks still fail appropriately.
 
 ## 5. Session workflow in the interface
 
