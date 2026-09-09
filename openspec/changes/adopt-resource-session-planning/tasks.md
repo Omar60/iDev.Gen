@@ -483,5 +483,13 @@
   > - `python -m pytest tests/test_no_personal_data.py tests/test_shoot_checks.py` (46 passed in 4.78s)
   > - `git diff --check` (clean)
   > - `npx --yes @fission-ai/openspec validate adopt-resource-session-planning --strict` (valid)
-- [ ] 6.5 Run the complete backend suite with `python -m pytest`, frontend tests with `npm --prefix frontend test`, and production build with `npm --prefix frontend run build`; verify all pass, data/config/build outputs stay untracked and no new public artifact contains personal data or source corpus text.
+- [x] 6.5 Run the complete backend suite with `python -m pytest`, frontend tests with `npm --prefix frontend test`, and production build with `npm --prefix frontend run build`; verify all pass, data/config/build outputs stay untracked and no new public artifact contains personal data or source corpus text.
+
+  > 6.5 status: **complete.** Fresh verification on the current HEAD passed all required gates:
+  > - `python -m pytest` (1287 passed, 3 warnings in 56.06s)
+  > - `npm --prefix frontend test` (11 test files passed, 253 tests passed in 2.59s)
+  > - `npm --prefix frontend run build` (60 modules transformed; production build completed in 1.64s with the existing chunk-size warning)
+  > - The complete backend suite kept the repository privacy and text-integrity guards green.
+  > - `config.json`, private/generated `data/` outputs, and `frontend/dist/` remain ignored and untracked. Existing allowlisted public data seeds remain tracked and unchanged; no new tracked artifact contains source corpus text or personal data.
+  > - No GPU, running ComfyUI instance, or network was used by the test suites.
 - [ ] 6.6 Validate the completed change with OpenSpec and review the acceptance evidence before enabling resource mode by default for new sessions; verify all tasks are supported by actual checks and legacy entry remains available.
