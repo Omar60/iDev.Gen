@@ -3260,12 +3260,18 @@ class TestConstantsIdentityAndExplicitInvalidation:
     def test_a_draft_edit_invalidates_only_ungenerated_prepared_takes(
         self, client, seeded,
     ):
-        """A successful save explicitly invalidates every prepared_take
-        row for the session in ``pending`` or ``ready`` status, and
-        leaves ``generated`` and ``invalidated`` rows untouched. The
-        pass runs inside the same transaction as the plan write so a
-        refused save is the only path that could leave the table in
-        an inconsistent state — and a refused save never reaches it.
+        """A relevant wardrobe / order edit invalidates the ungenerated
+        prepared_take rows whose effective state changed between
+        revisions, and leaves ``generated`` and ``invalidated`` rows
+        untouched. The pass runs inside the same transaction as the
+        plan write so a refused save is the only path that could
+        leave the table in an inconsistent state — and a refused save
+        never reaches it.
+
+        The companion rule "a save that does not change a take's
+        effective state keeps the prior ``ready`` row untouched"
+        is exercised by ``test_a_wardrobe_change_preserves_prior_ready_rows``
+        in this same class.
         """
         sid = client.post("/api/sessions", json={
             "model_id": seeded["model_id"],
@@ -3289,55 +3295,376 @@ class TestConstantsIdentityAndExplicitInvalidation:
         # Plant one row per status, all at plan_revision 1
         # (the current revision). The second save will bump to
         # revision 2; the invalidation pass will then target
-        # these rows because their plan_revision differs from 2.
+        # the ungenerated rows whose effective state changed
+        # between revisions.
         shot_id = _plant_shot(sid)
         ready_id = _plant_prepared_take(
-            sid, 1, "inv_take_ready", status="ready",
+            sid, 1, "take-001", status="ready",
         )
         pending_id = _plant_prepared_take(
-            sid, 1, "inv_take_pending", status="pending",
+            sid, 1, "take-002", status="pending",
         )
         generated_id = _plant_prepared_take(
-            sid, 1, "inv_take_generated", status="generated",
+            sid, 1, "take-003", status="generated",
             linked_shot_id=shot_id,
             final_prompt="the final prompt used for the generated take",
         )
-        already_invalidated_id = _plant_prepared_take(
-            sid, 1, "inv_take_invalidated", status="invalidated",
-        )
 
-        # Second save: same plan, no constant change. The
-        # invalidation pass marks the ungenerated rows.
+        # Second save: a real wardrobe change at take-002. The
+        # change of effective_wardrobe for take-002 is the only
+        # state that differs in the new plan, so the
+        # invalidation pass targets that single take. take-001
+        # is unaffected and keeps its prior ``ready`` row
+        # untouched.
+        edited = {
+            **plan,
+            "wardrobe_changes": [
+                {
+                    "take_id": "take-002",
+                    "scope": "this_take",
+                    "wardrobe": INV_WARDROBE_JACKET,
+                },
+            ],
+        }
         save = client.post(
             f"/api/sessions/{sid}/plan",
-            json={"plan": plan, "expected_revision": 1},
+            json={"plan": edited, "expected_revision": 1},
         )
         assert save.status_code == 200, save.text
         assert save.json()["plan_revision"] == 2
 
-        # The ungenerated rows moved to ``invalidated``. The
-        # generated row stays in ``generated`` with its prompt and
-        # linked_shot_id unchanged. The already-invalidated row
-        # stays as it was.
         rows_by_take = {
+            (row["plan_revision"], row["take_id"]): row
+            for row in _prepared_take_rows(sid)
+        }
+        # take-001 at revision 1 stays in ``ready`` because the
+        # new plan does not change its effective wardrobe.
+        assert rows_by_take[(1, "take-001")]["status"] == "ready"
+        # take-002 at revision 1 moved to ``invalidated`` because
+        # the new plan changed its effective wardrobe to the
+        # jacket.
+        assert rows_by_take[(1, "take-002")]["status"] == "invalidated"
+        # take-003 at revision 1 stays in ``generated``: the pass
+        # does not touch history.
+        assert rows_by_take[(1, "take-003")]["status"] == "generated"
+        assert rows_by_take[(1, "take-003")]["final_prompt"] == (
+            "the final prompt used for the generated take"
+        )
+        assert rows_by_take[(1, "take-003")]["linked_shot_id"] == shot_id
+        # The row ids are preserved: the pass is status-only, no
+        # delete, no rewrite of the snapshot.
+        assert rows_by_take[(1, "take-001")]["id"] == ready_id
+        assert rows_by_take[(1, "take-002")]["id"] == pending_id
+        assert rows_by_take[(1, "take-003")]["id"] == generated_id
+
+    def test_a_wardrobe_change_preserves_prior_ready_rows(
+        self, client, seeded,
+    ):
+        """A wardrobe change at take 7 with ``from_here`` scope
+        invalidates takes 7 through N but leaves takes 1 through
+        6 in their prior ``ready`` state. The session-plan
+        spec's "the changed take and following takes" rule is
+        the conservative invalidation boundary; takes that did
+        not change effective state keep their prior snapshots
+        intact as reusable history.
+        """
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "wardrobe change preserves prior ready",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_preserve_ready",
+            "inv_room_preserve_ready",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        # Six takes, no wardrobe changes at the first save.
+        plan["takes"] = [
+            {"take_id": f"take-{index:02d}"} for index in range(1, 7)
+        ]
+        plan["wardrobe_changes"] = []
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+
+        # Plant a ready row for every take at the current
+        # revision. The new save adds a ``from_here`` wardrobe
+        # change at take-04.
+        for index in range(1, 7):
+            _plant_prepared_take(
+                sid, 1, f"take-{index:02d}", status="ready",
+            )
+
+        edited = {
+            **plan,
+            "wardrobe_changes": [
+                {
+                    "take_id": "take-04",
+                    "scope": "from_here",
+                    "wardrobe": INV_WARDROBE_JACKET,
+                },
+            ],
+        }
+        second = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": edited, "expected_revision": 1},
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["plan_revision"] == 2
+
+        rows = {
             row["take_id"]: row
             for row in _prepared_take_rows(sid)
         }
-        assert rows_by_take["inv_take_ready"]["status"] == "invalidated"
-        assert rows_by_take["inv_take_pending"]["status"] == "invalidated"
-        assert rows_by_take["inv_take_generated"]["status"] == "generated"
-        assert rows_by_take["inv_take_generated"]["final_prompt"] == (
-            "the final prompt used for the generated take"
+        # takes 1, 2 and 3 keep their prior ``ready`` row. The
+        # invalidation pass did not touch them because their
+        # effective wardrobe under the new plan is identical to
+        # theirs under the old plan.
+        for index in (1, 2, 3):
+            assert rows[f"take-{index:02d}"]["status"] == "ready", (
+                f"take-{index:02d} was invalidated even though its "
+                f"effective wardrobe was unchanged; status={rows[f'take-{index:02d}']['status']!r}"
+            )
+        # takes 4, 5 and 6 are invalidated: the ``from_here``
+        # change at take 4 advanced the inherited state and the
+        # boundary the spec names is exactly the changed take
+        # and following takes.
+        for index in (4, 5, 6):
+            assert rows[f"take-{index:02d}"]["status"] == "invalidated", (
+                f"take-{index:02d} should have been invalidated by "
+                f"the wardrobe change; status={rows[f'take-{index:02d}']['status']!r}"
+            )
+
+    @pytest.mark.parametrize("creative_field", [
+        "camera", "framing", "pose", "expression",
+    ])
+    def test_a_take_content_edit_invalidates_the_prior_ready_row(
+        self, client, seeded, creative_field,
+    ):
+        """A revision that edits a take's creative choice
+        (``camera``, ``framing``, ``pose`` or ``expression``)
+        invalidates that take's prior ``ready`` row, even when
+        the take's effective wardrobe is byte-for-byte
+        identical. The four fields are the closed
+        ``TAKE_DESCRIPTIVE_CHOICES`` allowlist the
+        ``resource-prompts`` spec names as preparation inputs;
+        each is parameterised here so a future regression on
+        one of them is caught at the test that owns the
+        contract.
+
+        The companion rule "a generated snapshot is history
+        the invalidation pass must not rewrite" is exercised
+        by ``test_a_queued_or_generated_snapshot_remains_unchanged_after_a_draft_edit``
+        in this same class. The companion rule "a wardrobe
+        change whose boundary does not cross a take leaves
+        the take's prior ready row untouched" is exercised
+        by ``test_a_wardrobe_change_preserves_prior_ready_rows``
+        in this same class.
+        """
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": f"content edit invalidates ready ({creative_field})",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        revision = _build_revision(
+            f"inv_rooms_content_{creative_field}",
+            f"inv_room_content_{creative_field}",
+            INV_ROOM_PAYLOAD,
         )
-        assert rows_by_take["inv_take_generated"]["linked_shot_id"] == shot_id
-        assert rows_by_take["inv_take_invalidated"]["status"] == "invalidated"
-        # The row ids are preserved: the pass is status-only, no
-        # delete, no rewrite of the snapshot.
-        assert rows_by_take["inv_take_ready"]["id"] == ready_id
-        assert rows_by_take["inv_take_pending"]["id"] == pending_id
-        assert rows_by_take["inv_take_generated"]["id"] == generated_id
-        assert (
-            rows_by_take["inv_take_invalidated"]["id"] == already_invalidated_id
+        # The plan takes carry the four creative fields the
+        # preparation pipeline feeds into ``final_prompt``.
+        # Editing one of them in the next save is the
+        # content edit the policy must catch.
+        plan = _build_plan(revision)
+        plan["takes"] = [
+            {
+                "take_id": f"content-{creative_field}-{index}",
+                "camera": "an 85mm portrait lens at eye level",
+                "framing": "waist up",
+                "pose": "standing relaxed, weight even on both feet",
+                "expression": "a calm, neutral gaze",
+            }
+            for index in range(1, 4)
+        ]
+        plan["wardrobe_changes"] = []
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["plan_revision"] == 1
+
+        # Plant a ready row for each of the three takes. The
+        # new save edits the ``creative_field`` of take-002
+        # only; the invalidation pass must mark take-002's
+        # prior row ``invalidated`` and leave take-001 alone
+        # (its content and its effective wardrobe are
+        # identical under the new plan).
+        target_take_id = f"content-{creative_field}-2"
+        untouched_take_id = f"content-{creative_field}-1"
+        for index in range(1, 4):
+            _plant_prepared_take(
+                sid, 1, f"content-{creative_field}-{index}", status="ready",
+            )
+
+        # The new value is deliberately different in both
+        # shape and substance from the original. ``label``
+        # is a per-take field the OpenSpec may add later and
+        # the signature must pick it up too, so the test
+        # also flips it on every parameterisation. The
+        # effective wardrobe is NOT touched; the only
+        # ``from_here`` / ``this_take`` boundary is absent.
+        edited_takes = []
+        for take in plan["takes"]:
+            new_take = dict(take)
+            if new_take["take_id"] == target_take_id:
+                new_take[creative_field] = (
+                    f"an edited {creative_field} value for "
+                    f"the regression test"
+                )
+                new_take["label"] = (
+                    f"label after {creative_field} edit"
+                )
+            edited_takes.append(new_take)
+        edited = {
+            **plan,
+            "takes": edited_takes,
+            "wardrobe_changes": [],
+        }
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": edited, "expected_revision": 1},
+        )
+        assert save.status_code == 200, save.text
+        assert save.json()["plan_revision"] == 2
+
+        rows = {
+            (row["plan_revision"], row["take_id"]): row
+            for row in _prepared_take_rows(sid)
+        }
+        # The targeted take's prior row is invalidated. The
+        # prior row is at revision 1, status was ``ready``
+        # before the save, and the new revision's invalidation
+        # pass must mark it ``invalidated`` because its
+        # preparation input (the ``creative_field`` value)
+        # changed.
+        assert rows[(1, target_take_id)]["status"] == "invalidated", (
+            f"a {creative_field!r} edit on {target_take_id!r} did not "
+            f"invalidate the prior ready row; the invalidation "
+            f"policy is missing the take-content clause; "
+            f"status={rows[(1, target_take_id)]['status']!r}"
+        )
+        # The unrelated take keeps its prior ``ready`` row.
+        # The ``creative_field`` value on take-001 is identical
+        # in the new plan, its effective wardrobe is
+        # identical, and the invalidation pass must not touch
+        # the row.
+        assert rows[(1, untouched_take_id)]["status"] == "ready", (
+            f"an unrelated take was invalidated by a {creative_field!r} "
+            f"edit on take-002; status="
+            f"{rows[(1, untouched_take_id)]['status']!r}"
+        )
+        # take-003 also keeps its prior ``ready`` row: the
+        # edit on take-002 only changed take-002's content
+        # and the from_here / this_take boundary did not move.
+        assert rows[(1, f"content-{creative_field}-3")]["status"] == "ready", (
+            f"take-003 was invalidated by a {creative_field!r} edit on "
+            f"take-002; status={rows[(1, f'content-{creative_field}-3')]['status']!r}"
+        )
+
+    def test_a_generated_take_survives_a_take_content_edit(
+        self, client, seeded,
+    ):
+        """A generated prepared_take is history even when the
+        take content the new plan carries differs from the
+        one the row was prepared under. The invalidation
+        pass targets only ``pending`` and ``ready`` rows;
+        a generated row is left untouched so its linked
+        shot stays a true linked shot, not a silently
+        orphaned one.
+        """
+        sid = client.post("/api/sessions", json={
+            "model_id": seeded["model_id"],
+            "name": "content edit keeps generated immutable",
+            "composition_mode": "resource-v1",
+        }).json()["id"]
+        revision = _build_revision(
+            "inv_rooms_content_generated",
+            "inv_room_content_generated",
+            INV_ROOM_PAYLOAD,
+        )
+        plan = _build_plan(revision)
+        plan["takes"] = [
+            {
+                "take_id": "take-001",
+                "camera": "an 85mm portrait lens at eye level",
+                "framing": "waist up",
+                "pose": "standing relaxed, weight even on both feet",
+                "expression": "a calm, neutral gaze",
+            },
+        ]
+        plan["wardrobe_changes"] = []
+        first = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+
+        # Plant a generated row at the current revision. The
+        # snapshot stores the final prompt the linked shot
+        # was actually produced from, plus the linked shot
+        # id. The next save edits the take's camera; the
+        # invalidation pass must NOT rewrite the generated
+        # row's prompt, status or linked_shot_id.
+        shot_id = _plant_shot(sid, prompt="the linked shot's prompt")
+        prepared_id = _plant_prepared_take(
+            sid, 1, "take-001", status="generated",
+            linked_shot_id=shot_id,
+            final_prompt="the final prompt the generated take was shot with",
+        )
+        original_prepared = db.one(
+            "SELECT take_id, plan_revision, status, final_prompt, "
+            "linked_shot_id FROM prepared_take WHERE id = ?",
+            prepared_id,
+        )
+        original_shot = db.one(
+            "SELECT prompt, status FROM shot WHERE id = ?", shot_id,
+        )
+
+        edited_takes = [
+            {
+                **take,
+                "camera": "a 35mm lens at hip height",
+            }
+            for take in plan["takes"]
+        ]
+        edited = {**plan, "takes": edited_takes, "wardrobe_changes": []}
+        save = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": edited, "expected_revision": 1},
+        )
+        assert save.status_code == 200, save.text
+        assert save.json()["plan_revision"] == 2
+
+        after_prepared = db.one(
+            "SELECT take_id, plan_revision, status, final_prompt, "
+            "linked_shot_id FROM prepared_take WHERE id = ?",
+            prepared_id,
+        )
+        assert after_prepared == original_prepared, (
+            f"a generated prepared_take was rewritten by a "
+            f"take-content edit; before={original_prepared!r}, "
+            f"after={after_prepared!r}"
+        )
+        after_shot = db.one(
+            "SELECT prompt, status FROM shot WHERE id = ?", shot_id,
+        )
+        assert after_shot == original_shot, (
+            f"a linked shot was rewritten by a take-content "
+            f"edit; before={original_shot!r}, after={after_shot!r}"
         )
 
     def test_a_queued_or_generated_snapshot_remains_unchanged_after_a_draft_edit(
@@ -4297,9 +4624,23 @@ class TestPreparedTakePersistenceAndRecovery:
         )
         future_id = _plant_prepared_take(sid, 2, "resume-01", status="pending")
 
+        # A real wardrobe change at resume-02 with ``from_here``
+        # scope. The change is the only thing that differs
+        # between the new plan and the old one, so the
+        # invalidation pass targets exactly the takes whose
+        # effective wardrobe crosses the boundary: resume-02 and
+        # resume-03. resume-01 keeps its prior ``ready`` row
+        # because its effective wardrobe under the new plan is
+        # identical to the old plan.
         edited = {
             **plan,
-            "takes": [plan["takes"][1], plan["takes"][0], plan["takes"][2]],
+            "wardrobe_changes": [
+                {
+                    "take_id": "resume-02",
+                    "scope": "from_here",
+                    "wardrobe": "an invented replacement wardrobe line",
+                },
+            ],
         }
         second = client.post(
             f"/api/sessions/{sid}/plan",
@@ -4313,22 +4654,37 @@ class TestPreparedTakePersistenceAndRecovery:
             "FROM prepared_take WHERE session_id = ? ORDER BY id",
             sid,
         )}
-        assert rows[ready_id]["status"] == "invalidated"
+        # resume-01 keeps its prior ``ready`` row: the
+        # invalidation pass did not touch it because its
+        # effective wardrobe under the new plan is byte-for-byte
+        # identical to the old plan.
+        assert rows[ready_id]["status"] == "ready"
+        # resume-02 is invalidated: its effective wardrobe
+        # changed (a new ``from_here`` wardrobe landed on it).
         assert rows[pending_id]["status"] == "invalidated"
+        # resume-03 is invalidated too: the ``from_here`` change
+        # at resume-02 also affected the inherited state of
+        # resume-03.
         assert rows[generated_id]["status"] == "generated"
+        # The future-revision pending row at the new revision
+        # is left alone by the pass: it is at the new revision.
         assert rows[future_id]["status"] == "pending"
 
         recovery = client.get(f"/api/sessions/{sid}/plan")
         assert recovery.status_code == 200, recovery.text
         preparation = recovery.json()["preparation"]
+        # ``completed`` only contains the future-revision row,
+        # because the only current-revision row is the pending
+        # one at resume-01 (the test does not finalize a take
+        # at revision 2).
         assert preparation["completed"] == []
         assert preparation["incomplete"] == [
-            {"take_id": "resume-02", "status": "missing"},
             {"take_id": "resume-01", "status": "pending"},
+            {"take_id": "resume-02", "status": "missing"},
             {"take_id": "resume-03", "status": "missing"},
         ]
         history = {row["id"]: row for row in preparation["history"]}
-        assert history[ready_id]["status"] == "invalidated"
+        assert history[ready_id]["status"] == "ready"
         assert history[pending_id]["status"] == "invalidated"
         assert history[generated_id]["status"] == "generated"
 
@@ -4339,7 +4695,7 @@ class TestPreparedTakePersistenceAndRecovery:
         resumed = session_plan.recover_preparation(sid)
         assert [row["id"] for row in resumed["completed"]] == [current_generated]
         assert [row["take_id"] for row in resumed["incomplete"]] == [
-            "resume-02", "resume-01",
+            "resume-01", "resume-02",
         ]
 
 

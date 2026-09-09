@@ -1385,8 +1385,22 @@ def commit_import(
                     (rebuilt.accepted_outcomes or rebuilt.auxiliary_outcomes)
                     and rebuilt.library_key not in library_ids
                 ):
+                    # The library kind is the kind of the
+                    # file's first accepted entry. A single
+                    # file is one library and one kind, so the
+                    # first entry's kind is the library's
+                    # kind; the parser already refused a file
+                    # that mixed kinds, so the rest of the
+                    # entries carry the same kind. Auxiliary
+                    # libraries are scoped by their own
+                    # kind and fall back to the empty string
+                    # when the file has no scene outcomes.
+                    library_kind = ""
+                    if rebuilt.accepted_outcomes:
+                        library_kind = rebuilt.accepted_outcomes[0].kind
                     library_ids[rebuilt.library_key] = resource_store.ensure_library(
                         rebuilt.library_key,
+                        kind=library_kind,
                     )
                 library_id = library_ids.get(rebuilt.library_key)
                 # Recover the full original dict for each

@@ -752,10 +752,174 @@ def has_generated_take(session_id: int) -> bool:
     return row is not None
 
 
+def _take_id_set(plan: dict) -> set[str]:
+    """Return the set of stable take IDs in ``plan``.
+
+    A plan is a dict; ``takes`` is a list of dicts that may
+    carry extra fields a future task adds. The function is
+    purely defensive: a non-dict ``takes`` entry, a missing
+    ``take_id`` or a non-string ``take_id`` is skipped so a
+    malformed plan can never turn into a silent KeyError
+    inside the invalidation pass.
+    """
+    out: set[str] = set()
+    for take in plan.get("takes", []) or []:
+        if not isinstance(take, dict):
+            continue
+        tid = take.get("take_id")
+        if isinstance(tid, str) and tid:
+            out.add(tid)
+    return out
+
+
+def _take_by_id(plan: dict) -> dict[str, dict]:
+    """Index ``plan``'s takes by ``take_id`` and skip malformed entries.
+
+    The invalidation pass needs the per-take content of both
+    plans side by side. Returning a dict by ``take_id`` makes
+    the comparison O(N) and keeps the caller from having to
+    repeat the ``isinstance`` / non-string guards ``_take_id_set``
+    already owns. A non-dict ``takes`` entry, a missing
+    ``take_id`` or a non-string ``take_id`` is skipped for the
+    same reason ``_take_id_set`` skips it: the input was
+    validated upstream, but the helper is defensive in case a
+    future caller hands it an unvalidated plan.
+    """
+    out: dict[str, dict] = {}
+    for take in plan.get("takes", []) or []:
+        if not isinstance(take, dict):
+            continue
+        tid = take.get("take_id")
+        if not isinstance(tid, str) or not tid:
+            continue
+        out[tid] = take
+    return out
+
+
+def _take_content_signature(take: dict) -> str:
+    """Return a deterministic, JSON-serialisable signature of a take.
+
+    The signature covers every per-take field the take carries
+    except ``take_id`` itself, which is the comparison key the
+    invalidation pass matches on. The signature is built with
+    ``json.dumps`` and ``sort_keys=True`` so dict ordering and
+    list ordering that the user does not control do not
+    surface as a difference. The comparison is intentionally
+    conservative: any change in any field the take carries is
+    a difference, so the invalidation pass can target the
+    right rows.
+
+    The function ignores per-plan structural fields the take
+    does not carry (``look``, ``initial_wardrobe``,
+    ``selected_resources``, ``wardrobe_changes``) because
+    those live at the plan level, not on each take. The
+    function also ignores a ``take_id`` key when it is present
+    in the dict (the plan validator does not strip it), so
+    two takes with the same per-take content but a different
+    key order do not compare as different. The take must be a
+    dict; any other shape falls back to an empty signature
+    so a malformed input never raises inside the pass.
+    """
+    if not isinstance(take, dict):
+        return ""
+    payload = {
+        key: value
+        for key, value in take.items()
+        if key != "take_id"
+    }
+    try:
+        return json.dumps(payload, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _compute_affected_take_ids_for_plan_change(
+    old_plan: dict, new_plan: dict,
+) -> set[str]:
+    """Return the take IDs whose preparation inputs changed
+    between ``old_plan`` and ``new_plan``, plus any take
+    present in the old plan but absent from the new one.
+
+    The function is the conservative invalidation rule the
+    ``session-plan`` spec names for wardrobe / order / per-
+    take edits: a take is in the result when ANY of the
+    following holds between the two plans:
+
+      * the take is in ``old_plan`` but missing from
+        ``new_plan`` (the plan no longer carries it, so any
+        prepared_take row the user landed for it has no
+        current plan to live under);
+      * the take's effective wardrobe under ``new_plan``
+        differs from the one under ``old_plan`` (the
+        ``from_here`` / ``this_take`` boundary changed);
+      * the take's per-take content under ``new_plan``
+        differs from the one under ``old_plan`` (a take-
+        level field the preparation pipeline feeds into
+        ``final_prompt`` was edited: ``camera``,
+        ``framing``, ``pose``, ``expression``, or any
+        future take-level field the OpenSpec adds).
+
+    The third clause is the part the previous revision of
+    this function missed: a take whose creative choices
+    were edited but whose effective wardrobe stayed
+    identical still needs its prior ``ready`` row marked
+    ``invalidated`` because the new final_prompt will
+    differ from the persisted one, and shipping a stale
+    prompt as if it were current would let a finished
+    photograph cite a state the photograph did not
+    actually use. The function reads the take content
+    from the validated plan the caller already passed
+    through ``_validate_plan_payload``; a future take
+    field added by the OpenSpec is covered by the same
+    ``_take_content_signature`` comparison without any
+    code change here.
+
+    The function is intentionally generic. It does NOT
+    inspect any wardrobe string, scope value or take
+    count; it is a pure comparison of the per-take and
+    effective-wardrobe projections of two plans. A
+    future plan shape with a different wardrobe / scope /
+    take grammar keeps the same contract: the resolver
+    walks the new shape, the comparison surfaces what
+    changed, the invalidation pass targets the right
+    rows.
+
+    Takes added by the new plan (present in ``new_plan``
+    but absent from ``old_plan``) are NOT in the result:
+    there is no old row to invalidate. The new revision
+    has to land a fresh prepared_take row for them, which
+    is the normal re-prepare path the recovery surface
+    already offers.
+    """
+    old_effective = resolve_effective_wardrobes(old_plan)
+    new_effective = resolve_effective_wardrobes(new_plan)
+    old_by_id = _take_by_id(old_plan)
+    new_by_id = _take_by_id(new_plan)
+    affected: set[str] = set()
+    for tid, old_take in old_by_id.items():
+        new_take = new_by_id.get(tid)
+        if new_take is None:
+            affected.add(tid)
+            continue
+        if old_effective.get(tid, "") != new_effective.get(tid, ""):
+            affected.add(tid)
+            continue
+        if (
+            _take_content_signature(old_take)
+            != _take_content_signature(new_take)
+        ):
+            affected.add(tid)
+    return affected
+
+
 def invalidate_ungenerated_prepared_takes(
     session_id: int, kept_plan_revision: int,
+    *,
+    affected_take_ids: set[str] | None = None,
+    new_take_ids: set[str] | None = None,
 ) -> None:
-    """Mark every ungenerated prepared_take row for the session as ``invalidated``.
+    """Mark ungenerated prepared_take rows for the session as
+    ``invalidated`` according to the invalidation policy.
 
     The pass is the single implementation called by
     ``save_draft``. It targets rows whose status is ``pending`` or
@@ -769,6 +933,25 @@ def invalidate_ungenerated_prepared_takes(
     and rewriting a generated row's prompt or provenance would
     silently pretend a finished photograph used a state it did
     not.
+
+    ``affected_take_ids`` and ``new_take_ids`` are the
+    conservative-narrowing switches the ``session-plan`` spec
+    asks for. When both are ``None`` (the default), the pass
+    invalidates every ungenerated row at a non-current revision
+    — the strict policy for a save that changes the session's
+    constants (``look``, ``initial_wardrobe`` or
+    ``selected_resources``). When at least one is provided, the
+    pass invalidates only the rows whose ``take_id`` is in
+    ``affected_take_ids`` OR is not in ``new_take_ids`` — the
+    conservative policy for a save that only edits
+    ``wardrobe_changes`` or the take order, where a take whose
+    effective state is byte-for-byte identical in the new plan
+    keeps its prior ``ready`` row untouched, and any row whose
+    take_id is not in the new plan (a take removed by the edit, or
+    a synthetic orphan row) is invalidated because it has no
+    current plan to land under. The empty sets are a legal
+    argument: a save whose diff lands an empty affected set
+    invalidates no rows.
 
     The function returns nothing on purpose: a row-count
     derivation is not part of the contract, the tests assert the
@@ -789,15 +972,45 @@ def invalidate_ungenerated_prepared_takes(
     this function.
     """
     now = db.now()
+    if affected_take_ids is None and new_take_ids is None:
+        db.run(
+            "UPDATE prepared_take "
+            "SET status = ?, updated_at = ? "
+            "WHERE session_id = ? "
+            "AND status IN (?, ?) "
+            "AND plan_revision != ?",
+            PREPARED_TAKE_STATUS_INVALIDATED, now, session_id,
+            PREPARED_TAKE_STATUS_PENDING, PREPARED_TAKE_STATUS_READY,
+            kept_plan_revision,
+        )
+        return
+    affected_take_ids = affected_take_ids or set()
+    new_take_ids = new_take_ids or set()
+    if not affected_take_ids and not new_take_ids:
+        return
+    parts: list[str] = []
+    params: list[Any] = [
+        PREPARED_TAKE_STATUS_INVALIDATED, now, session_id,
+        PREPARED_TAKE_STATUS_PENDING, PREPARED_TAKE_STATUS_READY,
+        kept_plan_revision,
+    ]
+    if affected_take_ids:
+        placeholders = ", ".join("?" for _ in affected_take_ids)
+        parts.append(f"take_id IN ({placeholders})")
+        params.extend(sorted(affected_take_ids))
+    if new_take_ids:
+        placeholders = ", ".join("?" for _ in new_take_ids)
+        parts.append(f"take_id NOT IN ({placeholders})")
+        params.extend(sorted(new_take_ids))
+    where_extra = " OR ".join(parts)
     db.run(
         "UPDATE prepared_take "
         "SET status = ?, updated_at = ? "
         "WHERE session_id = ? "
         "AND status IN (?, ?) "
-        "AND plan_revision != ?",
-        PREPARED_TAKE_STATUS_INVALIDATED, now, session_id,
-        PREPARED_TAKE_STATUS_PENDING, PREPARED_TAKE_STATUS_READY,
-        kept_plan_revision,
+        "AND plan_revision != ? "
+        f"AND ({where_extra})",
+        *params,
     )
 
 
@@ -1436,7 +1649,43 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
         # save is the only path that could leave the table in
         # an inconsistent state, and a refused save never
         # reaches this call.
-        invalidate_ungenerated_prepared_takes(session_id, new_revision)
+        #
+        # The boundary the ``session-plan`` spec asks for lives
+        # here. A save that changes the session's constants
+        # (``look`` / ``initial_wardrobe`` / ``selected_resources``)
+        # keeps the strict policy: every ungenerated row at an
+        # older revision is invalidated. A save that only edits
+        # ``wardrobe_changes`` or the take order narrows the
+        # pass to the take IDs whose effective wardrobe actually
+        # changed between revisions, plus any take removed from
+        # the new plan. A take whose effective state and prompt
+        # remain byte-for-byte identical in the new plan keeps
+        # its prior ``ready`` row untouched, which is the
+        # "reuse the prior preparation" rule the 6.2 acceptance
+        # demands. The two policies live side by side so a
+        # constant change after a generated take still raises
+        # ``PlanConstantsFrozenAfterGenerated`` above without
+        # reaching this pass.
+        if current is None:
+            affected_for_invalidation: set[str] | None = None
+            new_take_ids_for_invalidation: set[str] | None = None
+        else:
+            constants_changed = _plan_constants_changed(old_compare, new_compare)
+            if constants_changed:
+                affected_for_invalidation = None
+                new_take_ids_for_invalidation = None
+            else:
+                affected_for_invalidation = (
+                    _compute_affected_take_ids_for_plan_change(
+                        old_plan, validated,
+                    )
+                )
+                new_take_ids_for_invalidation = _take_id_set(validated)
+        invalidate_ungenerated_prepared_takes(
+            session_id, new_revision,
+            affected_take_ids=affected_for_invalidation,
+            new_take_ids=new_take_ids_for_invalidation,
+        )
         invalidate_plan_approval(session_id)
     return {"plan_revision": new_revision, "conflicts": conflicts}
 
