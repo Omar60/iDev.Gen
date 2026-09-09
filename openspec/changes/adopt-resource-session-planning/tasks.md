@@ -262,7 +262,36 @@
   > - `npx --yes @fission-ai/openspec validate adopt-resource-session-planning --strict` (valid)
   > - `python -m pytest tests/test_no_personal_data.py` (10 passed)
   > - `git diff --check` (clean, no whitespace or formatting errors)
-- [ ] 5.4 Add per-take prompt/provenance review, conflict resolution, resume and selected-take test generation; verify stale review cannot submit and double-click/network retry does not duplicate shots.
+- [x] 5.4 Add per-take prompt/provenance review, conflict resolution, resume and selected-take test generation; verify stale review cannot submit and double-click/network retry does not duplicate shots.
+
+  > 5.4 status: **complete.** Per-take prompt and provenance review, conflict adaptation, resume after reload, and selected-take test generation with double-click and stale guards were implemented across backend and frontend:
+  >
+  > - **Backend review and preparation endpoints (`backend/main.py`)**:
+  >   - `GET /api/sessions/{sid}/plan/takes/{take_id}/review`: Returns compiled final prompt, effective state, pinned resources with digests, conflicts, adaptations, compiler/mapping versions, and enforces plan revision validation (HTTP 409 on revision mismatch).
+  >   - `GET /api/sessions/{sid}/plan/review`: Plan-wide review endpoint aggregating per-take reviews for a specific revision.
+  >   - `POST /api/sessions/{sid}/plan/takes/{take_id}/adaptations`: Persists reviewed adaptations bound to a specific plan revision.
+  >   - `POST /api/sessions/{sid}/plan/takes/{take_id}/prepare`: Deterministic take finalization producing ready preparation snapshots.
+  >   - `POST /api/sessions/{sid}/plan/preparations/prepare`: Batch finalization of incomplete takes.
+  >   - `POST /api/sessions/{sid}/plan/preparations/submit-selected`: Atomically materializes selected takes into pending shots; enforces revision validation (HTTP 409 on stale revision) and guarantees idempotent execution (network retry / duplicate submission returns existing `shot_id` without duplicate shot rows).
+  > - **Frontend helpers and controller state machine (`frontend/src/sessionPlan.js`)**:
+  >   - Pure and async API helpers: `loadTakeReview`, `loadPlanReviews`, `recordTakeAdaptation`, `prepareTake`, `preparePlanTakes`, `submitPreparedTake`, `submitSelectedTakes`.
+  >   - State tracking: `selectedTakeIds` (Set), `submittingTakes` (boolean), `takeReviews` (dictionary), and `preparation` snapshot state.
+  >   - Selection management: `toggleTakeSelect`, `selectSingleTake`, `selectAllReadyTakes`, and `clearTakeSelection`.
+  >   - Stale review invalidation: Any edit to plan constants, take order, creative choices, or wardrobe changes sets `planDirty = true`, resets `reviewedRevision = null`, and clears `selectedTakeIds`.
+  >   - Double-click & in-flight protection: `submitSelectedTakesAction` guards against concurrent requests via `submittingTakes` flag, rejects dirty plans with descriptive error, and verifies takes are in `ready` or `generated` status.
+  > - **Frontend review inspector UI (`frontend/src/views/SessionView.jsx`)**:
+  >   - Step 4 (Review) table enhancements: "Select All Ready Takes" header checkbox, row-level selection checkboxes for ready ungenerated takes, preparation status badges (`Ready`, `Generated`, `Requires re-prep`, `Pending prep`, `Unsaved edits`), per-take "Review" (expand/collapse) and "Prepare" actions.
+  >   - Expandable Take Inspector: Effective wardrobe & look display with provenance source (`initial`, `from_here`, `this_take`), pinned resource revisions with content digests, authoritative backend compiled `final_prompt` in styled `<pre>` container, compiler and mapping metadata, conflict resolution UI with inline input and "Adapt" action calling `recordTakeAdaptation`, and resolved adaptations review.
+  >   - Review toolbar: Batch "Prepare Incomplete Takes", "Approve Review (Rev N)" button gating submission on current revision review, and "Test Generate Selected" button with double-click / in-flight protection (`disabled={submittingTakes}`).
+  >   - Legacy isolation: Step 4 review tools and test generation controls remain strictly guarded under `isResource` mode.
+  >
+  > Verification commands and outcomes (all pass):
+  > - `npm --prefix frontend test` (251 passed across 11 test files, including 18 dedicated Task 5.4 tests)
+  > - `npm --prefix frontend run build` (clean Vite production build)
+  > - `.venv\Scripts\python.exe -m pytest` (1245 passed, 3 warnings in 65.24s)
+  > - `.venv\Scripts\python.exe -m pytest tests/test_no_personal_data.py tests/test_shoot_checks.py` (46 passed)
+  > - `git diff --check` (clean, no whitespace or formatting errors)
+  > - `npx --yes @fission-ai/openspec validate adopt-resource-session-planning --strict` (Change 'adopt-resource-session-planning' is valid)
 
 ## 6. Migration, acceptance and documentation
 

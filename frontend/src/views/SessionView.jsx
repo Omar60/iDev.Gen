@@ -30,6 +30,14 @@ import {
   canProceedToGeneration,
   canGenerateSession,
   isLegacyControlVisible,
+  getTakePreparationState,
+  loadTakeReview,
+  approvePlanReview,
+  recordTakeAdaptation,
+  prepareTake,
+  preparePlanTakes,
+  submitPreparedTake,
+  submitSelectedTakes,
 } from '../sessionPlan.js'
 
 /** The wardrobe the shoot passes through, in order — the arc a composed run is
@@ -75,6 +83,8 @@ export default function SessionView({
   initialReviewedRevision = null,
   initialConflicts = [],
   initialPreparation = null,
+  initialExpandedTakeId = null,
+  initialTakeReviewData = {},
 }) {
   const [s, setS] = useState(initialSession)
   const [error, setError] = useState(initialError)
@@ -199,6 +209,21 @@ export default function SessionView({
   const [planNotice, setPlanNotice] = useState('')
   const [activeStep, setActiveStep] = useState(initialActiveStep)
   const [reviewedRevision, setReviewedRevision] = useState(initialReviewedRevision)
+  const [selectedTakeIds, setSelectedTakeIds] = useState(() => new Set())
+  const [submittingTakes, setSubmittingTakes] = useState(false)
+  const [expandedTakeId, setExpandedTakeId] = useState(initialExpandedTakeId)
+  const [takeReviewData, setTakeReviewData] = useState(initialTakeReviewData)
+  const [takeReviewLoading, setTakeReviewLoading] = useState({})
+  const [takeReviewError, setTakeReviewError] = useState({})
+  const [adaptationDrafts, setAdaptationDrafts] = useState({})
+  const [preparingTakeId, setPreparingTakeId] = useState(null)
+  const [preparingAll, setPreparingAll] = useState(false)
+
+  const markPlanDirty = () => {
+    setPlanDirty(true)
+    setReviewedRevision(null)
+    setSelectedTakeIds(new Set())
+  }
 
   const isResource = isResourceSession(s)
 
@@ -213,6 +238,8 @@ export default function SessionView({
             setPlanConflicts([])
             setPlanPreparation(null)
             setReviewedRevision(null)
+            setSelectedTakeIds(new Set())
+            setTakeReviewData({})
             setError('Loaded draft missing valid plan_revision from backend')
             return
           }
@@ -220,8 +247,10 @@ export default function SessionView({
           setPlanRevision((prev) => (planDirtyRef.current && prev !== null ? prev : res.planRevision))
           setPlanConflicts(res.conflicts)
           setPlanPreparation(res.preparation || null)
+          setSelectedTakeIds(new Set())
+          setTakeReviewData({})
           if (!planDirtyRef.current) {
-            setReviewedRevision(null)
+            setReviewedRevision((prev) => (typeof res.reviewedRevision === 'number' ? res.reviewedRevision : (prev && prev === res.planRevision ? prev : null)))
           }
         } else {
           setPlan(null)
@@ -229,6 +258,8 @@ export default function SessionView({
           setPlanConflicts([])
           setPlanPreparation(null)
           setReviewedRevision(null)
+          setSelectedTakeIds(new Set())
+          setTakeReviewData({})
           setError(res.error)
         }
       }).catch((e) => {
@@ -237,6 +268,8 @@ export default function SessionView({
         setPlanConflicts([])
         setPlanPreparation(null)
         setReviewedRevision(null)
+        setSelectedTakeIds(new Set())
+        setTakeReviewData({})
         setError(e?.message || 'Failed to load plan')
       })
     }
@@ -253,11 +286,189 @@ export default function SessionView({
       setPlanConflicts(res.conflicts)
       setPlanDirty(false)
       setReviewedRevision(null)
+      setSelectedTakeIds(new Set())
+      setTakeReviewData({})
       setPlanNotice(`Plan saved (revision ${res.planRevision})`)
       setTimeout(() => setPlanNotice(''), 4000)
       reload()
     } else {
       setError(res.error)
+    }
+  }
+
+  const handleToggleTakeSelect = (takeId) => {
+    setSelectedTakeIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(takeId)) {
+        next.delete(takeId)
+      } else {
+        next.add(takeId)
+      }
+      return next
+    })
+  }
+
+  const handleSelectAllReady = (readyTakeIds) => {
+    setSelectedTakeIds((prev) => {
+      const allSelected = readyTakeIds.length > 0 && readyTakeIds.every((tid) => prev.has(tid))
+      if (allSelected) {
+        return new Set()
+      }
+      return new Set(readyTakeIds)
+    })
+  }
+
+  const fetchTakeReview = async (takeId) => {
+    setTakeReviewLoading((prev) => ({ ...prev, [takeId]: true }))
+    setTakeReviewError((prev) => ({ ...prev, [takeId]: '' }))
+    try {
+      const res = await loadTakeReview(id, takeId, api)
+      if (res.ok) {
+        setTakeReviewData((prev) => ({ ...prev, [takeId]: res }))
+      } else {
+        setTakeReviewError((prev) => ({ ...prev, [takeId]: res.error || 'Failed to load take review' }))
+      }
+    } catch (e) {
+      setTakeReviewError((prev) => ({ ...prev, [takeId]: e?.message || 'Failed to load take review' }))
+    } finally {
+      setTakeReviewLoading((prev) => ({ ...prev, [takeId]: false }))
+    }
+  }
+
+  const toggleTakeReview = (takeId) => {
+    if (expandedTakeId === takeId) {
+      setExpandedTakeId(null)
+    } else {
+      setExpandedTakeId(takeId)
+      if (!takeReviewData[takeId]) {
+        fetchTakeReview(takeId)
+      }
+    }
+  }
+
+  const handlePrepareTake = async (takeId) => {
+    if (planRevision === null || planDirty) return
+    setPreparingTakeId(takeId)
+    setError('')
+    try {
+      const res = await prepareTake(id, takeId, planRevision, api)
+      if (res.ok) {
+        setPlanNotice(`Take ${takeId} prepared`)
+        setTimeout(() => setPlanNotice(''), 3000)
+        await fetchTakeReview(takeId)
+        await reload()
+      } else {
+        setError(res.error || `Failed to prepare take ${takeId}`)
+      }
+    } catch (e) {
+      setError(e?.message || `Failed to prepare take ${takeId}`)
+    } finally {
+      setPreparingTakeId(null)
+    }
+  }
+
+  const handlePrepareAllIncomplete = async () => {
+    if (planRevision === null || planDirty) return
+    setPreparingAll(true)
+    setError('')
+    try {
+      const res = await preparePlanTakes(id, planRevision, api)
+      if (res.ok) {
+        setPlanNotice(`Batch preparation complete: ${res.completed_count ?? 0} prepared`)
+        setTimeout(() => setPlanNotice(''), 4000)
+        await reload()
+      } else {
+        setError(res.error || 'Batch preparation failed')
+      }
+    } catch (e) {
+      setError(e?.message || 'Batch preparation failed')
+    } finally {
+      setPreparingAll(false)
+    }
+  }
+
+  const handleRecordAdaptation = async (takeId, conflict) => {
+    if (planRevision === null || planDirty) return
+    const conflictKey = conflict.conflict_key || `${conflict.library_key || ''}:${conflict.source_id || ''}:${conflict.resource_field || ''}`
+    const adaptedVal = (adaptationDrafts[takeId]?.[conflictKey] ?? '').trim()
+    if (!adaptedVal) {
+      setError('Adaptation value cannot be empty')
+      return
+    }
+    setError('')
+    try {
+      const res = await recordTakeAdaptation(id, takeId, {
+        plan_revision: planRevision,
+        adaptation: {
+          library_key: conflict.library_key,
+          source_id: conflict.source_id,
+          content_digest: conflict.content_digest,
+          resource_field: conflict.resource_field,
+          adapted_value: adaptedVal,
+        },
+      }, api)
+      if (res.ok) {
+        setPlanNotice(`Adaptation recorded for take ${takeId}`)
+        setTimeout(() => setPlanNotice(''), 3000)
+        await fetchTakeReview(takeId)
+        await reload()
+      } else {
+        setError(res.error || 'Failed to record adaptation')
+      }
+    } catch (e) {
+      setError(e?.message || 'Failed to record adaptation')
+    }
+  }
+
+  const handleApproveReview = async () => {
+    if (planDirty || (planConflicts && planConflicts.length > 0) || planRevision === null) return
+    setError('')
+    try {
+      const res = await approvePlanReview(id, planRevision, api)
+      if (res.ok) {
+        setReviewedRevision(planRevision)
+        setPlanNotice(`Review approved for revision ${planRevision}`)
+        setTimeout(() => setPlanNotice(''), 3000)
+      } else {
+        setError(res.error || 'Failed to approve review')
+      }
+    } catch (e) {
+      setError(e?.message || 'Failed to approve review')
+    }
+  }
+
+  const handleSubmitSelectedTakes = async () => {
+    if (submittingTakes) return
+    if (planDirty) {
+      setError('Cannot submit: plan has unsaved changes')
+      return
+    }
+    if (reviewedRevision !== planRevision) {
+      setError('Cannot submit: review must be confirmed for current plan revision')
+      return
+    }
+    const toSubmit = Array.from(selectedTakeIds)
+    if (toSubmit.length === 0) {
+      setError('No takes selected for submission')
+      return
+    }
+    setSubmittingTakes(true)
+    setError('')
+    try {
+      const res = await submitSelectedTakes(id, toSubmit, planRevision, api)
+      if (res.ok) {
+        setSelectedTakeIds(new Set())
+        setPlanNotice(`Submitted ${res.submitted_count || toSubmit.length} take(s) to queue`)
+        setTimeout(() => setPlanNotice(''), 4000)
+        await reload()
+        navigateStep('generation')
+      } else {
+        setError(res.error || 'Failed to submit selected takes')
+      }
+    } catch (e) {
+      setError(e?.message || 'Failed to submit selected takes')
+    } finally {
+      setSubmittingTakes(false)
     }
   }
 
@@ -1462,13 +1673,49 @@ export default function SessionView({
                   (planPreparation.history || []).some((h) => h.take_id === inc.take_id)
                 ).length
               : 0
+            const incompleteCount = !planDirty && planPreparation?.incomplete?.length > 0
+              ? planPreparation.incomplete.length
+              : 0
+
+            const readyTakeIds = (plan?.takes || []).filter((t) => {
+              const st = getTakePreparationState(t.take_id, planPreparation, planDirty)
+              return st === 'ready'
+            }).map((t) => t.take_id)
+
+            const allReadySelected = readyTakeIds.length > 0 && readyTakeIds.every((tid) => selectedTakeIds.has(tid))
 
             return (
               <div>
-                <h3>4. Review</h3>
-                <p className="muted" style={{ margin: '0 0 12px' }}>
-                  Review session configuration before shooting. Confirm constants and planned takes.
-                </p>
+                <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div>
+                    <h3 style={{ margin: 0 }}>4. Review</h3>
+                    <p className="muted" style={{ margin: '2px 0 0' }}>
+                      Review session configuration, effective prompts, provenance, and conflicts before generating.
+                    </p>
+                  </div>
+                  <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                    {reviewedRevision === planRevision && planRevision !== null ? (
+                      <span className="badge ready" title="Current plan revision reviewed and approved">
+                        ✓ Review Approved (Rev {planRevision})
+                      </span>
+                    ) : (
+                      <button
+                        className="secondary"
+                        onClick={handleApproveReview}
+                        disabled={planDirty || (planConflicts && planConflicts.length > 0) || planRevision === null}
+                        title={
+                          planDirty
+                            ? 'Save plan changes before approving review'
+                            : (planConflicts && planConflicts.length > 0)
+                              ? 'Unresolved conflicts require attention before approving review'
+                              : 'Approve review for the current plan revision'
+                        }
+                      >
+                        Approve Review (Rev {planRevision ?? '—'})
+                      </button>
+                    )}
+                  </div>
+                </div>
 
                 {planDirty && (
                   <div style={{
@@ -1547,12 +1794,60 @@ export default function SessionView({
                   </div>
                 </div>
 
+                {/* Step 4 Toolbar: Batch Preparation & Selected Test Generation */}
+                <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, padding: '8px 12px', background: 'var(--panel-2)', borderRadius: 8 }}>
+                  <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, fontWeight: 600 }}>Actions:</span>
+                    <button
+                      onClick={handlePrepareAllIncomplete}
+                      disabled={planDirty || preparingAll || incompleteCount === 0}
+                      title={planDirty ? 'Save draft before preparing' : incompleteCount === 0 ? 'All takes already prepared' : `Prepare ${incompleteCount} take(s)`}
+                    >
+                      {preparingAll ? 'Preparing…' : `Prepare Incomplete Takes (${incompleteCount})`}
+                    </button>
+                  </div>
+                  <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+                    <button
+                      className="primary"
+                      onClick={handleSubmitSelectedTakes}
+                      disabled={selectedTakeIds.size === 0 || submittingTakes || planDirty || reviewedRevision !== planRevision}
+                      title={
+                        planDirty
+                          ? 'Save draft before test generation'
+                          : reviewedRevision !== planRevision
+                            ? 'Review must be approved for current revision before generation'
+                            : selectedTakeIds.size === 0
+                              ? 'Select at least one ready take to test generate'
+                              : `Test generate ${selectedTakeIds.size} selected take(s)`
+                      }
+                    >
+                      {submittingTakes ? 'Submitting…' : `Test Generate Selected (${selectedTakeIds.size})`}
+                    </button>
+                  </div>
+                </div>
+
                 <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Planned Takes ({plan?.takes?.length || 0})</div>
+                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <div style={{ fontWeight: 600 }}>Planned Takes ({plan?.takes?.length || 0})</div>
+                    {selectedTakeIds.size > 0 && (
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        {selectedTakeIds.size} take{selectedTakeIds.size === 1 ? '' : 's'} selected for test generation
+                      </span>
+                    )}
+                  </div>
                   <div style={{ overflowX: 'auto' }}>
                     <table>
                       <thead>
                         <tr>
+                          <th style={{ width: 36, textAlign: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={allReadySelected}
+                              onChange={() => handleSelectAllReady(readyTakeIds)}
+                              disabled={readyTakeIds.length === 0 || planDirty || submittingTakes}
+                              title={readyTakeIds.length === 0 ? 'No ready takes available to select' : 'Select all ready takes'}
+                            />
+                          </th>
                           <th>Take ID</th>
                           <th>Label</th>
                           <th>Camera</th>
@@ -1561,42 +1856,291 @@ export default function SessionView({
                           <th>Expression</th>
                           <th>Effective Wardrobe</th>
                           <th>Status</th>
+                          <th style={{ textAlign: 'right' }}>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         {(plan?.takes || []).map((t) => {
                           const d = effectiveDetails[t.take_id] || { wardrobe: plan?.initial_wardrobe || '', source: 'initial' }
-                          const isCompleted = !planDirty && (planPreparation?.completed || []).some((c) => c.take_id === t.take_id)
-                          const isInvalidated = !planDirty && !isCompleted && (planPreparation?.history || []).some((h) => h.take_id === t.take_id)
+                          const prepState = getTakePreparationState(t.take_id, planPreparation, planDirty)
+                          const completedItem = (planPreparation?.completed || []).find((c) => c.take_id === t.take_id)
+                          const isSelectable = !planDirty && prepState === 'ready' && !submittingTakes
+                          const isExpanded = expandedTakeId === t.take_id
+                          const rev = takeReviewData[t.take_id]
+                          const snap = rev?.snapshot || completedItem
+                          const finalPrompt = rev?.final_prompt || snap?.final_prompt
+                          const conflicts = rev?.conflicts || []
+                          const resolvedConflicts = rev?.adaptations || rev?.resolved_conflicts || []
+                          const unresolvedPlaceholders = rev?.unresolved_placeholders || []
+                          const hasPlaceholders = unresolvedPlaceholders.length > 0 || rev?.has_standing_placeholders || false
+                          const pinnedResources = rev?.selected_resource_revisions || snap?.provenance?.selected_resource_revisions || plan?.selected_resources || []
+
                           return (
-                            <tr key={t.take_id}>
-                              <td><span className="badge">{t.take_id}</span></td>
-                              <td>{t.label || '—'}</td>
-                              <td>{t.camera || '—'}</td>
-                              <td>{t.framing || '—'}</td>
-                              <td>{t.pose || '—'}</td>
-                              <td>{t.expression || '—'}</td>
-                              <td>
-                                <div style={{ fontSize: 12 }}>{d.wardrobe || '—'}</div>
-                                <span className="badge" style={{ fontSize: 10 }}>
-                                  {d.source === 'initial' && 'initial'}
-                                  {d.source === 'from_here' && 'from_here'}
-                                  {d.source === 'inherited_from_here' && `from ${d.inheritedFrom}`}
-                                  {d.source === 'this_take' && 'this_take'}
-                                </span>
-                              </td>
-                              <td>
-                                {planDirty ? (
-                                  <span className="badge warn">Unsaved edits</span>
-                                ) : isCompleted ? (
-                                  <span className="badge ready">Ready</span>
-                                ) : isInvalidated ? (
-                                  <span className="badge warn">Requires re-prep</span>
-                                ) : (
-                                  <span className="badge pending">Pending prep</span>
-                                )}
-                              </td>
-                            </tr>
+                            <React.Fragment key={t.take_id}>
+                              <tr>
+                                <td style={{ textAlign: 'center' }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedTakeIds.has(t.take_id)}
+                                    onChange={() => handleToggleTakeSelect(t.take_id)}
+                                    disabled={!isSelectable}
+                                    title={
+                                      planDirty
+                                        ? 'Save draft first'
+                                        : prepState === 'generated'
+                                          ? 'Take already generated as a shot'
+                                          : prepState !== 'ready'
+                                            ? 'Take must be prepared before test generation'
+                                            : `Select take ${t.take_id} for test generation`
+                                    }
+                                  />
+                                </td>
+                                <td><span className="badge">{t.take_id}</span></td>
+                                <td>{t.label || '—'}</td>
+                                <td>{t.camera || '—'}</td>
+                                <td>{t.framing || '—'}</td>
+                                <td>{t.pose || '—'}</td>
+                                <td>{t.expression || '—'}</td>
+                                <td>
+                                  <div style={{ fontSize: 12 }}>{d.wardrobe || '—'}</div>
+                                  <span className="badge" style={{ fontSize: 10 }}>
+                                    {d.source === 'initial' && 'initial'}
+                                    {d.source === 'from_here' && 'from_here'}
+                                    {d.source === 'inherited_from_here' && `from ${d.inheritedFrom}`}
+                                    {d.source === 'this_take' && 'this_take'}
+                                  </span>
+                                </td>
+                                <td>
+                                  {planDirty || prepState === 'unsaved' ? (
+                                    <span className="badge warn">Unsaved edits</span>
+                                  ) : prepState === 'generated' ? (
+                                    <span className="badge ready">✓ Generated [Shot #{completedItem?.linked_shot_id || '—'}]</span>
+                                  ) : prepState === 'ready' ? (
+                                    <span className="badge ready">Ready</span>
+                                  ) : prepState === 'invalidated' ? (
+                                    <span className="badge warn">Requires re-prep</span>
+                                  ) : (
+                                    <span className="badge pending">Pending prep</span>
+                                  )}
+                                </td>
+                                <td style={{ textAlign: 'right' }}>
+                                  <div className="row" style={{ gap: 4, justifyContent: 'flex-end' }}>
+                                    <button
+                                      className="icon"
+                                      onClick={() => toggleTakeReview(t.take_id)}
+                                      title="Inspect effective prompt, provenance, and conflicts"
+                                    >
+                                      {isExpanded ? '▲ Close' : '▼ Review'}
+                                    </button>
+                                    <button
+                                      style={{ fontSize: 11, padding: '2px 8px' }}
+                                      onClick={() => handlePrepareTake(t.take_id)}
+                                      disabled={planDirty || prepState === 'ready' || preparingTakeId === t.take_id || preparingAll}
+                                      title={planDirty ? 'Save draft before preparing' : 'Compile authoritative preparation snapshot'}
+                                    >
+                                      {preparingTakeId === t.take_id ? 'Preparing…' : 'Prepare'}
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                              {isExpanded && (
+                                <tr>
+                                  <td colSpan={10} style={{ padding: 12, background: 'var(--panel)' }}>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                      {takeReviewLoading[t.take_id] && <p className="muted" style={{ margin: 0 }}>Loading take review…</p>}
+                                      {takeReviewError[t.take_id] && <p style={{ margin: 0, color: 'var(--warn)' }}>{takeReviewError[t.take_id]}</p>}
+
+                                      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div style={{ fontWeight: 600 }}>Inspector: Take {t.take_id} {t.label ? `(${t.label})` : ''}</div>
+                                        <div className="row" style={{ gap: 6 }}>
+                                          <button
+                                            className="icon"
+                                            onClick={() => fetchTakeReview(t.take_id)}
+                                            title="Reload review data from backend"
+                                          >
+                                            ↻ Refresh
+                                          </button>
+                                          <button
+                                            onClick={() => handlePrepareTake(t.take_id)}
+                                            disabled={planDirty || preparingTakeId === t.take_id || preparingAll}
+                                            title={planDirty ? 'Save draft before preparing' : 'Compile authoritative preparation snapshot'}
+                                          >
+                                            {preparingTakeId === t.take_id ? 'Preparing…' : prepState === 'ready' ? 'Re-prepare Take' : 'Prepare Take'}
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      {/* Effective Wardrobe & Look */}
+                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 10 }}>
+                                        <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>
+                                          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>Effective Wardrobe</div>
+                                          <div style={{ fontSize: 12 }}>{snap?.effective_state?.wardrobe || d.wardrobe || '(none)'}</div>
+                                          <div style={{ marginTop: 4 }}>
+                                            <span className="badge" style={{ fontSize: 10 }}>
+                                              Source: {d.source === 'initial' ? 'Inherited from initial wardrobe' : d.source === 'from_here' ? 'Persistent change (from here onward)' : d.source === 'inherited_from_here' ? `Inherited from ${d.inheritedFrom}` : 'This take only override'}
+                                            </span>
+                                          </div>
+                                        </div>
+                                        <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>
+                                          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>Effective Look</div>
+                                          <div style={{ fontSize: 12 }}>{snap?.effective_state?.look || plan?.look || '(none)'}</div>
+                                        </div>
+                                      </div>
+
+                                      {/* Authoritative Final Prompt */}
+                                      <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>
+                                        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+                                          <div style={{ fontWeight: 600, fontSize: 12 }}>Authoritative Final Prompt</div>
+                                          {finalPrompt && <span className="badge ready" style={{ fontSize: 10 }}>Backend Compiled</span>}
+                                        </div>
+                                        {finalPrompt ? (
+                                          <pre style={{
+                                            margin: 0,
+                                            padding: 8,
+                                            background: 'var(--bg)',
+                                            borderRadius: 4,
+                                            fontSize: 11,
+                                            whiteSpace: 'pre-wrap',
+                                            wordBreak: 'break-word',
+                                            maxHeight: 120,
+                                            overflowY: 'auto',
+                                          }}>
+                                            {finalPrompt}
+                                          </pre>
+                                        ) : (
+                                          <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                                            Prompt has not yet been compiled by the backend compiler. Click &ldquo;Prepare Take&rdquo; to compile authoritative prompt.
+                                          </p>
+                                        )}
+                                      </div>
+
+                                      {/* Provenance & Versions */}
+                                      <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>
+                                        <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>Provenance & Compilation Metadata</div>
+                                        <div className="row" style={{ gap: 16, fontSize: 11 }}>
+                                          <span><b>Compiler:</b> {rev?.compiler_version || snap?.compiler_version || 'resource-v1'}</span>
+                                          <span><b>Mapping:</b> {rev?.mapping_version || snap?.mapping_version || '1.0'}</span>
+                                          <span><b>Prepared At:</b> {(() => {
+                                             const ts = snap?.updated_at || snap?.created_at || snap?.prepared_at
+                                             if (!ts) return '—'
+                                             try {
+                                               const d = typeof ts === 'number' ? new Date(ts > 1e11 ? ts : ts * 1000) : new Date(ts)
+                                               return isNaN(d.getTime()) ? String(ts) : d.toLocaleString()
+                                             } catch (_) {
+                                               return String(ts)
+                                             }
+                                           })()}</span>
+                                        </div>
+                                        {pinnedResources.length > 0 && (
+                                          <div style={{ marginTop: 6, fontSize: 11 }}>
+                                            <div style={{ fontWeight: 600 }}>Pinned Resource Revisions:</div>
+                                            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                                              {pinnedResources.map((res, idx) => {
+                                                if (typeof res === 'string') {
+                                                  return <li key={idx}><b>{res}</b></li>
+                                                }
+                                                const key = res.library_key || res.key || ''
+                                                const sourceId = res.source_id || res.id || ''
+                                                const digest = res.content_digest
+                                                return (
+                                                  <li key={idx}>
+                                                    <b>{key && sourceId ? `${key}:${sourceId}` : key || sourceId || JSON.stringify(res)}</b>
+                                                    {digest ? (
+                                                      <span className="muted" style={{ fontFamily: 'monospace' }}> ({digest.slice(0, 16)}…)</span>
+                                                    ) : null}
+                                                  </li>
+                                                )
+                                              })}
+                                            </ul>
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      {/* Conflicts and Adaptations */}
+                                      <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>
+                                        <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
+                                          Conflicts & Adaptations {conflicts.length > 0 ? `(${conflicts.length} open)` : ''}
+                                        </div>
+                                        {hasPlaceholders && (
+                                          <div style={{ padding: '6px 8px', background: '#3a2010', border: '1px solid var(--warn)', borderRadius: 4, marginBottom: 8, fontSize: 11, color: 'var(--warn)' }}>
+                                            ⚠️ Standing placeholders detected in resource inputs. An adapted value must be provided before preparation can succeed.
+                                            {unresolvedPlaceholders.length > 0 && (
+                                              <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                                                {unresolvedPlaceholders.map((up, idx) => (
+                                                  <li key={idx}>
+                                                    <code>{typeof up === 'string' ? up : up.placeholder || JSON.stringify(up)}</code>
+                                                    {up?.resource_field ? ` in ${up.resource_field}` : ''}
+                                                  </li>
+                                                ))}
+                                              </ul>
+                                            )}
+                                          </div>
+                                        )}
+                                        {conflicts.length === 0 && resolvedConflicts.length === 0 && !hasPlaceholders ? (
+                                          <p className="muted" style={{ margin: 0, fontSize: 12 }}>No resource conflicts detected for this take.</p>
+                                        ) : null}
+
+                                        {conflicts.length > 0 && (
+                                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                                            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--warn)' }}>Open Conflicts:</div>
+                                            {conflicts.map((c, idx) => {
+                                              const conflictKey = c.conflict_key || `${c.library_key || ''}:${c.source_id || ''}:${c.resource_field || ''}`
+                                              const draftVal = adaptationDrafts[t.take_id]?.[conflictKey] ?? ''
+                                              return (
+                                                <div key={idx} style={{ padding: 6, background: 'var(--bg)', borderRadius: 4, border: '1px solid var(--warn)' }}>
+                                                  <div style={{ fontSize: 11, marginBottom: 4 }}>
+                                                    <b>{c.resource_field || 'Resource'} conflict:</b> {c.message || 'Descriptive input conflicts with take settings.'}
+                                                  </div>
+                                                  <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+                                                    <input
+                                                      type="text"
+                                                      style={{ flex: 1, fontSize: 11 }}
+                                                      placeholder={`Enter adapted ${c.resource_field || 'value'}...`}
+                                                      value={draftVal}
+                                                      onChange={(e) => {
+                                                        const val = e.target.value
+                                                        setAdaptationDrafts((prev) => ({
+                                                          ...prev,
+                                                          [t.take_id]: {
+                                                            ...(prev[t.take_id] || {}),
+                                                            [conflictKey]: val,
+                                                          },
+                                                        }))
+                                                      }}
+                                                    />
+                                                    <button
+                                                      style={{ fontSize: 11, padding: '3px 8px' }}
+                                                      onClick={() => handleRecordAdaptation(t.take_id, { ...c, conflict_key: conflictKey })}
+                                                      disabled={planDirty || !draftVal.trim()}
+                                                      title={planDirty ? 'Save draft before adapting' : 'Record adaptation bound to plan revision'}
+                                                    >
+                                                      Adapt
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              )
+                                            })}
+                                          </div>
+                                        )}
+
+                                        {resolvedConflicts.length > 0 && (
+                                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ok)' }}>Resolved Adaptations:</div>
+                                            {resolvedConflicts.map((rc, idx) => (
+                                              <div key={idx} className="row" style={{ fontSize: 11, padding: '4px 6px', background: 'var(--bg)', borderRadius: 4 }}>
+                                                <span className="badge ready" style={{ fontSize: 9 }}>✓ Adapted</span>
+                                                <span><b>{rc.resource_field}:</b> {rc.adapted_value}</span>
+                                                <span className="muted" style={{ fontSize: 10 }}>({rc.library_key}:{rc.source_id})</span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
                           )
                         })}
                       </tbody>

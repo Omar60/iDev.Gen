@@ -375,10 +375,15 @@ export async function loadSessionPlan(sessionId, api) {
       }
     }
 
+    const reviewedRevision = typeof data.reviewed_revision === 'number'
+      ? data.reviewed_revision
+      : (typeof rawPlan.reviewed_revision === 'number' ? rawPlan.reviewed_revision : null)
+
     return {
       ok: true,
       plan: normalizePlan(rawPlan),
       planRevision,
+      reviewedRevision,
       conflicts: data.conflicts || rawPlan.conflicts || [],
       preparation: data.preparation || rawPlan.preparation || null,
       error: null,
@@ -437,6 +442,237 @@ export async function executeSavePlan(sessionId, plan, expectedRevision, api) {
       conflicts: [],
     }
   }
+}
+
+/** Load review state for a specific take. */
+export async function loadTakeReview(sessionId, takeId, planRevisionOrApi = null, maybeApi = null) {
+  let planRevision = null
+  let api = null
+  if (planRevisionOrApi && typeof planRevisionOrApi.get === 'function') {
+    api = planRevisionOrApi
+    planRevision = typeof maybeApi === 'number' ? maybeApi : null
+  } else {
+    planRevision = typeof planRevisionOrApi === 'number' ? planRevisionOrApi : null
+    api = maybeApi
+  }
+  try {
+    const url = planRevision !== null && planRevision !== undefined
+      ? `/api/sessions/${sessionId}/plan/takes/${takeId}/review?plan_revision=${planRevision}`
+      : `/api/sessions/${sessionId}/plan/takes/${takeId}/review`
+    const data = await api.get(url)
+    return { ok: true, review: data, ...(data || {}), error: null }
+  } catch (err) {
+    return { ok: false, review: null, error: err?.message || 'Failed to load take review' }
+  }
+}
+
+/** Load review states for all takes in current plan revision. */
+export async function loadPlanReviews(sessionId, planRevisionOrApi = null, maybeApi = null) {
+  let planRevision = null
+  let api = null
+  if (planRevisionOrApi && typeof planRevisionOrApi.get === 'function') {
+    api = planRevisionOrApi
+    planRevision = typeof maybeApi === 'number' ? maybeApi : null
+  } else {
+    planRevision = typeof planRevisionOrApi === 'number' ? planRevisionOrApi : null
+    api = maybeApi
+  }
+  try {
+    const url = planRevision !== null && planRevision !== undefined
+      ? `/api/sessions/${sessionId}/plan/review?plan_revision=${planRevision}`
+      : `/api/sessions/${sessionId}/plan/review`
+    const data = await api.get(url)
+    return { ok: true, takes: data.takes || [], planRevision: data.plan_revision, ...(data || {}), error: null }
+  } catch (err) {
+    return { ok: false, takes: [], planRevision: null, error: err?.message || 'Failed to load plan reviews' }
+  }
+}
+
+/** Persist a reviewed adaptation for a take. */
+export async function recordTakeAdaptation(...args) {
+  let sessionId, takeId, planRevision, adaptation, api
+  if (typeof args[2] === 'object' && args[2] !== null && 'plan_revision' in args[2]) {
+    sessionId = args[0]
+    takeId = args[1]
+    planRevision = args[2].plan_revision
+    adaptation = args[2].adaptation
+    api = args[3]
+  } else {
+    sessionId = args[0]
+    planRevision = args[1]
+    takeId = args[2]
+    adaptation = args[3]
+    api = args[4]
+  }
+  if (typeof planRevision !== 'number' || planRevision < 0) {
+    return { ok: false, error: 'Cannot record adaptation: invalid plan revision' }
+  }
+  try {
+    const data = await api.post(`/api/sessions/${sessionId}/plan/takes/${takeId}/adaptations`, {
+      plan_revision: planRevision,
+      adaptation,
+    })
+    return { ok: true, adaptation: data, ...(data || {}), error: null }
+  } catch (err) {
+    return { ok: false, adaptation: null, error: err?.message || 'Failed to record adaptation' }
+  }
+}
+
+/** Prepare and finalize a single take snapshot. */
+export async function prepareTake(...args) {
+  let sessionId, takeId, planRevision, options = {}, api
+  if (typeof args[1] === 'string' && typeof args[2] === 'number') {
+    sessionId = args[0]
+    takeId = args[1]
+    planRevision = args[2]
+    options = args[3] && !args[3].post ? args[3] : {}
+    api = args[4] || (args[3]?.post ? args[3] : null)
+  } else {
+    sessionId = args[0]
+    planRevision = args[1]
+    takeId = args[2]
+    options = args[3] && !args[3].post ? args[3] : {}
+    api = args[4] || (args[3]?.post ? args[3] : null)
+  }
+  if (typeof planRevision !== 'number' || planRevision < 0) {
+    return { ok: false, error: 'Cannot prepare take: invalid plan revision' }
+  }
+  try {
+    const data = await api.post(`/api/sessions/${sessionId}/plan/takes/${takeId}/prepare`, {
+      plan_revision: planRevision,
+      manual_completion: options.manualCompletion || options.manual_completion || null,
+      adaptations: options.adaptations || null,
+    })
+    return { ok: true, snapshot: data, ...(data || {}), error: null }
+  } catch (err) {
+    return { ok: false, snapshot: null, error: err?.message || 'Failed to prepare take' }
+  }
+}
+
+/** Prepare and finalize multiple or all takes in a plan. */
+export async function preparePlanTakes(sessionId, planRevision, takeIdsOrApi = null, maybeApi = null) {
+  let takeIds = null
+  let api = null
+  if (takeIdsOrApi && typeof takeIdsOrApi.post === 'function') {
+    api = takeIdsOrApi
+    takeIds = null
+  } else {
+    takeIds = takeIdsOrApi
+    api = maybeApi
+  }
+  if (typeof planRevision !== 'number' || planRevision < 0) {
+    return { ok: false, error: 'Cannot prepare takes: invalid plan revision' }
+  }
+  try {
+    const data = await api.post(`/api/sessions/${sessionId}/plan/preparations/prepare`, {
+      plan_revision: planRevision,
+      take_ids: takeIds,
+    })
+    return { ok: true, prepared: data.prepared || [], ...(data || {}), error: null }
+  } catch (err) {
+    return { ok: false, prepared: [], error: err?.message || 'Failed to prepare plan takes' }
+  }
+}
+
+/** Authoritatively approve review for a plan revision. */
+export async function approvePlanReview(sessionId, planRevision, api) {
+  if (typeof planRevision !== 'number' || planRevision <= 0) {
+    return { ok: false, error: 'Cannot approve review: invalid plan revision' }
+  }
+  try {
+    const res = await api.post(`/api/sessions/${sessionId}/plan/review/approve`, {
+      plan_revision: planRevision,
+    })
+    return { ok: true, ...(res || {}), error: null }
+  } catch (err) {
+    return { ok: false, error: err?.message || 'Failed to approve review' }
+  }
+}
+
+/** Submit a finalized prepared take to shot creation. */
+export async function submitPreparedTake(sessionId, planRevision, takeId, api) {
+  if (typeof planRevision !== 'number' || planRevision < 0) {
+    return { ok: false, error: 'Cannot submit take: invalid plan revision' }
+  }
+  try {
+    const data = await api.post(`/api/sessions/${sessionId}/plan/preparations/submit`, {
+      plan_revision: planRevision,
+      take_id: takeId,
+    })
+    return { ok: true, snapshot: data, shotId: data.shot_id || data.linked_shot_id, ...(data || {}), error: null }
+  } catch (err) {
+    return { ok: false, snapshot: null, shotId: null, error: err?.message || 'Failed to submit take' }
+  }
+}
+
+/** Submit selected prepared takes to shot creation. */
+export async function submitSelectedTakes(...args) {
+  let sessionId, reviewedRevision, takeIds, api
+  if (Array.isArray(args[1])) {
+    sessionId = args[0]
+    takeIds = args[1]
+    reviewedRevision = args[2]
+    api = args[3]
+  } else {
+    sessionId = args[0]
+    reviewedRevision = args[1]
+    takeIds = args[2]
+    api = args[3]
+  }
+  if (typeof reviewedRevision !== 'number' || reviewedRevision <= 0) {
+    return { ok: false, submitted: [], error: 'Cannot submit: plan must be reviewed first at the current revision' }
+  }
+  if (!Array.isArray(takeIds) || takeIds.length === 0) {
+    return { ok: false, submitted: [], error: 'No takes selected for submission' }
+  }
+  try {
+    const res = await api.post(`/api/sessions/${sessionId}/plan/preparations/submit-selected`, {
+      plan_revision: reviewedRevision,
+      take_ids: takeIds,
+    })
+    return { ok: true, submitted: res.submitted || [], ...(res || {}), error: null }
+  } catch (err) {
+    return { ok: false, submitted: [], error: err?.message || 'Failed to submit selected takes' }
+  }
+}
+
+/** Determine take preparation status from preparation snapshot state. */
+export function getTakePreparationState(takeId, preparation, planDirty = false) {
+  if (planDirty) return 'unsaved'
+  if (!preparation) return 'missing'
+
+  // 1. Check completed takes
+  for (const c of preparation.completed || []) {
+    if (c.take_id === takeId) {
+      if (c.status === 'generated' || c.linked_shot_id) return 'generated'
+      if (c.status === 'ready') return 'ready'
+    }
+  }
+
+  // 2. Check incomplete takes
+  for (const inc of preparation.incomplete || []) {
+    if (inc.take_id === takeId) {
+      return inc.status || 'missing'
+    }
+  }
+
+  // 3. Check history (invalidated)
+  for (const h of preparation.history || []) {
+    if (h.take_id === takeId) {
+      return 'invalidated'
+    }
+  }
+
+  return 'missing'
+}
+
+/** Check whether a take is in ready state for submission. */
+export function isTakeReadyForSubmission(takeId, preparation, reviewedRevision, planRevision) {
+  if (typeof reviewedRevision !== 'number' || reviewedRevision !== planRevision) {
+    return false
+  }
+  const state = getTakePreparationState(takeId, preparation, false)
+  return state === 'ready' || state === 'generated'
 }
 
 /** Guard: check whether the resource plan is in a valid loaded state ready for preparation. */
@@ -554,28 +790,35 @@ export function getAdvancedSettings(session, config = {}, workflows = []) {
  *  step transitions, error handling, and control visibility.
  */
 export function createSessionViewController(
-  sessionId,
-  {
-    api,
-    config = {},
-    initialSession = null,
-    initialPlan = null,
-    initialPlanRevision = null,
-    initialReviewedRevision = null,
-    initialPreparation = null,
-  } = {}
+  sessionIdOrOptions,
+  optionsArg = {}
 ) {
-  let session = initialSession
-  let plan = initialPlan
-  let planRevision = initialPlanRevision
-  let planConflicts = []
-  let planPreparation = initialPreparation
-  let planDirty = false
+  let sessionId
+  let opts
+  if (typeof sessionIdOrOptions === 'object' && sessionIdOrOptions !== null) {
+    opts = sessionIdOrOptions
+    sessionId = opts.sessionId ?? opts.session?.id ?? 1
+  } else {
+    sessionId = sessionIdOrOptions
+    opts = optionsArg || {}
+  }
+  const api = opts.api
+  const config = opts.config || {}
+  let session = opts.initialSession ?? opts.session ?? null
+  let plan = opts.initialPlan ?? opts.plan ?? null
+  let planRevision = opts.initialPlanRevision ?? opts.planRevision ?? null
+  let planConflicts = opts.initialConflicts ?? opts.planConflicts ?? opts.conflicts ?? []
+  let planPreparation = opts.initialPreparation ?? opts.planPreparation ?? opts.preparation ?? null
+  let planDirty = Boolean(opts.planDirty)
   let planNotice = ''
-  let activeStep = 'character'
-  let reviewedRevision = initialReviewedRevision
+  let activeStep = opts.activeStep || 'character'
+  let reviewedRevision = opts.initialReviewedRevision ?? opts.reviewedRevision ?? null
   let error = ''
   let settingsOpen = false
+  const initialSelected = opts.initialSelectedTakes ?? opts.selectedTakeIds ?? []
+  const selectedTakeIds = new Set(Array.isArray(initialSelected) ? initialSelected : [])
+  let submittingTakes = false
+  let takeReviews = {}
   const listeners = new Set()
 
   function notify() {
@@ -597,6 +840,8 @@ export function createSessionViewController(
       activeStep,
       reviewedRevision,
       pending,
+      selectedTakeIds: Array.from(selectedTakeIds),
+      submittingTakes,
     }
     let effectiveWardrobes = {}
     let effectiveWardrobeDetails = {}
@@ -618,6 +863,7 @@ export function createSessionViewController(
       planRevision,
       planConflicts,
       planPreparation,
+      preparation: planPreparation,
       effectiveWardrobes,
       effectiveWardrobeDetails,
       planDirty,
@@ -626,6 +872,9 @@ export function createSessionViewController(
       reviewedRevision,
       error,
       settingsOpen,
+      selectedTakeIds: Array.from(selectedTakeIds),
+      submittingTakes,
+      takeReviews,
       canPrepare: isResource ? canPreparePlan(planState) : true,
       canProceedToGeneration: canProceedToGeneration(session, planState),
       canGenerate: canGenerateSession(session, planState),
@@ -644,7 +893,8 @@ export function createSessionViewController(
           planConflicts = planRes.conflicts
           planPreparation = planRes.preparation
           if (!planDirty) {
-            reviewedRevision = null
+            reviewedRevision = planRes.reviewedRevision ?? null
+            selectedTakeIds.clear()
           }
           error = ''
         } else {
@@ -653,6 +903,7 @@ export function createSessionViewController(
           planConflicts = []
           planPreparation = null
           reviewedRevision = null
+          selectedTakeIds.clear()
           error = planRes.error
         }
       } else {
@@ -661,6 +912,7 @@ export function createSessionViewController(
         planConflicts = []
         planPreparation = null
         reviewedRevision = null
+        selectedTakeIds.clear()
         error = ''
       }
       notify()
@@ -684,6 +936,7 @@ export function createSessionViewController(
       planConflicts = res.conflicts
       planDirty = false
       reviewedRevision = null
+      selectedTakeIds.clear()
       planNotice = `Plan saved (revision ${res.planRevision})`
       try {
         const refreshed = await loadSessionPlan(sessionId, api)
@@ -758,6 +1011,7 @@ export function createSessionViewController(
     }
     planDirty = true
     reviewedRevision = null
+    selectedTakeIds.clear()
     notify()
     return true
   }
@@ -774,6 +1028,7 @@ export function createSessionViewController(
     }
     planDirty = true
     reviewedRevision = null
+    selectedTakeIds.clear()
     notify()
     return true
   }
@@ -790,6 +1045,7 @@ export function createSessionViewController(
     }
     planDirty = true
     reviewedRevision = null
+    selectedTakeIds.clear()
     notify()
     return true
   }
@@ -807,6 +1063,7 @@ export function createSessionViewController(
     }
     planDirty = true
     reviewedRevision = null
+    selectedTakeIds.clear()
     notify()
     return true
   }
@@ -823,6 +1080,7 @@ export function createSessionViewController(
     }
     planDirty = true
     reviewedRevision = null
+    selectedTakeIds.clear()
     notify()
     return true
   }
@@ -839,6 +1097,7 @@ export function createSessionViewController(
     }
     planDirty = true
     reviewedRevision = null
+    selectedTakeIds.clear()
     notify()
     return true
   }
@@ -855,8 +1114,237 @@ export function createSessionViewController(
     }
     planDirty = true
     reviewedRevision = null
+    selectedTakeIds.clear()
     notify()
     return true
+  }
+
+  function toggleTakeSelect(takeId) {
+    const cleanId = String(takeId || '').trim()
+    if (!cleanId) return false
+    const state = getTakePreparationState(cleanId, planPreparation, planDirty)
+    if (state !== 'ready' && state !== 'generated') {
+      error = `Take ${cleanId} is not ready for submission (current status: ${state})`
+      notify()
+      return false
+    }
+    if (selectedTakeIds.has(cleanId)) {
+      selectedTakeIds.delete(cleanId)
+    } else {
+      selectedTakeIds.add(cleanId)
+    }
+    error = ''
+    notify()
+    return true
+  }
+
+  function selectSingleTake(takeId) {
+    const cleanId = String(takeId || '').trim()
+    if (!cleanId) return false
+    const state = getTakePreparationState(cleanId, planPreparation, planDirty)
+    if (state !== 'ready' && state !== 'generated') {
+      error = `Take ${cleanId} is not ready for submission (current status: ${state})`
+      notify()
+      return false
+    }
+    selectedTakeIds.clear()
+    selectedTakeIds.add(cleanId)
+    error = ''
+    notify()
+    return true
+  }
+
+  function selectAllReadyTakes() {
+    selectedTakeIds.clear()
+    for (const t of plan?.takes || []) {
+      const state = getTakePreparationState(t.take_id, planPreparation, planDirty)
+      if (state === 'ready' || state === 'generated') {
+        selectedTakeIds.add(t.take_id)
+      }
+    }
+    error = ''
+    notify()
+    return true
+  }
+
+  function clearTakeSelection() {
+    selectedTakeIds.clear()
+    notify()
+    return true
+  }
+
+  async function loadTakeReviewAction(takeId) {
+    const cleanId = String(takeId || '').trim()
+    if (!cleanId) return { ok: false, error: 'Missing takeId' }
+    const res = await loadTakeReview(sessionId, cleanId, api, planRevision)
+    if (res.ok) {
+      takeReviews = { ...takeReviews, [cleanId]: res.review }
+      error = ''
+    } else {
+      error = res.error
+    }
+    notify()
+    return res
+  }
+
+  async function recordAdaptationAction(takeId, adaptation) {
+    const cleanId = String(takeId || '').trim()
+    if (!cleanId || planRevision === null) {
+      error = 'Cannot record adaptation: missing take or plan revision'
+      notify()
+      return { ok: false, error }
+    }
+    const res = await recordTakeAdaptation(sessionId, planRevision, cleanId, adaptation, api)
+    if (res.ok) {
+      await loadTakeReviewAction(cleanId)
+      planNotice = `Adaptation saved for ${cleanId}`
+    } else {
+      error = res.error
+    }
+    notify()
+    return res
+  }
+
+  async function prepareTakeAction(takeId, options = {}) {
+    const cleanId = String(takeId || '').trim()
+    if (!cleanId || planRevision === null) {
+      error = 'Cannot prepare take: missing take or plan revision'
+      notify()
+      return { ok: false, error }
+    }
+    const res = await prepareTake(sessionId, planRevision, cleanId, options, api)
+    if (res.ok) {
+      const planRes = await loadSessionPlan(sessionId, api)
+      if (planRes.ok) {
+        planPreparation = planRes.preparation
+      }
+      await loadTakeReviewAction(cleanId)
+      planNotice = `Take ${cleanId} prepared successfully`
+      error = ''
+    } else {
+      error = res.error
+    }
+    notify()
+    return res
+  }
+
+  async function prepareAllIncompleteTakesAction() {
+    if (planRevision === null) {
+      error = 'Cannot prepare takes: missing plan revision'
+      notify()
+      return { ok: false, error }
+    }
+    const res = await preparePlanTakes(sessionId, planRevision, null, api)
+    if (res.ok) {
+      const planRes = await loadSessionPlan(sessionId, api)
+      if (planRes.ok) {
+        planPreparation = planRes.preparation
+      }
+      planNotice = `Prepared ${res.prepared.length} takes successfully`
+      error = ''
+    } else {
+      error = res.error
+    }
+    notify()
+    return res
+  }
+
+  async function approveReviewAction(revision = null) {
+    const targetRev = typeof revision === 'number' ? revision : planRevision
+    if (typeof targetRev !== 'number' || targetRev <= 0) {
+      error = 'Cannot approve review: missing plan revision'
+      notify()
+      return { ok: false, error }
+    }
+    if (planDirty) {
+      error = 'Cannot approve review: save plan changes first'
+      notify()
+      return { ok: false, error }
+    }
+    const res = await approvePlanReview(sessionId, targetRev, api)
+    if (res.ok) {
+      reviewedRevision = targetRev
+      planNotice = `Review approved for revision ${targetRev}`
+      error = ''
+    } else {
+      error = res.error
+    }
+    notify()
+    return res
+  }
+
+  async function submitSelectedTakesAction(optionsOrTakeIds = {}) {
+    if (submittingTakes) {
+      return { ok: false, error: 'Submission already in progress' }
+    }
+    if (planDirty) {
+      error = 'Cannot submit: plan has unsaved changes'
+      notify()
+      return { ok: false, error }
+    }
+    if (reviewedRevision === null || reviewedRevision !== planRevision) {
+      error = 'Cannot submit: plan must be reviewed at the current revision before submitting'
+      notify()
+      return { ok: false, error }
+    }
+    let targets = null
+    let startRunner = false
+    if (Array.isArray(optionsOrTakeIds)) {
+      targets = optionsOrTakeIds
+    } else if (typeof optionsOrTakeIds === 'object' && optionsOrTakeIds !== null) {
+      targets = optionsOrTakeIds.takeIds || null
+      startRunner = Boolean(optionsOrTakeIds.startRunner)
+    }
+    const finalTargets = Array.isArray(targets) && targets.length > 0
+      ? targets
+      : Array.from(selectedTakeIds)
+    if (finalTargets.length === 0) {
+      error = 'No takes selected for submission'
+      notify()
+      return { ok: false, error }
+    }
+    for (const tid of finalTargets) {
+      const st = getTakePreparationState(tid, planPreparation, planDirty)
+      if (st !== 'ready' && st !== 'generated') {
+        error = `Cannot submit take ${tid}: preparation status is ${st}`
+        notify()
+        return { ok: false, error }
+      }
+    }
+
+    submittingTakes = true
+    error = ''
+    notify()
+
+    try {
+      const res = await submitSelectedTakes(sessionId, reviewedRevision, finalTargets, api)
+      if (res.ok) {
+        if (api && typeof api.get === 'function') {
+          await reload()
+        }
+        if (startRunner && api && typeof api.post === 'function') {
+          try {
+            await api.post(`/api/sessions/${sessionId}/run`)
+          } catch (runErr) {
+            error = runErr?.message || 'Failed to start runner'
+          }
+        }
+        planNotice = `Submitted ${res.submitted.length} takes successfully`
+        submittingTakes = false
+        notify()
+        return res
+      } else {
+        error = res.error
+        submittingTakes = false
+        notify()
+        return res
+      }
+    } catch (err) {
+      error = err?.message || 'Submission failed'
+      submittingTakes = false
+      notify()
+      return { ok: false, error }
+    }
   }
 
   function isControlVisible(controlName) {
@@ -871,12 +1359,17 @@ export function createSessionViewController(
       activeStep,
       reviewedRevision,
       pending,
+      selectedTakeIds: Array.from(selectedTakeIds),
+      submittingTakes,
     }
     if (isResource) {
       if (['compose', 'fill_cell', 'add_shots', 'catalogue_outfit', 'wardrobe_states_textarea'].includes(controlName)) {
         return false
       }
       if (['character_step', 'constants_step', 'takes_step', 'review_step', 'generation_step'].includes(controlName)) {
+        return canPreparePlan({ plan, planRevision })
+      }
+      if (['test_generation_button', 'prepare_take_button', 'prepare_all_button'].includes(controlName)) {
         return canPreparePlan({ plan, planRevision })
       }
       if (controlName === 'incomplete_plan_notice') {
@@ -896,6 +1389,9 @@ export function createSessionViewController(
         return true
       }
       if (['character_step', 'constants_step', 'takes_step', 'review_step', 'generation_step', 'incomplete_plan_notice'].includes(controlName)) {
+        return false
+      }
+      if (['test_generation_button', 'prepare_take_button', 'prepare_all_button'].includes(controlName)) {
         return false
       }
       if (controlName === 'run_button') {
@@ -920,6 +1416,16 @@ export function createSessionViewController(
     reorderTake,
     setTakeWardrobeChange,
     removeTakeWardrobeChange,
+    toggleTakeSelect,
+    selectSingleTake,
+    selectAllReadyTakes,
+    clearTakeSelection,
+    loadTakeReviewAction,
+    recordAdaptationAction,
+    prepareTakeAction,
+    prepareAllIncompleteTakesAction,
+    approveReviewAction,
+    submitSelectedTakesAction,
     isControlVisible,
     toggleSettings: () => { settingsOpen = !settingsOpen; notify() },
     subscribe(fn) {

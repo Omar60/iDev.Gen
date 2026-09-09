@@ -586,6 +586,7 @@ def _setup_finalized_resource_take(client, *, trigger="4da woman",
         "compiler_version": "v1",
         "provenance": {"take_id": "take-01"},
     })
+    client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1})
     return sid, mid, wf["id"]
 
 
@@ -748,6 +749,7 @@ def test_resource_take_respects_workflow_kind_for_edit_guide_and_t2i(client, mak
         "wardrobe_changes": [],
     }
     assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+    session_plan.approve_plan_review(sid, 1)
 
     r, fake = make_runner()
 

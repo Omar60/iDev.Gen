@@ -167,6 +167,10 @@ class PreparedTakePersistenceError(Exception):
     """A prepared-take write failed and was rolled back."""
 
 
+class PlanReviewNotApproved(Exception):
+    """The plan revision review has not been authoritatively approved for submission."""
+
+
 # -- Validation -------------------------------------------------------------
 
 
@@ -1433,6 +1437,7 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
         # an inconsistent state, and a refused save never
         # reaches this call.
         invalidate_ungenerated_prepared_takes(session_id, new_revision)
+        invalidate_plan_approval(session_id)
     return {"plan_revision": new_revision, "conflicts": conflicts}
 
 
@@ -1551,6 +1556,10 @@ def submit_prepared_take(
                 raise PlanRevisionStale(
                     f"session {session_id} plan revision is {current_rev}, "
                     f"requested submission revision is {plan_revision}"
+                )
+            if not is_plan_review_approved(session_id, plan_revision):
+                raise PlanReviewNotApproved(
+                    f"session {session_id} plan revision {plan_revision} has not been approved for submission"
                 )
             take_ids = {
                 t.get("take_id")
@@ -1674,9 +1683,77 @@ def submit_prepared_take(
         PlanValidationError,
         PreparedTakeConflict,
         PreparedTakePersistenceError,
+        PlanReviewNotApproved,
     ):
         raise
     except Exception as exc:
         raise PreparedTakePersistenceError(
             f"could not submit prepared take {take_id!r}: {exc}"
         ) from exc
+
+
+def is_plan_review_approved(session_id: int, plan_revision: int) -> bool:
+    """Check if the specified plan revision has an authoritative approved review."""
+    row = db.one(
+        "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
+        session_id,
+    )
+    if row is None:
+        return False
+    return int(row["plan_revision"]) == int(plan_revision)
+
+
+def get_approved_plan_revision(session_id: int) -> int | None:
+    """Return the approved plan revision for session_id if still current."""
+    row = db.one(
+        "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
+        session_id,
+    )
+    if row is None:
+        return None
+    return int(row["plan_revision"])
+
+
+def approve_plan_review(session_id: int, plan_revision: int) -> dict:
+    """Authoritatively record approval of the plan review for session_id and plan_revision.
+
+    Validates that:
+    1. Session exists and is in resource-v1 mode.
+    2. Current plan revision matches plan_revision (CAS check).
+    """
+    if not isinstance(plan_revision, int) or plan_revision <= 0:
+        raise PlanValidationError("plan_revision must be a positive integer")
+
+    with db.transaction():
+        session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
+        if session is None:
+            raise SessionNotFound(f"session {session_id} not found")
+        mode = read_composition_mode(session["settings"])
+        if mode != MODE_RESOURCE_V1:
+            raise SessionNotInResourceMode(
+                f"session {session_id} composition_mode is {mode!r}, expected {MODE_RESOURCE_V1!r}"
+            )
+        current_rev, _ = _load_current_resource_plan(session_id)
+        if current_rev != plan_revision:
+            raise PlanRevisionStale(
+                f"session {session_id} plan revision is {current_rev}, requested {plan_revision}"
+            )
+        now = db.now()
+        db.run(
+            "INSERT INTO session_plan_approval (session_id, plan_revision, approved_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "plan_revision = excluded.plan_revision, approved_at = excluded.approved_at",
+            session_id, plan_revision, now,
+        )
+        return {
+            "session_id": session_id,
+            "plan_revision": plan_revision,
+            "approved": True,
+            "approved_at": now,
+        }
+
+
+def invalidate_plan_approval(session_id: int) -> None:
+    """Invalidate any existing plan review approval for session_id."""
+    db.run("DELETE FROM session_plan_approval WHERE session_id = ?", session_id)

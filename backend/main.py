@@ -44,6 +44,7 @@ from backend.room_registry import DEFAULT_ROOM_LIBRARIES, available_rooms
 from backend.mining import combination_breakage, load_mined_combinations
 from backend import resource_service
 from backend import session_plan
+from backend import resource_preparation
 from backend.resource_import import CommitAborted, StaleFingerprintError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -1848,10 +1849,20 @@ class PreparedTakeCompleteIn(BaseModel):
 
 
 def _prepared_take_http_error(exc: Exception) -> HTTPException:
-    if isinstance(exc, session_plan.PlanValidationError):
+    if isinstance(
+        exc,
+        (
+            session_plan.PlanValidationError,
+            resource_preparation.PreparationError,
+        ),
+    ):
         return HTTPException(422, str(exc))
     if isinstance(
-        exc, (session_plan.PlanRevisionStale, session_plan.PreparedTakeConflict),
+        exc, (
+            session_plan.PlanRevisionStale,
+            session_plan.PreparedTakeConflict,
+            session_plan.PlanReviewNotApproved,
+        ),
     ):
         return HTTPException(409, str(exc))
     if isinstance(exc, session_plan.SessionNotInResourceMode):
@@ -1914,6 +1925,21 @@ class PreparedTakeSubmitIn(BaseModel):
 @app.post("/api/sessions/{sid}/plan/preparations/submit")
 def submit_plan_preparation(sid: int, p: PreparedTakeSubmitIn):
     """Atomically submit one ready preparation snapshot to shot creation and queue."""
+    row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
+    if row is None:
+        raise HTTPException(404, f"session {sid} not found")
+    mode = session_plan.read_composition_mode(row["settings"])
+    if mode != session_plan.MODE_RESOURCE_V1:
+        raise HTTPException(
+            400,
+            f"session {sid} composition_mode is {mode!r}, expected "
+            f"{session_plan.MODE_RESOURCE_V1!r}",
+        )
+    if not session_plan.is_plan_review_approved(sid, p.plan_revision):
+        raise HTTPException(
+            409,
+            f"session {sid} plan revision {p.plan_revision} has not been approved for submission",
+        )
     try:
         return session_plan.submit_prepared_take(
             sid, p.plan_revision, p.take_id,
@@ -1925,7 +1951,309 @@ def submit_plan_preparation(sid: int, p: PreparedTakeSubmitIn):
         session_plan.SessionNotInResourceMode,
         session_plan.SessionNotFound,
         session_plan.PreparedTakePersistenceError,
+        session_plan.PlanReviewNotApproved,
     ) as exc:
+        raise _prepared_take_http_error(exc)
+
+
+class TakeAdaptationIn(BaseModel):
+    plan_revision: int
+    adaptation: dict
+
+
+class TakePrepareIn(BaseModel):
+    plan_revision: int
+    manual_completion: dict[str, str] | None = None
+    adaptations: list[dict] | None = None
+
+
+class PlanPreparationsPrepareIn(BaseModel):
+    plan_revision: int
+    take_ids: list[str] | None = None
+    manual_completions: dict[str, dict[str, str]] | None = None
+
+
+class PreparedTakesSubmitSelectedIn(BaseModel):
+    plan_revision: int
+    take_ids: list[str]
+
+
+@app.get("/api/sessions/{sid}/plan/takes/{take_id}/review")
+def get_take_review(sid: int, take_id: str, plan_revision: int | None = None):
+    """Return the per-take review state, conflicts, adaptations, and snapshot."""
+    row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
+    if row is None:
+        raise HTTPException(404, f"session {sid} not found")
+    mode = session_plan.read_composition_mode(row["settings"])
+    if mode != session_plan.MODE_RESOURCE_V1:
+        raise HTTPException(
+            400,
+            f"session {sid} composition_mode is {mode!r}, expected "
+            f"{session_plan.MODE_RESOURCE_V1!r}",
+        )
+    current_rev, plan = session_plan._load_current_resource_plan(sid)
+    if plan_revision is not None and plan_revision != current_rev:
+        raise HTTPException(
+            409,
+            f"session {sid} plan revision is {current_rev}, requested {plan_revision}",
+        )
+    takes = [t.get("take_id") for t in plan.get("takes", []) if isinstance(t, dict)]
+    if take_id not in takes:
+        raise HTTPException(422, f"take_id {take_id!r} not found in current plan revision {current_rev}")
+    try:
+        prep = resource_preparation.prepare_take_inputs(sid, current_rev, take_id)
+        review = resource_preparation.build_review_state(prep)
+        snapshot = session_plan._prepared_take_row(sid, current_rev, take_id)
+        decoded_snap = session_plan._decode_prepared_take(snapshot) if snapshot else None
+        final_prompt = None
+        if decoded_snap and decoded_snap.get("final_prompt"):
+            final_prompt = decoded_snap.get("final_prompt")
+        else:
+            try:
+                final_prompt = resource_preparation.compile_final_prompt(prep)
+            except Exception:
+                final_prompt = None
+        approved_rev = session_plan.get_approved_plan_revision(sid)
+        return {
+            **review,
+            "plan_revision": current_rev,
+            "reviewed_revision": approved_rev if approved_rev == current_rev else None,
+            "snapshot": decoded_snap,
+            "final_prompt": final_prompt,
+            "compiler_version": resource_preparation.COMPILER_VERSION,
+            "mapping_version": resource_preparation.MAPPING_VERSION,
+        }
+    except Exception as exc:
+        raise _prepared_take_http_error(exc)
+
+
+@app.get("/api/sessions/{sid}/plan/review")
+def get_plan_review(sid: int, plan_revision: int | None = None):
+    """Return the review states for all takes in the current plan revision."""
+    row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
+    if row is None:
+        raise HTTPException(404, f"session {sid} not found")
+    mode = session_plan.read_composition_mode(row["settings"])
+    if mode != session_plan.MODE_RESOURCE_V1:
+        raise HTTPException(
+            400,
+            f"session {sid} composition_mode is {mode!r}, expected "
+            f"{session_plan.MODE_RESOURCE_V1!r}",
+        )
+    current_rev, plan = session_plan._load_current_resource_plan(sid)
+    if plan_revision is not None and plan_revision != current_rev:
+        raise HTTPException(
+            409,
+            f"session {sid} plan revision is {current_rev}, requested {plan_revision}",
+        )
+    takes = [t.get("take_id") for t in plan.get("takes", []) if isinstance(t, dict)]
+    reviews = []
+    try:
+        for take_id in takes:
+            prep = resource_preparation.prepare_take_inputs(sid, current_rev, take_id)
+            review = resource_preparation.build_review_state(prep)
+            snapshot = session_plan._prepared_take_row(sid, current_rev, take_id)
+            decoded_snap = session_plan._decode_prepared_take(snapshot) if snapshot else None
+            final_prompt = None
+            if decoded_snap and decoded_snap.get("final_prompt"):
+                final_prompt = decoded_snap.get("final_prompt")
+            else:
+                try:
+                    final_prompt = resource_preparation.compile_final_prompt(prep)
+                except Exception:
+                    final_prompt = None
+            reviews.append({
+                **review,
+                "plan_revision": current_rev,
+                "snapshot": decoded_snap,
+                "final_prompt": final_prompt,
+                "compiler_version": resource_preparation.COMPILER_VERSION,
+                "mapping_version": resource_preparation.MAPPING_VERSION,
+            })
+        approved_rev = session_plan.get_approved_plan_revision(sid)
+        return {
+            "session_id": sid,
+            "plan_revision": current_rev,
+            "reviewed_revision": approved_rev if approved_rev == current_rev else None,
+            "takes": reviews,
+        }
+    except Exception as exc:
+        raise _prepared_take_http_error(exc)
+
+
+@app.post("/api/sessions/{sid}/plan/takes/{take_id}/adaptations")
+def record_take_adaptation_endpoint(sid: int, take_id: str, p: TakeAdaptationIn):
+    """Persist a reviewed adaptation for take_id bound to this revision."""
+    row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
+    if row is None:
+        raise HTTPException(404, f"session {sid} not found")
+    mode = session_plan.read_composition_mode(row["settings"])
+    if mode != session_plan.MODE_RESOURCE_V1:
+        raise HTTPException(
+            400,
+            f"session {sid} composition_mode is {mode!r}, expected "
+            f"{session_plan.MODE_RESOURCE_V1!r}",
+        )
+    current_rev, plan = session_plan._load_current_resource_plan(sid)
+    if current_rev != p.plan_revision:
+        raise HTTPException(
+            409,
+            f"session {sid} plan revision is {current_rev}, requested {p.plan_revision}",
+        )
+    takes = [t.get("take_id") for t in plan.get("takes", []) if isinstance(t, dict)]
+    if take_id not in takes:
+        raise HTTPException(422, f"take_id {take_id!r} not found in current plan revision {current_rev}")
+    try:
+        return resource_preparation.record_take_adaptation(
+            sid, p.plan_revision, take_id, p.adaptation,
+        )
+    except Exception as exc:
+        raise _prepared_take_http_error(exc)
+
+
+@app.post("/api/sessions/{sid}/plan/takes/{take_id}/prepare")
+def prepare_take_endpoint(sid: int, take_id: str, p: TakePrepareIn):
+    """Finalize take preparation via resource_preparation into a ready snapshot."""
+    row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
+    if row is None:
+        raise HTTPException(404, f"session {sid} not found")
+    mode = session_plan.read_composition_mode(row["settings"])
+    if mode != session_plan.MODE_RESOURCE_V1:
+        raise HTTPException(
+            400,
+            f"session {sid} composition_mode is {mode!r}, expected "
+            f"{session_plan.MODE_RESOURCE_V1!r}",
+        )
+    current_rev, plan = session_plan._load_current_resource_plan(sid)
+    if current_rev != p.plan_revision:
+        raise HTTPException(
+            409,
+            f"session {sid} plan revision is {current_rev}, requested {p.plan_revision}",
+        )
+    takes = [t.get("take_id") for t in plan.get("takes", []) if isinstance(t, dict)]
+    if take_id not in takes:
+        raise HTTPException(422, f"take_id {take_id!r} not found in current plan revision {current_rev}")
+    try:
+        return resource_preparation.finalize_take_preparation(
+            sid,
+            p.plan_revision,
+            take_id,
+            manual_completion=p.manual_completion,
+            adaptations=p.adaptations,
+        )
+    except Exception as exc:
+        raise _prepared_take_http_error(exc)
+
+
+@app.post("/api/sessions/{sid}/plan/preparations/prepare")
+def prepare_plan_takes_endpoint(sid: int, p: PlanPreparationsPrepareIn):
+    """Finalize take preparations for selected takes or all incomplete takes."""
+    row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
+    if row is None:
+        raise HTTPException(404, f"session {sid} not found")
+    mode = session_plan.read_composition_mode(row["settings"])
+    if mode != session_plan.MODE_RESOURCE_V1:
+        raise HTTPException(
+            400,
+            f"session {sid} composition_mode is {mode!r}, expected "
+            f"{session_plan.MODE_RESOURCE_V1!r}",
+        )
+    current_rev, plan = session_plan._load_current_resource_plan(sid)
+    if current_rev != p.plan_revision:
+        raise HTTPException(
+            409,
+            f"session {sid} plan revision is {current_rev}, requested {p.plan_revision}",
+        )
+    takes = [t.get("take_id") for t in plan.get("takes", []) if isinstance(t, dict)]
+    target_ids = p.take_ids if p.take_ids is not None else takes
+    snapshots = []
+    for tid in target_ids:
+        if tid not in takes:
+            raise HTTPException(422, f"take_id {tid!r} not found in plan revision {p.plan_revision}")
+        manual = (p.manual_completions or {}).get(tid)
+        try:
+            snap = resource_preparation.finalize_take_preparation(
+                sid, p.plan_revision, tid, manual_completion=manual,
+            )
+            snapshots.append(snap)
+        except Exception as exc:
+            raise _prepared_take_http_error(exc)
+    return {"prepared": snapshots}
+
+
+@app.post("/api/sessions/{sid}/plan/preparations/submit-selected")
+def submit_selected_plan_preparations(sid: int, p: PreparedTakesSubmitSelectedIn):
+    """Atomically submit selected ready preparation snapshots to shot creation and queue."""
+    try:
+        with db.transaction():
+            row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
+            if row is None:
+                raise HTTPException(404, f"session {sid} not found")
+            mode = session_plan.read_composition_mode(row["settings"])
+            if mode != session_plan.MODE_RESOURCE_V1:
+                raise HTTPException(
+                    400,
+                    f"session {sid} composition_mode is {mode!r}, expected "
+                    f"{session_plan.MODE_RESOURCE_V1!r}",
+                )
+            current_rev, plan = session_plan._load_current_resource_plan(sid)
+            if current_rev != p.plan_revision:
+                raise HTTPException(
+                    409,
+                    f"session {sid} plan revision is {current_rev}, requested {p.plan_revision}",
+                )
+            if not session_plan.is_plan_review_approved(sid, p.plan_revision):
+                raise HTTPException(
+                    409,
+                    f"session {sid} plan revision {p.plan_revision} has not been approved for submission",
+                )
+            results = []
+            for tid in p.take_ids:
+                res = session_plan.submit_prepared_take(
+                    sid, p.plan_revision, tid,
+                )
+                results.append(res)
+            return {"submitted": results}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _prepared_take_http_error(exc)
+
+
+class PlanReviewApproveIn(BaseModel):
+    plan_revision: int
+
+
+@app.post("/api/sessions/{sid}/plan/review/approve")
+@app.post("/api/sessions/{sid}/plan/approve")
+def approve_plan_review_endpoint(sid: int, p: PlanReviewApproveIn):
+    """Authoritatively record approval of the current plan revision review."""
+    row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
+    if row is None:
+        raise HTTPException(404, f"session {sid} not found")
+    mode = session_plan.read_composition_mode(row["settings"])
+    if mode != session_plan.MODE_RESOURCE_V1:
+        raise HTTPException(
+            400,
+            f"session {sid} composition_mode is {mode!r}, expected "
+            f"{session_plan.MODE_RESOURCE_V1!r}",
+        )
+    current_rev, _ = session_plan._load_current_resource_plan(sid)
+    if current_rev != p.plan_revision:
+        raise HTTPException(
+            409,
+            f"session {sid} plan revision is {current_rev}, requested {p.plan_revision}",
+        )
+    try:
+        res = session_plan.approve_plan_review(sid, p.plan_revision)
+        return {
+            "ok": True,
+            "session_id": sid,
+            "plan_revision": p.plan_revision,
+            "approved": True,
+            "approved_at": res["approved_at"],
+        }
+    except Exception as exc:
         raise _prepared_take_http_error(exc)
 
 
@@ -2018,6 +2346,8 @@ def get_plan_draft(sid: int):
     if draft is None:
         raise HTTPException(404, "no plan draft for this session")
     draft["preparation"] = session_plan.recover_preparation(sid)
+    approved_rev = session_plan.get_approved_plan_revision(sid)
+    draft["reviewed_revision"] = approved_rev if approved_rev == draft.get("plan_revision") else None
     return draft
 
 

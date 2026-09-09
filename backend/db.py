@@ -471,6 +471,18 @@ CREATE TABLE IF NOT EXISTS session_plan (
     CHECK (plan_revision > 0)
 );
 
+-- Authoritative review approval for resource-v1 plan revisions (task 5.4).
+-- One row per session; creating or saving a new plan revision invalidates
+-- the approval, and submission routes reject unapproved revisions with
+-- HTTP 409.
+CREATE TABLE IF NOT EXISTS session_plan_approval (
+    id            INTEGER PRIMARY KEY,
+    session_id    INTEGER NOT NULL UNIQUE REFERENCES session(id) ON DELETE CASCADE,
+    plan_revision INTEGER NOT NULL,
+    approved_at   TEXT NOT NULL,
+    CHECK (plan_revision > 0)
+);
+
 -- Prepared-take snapshots for the resource-v1 path (task 3.1,
 -- design.md:33). One row per (session, plan_revision, take_id)
 -- triple, written by a future preparation task (3.2 / 4.x) and

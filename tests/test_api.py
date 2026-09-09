@@ -7518,6 +7518,22 @@ def test_api_submit_prepared_take_success_and_retry(client, seeded):
         json={"plan_revision": 1, "take_id": "take-01", **snapshot},
     ).status_code == 200
 
+    # 0. Unapproved submit fails with 409 and creates 0 shots
+    r_unapp = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert r_unapp.status_code == 409, r_unapp.text
+    assert len(db.q("SELECT * FROM shot WHERE session_id = ?", sid)) == 0
+
+    # Approve review for revision 1
+    r_app = client.post(
+        f"/api/sessions/{sid}/plan/review/approve",
+        json={"plan_revision": 1},
+    )
+    assert r_app.status_code == 200, r_app.text
+    assert r_app.json()["approved"] is True
+
     # 1. Valid submit
     r = client.post(
         f"/api/sessions/{sid}/plan/preparations/submit",
@@ -7577,6 +7593,10 @@ def test_api_submit_errors_stale_invalid_and_incompatible(client, seeded):
         "wardrobe_changes": [],
     }
     assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+    assert client.post(
+        f"/api/sessions/{sid}/plan/review/approve",
+        json={"plan_revision": 1},
+    ).status_code == 200
 
     r = client.post(
         f"/api/sessions/{sid}/plan/preparations/submit",
@@ -7620,6 +7640,12 @@ def test_api_submit_errors_stale_invalid_and_incompatible(client, seeded):
     )
     assert r.status_code == 409
 
+    # Approve revision 2 so take-level error checks can be reached
+    assert client.post(
+        f"/api/sessions/{sid}/plan/review/approve",
+        json={"plan_revision": 2},
+    ).status_code == 200
+
     db.run("INSERT INTO prepared_take (session_id, plan_revision, take_id, status, final_prompt, created_at, updated_at) VALUES (?, 2, 'take-01', 'invalidated', 'p', ?, ?)", sid, db.now(), db.now())
     r = client.post(
         f"/api/sessions/{sid}/plan/preparations/submit",
@@ -7655,6 +7681,10 @@ def test_api_submit_rejects_invalid_take_metadata_with_422(client, seeded):
         "wardrobe_changes": [],
     }
     assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+    assert client.post(
+        f"/api/sessions/{sid}/plan/review/approve",
+        json={"plan_revision": 1},
+    ).status_code == 200
 
     snapshot = {
         "final_prompt": "finalized prompt",
@@ -7713,3 +7743,444 @@ def test_api_submit_rejects_invalid_take_metadata_with_422(client, seeded):
 
     # Verify no shots created
     assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+
+
+def test_api_take_and_plan_review_endpoints(client, seeded):
+    """Verify GET /api/sessions/{sid}/plan/takes/{take_id}/review and GET .../plan/review."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "res-api-review",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+
+    plan = {
+        "version": "resource-v1",
+        "look": "soft morning light",
+        "initial_wardrobe": "dark trousers",
+        "takes": [
+            {"take_id": "take-01", "label": "first take", "camera": "35mm"},
+            {"take_id": "take-02", "label": "second take", "camera": "50mm"},
+        ],
+        "selected_resources": [],
+        "wardrobe_changes": [],
+    }
+    assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+
+    # 1. Successful per-take review
+    r_take = client.get(f"/api/sessions/{sid}/plan/takes/take-01/review")
+    assert r_take.status_code == 200, r_take.text
+    data = r_take.json()
+    assert data["take_id"] == "take-01"
+    assert data["plan_revision"] == 1
+    assert "compiler_version" in data
+    assert "mapping_version" in data
+    assert isinstance(data.get("conflicts"), list)
+    assert isinstance(data.get("resolved_conflicts"), list)
+    assert data.get("snapshot") is None
+
+    # 2. Successful plan-wide review
+    r_plan = client.get(f"/api/sessions/{sid}/plan/review")
+    assert r_plan.status_code == 200, r_plan.text
+    plan_review = r_plan.json()
+    assert plan_review["session_id"] == sid
+    assert plan_review["plan_revision"] == 1
+    assert len(plan_review["takes"]) == 2
+    assert plan_review["takes"][0]["take_id"] == "take-01"
+    assert plan_review["takes"][1]["take_id"] == "take-02"
+
+    # 3. Revision mismatch / stale revision -> 409
+    r_stale = client.get(f"/api/sessions/{sid}/plan/takes/take-01/review?plan_revision=99")
+    assert r_stale.status_code == 409
+
+    # 4. Unknown take in current plan -> 422
+    r_missing_take = client.get(f"/api/sessions/{sid}/plan/takes/take-missing/review")
+    assert r_missing_take.status_code == 422
+
+    # 5. Unknown session -> 404
+    r_missing_sid = client.get("/api/sessions/999999/plan/takes/take-01/review")
+    assert r_missing_sid.status_code == 404
+
+    # 6. Legacy session -> 400
+    legacy_sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "legacy-session-review",
+    }).json()["id"]
+    r_legacy = client.get(f"/api/sessions/{legacy_sid}/plan/takes/take-01/review")
+    assert r_legacy.status_code == 400
+
+
+def test_api_take_adaptation_and_conflict_resolution(client, seeded):
+    """Verify POST /api/sessions/{sid}/plan/takes/{take_id}/adaptations resolves conflicts."""
+    import resource_store
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "res-api-adapt",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+
+    lib_id = resource_store.ensure_library("fused_scene_lib", kind="fused_scenes")
+    rev_id = resource_store.record_revision(lib_id, "scene-01", {
+        "id": "scene-01",
+        "prompt": "she is wearing a silk dress in the sunlit loft",
+    })
+    rev_row = resource_store.get_revision(revision_id=rev_id)
+    assert rev_row is not None
+
+    plan = {
+        "version": "resource-v1",
+        "look": "studio ambient",
+        "initial_wardrobe": "dark trousers",
+        "takes": [
+            {"take_id": "take-01", "camera": "35mm", "framing": "medium", "pose": "standing", "expression": "calm"}
+        ],
+        "selected_resources": [
+            {
+                "library_key": "fused_scene_lib",
+                "source_id": "scene-01",
+                "content_digest": rev_row["content_digest"],
+            }
+        ],
+        "wardrobe_changes": [],
+    }
+    assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+
+    # Initial review shows open conflict on prompt
+    r_rev1 = client.get(f"/api/sessions/{sid}/plan/takes/take-01/review")
+    assert r_rev1.status_code == 200, r_rev1.text
+    rev1 = r_rev1.json()
+    assert len(rev1["conflicts"]) == 1
+    assert rev1["conflicts"][0]["resource_field"] == "prompt"
+    assert len(rev1["resolved_conflicts"]) == 0
+
+    # Record adaptation bound to revision 1
+    r_adapt = client.post(
+        f"/api/sessions/{sid}/plan/takes/take-01/adaptations",
+        json={
+            "plan_revision": 1,
+            "adaptation": {
+                "library_key": "fused_scene_lib",
+                "source_id": "scene-01",
+                "content_digest": rev_row["content_digest"],
+                "resource_field": "prompt",
+                "adapted_value": "she is standing in the sunlit loft",
+            },
+        },
+    )
+    assert r_adapt.status_code == 200, r_adapt.text
+
+    # Review now reports conflict resolved
+    r_rev2 = client.get(f"/api/sessions/{sid}/plan/takes/take-01/review")
+    assert r_rev2.status_code == 200, r_rev2.text
+    rev2 = r_rev2.json()
+    assert len(rev2["conflicts"]) == 0
+    assert len(rev2["resolved_conflicts"]) == 1
+    assert rev2["resolved_conflicts"][0]["resource_field"] == "prompt"
+    assert rev2["adaptations"][0]["adapted_value"] == "she is standing in the sunlit loft"
+
+    # Stale revision adaptation -> 409
+    r_stale = client.post(
+        f"/api/sessions/{sid}/plan/takes/take-01/adaptations",
+        json={
+            "plan_revision": 99,
+            "adaptation": {
+                "library_key": "fused_scene_lib",
+                "source_id": "scene-01",
+                "content_digest": rev_row["content_digest"],
+                "resource_field": "prompt",
+                "adapted_value": "custom",
+            },
+        },
+    )
+    assert r_stale.status_code == 409
+
+
+def test_api_take_prepare_and_batch_prepare_endpoints(client, seeded):
+    """Verify POST .../takes/{take_id}/prepare and POST .../preparations/prepare."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "res-api-prep",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+
+    plan = {
+        "version": "resource-v1",
+        "look": "natural light",
+        "initial_wardrobe": "casual sweater",
+        "takes": [
+            {"take_id": "take-01", "camera": "35mm", "framing": "medium", "pose": "standing", "expression": "calm"},
+            {"take_id": "take-02", "camera": "50mm", "framing": "close up", "pose": "sitting", "expression": "smiling"},
+        ],
+        "selected_resources": [],
+        "wardrobe_changes": [],
+    }
+    assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+
+    # 1. Single take prepare
+    r_single = client.post(
+        f"/api/sessions/{sid}/plan/takes/take-01/prepare",
+        json={"plan_revision": 1},
+    )
+    assert r_single.status_code == 200, r_single.text
+    snap1 = r_single.json()
+    assert snap1["status"] == "ready"
+    assert snap1["plan_revision"] == 1
+    assert "casual sweater" in snap1["final_prompt"]
+
+    # 2. Batch prepare remaining
+    r_batch = client.post(
+        f"/api/sessions/{sid}/plan/preparations/prepare",
+        json={"plan_revision": 1, "take_ids": ["take-02"]},
+    )
+    assert r_batch.status_code == 200, r_batch.text
+    batch_res = r_batch.json()
+    assert len(batch_res["prepared"]) == 1
+    assert batch_res["prepared"][0]["status"] == "ready"
+
+    # 3. Check review shows snapshots
+    r_rev = client.get(f"/api/sessions/{sid}/plan/takes/take-01/review")
+    assert r_rev.status_code == 200, r_rev.text
+    assert r_rev.json()["snapshot"] is not None
+    assert r_rev.json()["snapshot"]["status"] == "ready"
+
+
+def test_api_submit_selected_idempotency_and_stale_guards(client, seeded):
+    """Verify test-generating selected takes, retry idempotency, and stale revision refusal."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "res-api-selected-test",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+
+    plan = {
+        "version": "resource-v1",
+        "look": "studio lighting",
+        "initial_wardrobe": "dark trousers",
+        "takes": [
+            {"take_id": "take-01", "label": "test take", "camera": "35mm", "framing": "medium", "pose": "standing", "expression": "calm"},
+            {"take_id": "take-02", "label": "second take", "camera": "50mm", "framing": "close up", "pose": "sitting", "expression": "smiling"},
+        ],
+        "selected_resources": [],
+        "wardrobe_changes": [],
+    }
+    assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+
+    # Prepare both takes
+    assert client.post(f"/api/sessions/{sid}/plan/takes/take-01/prepare", json={"plan_revision": 1}).status_code == 200
+    assert client.post(f"/api/sessions/{sid}/plan/takes/take-02/prepare", json={"plan_revision": 1}).status_code == 200
+
+    # 0. Unapproved submission fails with 409 and creates 0 shots
+    r_unapp = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit-selected",
+        json={"plan_revision": 1, "take_ids": ["take-01"]},
+    )
+    assert r_unapp.status_code == 409
+    assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+
+    # Approve review for revision 1
+    r_app = client.post(
+        f"/api/sessions/{sid}/plan/review/approve",
+        json={"plan_revision": 1},
+    )
+    assert r_app.status_code == 200
+    assert r_app.json()["approved"] is True
+
+    # 1. Test generate selected: submit ONLY take-01
+    r_sub1 = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit-selected",
+        json={"plan_revision": 1, "take_ids": ["take-01"]},
+    )
+    assert r_sub1.status_code == 200, r_sub1.text
+    res1 = r_sub1.json()["submitted"]
+    assert len(res1) == 1
+    assert res1[0]["take_id"] == "take-01"
+    assert res1[0]["status"] == "generated"
+    shot_1_id = res1[0]["shot_id"]
+
+    # Exactly 1 shot in database
+    shots = db.q("SELECT id, prompt FROM shot WHERE session_id = ?", sid)
+    assert len(shots) == 1
+    assert shots[0]["id"] == shot_1_id
+
+    # 2. Double-click / network retry: submit take-01 again
+    r_sub_retry = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit-selected",
+        json={"plan_revision": 1, "take_ids": ["take-01"]},
+    )
+    assert r_sub_retry.status_code == 200
+    res_retry = r_sub_retry.json()["submitted"]
+    assert len(res_retry) == 1
+    assert res_retry[0]["shot_id"] == shot_1_id
+    # Still exactly 1 shot in database!
+    assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 1
+
+    # 3. Submit remaining take-02
+    r_sub2 = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit-selected",
+        json={"plan_revision": 1, "take_ids": ["take-02"]},
+    )
+    assert r_sub2.status_code == 200
+    res2 = r_sub2.json()["submitted"]
+    assert len(res2) == 1
+    assert res2[0]["take_id"] == "take-02"
+    shot_2_id = res2[0]["shot_id"]
+    assert shot_2_id != shot_1_id
+
+    # Exactly 2 shots in database now
+    shots_all = db.q("SELECT id FROM shot WHERE session_id = ?", sid)
+    assert len(shots_all) == 2
+
+    # 4. Submit both together -> both returned idempotently, 0 new shots
+    r_sub_both = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit-selected",
+        json={"plan_revision": 1, "take_ids": ["take-01", "take-02"]},
+    )
+    assert r_sub_both.status_code == 200
+    assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 2
+
+    # 5. Stale review / revision mismatch -> 409, 0 new shots
+    plan2 = {
+        **plan,
+        "takes": [
+            *plan["takes"],
+            {"take_id": "take-03", "label": "third take", "camera": "85mm", "framing": "close up", "pose": "standing", "expression": "calm"},
+        ],
+    }
+    assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan2, "expected_revision": 1}).status_code == 200
+    r_stale_submit = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit-selected",
+        json={"plan_revision": 1, "take_ids": ["take-01"]},
+    )
+    assert r_stale_submit.status_code == 409
+    assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 2
+
+    # Submitting under revision 2 before approving revision 2 fails with 409
+    r_unapp2 = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit-selected",
+        json={"plan_revision": 2, "take_ids": ["take-01"]},
+    )
+    assert r_unapp2.status_code == 409
+    assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 2
+
+
+def test_api_submit_selected_atomic_rollback_on_failure(client, seeded):
+    """Verify atomic multi-take submission: if any take fails, all shots and take updates are rolled back."""
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "res-atomic-submit-test",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+
+    plan = {
+        "version": "resource-v1",
+        "look": "studio lighting",
+        "initial_wardrobe": "dark trousers",
+        "takes": [
+            {"take_id": "take-01", "label": "first take", "camera": "35mm", "framing": "medium", "pose": "standing", "expression": "calm"},
+            {"take_id": "take-02", "label": "second take", "camera": "50mm", "framing": "close up", "pose": "sitting", "expression": "smiling"},
+        ],
+        "selected_resources": [],
+        "wardrobe_changes": [],
+    }
+    assert client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}).status_code == 200
+
+    # Prepare only take-01 so it is 'ready'; take-02 is NOT prepared (unsubmittable)
+    assert client.post(f"/api/sessions/{sid}/plan/takes/take-01/prepare", json={"plan_revision": 1}).status_code == 200
+
+    # Approve review for revision 1
+    assert client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1}).status_code == 200
+
+    # Preconditions: 0 shots in DB, take-01 is 'ready'
+    assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+    t1_before = db.one("SELECT status, linked_shot_id FROM prepared_take WHERE session_id = ? AND take_id = 'take-01'", sid)
+    assert t1_before["status"] == "ready"
+    assert t1_before["linked_shot_id"] is None
+
+    # Submit selected with both takes: first is ready, second is not submittable
+    r_fail = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit-selected",
+        json={"plan_revision": 1, "take_ids": ["take-01", "take-02"]},
+    )
+    assert r_fail.status_code == 409
+
+    # Atomic rollback verification: zero new shots exist, and no take transitioned to generated
+    shots_after = db.q("SELECT id FROM shot WHERE session_id = ?", sid)
+    assert len(shots_after) == 0
+
+    t1_after = db.one("SELECT status, linked_shot_id FROM prepared_take WHERE session_id = ? AND take_id = 'take-01'", sid)
+    assert t1_after["status"] == "ready"
+    assert t1_after["linked_shot_id"] is None
+
+    t2_after = db.one("SELECT status, linked_shot_id FROM prepared_take WHERE session_id = ? AND take_id = 'take-02'", sid)
+    assert t2_after is None or t2_after["status"] != "generated"
+
+
+def test_api_plan_review_approval_lifecycle(client, seeded):
+    """Verify approval lifecycle: mode guard, CAS optimistic concurrency, invalidation on save, and persistence."""
+    # 1. Non-resource session rejected with 400
+    legacy_sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "legacy-session",
+    }).json()["id"]
+    r_leg = client.post(f"/api/sessions/{legacy_sid}/plan/review/approve", json={"plan_revision": 1})
+    assert r_leg.status_code == 400
+
+    # 2. Resource session
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"],
+        "name": "res-approval-lifecycle",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+    plan = {
+        "version": "resource-v1",
+        "look": "studio",
+        "initial_wardrobe": "suit",
+        "takes": [{"take_id": "take-01", "camera": "35mm", "framing": "medium", "pose": "standing", "expression": "calm"}],
+        "selected_resources": [],
+        "wardrobe_changes": [],
+    }
+    client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0})
+
+    # Stale revision CAS rejected with 409
+    r_stale = client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 99})
+    assert r_stale.status_code == 409
+
+    # Valid approval returns 200
+    r_app = client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1})
+    assert r_app.status_code == 200
+    assert r_app.json()["approved"] is True
+    assert r_app.json()["plan_revision"] == 1
+
+    # Alias /plan/approve works identically
+    r_alias = client.post(f"/api/sessions/{sid}/plan/approve", json={"plan_revision": 1})
+    assert r_alias.status_code == 200
+    assert r_alias.json()["approved"] is True
+
+    # Draft endpoint reports reviewed_revision
+    draft = client.get(f"/api/sessions/{sid}/plan").json()
+    assert draft["reviewed_revision"] == 1
+
+    # Saving a new revision invalidates prior approval
+    plan2 = {**plan, "look": "updated look"}
+    client.post(f"/api/sessions/{sid}/plan", json={"plan": plan2, "expected_revision": 1})
+
+    draft2 = client.get(f"/api/sessions/{sid}/plan").json()
+    assert draft2["plan_revision"] == 2
+    assert draft2["reviewed_revision"] is None
+
+    # Submitting under unapproved revision 2 rejected with 409
+    assert client.post(f"/api/sessions/{sid}/plan/takes/take-01/prepare", json={"plan_revision": 2}).status_code == 200
+    r_unapp = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit-selected",
+        json={"plan_revision": 2, "take_ids": ["take-01"]},
+    )
+    assert r_unapp.status_code == 409
+    assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+
+    # Approving revision 2 allows submission
+    assert client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 2}).status_code == 200
+    r_app2 = client.post(
+        f"/api/sessions/{sid}/plan/preparations/submit-selected",
+        json={"plan_revision": 2, "take_ids": ["take-01"]},
+    )
+    assert r_app2.status_code == 200
+    assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 1

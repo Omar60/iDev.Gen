@@ -28,6 +28,16 @@ import {
   requiresCatalogueOrJudge,
   getAdvancedSettings,
   createSessionViewController,
+  getTakePreparationState,
+  isTakeReadyForSubmission,
+  loadTakeReview,
+  loadPlanReviews,
+  recordTakeAdaptation,
+  prepareTake,
+  preparePlanTakes,
+  submitPreparedTake,
+  submitSelectedTakes,
+  approvePlanReview,
 } from './sessionPlan.js'
 
 describe('sessionPlan pure helpers (Task 5.2)', () => {
@@ -2206,6 +2216,728 @@ describe('Task 5.3: Wardrobe scope controls, pure resolution, reordering, and re
       expect(html).not.toContain('Move take down')
       expect(html).not.toContain('Effective Wardrobe')
       expect(html).not.toContain('From here onward')
+    })
+  })
+
+  describe('Task 5.4: Review inspector, conflict resolution, test generation, and double-click/stale guards', () => {
+    describe('Pure and Async API helpers for Task 5.4', () => {
+      it('loadTakeReview calls GET /api/sessions/:id/plan/takes/:takeId/review with plan_revision', async () => {
+        let requestedUrl = ''
+        const mockApi = {
+          get: async (url) => {
+            requestedUrl = url
+            return {
+              take_id: 'take-001',
+              final_prompt: 'authoritative prompt from backend',
+              conflicts: [],
+              resolved_conflicts: [],
+              compiler_version: 'resource-v1',
+              mapping_version: '1.0',
+            }
+          },
+        }
+        const res = await loadTakeReview(10, 'take-001', 2, mockApi)
+        expect(res.ok).toBe(true)
+        expect(requestedUrl).toBe('/api/sessions/10/plan/takes/take-001/review?plan_revision=2')
+        expect(res.final_prompt).toBe('authoritative prompt from backend')
+        expect(res.compiler_version).toBe('resource-v1')
+      })
+
+      it('loadPlanReviews calls GET /api/sessions/:id/plan/review', async () => {
+        let requestedUrl = ''
+        const mockApi = {
+          get: async (url) => {
+            requestedUrl = url
+            return {
+              session_id: 10,
+              plan_revision: 1,
+              takes: [{ take_id: 'take-001' }, { take_id: 'take-002' }],
+            }
+          },
+        }
+        const res = await loadPlanReviews(10, 1, mockApi)
+        expect(res.ok).toBe(true)
+        expect(requestedUrl).toBe('/api/sessions/10/plan/review?plan_revision=1')
+        expect(res.takes.length).toBe(2)
+      })
+
+      it('recordTakeAdaptation calls POST /api/sessions/:id/plan/takes/:takeId/adaptations', async () => {
+        let postedUrl = ''
+        let postedPayload = null
+        const mockApi = {
+          post: async (url, payload) => {
+            postedUrl = url
+            postedPayload = payload
+            return { status: 'recorded' }
+          },
+        }
+        const adaptation = {
+          library_key: 'room_lib',
+          source_id: 'room-01',
+          content_digest: 'abc123',
+          resource_field: 'wardrobe',
+          adapted_value: 'silk blouse',
+        }
+        const res = await recordTakeAdaptation(10, 'take-001', {
+          plan_revision: 1,
+          adaptation,
+        }, mockApi)
+        expect(res.ok).toBe(true)
+        expect(postedUrl).toBe('/api/sessions/10/plan/takes/take-001/adaptations')
+        expect(postedPayload.plan_revision).toBe(1)
+        expect(postedPayload.adaptation.adapted_value).toBe('silk blouse')
+      })
+
+      it('prepareTake calls POST /api/sessions/:id/plan/takes/:takeId/prepare', async () => {
+        let postedUrl = ''
+        let postedPayload = null
+        const mockApi = {
+          post: async (url, payload) => {
+            postedUrl = url
+            postedPayload = payload
+            return { status: 'ready', plan_revision: 1, take_id: 'take-001' }
+          },
+        }
+        const res = await prepareTake(10, 'take-001', 1, mockApi)
+        expect(res.ok).toBe(true)
+        expect(postedUrl).toBe('/api/sessions/10/plan/takes/take-001/prepare')
+        expect(postedPayload.plan_revision).toBe(1)
+      })
+
+      it('preparePlanTakes calls POST /api/sessions/:id/plan/preparations/prepare', async () => {
+        let postedUrl = ''
+        let postedPayload = null
+        const mockApi = {
+          post: async (url, payload) => {
+            postedUrl = url
+            postedPayload = payload
+            return { prepared: [{ status: 'ready', take_id: 'take-001' }] }
+          },
+        }
+        const res = await preparePlanTakes(10, 1, ['take-001'], mockApi)
+        expect(res.ok).toBe(true)
+        expect(postedUrl).toBe('/api/sessions/10/plan/preparations/prepare')
+        expect(postedPayload.take_ids).toEqual(['take-001'])
+      })
+
+      it('submitSelectedTakes calls POST /api/sessions/:id/plan/preparations/submit-selected', async () => {
+        let postedUrl = ''
+        let postedPayload = null
+        const mockApi = {
+          post: async (url, payload) => {
+            postedUrl = url
+            postedPayload = payload
+            return { submitted: [{ take_id: 'take-001', status: 'generated', shot_id: 42 }] }
+          },
+        }
+        const res = await submitSelectedTakes(10, ['take-001'], 1, mockApi)
+        expect(res.ok).toBe(true)
+        expect(postedUrl).toBe('/api/sessions/10/plan/preparations/submit-selected')
+        expect(postedPayload.take_ids).toEqual(['take-001'])
+        expect(postedPayload.plan_revision).toBe(1)
+      })
+    })
+
+    describe('createSessionViewController Task 5.4 features', () => {
+      it('manages selection of ready takes and clears selection on plan modification', () => {
+        const controller = createSessionViewController({
+          session: { id: 1, composition_mode: 'resource-v1' },
+          plan: {
+            version: 'resource-v1',
+            takes: [
+              { take_id: 'take-001', camera: '35mm' },
+              { take_id: 'take-002', camera: '50mm' },
+            ],
+          },
+          planRevision: 1,
+          planPreparation: {
+            plan_revision: 1,
+            completed: [
+              { take_id: 'take-001', status: 'ready' },
+              { take_id: 'take-002', status: 'ready' },
+            ],
+            incomplete: [],
+            history: [],
+          },
+        })
+
+        // Toggle selection
+        controller.toggleTakeSelect('take-001')
+        expect(controller.getState().selectedTakeIds).toContain('take-001')
+        expect(controller.getState().selectedTakeIds.length).toBe(1)
+
+        controller.selectAllReadyTakes()
+        expect(controller.getState().selectedTakeIds.length).toBe(2)
+
+        // Editing a take invalidates selection and reviewedRevision
+        controller.editTake('take-001', { camera: '85mm' })
+        expect(controller.getState().planDirty).toBe(true)
+        expect(controller.getState().reviewedRevision).toBe(null)
+        expect(controller.getState().selectedTakeIds.length).toBe(0)
+      })
+
+      it('guards submitSelectedTakesAction against submitting when plan is dirty or revision is stale', async () => {
+        let submitted = false
+        const mockApi = {
+          post: async () => {
+            submitted = true
+            return { submitted: [] }
+          },
+        }
+        const controller = createSessionViewController({
+          session: { id: 1, composition_mode: 'resource-v1' },
+          plan: {
+            version: 'resource-v1',
+            takes: [{ take_id: 'take-001', camera: '35mm' }],
+          },
+          planRevision: 1,
+          planDirty: true,
+          api: mockApi,
+        })
+
+        const resDirty = await controller.submitSelectedTakesAction(['take-001'])
+        expect(resDirty.ok).toBe(false)
+        expect(resDirty.error).toContain('unsaved')
+        expect(submitted).toBe(false)
+      })
+
+      it('guards against double-click/in-flight submission via submittingTakes flag', async () => {
+        let callCount = 0
+        let resolveFirst = null
+        const mockApi = {
+          post: async () => {
+            callCount++
+            return new Promise((resolve) => {
+              resolveFirst = resolve
+            })
+          },
+        }
+
+        const controller = createSessionViewController({
+          session: { id: 1, composition_mode: 'resource-v1' },
+          plan: {
+            version: 'resource-v1',
+            takes: [{ take_id: 'take-001', camera: '35mm' }],
+          },
+          planRevision: 1,
+          planDirty: false,
+          reviewedRevision: 1,
+          planPreparation: {
+            completed: [{ take_id: 'take-001', status: 'ready' }],
+          },
+          api: mockApi,
+        })
+
+        // Start first submission (in-flight)
+        const promise1 = controller.submitSelectedTakesAction(['take-001'])
+        expect(controller.getState().submittingTakes).toBe(true)
+
+        // Attempt second submission concurrently -> blocked
+        const promise2 = controller.submitSelectedTakesAction(['take-001'])
+        const res2 = await promise2
+        expect(res2.ok).toBe(false)
+        expect(res2.error).toContain('already in progress')
+        expect(callCount).toBe(1)
+
+        // Resolve first submission
+        resolveFirst({ submitted: [{ take_id: 'take-001', status: 'generated', shot_id: 100 }] })
+        const res1 = await promise1
+        expect(res1.ok).toBe(true)
+        expect(controller.getState().submittingTakes).toBe(false)
+      })
+
+      it('resumes on reload: completed takes preserve snapshot and generated status without re-execution', async () => {
+        const controller = createSessionViewController({
+          session: { id: 1, composition_mode: 'resource-v1', shots: [{ id: 77, prompt: 'compiled' }] },
+          plan: {
+            version: 'resource-v1',
+            takes: [{ take_id: 'take-001' }, { take_id: 'take-002' }],
+          },
+          planRevision: 1,
+          planPreparation: {
+            plan_revision: 1,
+            completed: [
+              { take_id: 'take-001', status: 'generated', linked_shot_id: 77, snapshot: { final_prompt: 'compiled' } },
+              { take_id: 'take-002', status: 'ready', snapshot: { final_prompt: 'ready prompt' } },
+            ],
+            incomplete: [],
+            history: [],
+          },
+        })
+
+        const state1 = getTakePreparationState('take-001', controller.getState().preparation)
+        const state2 = getTakePreparationState('take-002', controller.getState().preparation)
+        expect(state1).toBe('generated')
+        expect(state2).toBe('ready')
+      })
+    })
+
+    describe('SessionView UI rendering for Task 5.4', () => {
+      it('renders inspector toggle, final prompt, and compiler metadata in review inspector', () => {
+        const resourceSession = {
+          id: 801,
+          name: 'Inspector Shoot',
+          composition_mode: 'resource-v1',
+          workflow_id: 10,
+          model: { id: 1, name: 'Ada' },
+          shots: [],
+          settings: { composition_mode: 'resource-v1' },
+        }
+
+        const plan = {
+          version: 'resource-v1',
+          look: 'Morning golden hour',
+          initial_wardrobe: 'Cashmere sweater',
+          takes: [
+            { take_id: 'take-001', camera: '35mm', framing: 'medium', pose: 'standing', expression: 'calm' },
+          ],
+          selected_resources: [],
+          wardrobe_changes: [],
+        }
+
+        const preparationState = {
+          plan_revision: 1,
+          completed: [
+            {
+              take_id: 'take-001',
+              status: 'ready',
+              snapshot: {
+                final_prompt: 'Ada. Morning golden hour. Cashmere sweater. 35mm, medium, standing, calm.',
+                compiler_version: 'resource-v1',
+                mapping_version: '1.0',
+                plan_revision: 1,
+              },
+            },
+          ],
+          incomplete: [],
+          history: [],
+        }
+
+        const html = renderToStaticMarkup(
+          React.createElement(SessionView, {
+            id: 801,
+            initialSession: resourceSession,
+            initialPlan: plan,
+            initialRevision: 1,
+            initialActiveStep: 'review',
+            initialPreparation: preparationState,
+          })
+        )
+
+        expect(html).toContain('Actions:')
+        expect(html).toContain('Test Generate Selected (0)')
+        expect(html).toContain('Approve Review (Rev 1)')
+        expect(html).toContain('▼ Review')
+        expect(html).toContain('Ready</span>')
+      })
+
+      it('renders selection checkboxes for ready takes and select all ready checkbox', () => {
+        const resourceSession = {
+          id: 802,
+          name: 'Selection Shoot',
+          composition_mode: 'resource-v1',
+          workflow_id: 10,
+          model: { id: 1, name: 'Ada' },
+          shots: [],
+          settings: { composition_mode: 'resource-v1' },
+        }
+
+        const plan = {
+          version: 'resource-v1',
+          look: 'Soft studio lighting',
+          initial_wardrobe: 'Blue blazer',
+          takes: [
+            { take_id: 'take-001', camera: '35mm', framing: 'medium', pose: 'standing', expression: 'calm' },
+            { take_id: 'take-002', camera: '50mm', framing: 'close up', pose: 'sitting', expression: 'smiling' },
+          ],
+          selected_resources: [],
+          wardrobe_changes: [],
+        }
+
+        const preparationState = {
+          plan_revision: 1,
+          completed: [
+            { take_id: 'take-001', status: 'ready' },
+          ],
+          incomplete: [{ take_id: 'take-002', status: 'incomplete' }],
+          history: [],
+        }
+
+        const html = renderToStaticMarkup(
+          React.createElement(SessionView, {
+            id: 802,
+            initialSession: resourceSession,
+            initialPlan: plan,
+            initialRevision: 1,
+            initialActiveStep: 'review',
+            initialPreparation: preparationState,
+          })
+        )
+
+        // Take 1 ready, Take 2 pending prep
+        expect(html).toContain('Ready</span>')
+        expect(html).toContain('Pending prep</span>')
+        expect(html).toContain('Prepare Incomplete Takes (1)')
+      })
+
+      it('does NOT render review inspector, test generation or batch prepare on legacy sessions', () => {
+        const legacySession = {
+          id: 803,
+          name: 'Legacy No Inspector',
+          composition_mode: '',
+          workflow_id: 10,
+          model: { id: 1, name: 'Ada' },
+          shots: [],
+          settings: {},
+        }
+
+        const html = renderToStaticMarkup(
+          React.createElement(SessionView, {
+            id: 803,
+            initialSession: legacySession,
+            initialPlan: null,
+            initialRevision: null,
+          })
+        )
+
+        expect(html).not.toContain('Test Generate Selected')
+        expect(html).not.toContain('Prepare Incomplete Takes')
+        expect(html).not.toContain('Approve Review')
+        expect(html).not.toContain('▼ Review')
+      })
+
+      it('renders direct recover_preparation snapshot row, pinned revisions with digests, and unresolved placeholders', () => {
+        const resourceSession = {
+          id: 804,
+          name: 'Authoritative Inspector Shoot',
+          composition_mode: 'resource-v1',
+          workflow_id: 10,
+          model: { id: 1, name: 'Ada' },
+          shots: [],
+          settings: { composition_mode: 'resource-v1' },
+        }
+
+        const plan = {
+          version: 'resource-v1',
+          look: 'Dramatic spotlight',
+          initial_wardrobe: 'Tweed blazer',
+          takes: [
+            { take_id: 'take-001', camera: '35mm', framing: 'medium', pose: 'standing', expression: 'calm' },
+          ],
+          selected_resources: [],
+          wardrobe_changes: [],
+        }
+
+        // recover_preparation returns completed items as direct snapshot rows (NOT nested under .snapshot)
+        const preparationState = {
+          plan_revision: 1,
+          completed: [
+            {
+              take_id: 'take-001',
+              plan_revision: 1,
+              updated_at: '2026-09-09T14:30:00Z',
+              created_at: '2026-09-09T14:20:00Z',
+              compiler_version: 'resource-v1',
+              mapping_version: '1.0',
+              final_prompt: 'Authoritative prompt from direct snapshot row: Ada in tweed blazer under dramatic spotlight.',
+              effective_state: { wardrobe: 'Tweed blazer', look: 'Dramatic spotlight' },
+              provenance: {
+                selected_resource_revisions: [
+                  { library_key: 'room', source_id: 'studio_spotlight', content_digest: 'abc123def45678901234' },
+                ],
+              },
+              status: 'ready',
+              linked_shot_id: null,
+            },
+          ],
+          incomplete: [],
+          history: [],
+        }
+
+        const reviewData = {
+          'take-001': {
+            ok: true,
+            take_id: 'take-001',
+            plan_revision: 1,
+            unresolved_placeholders: [
+              { placeholder: '{time_of_day}', resource_field: 'lighting' },
+            ],
+            selected_resource_revisions: [
+              { library_key: 'room', source_id: 'studio_spotlight', content_digest: 'abc123def45678901234' },
+            ],
+            adaptations: [
+              { library_key: 'room', source_id: 'studio_spotlight', resource_field: 'wall_color', adapted_value: 'matte black' },
+            ],
+            conflicts: [
+              { library_key: 'room', source_id: 'studio_spotlight', resource_field: 'wall_color', message: 'Color mismatch' },
+            ],
+          },
+        }
+
+        const html = renderToStaticMarkup(
+          React.createElement(SessionView, {
+            id: 804,
+            initialSession: resourceSession,
+            initialPlan: plan,
+            initialRevision: 1,
+            initialActiveStep: 'review',
+            initialPreparation: preparationState,
+            initialExpandedTakeId: 'take-001',
+            initialTakeReviewData: reviewData,
+          })
+        )
+
+        // Direct snapshot final prompt is visible
+        expect(html).toContain('Authoritative prompt from direct snapshot row: Ada in tweed blazer under dramatic spotlight.')
+        // Compiler metadata is visible
+        expect(html).toContain('Compiler:')
+        expect(html).toContain('resource-v1')
+        expect(html).toContain('Mapping:')
+        expect(html).toContain('1.0')
+        // Prepared At formatted timestamp is visible and parsed from ISO
+        const expectedDate = new Date('2026-09-09T14:30:00Z').toLocaleString()
+        expect(html).toContain('Prepared At:')
+        expect(html).toContain(expectedDate)
+        expect(html).not.toContain('Invalid Date')
+        // Pinned resource revisions and digests are visible
+        expect(html).toContain('Pinned Resource Revisions:')
+        expect(html).toContain('room:studio_spotlight')
+        expect(html).toContain('abc123def4567890')
+        // Unresolved placeholder warning and specific placeholder are visible
+        expect(html).toContain('Standing placeholders detected in resource inputs')
+        expect(html).toContain('{time_of_day}')
+        expect(html).toContain('in lighting')
+        // Adaptations are visible
+        expect(html).toContain('Resolved Adaptations:')
+        expect(html).toContain('matte black')
+      })
+
+      it('recordTakeAdaptation sends exact singular adaptation contract to API without adaptations list', async () => {
+        let postedUrl = null
+        let postedBody = null
+        const mockApi = {
+          post: async (url, body) => {
+            postedUrl = url
+            postedBody = body
+            return { ok: true, adaptation: body.adaptation }
+          },
+        }
+
+        const adaptationPayload = {
+          library_key: 'room',
+          source_id: 'loft_sunlight',
+          content_digest: 'sha256:abc123def456',
+          resource_field: 'wall_color',
+          adapted_value: 'vintage cream',
+        }
+
+        const res = await recordTakeAdaptation(
+          42,
+          'take-001',
+          {
+            plan_revision: 3,
+            adaptation: adaptationPayload,
+          },
+          mockApi
+        )
+
+        expect(res.ok).toBe(true)
+        expect(postedUrl).toBe('/api/sessions/42/plan/takes/take-001/adaptations')
+        expect(postedBody).toEqual({
+          plan_revision: 3,
+          adaptation: adaptationPayload,
+        })
+        expect(postedBody.adaptations).toBeUndefined()
+      })
+
+      it('approvePlanReview calls /api/sessions/:id/plan/review/approve and controller updates reviewedRevision', async () => {
+        let postedUrl = null
+        let postedBody = null
+        const mockApi = {
+          post: async (url, body) => {
+            postedUrl = url
+            postedBody = body
+            return { ok: true, approved: true, plan_revision: body.plan_revision, approved_at: '2026-09-09T12:00:00Z' }
+          },
+        }
+
+        const res = await approvePlanReview(99, 2, mockApi)
+        expect(res.ok).toBe(true)
+        expect(postedUrl).toBe('/api/sessions/99/plan/review/approve')
+        expect(postedBody).toEqual({ plan_revision: 2 })
+
+        const controller = createSessionViewController({
+          session: { id: 99, composition_mode: 'resource-v1' },
+          plan: { version: 'resource-v1', takes: [{ take_id: 'take-001' }] },
+          planRevision: 2,
+          planDirty: false,
+          reviewedRevision: null,
+          api: mockApi,
+        })
+        expect(controller.getState().reviewedRevision).toBe(null)
+        const actionRes = await controller.approveReviewAction(2)
+        expect(actionRes.ok).toBe(true)
+        expect(controller.getState().reviewedRevision).toBe(2)
+      })
+
+      it('expanded inspector with realistic snapshot displays real visible prepared_at date parsed from ISO string', () => {
+        const resourceSession = {
+          id: 805,
+          name: 'Realistic Date Inspector Shoot',
+          composition_mode: 'resource-v1',
+          workflow_id: 10,
+          model: { id: 1, name: 'Ada' },
+          shots: [],
+          settings: { composition_mode: 'resource-v1' },
+        }
+
+        const plan = {
+          version: 'resource-v1',
+          look: 'Studio light',
+          initial_wardrobe: 'Dark suit',
+          takes: [
+            { take_id: 'take-001', camera: '35mm', framing: 'medium', pose: 'standing', expression: 'calm' },
+          ],
+          selected_resources: [],
+          wardrobe_changes: [],
+        }
+
+        const isoDate = '2026-09-09T14:30:00Z'
+        const expectedDateStr = new Date(isoDate).toLocaleString()
+
+        const preparationState = {
+          plan_revision: 1,
+          completed: [
+            {
+              take_id: 'take-001',
+              plan_revision: 1,
+              updated_at: isoDate,
+              created_at: '2026-09-09T14:20:00Z',
+              compiler_version: 'resource-v1',
+              mapping_version: '1.0',
+              final_prompt: 'Ada in dark suit under studio light.',
+              effective_state: { wardrobe: 'Dark suit', look: 'Studio light' },
+              provenance: {},
+              status: 'ready',
+              linked_shot_id: null,
+            },
+          ],
+          incomplete: [],
+          history: [],
+        }
+
+        const html = renderToStaticMarkup(
+          React.createElement(SessionView, {
+            id: 805,
+            initialSession: resourceSession,
+            initialPlan: plan,
+            initialRevision: 1,
+            initialActiveStep: 'review',
+            initialPreparation: preparationState,
+            initialExpandedTakeId: 'take-001',
+          })
+        )
+
+        expect(html).toContain('Prepared At:')
+        expect(html).toContain(expectedDateStr)
+        expect(html).not.toContain('Invalid Date')
+      })
+
+      it('restores approved review badge and enables generation actions when /plan loads with reviewed_revision equal to plan_revision', async () => {
+        const planData = {
+          version: 'resource-v1',
+          look: 'Studio light',
+          initial_wardrobe: 'Dark suit',
+          takes: [
+            { take_id: 'take-001', camera: '35mm', framing: 'medium', pose: 'standing', expression: 'calm' },
+          ],
+          selected_resources: [],
+          wardrobe_changes: [],
+        }
+
+        const preparationData = {
+          plan_revision: 2,
+          completed: [
+            { take_id: 'take-001', status: 'ready', plan_revision: 2 },
+          ],
+          incomplete: [],
+          history: [],
+        }
+
+        const mockApi = {
+          get: async (url) => {
+            if (url === '/api/sessions/77') {
+              return {
+                id: 77,
+                name: 'Approved Session',
+                composition_mode: 'resource-v1',
+                workflow_id: 10,
+                model: { id: 1, name: 'Ada' },
+                shots: [],
+                settings: { composition_mode: 'resource-v1' },
+              }
+            }
+            if (url === '/api/sessions/77/plan') {
+              return {
+                ok: true,
+                session_id: 77,
+                plan_revision: 2,
+                reviewed_revision: 2,
+                plan: planData,
+                preparation: preparationData,
+                conflicts: [],
+              }
+            }
+            throw new Error(`Unexpected url: ${url}`)
+          },
+        }
+
+        // 1. Controller / loadSessionPlan simulation: reviewed_revision equal to plan_revision
+        const loadedPlan = await loadSessionPlan(77, mockApi)
+        expect(loadedPlan.ok).toBe(true)
+        expect(loadedPlan.planRevision).toBe(2)
+        expect(loadedPlan.reviewedRevision).toBe(2)
+
+        const controller = createSessionViewController({
+          session: { id: 77, composition_mode: 'resource-v1' },
+          plan: planData,
+          planRevision: 2,
+          planDirty: false,
+          reviewedRevision: null,
+          api: mockApi,
+        })
+        const state = await controller.reload()
+        expect(state.planRevision).toBe(2)
+        expect(state.reviewedRevision).toBe(2)
+
+        // 2. UI rendering verification: restores badge and permits corresponding actions
+        const html = renderToStaticMarkup(
+          React.createElement(SessionView, {
+            id: 77,
+            initialSession: {
+              id: 77,
+              name: 'Approved Session',
+              composition_mode: 'resource-v1',
+              workflow_id: 10,
+              model: { id: 1, name: 'Ada' },
+              shots: [],
+              settings: { composition_mode: 'resource-v1' },
+            },
+            initialPlan: planData,
+            initialRevision: 2,
+            initialReviewedRevision: 2,
+            initialActiveStep: 'review',
+            initialPreparation: preparationData,
+          })
+        )
+
+        // Restores authoritative approved badge
+        expect(html).toContain('✓ Review Approved (Rev 2)')
+        // Does not show "Approve Review (Rev 2)" button
+        expect(html).not.toContain('Approve Review (Rev 2)')
+        // Test generate button is rendered and shows 0 selected
+        expect(html).toContain('Test Generate Selected (0)')
+      })
     })
   })
 })

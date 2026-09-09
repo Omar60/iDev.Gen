@@ -4344,6 +4344,48 @@ class TestPreparedTakePersistenceAndRecovery:
 
 
 class TestSubmitPreparedTake:
+    def test_direct_submit_without_approval_raises_plan_review_not_approved_and_creates_no_shot(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "unapproved submit refusal")
+        plan = _task34_plan(2)
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        ).status_code == 200
+
+        snapshot = _task34_snapshot(1)
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 1, "take_id": "resume-01"},
+        ).status_code == 200
+        assert client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={"plan_revision": 1, "take_id": "resume-01", **snapshot},
+        ).status_code == 200
+
+        # Unapproved submission directly via domain layer raises PlanReviewNotApproved
+        with pytest.raises(session_plan.PlanReviewNotApproved, match="has not been approved"):
+            session_plan.submit_prepared_take(sid, 1, "resume-01")
+
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 0
+        raw = _task34_raw_prepared(sid, 1, "resume-01")
+        assert raw["status"] == "ready"
+        assert raw["linked_shot_id"] is None
+
+        # After approval, direct submit succeeds and idempotency preserves a single shot
+        app_res = session_plan.approve_plan_review(sid, 1)
+        assert app_res["approved"] is True
+
+        res1 = session_plan.submit_prepared_take(sid, 1, "resume-01")
+        assert res1["status"] == "generated"
+        assert isinstance(res1["shot_id"], int)
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 1
+
+        res2 = session_plan.submit_prepared_take(sid, 1, "resume-01")
+        assert res2["shot_id"] == res1["shot_id"]
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 1
+
     def test_finalized_take_submits_to_single_shot_and_enters_generated_status(
         self, client, seeded,
     ):
@@ -4353,6 +4395,7 @@ class TestSubmitPreparedTake:
             f"/api/sessions/{sid}/plan",
             json={"plan": plan, "expected_revision": 0},
         ).status_code == 200
+        session_plan.approve_plan_review(sid, 1)
 
         snapshot = _task34_snapshot(1)
         assert client.post(
@@ -4403,6 +4446,7 @@ class TestSubmitPreparedTake:
             f"/api/sessions/{sid}/plan",
             json={"plan": plan, "expected_revision": 0},
         ).status_code == 200
+        session_plan.approve_plan_review(sid, 1)
 
         snapshot = _task34_snapshot(1)
         assert client.post(
@@ -4436,6 +4480,7 @@ class TestSubmitPreparedTake:
             f"/api/sessions/{sid}/plan",
             json={"plan": plan, "expected_revision": 0},
         ).status_code == 200
+        session_plan.approve_plan_review(sid, 1)
 
         snapshot = _task34_snapshot(1)
         assert client.post(
@@ -4509,6 +4554,7 @@ class TestSubmitPreparedTake:
             f"/api/sessions/{sid}/plan",
             json={"plan": plan, "expected_revision": 0},
         ).status_code == 200
+        session_plan.approve_plan_review(sid, 1)
 
         assert client.post(
             f"/api/sessions/{sid}/plan/preparations/begin",
@@ -4547,6 +4593,7 @@ class TestSubmitPreparedTake:
             f"/api/sessions/{sid}/plan",
             json={"plan": plan, "expected_revision": 0},
         ).status_code == 200
+        session_plan.approve_plan_review(sid, 1)
 
         with pytest.raises(session_plan.PlanValidationError, match="not present in plan"):
             session_plan.submit_prepared_take(sid, 1, "take-does-not-exist")
@@ -4560,6 +4607,7 @@ class TestSubmitPreparedTake:
             f"/api/sessions/{sid}/plan",
             json={"plan": plan, "expected_revision": 0},
         ).status_code == 200
+        session_plan.approve_plan_review(sid, 1)
 
         db.run(
             "INSERT INTO prepared_take (session_id, plan_revision, take_id, status, final_prompt, created_at, updated_at) "
@@ -4581,6 +4629,7 @@ class TestSubmitPreparedTake:
             f"/api/sessions/{sid}/plan",
             json={"plan": plan, "expected_revision": 0},
         ).status_code == 200
+        session_plan.approve_plan_review(sid, 1)
 
         snapshot = _task34_snapshot(1)
         assert client.post(
@@ -4618,6 +4667,7 @@ class TestSubmitPreparedTake:
             f"/api/sessions/{sid}/plan",
             json={"plan": plan, "expected_revision": 0},
         ).status_code == 200
+        session_plan.approve_plan_review(sid, 1)
 
         snapshot1 = _task34_snapshot(1)
         assert client.post(
@@ -4662,6 +4712,7 @@ class TestSubmitPreparedTake:
             "wardrobe_changes": [],
         }
         client.post(f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0})
+        session_plan.approve_plan_review(sid, 1)
 
         # Plant ready rows for each
         _plant_prepared_take(sid, 1, "take-bad-seed", status="ready")
@@ -4827,6 +4878,10 @@ class TestTwelvePortraitsOneCameraAndCatalogueScoping:
         assert len({r["take_id"] for r in prepared_rows}) == 12
 
         # 8. Submit each prepared take to shot creation.
+        assert client.post(
+            f"/api/sessions/{sid}/plan/review/approve",
+            json={"plan_revision": 1},
+        ).status_code == 200
         for take in takes:
             take_id = take["take_id"]
             sub_res = client.post(
