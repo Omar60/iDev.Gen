@@ -16,6 +16,13 @@ import {
   createTake,
   updateTake,
   removeTake,
+  reorderTakes,
+  setWardrobeChange,
+  removeWardrobeChange,
+  resolveEffectiveWardrobes,
+  resolveEffectiveWardrobeDetails,
+  WARDROBE_SCOPE_THIS_TAKE,
+  WARDROBE_SCOPE_FROM_HERE,
   buildPlanSavePayload,
   loadSessionPlan,
   executeSavePlan,
@@ -67,6 +74,7 @@ export default function SessionView({
   initialActiveStep = 'character',
   initialReviewedRevision = null,
   initialConflicts = [],
+  initialPreparation = null,
 }) {
   const [s, setS] = useState(initialSession)
   const [error, setError] = useState(initialError)
@@ -184,6 +192,7 @@ export default function SessionView({
   const [plan, setPlan] = useState(initialPlan)
   const [planRevision, setPlanRevision] = useState(initialRevision)
   const [planConflicts, setPlanConflicts] = useState(initialConflicts)
+  const [planPreparation, setPlanPreparation] = useState(initialPreparation)
   const [planDirty, setPlanDirty] = useState(false)
   const planDirtyRef = useRef(false)
   planDirtyRef.current = planDirty
@@ -202,6 +211,7 @@ export default function SessionView({
             setPlan(null)
             setPlanRevision(null)
             setPlanConflicts([])
+            setPlanPreparation(null)
             setReviewedRevision(null)
             setError('Loaded draft missing valid plan_revision from backend')
             return
@@ -209,6 +219,7 @@ export default function SessionView({
           setPlan((prev) => (planDirtyRef.current && prev ? prev : res.plan))
           setPlanRevision((prev) => (planDirtyRef.current && prev !== null ? prev : res.planRevision))
           setPlanConflicts(res.conflicts)
+          setPlanPreparation(res.preparation || null)
           if (!planDirtyRef.current) {
             setReviewedRevision(null)
           }
@@ -216,6 +227,7 @@ export default function SessionView({
           setPlan(null)
           setPlanRevision(null)
           setPlanConflicts([])
+          setPlanPreparation(null)
           setReviewedRevision(null)
           setError(res.error)
         }
@@ -223,6 +235,7 @@ export default function SessionView({
         setPlan(null)
         setPlanRevision(null)
         setPlanConflicts([])
+        setPlanPreparation(null)
         setReviewedRevision(null)
         setError(e?.message || 'Failed to load plan')
       })
@@ -454,8 +467,8 @@ export default function SessionView({
   // the takes, the prompts and the seeds are the same, which is exactly what a
   // clone guarantees and nothing else does. A clone of a clone carries the same
   // root, so the family is flat and every member sees every other one.
-  const root = s.settings.cloned_from || s.id
-  const family = sessions.filter((x) => x.id !== s.id && (x.settings?.cloned_from || x.id) === root)
+  const root = s?.settings?.cloned_from || s?.id
+  const family = sessions.filter((x) => x.id !== s?.id && (x.settings?.cloned_from || x.id) === root)
 
   // What makes two photos the same take: the id of the take they were both
   // copied from. A shot of the session that was cloned is its own original, and
@@ -1092,259 +1105,533 @@ export default function SessionView({
             </div>
           )}
 
-          {activeStep === 'takes' && (
-            <div>
-              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <div>
-                  <h3 style={{ margin: 0 }}>3. Takes ({plan?.takes?.length || 0})</h3>
-                  <p className="muted" style={{ margin: '2px 0 0' }}>
-                    Configure takes. Creative choices (camera, framing, pose, expression) may repeat across takes. Stable take IDs are preserved.
-                  </p>
-                </div>
-                <button
-                  onClick={() => {
-                    if (!plan) return
-                    setPlan({
-                      ...plan,
-                      takes: createTake(plan.takes || []),
-                    })
-                    setPlanDirty(true)
-                    setReviewedRevision(null)
-                  }}
-                >
-                  + Add Take
-                </button>
-              </div>
+          {activeStep === 'takes' && (() => {
+            const effectiveDetails = plan ? resolveEffectiveWardrobeDetails(plan) : {}
+            const rePrepCount = !planDirty && planPreparation?.incomplete?.length > 0
+              ? (planPreparation.incomplete || []).filter((inc) =>
+                  (planPreparation.history || []).some((h) => h.take_id === inc.take_id)
+                ).length
+              : 0
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
-                {(plan?.takes || []).map((take, index) => (
-                  <div
-                    key={take.take_id}
-                    style={{
-                      border: '1px solid var(--line)',
-                      borderRadius: 8,
-                      padding: 10,
-                      background: 'var(--panel-2)',
+            return (
+              <div>
+                <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <div>
+                    <h3 style={{ margin: 0 }}>3. Takes ({plan?.takes?.length || 0})</h3>
+                    <p className="muted" style={{ margin: '2px 0 0' }}>
+                      Configure takes. Creative choices (camera, framing, pose, expression) may repeat across takes. Stable take IDs are preserved.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (!plan) return
+                      setPlan({
+                        ...plan,
+                        takes: createTake(plan.takes || []),
+                      })
+                      setPlanDirty(true)
+                      setReviewedRevision(null)
                     }}
                   >
-                    <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
-                      <div className="row" style={{ gap: 8 }}>
-                        <span className="badge" style={{ fontWeight: 600 }}>{take.take_id}</span>
-                        <span className="muted">Take {index + 1}</span>
-                      </div>
-                      <button
-                        className="icon danger"
-                        title="Remove take"
-                        disabled={(plan?.takes || []).length <= 1}
-                        onClick={() => {
-                          setPlan({
-                            ...plan,
-                            takes: removeTake(plan.takes, take.take_id),
-                          })
-                          setPlanDirty(true)
-                          setReviewedRevision(null)
+                    + Add Take
+                  </button>
+                </div>
+
+                {planDirty && (
+                  <div style={{ padding: '6px 10px', background: 'var(--panel-2)', border: '1px solid var(--warn)', borderRadius: 6, marginBottom: 10, fontSize: 12, color: 'var(--warn)' }}>
+                    Plan has unsaved modifications. Saving a new revision will require re-preparation of affected takes.
+                  </div>
+                )}
+
+                {!planDirty && planPreparation?.incomplete?.length > 0 && (
+                  <div style={{ padding: '6px 10px', background: 'var(--panel-2)', border: '1px solid var(--line)', borderRadius: 6, marginBottom: 10, fontSize: 12 }}>
+                    {rePrepCount > 0 ? (
+                      <span style={{ color: 'var(--warn)' }}>
+                        ⚠️ {rePrepCount} take(s) require re-preparation following plan revision changes.
+                      </span>
+                    ) : (
+                      <span className="muted">
+                        {planPreparation.incomplete.length} take(s) require preparation before generation.
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+                  {(plan?.takes || []).map((take, index) => {
+                    const detail = effectiveDetails[take.take_id] || { wardrobe: plan?.initial_wardrobe || '', source: 'initial' }
+                    const existingChange = (plan?.wardrobe_changes || []).find((c) => c.take_id === take.take_id)
+                    const isCompleted = !planDirty && (planPreparation?.completed || []).some((c) => c.take_id === take.take_id)
+                    const isInvalidated = !planDirty && !isCompleted && (planPreparation?.history || []).some((h) => h.take_id === take.take_id)
+                    const isIncomplete = !planDirty && !isCompleted && (planPreparation?.incomplete || []).some((i) => i.take_id === take.take_id)
+
+                    return (
+                      <div
+                        key={take.take_id}
+                        style={{
+                          border: '1px solid var(--line)',
+                          borderRadius: 8,
+                          padding: 10,
+                          background: 'var(--panel-2)',
                         }}
                       >
-                        🗑
-                      </button>
+                        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+                          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                            <span className="badge" style={{ fontWeight: 600 }}>{take.take_id}</span>
+                            <span className="muted">Take {index + 1}</span>
+                            {planDirty ? (
+                              <span className="muted" style={{ fontSize: 11, color: 'var(--warn)' }}>⚠️ Unsaved edits</span>
+                            ) : isCompleted ? (
+                              <span className="badge ready">✓ Ready</span>
+                            ) : isInvalidated ? (
+                              <span className="badge warn">⚠️ Requires re-preparation</span>
+                            ) : isIncomplete ? (
+                              <span className="badge pending">Preparation required</span>
+                            ) : null}
+                          </div>
+                          <div className="row" style={{ gap: 4 }}>
+                            <button
+                              className="icon"
+                              title="Move take up"
+                              disabled={index === 0}
+                              onClick={() => {
+                                setPlan({
+                                  ...plan,
+                                  takes: reorderTakes(plan.takes || [], index, index - 1),
+                                })
+                                setPlanDirty(true)
+                                setReviewedRevision(null)
+                              }}
+                            >
+                              ↑
+                            </button>
+                            <button
+                              className="icon"
+                              title="Move take down"
+                              disabled={index === (plan?.takes?.length || 1) - 1}
+                              onClick={() => {
+                                setPlan({
+                                  ...plan,
+                                  takes: reorderTakes(plan.takes || [], index, index + 1),
+                                })
+                                setPlanDirty(true)
+                                setReviewedRevision(null)
+                              }}
+                            >
+                              ↓
+                            </button>
+                            <button
+                              className="icon danger"
+                              title="Remove take"
+                              disabled={(plan?.takes || []).length <= 1}
+                              onClick={() => {
+                                setPlan({
+                                  ...plan,
+                                  takes: removeTake(plan.takes, take.take_id),
+                                  wardrobe_changes: removeWardrobeChange(plan.wardrobe_changes || [], take.take_id),
+                                })
+                                setPlanDirty(true)
+                                setReviewedRevision(null)
+                              }}
+                            >
+                              🗑
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid-form">
+                          <div>
+                            <label>Label</label>
+                            <input
+                              value={take.label || ''}
+                              placeholder="e.g. Wide shot at entrance"
+                              onChange={(e) => {
+                                setPlan({
+                                  ...plan,
+                                  takes: updateTake(plan.takes, take.take_id, { label: e.target.value }),
+                                })
+                                setPlanDirty(true)
+                                setReviewedRevision(null)
+                              }}
+                            />
+                          </div>
+                          <div>
+                            <label>Camera</label>
+                            <input
+                              value={take.camera || ''}
+                              placeholder="e.g. eye-level, 50mm"
+                              onChange={(e) => {
+                                setPlan({
+                                  ...plan,
+                                  takes: updateTake(plan.takes, take.take_id, { camera: e.target.value }),
+                                })
+                                setPlanDirty(true)
+                                setReviewedRevision(null)
+                              }}
+                            />
+                          </div>
+                          <div>
+                            <label>Framing</label>
+                            <input
+                              value={take.framing || ''}
+                              placeholder="e.g. medium full shot"
+                              onChange={(e) => {
+                                setPlan({
+                                  ...plan,
+                                  takes: updateTake(plan.takes, take.take_id, { framing: e.target.value }),
+                                })
+                                setPlanDirty(true)
+                                setReviewedRevision(null)
+                              }}
+                            />
+                          </div>
+                          <div>
+                            <label>Pose</label>
+                            <input
+                              value={take.pose || ''}
+                              placeholder="e.g. standing leaning against doorway"
+                              onChange={(e) => {
+                                setPlan({
+                                  ...plan,
+                                  takes: updateTake(plan.takes, take.take_id, { pose: e.target.value }),
+                                })
+                                setPlanDirty(true)
+                                setReviewedRevision(null)
+                              }}
+                            />
+                          </div>
+                          <div style={{ gridColumn: 'span 2' }}>
+                            <label>Expression</label>
+                            <input
+                              value={take.expression || ''}
+                              placeholder="e.g. calm neutral expression, direct eye contact"
+                              onChange={(e) => {
+                                setPlan({
+                                  ...plan,
+                                  takes: updateTake(plan.takes, take.take_id, { expression: e.target.value }),
+                                })
+                                setPlanDirty(true)
+                                setReviewedRevision(null)
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Wardrobe Display and Scope Controls */}
+                        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
+                          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                            <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                              <span style={{ fontSize: 12, fontWeight: 600 }}>Effective Wardrobe:</span>
+                              {detail.source === 'initial' && (
+                                <span className="badge">Inherited (initial wardrobe)</span>
+                              )}
+                              {detail.source === 'from_here' && (
+                                <span className="badge warn">Persistent change (from here onward)</span>
+                              )}
+                              {detail.source === 'inherited_from_here' && (
+                                <span className="badge">Inherited from {detail.inheritedFrom} (from here)</span>
+                              )}
+                              {detail.source === 'this_take' && (
+                                <span className="badge warn">Override (this take only)</span>
+                              )}
+                            </div>
+                            {!existingChange ? (
+                              <button
+                                className="icon"
+                                style={{ fontSize: 11, padding: '2px 8px' }}
+                                onClick={() => {
+                                  setPlan({
+                                    ...plan,
+                                    wardrobe_changes: setWardrobeChange(plan.wardrobe_changes || [], take.take_id, {
+                                      scope: WARDROBE_SCOPE_THIS_TAKE,
+                                      wardrobe: detail.wardrobe || '',
+                                    }),
+                                  })
+                                  setPlanDirty(true)
+                                  setReviewedRevision(null)
+                                }}
+                              >
+                                + Change wardrobe
+                              </button>
+                            ) : (
+                              <button
+                                className="icon danger"
+                                style={{ fontSize: 11, padding: '2px 8px' }}
+                                title="Remove wardrobe change and restore inherited state"
+                                onClick={() => {
+                                  setPlan({
+                                    ...plan,
+                                    wardrobe_changes: removeWardrobeChange(plan.wardrobe_changes || [], take.take_id),
+                                  })
+                                  setPlanDirty(true)
+                                  setReviewedRevision(null)
+                                }}
+                              >
+                                Remove change
+                              </button>
+                            )}
+                          </div>
+
+                          <div style={{ fontSize: 13, padding: '4px 8px', background: 'var(--panel)', borderRadius: 4, marginBottom: existingChange ? 8 : 0 }}>
+                            {detail.wardrobe ? detail.wardrobe : <span className="muted">(none)</span>}
+                          </div>
+
+                          {existingChange && (
+                            <div style={{ marginTop: 6, padding: 8, background: 'var(--panel)', borderRadius: 6, border: '1px solid var(--line)' }}>
+                              <div className="row" style={{ gap: 16, marginBottom: 6 }}>
+                                <label style={{ margin: 0, fontWeight: 600 }}>Scope:</label>
+                                <label className="chk" style={{ padding: 0 }}>
+                                  <input
+                                    type="radio"
+                                    name={`scope-${take.take_id}`}
+                                    checked={existingChange.scope === WARDROBE_SCOPE_THIS_TAKE}
+                                    onChange={() => {
+                                      setPlan({
+                                        ...plan,
+                                        wardrobe_changes: setWardrobeChange(plan.wardrobe_changes || [], take.take_id, {
+                                          scope: WARDROBE_SCOPE_THIS_TAKE,
+                                          wardrobe: existingChange.wardrobe,
+                                        }),
+                                      })
+                                      setPlanDirty(true)
+                                      setReviewedRevision(null)
+                                    }}
+                                  />
+                                  This take only
+                                </label>
+                                <label className="chk" style={{ padding: 0 }}>
+                                  <input
+                                    type="radio"
+                                    name={`scope-${take.take_id}`}
+                                    checked={existingChange.scope === WARDROBE_SCOPE_FROM_HERE}
+                                    onChange={() => {
+                                      setPlan({
+                                        ...plan,
+                                        wardrobe_changes: setWardrobeChange(plan.wardrobe_changes || [], take.take_id, {
+                                          scope: WARDROBE_SCOPE_FROM_HERE,
+                                          wardrobe: existingChange.wardrobe,
+                                        }),
+                                      })
+                                      setPlanDirty(true)
+                                      setReviewedRevision(null)
+                                    }}
+                                  />
+                                  From here onward
+                                </label>
+                              </div>
+                              <div>
+                                <label>Wardrobe Description</label>
+                                <textarea
+                                  rows={2}
+                                  value={existingChange.wardrobe}
+                                  placeholder="Describe clothing for this take..."
+                                  onChange={(e) => {
+                                    setPlan({
+                                      ...plan,
+                                      wardrobe_changes: setWardrobeChange(plan.wardrobe_changes || [], take.take_id, {
+                                        scope: existingChange.scope,
+                                        wardrobe: e.target.value,
+                                      }),
+                                    })
+                                    setPlanDirty(true)
+                                    setReviewedRevision(null)
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="row" style={{ marginTop: 12 }}>
+                  <button onClick={() => navigateStep('constants')}>← Back: Scene / Constants</button>
+                  <button onClick={savePlan} disabled={!planDirty}>Save Draft</button>
+                  <span className="spacer" style={{ flex: 1 }} />
+                  <button className="primary" onClick={() => navigateStep('review')}>Next: Review →</button>
+                </div>
+              </div>
+            )
+          })()}
+
+          {activeStep === 'review' && (() => {
+            const effectiveDetails = plan ? resolveEffectiveWardrobeDetails(plan) : {}
+            const rePrepCount = !planDirty && planPreparation?.incomplete?.length > 0
+              ? (planPreparation.incomplete || []).filter((inc) =>
+                  (planPreparation.history || []).some((h) => h.take_id === inc.take_id)
+                ).length
+              : 0
+
+            return (
+              <div>
+                <h3>4. Review</h3>
+                <p className="muted" style={{ margin: '0 0 12px' }}>
+                  Review session configuration before shooting. Confirm constants and planned takes.
+                </p>
+
+                {planDirty && (
+                  <div style={{
+                    background: '#2a2214',
+                    border: '1px solid #785a28',
+                    borderRadius: 8,
+                    padding: 10,
+                    marginBottom: 14,
+                  }}>
+                    <div style={{ fontWeight: 600, color: 'var(--warn)', marginBottom: 4 }}>
+                      Unsaved Plan Changes
                     </div>
-                    <div className="grid-form">
-                      <div>
-                        <label>Label</label>
-                        <input
-                          value={take.label || ''}
-                          placeholder="e.g. Wide shot at entrance"
-                          onChange={(e) => {
-                            setPlan({
-                              ...plan,
-                              takes: updateTake(plan.takes, take.take_id, { label: e.target.value }),
-                            })
-                            setPlanDirty(true)
-                            setReviewedRevision(null)
-                          }}
-                        />
-                      </div>
-                      <div>
-                        <label>Camera</label>
-                        <input
-                          value={take.camera || ''}
-                          placeholder="e.g. eye-level, 50mm"
-                          onChange={(e) => {
-                            setPlan({
-                              ...plan,
-                              takes: updateTake(plan.takes, take.take_id, { camera: e.target.value }),
-                            })
-                            setPlanDirty(true)
-                            setReviewedRevision(null)
-                          }}
-                        />
-                      </div>
-                      <div>
-                        <label>Framing</label>
-                        <input
-                          value={take.framing || ''}
-                          placeholder="e.g. medium full shot"
-                          onChange={(e) => {
-                            setPlan({
-                              ...plan,
-                              takes: updateTake(plan.takes, take.take_id, { framing: e.target.value }),
-                            })
-                            setPlanDirty(true)
-                            setReviewedRevision(null)
-                          }}
-                        />
-                      </div>
-                      <div>
-                        <label>Pose</label>
-                        <input
-                          value={take.pose || ''}
-                          placeholder="e.g. standing leaning against doorway"
-                          onChange={(e) => {
-                            setPlan({
-                              ...plan,
-                              takes: updateTake(plan.takes, take.take_id, { pose: e.target.value }),
-                            })
-                            setPlanDirty(true)
-                            setReviewedRevision(null)
-                          }}
-                        />
-                      </div>
-                      <div style={{ gridColumn: 'span 2' }}>
-                        <label>Expression</label>
-                        <input
-                          value={take.expression || ''}
-                          placeholder="e.g. calm neutral expression, direct eye contact"
-                          onChange={(e) => {
-                            setPlan({
-                              ...plan,
-                              takes: updateTake(plan.takes, take.take_id, { expression: e.target.value }),
-                            })
-                            setPlanDirty(true)
-                            setReviewedRevision(null)
-                          }}
-                        />
-                      </div>
+                    <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                      You have unsaved changes to takes or wardrobe. Save the plan draft to update revisions before proceeding to generation.
+                    </p>
+                  </div>
+                )}
+
+                {!planDirty && rePrepCount > 0 && (
+                  <div style={{
+                    background: '#2a2214',
+                    border: '1px solid #785a28',
+                    borderRadius: 8,
+                    padding: 10,
+                    marginBottom: 14,
+                  }}>
+                    <div style={{ fontWeight: 600, color: 'var(--warn)', marginBottom: 4 }}>
+                      Re-preparation Required ({rePrepCount} take{rePrepCount > 1 ? 's' : ''})
                     </div>
+                    <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                      Previous take preparations were invalidated by plan revisions. Re-preparation is required before shooting.
+                    </p>
                   </div>
-                ))}
-              </div>
+                )}
 
-              <div className="row" style={{ marginTop: 12 }}>
-                <button onClick={() => navigateStep('constants')}>← Back: Scene / Constants</button>
-                <button onClick={savePlan} disabled={!planDirty}>Save Draft</button>
-                <span className="spacer" style={{ flex: 1 }} />
-                <button className="primary" onClick={() => navigateStep('review')}>Next: Review →</button>
-              </div>
-            </div>
-          )}
-
-          {activeStep === 'review' && (
-            <div>
-              <h3>4. Review</h3>
-              <p className="muted" style={{ margin: '0 0 12px' }}>
-                Review session configuration before shooting. Confirm constants and planned takes.
-              </p>
-
-              {planConflicts && planConflicts.length > 0 && (
-                <div style={{
-                  background: '#2a2214',
-                  border: '1px solid #785a28',
-                  borderRadius: 8,
-                  padding: 10,
-                  marginBottom: 14,
-                }}>
-                  <div style={{ fontWeight: 600, color: 'var(--warn)', marginBottom: 4 }}>
-                    Resource Conflicts Requiring Review ({planConflicts.length})
-                  </div>
-                  <p className="muted" style={{ margin: '0 0 8px', fontSize: 13 }}>
-                    Unresolved conflicts block proceeding to generation. Review or resolve conflicting constants to continue.
-                  </p>
-                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                    {planConflicts.map((c, i) => (
-                      <li key={i} style={{ margin: '2px 0' }}>
-                        <b>{c.resource_field || c.source_id || 'Resource'}</b>: {c.message || 'Descriptive input competes with plan constants.'}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12, marginBottom: 14 }}>
-                <div style={{ background: 'var(--panel-2)', padding: 10, borderRadius: 8 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Character Identity</div>
-                  <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
-                    <div><b>Model:</b> {s.model?.name || s.model?.id}</div>
-                    <div><b>Checkpoint:</b> {s.checkpoint || s.settings?.checkpoint || 'Default'}</div>
-                    <div><b>LoRA Strength:</b> {s.settings?.lora_strength ?? '1.0'}</div>
-                  </div>
-                </div>
-                <div style={{ background: 'var(--panel-2)', padding: 10, borderRadius: 8 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Constants</div>
-                  <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
-                    <div><b>Look:</b> {plan?.look || '(none)'}</div>
-                    <div><b>Initial Wardrobe:</b> {plan?.initial_wardrobe || '(none)'}</div>
-                    <div><b>Pinned Resources:</b> {plan?.selected_resources?.length || 0}</div>
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>Planned Takes ({plan?.takes?.length || 0})</div>
-                <div style={{ overflowX: 'auto' }}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Take ID</th>
-                        <th>Label</th>
-                        <th>Camera</th>
-                        <th>Framing</th>
-                        <th>Pose</th>
-                        <th>Expression</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(plan?.takes || []).map((t) => (
-                        <tr key={t.take_id}>
-                          <td><span className="badge">{t.take_id}</span></td>
-                          <td>{t.label || '—'}</td>
-                          <td>{t.camera || '—'}</td>
-                          <td>{t.framing || '—'}</td>
-                          <td>{t.pose || '—'}</td>
-                          <td>{t.expression || '—'}</td>
-                        </tr>
+                {planConflicts && planConflicts.length > 0 && (
+                  <div style={{
+                    background: '#2a2214',
+                    border: '1px solid #785a28',
+                    borderRadius: 8,
+                    padding: 10,
+                    marginBottom: 14,
+                  }}>
+                    <div style={{ fontWeight: 600, color: 'var(--warn)', marginBottom: 4 }}>
+                      Resource Conflicts Requiring Review ({planConflicts.length})
+                    </div>
+                    <p className="muted" style={{ margin: '0 0 8px', fontSize: 13 }}>
+                      Unresolved conflicts block proceeding to generation. Review or resolve conflicting constants to continue.
+                    </p>
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                      {planConflicts.map((c, i) => (
+                        <li key={i} style={{ margin: '2px 0' }}>
+                          <b>{c.resource_field || c.source_id || 'Resource'}</b>: {c.message || 'Descriptive input competes with plan constants.'}
+                        </li>
                       ))}
-                    </tbody>
-                  </table>
+                    </ul>
+                  </div>
+                )}
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12, marginBottom: 14 }}>
+                  <div style={{ background: 'var(--panel-2)', padding: 10, borderRadius: 8 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>Character Identity</div>
+                    <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+                      <div><b>Model:</b> {s.model?.name || s.model?.id}</div>
+                      <div><b>Checkpoint:</b> {s.checkpoint || s.settings?.checkpoint || 'Default'}</div>
+                      <div><b>LoRA Strength:</b> {s.settings?.lora_strength ?? '1.0'}</div>
+                    </div>
+                  </div>
+                  <div style={{ background: 'var(--panel-2)', padding: 10, borderRadius: 8 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>Constants</div>
+                    <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+                      <div><b>Look:</b> {plan?.look || '(none)'}</div>
+                      <div><b>Initial Wardrobe:</b> {plan?.initial_wardrobe || '(none)'}</div>
+                      <div><b>Pinned Resources:</b> {plan?.selected_resources?.length || 0}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Planned Takes ({plan?.takes?.length || 0})</div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Take ID</th>
+                          <th>Label</th>
+                          <th>Camera</th>
+                          <th>Framing</th>
+                          <th>Pose</th>
+                          <th>Expression</th>
+                          <th>Effective Wardrobe</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(plan?.takes || []).map((t) => {
+                          const d = effectiveDetails[t.take_id] || { wardrobe: plan?.initial_wardrobe || '', source: 'initial' }
+                          const isCompleted = !planDirty && (planPreparation?.completed || []).some((c) => c.take_id === t.take_id)
+                          const isInvalidated = !planDirty && !isCompleted && (planPreparation?.history || []).some((h) => h.take_id === t.take_id)
+                          return (
+                            <tr key={t.take_id}>
+                              <td><span className="badge">{t.take_id}</span></td>
+                              <td>{t.label || '—'}</td>
+                              <td>{t.camera || '—'}</td>
+                              <td>{t.framing || '—'}</td>
+                              <td>{t.pose || '—'}</td>
+                              <td>{t.expression || '—'}</td>
+                              <td>
+                                <div style={{ fontSize: 12 }}>{d.wardrobe || '—'}</div>
+                                <span className="badge" style={{ fontSize: 10 }}>
+                                  {d.source === 'initial' && 'initial'}
+                                  {d.source === 'from_here' && 'from_here'}
+                                  {d.source === 'inherited_from_here' && `from ${d.inheritedFrom}`}
+                                  {d.source === 'this_take' && 'this_take'}
+                                </span>
+                              </td>
+                              <td>
+                                {planDirty ? (
+                                  <span className="badge warn">Unsaved edits</span>
+                                ) : isCompleted ? (
+                                  <span className="badge ready">Ready</span>
+                                ) : isInvalidated ? (
+                                  <span className="badge warn">Requires re-prep</span>
+                                ) : (
+                                  <span className="badge pending">Pending prep</span>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="row" style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--line)' }}>
+                  <button onClick={() => navigateStep('takes')}>← Back: Takes</button>
+                  <button className={planDirty ? 'primary' : ''} onClick={savePlan} disabled={!planDirty}>
+                    Save Plan
+                  </button>
+                  <span className="spacer" style={{ flex: 1 }} />
+                  <button
+                    className="primary"
+                    onClick={() => navigateStep('generation')}
+                    disabled={!canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflicts })}
+                    title={
+                      planDirty
+                        ? 'Save plan before proceeding to generation'
+                        : (planConflicts && planConflicts.length > 0)
+                          ? 'Unresolved conflicts block proceeding to generation'
+                          : !plan?.takes?.length
+                            ? 'Plan must contain at least one take'
+                            : !Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)
+                              ? 'Session has no workflow assigned'
+                              : 'Proceed to Generation'
+                    }
+                  >
+                    Proceed to Generation →
+                  </button>
                 </div>
               </div>
-
-              <div className="row" style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--line)' }}>
-                <button onClick={() => navigateStep('takes')}>← Back: Takes</button>
-                <button className={planDirty ? 'primary' : ''} onClick={savePlan} disabled={!planDirty}>
-                  Save Plan
-                </button>
-                <span className="spacer" style={{ flex: 1 }} />
-                <button
-                  className="primary"
-                  onClick={() => navigateStep('generation')}
-                  disabled={!canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflicts })}
-                  title={
-                    planDirty
-                      ? 'Save plan before proceeding to generation'
-                      : (planConflicts && planConflicts.length > 0)
-                        ? 'Unresolved conflicts block proceeding to generation'
-                        : !plan?.takes?.length
-                          ? 'Plan must contain at least one take'
-                          : !Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)
-                            ? 'Session has no workflow assigned'
-                            : 'Proceed to Generation'
-                  }
-                >
-                  Proceed to Generation →
-                </button>
-              </div>
-            </div>
-          )}
+            )
+          })()}
 
           {activeStep === 'generation' && (
             <div style={{ marginBottom: 4 }}>

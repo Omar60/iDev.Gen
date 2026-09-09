@@ -4,12 +4,20 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import SessionView from './views/SessionView.jsx'
 import {
   MODE_RESOURCE_V1,
+  WARDROBE_SCOPE_THIS_TAKE,
+  WARDROBE_SCOPE_FROM_HERE,
+  VALID_WARDROBE_SCOPES,
   isResourceSession,
   normalizePlan,
   nextTakeId,
   createTake,
   updateTake,
   removeTake,
+  reorderTakes,
+  setWardrobeChange,
+  removeWardrobeChange,
+  resolveEffectiveWardrobes,
+  resolveEffectiveWardrobeDetails,
   buildPlanSavePayload,
   loadSessionPlan,
   executeSavePlan,
@@ -1435,5 +1443,769 @@ describe('SessionView React component rendering integration (renderToStaticMarku
 
     expect(html).toContain('Unresolved conflicts block proceeding to generation')
     expect(html).toContain('disabled=""')
+  })
+})
+
+describe('Task 5.3: Wardrobe scope controls, pure resolution, reordering, and re-preparation', () => {
+  const samplePlan = {
+    version: MODE_RESOURCE_V1,
+    look: 'Dramatic directional rim light.',
+    initial_wardrobe: 'Classic cream trench coat over turtleneck.',
+    takes: [
+      { take_id: 'take-001', camera: '35mm', framing: 'full body', pose: 'walking', expression: 'calm' },
+      { take_id: 'take-002', camera: '50mm', framing: 'medium', pose: 'turning', expression: 'serious' },
+      { take_id: 'take-003', camera: '85mm', framing: 'close up', pose: 'profile', expression: 'pensive' },
+      { take_id: 'take-004', camera: '50mm', framing: 'three quarter', pose: 'seated', expression: 'soft' },
+    ],
+    selected_resources: [],
+    wardrobe_changes: [],
+  }
+
+  describe('Pure wardrobe resolution', () => {
+    it('inherits initial_wardrobe across all takes when no wardrobe_changes are present', () => {
+      const resolved = resolveEffectiveWardrobes(samplePlan)
+      expect(resolved['take-001']).toBe('Classic cream trench coat over turtleneck.')
+      expect(resolved['take-002']).toBe('Classic cream trench coat over turtleneck.')
+      expect(resolved['take-003']).toBe('Classic cream trench coat over turtleneck.')
+      expect(resolved['take-004']).toBe('Classic cream trench coat over turtleneck.')
+
+      const details = resolveEffectiveWardrobeDetails(samplePlan)
+      expect(details['take-001'].source).toBe('initial')
+      expect(details['take-001'].inheritedFrom).toBe('initial')
+      expect(details['take-001'].scope).toBeNull()
+      expect(details['take-001'].event).toBeNull()
+    })
+
+    it('falls back to empty string when initial_wardrobe is empty or missing', () => {
+      const emptyPlan = {
+        ...samplePlan,
+        initial_wardrobe: '',
+        takes: [{ take_id: 'take-001' }],
+      }
+      const resolved = resolveEffectiveWardrobes(emptyPlan)
+      expect(resolved['take-001']).toBe('')
+    })
+
+    it('handles isolated override (this_take) without altering following takes', () => {
+      const planWithOverride = {
+        ...samplePlan,
+        wardrobe_changes: [
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Red leather jacket override' },
+        ],
+      }
+      const resolved = resolveEffectiveWardrobes(planWithOverride)
+      expect(resolved['take-001']).toBe('Classic cream trench coat over turtleneck.')
+      expect(resolved['take-002']).toBe('Red leather jacket override')
+      expect(resolved['take-003']).toBe('Classic cream trench coat over turtleneck.')
+      expect(resolved['take-004']).toBe('Classic cream trench coat over turtleneck.')
+
+      const details = resolveEffectiveWardrobeDetails(planWithOverride)
+      expect(details['take-002'].source).toBe('this_take')
+      expect(details['take-002'].scope).toBe(WARDROBE_SCOPE_THIS_TAKE)
+      expect(details['take-002'].inheritedFrom).toBe('initial')
+      expect(details['take-002'].event).toEqual({
+        take_id: 'take-002',
+        scope: WARDROBE_SCOPE_THIS_TAKE,
+        wardrobe: 'Red leather jacket override',
+      })
+
+      expect(details['take-003'].source).toBe('initial')
+      expect(details['take-003'].inheritedFrom).toBe('initial')
+      expect(details['take-003'].scope).toBeNull()
+    })
+
+    it('handles persistent change (from_here) advancing inherited state for following takes', () => {
+      const planWithPersistent = {
+        ...samplePlan,
+        wardrobe_changes: [
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Black evening silk dress' },
+        ],
+      }
+      const resolved = resolveEffectiveWardrobes(planWithPersistent)
+      expect(resolved['take-001']).toBe('Classic cream trench coat over turtleneck.')
+      expect(resolved['take-002']).toBe('Black evening silk dress')
+      expect(resolved['take-003']).toBe('Black evening silk dress')
+      expect(resolved['take-004']).toBe('Black evening silk dress')
+
+      const details = resolveEffectiveWardrobeDetails(planWithPersistent)
+      expect(details['take-002'].source).toBe('from_here')
+      expect(details['take-002'].scope).toBe(WARDROBE_SCOPE_FROM_HERE)
+      expect(details['take-002'].inheritedFrom).toBe('take-002')
+
+      expect(details['take-003'].source).toBe('inherited_from_here')
+      expect(details['take-003'].scope).toBeNull()
+      expect(details['take-003'].inheritedFrom).toBe('take-002')
+
+      expect(details['take-004'].source).toBe('inherited_from_here')
+      expect(details['take-004'].inheritedFrom).toBe('take-002')
+    })
+
+    it('handles superseding from_here changes in sequence', () => {
+      const planMultiple = {
+        ...samplePlan,
+        wardrobe_changes: [
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Navy double-breasted suit' },
+          { take_id: 'take-004', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'White oversized linen shirt' },
+        ],
+      }
+      const resolved = resolveEffectiveWardrobes(planMultiple)
+      expect(resolved['take-001']).toBe('Classic cream trench coat over turtleneck.')
+      expect(resolved['take-002']).toBe('Navy double-breasted suit')
+      expect(resolved['take-003']).toBe('Navy double-breasted suit')
+      expect(resolved['take-004']).toBe('White oversized linen shirt')
+
+      const details = resolveEffectiveWardrobeDetails(planMultiple)
+      expect(details['take-003'].inheritedFrom).toBe('take-002')
+      expect(details['take-004'].inheritedFrom).toBe('take-004')
+    })
+
+    it('handles mixed from_here and this_take without allowing this_take to contaminate persistent state', () => {
+      const planMixed = {
+        ...samplePlan,
+        wardrobe_changes: [
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Dark charcoal wool suit' },
+          { take_id: 'take-003', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Yellow vinyl raincoat' },
+        ],
+      }
+      const resolved = resolveEffectiveWardrobes(planMixed)
+      expect(resolved['take-001']).toBe('Classic cream trench coat over turtleneck.')
+      expect(resolved['take-002']).toBe('Dark charcoal wool suit')
+      expect(resolved['take-003']).toBe('Yellow vinyl raincoat')
+      expect(resolved['take-004']).toBe('Dark charcoal wool suit')
+
+      const details = resolveEffectiveWardrobeDetails(planMixed)
+      expect(details['take-002'].source).toBe('from_here')
+      expect(details['take-003'].source).toBe('this_take')
+      expect(details['take-003'].inheritedFrom).toBe('take-002')
+      expect(details['take-004'].source).toBe('inherited_from_here')
+      expect(details['take-004'].inheritedFrom).toBe('take-002')
+    })
+
+    it('throws when encountering an unknown or invalid wardrobe scope', () => {
+      const planInvalidScope = {
+        ...samplePlan,
+        wardrobe_changes: [
+          { take_id: 'take-002', scope: 'invalid_scope', wardrobe: 'Some clothes' },
+        ],
+      }
+      expect(() => resolveEffectiveWardrobes(planInvalidScope)).toThrow(
+        /resolveEffectiveWardrobes encountered unrecognised scope "invalid_scope"/
+      )
+    })
+
+    it('throws when encountering duplicate wardrobe changes for the same take_id', () => {
+      const planWithDuplicates = {
+        ...samplePlan,
+        wardrobe_changes: [
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Outfit A' },
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Outfit B' },
+        ],
+      }
+      expect(() => resolveEffectiveWardrobes(planWithDuplicates)).toThrow(
+        /duplicate wardrobe_change for take_id "take-002"/
+      )
+    })
+
+    it('throws when a wardrobe change references a nonexistent take_id', () => {
+      const planWithNonexistentTake = {
+        ...samplePlan,
+        wardrobe_changes: [
+          { take_id: 'take-999', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Ghost outfit' },
+        ],
+      }
+      expect(() => resolveEffectiveWardrobes(planWithNonexistentTake)).toThrow(
+        /references take_id "take-999" which does not exist in plan\.takes/
+      )
+    })
+  })
+
+  describe('normalizePlan scope preservation', () => {
+    it('preserves invalid/unsupported scopes verbatim so validation catches them', () => {
+      const rawPlan = {
+        version: MODE_RESOURCE_V1,
+        wardrobe_changes: [
+          { take_id: 'take-001', scope: 'unsupported_custom_scope', wardrobe: 'Vintage denim' },
+        ],
+      }
+      const normalized = normalizePlan(rawPlan)
+      expect(normalized.wardrobe_changes[0].scope).toBe('unsupported_custom_scope')
+      expect(normalized.wardrobe_changes[0].scope).not.toBe(WARDROBE_SCOPE_THIS_TAKE)
+    })
+
+    it('preserves valid scopes correctly', () => {
+      const rawPlan = {
+        version: MODE_RESOURCE_V1,
+        wardrobe_changes: [
+          { take_id: 'take-001', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Denim' },
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Silk' },
+        ],
+      }
+      const normalized = normalizePlan(rawPlan)
+      expect(normalized.wardrobe_changes[0].scope).toBe(WARDROBE_SCOPE_THIS_TAKE)
+      expect(normalized.wardrobe_changes[1].scope).toBe(WARDROBE_SCOPE_FROM_HERE)
+    })
+  })
+
+  describe('reorderTakes pure function', () => {
+    it('moves a take from one index to another while keeping take_id stable', () => {
+      const initialTakes = [
+        { take_id: 'take-001', framing: 'wide' },
+        { take_id: 'take-002', framing: 'medium' },
+        { take_id: 'take-003', framing: 'close' },
+      ]
+      const reordered = reorderTakes(initialTakes, 0, 2)
+      expect(reordered.map((t) => t.take_id)).toEqual(['take-002', 'take-003', 'take-001'])
+      expect(reordered[2].framing).toBe('wide')
+    })
+
+    it('returns takes unchanged when indices are out of range or equal', () => {
+      const initialTakes = [
+        { take_id: 'take-001' },
+        { take_id: 'take-002' },
+      ]
+      expect(reorderTakes(initialTakes, 0, 0)).toEqual(initialTakes)
+      expect(reorderTakes(initialTakes, -1, 1)).toEqual(initialTakes)
+      expect(reorderTakes(initialTakes, 0, 5)).toEqual(initialTakes)
+      expect(reorderTakes(initialTakes, 'invalid', 1)).toEqual(initialTakes)
+    })
+
+    it('immediately changes effective wardrobes when moving a take across a from_here boundary', () => {
+      const plan = {
+        version: MODE_RESOURCE_V1,
+        initial_wardrobe: 'Initial outfit A',
+        takes: [
+          { take_id: 'take-001' },
+          { take_id: 'take-002' },
+          { take_id: 'take-003' },
+        ],
+        wardrobe_changes: [
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Changed outfit B' },
+        ],
+      }
+
+      // Order [001, 002, 003]:
+      // take-001: Initial outfit A
+      // take-002: Changed outfit B
+      // take-003: Changed outfit B
+      const initialResolved = resolveEffectiveWardrobes(plan)
+      expect(initialResolved['take-001']).toBe('Initial outfit A')
+      expect(initialResolved['take-002']).toBe('Changed outfit B')
+      expect(initialResolved['take-003']).toBe('Changed outfit B')
+
+      // Move take-002 to index 0: Order [002, 001, 003]
+      const movedTakes = reorderTakes(plan.takes, 1, 0)
+      const reorderedPlan = { ...plan, takes: movedTakes }
+      const reorderedResolved = resolveEffectiveWardrobes(reorderedPlan)
+
+      // Now take-002 is first! Its from_here propagates to take-001 and take-003
+      expect(reorderedResolved['take-002']).toBe('Changed outfit B')
+      expect(reorderedResolved['take-001']).toBe('Changed outfit B')
+      expect(reorderedResolved['take-003']).toBe('Changed outfit B')
+    })
+  })
+
+  describe('setWardrobeChange and removeWardrobeChange pure helpers', () => {
+    it('adds a new wardrobe change for a take', () => {
+      const changes = setWardrobeChange([], 'take-001', {
+        scope: WARDROBE_SCOPE_FROM_HERE,
+        wardrobe: 'Summer floral dress',
+      })
+      expect(changes).toEqual([
+        { take_id: 'take-001', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Summer floral dress' },
+      ])
+    })
+
+    it('updates an existing wardrobe change without creating duplicates for the same take_id', () => {
+      const initial = [
+        { take_id: 'take-001', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Old wardrobe' },
+        { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Other wardrobe' },
+      ]
+      const updated = setWardrobeChange(initial, 'take-001', {
+        scope: WARDROBE_SCOPE_FROM_HERE,
+        wardrobe: 'New updated wardrobe',
+      })
+      expect(updated).toHaveLength(2)
+      expect(updated[0]).toEqual({
+        take_id: 'take-001',
+        scope: WARDROBE_SCOPE_FROM_HERE,
+        wardrobe: 'New updated wardrobe',
+      })
+    })
+
+    it('removes wardrobe change for a take_id and restores inheritance', () => {
+      const initial = [
+        { take_id: 'take-001', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Take 1 wardrobe' },
+        { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Take 2 wardrobe' },
+      ]
+      const remaining = removeWardrobeChange(initial, 'take-001')
+      expect(remaining).toEqual([
+        { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Take 2 wardrobe' },
+      ])
+    })
+
+    it('sanitizes inherited duplicate entries for the target take_id into exactly one updated event', () => {
+      const initialWithDuplicates = [
+        { take_id: 'take-001', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Old wardrobe A' },
+        { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Other wardrobe' },
+        { take_id: 'take-001', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Stale duplicate B' },
+      ]
+      const sanitized = setWardrobeChange(initialWithDuplicates, 'take-001', {
+        scope: WARDROBE_SCOPE_FROM_HERE,
+        wardrobe: 'Fresh clean wardrobe',
+      })
+      expect(sanitized).toHaveLength(2)
+      expect(sanitized[0]).toEqual({
+        take_id: 'take-001',
+        scope: WARDROBE_SCOPE_FROM_HERE,
+        wardrobe: 'Fresh clean wardrobe',
+      })
+      expect(sanitized[1]).toEqual({
+        take_id: 'take-002',
+        scope: WARDROBE_SCOPE_FROM_HERE,
+        wardrobe: 'Other wardrobe',
+      })
+      // Confirms that exactly one event exists for take-001
+      expect(sanitized.filter((c) => c.take_id === 'take-001')).toHaveLength(1)
+    })
+  })
+
+  describe('buildPlanSavePayload wardrobe persistence contract', () => {
+    it('persists explicit wardrobe_changes and does NOT materialize effective_wardrobe onto takes', () => {
+      const planWithChanges = {
+        ...samplePlan,
+        wardrobe_changes: [
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Override wardrobe' },
+        ],
+      }
+      const payload = buildPlanSavePayload(planWithChanges, 3)
+      expect(payload.expected_revision).toBe(3)
+      expect(payload.plan.wardrobe_changes).toEqual([
+        { take_id: 'take-002', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Override wardrobe' },
+      ])
+
+      // Each take must NOT contain effective_wardrobe or any invented state
+      for (const t of payload.plan.takes) {
+        expect(t).not.toHaveProperty('effective_wardrobe')
+        expect(t).not.toHaveProperty('effectiveWardrobe')
+      }
+    })
+  })
+
+  describe('createSessionViewController wardrobe scope, reordering, and re-preparation operations', () => {
+    const fakeApi = {
+      get: async (url) => {
+        if (url === '/api/sessions/100') {
+          return { id: 100, composition_mode: MODE_RESOURCE_V1, workflow_id: 5 }
+        }
+        if (url === '/api/sessions/100/plan') {
+          return {
+            plan: samplePlan,
+            plan_revision: 2,
+            conflicts: [],
+            preparation: {
+              plan_revision: 2,
+              completed: [
+                { take_id: 'take-001', status: 'ready' },
+                { take_id: 'take-002', status: 'ready' },
+                { take_id: 'take-003', status: 'ready' },
+                { take_id: 'take-004', status: 'ready' },
+              ],
+              incomplete: [],
+              history: [],
+            },
+          }
+        }
+        throw new Error(`Unexpected GET ${url}`)
+      },
+      post: async (url, body) => {
+        if (url === '/api/sessions/100/plan') {
+          return {
+            plan_revision: body.expected_revision + 1,
+            conflicts: [],
+          }
+        }
+        throw new Error(`Unexpected POST ${url}`)
+      },
+    }
+
+    it('exposes effectiveWardrobes and effectiveWardrobeDetails in state', async () => {
+      const controller = createSessionViewController(100, {
+        initialSession: { id: 100, composition_mode: MODE_RESOURCE_V1, workflow_id: 5 },
+        initialPlan: samplePlan,
+        initialPlanRevision: 2,
+        api: fakeApi,
+      })
+      const state = controller.getState()
+      expect(state.effectiveWardrobes['take-001']).toBe(samplePlan.initial_wardrobe)
+      expect(state.effectiveWardrobeDetails['take-001'].source).toBe('initial')
+    })
+
+    it('reorderTake updates order, recalculates effectiveWardrobes, sets planDirty=true, and resets reviewedRevision', () => {
+      const planWithChange = {
+        ...samplePlan,
+        wardrobe_changes: [
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Special Evening Dress' },
+        ],
+      }
+      const controller = createSessionViewController(100, {
+        initialSession: { id: 100, composition_mode: MODE_RESOURCE_V1, workflow_id: 5 },
+        initialPlan: planWithChange,
+        initialPlanRevision: 2,
+        initialReviewedRevision: 2,
+        api: fakeApi,
+      })
+
+      expect(controller.getState().effectiveWardrobes['take-001']).toBe(samplePlan.initial_wardrobe)
+      expect(controller.getState().effectiveWardrobes['take-002']).toBe('Special Evening Dress')
+
+      // Move take-002 before take-001
+      const ok = controller.reorderTake(1, 0)
+      expect(ok).toBe(true)
+
+      const updatedState = controller.getState()
+      expect(updatedState.plan.takes[0].take_id).toBe('take-002')
+      expect(updatedState.plan.takes[1].take_id).toBe('take-001')
+      // Since take-002 is now first, its from_here applies to take-001!
+      expect(updatedState.effectiveWardrobes['take-001']).toBe('Special Evening Dress')
+      expect(updatedState.planDirty).toBe(true)
+      expect(updatedState.reviewedRevision).toBeNull()
+    })
+
+    it('setTakeWardrobeChange updates change, recalculates wardrobes, sets planDirty, and resets reviewedRevision', () => {
+      const controller = createSessionViewController(100, {
+        initialSession: { id: 100, composition_mode: MODE_RESOURCE_V1, workflow_id: 5 },
+        initialPlan: samplePlan,
+        initialPlanRevision: 2,
+        initialReviewedRevision: 2,
+        api: fakeApi,
+      })
+
+      const ok = controller.setTakeWardrobeChange('take-002', {
+        scope: WARDROBE_SCOPE_THIS_TAKE,
+        wardrobe: 'Embroidered velvet jacket',
+      })
+      expect(ok).toBe(true)
+
+      const state = controller.getState()
+      expect(state.effectiveWardrobes['take-002']).toBe('Embroidered velvet jacket')
+      expect(state.effectiveWardrobes['take-003']).toBe(samplePlan.initial_wardrobe)
+      expect(state.planDirty).toBe(true)
+      expect(state.reviewedRevision).toBeNull()
+    })
+
+    it('removeTakeWardrobeChange removes change, restores inheritance, and marks plan dirty', () => {
+      const planWithChange = {
+        ...samplePlan,
+        wardrobe_changes: [
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Embroidered velvet jacket' },
+        ],
+      }
+      const controller = createSessionViewController(100, {
+        initialSession: { id: 100, composition_mode: MODE_RESOURCE_V1, workflow_id: 5 },
+        initialPlan: planWithChange,
+        initialPlanRevision: 2,
+        api: fakeApi,
+      })
+
+      expect(controller.getState().effectiveWardrobes['take-002']).toBe('Embroidered velvet jacket')
+
+      controller.removeTakeWardrobeChange('take-002')
+      const state = controller.getState()
+      expect(state.effectiveWardrobes['take-002']).toBe(samplePlan.initial_wardrobe)
+      expect(state.plan.wardrobe_changes).toHaveLength(0)
+      expect(state.planDirty).toBe(true)
+    })
+
+    it('deleteTake removes the take and cleans up any wardrobe change for that take_id', () => {
+      const planWithChange = {
+        ...samplePlan,
+        wardrobe_changes: [
+          { take_id: 'take-002', scope: WARDROBE_SCOPE_FROM_HERE, wardrobe: 'Cocktail dress' },
+        ],
+      }
+      const controller = createSessionViewController(100, {
+        initialSession: { id: 100, composition_mode: MODE_RESOURCE_V1, workflow_id: 5 },
+        initialPlan: planWithChange,
+        initialPlanRevision: 2,
+        api: fakeApi,
+      })
+
+      controller.deleteTake('take-002')
+      const state = controller.getState()
+      expect(state.plan.takes.find((t) => t.take_id === 'take-002')).toBeUndefined()
+      expect(state.plan.wardrobe_changes.find((c) => c.take_id === 'take-002')).toBeUndefined()
+      expect(state.planDirty).toBe(true)
+      expect(state.reviewedRevision).toBeNull()
+    })
+
+    it('edits a wardrobe change, reorders takes, and saves via controller verifying CAS POST payload carries explicit changes without effective_wardrobe', async () => {
+      let capturedPayload = null
+      const testApi = {
+        get: async (url) => {
+          if (url === '/api/sessions/301') {
+            return { id: 301, composition_mode: MODE_RESOURCE_V1, workflow_id: 10 }
+          }
+          if (url === '/api/sessions/301/plan') {
+            return {
+              plan: samplePlan,
+              plan_revision: 2,
+              conflicts: [],
+              preparation: {
+                plan_revision: 2,
+                completed: [],
+                incomplete: [
+                  { take_id: 'take-001', status: 'pending' },
+                  { take_id: 'take-002', status: 'pending' },
+                  { take_id: 'take-003', status: 'pending' },
+                  { take_id: 'take-004', status: 'pending' },
+                ],
+                history: [],
+              },
+            }
+          }
+          throw new Error(`Unexpected GET ${url}`)
+        },
+        post: async (url, body) => {
+          if (url === '/api/sessions/301/plan') {
+            capturedPayload = body
+            return {
+              plan_revision: body.expected_revision + 1,
+              conflicts: [],
+            }
+          }
+          throw new Error(`Unexpected POST ${url}`)
+        },
+      }
+
+      const controller = createSessionViewController(301, {
+        initialSession: { id: 301, composition_mode: MODE_RESOURCE_V1, workflow_id: 10 },
+        initialPlan: samplePlan,
+        initialPlanRevision: 2,
+        api: testApi,
+      })
+
+      // 1. Edit wardrobe change for take-002
+      controller.setTakeWardrobeChange('take-002', {
+        scope: WARDROBE_SCOPE_FROM_HERE,
+        wardrobe: 'Navy tailored suit',
+      })
+
+      // 2. Reorder takes: move take-002 to index 0
+      controller.reorderTake(1, 0)
+
+      expect(controller.getState().planDirty).toBe(true)
+
+      // 3. Save via controller
+      const saveRes = await controller.savePlan()
+      expect(saveRes.ok).toBe(true)
+      expect(saveRes.planRevision).toBe(3)
+      expect(controller.getState().planDirty).toBe(false)
+
+      // 4. Verify captured CAS payload sent to backend
+      expect(capturedPayload).not.toBeNull()
+      expect(capturedPayload.expected_revision).toBe(2)
+      expect(capturedPayload.plan.version).toBe(MODE_RESOURCE_V1)
+
+      // Explicit wardrobe changes must be preserved exactly
+      expect(capturedPayload.plan.wardrobe_changes).toEqual([
+        {
+          take_id: 'take-002',
+          scope: WARDROBE_SCOPE_FROM_HERE,
+          wardrobe: 'Navy tailored suit',
+        },
+      ])
+
+      // Takes must reflect the new order
+      expect(capturedPayload.plan.takes.map((t) => t.take_id)).toEqual([
+        'take-002',
+        'take-001',
+        'take-003',
+        'take-004',
+      ])
+
+      // Crucial invariant: effective_wardrobe must NEVER be materialized onto takes
+      for (const t of capturedPayload.plan.takes) {
+        expect(t).not.toHaveProperty('effective_wardrobe')
+        expect(t).not.toHaveProperty('effectiveWardrobe')
+      }
+    })
+  })
+
+  describe('SessionView UI rendering for Task 5.3', () => {
+    const resourceSession = {
+      id: 601,
+      name: 'Autumn Studio Shoot',
+      model_id: 1,
+      model: { id: 1, name: 'Ada' },
+      composition_mode: MODE_RESOURCE_V1,
+      workflow_id: 10,
+      shots: [],
+      settings: { composition_mode: MODE_RESOURCE_V1 },
+    }
+
+    const testPlanWithChanges = {
+      version: MODE_RESOURCE_V1,
+      look: 'Golden hour sidelight through French doors.',
+      initial_wardrobe: 'Beige trench coat and dark trousers.',
+      takes: [
+        { take_id: 'take-001', camera: '35mm', framing: 'full body', pose: 'standing', expression: 'calm' },
+        { take_id: 'take-002', camera: '50mm', framing: 'medium', pose: 'three quarter', expression: 'smile' },
+        { take_id: 'take-003', camera: '85mm', framing: 'close up', pose: 'portrait', expression: 'direct' },
+      ],
+      selected_resources: [],
+      wardrobe_changes: [
+        { take_id: 'take-002', scope: WARDROBE_SCOPE_THIS_TAKE, wardrobe: 'Red leather biker jacket' },
+      ],
+    }
+
+    it('renders Move Up (↑) and Move Down (↓) reorder buttons on takes with boundary states', () => {
+      const html = renderToStaticMarkup(
+        React.createElement(SessionView, {
+          id: 601,
+          initialSession: resourceSession,
+          initialPlan: testPlanWithChanges,
+          initialRevision: 1,
+          initialActiveStep: 'takes',
+        })
+      )
+
+      // First take: Move Up should be disabled, Move Down enabled
+      expect(html).toContain('title="Move take up"')
+      expect(html).toContain('title="Move take down"')
+      expect(html).toContain('title="Move take up" disabled=""') // boundary check for first item
+    })
+
+    it('renders effective wardrobe badges (Inherited vs Override vs Persistent)', () => {
+      const html = renderToStaticMarkup(
+        React.createElement(SessionView, {
+          id: 601,
+          initialSession: resourceSession,
+          initialPlan: testPlanWithChanges,
+          initialRevision: 1,
+          initialActiveStep: 'takes',
+        })
+      )
+
+      // Take 1: Inherited (initial wardrobe)
+      expect(html).toContain('Inherited (initial wardrobe)')
+      expect(html).toContain('Beige trench coat and dark trousers.')
+
+      // Take 2: Override (this take only)
+      expect(html).toContain('Override (this take only)')
+      expect(html).toContain('Red leather biker jacket')
+
+      // Take 3: Reverted back to inherited
+      expect(html).toContain('Beige trench coat and dark trousers.')
+    })
+
+    it('renders wardrobe scope controls allowing this_take and from_here selections', () => {
+      const html = renderToStaticMarkup(
+        React.createElement(SessionView, {
+          id: 601,
+          initialSession: resourceSession,
+          initialPlan: testPlanWithChanges,
+          initialRevision: 1,
+          initialActiveStep: 'takes',
+        })
+      )
+
+      // Scope select options
+      expect(html).toContain('This take only')
+      expect(html).toContain('From here onward')
+      expect(html).toContain('name="scope-take-002"')
+      expect(html).toContain('Remove change')
+    })
+
+    it('renders preparation status indicators on takes and shows warning when re-preparation is required', () => {
+      const preparationState = {
+        plan_revision: 1,
+        completed: [
+          { take_id: 'take-001', status: 'ready' },
+        ],
+        incomplete: [
+          { take_id: 'take-002', status: 'pending' },
+          { take_id: 'take-003', status: 'missing' },
+        ],
+        history: [
+          { take_id: 'take-002', status: 'invalidated' },
+        ],
+      }
+
+      const html = renderToStaticMarkup(
+        React.createElement(SessionView, {
+          id: 601,
+          initialSession: resourceSession,
+          initialPlan: testPlanWithChanges,
+          initialRevision: 1,
+          initialActiveStep: 'takes',
+          initialPreparation: preparationState,
+        })
+      )
+
+      // Take 1 is ready
+      expect(html).toContain('✓ Ready')
+      // Take 2 was invalidated -> Requires re-preparation
+      expect(html).toContain('⚠️ Requires re-preparation')
+      // Take 3 was never prepared -> Preparation required
+      expect(html).toContain('Preparation required')
+
+      // Warning banner displayed at the top of Takes step
+      expect(html).toContain('require re-preparation following plan revision changes')
+    })
+
+    it('renders Effective Wardrobe and Preparation Status columns in Review step table', () => {
+      const preparationState = {
+        plan_revision: 1,
+        completed: [
+          { take_id: 'take-001', status: 'ready' },
+          { take_id: 'take-002', status: 'ready' },
+          { take_id: 'take-003', status: 'ready' },
+        ],
+        incomplete: [],
+        history: [],
+      }
+
+      const html = renderToStaticMarkup(
+        React.createElement(SessionView, {
+          id: 601,
+          initialSession: resourceSession,
+          initialPlan: testPlanWithChanges,
+          initialRevision: 1,
+          initialActiveStep: 'review',
+          initialPreparation: preparationState,
+        })
+      )
+
+      expect(html).toContain('Effective Wardrobe</th>')
+      expect(html).toContain('Status</th>')
+      expect(html).toContain('Red leather biker jacket')
+      expect(html).toContain('Ready</span>')
+    })
+
+    it('does NOT render wardrobe scope controls or reorder buttons on legacy sessions', () => {
+      const legacySession = {
+        id: 701,
+        name: 'Old Legacy Session',
+        composition_mode: '',
+        workflow_id: 10,
+        model: { id: 1, name: 'Ada' },
+        shots: [],
+        settings: {},
+      }
+
+      const html = renderToStaticMarkup(
+        React.createElement(SessionView, {
+          id: 701,
+          initialSession: legacySession,
+          initialPlan: null,
+          initialRevision: null,
+        })
+      )
+
+      expect(html).not.toContain('Move take up')
+      expect(html).not.toContain('Move take down')
+      expect(html).not.toContain('Effective Wardrobe')
+      expect(html).not.toContain('From here onward')
+    })
   })
 })

@@ -244,7 +244,24 @@
 
 - [x] 5.1 Add a resource browser and import preview with filters, readiness, field roles and a start-session action; verify every inventory outcome is visible and an accepted mapped resource can start a draft without scripts.
 - [x] 5.2 Reorder new-session preparation around character, scene/constants, takes and review, reusing current profiles and advanced settings; verify the resource path needs no visit to Catalogue or Judge.
-- [ ] 5.3 Add wardrobe scope controls and inherited-state display for ordered takes; verify UI changes save the same explicit events the backend resolves and reordering shows required re-preparation.
+- [x] 5.3 Add wardrobe scope controls and inherited-state display for ordered takes; verify UI changes save the same explicit events the backend resolves and reordering shows required re-preparation.
+
+  > 5.3 status: **complete.** Pure resolution, ordered scope controls, CAS persistence, and re-preparation tracking for wardrobe changes were implemented across the frontend and view layers:
+  >
+  > - **Pure resolution**: Added `resolveEffectiveWardrobes` and `resolveEffectiveWardrobeDetails` in `frontend/src/sessionPlan.js` matching `backend.session_plan.resolve_effective_wardrobes` exactly. Handles initial wardrobe inheritance, isolated overrides (`this_take`), and persistent transitions (`from_here`) walking ordered takes. Rejects unrecognized scopes with descriptive error.
+  > - **Non-coercing normalization**: Updated `normalizePlan` to retain custom/invalid scopes verbatim rather than silently coercing them to `this_take`, ensuring backend CAS validation rejects invalid payloads cleanly.
+  > - **Payload contract**: `buildPlanSavePayload` persists only explicit `wardrobe_changes` and never materializes `effective_wardrobe` into persisted takes.
+  > - **Pure reordering & editing**: Added `reorderTakes`, `setWardrobeChange`, and `removeWardrobeChange`. Reordering preserves stable `take_id`s, keeps attached events bound to `take_id`, and immediately recalculates effective wardrobe states across `from_here` boundaries.
+  > - **Preparation tracking & invalidation**: Controller and view track backend `planPreparation` from `recover_preparation` (`/api/sessions/{sid}/plan`). Edits and take reordering immediately set `planDirty = true` and reset `reviewedRevision = null`. Take cards and review tables surface preparation states (`Ready`, `Requires re-preparation`, `Preparation required`, `Unsaved edits`) and re-preparation alerts.
+  > - **Legacy isolation**: Wardrobe scope controls, reorder buttons, and resource preparation steps remain hidden on legacy sessions (`isLegacyControlVisible`).
+  >
+  > Verification commands and outcomes:
+  > - `npm --prefix frontend test` (235 passed across 11 test files, including 31 dedicated Task 5.3 tests)
+  > - `npm --prefix frontend run build` (production build clean)
+  > - `.venv\Scripts\python.exe -m pytest -q --tb=no` (exit code 0, 100% pass; terminal summary line suppressed by quiet mode, no prior summary figure copied)
+  > - `npx --yes @fission-ai/openspec validate adopt-resource-session-planning --strict` (valid)
+  > - `python -m pytest tests/test_no_personal_data.py` (10 passed)
+  > - `git diff --check` (clean, no whitespace or formatting errors)
 - [ ] 5.4 Add per-take prompt/provenance review, conflict resolution, resume and selected-take test generation; verify stale review cannot submit and double-click/network retry does not duplicate shots.
 
 ## 6. Migration, acceptance and documentation

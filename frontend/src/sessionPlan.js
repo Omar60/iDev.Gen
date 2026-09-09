@@ -6,6 +6,9 @@
  */
 
 export const MODE_RESOURCE_V1 = 'resource-v1'
+export const WARDROBE_SCOPE_THIS_TAKE = 'this_take'
+export const WARDROBE_SCOPE_FROM_HERE = 'from_here'
+export const VALID_WARDROBE_SCOPES = new Set([WARDROBE_SCOPE_THIS_TAKE, WARDROBE_SCOPE_FROM_HERE])
 
 /** Check whether a session is configured for resource-v1 composition.
  *
@@ -23,6 +26,8 @@ export function isResourceSession(session) {
  *
  *  Preserves exact resource revision triples, stable take IDs, creative choices,
  *  and any existing wardrobe changes without data loss.
+ *  Preserves invalid/unknown scopes verbatim so validation catches them instead
+ *  of silently coercing them to valid scopes.
  */
 export function normalizePlan(rawPlan) {
   const plan = rawPlan?.plan || rawPlan || {}
@@ -42,22 +47,31 @@ export function normalizePlan(rawPlan) {
   // Normalize takes preserving take_id and creative choices
   const rawTakes = Array.isArray(plan.takes) ? plan.takes : []
   const takes = rawTakes.length > 0
-    ? rawTakes.map((t, idx) => ({
-        ...t,
-        take_id: String(t.take_id || `take-${String(idx + 1).padStart(3, '0')}`).trim(),
-        camera: typeof t.camera === 'string' ? t.camera : '',
-        framing: typeof t.framing === 'string' ? t.framing : '',
-        pose: typeof t.pose === 'string' ? t.pose : '',
-        expression: typeof t.expression === 'string' ? t.expression : '',
-      }))
+    ? rawTakes.map((t, idx) => {
+        const { effective_wardrobe, effectiveWardrobe, ...rest } = t || {}
+        return {
+          ...rest,
+          take_id: String(rest.take_id || `take-${String(idx + 1).padStart(3, '0')}`).trim(),
+          camera: typeof rest.camera === 'string' ? rest.camera : '',
+          framing: typeof rest.framing === 'string' ? rest.framing : '',
+          pose: typeof rest.pose === 'string' ? rest.pose : '',
+          expression: typeof rest.expression === 'string' ? rest.expression : '',
+        }
+      })
     : [{ take_id: 'take-001', camera: '', framing: '', pose: '', expression: '' }]
 
-  // Normalize wardrobe changes
-  const wardrobeChanges = (plan.wardrobe_changes || plan.wardrobeChanges || []).map((ch) => ({
-    take_id: String(ch.take_id || '').trim(),
-    scope: ch.scope === 'from_here' ? 'from_here' : 'this_take',
-    wardrobe: typeof ch.wardrobe === 'string' ? ch.wardrobe : '',
-  }))
+  // Normalize wardrobe changes without silently coercing invalid scopes
+  const wardrobeChanges = (plan.wardrobe_changes || plan.wardrobeChanges || []).map((ch) => {
+    const rawScope = typeof ch.scope === 'string' ? ch.scope : (ch.scope ? String(ch.scope) : '')
+    const scope = (rawScope === WARDROBE_SCOPE_FROM_HERE || rawScope === WARDROBE_SCOPE_THIS_TAKE)
+      ? rawScope
+      : rawScope
+    return {
+      take_id: String(ch.take_id || '').trim(),
+      scope,
+      wardrobe: typeof ch.wardrobe === 'string' ? ch.wardrobe : '',
+    }
+  })
 
   const normalized = {
     version: MODE_RESOURCE_V1,
@@ -133,6 +147,185 @@ export function removeTake(existingTakes = [], takeId) {
   return existingTakes.filter((take) => take.take_id !== takeId)
 }
 
+/** Immutably reorder takes, preserving every take's take_id and creative choices. */
+export function reorderTakes(takes = [], fromIndex, toIndex) {
+  if (
+    typeof fromIndex !== 'number' || typeof toIndex !== 'number' ||
+    fromIndex < 0 || fromIndex >= takes.length ||
+    toIndex < 0 || toIndex >= takes.length ||
+    fromIndex === toIndex
+  ) {
+    return takes
+  }
+  const updated = [...takes]
+  const [moved] = updated.splice(fromIndex, 1)
+  updated.splice(toIndex, 0, moved)
+  return updated
+}
+
+/** Add or update an explicit wardrobe change for a take.
+ *  Ensures at most one wardrobe change per take_id without ambiguous duplicates,
+ *  sanitizing any legacy/inherited duplicates for the given take_id.
+ */
+export function setWardrobeChange(
+  wardrobeChanges = [],
+  takeId,
+  { scope = WARDROBE_SCOPE_THIS_TAKE, wardrobe = '' } = {}
+) {
+  const cleanTakeId = String(takeId || '').trim()
+  if (!cleanTakeId) return wardrobeChanges
+
+  const validScope = scope === WARDROBE_SCOPE_FROM_HERE ? WARDROBE_SCOPE_FROM_HERE : WARDROBE_SCOPE_THIS_TAKE
+  const newEvent = {
+    take_id: cleanTakeId,
+    scope: validScope,
+    wardrobe: typeof wardrobe === 'string' ? wardrobe : '',
+  }
+
+  const updated = []
+  let inserted = false
+  for (const ch of wardrobeChanges || []) {
+    if (ch && ch.take_id === cleanTakeId) {
+      if (!inserted) {
+        updated.push(newEvent)
+        inserted = true
+      }
+    } else if (ch) {
+      updated.push(ch)
+    }
+  }
+
+  if (!inserted) {
+    updated.push(newEvent)
+  }
+
+  return updated
+}
+
+/** Immutably remove any wardrobe change attached to a take_id. */
+export function removeWardrobeChange(wardrobeChanges = [], takeId) {
+  const cleanTakeId = String(takeId || '').trim()
+  return (wardrobeChanges || []).filter((c) => c.take_id !== cleanTakeId)
+}
+
+/** Resolve detailed effective wardrobe information for each take in a plan.
+ *
+ *  Compatible with backend session_plan.resolve_effective_wardrobes:
+ *  - Walks plan.takes in their current order.
+ *  - Starts with plan.initial_wardrobe.
+ *  - 'from_here' updates the persistent inherited state for this take and following takes.
+ *  - 'this_take' overrides only this take and leaves following takes with the prior inherited state.
+ *  - Events are matched by stable take_id, not array position.
+ *  - Reordering takes causes effective state to be recalculated immediately from the new order.
+ *  - Throws if duplicate wardrobe changes for the same take_id are encountered.
+ *  - Throws if a wardrobe change references a take_id that does not exist in plan.takes.
+ *  - Throws if an unrecognized wardrobe change scope is encountered.
+ *
+ *  Returns an object mapping take_id -> {
+ *    take_id: string,
+ *    wardrobe: string,
+ *    source: 'initial' | 'from_here' | 'this_take' | 'inherited_from_here',
+ *    scope: 'this_take' | 'from_here' | null,
+ *    inheritedFrom: string, // 'initial' or take_id where the active from_here event was declared
+ *    event: object | null, // explicit wardrobe change event if attached to this take
+ *  }
+ */
+export function resolveEffectiveWardrobeDetails(plan) {
+  const normalized = normalizePlan(plan)
+  const initial = normalized.initial_wardrobe || ''
+  const takes = normalized.takes || []
+  const changes = normalized.wardrobe_changes || []
+
+  const validTakeIds = new Set(takes.map((t) => t.take_id))
+  const seenChangeTakeIds = new Set()
+  const changesByTake = new Map()
+
+  for (let i = 0; i < changes.length; i++) {
+    const ch = changes[i]
+    if (!ch || typeof ch !== 'object') {
+      throw new Error(`resolveEffectiveWardrobes encountered invalid wardrobe change at index ${i}`)
+    }
+    const takeId = ch.take_id
+    if (!validTakeIds.has(takeId)) {
+      throw new Error(
+        `resolveEffectiveWardrobes: wardrobe_change at index ${i} references take_id ${JSON.stringify(takeId)} which does not exist in plan.takes`
+      )
+    }
+    if (seenChangeTakeIds.has(takeId)) {
+      throw new Error(
+        `resolveEffectiveWardrobes: duplicate wardrobe_change for take_id ${JSON.stringify(takeId)} at index ${i}; each take must have at most one wardrobe change`
+      )
+    }
+    seenChangeTakeIds.add(takeId)
+    changesByTake.set(takeId, ch)
+  }
+
+  const details = {}
+  let inherited = initial
+  let activeFromHereTakeId = 'initial'
+
+  for (const take of takes) {
+    const takeId = take.take_id
+    const change = changesByTake.get(takeId)
+
+    if (!change) {
+      details[takeId] = {
+        take_id: takeId,
+        wardrobe: inherited,
+        source: activeFromHereTakeId === 'initial' ? 'initial' : 'inherited_from_here',
+        scope: null,
+        inheritedFrom: activeFromHereTakeId,
+        event: null,
+      }
+      continue
+    }
+
+    const scope = change.scope
+    if (scope === WARDROBE_SCOPE_THIS_TAKE) {
+      details[takeId] = {
+        take_id: takeId,
+        wardrobe: change.wardrobe,
+        source: 'this_take',
+        scope: WARDROBE_SCOPE_THIS_TAKE,
+        inheritedFrom: activeFromHereTakeId,
+        event: change,
+      }
+    } else if (scope === WARDROBE_SCOPE_FROM_HERE) {
+      inherited = change.wardrobe
+      activeFromHereTakeId = takeId
+      details[takeId] = {
+        take_id: takeId,
+        wardrobe: inherited,
+        source: 'from_here',
+        scope: WARDROBE_SCOPE_FROM_HERE,
+        inheritedFrom: activeFromHereTakeId,
+        event: change,
+      }
+    } else {
+      throw new Error(
+        `resolveEffectiveWardrobes encountered unrecognised scope ${JSON.stringify(scope)} on take_id ${JSON.stringify(takeId)}`
+      )
+    }
+  }
+
+  return details
+}
+
+/** Resolve effective wardrobe for every take in the plan.
+ *
+ *  Returns an object mapping take_id -> effectiveWardrobe string,
+ *  matching backend session_plan.resolve_effective_wardrobes.
+ */
+export function resolveEffectiveWardrobes(plan) {
+  const details = resolveEffectiveWardrobeDetails(plan)
+  const effective = {}
+  for (const [takeId, detail] of Object.entries(details)) {
+    effective[takeId] = detail.wardrobe
+  }
+  return effective
+}
+
+
 /** Build the CAS save payload matching the backend PlanDraftIn contract. */
 export function buildPlanSavePayload(plan, expectedRevision) {
   if (typeof expectedRevision !== 'number' || Number.isNaN(expectedRevision) || expectedRevision < 0) {
@@ -177,6 +370,7 @@ export async function loadSessionPlan(sessionId, api) {
         plan: null,
         planRevision: null,
         conflicts: [],
+        preparation: null,
         error: 'Loaded draft missing valid plan_revision from backend',
       }
     }
@@ -186,6 +380,7 @@ export async function loadSessionPlan(sessionId, api) {
       plan: normalizePlan(rawPlan),
       planRevision,
       conflicts: data.conflicts || rawPlan.conflicts || [],
+      preparation: data.preparation || rawPlan.preparation || null,
       error: null,
     }
   } catch (err) {
@@ -194,6 +389,7 @@ export async function loadSessionPlan(sessionId, api) {
       plan: null,
       planRevision: null,
       conflicts: [],
+      preparation: null,
       error: err?.message || 'Failed to load session plan',
     }
   }
@@ -357,15 +553,27 @@ export function getAdvancedSettings(session, config = {}, workflows = []) {
  *  Coordinates session loading, mode resolution, plan draft CAS persistence,
  *  step transitions, error handling, and control visibility.
  */
-export function createSessionViewController(sessionId, { api, config = {} } = {}) {
-  let session = null
-  let plan = null
-  let planRevision = null
+export function createSessionViewController(
+  sessionId,
+  {
+    api,
+    config = {},
+    initialSession = null,
+    initialPlan = null,
+    initialPlanRevision = null,
+    initialReviewedRevision = null,
+    initialPreparation = null,
+  } = {}
+) {
+  let session = initialSession
+  let plan = initialPlan
+  let planRevision = initialPlanRevision
   let planConflicts = []
+  let planPreparation = initialPreparation
   let planDirty = false
   let planNotice = ''
   let activeStep = 'character'
-  let reviewedRevision = null
+  let reviewedRevision = initialReviewedRevision
   let error = ''
   let settingsOpen = false
   const listeners = new Set()
@@ -385,9 +593,23 @@ export function createSessionViewController(sessionId, { api, config = {} } = {}
       planRevision,
       planDirty,
       conflicts: planConflicts,
+      preparation: planPreparation,
       activeStep,
       reviewedRevision,
       pending,
+    }
+    let effectiveWardrobes = {}
+    let effectiveWardrobeDetails = {}
+    if (plan) {
+      try {
+        effectiveWardrobeDetails = resolveEffectiveWardrobeDetails(plan)
+        for (const [takeId, detail] of Object.entries(effectiveWardrobeDetails)) {
+          effectiveWardrobes[takeId] = detail.wardrobe
+        }
+      } catch (_) {
+        effectiveWardrobes = {}
+        effectiveWardrobeDetails = {}
+      }
     }
     return {
       session,
@@ -395,6 +617,9 @@ export function createSessionViewController(sessionId, { api, config = {} } = {}
       plan,
       planRevision,
       planConflicts,
+      planPreparation,
+      effectiveWardrobes,
+      effectiveWardrobeDetails,
       planDirty,
       planNotice,
       activeStep,
@@ -417,6 +642,7 @@ export function createSessionViewController(sessionId, { api, config = {} } = {}
           plan = planDirty && plan ? plan : planRes.plan
           planRevision = planDirty && planRevision !== null ? planRevision : planRes.planRevision
           planConflicts = planRes.conflicts
+          planPreparation = planRes.preparation
           if (!planDirty) {
             reviewedRevision = null
           }
@@ -425,6 +651,7 @@ export function createSessionViewController(sessionId, { api, config = {} } = {}
           plan = null
           planRevision = null
           planConflicts = []
+          planPreparation = null
           reviewedRevision = null
           error = planRes.error
         }
@@ -432,6 +659,7 @@ export function createSessionViewController(sessionId, { api, config = {} } = {}
         plan = null
         planRevision = null
         planConflicts = []
+        planPreparation = null
         reviewedRevision = null
         error = ''
       }
@@ -457,6 +685,12 @@ export function createSessionViewController(sessionId, { api, config = {} } = {}
       planDirty = false
       reviewedRevision = null
       planNotice = `Plan saved (revision ${res.planRevision})`
+      try {
+        const refreshed = await loadSessionPlan(sessionId, api)
+        if (refreshed.ok) {
+          planPreparation = refreshed.preparation
+        }
+      } catch (_) {}
       notify()
       return res
     } else {
@@ -569,6 +803,55 @@ export function createSessionViewController(sessionId, { api, config = {} } = {}
     plan = {
       ...plan,
       takes: removeTake(plan.takes || [], takeId),
+      wardrobe_changes: removeWardrobeChange(plan.wardrobe_changes || [], takeId),
+    }
+    planDirty = true
+    reviewedRevision = null
+    notify()
+    return true
+  }
+
+  function reorderTake(fromIndex, toIndex) {
+    if (!canPreparePlan({ plan, planRevision })) {
+      error = 'Cannot reorder takes: plan draft is incomplete or missing'
+      notify()
+      return false
+    }
+    plan = {
+      ...plan,
+      takes: reorderTakes(plan.takes || [], fromIndex, toIndex),
+    }
+    planDirty = true
+    reviewedRevision = null
+    notify()
+    return true
+  }
+
+  function setTakeWardrobeChange(takeId, { scope, wardrobe }) {
+    if (!canPreparePlan({ plan, planRevision })) {
+      error = 'Cannot edit wardrobe: plan draft is incomplete or missing'
+      notify()
+      return false
+    }
+    plan = {
+      ...plan,
+      wardrobe_changes: setWardrobeChange(plan.wardrobe_changes || [], takeId, { scope, wardrobe }),
+    }
+    planDirty = true
+    reviewedRevision = null
+    notify()
+    return true
+  }
+
+  function removeTakeWardrobeChange(takeId) {
+    if (!canPreparePlan({ plan, planRevision })) {
+      error = 'Cannot remove wardrobe change: plan draft is incomplete or missing'
+      notify()
+      return false
+    }
+    plan = {
+      ...plan,
+      wardrobe_changes: removeWardrobeChange(plan.wardrobe_changes || [], takeId),
     }
     planDirty = true
     reviewedRevision = null
@@ -584,6 +867,7 @@ export function createSessionViewController(sessionId, { api, config = {} } = {}
       planRevision,
       planDirty,
       conflicts: planConflicts,
+      preparation: planPreparation,
       activeStep,
       reviewedRevision,
       pending,
@@ -633,6 +917,9 @@ export function createSessionViewController(sessionId, { api, config = {} } = {}
     addTake,
     editTake,
     deleteTake,
+    reorderTake,
+    setTakeWardrobeChange,
+    removeTakeWardrobeChange,
     isControlVisible,
     toggleSettings: () => { settingsOpen = !settingsOpen; notify() },
     subscribe(fn) {
