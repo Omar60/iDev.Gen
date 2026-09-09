@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { api, shotImage } from '../api'
 import { go } from '../App.jsx'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
@@ -10,6 +10,20 @@ import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary,
 import { candidatePool, defaultCount, extrasFor, fillCellDefaultCount } from '../compose.js'
 import { composed, spread } from '../enhance.js'
 import { arcFor, outfits, statesFor } from '../wardrobe.js'
+import {
+  isResourceSession,
+  normalizePlan,
+  createTake,
+  updateTake,
+  removeTake,
+  buildPlanSavePayload,
+  loadSessionPlan,
+  executeSavePlan,
+  canPreparePlan,
+  canProceedToGeneration,
+  canGenerateSession,
+  isLegacyControlVisible,
+} from '../sessionPlan.js'
 
 /** The wardrobe the shoot passes through, in order — the arc a composed run is
  *  dealt, one state per photograph after `spread`.
@@ -44,9 +58,18 @@ const wardrobeStates = (session) => wardrobeArc(session).map((s) => s.text)
 const modelStem = (checkpoint) =>
   (checkpoint || '').split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || 'copy'
 
-export default function SessionView({ id }) {
-  const [s, setS] = useState(null)
-  const [error, setError] = useState('')
+export default function SessionView({
+  id,
+  initialSession = null,
+  initialPlan = null,
+  initialRevision = null,
+  initialError = '',
+  initialActiveStep = 'character',
+  initialReviewedRevision = null,
+  initialConflicts = [],
+}) {
+  const [s, setS] = useState(initialSession)
+  const [error, setError] = useState(initialError)
   const [filter, setFilter] = useState('all')
   const [zoom, setZoom] = useState(null)
   const [split, setSplit] = useState(50)
@@ -158,7 +181,109 @@ export default function SessionView({ id }) {
   const [fillCellCount, setFillCellCount] = useState(() => fillCellDefaultCount())
   const llm = !!config.llm_ok
 
-  const reload = () => api.get(`/api/sessions/${id}`).then(setS).catch((e) => setError(e.message))
+  const [plan, setPlan] = useState(initialPlan)
+  const [planRevision, setPlanRevision] = useState(initialRevision)
+  const [planConflicts, setPlanConflicts] = useState(initialConflicts)
+  const [planDirty, setPlanDirty] = useState(false)
+  const planDirtyRef = useRef(false)
+  planDirtyRef.current = planDirty
+  const [planNotice, setPlanNotice] = useState('')
+  const [activeStep, setActiveStep] = useState(initialActiveStep)
+  const [reviewedRevision, setReviewedRevision] = useState(initialReviewedRevision)
+
+  const isResource = isResourceSession(s)
+
+  const reload = () => api.get(`/api/sessions/${id}`).then((data) => {
+    setS(data)
+    if (isResourceSession(data)) {
+      loadSessionPlan(id, api).then((res) => {
+        if (res.ok) {
+          if (typeof res.planRevision !== 'number' || res.planRevision < 0) {
+            setPlan(null)
+            setPlanRevision(null)
+            setPlanConflicts([])
+            setReviewedRevision(null)
+            setError('Loaded draft missing valid plan_revision from backend')
+            return
+          }
+          setPlan((prev) => (planDirtyRef.current && prev ? prev : res.plan))
+          setPlanRevision((prev) => (planDirtyRef.current && prev !== null ? prev : res.planRevision))
+          setPlanConflicts(res.conflicts)
+          if (!planDirtyRef.current) {
+            setReviewedRevision(null)
+          }
+        } else {
+          setPlan(null)
+          setPlanRevision(null)
+          setPlanConflicts([])
+          setReviewedRevision(null)
+          setError(res.error)
+        }
+      }).catch((e) => {
+        setPlan(null)
+        setPlanRevision(null)
+        setPlanConflicts([])
+        setReviewedRevision(null)
+        setError(e?.message || 'Failed to load plan')
+      })
+    }
+  }).catch((e) => setError(e.message))
+
+  const savePlan = async () => {
+    if (!plan || planRevision === null) {
+      setError('Cannot save plan: no valid plan draft loaded')
+      return
+    }
+    const res = await executeSavePlan(id, plan, planRevision, api)
+    if (res.ok) {
+      setPlanRevision(res.planRevision)
+      setPlanConflicts(res.conflicts)
+      setPlanDirty(false)
+      setReviewedRevision(null)
+      setPlanNotice(`Plan saved (revision ${res.planRevision})`)
+      setTimeout(() => setPlanNotice(''), 4000)
+      reload()
+    } else {
+      setError(res.error)
+    }
+  }
+
+  const navigateStep = (step) => {
+    if (isResource) {
+      if (!canPreparePlan({ plan, planRevision })) {
+        setError('Cannot navigate steps: plan draft is incomplete or missing')
+        return false
+      }
+      if (step === 'generation') {
+        if (activeStep !== 'review' && activeStep !== 'generation') {
+          setError('Cannot skip to generation: review step must be completed first')
+          return false
+        }
+        if (planDirty) {
+          setError('Cannot proceed to generation: plan has unsaved changes. Save the draft first.')
+          return false
+        }
+        const hasConflicts = (planConflicts && planConflicts.length > 0) || (plan?.conflicts && plan.conflicts.length > 0)
+        if (hasConflicts) {
+          setError('Cannot proceed to generation: unresolved resource conflicts require review.')
+          return false
+        }
+        if (!plan?.takes || plan.takes.length === 0) {
+          setError('Cannot proceed to generation: plan must contain at least one take.')
+          return false
+        }
+        const hasWorkflow = Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)
+        if (!hasWorkflow) {
+          setError('Cannot proceed to generation: session has no workflow assigned.')
+          return false
+        }
+        setReviewedRevision(planRevision)
+      }
+    }
+    setActiveStep(step)
+    setError('')
+    return true
+  }
   useEffect(() => {
     reload()
     api.get('/api/workflows').then(setWorkflows).catch(() => {})
@@ -185,6 +310,12 @@ export default function SessionView({ id }) {
     const t = setInterval(reload, 2500)
     return () => clearInterval(t)
   }, [s?.status, id])
+
+  useEffect(() => {
+    if (s?.status === 'running') {
+      setActiveStep('generation')
+    }
+  }, [s?.status])
 
   if (!s) return <p className="muted">{error || 'Loading…'}</p>
 
@@ -566,170 +697,182 @@ export default function SessionView({ id }) {
         </div>
         <div className="row">
           {kind && <span className="badge" title={KINDS[kind].blurb}>{KINDS[kind].label}</span>}
-          <span className={'badge ' + s.status}>{s.status}</span>
-          {pending > 0 && s.status !== 'running' &&
+          {canGenerateSession(s, {
+            plan,
+            planRevision,
+            planDirty,
+            conflicts: planConflicts,
+            activeStep,
+            reviewedRevision,
+            pending,
+          }) && (
             <button className="primary" onClick={() => call(() => api.post(`/api/sessions/${id}/run`))}>
               Run ({pending})
-            </button>}
-          {/* The compose control: a count, a mode, and a button, on the session
-              that's already open. The candidate pool is the whole catalogue slice
-              for the session's manner (see compose.js for the per-manner rule);
-              the framing is fixed and the screen says so, because picking
-              framings is a measurement decision not yet made. Disabled when
-              manner or checkpoint is missing, with the reason on the title —
-              the same refusal the endpoint will give, surfaced before the click
-              so the operator does not pay a round trip to learn what is
-              missing. Mode defaults to "exploratory" (8.4): a strict default
-              makes the first use of this feature a 422 on a 17-row, 2-trios
-              cell table, and reads as broken. */}
-          <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <label title="Compose the line without the session's wardrobe, so a reference image can deliver the clothing instead. With no reference attached the line renders her undressed."
-                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-              <input type="checkbox" checked={muteWardrobe}
-                     disabled={!s.manner || !s.checkpoint || s.running}
-                     onChange={(e) => setMuteWardrobe(e.target.checked)} />
-              no wardrobe
-            </label>
-            <label title="He is in the room for this run. Off: an act with a second person in it is not drawn at all, which is what keeps a dressed photograph from coming back as penetration. On does not mean only him - the whole act list is drawable again."
-                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-              <input type="checkbox" checked={withHim}
-                     disabled={!s.manner || !s.checkpoint || s.running}
-                     onChange={(e) => setWithHim(e.target.checked)} />
-              with him
-            </label>
-            <label title="The room has furniture in it for this run. Off: an act that sits her on a chair, a bed, a counter or a stair is not drawn at all, because nothing in the prompt describes the room and naming a piece builds it - measured seven times in eight. On does not mean only furniture - the whole act list is drawable again."
-                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-              <input type="checkbox" checked={withFurniture}
-                     disabled={!s.manner || !s.checkpoint || s.running}
-                     onChange={(e) => setWithFurniture(e.target.checked)} />
-              furniture
-            </label>
-            {/* The three run subjects. A checkbox alone would be the failure they
-                exist to prevent - the writer would invent one - so the words
-                come with the switch, and the run is refused while a box is on
-                and its words are empty. */}
-            {RUN_SUBJECTS.map((subject) => (
-              <label key={subject.flag}
-                     title={`This shoot has one, written in your words and carried into the \`${subject.field}\` field of every photograph that does not change it. Off: nothing about it reaches the writer at all, and a line that describes one anyway is flagged.`}
-                     style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                <input type="checkbox" checked={subjects[subject.flag]}
-                       disabled={s.running}
-                       onChange={(e) => setSubjects({ ...subjects,
-                                                      [subject.flag]: e.target.checked })} />
-                {subject.input}
-                {subjects[subject.flag] && (
-                  <input type="text" value={subjects[subject.input]} disabled={s.running}
-                         placeholder={`what the ${subject.input} is, in your words`}
-                         style={{ width: 220 }}
-                         onChange={(e) => setSubjects({ ...subjects,
-                                                        [subject.input]: e.target.value })} />
-                )}
-              </label>
-            ))}
-            {/* The gates report before the run, not during it: an operator finds
-                out a room is unshootable today by sending the run and reading the
-                422, which is fine for one room and useless for a picker with
-                hundreds in it. Nothing is queued by asking. */}
-            <button className="icon" onClick={askRooms}
-                    title="Which rooms this run would be refused in, and why. Queues nothing.">
-              rooms?
             </button>
-            <label title="The fallback answer for a photograph the arc says nothing about. An act that needs access - a toy, a hand between her legs - is drawn where the dealt wardrobe gives access: nothing covering her below the waist, or the garment pulled aside. This decides the photographs an outfit does not: a hand-typed arc, or a session with no arc at all."
-                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-              <input type="checkbox" checked={bare}
-                     disabled={!s.manner || !s.checkpoint || s.running}
-                     onChange={(e) => setBare(e.target.checked)} />
-              access
-            </label>
-            {/* Only offered when the session has a reference graph to send them
-                through: without one the runner falls back to the text2image
-                workflow and the flag is a lie the row still records. */}
-            <label title="Shoot these takes through the session's reference workflow, so the anchor photograph can carry what the line leaves out."
-                   style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-              <input type="checkbox" checked={composeGuided}
-                     disabled={!s.reference_workflow_id || !s.manner || !s.checkpoint || s.running}
-                     onChange={(e) => setComposeReference(e.target.checked)} />
-              guided
-            </label>
-            <input type="number" min={1} max={50} value={composeCount}
-                   disabled={!s.manner || !s.checkpoint || s.running}
-                   onChange={(e) => setComposeCount(Math.max(1, Number(e.target.value) || 1))}
-                   style={{ width: 60 }}
-                   title="How many photographs to compose and queue" />
-            <select value={composeMode}
-                    disabled={!s.manner || !s.checkpoint || s.running}
-                    onChange={(e) => setComposeMode(e.target.value)}
-                    title="exploratory draws unknown and verified cells (never dead); strict draws verified only">
-              <option value="exploratory">exploratory</option>
-              <option value="strict">strict</option>
-            </select>
-            <button disabled={!s.manner || !s.checkpoint || s.running || composeCount < 1}
-                    onClick={() => composeRun(composeCount, composeMode)}
-                    title={!s.manner || !s.checkpoint
-                      ? `Compose needs manner and checkpoint (manner="${s.manner || ''}", checkpoint="${s.checkpoint || ''}")`
-                      : `Compose ${composeCount} ${composeMode} photograph${composeCount === 1 ? '' : 's'} from the catalogue`}>
-              Compose
-            </button>
-          </span>
-          {/* The fill-cell control: pick one trio, queue N photographs of it on
-              this session so an operator can take a single cell to its
-              `judged=10` threshold without a script. The camera and act
-              are <select>s of the catalogue slice the Compose control also
-              reads (`candidatePool(manner)`), one per slot. Default count is 10 — the
-              threshold `db.cell_state` reads — so a single press queues
-              the batch that pushes a cell to verified or dead. Strict
-              mode refuses unknowns (the cell check 3.2 already pinned);
-              exploratory draws them too. The 422 path is the same
-              `setError(e.message)` the Compose control uses. */}
-          <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <select multiple size={4} value={fillCellCamera}
-                    disabled={!s.manner || !s.checkpoint || s.running}
-                    onChange={(e) => setFillCellCamera([...e.target.selectedOptions].map((o) => o.value))}
-                    title="Camera concepts for the fill-cell compose — pick several and every combination becomes its own cell">
-              {candidatePool(s.manner).camera.map((x) => (
-                <option key={x.key} value={x.key}>{x.key}</option>
-              ))}
-              <option value="none">none (control)</option>
-            </select>
-            <select multiple size={4} value={fillCellAct}
-                    disabled={!s.manner || !s.checkpoint || s.running}
-                    onChange={(e) => setFillCellAct([...e.target.selectedOptions].map((o) => o.value))}
-                    title="Act concepts for the fill-cell compose — pick several and every combination becomes its own cell">
-              {candidatePool(s.manner).act.map((x) => (
-                <option key={x.key} value={x.key}>{x.key}</option>
-              ))}
-              <option value="none">none (control)</option>
-            </select>
-            <select multiple size={4} value={fillCellFraming}
-                    disabled={!s.manner || !s.checkpoint || s.running}
-                    onChange={(e) => setFillCellFraming([...e.target.selectedOptions].map((o) => o.value))}
-                    title="Framing concepts for the fill-cell compose — pick several and every combination becomes its own cell">
-              {candidatePool(s.manner).framing.map((x) => (
-                <option key={x.key} value={x.key}>{x.key}</option>
-              ))}
-              <option value="none">none (control)</option>
-            </select>
-            <input type="number" min={1} max={50} value={fillCellCount}
-                   disabled={!s.manner || !s.checkpoint || s.running}
-                   onChange={(e) => setFillCellCount(Math.max(1, Number(e.target.value) || 1))}
-                   style={{ width: 50 }}
-                   title="How many photographs of this trio to queue" />
-            <select value={fillCellMode}
-                    disabled={!s.manner || !s.checkpoint || s.running}
-                    onChange={(e) => setFillCellMode(e.target.value)}
-                    title="Mode for the fill-cell compose (strict refuses unknown cells; exploratory draws them)">
-              <option value="exploratory">exploratory</option>
-              <option value="strict">strict</option>
-            </select>
-            <button disabled={!s.manner || !s.checkpoint || s.running || fillCellCount < 1
-                              || !fillCellCamera.length || !fillCellAct.length || !fillCellFraming.length}
-                    onClick={() => fillCell(fillCellCamera, fillCellAct, fillCellFraming, fillCellCount, fillCellMode)}
-                    title={!s.manner || !s.checkpoint
-                      ? `Fill cell needs manner and checkpoint (manner="${s.manner || ''}", checkpoint="${s.checkpoint || ''}")`
-                      : `${fillCells} cell${fillCells === 1 ? '' : 's'} × ${fillCellCount} = ${fillCells * fillCellCount} ${fillCellMode} photographs. Every cell is checked before any of them is queued.`}>
-              Fill {fillCells * fillCellCount} photo{fillCells * fillCellCount === 1 ? '' : 's'}
-            </button>
-          </span>
+          )}
+          {isLegacyControlVisible(s, 'compose') && (
+            <>
+              {/* The compose control: a count, a mode, and a button, on the session
+                  that's already open. The candidate pool is the whole catalogue slice
+                  for the session's manner (see compose.js for the per-manner rule);
+                  the framing is fixed and the screen says so, because picking
+                  framings is a measurement decision not yet made. Disabled when
+                  manner or checkpoint is missing, with the reason on the title —
+                  the same refusal the endpoint will give, surfaced before the click
+                  so the operator does not pay a round trip to learn what is
+                  missing. Mode defaults to "exploratory" (8.4): a strict default
+                  makes the first use of this feature a 422 on a 17-row, 2-trios
+                  cell table, and reads as broken. */}
+              <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <label title="Compose the line without the session's wardrobe, so a reference image can deliver the clothing instead. With no reference attached the line renders her undressed."
+                       style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                  <input type="checkbox" checked={muteWardrobe}
+                         disabled={!s.manner || !s.checkpoint || s.running}
+                         onChange={(e) => setMuteWardrobe(e.target.checked)} />
+                  no wardrobe
+                </label>
+                <label title="He is in the room for this run. Off: an act with a second person in it is not drawn at all, which is what keeps a dressed photograph from coming back as penetration. On does not mean only him - the whole act list is drawable again."
+                       style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                  <input type="checkbox" checked={withHim}
+                         disabled={!s.manner || !s.checkpoint || s.running}
+                         onChange={(e) => setWithHim(e.target.checked)} />
+                  with him
+                </label>
+                <label title="The room has furniture in it for this run. Off: an act that sits her on a chair, a bed, a counter or a stair is not drawn at all, because nothing in the prompt describes the room and naming a piece builds it - measured seven times in eight. On does not mean only furniture - the whole act list is drawable again."
+                       style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                  <input type="checkbox" checked={withFurniture}
+                         disabled={!s.manner || !s.checkpoint || s.running}
+                         onChange={(e) => setWithFurniture(e.target.checked)} />
+                  furniture
+                </label>
+                {/* The three run subjects. A checkbox alone would be the failure they
+                    exist to prevent - the writer would invent one - so the words
+                    come with the switch, and the run is refused while a box is on
+                    and its words are empty. */}
+                {RUN_SUBJECTS.map((subject) => (
+                  <label key={subject.flag}
+                         title={`This shoot has one, written in your words and carried into the \`${subject.field}\` field of every photograph that does not change it. Off: nothing about it reaches the writer at all, and a line that describes one anyway is flagged.`}
+                         style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                    <input type="checkbox" checked={subjects[subject.flag]}
+                           disabled={s.running}
+                           onChange={(e) => setSubjects({ ...subjects,
+                                                          [subject.flag]: e.target.checked })} />
+                    {subject.input}
+                    {subjects[subject.flag] && (
+                      <input type="text" value={subjects[subject.input]} disabled={s.running}
+                             placeholder={`what the ${subject.input} is, in your words`}
+                             style={{ width: 220 }}
+                             onChange={(e) => setSubjects({ ...subjects,
+                                                            [subject.input]: e.target.value })} />
+                    )}
+                  </label>
+                ))}
+                {/* The gates report before the run, not during it: an operator finds
+                    out a room is unshootable today by sending the run and reading the
+                    422, which is fine for one room and useless for a picker with
+                    hundreds in it. Nothing is queued by asking. */}
+                <button className="icon" onClick={askRooms}
+                        title="Which rooms this run would be refused in, and why. Queues nothing.">
+                  rooms?
+                </button>
+                <label title="The fallback answer for a photograph the arc says nothing about. An act that needs access - a toy, a hand between her legs - is drawn where the dealt wardrobe gives access: nothing covering her below the waist, or the garment pulled aside. This decides the photographs an outfit does not: a hand-typed arc, or a session with no arc at all."
+                       style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                  <input type="checkbox" checked={bare}
+                         disabled={!s.manner || !s.checkpoint || s.running}
+                         onChange={(e) => setBare(e.target.checked)} />
+                  access
+                </label>
+                {/* Only offered when the session has a reference graph to send them
+                    through: without one the runner falls back to the text2image
+                    workflow and the flag is a lie the row still records. */}
+                <label title="Shoot these takes through the session's reference workflow, so the anchor photograph can carry what the line leaves out."
+                       style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                  <input type="checkbox" checked={composeGuided}
+                         disabled={!s.reference_workflow_id || !s.manner || !s.checkpoint || s.running}
+                         onChange={(e) => setComposeReference(e.target.checked)} />
+                  guided
+                </label>
+                <input type="number" min={1} max={50} value={composeCount}
+                       disabled={!s.manner || !s.checkpoint || s.running}
+                       onChange={(e) => setComposeCount(Math.max(1, Number(e.target.value) || 1))}
+                       style={{ width: 60 }}
+                       title="How many photographs to compose and queue" />
+                <select value={composeMode}
+                        disabled={!s.manner || !s.checkpoint || s.running}
+                        onChange={(e) => setComposeMode(e.target.value)}
+                        title="exploratory draws unknown and verified cells (never dead); strict draws verified only">
+                  <option value="exploratory">exploratory</option>
+                  <option value="strict">strict</option>
+                </select>
+                <button disabled={!s.manner || !s.checkpoint || s.running || composeCount < 1}
+                        onClick={() => composeRun(composeCount, composeMode)}
+                        title={!s.manner || !s.checkpoint
+                          ? `Compose needs manner and checkpoint (manner="${s.manner || ''}", checkpoint="${s.checkpoint || ''}")`
+                          : `Compose ${composeCount} ${composeMode} photograph${composeCount === 1 ? '' : 's'} from the catalogue`}>
+                  Compose
+                </button>
+              </span>
+              {/* The fill-cell control: pick one trio, queue N photographs of it on
+                  this session so an operator can take a single cell to its
+                  `judged=10` threshold without a script. The camera and act
+                  are <select>s of the catalogue slice the Compose control also
+                  reads (`candidatePool(manner)`), one per slot. Default count is 10 — the
+                  threshold `db.cell_state` reads — so a single press queues
+                  the batch that pushes a cell to verified or dead. Strict
+                  mode refuses unknowns (the cell check 3.2 already pinned);
+                  exploratory draws them too. The 422 path is the same
+                  `setError(e.message)` the Compose control uses. */}
+              <span className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <select multiple size={4} value={fillCellCamera}
+                        disabled={!s.manner || !s.checkpoint || s.running}
+                        onChange={(e) => setFillCellCamera([...e.target.selectedOptions].map((o) => o.value))}
+                        title="Camera concepts for the fill-cell compose — pick several and every combination becomes its own cell">
+                  {candidatePool(s.manner).camera.map((x) => (
+                    <option key={x.key} value={x.key}>{x.key}</option>
+                  ))}
+                  <option value="none">none (control)</option>
+                </select>
+                <select multiple size={4} value={fillCellAct}
+                        disabled={!s.manner || !s.checkpoint || s.running}
+                        onChange={(e) => setFillCellAct([...e.target.selectedOptions].map((o) => o.value))}
+                        title="Act concepts for the fill-cell compose — pick several and every combination becomes its own cell">
+                  {candidatePool(s.manner).act.map((x) => (
+                    <option key={x.key} value={x.key}>{x.key}</option>
+                  ))}
+                  <option value="none">none (control)</option>
+                </select>
+                <select multiple size={4} value={fillCellFraming}
+                        disabled={!s.manner || !s.checkpoint || s.running}
+                        onChange={(e) => setFillCellFraming([...e.target.selectedOptions].map((o) => o.value))}
+                        title="Framing concepts for the fill-cell compose — pick several and every combination becomes its own cell">
+                  {candidatePool(s.manner).framing.map((x) => (
+                    <option key={x.key} value={x.key}>{x.key}</option>
+                  ))}
+                  <option value="none">none (control)</option>
+                </select>
+                <input type="number" min={1} max={50} value={fillCellCount}
+                       disabled={!s.manner || !s.checkpoint || s.running}
+                       onChange={(e) => setFillCellCount(Math.max(1, Number(e.target.value) || 1))}
+                       style={{ width: 50 }}
+                       title="How many photographs of this trio to queue" />
+                <select value={fillCellMode}
+                        disabled={!s.manner || !s.checkpoint || s.running}
+                        onChange={(e) => setFillCellMode(e.target.value)}
+                        title="Mode for the fill-cell compose (strict refuses unknown cells; exploratory draws them)">
+                  <option value="exploratory">exploratory</option>
+                  <option value="strict">strict</option>
+                </select>
+                <button disabled={!s.manner || !s.checkpoint || s.running || fillCellCount < 1
+                                  || !fillCellCamera.length || !fillCellAct.length || !fillCellFraming.length}
+                        onClick={() => fillCell(fillCellCamera, fillCellAct, fillCellFraming, fillCellCount, fillCellMode)}
+                        title={!s.manner || !s.checkpoint
+                          ? `Fill cell needs manner and checkpoint (manner="${s.manner || ''}", checkpoint="${s.checkpoint || ''}")`
+                          : `${fillCells} cell${fillCells === 1 ? '' : 's'} × ${fillCellCount} = ${fillCells * fillCellCount} ${fillCellMode} photographs. Every cell is checked before any of them is queued.`}>
+                  Fill {fillCells * fillCellCount} photo{fillCells * fillCellCount === 1 ? '' : 's'}
+                </button>
+              </span>
+            </>
+          )}
           {s.status === 'running' &&
             <button onClick={() => call(() => api.post(`/api/sessions/${id}/cancel`))}>Cancel</button>}
           {failed > 0 && s.status !== 'running' &&
@@ -747,7 +890,9 @@ export default function SessionView({ id }) {
           })} title="Shoot this whole session again on other base models — same takes, same seeds">
             ⧉ Clone
           </button>
-          <button onClick={() => setAdding(adding ? null : [blankShot(kind)])}>+ Shots</button>
+          {isLegacyControlVisible(s, 'add_shots') && (
+            <button onClick={() => setAdding(adding ? null : [blankShot(kind)])}>+ Shots</button>
+          )}
           {/* The native file input renders its label in the browser's locale, so
               it is hidden behind our own, the same way Workflows does it. */}
           <label className="filebtn" title="Bring in a photo from outside — it lands as a finished shot, so it can be marked as a reference like any other">
@@ -769,75 +914,531 @@ export default function SessionView({ id }) {
         </div>
       </div>
 
-      <div className="row" style={{ margin: '10px 0' }}>
-        <div className="progress"><div style={{ width: `${(done / Math.max(1, s.shots.length)) * 100}%` }} /></div>
-        <span className="muted">{done}/{s.shots.length} done{failed ? ` · ${failed} failed` : ''}</span>
-        <span className="spacer" style={{ flex: 1 }} />
-        {/* Only the copies of this shoot are offered: comparing two photos means
-            the same take on the same seed, and no other pair of sessions has
-            that. Picking one turns every photo that has a twin into a
-            before/after wipe in the lightbox. */}
-        {family.length > 0 && (
-          <select style={{ width: 'auto' }} value={twinId}
-                  title="Compare with a copy of this session — same takes, same seeds, other base model"
-                  onChange={(e) => setTwinId(Number(e.target.value))}>
-            <option value={0}>Compare with…</option>
-            {family.map((f) => (
-              <option key={f.id} value={f.id}>{shotWith(f)} · {f.done_count}/{f.shot_count}</option>
-            ))}
+      {isResource && (
+        <div className="panel" style={{ marginBottom: 14 }}>
+          {!canPreparePlan({ plan, planRevision }) ? (
+            <div>
+              <h3>Resource Session Plan Incomplete</h3>
+              <p className="muted" style={{ margin: '0 0 10px' }}>
+                {error || 'No valid plan draft could be loaded for this session.'} Preparation and generation are blocked until a valid draft is available.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div className="row" style={{ gap: 6 }}>
+              <button
+                type="button"
+                className={'chip' + (activeStep === 'character' ? ' on' : '')}
+                onClick={() => navigateStep('character')}
+              >
+                1. Character
+              </button>
+              <button
+                type="button"
+                className={'chip' + (activeStep === 'constants' ? ' on' : '')}
+                onClick={() => navigateStep('constants')}
+              >
+                2. Scene / Constants
+              </button>
+              <button
+                type="button"
+                className={'chip' + (activeStep === 'takes' ? ' on' : '')}
+                onClick={() => navigateStep('takes')}
+              >
+                3. Takes {plan?.takes ? `(${plan.takes.length})` : ''}
+              </button>
+              <button
+                type="button"
+                className={'chip' + (activeStep === 'review' ? ' on' : '')}
+                onClick={() => navigateStep('review')}
+              >
+                4. Review
+              </button>
+              <button
+                type="button"
+                className={'chip' + (activeStep === 'generation' ? ' on' : '')}
+                onClick={() => navigateStep('generation')}
+                disabled={activeStep !== 'generation' && (
+                  activeStep !== 'review' ||
+                  !canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflicts })
+                )}
+                title={
+                  activeStep !== 'generation' && activeStep !== 'review'
+                    ? 'Review step must be completed before generation'
+                    : planDirty
+                      ? 'Plan has unsaved changes'
+                      : (planConflicts && planConflicts.length > 0)
+                        ? 'Unresolved conflicts block generation'
+                        : !plan?.takes?.length
+                          ? 'Plan must contain at least one take'
+                          : !Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)
+                            ? 'Session has no workflow assigned'
+                            : ''
+                }
+              >
+                5. Generation {s.shots?.length ? `(${s.shots.length})` : ''}
+              </button>
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              {planRevision !== null && (
+                <span className="badge" title="Current plan revision">Rev {planRevision}</span>
+              )}
+              {planDirty && (
+                <span className="badge pending" title="Unsaved changes in draft plan">Unsaved changes</span>
+              )}
+              {planNotice && (
+                <span className="badge ready">{planNotice}</span>
+              )}
+            </div>
+          </div>
+
+          {activeStep === 'character' && (
+            <div>
+              <h3>1. Character</h3>
+              <p className="muted" style={{ margin: '0 0 10px' }}>
+                Character identity is fixed for this session. Base model and LoRA parameters apply to all takes.
+              </p>
+              <div className="grid-form" style={{ marginBottom: 12 }}>
+                <div>
+                  <label>Model</label>
+                  <input readOnly disabled value={s.model?.name || s.model?.id || ''} />
+                </div>
+                <div>
+                  <label>Trigger / Prefix</label>
+                  <input readOnly disabled value={s.model?.trigger || '(none)'} />
+                </div>
+                <div>
+                  <label>Base Model / Checkpoint</label>
+                  <input readOnly disabled value={s.checkpoint || s.settings?.checkpoint || 'Default'} />
+                </div>
+                <div>
+                  <label>LoRA Strength</label>
+                  <input readOnly disabled value={s.settings?.lora_strength ?? '1.0'} />
+                </div>
+              </div>
+              <p className="muted" style={{ fontSize: 12 }}>
+                To adjust checkpoint profiles or LoRA strength, use the ⚙ Settings panel above.
+              </p>
+              <div className="row" style={{ marginTop: 12 }}>
+                <span className="spacer" style={{ flex: 1 }} />
+                <button className="primary" onClick={() => navigateStep('constants')}>
+                  Next: Scene / Constants →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {activeStep === 'constants' && (
+            <div>
+              <h3>2. Scene / Constants</h3>
+              <p className="muted" style={{ margin: '0 0 10px' }}>
+                Set constants shared across the session. The look sets appearance, location, and lighting.
+              </p>
+              <div style={{ marginBottom: 12 }}>
+                <label>Look (appearance, place, light)</label>
+                <textarea
+                  rows={3}
+                  value={plan?.look ?? ''}
+                  placeholder="e.g. natural soft daylight in an open loft, detailed skin texture"
+                  onChange={(e) => {
+                    if (!plan) return
+                    setPlan({ ...plan, look: e.target.value })
+                    setPlanDirty(true)
+                    setReviewedRevision(null)
+                  }}
+                />
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <label>Initial Wardrobe</label>
+                <textarea
+                  rows={2}
+                  value={plan?.initial_wardrobe ?? ''}
+                  placeholder="e.g. wearing a charcoal wool overcoat and white silk shirt"
+                  onChange={(e) => {
+                    if (!plan) return
+                    setPlan({ ...plan, initial_wardrobe: e.target.value })
+                    setPlanDirty(true)
+                    setReviewedRevision(null)
+                  }}
+                />
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <label>Selected Resources (Pinned Revisions)</label>
+                {(plan?.selected_resources && plan.selected_resources.length > 0) ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+                    {plan.selected_resources.map((res, idx) => (
+                      <div key={idx} className="row" style={{ padding: '6px 8px', background: 'var(--panel-2)', borderRadius: 6, fontSize: 12 }}>
+                        <span className="badge">{res.library_key}</span>
+                        <span><b>{res.source_id}</b></span>
+                        <span className="muted" style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                          digest: {res.content_digest?.slice(0, 16)}…
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="muted" style={{ margin: '4px 0', fontSize: 12 }}>
+                    No pinned resource revisions attached to this plan.
+                  </p>
+                )}
+              </div>
+              <div className="row" style={{ marginTop: 12 }}>
+                <button onClick={() => navigateStep('character')}>← Back: Character</button>
+                <button onClick={savePlan} disabled={!planDirty}>Save Draft</button>
+                <span className="spacer" style={{ flex: 1 }} />
+                <button className="primary" onClick={() => navigateStep('takes')}>Next: Takes →</button>
+              </div>
+            </div>
+          )}
+
+          {activeStep === 'takes' && (
+            <div>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <div>
+                  <h3 style={{ margin: 0 }}>3. Takes ({plan?.takes?.length || 0})</h3>
+                  <p className="muted" style={{ margin: '2px 0 0' }}>
+                    Configure takes. Creative choices (camera, framing, pose, expression) may repeat across takes. Stable take IDs are preserved.
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (!plan) return
+                    setPlan({
+                      ...plan,
+                      takes: createTake(plan.takes || []),
+                    })
+                    setPlanDirty(true)
+                    setReviewedRevision(null)
+                  }}
+                >
+                  + Add Take
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+                {(plan?.takes || []).map((take, index) => (
+                  <div
+                    key={take.take_id}
+                    style={{
+                      border: '1px solid var(--line)',
+                      borderRadius: 8,
+                      padding: 10,
+                      background: 'var(--panel-2)',
+                    }}
+                  >
+                    <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+                      <div className="row" style={{ gap: 8 }}>
+                        <span className="badge" style={{ fontWeight: 600 }}>{take.take_id}</span>
+                        <span className="muted">Take {index + 1}</span>
+                      </div>
+                      <button
+                        className="icon danger"
+                        title="Remove take"
+                        disabled={(plan?.takes || []).length <= 1}
+                        onClick={() => {
+                          setPlan({
+                            ...plan,
+                            takes: removeTake(plan.takes, take.take_id),
+                          })
+                          setPlanDirty(true)
+                          setReviewedRevision(null)
+                        }}
+                      >
+                        🗑
+                      </button>
+                    </div>
+                    <div className="grid-form">
+                      <div>
+                        <label>Label</label>
+                        <input
+                          value={take.label || ''}
+                          placeholder="e.g. Wide shot at entrance"
+                          onChange={(e) => {
+                            setPlan({
+                              ...plan,
+                              takes: updateTake(plan.takes, take.take_id, { label: e.target.value }),
+                            })
+                            setPlanDirty(true)
+                            setReviewedRevision(null)
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <label>Camera</label>
+                        <input
+                          value={take.camera || ''}
+                          placeholder="e.g. eye-level, 50mm"
+                          onChange={(e) => {
+                            setPlan({
+                              ...plan,
+                              takes: updateTake(plan.takes, take.take_id, { camera: e.target.value }),
+                            })
+                            setPlanDirty(true)
+                            setReviewedRevision(null)
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <label>Framing</label>
+                        <input
+                          value={take.framing || ''}
+                          placeholder="e.g. medium full shot"
+                          onChange={(e) => {
+                            setPlan({
+                              ...plan,
+                              takes: updateTake(plan.takes, take.take_id, { framing: e.target.value }),
+                            })
+                            setPlanDirty(true)
+                            setReviewedRevision(null)
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <label>Pose</label>
+                        <input
+                          value={take.pose || ''}
+                          placeholder="e.g. standing leaning against doorway"
+                          onChange={(e) => {
+                            setPlan({
+                              ...plan,
+                              takes: updateTake(plan.takes, take.take_id, { pose: e.target.value }),
+                            })
+                            setPlanDirty(true)
+                            setReviewedRevision(null)
+                          }}
+                        />
+                      </div>
+                      <div style={{ gridColumn: 'span 2' }}>
+                        <label>Expression</label>
+                        <input
+                          value={take.expression || ''}
+                          placeholder="e.g. calm neutral expression, direct eye contact"
+                          onChange={(e) => {
+                            setPlan({
+                              ...plan,
+                              takes: updateTake(plan.takes, take.take_id, { expression: e.target.value }),
+                            })
+                            setPlanDirty(true)
+                            setReviewedRevision(null)
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="row" style={{ marginTop: 12 }}>
+                <button onClick={() => navigateStep('constants')}>← Back: Scene / Constants</button>
+                <button onClick={savePlan} disabled={!planDirty}>Save Draft</button>
+                <span className="spacer" style={{ flex: 1 }} />
+                <button className="primary" onClick={() => navigateStep('review')}>Next: Review →</button>
+              </div>
+            </div>
+          )}
+
+          {activeStep === 'review' && (
+            <div>
+              <h3>4. Review</h3>
+              <p className="muted" style={{ margin: '0 0 12px' }}>
+                Review session configuration before shooting. Confirm constants and planned takes.
+              </p>
+
+              {planConflicts && planConflicts.length > 0 && (
+                <div style={{
+                  background: '#2a2214',
+                  border: '1px solid #785a28',
+                  borderRadius: 8,
+                  padding: 10,
+                  marginBottom: 14,
+                }}>
+                  <div style={{ fontWeight: 600, color: 'var(--warn)', marginBottom: 4 }}>
+                    Resource Conflicts Requiring Review ({planConflicts.length})
+                  </div>
+                  <p className="muted" style={{ margin: '0 0 8px', fontSize: 13 }}>
+                    Unresolved conflicts block proceeding to generation. Review or resolve conflicting constants to continue.
+                  </p>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                    {planConflicts.map((c, i) => (
+                      <li key={i} style={{ margin: '2px 0' }}>
+                        <b>{c.resource_field || c.source_id || 'Resource'}</b>: {c.message || 'Descriptive input competes with plan constants.'}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12, marginBottom: 14 }}>
+                <div style={{ background: 'var(--panel-2)', padding: 10, borderRadius: 8 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Character Identity</div>
+                  <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+                    <div><b>Model:</b> {s.model?.name || s.model?.id}</div>
+                    <div><b>Checkpoint:</b> {s.checkpoint || s.settings?.checkpoint || 'Default'}</div>
+                    <div><b>LoRA Strength:</b> {s.settings?.lora_strength ?? '1.0'}</div>
+                  </div>
+                </div>
+                <div style={{ background: 'var(--panel-2)', padding: 10, borderRadius: 8 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Constants</div>
+                  <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+                    <div><b>Look:</b> {plan?.look || '(none)'}</div>
+                    <div><b>Initial Wardrobe:</b> {plan?.initial_wardrobe || '(none)'}</div>
+                    <div><b>Pinned Resources:</b> {plan?.selected_resources?.length || 0}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>Planned Takes ({plan?.takes?.length || 0})</div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Take ID</th>
+                        <th>Label</th>
+                        <th>Camera</th>
+                        <th>Framing</th>
+                        <th>Pose</th>
+                        <th>Expression</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(plan?.takes || []).map((t) => (
+                        <tr key={t.take_id}>
+                          <td><span className="badge">{t.take_id}</span></td>
+                          <td>{t.label || '—'}</td>
+                          <td>{t.camera || '—'}</td>
+                          <td>{t.framing || '—'}</td>
+                          <td>{t.pose || '—'}</td>
+                          <td>{t.expression || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="row" style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--line)' }}>
+                <button onClick={() => navigateStep('takes')}>← Back: Takes</button>
+                <button className={planDirty ? 'primary' : ''} onClick={savePlan} disabled={!planDirty}>
+                  Save Plan
+                </button>
+                <span className="spacer" style={{ flex: 1 }} />
+                <button
+                  className="primary"
+                  onClick={() => navigateStep('generation')}
+                  disabled={!canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflicts })}
+                  title={
+                    planDirty
+                      ? 'Save plan before proceeding to generation'
+                      : (planConflicts && planConflicts.length > 0)
+                        ? 'Unresolved conflicts block proceeding to generation'
+                        : !plan?.takes?.length
+                          ? 'Plan must contain at least one take'
+                          : !Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)
+                            ? 'Session has no workflow assigned'
+                            : 'Proceed to Generation'
+                  }
+                >
+                  Proceed to Generation →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {activeStep === 'generation' && (
+            <div style={{ marginBottom: 4 }}>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h3 style={{ margin: 0 }}>5. Generation</h3>
+                  <p className="muted" style={{ margin: '2px 0 0' }}>
+                    {s.shots.length > 0
+                      ? `Session gallery (${done}/${s.shots.length} completed).`
+                      : pending > 0
+                        ? `Session plan reviewed (${pending} pending shots ready to run). Click Run in the top bar to shoot.`
+                        : 'Session plan reviewed. Materialized takes will appear here ready to run.'}
+                  </p>
+                </div>
+                <button onClick={() => navigateStep('review')}>← Back to Review</button>
+              </div>
+            </div>
+          )}
+            </>
+          )}
+        </div>
+      )}
+
+      {(!isResource || (canPreparePlan({ plan, planRevision }) && activeStep === 'generation')) && (
+        <div className="row" style={{ margin: '10px 0' }}>
+          <div className="progress"><div style={{ width: `${(done / Math.max(1, s.shots.length)) * 100}%` }} /></div>
+          <span className="muted">{done}/{s.shots.length} done{failed ? ` · ${failed} failed` : ''}</span>
+          <span className="spacer" style={{ flex: 1 }} />
+          {/* Only the copies of this shoot are offered: comparing two photos means
+              the same take on the same seed, and no other pair of sessions has
+              that. Picking one turns every photo that has a twin into a
+              before/after wipe in the lightbox. */}
+          {family.length > 0 && (
+            <select style={{ width: 'auto' }} value={twinId}
+                    title="Compare with a copy of this session — same takes, same seeds, other base model"
+                    onChange={(e) => setTwinId(Number(e.target.value))}>
+              <option value={0}>Compare with…</option>
+              {family.map((f) => (
+                <option key={f.id} value={f.id}>{shotWith(f)} · {f.done_count}/{f.shot_count}</option>
+              ))}
+            </select>
+          )}
+          <select style={{ width: 'auto' }} value={filter} onChange={(e) => setFilter(e.target.value)}>
+            <option value="all">All</option>
+            <option value="keep">Without rejects</option>
+            <option value="picks">Picks only (4★+)</option>
           </select>
-        )}
-        <select style={{ width: 'auto' }} value={filter} onChange={(e) => setFilter(e.target.value)}>
-          <option value="all">All</option>
-          <option value="keep">Without rejects</option>
-          <option value="picks">Picks only (4★+)</option>
-        </select>
-        {(() => {
-          const minRating = filter === 'picks' ? 4 : 1
-          const exportCount = s.shots.filter((x) => x.status === 'done' && !x.rejected && x.rating >= minRating).length
-          const url = `/api/sessions/${id}/export?min_rating=${minRating}`
-          return (
-            <a href={exportCount > 0 ? url : undefined} download
-               className={exportCount > 0 ? 'button' : 'button disabled'}>
-              Download picks ({exportCount})
-            </a>
-          )
-        })()}
-        {(() => {
-          const minRating = filter === 'picks' ? 4 : 1
-          const count = s.shots.filter((x) => x.status === 'done' && !x.rejected && x.rating >= minRating).length
-          const url = `/api/sessions/${id}/contact-sheet?min_rating=${minRating}`
-          return (
-            <a href={count > 0 ? url : undefined} download
-               className={count > 0 ? 'button' : 'button disabled'}>
-              Contact sheet ({count})
-            </a>
-          )
-        })()}
-        {(() => {
-          // Same threshold the export uses, read the other way: "below X" is the
-          // complement of "X and up". Picks filter -> reshoot everything that
-          // isn't a pick; otherwise just the unrated. The anchor stays put for
-          // the same reason the per-shot ↺ refuses it.
-          const minRating = filter === 'picks' ? 4 : 1
-          const reshootCount = s.shots.filter((x) =>
-            x.status === 'done' && x.rating < minRating && !anchors.includes(x.id)
-          ).length
-          return (
-            <button disabled={reshootCount === 0}
-                    title={reshootCount > 0
-                      ? `Delete ${reshootCount} photo${reshootCount === 1 ? '' : 's'} and put ${reshootCount === 1 ? 'it' : 'them'} back in the queue on a new seed`
-                      : 'No finished shots are below the current threshold'}
-                    onClick={() => {
-                      if (confirm(`Reshoot ${reshootCount} shot${reshootCount === 1 ? '' : 's'} below ${minRating}★? Their photos will be deleted and the takes go back in the queue.`)) {
-                        call(() => api.post(`/api/sessions/${id}/reshoot-below?min_rating=${minRating}`))
-                      }
-                    }}>
-              Reshoot below {minRating}★ ({reshootCount})
-            </button>
-          )
-        })()}
-      </div>
+          {(() => {
+            const minRating = filter === 'picks' ? 4 : 1
+            const exportCount = s.shots.filter((x) => x.status === 'done' && !x.rejected && x.rating >= minRating).length
+            const url = `/api/sessions/${id}/export?min_rating=${minRating}`
+            return (
+              <a href={exportCount > 0 ? url : undefined} download
+                 className={exportCount > 0 ? 'button' : 'button disabled'}>
+                Download picks ({exportCount})
+              </a>
+            )
+          })()}
+          {(() => {
+            const minRating = filter === 'picks' ? 4 : 1
+            const count = s.shots.filter((x) => x.status === 'done' && !x.rejected && x.rating >= minRating).length
+            const url = `/api/sessions/${id}/contact-sheet?min_rating=${minRating}`
+            return (
+              <a href={count > 0 ? url : undefined} download
+                 className={count > 0 ? 'button' : 'button disabled'}>
+                Contact sheet ({count})
+              </a>
+            )
+          })()}
+          {(() => {
+            // Same threshold the export uses, read the other way: "below X" is the
+            // complement of "X and up". Picks filter -> reshoot everything that
+            // isn't a pick; otherwise just the unrated. The anchor stays put for
+            // the same reason the per-shot ↺ refuses it.
+            const minRating = filter === 'picks' ? 4 : 1
+            const reshootCount = s.shots.filter((x) =>
+              x.status === 'done' && x.rating < minRating && !anchors.includes(x.id)
+            ).length
+            return (
+              <button disabled={reshootCount === 0}
+                      title={reshootCount > 0
+                        ? `Delete ${reshootCount} photo${reshootCount === 1 ? '' : 's'} and put ${reshootCount === 1 ? 'it' : 'them'} back in the queue on a new seed`
+                        : 'No finished shots are below the current threshold'}
+                      onClick={() => {
+                        if (confirm(`Reshoot ${reshootCount} shot${reshootCount === 1 ? '' : 's'} below ${minRating}★? Their photos will be deleted and the takes go back in the queue.`)) {
+                          call(() => api.post(`/api/sessions/${id}/reshoot-below?min_rating=${minRating}`))
+                        }
+                      }}>
+                Reshoot below {minRating}★ ({reshootCount})
+              </button>
+            )
+          })()}
+        </div>
+      )}
 
       {/* The three choices every refused Run is about. Each saves on change, like
           the reference workflow selector below: a Save button here would be one
@@ -933,6 +1534,32 @@ export default function SessionView({ id }) {
                      onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                        { settings: { lora_strength: e.target.value === '' ? null : parseFloat(e.target.value) } }))} />
             </div>
+            <div>
+              <label title="Steps">Steps</label>
+              <input type="number" min="1" disabled={running}
+                     value={s.settings.steps ?? ''} placeholder="8"
+                     onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
+                       { settings: { steps: e.target.value === '' ? null : parseInt(e.target.value, 10) } }))} />
+            </div>
+            <div>
+              <label title="CFG Scale">CFG</label>
+              <input type="number" step="0.1" min="0" disabled={running}
+                     value={s.settings.cfg ?? ''} placeholder="1.0"
+                     onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
+                       { settings: { cfg: e.target.value === '' ? null : parseFloat(e.target.value) } }))} />
+            </div>
+            <div>
+              <label title="Sampler">Sampler</label>
+              <SamplerSelect value={s.settings.sampler} options={baseModels.samplers} disabled={running}
+                             onChange={(v) => call(() => api.patch(`/api/sessions/${id}`,
+                               { settings: { sampler: v } }))} />
+            </div>
+            <div>
+              <label title="Scheduler">Scheduler</label>
+              <SamplerSelect value={s.settings.scheduler} options={baseModels.schedulers} disabled={running}
+                             onChange={(v) => call(() => api.patch(`/api/sessions/${id}`,
+                               { settings: { scheduler: v } }))} />
+            </div>
           </div>
           {/* Offered, not applied: swapping the graph out from under a session
               because a dropdown moved is exactly the silent change the panel
@@ -958,47 +1585,51 @@ export default function SessionView({ id }) {
               want the session to drive it instead.
             </p>
           )}
-          {/* The arc, typed once: one wardrobe per line, in the order the shoot
-              passes through them. A composed run spreads them over its
-              photographs (`spread`), so three states over twelve photographs is
-              four photographs a state — and the wardrobe holds still inside a
-              stage, which is what makes two photographs of one stage two
-              photographs of one stage.
-              Written on blur and not on every keystroke: a PATCH per character
-              is a session row rewritten forty times while somebody types a
-              sentence. Empty is the session's one wardrobe in every
-              photograph. */}
-          {/* The outfit, and the arc it derives. Picking one writes the session's
-              own wardrobe too: a fill-cell sends no states and composes in
-              `session.wardrobe`, so leaving that pointing at an older outfit
-              would put two shoots in one session and file them under one cell. */}
-          <div style={{ marginTop: 10 }}>
-            <label title="An outfit from the wardrobe catalogue. Its garments come off in the order the outfit lists them, one per state, and the last state is bare.">
-              Outfit
-            </label>
-            <select value={s.settings?.outfit || ''} disabled={running}
-                    onChange={(e) => call(() => api.patch(`/api/sessions/${id}`, {
-                      settings: { outfit: e.target.value },
-                      wardrobe: statesFor(e.target.value)[0] || s.wardrobe,
-                    }))}>
-              <option value="">the session's own wardrobe</option>
-              {outfits().map((o) => (
-                <option key={o.key} value={o.key}>{o.label || o.key}</option>
-              ))}
-            </select>
-          </div>
-          <div style={{ marginTop: 10 }}>
-            <label title="One wardrobe per line, in order. A composed run spreads them over its photographs, so the shoot undresses without a writer. Empty: the session's wardrobe in every photograph.">
-              Wardrobe states ({wardrobeStates(s).length || "the session's"}
-              {!s.settings?.wardrobe_states?.length && s.settings?.outfit ? ', from the outfit' : ''})
-            </label>
-            <textarea rows={4} disabled={running} defaultValue={wardrobeStates(s).join('\n')}
-                      key={wardrobeStates(s).join('\n')}
-                      placeholder="She wears a black wool coat, and a grey jumper.&#10;She wears a grey jumper.&#10;She wears nothing at all."
-                      onBlur={(e) => call(() => api.patch(`/api/sessions/${id}`, {
-                        settings: { wardrobe_states: e.target.value.split('\n').filter((l) => l.trim()) },
-                      }))} />
-          </div>
+          {!isResource && (
+            <>
+              {/* The arc, typed once: one wardrobe per line, in the order the shoot
+                  passes through them. A composed run spreads them over its
+                  photographs (`spread`), so three states over twelve photographs is
+                  four photographs a state — and the wardrobe holds still inside a
+                  stage, which is what makes two photographs of one stage two
+                  photographs of one stage.
+                  Written on blur and not on every keystroke: a PATCH per character
+                  is a session row rewritten forty times while somebody types a
+                  sentence. Empty is the session's one wardrobe in every
+                  photograph. */}
+              {/* The outfit, and the arc it derives. Picking one writes the session's
+                  own wardrobe too: a fill-cell sends no states and composes in
+                  `session.wardrobe`, so leaving that pointing at an older outfit
+                  would put two shoots in one session and file them under one cell. */}
+              <div style={{ marginTop: 10 }}>
+                <label title="An outfit from the wardrobe catalogue. Its garments come off in the order the outfit lists them, one per state, and the last state is bare.">
+                  Outfit
+                </label>
+                <select value={s.settings?.outfit || ''} disabled={running}
+                        onChange={(e) => call(() => api.patch(`/api/sessions/${id}`, {
+                          settings: { outfit: e.target.value },
+                          wardrobe: statesFor(e.target.value)[0] || s.wardrobe,
+                        }))}>
+                  <option value="">the session's own wardrobe</option>
+                  {outfits().map((o) => (
+                    <option key={o.key} value={o.key}>{o.label || o.key}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <label title="One wardrobe per line, in order. A composed run spreads them over its photographs, so the shoot undresses without a writer. Empty: the session's wardrobe in every photograph.">
+                  Wardrobe states ({wardrobeStates(s).length || "the session's"}
+                  {!s.settings?.wardrobe_states?.length && s.settings?.outfit ? ', from the outfit' : ''})
+                </label>
+                <textarea rows={4} disabled={running} defaultValue={wardrobeStates(s).join('\n')}
+                          key={wardrobeStates(s).join('\n')}
+                          placeholder="She wears a black wool coat, and a grey jumper.&#10;She wears a grey jumper.&#10;She wears nothing at all."
+                          onBlur={(e) => call(() => api.patch(`/api/sessions/${id}`, {
+                            settings: { wardrobe_states: e.target.value.split('\n').filter((l) => l.trim()) },
+                          }))} />
+              </div>
+            </>
+          )}
           <p className="muted" style={{ marginBottom: 0 }}>
             Photos already shot keep the settings they were shot with. These apply to what runs next.
           </p>
@@ -1242,112 +1873,132 @@ export default function SessionView({ id }) {
         </div>
       )}
 
-      <div className="shots">
-        {shots.map((shot) => (
-          <div className={'shot' + (shot.rejected ? ' rejected' : '')
-                          + (anchors.includes(shot.id) ? ' is-anchor' : '')} key={shot.id}>
-            {shot.status === 'done'
-              ? <img src={shotImage(shot.id)} alt={shot.shot_label} loading="lazy" onClick={() => setZoom(shot)} />
-              : <div className="ph">
-                  {shot.status === 'running' ? '⏳ generating…'
-                    : shot.status === 'pending' ? '· queued'
-                      : `⚠ ${shot.error || shot.status}`}
-                  {shot.status === 'pending' && !!shot.use_reference && (
-                    <select className="guide" disabled={running}
-                            value={(shot.reference_shot_ids || [])[0] || ''}
-                            title="The photograph that guides this take. Follows the session's 📎 pick unless you name one here."
-                            onChange={(e) => guideWith(shot, e.target.value)}>
-                      <option value="">📎 session's pick</option>
-                      {s.shots.filter((x) => x.status === 'done').map((x) => (
-                        <option key={x.id} value={x.id}>{x.shot_label || `shot ${x.id}`}</option>
+      {(!isResource || (canPreparePlan({ plan, planRevision }) && activeStep === 'generation')) && (
+        <>
+          {shots.length > 0 ? (
+            <div className="shots">
+              {shots.map((shot) => (
+                <div className={'shot' + (shot.rejected ? ' rejected' : '')
+                                + (anchors.includes(shot.id) ? ' is-anchor' : '')} key={shot.id}>
+                  {shot.status === 'done'
+                    ? <img src={shotImage(shot.id)} alt={shot.shot_label} loading="lazy" onClick={() => setZoom(shot)} />
+                    : <div className="ph">
+                        {shot.status === 'running' ? '⏳ generating…'
+                          : shot.status === 'pending' ? '· queued'
+                            : `⚠ ${shot.error || shot.status}`}
+                        {shot.status === 'pending' && !!shot.use_reference && (
+                          <select className="guide" disabled={running}
+                                  value={(shot.reference_shot_ids || [])[0] || ''}
+                                  title="The photograph that guides this take. Follows the session's 📎 pick unless you name one here."
+                                  onChange={(e) => guideWith(shot, e.target.value)}>
+                            <option value="">📎 session's pick</option>
+                            {s.shots.filter((x) => x.status === 'done').map((x) => (
+                              <option key={x.id} value={x.id}>{x.shot_label || `shot ${x.id}`}</option>
+                            ))}
+                          </select>
+                        )}
+                      </div>}
+                  <div className="bar">
+                    <div className="stars">
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <span key={n} className={'star' + (shot.rating >= n ? ' on' : '')} onClick={() => rate(shot, n)}>★</span>
                       ))}
-                    </select>
-                  )}
-                </div>}
-            <div className="bar">
-              <div className="stars">
-                {[1, 2, 3, 4, 5].map((n) => (
-                  <span key={n} className={'star' + (shot.rating >= n ? ' on' : '')} onClick={() => rate(shot, n)}>★</span>
-                ))}
-              </div>
-              <span className="spacer" style={{ flex: 1 }} />
-              {shot.status === 'done' && (
-                <>
-                  <button className="icon" onClick={() => toggleAnchor(shot)}
-                          title={anchors.includes(shot.id)
-                            ? 'Stop using this photo as the reference'
-                            : 'Use as the reference — takes marked ref will edit this photo'}>
-                    {anchors.includes(shot.id) ? '📌' : '📎'}
-                  </button>
-                  {/* A native menu on purpose: a popover would need its own
-                      dismiss, focus and z-index for six items the browser
-                      already knows how to show. */}
-                  <select className="continue" value="" disabled={running}
-                          title="Continue with this photo — as the reference of this session, or of a new one"
-                          onChange={(e) => continueWith(shot, e.target.value)}>
-                    <option value="">→</option>
-                    <optgroup label="Continue here">
-                      {continuations.map(([k, spec]) => (
-                        <option key={k} value={`here:${k}`}>{spec.label}</option>
-                      ))}
-                    </optgroup>
-                    <optgroup label="In a new session">
-                      {continuations.map(([k, spec]) => (
-                        <option key={k} value={`new:${k}`}>{spec.label}…</option>
-                      ))}
-                    </optgroup>
-                  </select>
-                </>
-              )}
-              <button className="icon" title="More like this — same prompt, new seeds"
-                      onClick={() => moreLikeThis(shot)}>⟳</button>
-              <button className="icon"
-                      title={shot.use_reference
-                        ? 'Strength sweep — this prompt and seed at 1.0 / 1.5 / 2.0 / 3.0, so the only difference you see is the dial'
-                        : 'Tweak on this same seed — edit the prompt, compare the change'}
-                      onClick={() => reshootSameSeed(shot)}>⚖</button>
-              {shot.status === 'done' && (
-                <button className="icon"
-                        title="Reshoot — this photo is deleted and the take goes back in the queue with a new seed"
-                        onClick={() => {
-                          if (confirm(`Delete this photo and shoot "${shot.shot_label}" again?`)) {
-                            call(() => api.post(`/api/shots/${shot.id}/reshoot`))
-                          }
-                        }}>↺</button>
-              )}
-              <button className="icon" title={shot.rejected ? 'Restore' : 'Reject'}
-                      onClick={() => call(() => api.patch(`/api/shots/${shot.id}`, { rejected: !shot.rejected }))}>
-                {shot.rejected ? '↩' : '✕'}
-              </button>
-              {/* Delete, as opposed to Reject: the row and the file go, and
-                  nothing takes their place. The cell counts are NOT touched -
-                  a judged photograph stays counted after its row is gone, so
-                  the confirm says so rather than the button quietly corrupting
-                  a measurement. Reject is the one that takes a photograph out
-                  of a judging pass and leaves the evidence where it is. */}
-              <button className="icon" title="Delete this photo"
-                      onClick={() => {
-                        const judged = !!shot.verdicts
-                        if (confirm(judged
-                          ? 'This photo has already been judged and its answer stays counted in the cell. Delete it anyway?'
-                          : 'Delete this photo?')) {
-                          call(() => api.del(`/api/shots/${shot.id}`))
-                        }
-                      }}>🗑</button>
+                    </div>
+                    <span className="spacer" style={{ flex: 1 }} />
+                    {shot.status === 'done' && (
+                      <>
+                        <button className="icon" onClick={() => toggleAnchor(shot)}
+                                title={anchors.includes(shot.id)
+                                  ? 'Stop using this photo as the reference'
+                                  : 'Use as the reference — takes marked ref will edit this photo'}>
+                          {anchors.includes(shot.id) ? '📌' : '📎'}
+                        </button>
+                        {/* A native menu on purpose: a popover would need its own
+                            dismiss, focus and z-index for six items the browser
+                            already knows how to show. */}
+                        <select className="continue" value="" disabled={running}
+                                title="Continue with this photo — as the reference of this session, or of a new one"
+                                onChange={(e) => continueWith(shot, e.target.value)}>
+                          <option value="">→</option>
+                          <optgroup label="Continue here">
+                            {continuations.map(([k, spec]) => (
+                              <option key={k} value={`here:${k}`}>{spec.label}</option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="In a new session">
+                            {continuations.map(([k, spec]) => (
+                              <option key={k} value={`new:${k}`}>{spec.label}…</option>
+                            ))}
+                          </optgroup>
+                        </select>
+                      </>
+                    )}
+                    <button className="icon" title="More like this — same prompt, new seeds"
+                            onClick={() => moreLikeThis(shot)}>⟳</button>
+                    <button className="icon"
+                            title={shot.use_reference
+                              ? 'Strength sweep — this prompt and seed at 1.0 / 1.5 / 2.0 / 3.0, so the only difference you see is the dial'
+                              : 'Tweak on this same seed — edit the prompt, compare the change'}
+                            onClick={() => reshootSameSeed(shot)}>⚖</button>
+                    {shot.status === 'done' && (
+                      <button className="icon"
+                              title="Reshoot — this photo is deleted and the take goes back in the queue with a new seed"
+                              onClick={() => {
+                                if (confirm(`Delete this photo and shoot "${shot.shot_label}" again?`)) {
+                                  call(() => api.post(`/api/shots/${shot.id}/reshoot`))
+                                }
+                              }}>↺</button>
+                    )}
+                    <button className="icon" title={shot.rejected ? 'Restore' : 'Reject'}
+                            onClick={() => call(() => api.patch(`/api/shots/${shot.id}`, { rejected: !shot.rejected }))}>
+                      {shot.rejected ? '↩' : '✕'}
+                    </button>
+                    {/* Delete, as opposed to Reject: the row and the file go, and
+                        nothing takes their place. The cell counts are NOT touched -
+                        a judged photograph stays counted after its row is gone, so
+                        the confirm says so rather than the button quietly corrupting
+                        a measurement. Reject is the one that takes a photograph out
+                        of a judging pass and leaves the evidence where it is. */}
+                    <button className="icon" title="Delete this photo"
+                            onClick={() => {
+                              const judged = !!shot.verdicts
+                              if (confirm(judged
+                                ? 'This photo has already been judged and its answer stays counted in the cell. Delete it anyway?'
+                                : 'Delete this photo?')) {
+                                call(() => api.del(`/api/shots/${shot.id}`))
+                              }
+                            }}>🗑</button>
+                  </div>
+                  <div className="muted" style={{ padding: '0 6px 6px', fontSize: 11 }} title={shot.prompt}>
+                    {shot.shot_label} · seed {shot.seed}
+                    {/* Which photos the picked copy actually has a twin for: one that
+                        has not been shot there yet, or was reshot on a new seed, is
+                        not comparable and says so instead of opening a plain photo. */}
+                    {twin && (twinOf(shot)
+                      ? <span title={`Compares with ${shotWith(twin)}`}> · ⇄</span>
+                      : <span title="No twin in the session being compared — not shot yet, or reshot on another seed"> · —</span>)}
+                  </div>
+                </div>
+              ))}
             </div>
-            <div className="muted" style={{ padding: '0 6px 6px', fontSize: 11 }} title={shot.prompt}>
-              {shot.shot_label} · seed {shot.seed}
-              {/* Which photos the picked copy actually has a twin for: one that
-                  has not been shot there yet, or was reshot on a new seed, is
-                  not comparable and says so instead of opening a plain photo. */}
-              {twin && (twinOf(shot)
-                ? <span title={`Compares with ${shotWith(twin)}`}> · ⇄</span>
-                : <span title="No twin in the session being compared — not shot yet, or reshot on another seed"> · —</span>)}
+          ) : (
+            <div className={isResource ? 'panel' : ''} style={isResource ? { textAlign: 'center', padding: '32px 16px', margin: '14px 0' } : undefined}>
+              <p className="muted" style={{ margin: isResource ? '0 0 6px' : undefined }}>
+                {isResource && s.shots.length === 0
+                  ? 'No photos have been generated for this session yet.'
+                  : 'Nothing to show with this filter.'}
+              </p>
+              {isResource && s.shots.length === 0 && (
+                <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                  {pending > 0
+                    ? 'Click Run in the top bar to start shooting.'
+                    : 'Complete preparation and review. Takes must be materialized as pending shots before running.'}
+                </p>
+              )}
             </div>
-          </div>
-        ))}
-      </div>
-      {!shots.length && <p className="muted">Nothing to show with this filter.</p>}
+          )}
+        </>
+      )}
 
       {zoom && (
         <div className="lightbox" onClick={() => setZoom(null)}>

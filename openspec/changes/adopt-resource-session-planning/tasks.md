@@ -243,7 +243,7 @@
 ## 5. Session workflow in the interface
 
 - [x] 5.1 Add a resource browser and import preview with filters, readiness, field roles and a start-session action; verify every inventory outcome is visible and an accepted mapped resource can start a draft without scripts.
-- [ ] 5.2 Reorder new-session preparation around character, scene/constants, takes and review, reusing current profiles and advanced settings; verify the resource path needs no visit to Catalogue or Judge.
+- [x] 5.2 Reorder new-session preparation around character, scene/constants, takes and review, reusing current profiles and advanced settings; verify the resource path needs no visit to Catalogue or Judge.
 - [ ] 5.3 Add wardrobe scope controls and inherited-state display for ordered takes; verify UI changes save the same explicit events the backend resolves and reordering shows required re-preparation.
 - [ ] 5.4 Add per-take prompt/provenance review, conflict resolution, resume and selected-take test generation; verify stale review cannot submit and double-click/network retry does not duplicate shots.
 
