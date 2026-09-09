@@ -3,6 +3,7 @@
   "comfy_output_dir": "",
   "lora_dir": "",
   "data_dir": "data",
+  "resource_planning_enabled": true,
   "room_word_budget": 200,
   "llm_url": "",
   "llm_model": "",

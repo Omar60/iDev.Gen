@@ -123,6 +123,24 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
   session draft bound to an explicitly chosen character model, with no CLI or
   external scripts needed.
 
+### Database backup and operational rollback
+
+Before migrations or schema upgrades, create a verified WAL-consistent snapshot of the SQLite database:
+
+```bash
+python scripts/backup_db.py
+# or specify an explicit target:
+python scripts/backup_db.py -o data/backups/manual-backup.db
+```
+
+The backup utility uses SQLite's online backup API, validates schema integrity (`PRAGMA integrity_check`), and writes atomically. Note that database backups store database records and metadata; session images live in `<data folder>/sessions/`.
+
+To operationally disable the resource planning feature without destructive schema rollbacks:
+- Set `"resource_planning_enabled": false` in `config.json`, or export `IDEVGEN_RESOURCE_PLANNING_ENABLED=0`.
+- All legacy sessions, resource revisions, plan history, and finished shots remain fully readable and intact.
+- Persistent writes and draft preparations in `resource-v1` mode are cleanly refused with HTTP 503.
+- Re-enabling the flag (`true` or `1`) restores write capabilities immediately without data loss.
+
 ## Library
 
 Sessions are reachable through the model that owns them — **Library** lists

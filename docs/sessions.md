@@ -1502,6 +1502,36 @@ Unlike legacy sessions which expand shots immediately upon creation, a
   revision (e.g. missing required English translations) cannot start a draft,
   and its specific blocking reasons are shown in the interface.
 
+### Operational rollback and disabling resource mode
+
+To disable resource-based session planning without running a destructive database downgrade:
+- Set `"resource_planning_enabled": false` in `config.json` (or set environment variable `IDEVGEN_RESOURCE_PLANNING_ENABLED=0`).
+- When disabled:
+  - All existing legacy sessions, resource libraries, immutable revisions, session plans, and finished photographs remain intact and fully inspectable.
+  - Read-only endpoints (`GET /api/sessions/{sid}/plan`, revision queries, and draft inspections) continue serving historical state.
+  - Creating new `resource-v1` sessions, cloning into `resource-v1`, saving plan drafts, or preparing new takes returns HTTP 503 (`Resource planning is disabled by configuration`).
+  - No destructive downgrade or schema dropping runs automatically. The schema additions remain purely additive.
+  - Setting `"resource_planning_enabled": true` (or removing the override) re-enables resource planning immediately with all prior work preserved.
+
+### Database backups
+
+Before performing schema updates or major configuration changes, back up the SQLite database using:
+
+```bash
+python scripts/backup_db.py
+```
+
+The script accepts optional arguments:
+- `--target` or `-o <path>`: explicit target destination (defaults to `<data_dir>/backups/idevgen-backup-<timestamp>.db`).
+- `--force` or `-f`: overwrite an existing destination file.
+- `--config <path>`: path to `config.json`.
+- `--data-dir <path>`: path to database directory.
+- `--json`: emit JSON summary with source, target, size in bytes, and timestamp.
+
+The backup utility uses SQLite's online backup API (`sqlite3.Connection.backup()`), ensuring WAL transactions are safely flushed into a consistent, verified snapshot (`PRAGMA integrity_check`).
+
+Database backups copy the SQLite database file only (models, sessions, shot metadata, catalogue evidence, resource revisions, and draft plans). Rendered image files reside in `<data folder>/sessions/<session id>/` and are managed on the filesystem.
+
 ## Component Catalogue & Judging
 
 iDev.Gen manages prompt components across three slots (**camera**, **act**, **framing**) and three manners (**directed**, **candid**, **selfie**).

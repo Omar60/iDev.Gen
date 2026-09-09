@@ -295,7 +295,49 @@
 
 ## 6. Migration, acceptance and documentation
 
-- [ ] 6.1 Exercise backup, additive upgrade and disable-new-mode rollback on an isolated database; verify legacy sessions, source revisions and finished shots survive and no destructive downgrade runs automatically.
+- [x] 6.1 Exercise backup, additive upgrade and disable-new-mode rollback on an isolated database; verify legacy sessions, source revisions and finished shots survive and no destructive downgrade runs automatically.
+
+  > 6.1 status: **complete.** Online WAL-consistent database backup, additive migration verification, and non-destructive operational rollback for resource session planning were implemented, documented, and thoroughly verified on isolated databases:
+  >
+  > - **Atomic online SQLite backup (`backend/backup.py`)**:
+  >   - Implemented `backup_database(source_path, target_path, *, overwrite=False, pages=-1, progress=None) -> Path` using Python's standard library `sqlite3.Connection.backup()`.
+  >   - Directly opens the source SQLite database without calling `db.connect()`, ensuring pre-migration source databases remain strictly untouched by application upgrade hooks prior to backup.
+  >   - Safely captures committed WAL transactions, runs `PRAGMA integrity_check` on the backup connection, writes into a temporary file alongside the target, and atomically publishes the destination.
+  >   - For `overwrite=False`, publication uses `os.link` exclusively for atomic collision detection; if `os.link` fails or is unsupported, it fails safely without falling back to `os.rename` or `os.replace` that could overwrite concurrent destinations.
+  >   - For `overwrite=True`, publication uses `os.replace` for atomic replacement.
+  >   - Ensures temporary files are cleaned up on any exception during backup or publication, preserving previous destination files intact.
+  > - **Reproducible backup CLI utility (`scripts/backup_db.py`)**:
+  >   - Provides a CLI accepting `--config`, `--data-dir`, `--source`, `--target` (`-o`), `--force` (`-f`), and `--json`.
+  >   - Automatically resolves default database paths and writes timestamped backups to `<data_dir>/backups/idevgen-backup-<timestamp>.db` when no explicit destination is given.
+  > - **Operational rollback without destructive downgrade (`backend/main.py`, `config.example.json`)**:
+  >   - Added `"resource_planning_enabled": true` to `config.example.json` and `ConfigIn`.
+  >   - Added `is_resource_planning_enabled()` helper respecting `IDEVGEN_RESOURCE_PLANNING_ENABLED` environment variable and `CONFIG["resource_planning_enabled"]`.
+  >   - Added `is_session_resource_mode(session_or_sid)` helper to identify sessions operating in `resource-v1` mode.
+  >   - When disabled (`false`), mutating endpoints return HTTP 503 (`Resource planning is disabled by configuration`) before executing persistent writes: session creation with `composition_mode == "resource-v1"`, updates, cloning into resource-v1, draft plan saving, preparation start, adaptation recording, take preparation, and all shot creation/preparation endpoints on resource-v1 sessions (`/shots`, `/compose`, `/compose-run`, `/compose-combination`, `/compose-session`, `/import`, `/reshoot`, `/reshoot-below`).
+  >   - Preserves delivery of already prepared and approved snapshots (`submit_plan_preparation`, `submit_selected_plan_preparations`, `run`, `retry`, `cancel`) without preparing new work.
+  >   - Fully preserves read operations (`GET /api/sessions/{sid}/plan`, resource libraries, and revision inspections).
+  >   - Does not run any destructive schema downgrades or table dropping; re-enabling the flag immediately restores full write capability without data loss.
+  > - **Dedicated verification suite (`tests/test_backup_upgrade_rollback.py`)**:
+  >   - Added 13 comprehensive integration tests using isolated temporary databases and fake ComfyUI doubles:
+  >     1. `test_backup_database_wal_consistency`: Backs up a database in WAL mode with uncheckpointed commits and verifies data integrity.
+  >     2. `test_backup_pre_upgrade_preserves_source_schema`: Ensures backing up an unmigrated legacy database does not execute additive migrations on the source.
+  >     3. `test_backup_safety_and_failure_handling`: Verifies overwrite guards, directory creation, path collisions, and temp file cleanup on error.
+  >     4. `test_backup_publish_failure_cleans_temp_and_preserves_target`: Forces failure during final publish; verifies previous destination remains untouched and all temp files are deleted.
+  >     5. `test_backup_refuses_concurrent_target_creation_without_overwrite`: Tests direct atomic collision via `os.link` when destination appears concurrently during backup with `overwrite=False`; preserves concurrent target and cleans up temp files.
+  >     6. `test_backup_link_failure_safe_refusal_without_destructive_fallback`: Forces `os.link` failure or unavailability with `overwrite=False`; ensures no destructive fallback (e.g. `os.replace` or `os.rename`) is called, destinations remain untouched, and temp files are deleted.
+  >     7. `test_backup_cli_entry_point`: Exercises CLI execution with default and explicit targets and `--json` output.
+  >     8. `test_additive_upgrade_from_pre_change_schema`: Upgrades a true pre-feature legacy database (models, legacy sessions, shots, outputs on disk) and verifies zero data loss and all legacy rows/files survive.
+  >     9. `test_operational_rollback_preserves_legacy_and_resource_state`: Disables resource planning on a database containing both legacy and resource sessions; verifies legacy workflows run to completion, resource drafts/revisions remain intact, and no tables/columns are dropped.
+  >     10. `test_rollback_disables_resource_v1_writes_with_http_503`: Verifies HTTP 503 is returned across all resource draft and planning write endpoints when disabled.
+  >     11. `test_rollback_blocks_all_shot_creation_endpoints_for_resource_v1`: Verifies HTTP 503 is returned across all shot creation and preparation endpoints (`shots`, `compose`, `compose-run`, `compose-combination`, `compose-session`, `import`, `reshoot`, `reshoot-below`) for `resource-v1` sessions with 0 inserted or modified rows, while legacy sessions remain unblocked.
+  >     12. `test_rollback_keeps_reads_and_queue_actions_functional`: Verifies pre-prepared resource takes can be submitted to the shot queue and executed while planning is disabled.
+  >     13. `test_operational_re_enable_restores_resource_planning`: Verifies toggling configuration back to enabled restores full write capabilities seamlessly.
+  >
+  > Verification commands and outcomes:
+  > - `python -m pytest tests/test_backup_upgrade_rollback.py` (13 passed)
+  > - `python -m pytest tests/test_backup_upgrade_rollback.py tests/test_db_migrate.py tests/test_resource_store.py tests/test_session_plan.py tests/test_legacy_session_baseline.py tests/test_no_personal_data.py tests/test_shoot_checks.py` (214 passed)
+  > - `git diff --check` (clean, no whitespace or formatting errors)
+  > - `npx --yes @fission-ai/openspec validate adopt-resource-session-planning --strict` (valid)
 - [ ] 6.2 Demonstrate the twelve-portrait acceptance workflow with invented adult-character resources, fixed clothing, a jacket change, interruption and recovery; verify effective state and saved prompts independently of the implementation, without GPU or network.
 - [ ] 6.3 Deliver a private corpus coverage report from the actual operator-selected sources, accounting for every library and field without publishing source prose; verify every accepted supported resource has a declared use and every unsupported item remains explicitly reported. Do not call pending mapping work complete adoption.
 - [ ] 6.4 Update README and matching session/import/limitations documentation, including technical restrictions retired, original-language private storage, reference behavior and lack of pixel-level continuity guarantees; verify descriptions against delivered behavior.

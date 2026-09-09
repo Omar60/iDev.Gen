@@ -451,6 +451,42 @@ class ConfigIn(BaseModel):
     # has - and it stays a tripwire for an absurd input rather than a
     # constraint, because a refusal beats a silent truncation.
     room_word_budget: int = ROOM_WORD_BUDGET
+    # Rollback and operational flag (task 6.1): when False, disables
+    # creation, cloning into, transition to, plan saving, and preparation
+    # of resource-v1 sessions while preserving all existing tables, drafts,
+    # snapshots, and read endpoints. Absent/omitted defaults to True.
+    resource_planning_enabled: bool = True
+
+
+def is_resource_planning_enabled() -> bool:
+    """Return whether resource-v1 planning and preparation are enabled.
+
+    Controlled via the local config key ``resource_planning_enabled`` or the
+    ``IDEVGEN_RESOURCE_PLANNING_ENABLED`` environment variable override.
+    Absence in configuration defaults to True (enabled). When disabled (False),
+    new resource-v1 session creation, cloning into resource-v1, mode transition,
+    plan saving, and take preparations are refused with HTTP 503 before any write.
+    """
+    env_override = os.environ.get("IDEVGEN_RESOURCE_PLANNING_ENABLED")
+    if env_override is not None:
+        return env_override.strip().lower() not in ("0", "false", "no", "off")
+    return bool(CONFIG.get("resource_planning_enabled", True))
+
+
+def is_session_resource_mode(session_or_sid: int | dict) -> bool:
+    """Return True if the given session dict or session ID has resource-v1 composition mode."""
+    if isinstance(session_or_sid, (int, str)):
+        row = db.one("SELECT settings FROM session WHERE id=?", int(session_or_sid))
+        if not row:
+            return False
+        settings = row["settings"]
+    elif isinstance(session_or_sid, dict):
+        settings = session_or_sid.get("settings")
+    else:
+        return False
+    if isinstance(settings, dict):
+        return settings.get("composition_mode") == session_plan.MODE_RESOURCE_V1
+    return session_plan.read_composition_mode(settings) == session_plan.MODE_RESOURCE_V1
 
 
 # ------------------------------------------------------------------ setup
@@ -1575,6 +1611,8 @@ def create_session(s: SessionIn):
             f"composition_mode must be one of {sorted(VALID_COMPOSITION_MODES)}, "
             f"got {s.composition_mode!r}",
         )
+    if s.composition_mode == session_plan.MODE_RESOURCE_V1 and not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     # Reserved-field guard: `composition_mode` lives on the top-level
     # SessionIn field, not in the free-form `settings` dict. A
     # payload that injects it through `settings` would otherwise set
@@ -1733,6 +1771,8 @@ def update_session(sid: int, p: SessionPatch):
                 f"composition_mode must be one of {sorted(VALID_COMPOSITION_MODES)}, "
                 f"got {p.composition_mode!r}",
             )
+        if p.composition_mode == session_plan.MODE_RESOURCE_V1 and not is_resource_planning_enabled():
+            raise HTTPException(503, "Resource planning is disabled by configuration")
         # Switching the mode of a session that already carries a
         # resource-v1 plan would orphan that plan, so the route refuses
         # the change rather than rewriting it silently. A legacy
@@ -1877,6 +1917,8 @@ def _prepared_take_http_error(exc: Exception) -> HTTPException:
 @app.post("/api/sessions/{sid}/plan/preparations/begin")
 def begin_plan_preparation(sid: int, p: PreparedTakeBeginIn):
     """Persist a resumable pending marker before lengthy preparation work."""
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     try:
         return session_plan.begin_preparation(
             sid, p.plan_revision, p.take_id,
@@ -1895,6 +1937,8 @@ def begin_plan_preparation(sid: int, p: PreparedTakeBeginIn):
 @app.post("/api/sessions/{sid}/plan/preparations/complete")
 def complete_plan_preparation(sid: int, p: PreparedTakeCompleteIn):
     """Atomically finalize one pending preparation snapshot as ready."""
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     try:
         return session_plan.complete_preparation(
             sid,
@@ -2084,6 +2128,8 @@ def get_plan_review(sid: int, plan_revision: int | None = None):
 @app.post("/api/sessions/{sid}/plan/takes/{take_id}/adaptations")
 def record_take_adaptation_endpoint(sid: int, take_id: str, p: TakeAdaptationIn):
     """Persist a reviewed adaptation for take_id bound to this revision."""
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
     if row is None:
         raise HTTPException(404, f"session {sid} not found")
@@ -2114,6 +2160,8 @@ def record_take_adaptation_endpoint(sid: int, take_id: str, p: TakeAdaptationIn)
 @app.post("/api/sessions/{sid}/plan/takes/{take_id}/prepare")
 def prepare_take_endpoint(sid: int, take_id: str, p: TakePrepareIn):
     """Finalize take preparation via resource_preparation into a ready snapshot."""
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
     if row is None:
         raise HTTPException(404, f"session {sid} not found")
@@ -2148,6 +2196,8 @@ def prepare_take_endpoint(sid: int, take_id: str, p: TakePrepareIn):
 @app.post("/api/sessions/{sid}/plan/preparations/prepare")
 def prepare_plan_takes_endpoint(sid: int, p: PlanPreparationsPrepareIn):
     """Finalize take preparations for selected takes or all incomplete takes."""
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
     if row is None:
         raise HTTPException(404, f"session {sid} not found")
@@ -2228,6 +2278,8 @@ class PlanReviewApproveIn(BaseModel):
 @app.post("/api/sessions/{sid}/plan/approve")
 def approve_plan_review_endpoint(sid: int, p: PlanReviewApproveIn):
     """Authoritatively record approval of the current plan revision review."""
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     row = db.one("SELECT id, settings FROM session WHERE id=?", sid)
     if row is None:
         raise HTTPException(404, f"session {sid} not found")
@@ -2300,6 +2352,8 @@ def save_plan_draft(sid: int, p: PlanDraftIn):
         and is NOT carried in the plan, in any provenance
         field, or in the session row.
     """
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     try:
         result = session_plan.save_draft(
             sid, p.plan, p.expected_revision,
@@ -2425,6 +2479,9 @@ def clone_session(sid: int, c: SessionClone):
     if not src:
         raise HTTPException(404, "session not found")
     settings = {**json.loads(src["settings"] or "{}"), **c.settings}
+    target_mode = settings.get("composition_mode") or ""
+    if target_mode == session_plan.MODE_RESOURCE_V1 and not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     # Which shoot this is a copy of, so the gallery can put the two side by side.
     # Always the *root*: a clone of a clone joins the same family rather than
     # starting a chain nothing walks, and comparing is then one flat query.
@@ -2524,6 +2581,8 @@ def add_shots(sid: int, payload: dict):
     session = db.one("SELECT * FROM session WHERE id=?", sid)
     if not session:
         raise HTTPException(404, "session not found")
+    if is_session_resource_mode(session) and not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     model = db.one("SELECT * FROM model WHERE id=?", session["model_id"])
     shots = [ShotIn(**item) for item in payload.get("shots", [])]
     added = _expand_shots(sid, model,
@@ -2576,6 +2635,8 @@ def compose_shot_endpoint(sid: int, c: ComposeIn):
     session = db.one("SELECT * FROM session WHERE id=?", sid)
     if not session:
         raise HTTPException(404, "session not found")
+    if is_session_resource_mode(session) and not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
 
     # The cell table is the only home for "is this trio drawable
     # for this session". A session that has no manner or no
@@ -3170,6 +3231,11 @@ def compose_run_endpoint(sid: int, c: ComposeRunIn):
     the post-draw step (3.5 adds `_skip_for_spread` as the
     caller's skip predicate, 3.3 passes no skip).
     """
+    session = db.one("SELECT * FROM session WHERE id=?", sid)
+    if not session:
+        raise HTTPException(404, "session not found")
+    if is_session_resource_mode(session) and not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     by_key, best_chosen = _draw_n_trio_shots(sid, c.count, c.candidates, mode=c.mode,
                                              mute_wardrobe=c.mute_wardrobe,
                                              extras=c.extras, wardrobes=c.wardrobes,
@@ -3272,6 +3338,8 @@ def compose_combination_endpoint(sid: int, c: ComposeCombinationIn):
     session = db.one("SELECT * FROM session WHERE id=?", sid)
     if not session:
         raise HTTPException(404, "session not found")
+    if is_session_resource_mode(session) and not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
 
     key = (c.identifier or "").strip()
     combination = load_mined_combinations(config=CONFIG, data_dir=DATA_DIR).get(key)
@@ -4241,6 +4309,11 @@ def compose_session_endpoint(sid: int, c: ComposeSessionIn):
     # defensive (it is unreachable on the 3.5 path with the
     # skip in place, but the function keeps the assertion
     # for a future caller that drops the skip).
+    session = db.one("SELECT * FROM session WHERE id=?", sid)
+    if not session:
+        raise HTTPException(404, "session not found")
+    if is_session_resource_mode(session) and not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     by_key, best_chosen = _draw_n_trio_shots(
         sid, c.count, c.candidates, mode=c.mode, skip=_skip_for_spread,
         mute_wardrobe=c.mute_wardrobe, extras=c.extras, wardrobes=c.wardrobes,
@@ -4623,8 +4696,11 @@ async def import_photo(sid: int, request: Request, label: str = "", from_shot: i
     uploading it straight back. The copy is deliberate: the two sessions own
     their files, and deleting either one must not blank the other's gallery.
     """
-    if not db.one("SELECT id FROM session WHERE id=?", sid):
+    session = db.one("SELECT * FROM session WHERE id=?", sid)
+    if not session:
         raise HTTPException(404, "session not found")
+    if is_session_resource_mode(session) and not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
 
     if from_shot:
         src = db.one("SELECT * FROM shot WHERE id=?", from_shot)
@@ -5743,6 +5819,10 @@ def reshoot_shot(shot_id: int):
     # `_valid_anchors` refuses to point at one — so this is refused here rather
     # than left to surface once the queue has already started.
     session = db.one("SELECT * FROM session WHERE id=?", shot["session_id"])
+    if not session:
+        raise HTTPException(404, "session not found")
+    if is_session_resource_mode(session) and not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     if shot_id in json.loads(session["anchor_shot_ids"] or "[]"):
         raise HTTPException(409, (
             "this photo is the session's reference — the takes that edit it would have "
@@ -5789,6 +5869,8 @@ def reshoot_below(sid: int, min_rating: int):
     session = db.one("SELECT * FROM session WHERE id=?", sid)
     if not session:
         raise HTTPException(404, "session not found")
+    if is_session_resource_mode(session) and not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     anchors = set(json.loads(session["anchor_shot_ids"] or "[]"))
     # `rating < min_rating` catches rating 0 (unrated) and every numeric value
     # below the threshold — both are candidates by the spec, because refusing
