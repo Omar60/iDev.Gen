@@ -1,12 +1,12 @@
 ## Purpose
 
-Make resource ingestion and `resource-v1` session authoring understandable to a normal user by making local file selection and automatic take preparation the default while retaining exact resource provenance, expert controls and explicit generation authorization.
+Make resource ingestion and `resource-v1` session authoring understandable to a normal user by making local file selection and guided take preparation the default while retaining exact resource provenance, first-class manual authoring, optional assistant automation, expert controls and explicit generation authorization.
 
 ## ADDED Requirements
 
 ### Requirement: Normal resource import uses browser-selected files
 
-The application SHALL let a user select one or more local JSON resource files through the browser and preview them without typing a filesystem path that the backend must open. Browser-provided file names SHALL be treated as metadata, not trusted client filesystem paths. The selected content SHALL cross a server-controlled boundary that preserves the exact bytes or equivalent canonical content used for preview and commit.
+The application SHALL let a user select one or more local JSON resource files through the browser and preview them without typing a filesystem path that the backend must open. Browser-provided file names SHALL be treated as metadata, not trusted client filesystem paths. The selected content SHALL cross a server-controlled boundary that preserves the exact bytes or equivalent canonical content used for preview and commit. Physical server staging paths SHALL remain private implementation state and SHALL NOT be required or exposed in the browser-facing flow.
 
 #### Scenario: User selects resource files
 - **WHEN** a user chooses one or more supported JSON files with the normal import control
@@ -41,7 +41,7 @@ The application SHALL derive a candidate library identity for browser-selected r
 
 ### Requirement: Simplified import preserves preview and atomic commit guarantees
 
-The normal import UI SHALL present preview and commit as one user workflow while preserving the existing two-phase integrity boundary. Changing any preview-affecting input SHALL invalidate the prior preview. The primary summary SHALL describe user-relevant outcomes, while exact outcome classifications and technical identifiers remain inspectable.
+The normal import UI SHALL present preview and commit as one user workflow while preserving the existing two-phase integrity boundary. Changing any preview-affecting input SHALL invalidate the prior preview. The primary summary SHALL describe user-relevant outcomes, while exact outcome classifications and safe technical identifiers remain inspectable.
 
 #### Scenario: Valid selection is previewed
 - **WHEN** selected files pass parsing and identity checks
@@ -55,11 +55,12 @@ The normal import UI SHALL present preview and commit as one user workflow while
 
 #### Scenario: User requests technical details
 - **WHEN** a user expands import diagnostics
-- **THEN** the full canonical report remains available including unresolved items and safe revision identifiers
+- **THEN** the full safe canonical report remains available including unresolved items and safe revision identifiers
+- **AND** private server staging paths remain undisclosed
 
 ### Requirement: Translation maps can be selected as local files
 
-The normal Resources UI SHALL allow a user to select a local JSON translation map without typing a backend-visible map path. Translation preview and apply SHALL remain bound to the selected map content and current library state using the translation contract's existing validation and stale-preview protections.
+The normal Resources UI SHALL allow a user to select a local JSON translation map without typing a backend-visible map path. The selected JSON SHALL use the existing direct `translation_map` content contract. Translation preview and apply SHALL remain bound to the selected normalized map content and current library state using the translation contract's existing validation, canonical map digest, attestation and stale-preview protections.
 
 #### Scenario: User selects a translation map
 - **WHEN** a user chooses a supported translation-map JSON file for an imported library
@@ -72,12 +73,19 @@ The normal Resources UI SHALL allow a user to select a local JSON translation ma
 
 ### Requirement: Resource session creation requests high-level intent
 
-The normal `resource-v1` creation flow SHALL let a user define a session using a character model, ready resource selection, requested take count, optional session brief, applicable constant look/wardrobe choices and a variation policy. It SHALL NOT require the user to manually author camera, framing, pose or expression for every take before the session can be prepared automatically.
+The normal `resource-v1` creation flow SHALL let a user define a session using a character model, one ready scene anchor, requested take count, optional session brief, applicable constant look/wardrobe choices, a variation policy and an explicit authoring mode of `automatic` or `manual`. Session creation SHALL NOT require a configured prompt assistant.
 
-#### Scenario: User creates a twelve-take resource session
-- **WHEN** a user selects a character and ready resource, requests twelve takes and leaves automatic creative variation enabled
-- **THEN** the system creates a persisted resource draft containing twelve stable take IDs
+Both authoring modes SHALL create the same persisted `resource-v1` draft, exact scene anchor, requested stable take IDs, plan-CAS state and eventual review/generation path. Automatic mode MAY fill unlocked camera, framing, pose and expression through the configured assistant. Manual mode SHALL make no assistant call and SHALL let the user fill the same closed take-choice fields directly.
+
+#### Scenario: User creates a twelve-take automatic resource session
+- **WHEN** a user selects a character and ready scene anchor, requests twelve takes and chooses automatic authoring
+- **THEN** the system creates a persisted resource draft containing twelve stable take IDs before assistant work
 - **AND** the user is not required to type twelve sets of camera, framing, pose and expression values
+
+#### Scenario: User creates a twelve-take manual resource session
+- **WHEN** a user selects a character and ready scene anchor, requests twelve takes and chooses manual authoring
+- **THEN** the system creates the same persisted twelve-take resource draft without calling an assistant
+- **AND** the user may fill camera, framing, pose and expression manually for each take before deterministic preparation
 
 #### Scenario: User fixes one creative dimension
 - **WHEN** the variation policy marks a creative dimension as fixed
@@ -86,7 +94,7 @@ The normal `resource-v1` creation flow SHALL let a user define a session using a
 
 ### Requirement: Automatic authoring fills only unlocked take choices
 
-When a configured prompt assistant is available, the application SHALL automatically fill unlocked take-level descriptive choices only from the closed set `camera`, `framing`, `pose` and `expression`. Assistant output SHALL pass through the resource preparation contract's validation before finalization and SHALL NOT overwrite fixed character identity, look, initial wardrobe, effective wardrobe, resource selection, adaptations or already locked take choices.
+When automatic authoring is selected and a configured prompt assistant is available, the application SHALL fill unlocked take-level descriptive choices only from the closed set `camera`, `framing`, `pose` and `expression`. Assistant output SHALL pass through the resource preparation contract's validation before finalization and SHALL NOT overwrite fixed character identity, look, initial wardrobe, effective wardrobe, resource selection, scene anchor, adaptations or already locked take choices.
 
 #### Scenario: All four creative choices are unlocked
 - **WHEN** automatic preparation runs for a take with camera, framing, pose and expression unlocked
@@ -105,7 +113,7 @@ When a configured prompt assistant is available, the application SHALL automatic
 
 ### Requirement: Automatic authoring records assistant provenance
 
-Assistant-authored take choices SHALL retain the existing resource writer synthesis provenance semantics, including the bounded writer input, validated writer output and synthesis kind. Automatically generated values SHALL NOT be persisted as if the user manually entered them solely to bypass the assistant provenance contract.
+Assistant-authored take choices SHALL retain the existing resource writer synthesis provenance semantics, including the bounded writer input, persisted continuity context, validated writer output and synthesis kind. Automatically generated values SHALL NOT be persisted as if the user manually entered them solely to bypass the assistant provenance contract.
 
 #### Scenario: Assistant successfully fills a take
 - **WHEN** automatic authoring supplies valid values for an incomplete take
@@ -119,7 +127,7 @@ Assistant-authored take choices SHALL retain the existing resource writer synthe
 
 ### Requirement: Automatic preparation is recoverable
 
-The application SHALL persist the resource draft before lengthy assistant work and SHALL retain each successfully completed prepared take independently. Retrying after interruption SHALL resume only work that is incomplete or invalidated for the current authoritative plan revision.
+The application SHALL persist the resource draft and authoring intent before lengthy assistant work and SHALL retain each successfully completed prepared take independently. Retrying after interruption SHALL resume only work that is incomplete or invalidated for the current authoritative plan revision.
 
 #### Scenario: Authoring is interrupted after three takes
 - **WHEN** a twelve-take automatic preparation stops after three takes are completed
@@ -131,45 +139,59 @@ The application SHALL persist the resource draft before lengthy assistant work a
 - **THEN** stale authoring work cannot overwrite the newer plan
 - **AND** existing plan revision and invalidation rules determine which preparations remain valid
 
-### Requirement: Generated take choices are reviewable without mandatory raw editing
+### Requirement: Effective take choices are reviewable without mandatory raw editing
 
-The normal Takes and Review surfaces SHALL show the effective camera, framing, pose and expression produced for each prepared take. Raw per-field editing SHALL be available as an advanced override rather than four mandatory blank inputs in the primary workflow.
+The normal Takes and Review surfaces SHALL show the effective camera, framing, pose and expression for each prepared take. In automatic mode those values may be synthesized. In manual mode they are supplied explicitly by the user. Raw per-field editing SHALL remain available for manual authoring and explicit overrides without changing the authoritative preparation/review semantics.
 
 #### Scenario: Automatic preparation completes
 - **WHEN** synthesized takes are available
 - **THEN** the user can review each take's effective creative choices before generation without entering edit mode
 
+#### Scenario: Manual take is completed
+- **WHEN** the user supplies the required take choices in manual authoring mode and prepares the take
+- **THEN** the same effective choice summary and review path are used without any assistant provenance or assistant call
+
 #### Scenario: User overrides a generated choice
-- **WHEN** a user opens advanced editing and changes a generated take choice
+- **WHEN** a user opens editing and changes a generated take choice
 - **THEN** the explicit value is saved through the authoritative session plan
 - **AND** affected preparation/review state is invalidated according to existing resource-plan rules before the changed take can be generated
 
-### Requirement: Manual completion remains a fallback
+### Requirement: Manual authoring is a first-class no-LLM path
 
-The application SHALL remain usable for resource sessions when no prompt assistant is configured. In that condition automatic authoring SHALL report that it is unavailable, while advanced manual completion SHALL continue to support the same closed take-level descriptive choices and deterministic preparation.
+The application SHALL support complete `resource-v1` session creation, take editing, deterministic preparation, review, submission and generation with no configured prompt assistant. Manual authoring SHALL use the same resource revisions, scene continuity, fixed-state validation, CAS revisions, conflict handling and generation gates as automatic authoring. Assistant availability SHALL affect synthesis convenience only, not resource-session capability.
 
 #### Scenario: No assistant is configured
-- **WHEN** a user creates or opens a resource draft on a system without a configured prompt assistant
-- **THEN** automatic authoring is unavailable with a readable reason
-- **AND** the user may complete required take choices manually without changing session mode
+- **WHEN** a user creates or opens a manual resource draft on a system without a configured prompt assistant
+- **THEN** the session remains fully usable through manual take completion, preparation, review and generation
+- **AND** no assistant configuration is requested as a prerequisite for those operations
 
-### Requirement: Automatic authoring does not authorize generation
+#### Scenario: Automatic mode lacks an assistant
+- **WHEN** a draft is in automatic authoring mode but no assistant is configured
+- **THEN** automatic synthesis is unavailable with a readable reason
+- **AND** the draft remains valid and may be switched explicitly to manual authoring without creating a different session type
 
-Automatic session authoring and preparation SHALL stop at review. It SHALL NOT automatically approve the current plan revision, submit prepared takes, create implicit generation authorization or start the session runner. Existing conflict, workflow, review and pending-shot gates remain authoritative.
+### Requirement: Authoring does not authorize generation
 
-#### Scenario: All requested takes are prepared successfully
+Automatic or manual session authoring and preparation SHALL stop at review. Neither mode SHALL automatically approve the current plan revision, submit prepared takes, create implicit generation authorization or start the session runner. Existing conflict, workflow, review and pending-shot gates remain authoritative.
+
+#### Scenario: All requested automatic takes are prepared successfully
 - **WHEN** automatic preparation finishes every take
 - **THEN** the session enters or remains at the review stage
 - **AND** no shot is submitted or generated until the existing explicit review and generation actions are performed
 
+#### Scenario: All requested manual takes are prepared successfully
+- **WHEN** manual preparation finishes every take
+- **THEN** the same explicit review/submission/generation gates apply
+- **AND** no shot is generated merely because no assistant step was needed
+
 #### Scenario: A resource conflict remains unresolved
-- **WHEN** automatic authoring encounters or leaves an unresolved resource conflict
+- **WHEN** either authoring mode encounters or leaves an unresolved resource conflict
 - **THEN** review/generation remains blocked by the existing conflict gate
-- **AND** automatic authoring does not silently adapt or discard the conflicting source content
+- **AND** the system does not silently adapt or discard the conflicting source content
 
 ### Requirement: Legacy and expert workflows remain available
 
-The simplified resource workflow SHALL NOT change legacy session behavior or make resource automation a prerequisite for expert workflows. Legacy measured Catalogue/Compose/Fill/Judge behavior, path-based resource automation and detailed resource inspection SHALL remain available in their current scopes.
+The simplified resource workflow SHALL NOT change legacy session behavior or make resource automation a prerequisite for expert workflows. Legacy measured Catalogue/Compose/Fill/Judge behavior, path-based resource automation, expert multi-resource plans and detailed resource inspection SHALL remain available in their current scopes.
 
 #### Scenario: User opens a legacy session
 - **WHEN** a session does not use `resource-v1`
