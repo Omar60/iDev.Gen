@@ -276,6 +276,8 @@ def _match_auxiliary_shape(data: Any) -> str | None:
     """
     if not isinstance(data, dict) or not data:
         return None
+    if "items" in data or "library" in data:
+        return None
     if _is_translation_map_shape(data):
         return KIND_TRANSLATION_MAP
     if _is_cut_map_shape(data):
@@ -296,6 +298,8 @@ def _auxiliary_shadow_matches(data: Any) -> list[str]:
     wins; the rest are diagnostic, not the basis for classification.
     """
     if not isinstance(data, dict) or not data:
+        return []
+    if "items" in data or "library" in data:
         return []
     matched: list[str] = []
     for name, test in (
@@ -722,11 +726,66 @@ def _parse_entry(item: Any, index: int, result: ParseResult) -> None:
     ))
 
 
+
+_ENTRY_CONTENT_MARKERS: tuple[str, ...] = (
+    *IDENTIFIER_FIELDS,
+    "prompt",
+    "scene_theme",
+    "theme",
+    "theme_text",
+    "text",
+    "label",
+    "display_name",
+    "props",
+    "objects",
+    "furniture",
+    "tags",
+    "tag",
+    "uniform_fit",
+    "mood_light",
+    "action_anchor",
+    "anchors",
+)
+
+
+def is_source_envelope(data: Any) -> bool:
+    """True when `data` is a source collection envelope {library: ..., items: [...]}.
+
+    A source envelope carries top-level collection metadata ('library') and an
+    'items' list holding individual entries. It is neither an individual scene
+    record nor an auxiliary resource map.
+    """
+    if not isinstance(data, dict):
+        return False
+    if "items" not in data or not isinstance(data["items"], list):
+        return False
+    if "library" not in data:
+        return False
+    if any(k in data for k in _ENTRY_CONTENT_MARKERS):
+        return False
+    return True
+
+
+def normalize_source_payload(data: Any) -> Any:
+    """Normalize a source payload if it is an envelope, otherwise return as-is.
+
+    When `data` is a valid source envelope ({library: ..., items: [...]}),
+    returns the underlying `items` list. Otherwise returns `data` unchanged.
+    """
+    if is_source_envelope(data):
+        return data["items"]
+    return data
+
+
 def parse_source_payload(data: Any) -> ParseResult:
     """Parse one source payload into a structured result.
 
     The input contract — the same one ``input_size`` reports — is:
 
+    - a source envelope dict: a dict carrying file-level 'library'
+      metadata and an 'items' list. Each element of 'items' is parsed
+      as an individual entry. An empty 'items' list accounts for 0
+      inputs and produces 0 bucket entries.
     - a list of N items: every list element is one input. The
       function produces exactly N bucket entries (one per item),
       where each bucket entry is one of accepted / auxiliary /
@@ -753,6 +812,7 @@ def parse_source_payload(data: Any) -> ParseResult:
     ``total() == input_size(data)``: nothing is silently dropped,
     nothing is double-counted.
     """
+    data = normalize_source_payload(data)
     result = ParseResult()
 
     if isinstance(data, dict):
@@ -831,6 +891,8 @@ def input_size(data: Any) -> int:
 
     The contract is the one ``parse_source_payload`` implements:
 
+    - a source envelope dict {library: ..., items: [...]}: returns the
+      length of the 'items' list (0 for an empty envelope).
     - a list of N items: ``input_size`` returns ``N``; the
       parser produces exactly N bucket entries (one per list
       item). An empty list is 0.
@@ -845,6 +907,8 @@ def input_size(data: Any) -> int:
     ``parse_source_payload(data).total() == input_size(data)``
     for any value the parser is asked to parse.
     """
+    if is_source_envelope(data):
+        return len(data["items"])
     if isinstance(data, list):
         return len(data)
     return 1
@@ -862,5 +926,6 @@ __all__ = (
     "FieldClassification", "AcceptedEntry", "AuxiliaryResource",
     "MalformedInput", "UnsupportedShape", "AmbiguousIdentifier",
     "MissingIdentifier", "ParseResult",
+    "is_source_envelope", "normalize_source_payload",
     "parse_source_payload", "input_size",
 )

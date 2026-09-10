@@ -666,3 +666,94 @@ def test_api_preview_commit_roundtrip_through_real_javascript_node(client, tmp_p
     assert commit_response.status_code == 200
     assert commit_response.json()["report"]["phase"] == "commit"
     assert len(resource_store.list_libraries()) == 1
+
+
+def test_api_preview_and_commit_envelope_source_file(client, tmp_path):
+    path = tmp_path / "envelope-scenes.json"
+    envelope_payload = {
+        "library": "invented_scenes",
+        "items": [
+            {
+                "identifier": "invented_scene_01",
+                "label": "Example scene 01",
+                "theme": "Invented studio environment",
+                "tags": ["interior", "studio"],
+            },
+            {
+                "identifier": "invented_scene_02",
+                "label": "Example scene 02",
+                "theme": "Invented garden environment",
+                "tags": ["exterior", "garden"],
+            },
+        ],
+    }
+    _write(path, envelope_payload)
+
+    preview_response = client.post(
+        "/api/resources/import/preview",
+        json={"selections": [{"path": str(path), "library_key": "invented_scenes"}]},
+    )
+    assert preview_response.status_code == 200
+    preview_body = preview_response.json()
+    report = preview_body["report"]
+    assert report["phase"] == "preview"
+    assert report["summary"]["accepted"] == 2
+    assert report["summary"]["unresolved"] == 0
+    assert len(report["files"]) == 1
+    file_rep = report["files"][0]
+    assert file_rep["total_inputs"] == 2
+    assert len(file_rep["accepted"]) == 2
+    assert len(file_rep["unresolved"]) == 0
+
+    raw_preview = preview_body["preview"]
+    commit_response = client.post(
+        "/api/resources/import/commit",
+        json={"preview": raw_preview},
+    )
+    assert commit_response.status_code == 200
+    commit_report = commit_response.json()["report"]
+    assert commit_report["phase"] == "commit"
+    assert commit_report["summary"]["recorded"] == 2
+
+    libraries_resp = client.get("/api/resources/libraries")
+    assert libraries_resp.status_code == 200
+    libraries = libraries_resp.json()
+    assert len(libraries) == 1
+    assert libraries[0]["library_key"] == "invented_scenes"
+    assert libraries[0]["revision_count"] == 2
+
+    lib_detail_resp = client.get("/api/resources/libraries/invented_scenes")
+    assert lib_detail_resp.status_code == 200
+    lib_detail = lib_detail_resp.json()
+    revisions_meta = {r["source_id"]: r["content_digest"] for r in lib_detail["revisions"]}
+    assert "invented_scene_01" in revisions_meta
+    assert "invented_scene_02" in revisions_meta
+
+    digest1 = revisions_meta["invented_scene_01"]
+    rev1 = resource_service.get_resource_revision("invented_scenes", "invented_scene_01", digest1)
+    assert rev1 is not None
+    assert rev1["source_id"] == "invented_scene_01"
+    assert rev1["payload"]["identifier"] == "invented_scene_01"
+    assert rev1["payload"]["label"] == "Example scene 01"
+    assert rev1["payload"]["theme"] == "Invented studio environment"
+    assert "library" not in rev1["payload"]
+    assert "items" not in rev1["payload"]
+
+    api_rev1_resp = client.get(
+        f"/api/resources/revisions/invented_scenes/invented_scene_01/{digest1}"
+    )
+    assert api_rev1_resp.status_code == 200
+    api_rev1 = api_rev1_resp.json()
+    assert api_rev1["source_id"] == "invented_scene_01"
+    assert api_rev1["payload"]["theme"] == "Invented studio environment"
+    assert "library" not in api_rev1["payload"]
+
+    digest2 = revisions_meta["invented_scene_02"]
+    api_rev2_resp = client.get(
+        f"/api/resources/revisions/invented_scenes/invented_scene_02/{digest2}"
+    )
+    assert api_rev2_resp.status_code == 200
+    api_rev2 = api_rev2_resp.json()
+    assert api_rev2["source_id"] == "invented_scene_02"
+    assert api_rev2["payload"]["theme"] == "Invented garden environment"
+    assert "library" not in api_rev2["payload"]

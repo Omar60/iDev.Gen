@@ -1708,3 +1708,207 @@ class TestDbTransaction:
             "SELECT name FROM model WHERE name = ?", "inv_outside_tx"
         )
         assert row is not None
+
+
+# ---- Source envelope import tests -----------------------------------------
+
+
+class TestEnvelopeImport:
+    """Tests for importing source files wrapped in envelopes {library: ..., items: [...]}.
+
+    The envelope shape wraps a collection of entries under 'items'. The importer
+    normalizes the envelope, treats each item as an entry in the normal pipeline,
+    binds fingerprints to the whole source file, and ensures operator library_key
+    governs destination without being silently overridden by envelope metadata.
+    """
+
+    def test_preview_and_commit_envelope(self, isolated_db, tmp_path):
+        envelope = {
+            "library": "invented_scenes",
+            "items": [
+                {
+                    "identifier": "inv_env_scene_01",
+                    "label": "invented lounge",
+                    "theme": "an invented quiet lounge",
+                },
+                {
+                    "identifier": "inv_env_scene_02",
+                    "label": "invented studio",
+                    "theme": "an invented photo studio",
+                },
+            ],
+        }
+        path = _write_source_file(tmp_path, "envelope.json", envelope)
+        preview = preview_import([(path, "invented_scenes")])
+
+        file_report = preview.files[0]
+        assert file_report.total_inputs == 2
+        assert file_report.accepted_total == 2
+        assert file_report.unresolved_total == 0
+        assert file_report.counts_reconcile()
+        assert preview.total_inputs == 2
+        assert preview.total_accepted == 2
+        assert preview.total_unresolved == 0
+        assert preview.counts_reconcile()
+
+        report = commit_import(preview)
+        assert report.total_new_scene_revisions == 2
+        assert report.total_unchanged_scene_revisions == 0
+        assert report.total_updated_scene_revisions == 0
+        assert report.counts_reconcile()
+
+        library_id = resource_store.ensure_library("invented_scenes")
+        rev_1 = resource_store.get_revision(library_id=library_id, source_id="inv_env_scene_01")
+        rev_2 = resource_store.get_revision(library_id=library_id, source_id="inv_env_scene_02")
+        assert rev_1 is not None
+        assert rev_2 is not None
+        assert rev_1["payload"] == envelope["items"][0]
+        assert rev_2["payload"] == envelope["items"][1]
+        assert "library" not in rev_1["payload"]
+        assert "library" not in rev_2["payload"]
+
+    def test_envelope_duplicate_detection(self, isolated_db, tmp_path):
+        envelope = {
+            "library": "general_scenes",
+            "items": [
+                {
+                    "identifier": "inv_dup_01",
+                    "label": "first instance",
+                    "theme": "first room",
+                },
+                {
+                    "identifier": "inv_dup_01",
+                    "label": "second instance",
+                    "theme": "second room",
+                },
+            ],
+        }
+        path = _write_source_file(tmp_path, "dup_envelope.json", envelope)
+        preview = preview_import([(path, "general_scenes")])
+
+        file_report = preview.files[0]
+        assert file_report.total_inputs == 2
+        assert file_report.accepted_total == 0
+        assert file_report.duplicate_total == 2
+        assert file_report.counts_reconcile()
+        assert preview.total_duplicate == 2
+        assert preview.total_accepted == 0
+        assert preview.counts_reconcile()
+
+    def test_envelope_missing_entries_on_reimport(self, isolated_db, tmp_path):
+        first_envelope = {
+            "library": "general_scenes",
+            "items": [
+                {"identifier": "inv_s1", "label": "scene 1", "theme": "room 1"},
+                {"identifier": "inv_s2", "label": "scene 2", "theme": "room 2"},
+                {"identifier": "inv_s3", "label": "scene 3", "theme": "room 3"},
+            ],
+        }
+        path_first = _write_source_file(tmp_path, "full.json", first_envelope)
+        commit_import(preview_import([(path_first, "general_scenes")]))
+
+        library_id = resource_store.ensure_library("general_scenes")
+        before_revisions = resource_store.list_revisions(library_id)
+        assert len(before_revisions) == 3
+
+        second_envelope = {
+            "library": "general_scenes",
+            "items": [
+                {"identifier": "inv_s1", "label": "scene 1", "theme": "room 1"},
+                {"identifier": "inv_s3", "label": "scene 3", "theme": "room 3"},
+            ],
+        }
+        path_second = _write_source_file(tmp_path, "partial.json", second_envelope)
+        preview_second = preview_import([(path_second, "general_scenes")])
+        assert preview_second.total_inputs == 2
+        assert preview_second.total_accepted == 2
+        assert preview_second.total_missing == 1
+        missing = preview_second.missing_source_entries[0]
+        assert missing.library_key == "general_scenes"
+        assert missing.source_id == "inv_s2"
+
+        commit_import(preview_second)
+        after_revisions = resource_store.list_revisions(library_id)
+        assert len(after_revisions) == 3
+        source_ids = {r["source_id"] for r in after_revisions}
+        assert source_ids == {"inv_s1", "inv_s2", "inv_s3"}
+
+    def test_empty_envelope_import(self, isolated_db, tmp_path):
+        empty_envelope = {
+            "library": "invented_scenes",
+            "items": [],
+        }
+        path = _write_source_file(tmp_path, "empty.json", empty_envelope)
+        preview = preview_import([(path, "invented_scenes")])
+
+        file_report = preview.files[0]
+        assert file_report.total_inputs == 0
+        assert file_report.accepted_total == 0
+        assert file_report.unresolved_total == 0
+        assert file_report.counts_reconcile()
+        assert preview.total_inputs == 0
+        assert preview.counts_reconcile()
+
+        report = commit_import(preview)
+        assert report.total_new_scene_revisions == 0
+        assert report.total_unchanged_scene_revisions == 0
+        assert report.total_updated_scene_revisions == 0
+        assert report.total_recorded == 0
+        assert report.counts_reconcile()
+
+    def test_envelope_library_mismatch_uses_operator_selection(
+        self, isolated_db, tmp_path,
+    ):
+        envelope = {
+            "library": "metadata_only_library_name",
+            "items": [
+                {
+                    "identifier": "inv_scene_mismatch",
+                    "label": "mismatched scene",
+                    "theme": "an invented room",
+                },
+            ],
+        }
+        path = _write_source_file(tmp_path, "mismatch.json", envelope)
+        preview = preview_import([(path, "operator_target_lib")])
+
+        assert preview.files[0].library_key == "operator_target_lib"
+        assert preview.files[0].accepted_outcomes[0].library_key == "operator_target_lib"
+
+        commit_import(preview)
+        target_id = resource_store.ensure_library("operator_target_lib")
+        rev = resource_store.get_revision(library_id=target_id, source_id="inv_scene_mismatch")
+        assert rev is not None
+        assert rev["library_id"] == target_id
+        assert db.one("SELECT id FROM resource_library WHERE library_key = ?", "metadata_only_library_name") is None
+
+    def test_envelope_stale_fingerprint_rejected(
+        self, isolated_db, tmp_path,
+    ):
+        envelope = {
+            "library": "general_scenes",
+            "items": [
+                {
+                    "identifier": "inv_stale_01",
+                    "label": "original label",
+                    "theme": "original theme",
+                },
+            ],
+        }
+        path = _write_source_file(tmp_path, "stale_envelope.json", envelope)
+        preview = preview_import([(path, "general_scenes")])
+
+        mutated_envelope = {
+            "library": "general_scenes",
+            "items": [
+                {
+                    "identifier": "inv_stale_01",
+                    "label": "mutated label",
+                    "theme": "mutated theme",
+                },
+            ],
+        }
+        _write_source_file(tmp_path, "stale_envelope.json", mutated_envelope)
+
+        with pytest.raises(StaleFingerprintError):
+            commit_import(preview)

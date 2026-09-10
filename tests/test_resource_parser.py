@@ -63,6 +63,8 @@ from backend.resource_parser import (
     ParseResult,
     UnsupportedShape,
     input_size,
+    is_source_envelope,
+    normalize_source_payload,
     parse_source_payload,
 )
 
@@ -1156,3 +1158,167 @@ class TestParserApiShape:
         assert isinstance(SELECTION_METADATA_FIELDS, frozenset)
         for name in SELECTION_METADATA_FIELDS:
             assert isinstance(name, str) and name
+
+
+# -- Source envelope tests --------------------------------------------------
+
+
+class TestEnvelopeParsing:
+    """Tests for parsing source envelopes {library: ..., items: [...]}.
+
+    Source files with historical or structured envelope formatting wrap
+    the entry collection under 'items' with top-level 'library' metadata.
+    The parser normalizes the envelope, processing each item in 'items' as an
+    entry while preserving the exact original payloads.
+    """
+
+    def test_valid_envelope_with_two_resources(self):
+        envelope = {
+            "library": "general_scenes",
+            "items": [
+                {
+                    "identifier": "inv_scene_01",
+                    "label": "invented lounge",
+                    "theme": "an invented quiet lounge",
+                },
+                {
+                    "identifier": "inv_scene_02",
+                    "label": "invented studio",
+                    "theme": "an invented photo studio",
+                },
+            ],
+        }
+        result = parse_source_payload(envelope)
+        assert result.total() == 2
+        assert len(result.accepted) == 2
+        assert len(result.unsupported) == 0
+        assert len(result.malformed) == 0
+        assert len(result.missing_identifier) == 0
+        assert len(result.ambiguous_identifier) == 0
+        assert len(result.auxiliary) == 0
+        assert result.every_input_accounted_for(input_size(envelope)) is True
+
+        first = result.accepted[0]
+        second = result.accepted[1]
+        assert first.source_id == "inv_scene_01"
+        assert first.kind == KIND_ROOMS
+        assert first.original == envelope["items"][0]
+        assert "library" not in first.original
+
+        assert second.source_id == "inv_scene_02"
+        assert second.kind == KIND_ROOMS
+        assert second.original == envelope["items"][1]
+        assert "library" not in second.original
+
+    def test_direct_list_compatibility_remains_identical(self):
+        direct_list = [
+            {
+                "identifier": "inv_scene_01",
+                "label": "invented lounge",
+                "theme": "an invented quiet lounge",
+            },
+            {
+                "identifier": "inv_scene_02",
+                "label": "invented studio",
+                "theme": "an invented photo studio",
+            },
+        ]
+        result_direct = parse_source_payload(direct_list)
+        envelope = {
+            "library": "general_scenes",
+            "items": direct_list,
+        }
+        result_envelope = parse_source_payload(envelope)
+
+        assert result_direct.total() == result_envelope.total() == 2
+        assert len(result_direct.accepted) == len(result_envelope.accepted) == 2
+        assert result_direct.accepted[0].original == result_envelope.accepted[0].original
+        assert result_direct.accepted[1].original == result_envelope.accepted[1].original
+
+    def test_empty_envelope_has_zero_inputs(self):
+        empty_envelope = {
+            "library": "invented_scenes",
+            "items": [],
+        }
+        assert is_source_envelope(empty_envelope) is True
+        assert input_size(empty_envelope) == 0
+        result = parse_source_payload(empty_envelope)
+        assert result.total() == 0
+        assert result.accepted == []
+        assert result.unsupported == []
+        assert result.every_input_accounted_for(input_size(empty_envelope)) is True
+
+    def test_invalid_shape_items_not_a_list_is_unsupported(self):
+        bad_shape_1 = {
+            "something": "else",
+            "items": "not-a-list",
+        }
+        assert is_source_envelope(bad_shape_1) is False
+        assert input_size(bad_shape_1) == 1
+        result_1 = parse_source_payload(bad_shape_1)
+        assert result_1.total() == 1
+        assert len(result_1.unsupported) == 1
+        assert len(result_1.accepted) == 0
+
+        bad_shape_2 = {
+            "library": "invented_scenes",
+            "items": "not-a-list",
+        }
+        assert is_source_envelope(bad_shape_2) is False
+        assert input_size(bad_shape_2) == 1
+        result_2 = parse_source_payload(bad_shape_2)
+        assert result_2.total() == 1
+        assert len(result_2.unsupported) == 1
+        assert len(result_2.accepted) == 0
+
+        bad_shape_3 = {
+            "something": "else",
+            "items": [1, 2, 3],
+        }
+        assert is_source_envelope(bad_shape_3) is False
+        assert input_size(bad_shape_3) == 1
+        result_3 = parse_source_payload(bad_shape_3)
+        assert result_3.total() == 1
+        assert len(result_3.unsupported) == 1
+
+    def test_entry_casually_containing_items_is_not_treated_as_envelope(self):
+        entry_with_items = {
+            "identifier": "inv_scene_store",
+            "label": "invented grocery store",
+            "theme": "an invented store interior with wooden aisles",
+            "library": "general_scenes",
+            "items": ["cereal", "tea", "biscuit"],
+        }
+        assert is_source_envelope(entry_with_items) is False
+        assert input_size(entry_with_items) == 1
+        result = parse_source_payload(entry_with_items)
+        assert result.total() == 1
+        assert len(result.accepted) == 1
+        assert result.accepted[0].source_id == "inv_scene_store"
+        assert result.accepted[0].original == entry_with_items
+        assert "items" in result.accepted[0].unknown_fields
+
+    def test_nested_content_and_unknown_fields_in_items_are_preserved(self):
+        complex_item = {
+            "identifier": "inv_scene_complex",
+            "label": "complex room",
+            "theme": "room with preserved hierarchy",
+            "custom_metadata": {
+                "nested_level_1": {
+                    "nested_level_2": ["val1", "val2"],
+                },
+            },
+            "unusual_list": [1, 2, {"a": "b"}],
+        }
+        envelope = {
+            "library": "general_scenes",
+            "items": [complex_item],
+        }
+        result = parse_source_payload(envelope)
+        assert result.total() == 1
+        assert len(result.accepted) == 1
+        accepted = result.accepted[0]
+        assert accepted.original == complex_item
+        assert accepted.original["custom_metadata"]["nested_level_1"]["nested_level_2"] == ["val1", "val2"]
+        assert "custom_metadata" in accepted.unknown_fields
+        assert "unusual_list" in accepted.unknown_fields
