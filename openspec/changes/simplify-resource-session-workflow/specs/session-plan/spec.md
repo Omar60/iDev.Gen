@@ -1,80 +1,141 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
-### Requirement: Session choices precede take variations
+### Requirement: Guided creation persists a compatible authoring plan atomically
 
-A resource session SHALL bind its character to the selected model and store a constant look, initial wardrobe and source selections. Source identity suggestions SHALL NOT replace the selected character. Each take SHALL expose its camera, framing, pose and expression choices and its effective wardrobe. Shared appearance, place and light SHALL remain constant within the session; changing those constants SHALL require a new session or an explicit revision before any take is generated.
+Guided creation SHALL validate a selected character/workflow, ready stored rooms scene anchor, positive integer photo count, optional brief of at most 2,000 characters and complete variation policy. The exact anchor triple SHALL also appear in selected_resources. Session and initial plan SHALL become durable atomically with stable take IDs before assistant calls. Failure SHALL leave no orphan session.
 
-For the normal guided resource workflow, the plan SHALL persist a normalized `authoring` block containing an `authoring_mode` of `automatic` or `manual`, an optional session brief of at most 2,000 characters, one exact scene-anchor revision selected from the plan's immutable resource triples, and one variation-policy entry for each of camera, framing, pose and expression. Guided creation SHALL accept between 1 and 20 takes inclusive.
+The normalized authoring block SHALL use authoring.mode with automatic or manual, brief, scene_anchor, variation_policy and shared-state resolution metadata. The default policy SHALL vary camera, framing, pose and expression. A fixed dimension SHALL require a non-empty user value and SHALL reject conflicting explicit take choices. Automatic batch limits SHALL NOT impose a twenty-take plan limit. Older/expert plans without authoring metadata SHALL retain existing behavior without silent migration.
 
-The scene anchor SHALL be an exact `(library_key, source_id, content_digest)` triple that also appears in `selected_resources`, resolves to a stored ready non-deleted scene-defining revision, and remains authoritative across the session. It SHALL NOT be selected or replaced by the assistant. Advanced plans MAY retain additional selected resources under the existing resource-plan contract, but the normal flow SHALL NOT silently combine competing scene-defining resources.
+#### Scenario: Guided creation fails
+- **WHEN** validation or initial plan persistence fails
+- **THEN** no orphan session remains and no assistant call starts
 
-A variation-policy entry SHALL declare either `vary` or `fixed`. A fixed entry SHALL persist its resolved value when known and SHALL record `value_origin` as `user` or `assistant`. Manual authoring SHALL require explicit user values for all fixed dimensions before deterministic preparation. Automatic authoring MAY persist an unresolved fixed value temporarily so that the assistant can establish it exactly once. An assistant-established fixed value SHALL be saved by plan CAS together with exact resolution provenance before any take preparation consumes it.
+#### Scenario: Forty-photo session
+- **WHEN** valid guided inputs request forty photos
+- **THEN** the plan persists forty stable take IDs
+- **AND** automatic preparation can proceed in batches of at most twenty
 
-Session creation SHALL NOT require a configured prompt assistant. Both authoring modes SHALL create the same authoritative `resource-v1` draft shape, requested stable take IDs, scene anchor, fixed state, review gates and generation path. `automatic` SHALL remain a valid persisted mode even when no assistant is configured; in that case only synthesis is unavailable. `manual` SHALL make no assistant call and SHALL let the user provide the same closed take-choice fields directly before deterministic preparation.
+#### Scenario: Existing expert plan is reopened
+- **WHEN** a saved plan has no authoring metadata
+- **THEN** its existing resources, take count and preparation behavior remain usable without a forced anchor or mode migration
 
-Changing authoring mode, brief, scene anchor, variation mode or resolved fixed value SHALL be an explicit compare-and-swap plan revision and SHALL invalidate affected ungenerated preparations under existing revision rules. Once any take in the session has reached immutable generated state, scene anchor and variation-policy/fixed-value continuity state SHALL be frozen along with existing generated-session constants so an edit cannot contradict already generated output. Authoring mode or brief changes MAY remain possible for future ungenerated authoring only when existing invalidation rules can preserve generated snapshots unchanged.
+#### Scenario: Fixed policy conflicts with a take
+- **WHEN** an explicit take value differs from its fixed policy value
+- **THEN** validation reports the conflict rather than silently overwriting either value
 
-#### Scenario: A resource suggests another character or outfit
-- **WHEN** a selected source contradicts session identity or clothing
-- **THEN** the conflict is shown before preparation and neither choice is silently overwritten
+### Requirement: Shared choices have one authoritative accepted state
 
-#### Scenario: A session uses one imported scene across many takes
-- **WHEN** a normal resource session is authored from one ready non-deleted scene anchor and multiple takes are requested
-- **THEN** every take retains that exact scene anchor and shared place/light state while unlocked camera, framing, pose and expression may vary
+The selected model SHALL own character identity. Authorized scene descriptions SHALL supply scene context without heuristic decomposition. Existing plan look and initial wardrobe SHALL remain authoritative, with explicit user values taking precedence. Empty additional constraints SHALL NOT erase source descriptions.
 
-#### Scenario: Guided authoring bounds are invalid
-- **WHEN** the requested take count is outside 1-20 or the brief exceeds 2,000 characters
-- **THEN** validation fails before assistant work and before guided session/plan creation commits
+Optional assistant suggestions for missing look/wardrobe SHALL be reviewed and accepted through plan CAS before take preparation consumes them. Persist exact suggestion input/output, accepted values, origins and user edits. Users SHALL be able to keep empty additional constraints explicitly. Manual mode SHALL support the same shared-state decisions without an assistant. Wardrobe progression SHALL remain an explicit scoped user change.
 
-#### Scenario: Manual session is created with no assistant configured
-- **WHEN** the user chooses manual authoring on a system with no configured prompt assistant
-- **THEN** the requested `resource-v1` draft and stable take IDs are created normally
-- **AND** no assistant call is required to edit, prepare, review, submit or generate the manually completed takes
+#### Scenario: Shared suggestions await acceptance
+- **WHEN** the assistant proposes look or wardrobe values
+- **THEN** they are shown for acceptance or editing
+- **AND** they do not silently replace effective plan values or enter take preparation
 
-#### Scenario: Automatic mode has no assistant configured
-- **WHEN** the user chooses automatic authoring but no prompt assistant is configured
-- **THEN** the automatic draft remains valid and persisted
-- **AND** automatic synthesis is reported as unavailable
-- **AND** the same plan may later be synthesized after configuration or switched explicitly to manual through CAS
+#### Scenario: User edits a suggested value
+- **WHEN** an operator changes a shared suggestion before acceptance
+- **THEN** persistence records the assistant suggestion and user edit accurately through CAS
 
-#### Scenario: Assistant establishes a fixed dimension
-- **WHEN** automatic mode fixes a variation dimension but no user value was supplied and the assistant establishes the value
-- **THEN** the value, `value_origin = assistant`, and exact resolution provenance are persisted by CAS before per-take preparation
-- **AND** every take/retry in that authoritative scope reuses the same value
+#### Scenario: No additional look is requested
+- **WHEN** the user keeps an empty extra look or wardrobe constraint
+- **THEN** the plan does not invent a value or remove the source description
 
-#### Scenario: Generated state freezes continuity choices
-- **WHEN** at least one take has generated output
-- **THEN** scene anchor and variation-policy/fixed-value continuity state cannot be changed in a way that would contradict that generated output
-- **AND** existing generated snapshots remain immutable
+### Requirement: Automatic authoring edits invalidate downstream dependencies
 
-### Requirement: Guided creation persists session and initial plan atomically
+Automatic preparation SHALL consume takes in stable order and record predecessor snapshot identities/revisions with its exact bounded context. Brief, anchor, effective shared-state or policy changes SHALL invalidate affected ungenerated automatic preparations. Editing, removing or reordering a take SHALL conservatively invalidate later ungenerated automatic preparations from the earliest changed position, in addition to existing direct-input and wardrobe rules. Earlier unaffected results SHALL remain reusable. Manual work SHALL retain existing input-based invalidation.
 
-The normal guided `resource-v1` creation flow SHALL validate the guided inputs and create the session row plus its initial authoritative plan in one database transaction. The initial plan SHALL contain exactly the requested stable take IDs and complete authoring state before any assistant call. A validation or persistence failure SHALL leave no orphaned or partially initialized guided session. Existing legacy/general session creation behavior SHALL remain unchanged.
+Mode-only changes SHALL revoke review and cancel old in-flight authoring while retaining completed choices with original provenance. Generated/queued snapshots SHALL remain immutable. Generated-state continuity protection SHALL include scene anchor and variation policy; brief changes SHALL affect only future ungenerated work without rewriting historical evidence.
 
-#### Scenario: Guided plan validation fails
-- **WHEN** the initial scene anchor, authoring state, take count or selected resource set is invalid
-- **THEN** guided creation fails atomically
-- **AND** no standalone session row remains
+#### Scenario: Third take changes
+- **WHEN** take three changes after twelve automatic takes were prepared
+- **THEN** take three and later ungenerated automatic results require preparation again
+- **AND** unaffected earlier snapshots and generated history remain intact
 
-#### Scenario: Guided creation succeeds
-- **WHEN** all guided inputs are valid
-- **THEN** the session and initial `resource-v1` plan become durable together
-- **AND** any automatic synthesis starts only afterward against the persisted plan revision
+#### Scenario: Take order changes
+- **WHEN** a take moves earlier in the plan
+- **THEN** affected ungenerated automatic work from the earliest changed position is invalidated
 
-### Requirement: Draft preparation survives interruption
+#### Scenario: Mode switches after preparation
+- **WHEN** automatic authoring changes explicitly to manual
+- **THEN** review is revoked and in-flight automatic output is cancelled
+- **AND** completed choices retain assistant provenance rather than becoming falsely manual
 
-The system SHALL persist the draft before long preparation begins and save completed take preparation incrementally. Reopening a draft SHALL recover completed work and identify incomplete work without regenerating completed takes automatically. Saving failures SHALL be visible. Any persisted authoring mode, brief, scene anchor, variation policy, fixed-value origin/provenance and resolved fixed values needed to continue the chosen authoring path SHALL survive the same round trip so recovery does not depend on transient browser state or assistant conversational memory.
+#### Scenario: Generated continuity cannot change
+- **WHEN** an edit would change scene anchor or fixed continuity policy after generated state exists
+- **THEN** it is refused under continuity freeze rules without rewriting history
 
-#### Scenario: Browser closes during preparation
-- **WHEN** the browser closes after three of twelve takes have been prepared automatically
-- **THEN** reopening restores those three results and offers preparation of the remaining takes
+### Requirement: Authoring operations have exclusive recoverable ownership
 
-#### Scenario: Browser closes during manual authoring
-- **WHEN** the browser closes after a manual resource draft and some explicit take choices have been saved
-- **THEN** reopening restores the same manual authoring mode, scene anchor, take IDs and saved take choices
-- **AND** continuing the session does not require an assistant
+The system SHALL prevent concurrent shared-state suggestion and automatic take-preparation operations for the same session from launching duplicate work. It SHALL track operation ownership, plan revision and progress and refuse stale or expired owners' writes. Cancellation SHALL stop new calls and discard late responses. Plan changes SHALL revoke old operation ownership.
 
-#### Scenario: Browser closes after authoring intent was saved
-- **WHEN** automatic authoring resumes after the page or application was closed
-- **THEN** remaining takes are prepared from the persisted brief, scene anchor, variation policy and resolved fixed state associated with the current plan revision
-- **AND** already completed ready/generated snapshots are not regenerated merely to reconstruct context
+Completed take snapshots SHALL persist incrementally. Failure SHALL report completed, failed and remaining work. Reopening SHALL recover progress and permit resuming incomplete work after abandoned ownership expires. Ready/generated snapshots SHALL NOT be regenerated merely to resume. Retrying an unpersisted remote response after a crash MAY make another assistant call; exactly-once remote billing SHALL NOT be promised.
+
+#### Scenario: Two tabs prepare simultaneously
+- **WHEN** a second request arrives while the same session is being authored
+- **THEN** it receives active-operation status rather than launching a duplicate assistant call
+
+#### Scenario: Cancellation during a remote call
+- **WHEN** the user cancels while a response is in flight
+- **THEN** that late response is not persisted and no next take is scheduled
+
+#### Scenario: Crash after three completed takes
+- **WHEN** a twelve-take operation is abandoned after three results persist
+- **THEN** recovery reuses those three and resumes remaining work after ownership recovery
+
+#### Scenario: Plan edit races an assistant response
+- **WHEN** output returns for an older plan revision or expired owner
+- **THEN** it cannot overwrite current state
+
+#### Scenario: Partial failure
+- **WHEN** one take fails in a batch
+- **THEN** completed results survive and the failed and remaining takes are visible for retry
+
+### Requirement: Selected looks are snapshotted into session state
+
+Applying a reusable look SHALL copy its exact appearance and garment definitions/order into the session plan with preset identity/version/digest and origin metadata. Session prompts SHALL use the accepted snapshot, not mutable live library content. Explicit existing choices SHALL require a Replace or Keep decision. Later library edits SHALL NOT change existing sessions. Reapplying a newer version SHALL require explicit CAS, normal invalidation and generated-constant guards.
+
+An appearance-only preset SHALL leave wardrobe unchanged; an absent outfit SHALL NOT imply a garment-free state. Appearance SHALL remain constant while clothing SHALL be represented through initial_wardrobe and scoped wardrobe changes. Removable garments SHALL NOT be automatically copied into constant appearance.
+
+#### Scenario: One look is reused by two sessions
+- **WHEN** a preset is selected for two different characters or scenes
+- **THEN** each session receives an independent snapshot without changing character identity or scene
+
+#### Scenario: Library changes after selection
+- **WHEN** a preset receives a new version
+- **THEN** existing session choices and prepared prompts remain unchanged until explicit permissible reapplication
+
+#### Scenario: Existing shared choices conflict with a look
+- **WHEN** a selected preset would replace explicit look or wardrobe values
+- **THEN** the user must choose Replace or Keep before the plan changes
+
+### Requirement: Outfit progression requires explicit preview and scoped application
+
+Resource sessions SHALL keep clothing constant by default. Users SHALL be able to request a progression from snapshotted ordered garments, choose the final stage and take interval, and review every resulting state. The system SHALL derive stages using authored order, offering moved-aside wording only under existing final-garment arc semantics; it SHALL NOT guess the order or invent garments.
+
+For K chosen ordered stages and M consecutive takes, automatic distribution SHALL require M >= K when K > 1 and assign stage floor(i * (K - 1) / (M - 1)) at zero-based interval offset i. K = 1 SHALL keep clothing constant. Too few takes SHALL require a wider interval or fewer selected stages. Initial wardrobe SHALL apply before the interval and the final selected stage SHALL carry afterward.
+
+Explicit application SHALL atomically materialize initial_wardrobe and minimal from_here events using stable take IDs through plan CAS. Existing events SHALL require a reviewed replacement/merge without duplicates; this_take overrides SHALL remain supported. Approved events SHALL remain authoritative after reordering or adding takes, without silently redistributing a saved progression. Existing wardrobe resolution, downstream invalidation and generated-history rules SHALL apply.
+
+#### Scenario: Outfit stays unchanged by default
+- **WHEN** a saved outfit is selected without requesting progression
+- **THEN** every take inherits its initial clothing
+
+#### Scenario: User approves a staged progression
+- **WHEN** a user confirms garment order, final stage and sufficient take interval
+- **THEN** preview shows every state before an explicit atomic application
+- **AND** accepted changes are stored as existing scoped events rather than a live automatic rule
+
+#### Scenario: Too few takes for stages
+- **WHEN** the interval has fewer takes than selected stages
+- **THEN** the user must widen it or select fewer stages without silent omission
+
+#### Scenario: Preview conflicts with existing wardrobe events
+- **WHEN** a proposed progression overlaps saved changes
+- **THEN** explicit replacement/merge review is required before CAS save
+
+#### Scenario: Takes are reordered after approval
+- **WHEN** a saved progression's takes are reordered
+- **THEN** existing stable-ID scope rules recompute effective wardrobe and invalidate affected work
+- **AND** no new distribution is silently applied

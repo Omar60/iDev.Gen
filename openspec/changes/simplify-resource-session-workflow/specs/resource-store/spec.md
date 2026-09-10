@@ -1,89 +1,124 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
-### Requirement: Resource revisions are reproducible
+### Requirement: Browser import binds selected bytes and explicit identity
 
-The system SHALL use library identity and source entry identity together and retain immutable accepted revisions. Reimporting identical content SHALL create no duplicate revision. A changed source SHALL create a new revision without changing existing session snapshots or measured evidence. Missing source entries SHALL be reported and SHALL NOT silently delete existing data.
+Browser import SHALL preserve exact selected source bytes and use the canonical import accounting, fingerprint, attestation and atomic accepted-set semantics. It SHALL expose opaque identifiers instead of private staging paths. It SHALL enforce 20 files per selection, 10 MiB per file, 50 MiB aggregate per selection and 24-hour staging expiry. A changed selection, target or expired/missing/mismatched staged input SHALL require a fresh preview.
 
-Logical deletion SHALL NOT physically remove or mutate accepted immutable revisions. A deleted library or logical source entry SHALL be excluded from normal inventory and new selection/preparation while historical exact revision references remain resolvable for finalized prepared/generated evidence.
+A valid source library declaration SHALL provide the default target with its exact spelling. A declared key SHALL contain 1-128 characters without surrounding whitespace, ASCII controls, slash or backslash and SHALL NOT equal dot or dot-dot. Filenames SHALL NOT determine identity. Supported non-envelope inputs and invalid/missing declarations SHALL offer explicit compatibility targeting of an existing library or a valid new key instead of requiring source editing.
 
-#### Scenario: A source entry changes
-- **WHEN** the same library and identifier are reimported with different content
-- **THEN** new selections can use the new revision while previously prepared takes retain their original inputs
+An existing exact target key SHALL remain authoritative. If no exact-key target exists but an exact source-ID/content-digest pair occurs in another library, preview SHALL require an explicit existing-target or separate-library choice. The system SHALL NOT silently merge, rename or duplicate that candidate. Declared and effective identities SHALL be shown and bound to preview. Existing path-based API/CLI semantics SHALL remain unchanged.
 
-#### Scenario: A logical resource is deleted
-- **WHEN** a library or source entry is logically deleted
-- **THEN** its accepted revision rows remain unchanged
-- **AND** finalized historical snapshots that reference exact revisions remain explainable and replayable according to existing snapshot semantics
+#### Scenario: Selected bytes change after preview
+- **WHEN** staged bytes or target identity differ from a preview
+- **THEN** commit refuses without changing accepted resources
 
-### Requirement: Logical resource deletion and restoration are explicit
+#### Scenario: File or aggregate limits are exceeded
+- **WHEN** individual uploads together exceed any selection limit
+- **THEN** the selection is refused before expensive parsing or accepted-resource persistence
 
-The system SHALL support transactional, idempotent logical Delete and Restore operations for imported libraries and individual logical source entries. Library-level deletion state SHALL be stored separately from immutable revision payloads. Individual entry deletion state SHALL be keyed by logical source identity rather than by a particular immutable revision.
+#### Scenario: Staged input expires
+- **WHEN** a commit references missing or expired staging
+- **THEN** the user must select or preview fresh content
+- **AND** private server paths are not disclosed
 
-Deleting a library SHALL hide all of its entries from normal inventory and new selection/preparation through parent library state. Restoring a library SHALL clear only the library deletion state. An entry that was individually deleted SHALL remain deleted until explicitly restored.
+#### Scenario: Source declares a valid new library
+- **WHEN** a source declares a valid key with no exact-key target or historical exact-revision overlap
+- **THEN** that declared key is the normal target without typed identity input
 
-A new preparation request that depends on a deleted library/entry SHALL fail with a deleted-resource reason rather than silently substituting another revision. Historical finalized prepared/generated snapshots SHALL continue resolving the exact immutable revisions they already captured.
+#### Scenario: Historical import used another key
+- **WHEN** the declared target is new but source identity and digest overlap a differently keyed stored library
+- **THEN** preview requests an explicit target choice
+- **AND** selecting the historical library preserves its identity and immutable revisions
 
-#### Scenario: Delete library twice
-- **WHEN** an already deleted library receives Delete again
-- **THEN** the operation succeeds idempotently without altering immutable revisions
+#### Scenario: Supported source lacks an envelope
+- **WHEN** a supported list, individual entry or auxiliary map has no usable declaration
+- **THEN** selected-byte import offers explicit compatibility targeting without editing JSON
+- **AND** auxiliary data is not interpreted as a scene
 
-#### Scenario: Restore library twice
-- **WHEN** an active library receives Restore again
-- **THEN** the operation succeeds idempotently without altering immutable revisions
+#### Scenario: Two files target one library
+- **WHEN** multiple files resolve to the same target key
+- **THEN** canonical duplicate and content accounting applies without invented suffixes
 
-#### Scenario: Restore parent library with deleted child entry
-- **WHEN** a deleted library is restored while one source entry has an individual deletion tombstone
-- **THEN** the library becomes active
-- **AND** that source entry remains excluded until explicitly restored
+### Requirement: Translation proposals do not bypass reviewed application
 
-#### Scenario: New preparation references deleted resource
-- **WHEN** an unfinalized plan requests preparation using an exact revision whose logical library or source entry is deleted
-- **THEN** preparation is refused with a deleted-resource diagnostic
-- **AND** no replacement revision is selected automatically
+The system SHALL offer editable source-backed translation rows and optional assistant proposals for authorized descriptive fields. Proposals SHALL preserve canonical keys, scalar/list contracts and list order, and SHALL NOT write sidecars. Already-English required source strings SHALL still require explicitly accepted sidecar entries. Users SHALL preview and explicitly apply selected map content or reviewed rows through existing authorization, map-digest and library-fingerprint checks.
 
-### Requirement: Browser re-import restores a matching deleted library without duplicating identity
+Direct-content translation requests SHALL be limited to 10 MiB; assistant proposal actions SHALL cover at most twenty source entries. Unsolicited or malformed proposals SHALL be refused. A library or selection change SHALL invalidate pending proposal/preview results. Unsupported mappings and invalid source structures SHALL remain correction issues, not be guessed into translations. No assistant SHALL be required for manual rows or selected maps.
 
-For the browser-selected import flow, the supported source envelope's valid top-level `library` declaration SHALL identify the logical target library. If that exact library identity already exists in soft-deleted state, preview SHALL report reuse/restoration and successful atomic commit SHALL reactivate the same logical library row while applying normal immutable revision import rules.
+#### Scenario: Imported English source lacks required sidecars
+- **WHEN** required English source strings have no authorized translations
+- **THEN** the resource remains pending until explicit identity translations or other valid translations are reviewed and applied
 
-Re-import SHALL NOT create a second logical library with the same declared identity and SHALL NOT silently restore individually deleted source entries. Individual entry tombstones remain authoritative until explicit Restore.
+#### Scenario: Assistant proposes translations
+- **WHEN** valid assistant suggestions are returned
+- **THEN** users can edit and preview them without any sidecar write
+- **AND** only explicit application persists authorized translations
 
-#### Scenario: Re-import deleted library
-- **WHEN** a source declares the exact key of an existing soft-deleted library
-- **THEN** preview identifies the existing library as the target to restore
-- **AND** commit reactivates that same logical library identity atomically with accepted revision writes
+#### Scenario: No translation map or assistant is available
+- **WHEN** a user opens an entry with missing required translations
+- **THEN** editable source-backed rows provide a complete manual preview/apply path
 
-#### Scenario: Re-import includes deleted source entry
-- **WHEN** a re-imported file contains a source ID that is individually deleted
-- **THEN** normal immutable revision accounting still occurs
-- **AND** the logical source entry remains deleted after import until explicitly restored
+#### Scenario: Proposal or map becomes stale
+- **WHEN** source/library state or selected content changes after a proposal or preview
+- **THEN** stale results cannot be applied as current
 
-### Requirement: Field coverage and readiness are inspectable
+#### Scenario: Unsolicited translation field
+- **WHEN** a proposal targets a field not authorized for the source
+- **THEN** preview/application rejects it with no translation writes
 
-The system SHALL classify source fields as descriptive input, selection metadata, writer guidance, auxiliary data or unused data. It SHALL distinguish importable resources from resources ready for preparation. An unmapped or untranslated field required for preparation SHALL block that preparation with a field-specific reason. Keys in pending_fields SHALL be canonical field names, with any source alias recorded in reason and field metadata. Optional unused fields SHALL remain visible without entering the prompt automatically. Stored revisions with invalid persisted translation sidecars SHALL remain inspectable with pending status and diagnostic sidecar_error metadata.
+#### Scenario: Translation input exceeds bounds
+- **WHEN** direct content exceeds 10 MiB or a proposal action exceeds twenty entries
+- **THEN** the request is refused with a readable limit error
 
-Normal inventory/readiness surfaces SHALL also expose enough safe logical deletion state to explain why a library or source entry is unavailable. Deleted state SHALL NOT be confused with translation/readiness failure.
+### Requirement: Personal looks preserve reusable appearance and garment definitions
 
-#### Scenario: Deleted entry is inspected through management details
-- **WHEN** an operator views advanced/management details for a deleted logical source entry
-- **THEN** its immutable revisions and readiness metadata remain inspectable
-- **AND** the UI/API identifies logical deletion separately from readiness or translation errors
+The system SHALL let users create named looks through forms, import/export versioned JSON, and save reviewed photo-derived proposals. A look SHALL separate constant appearance from an optional ordered garment outfit. Garments SHALL have stable identity, worn wording and optional moved-aside wording. Removal order SHALL be explicitly authored, not inferred from a photograph or assistant output. One-piece garments, layers and removable accessories SHALL be supported without mandatory rigid body-part slots.
 
-### Requirement: Translation map application, attestation, and TOCTOU protection
+Personal looks SHALL remain separate from immutable mined resources. Editing a saved look SHALL create a new immutable version or record and SHALL NOT reword existing legacy garment/outfit keys. Imported references and duplicate keys SHALL be prevalidated before atomic persistence. Identical JSON re-import SHALL be a no-op; conflicting content SHALL require explicit new-version or save-copy resolution. Existing garment/outfit JSON SHALL be accepted as an outfit-only input. JSON requests SHALL be limited to 10 MiB and exported content SHALL exclude photos, private paths, credentials and session data.
 
-The system SHALL support previewing and applying translation maps to stored resource libraries. Preview SHALL be strictly read-only and SHALL produce an HMAC-SHA256 attestation token signed by a database-directory-scoped private key (.resource-translation-preview-key), binding library metadata, map digest, and raw sidecar fingerprints (excluding coverage). Apply SHALL verify the token, library existence, logical deletion state, and library fingerprint against TOCTOU drift inside a transaction under BEGIN IMMEDIATE, execute validated merge updates into the translation sidecar, repair stale coverage without mutating unchanged translation counts, and suppress redundant SQL writes. If the target library is logically deleted or modified after preview, apply SHALL fail with HTTP 409 Conflict.
+#### Scenario: Look is created manually
+- **WHEN** a user names a look, enters appearance and adds garments in an explicit order
+- **THEN** it is reusable without entering technical keys or editing external JSON
 
-#### Scenario: Applying a valid translation map
-- **WHEN** an operator applies a translation map matching source strings in an active library
-- **THEN** canonical translations are merged into asset_revision.translation and affected revisions become ready
+#### Scenario: Look is imported twice
+- **WHEN** identical portable JSON is imported twice
+- **THEN** the second import creates no duplicate
+- **AND** changed content under the same identity requires explicit conflict resolution
 
-#### Scenario: Target library is deleted after preview
-- **WHEN** a target library is logically deleted between preview token issuance and apply execution
-- **THEN** apply is rejected with an HTTP 409 Conflict error
+#### Scenario: Imported outfit has an unknown garment
+- **WHEN** a reference is absent from both the import and existing store
+- **THEN** the whole import is refused before writes
 
-#### Scenario: Source library state drifts between preview and apply
-- **WHEN** library revisions are modified after preview issuance
-- **THEN** apply is rejected with a conflict error requiring a fresh preview
+#### Scenario: Existing look is edited
+- **WHEN** a used look is saved with different garment wording
+- **THEN** a new version or record is created without mutating prior versions or legacy keys
 
-#### Scenario: Translation map is invalid
-- **WHEN** a translation map contains non-English translations or empty fields
-- **THEN** the entire operation is rejected with zero writes to stored translations or coverage
+### Requirement: Photo look extraction is an explicitly reviewed proposal
+
+The system SHALL accept one browser-selected JPEG, PNG or WebP look image per operation, up to 10 MiB file bytes and 25 megapixels decoded. It SHALL validate actual image content, stage it privately behind opaque identifiers, and require an explicit extraction action before sending it to the configured vision assistant. It SHALL NOT infer person identity, unseen garments, background, camera or pose as accepted look content.
+
+Extraction SHALL produce editable visible appearance/garment proposals with unresolved details identified. Users SHALL confirm removal order and review or edit content before saving. Failed extraction or invalid output SHALL save no look. Without vision support, manual entry SHALL remain available and extraction unavailability SHALL be explained.
+
+Saved provenance SHALL retain the source digest, assistant request/output and user edits without embedding image bytes in ordinary metadata or portable JSON. Temporary images SHALL expire after 24 hours and be cleaned after save/cancel when no longer needed. Saved looks SHALL remain usable without the original image or another assistant call. Look images SHALL NOT automatically become generation references.
+
+#### Scenario: Image is selected
+- **WHEN** a photo is selected but Extract look has not been invoked
+- **THEN** no assistant request or saved-look mutation occurs
+
+#### Scenario: Image proposal needs correction
+- **WHEN** extraction returns uncertain garments or incomplete details
+- **THEN** the user can correct or explicitly omit them and confirm removal order before saving
+
+#### Scenario: Vision assistant is unavailable
+- **WHEN** the configured assistant cannot process the image
+- **THEN** extraction fails visibly without saving
+- **AND** photo preview and manual creation remain available
+
+#### Scenario: Saved look outlives the photo
+- **WHEN** temporary image content has been cleaned
+- **THEN** saved descriptions and provenance remain reusable
+- **AND** the photo is not silently attached to image generation
+
+#### Scenario: Image exceeds limits or has invalid content
+- **WHEN** a selected image is oversized, exceeds decoded dimensions or is not a supported valid image
+- **THEN** it is refused before inference or saved-look persistence

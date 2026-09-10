@@ -1,58 +1,76 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
-### Requirement: Structured preparation has explicit inputs
+### Requirement: Automatic take synthesis preserves structured provenance
 
-Preparation SHALL consume the resolved session state, selected resource revisions, declared field mappings and take choices. It SHALL separate creative decisions, descriptive fields and any optional prose synthesis. Required descriptive fields SHALL be consumed strictly from authorized English translations in the translation sidecar; preparation SHALL NOT fall back to the source payload for required descriptive fields even if the payload contains English text. Optional descriptive fields without translations SHALL be omitted if they contain non-English characters. Instructions in source files SHALL be treated as data and SHALL NOT execute commands or change application rules. External application binaries SHALL NOT be required for normal operation.
+Automatic authoring SHALL use the configured assistant and preserve structured camera, framing, pose and expression output through validation. Only currently unlocked fields SHALL be requested and accepted. Output SHALL NOT be flattened into prose and reconstructed heuristically, or persisted as manual completion to bypass assistant provenance. Historical assistant callers SHALL retain their existing behavior.
 
-When automatic resource-session authoring is used, the writer request MAY additionally include a bounded authoritative authoring context derived from the current persisted plan revision. That context SHALL contain only information needed to maintain the session while varying unlocked take choices: the persisted session brief, exact scene anchor and authorized descriptive state, current take ID/ordinal/total, variation policy/resolved fixed values, and deterministic summaries of at most the five immediately preceding finalized takes in stable plan order.
+The request SHALL include persisted brief, exact scene anchor and authorized descriptions, accepted shared state, policy, current take ID/ordinal/total and at most five immediately preceding finalized take summaries in stable plan order. Each summary SHALL contain only take ID and the four creative fields. Images, arbitrary conversation and full historical prompts SHALL be excluded. Exact request context, validated output and predecessor snapshot identities/revisions SHALL remain replayable evidence.
 
-Each prior-take summary SHALL contain only stable take ID plus camera, framing, pose and expression. Generated images, arbitrary conversation, full historical prompts and unrelated session history SHALL NOT be included. When more than five earlier finalized takes exist, truncation SHALL deterministically retain only the five immediately preceding finalized takes in plan order.
+#### Scenario: Structured output is returned
+- **WHEN** an assistant returns valid unlocked take fields
+- **THEN** preparation validates them as fields and records assistant synthesis input/output
 
-The context SHALL be input-only: writer output remains restricted to currently unlocked fields from the closed take-choice set `camera`, `framing`, `pose` and `expression`. The configured OpenAI-compatible assistant transport MAY expose a field-preserving structured-output helper for this writer path. Resource writer output SHALL remain a structured field object through validation and SHALL NOT be flattened into an unrelated historical `{label, prompt}` representation and then reconstructed heuristically.
+#### Scenario: Writer changes a locked field
+- **WHEN** output contains a fixed or otherwise unauthorized field
+- **THEN** it is rejected without mutating shared or take state
 
-Because the configured assistant transport is asynchronous while the existing deterministic resource writer interface is synchronous, the implementation SHALL establish an explicit orchestration boundary. That boundary MAY invoke the async assistant transport before passing structured values into existing preparation validation/finalization primitives, but it SHALL NOT duplicate provider configuration/HTTP transport or bypass existing writer-output validation merely to bridge async and sync code.
+#### Scenario: More than five predecessors exist
+- **WHEN** take twelve is prepared after its predecessors
+- **THEN** at most the five immediately preceding finalized summaries enter context
+- **AND** exact context and predecessor snapshot references are persisted
 
-#### Scenario: Guidance includes an instruction
-- **WHEN** a resource contains authoring guidance
-- **THEN** it is passed only as bounded reference data where its mapping permits and is not blindly appended to the image description
+#### Scenario: Completed take is retried
+- **WHEN** current ready/generated preparation is requested again
+- **THEN** the stored snapshot is reused without a new writer call
 
-#### Scenario: Required descriptive field lacks translation sidecar
-- **WHEN** a resource take is prepared but a required descriptive field has no authorized translation in the sidecar
-- **THEN** preparation is refused with a PreparationFieldError even if the source payload contains English text
+### Requirement: Simple automatic authoring does not decompose fused descriptions
 
-#### Scenario: Optional field contains non-English characters
-- **WHEN** an untranslated optional field contains non-English text
-- **THEN** it is omitted from prompt clauses to avoid non-English script pollution
+The simple automatic scene selector SHALL admit ready rooms resources and SHALL redirect fused_scenes resources to an explicit advanced/manual path. Fused descriptions SHALL remain complete and inspectable; automatic splitting or silent omission SHALL NOT be used to make them appear compatible.
 
-#### Scenario: Automatic authoring receives continuity context
-- **WHEN** an incomplete take is automatically authored under a persisted session brief and scene anchor
-- **THEN** the writer receives that authoritative context plus summaries of at most the five immediately preceding finalized take choices
-- **AND** it may return only the currently unlocked camera, framing, pose and expression fields
+The advanced path SHALL display the full authorized description with effective shared/take choices. Contradictions SHALL require a separately stored user-approved adaptation or another resource before finalization. Structural validation SHALL NOT be presented as proof that free-text output preserves scene, wardrobe or identity. Existing conflict review SHALL remain required, and the system SHALL NOT claim exhaustive semantic contradiction detection for room or fused prose.
 
-#### Scenario: More than five prior takes are available
-- **WHEN** automatic authoring prepares a take with more than five finalized predecessors
-- **THEN** only the five immediately preceding finalized predecessors in stable plan order are included
-- **AND** no generated image, arbitrary conversation or full historical prompt is included
+#### Scenario: Fused scene already specifies pose and camera
+- **WHEN** a user selects a fused description for simple automatic authoring
+- **THEN** the UI explains the restriction and offers the advanced editor or another scene
+- **AND** no competing automatic choices are silently appended
 
-#### Scenario: Structured transport returns take fields
-- **WHEN** the configured assistant returns structured camera, framing, pose or expression values
-- **THEN** those fields reach the existing writer-output validator as fields rather than being flattened into a prose prompt and reconstructed
+#### Scenario: Advanced fused adaptation
+- **WHEN** an advanced take contradicts the fused description
+- **THEN** a user-approved adaptation or another resource is required
+- **AND** the original revision remains unchanged
 
-### Requirement: Preparation is traceable and replayable
+#### Scenario: Location is embedded in pose text
+- **WHEN** an otherwise structurally valid pose value describes another location
+- **THEN** structural validation alone does not mark it semantically approved
+- **AND** fixed context and complete resulting prompt remain visible for explicit review
 
-The system SHALL save the final prompt, effective state, source revision references, field mappings, preparation version and any writer input/output needed to explain the result. Re-running a finalized take SHALL reuse its saved prompt without another writer call. Unsupported claims of exact AmazingDraw rendering parity SHALL NOT appear in the interface or documentation. When automatic authoring used persisted authoring context, the saved writer input SHALL include the exact bounded context sent to the assistant so the resulting choice can be explained without relying on external conversational state.
+### Requirement: Automatic variety exposes exact repeats without forbidding deliberate reuse
 
-Assistant-established fixed variation values SHALL also be traceable before they are consumed by per-take preparation. The authoritative authoring state SHALL preserve the resolved value, `value_origin = assistant`, the exact bounded resolution input/context and the validated assistant output used to establish that fixed value. User-established fixed values SHALL record `value_origin = user` and SHALL NOT fabricate assistant provenance.
+Automatic preparation SHALL compare normalized four-field choice tuples against finalized takes across the session and flag exact duplicates for review. Normalization SHALL trim and collapse whitespace and compare case-insensitively without changing stored output. It SHALL NOT silently delete a repeated take or retry indefinitely. Explicitly reviewed repetition SHALL remain allowed, including a fixed camera across many takes. Five-predecessor context SHALL NOT be advertised as a whole-session uniqueness guarantee.
 
-#### Scenario: Repeating a prepared photograph
-- **WHEN** the user repeats a finalized take with another seed
-- **THEN** the saved prompt remains unchanged and no source refresh or writer variation changes it
+#### Scenario: Distant duplicate
+- **WHEN** a prepared take repeats a finalized tuple outside its five-take context window
+- **THEN** the UI flags the duplicate for explicit review without dropping the take
 
-#### Scenario: Reviewing assistant-authored provenance
-- **WHEN** a prepared take was filled by automatic session authoring
-- **THEN** its provenance identifies the assistant synthesis and preserves the exact bounded writer input/context and validated writer output used for that take
+#### Scenario: Deliberate repeated camera
+- **WHEN** takes share a fixed camera but differ in other choices
+- **THEN** shared camera alone does not trigger duplicate rejection
 
-#### Scenario: Reviewing assistant-established fixed state
-- **WHEN** the assistant established a fixed variation value before take preparation
-- **THEN** persisted authoring state identifies its assistant origin and exact resolution input/output
-- **AND** later takes do not need another assistant call to explain or reconstruct that fixed value
+### Requirement: Reusable looks compose constant appearance and current clothing separately
+
+Prepared prompts SHALL consume snapshotted appearance as constant look and only the take's resolved wardrobe as clothing. Unchanged garment wording SHALL repeat verbatim. Removed garments SHALL NOT be restated as positive clothing or carried by an automatically copied full-outfit appearance block. A deliberately garment-free stage SHALL contain an explicit no-clothing statement; an empty wardrobe string SHALL retain its distinct no-description meaning.
+
+The writer SHALL receive resolved current clothing as fixed context and SHALL NOT reintroduce the initial outfit through its choices. Existing conflict/adaptation review SHALL apply when source prose or user-entered appearance contains contradictory clothing. The system SHALL NOT claim exhaustive detection of such prose conflicts.
+
+#### Scenario: A garment is removed midway
+- **WHEN** an approved wardrobe event removes a jacket while keeping other garments
+- **THEN** later prompts describe only remaining garments and unchanged appearance
+- **AND** the initial jacket description is not appended elsewhere automatically
+
+#### Scenario: Explicit final garment-free stage
+- **WHEN** the user selects and approves the final stage with no garments
+- **THEN** prompts contain an explicit no-clothing statement rather than relying on an empty field
+
+#### Scenario: Source still names the original outfit
+- **WHEN** a resource conflicts with the approved current wardrobe
+- **THEN** normal conflict review requires adaptation or another resource instead of silently combining both
