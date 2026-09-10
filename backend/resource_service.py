@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import time
 from typing import Any, Iterable
@@ -21,11 +22,12 @@ import resource_readiness
 import resource_store
 
 
-PREVIEW_VERSION = 1
+PREVIEW_VERSION = 2
 PREVIEW_TTL_SECONDS = 24 * 60 * 60
 _ATTESTATION_KEY_NAME = ".resource-preview-key"
 _ATTESTATION_DIR_NAME = ".resource-preview-attestations"
 _ATTESTATION_TOKEN_MIN_LENGTH = 32
+_CANONICAL_NON_NEGATIVE_INT_RE = re.compile(r"^(0|[1-9][0-9]*)$")
 
 
 def preview_import(selections: Iterable[tuple[str | Path, str]]) -> resource_import.PreviewReport:
@@ -92,10 +94,16 @@ def _persist_new_revision_coverage(preview: resource_import.PreviewReport) -> No
 def _fingerprint_to_dict(fingerprint: resource_import.FileFingerprint | None) -> dict[str, Any] | None:
     if fingerprint is None:
         return None
+    if (
+        not isinstance(fingerprint.mtime_ns, int)
+        or isinstance(fingerprint.mtime_ns, bool)
+        or fingerprint.mtime_ns < 0
+    ):
+        raise ValueError("fingerprint mtime_ns must be a non-negative integer")
     return {
         "path": fingerprint.path,
         "size": fingerprint.size,
-        "mtime_ns": fingerprint.mtime_ns,
+        "mtime_ns": str(fingerprint.mtime_ns),
         "content_sha256": fingerprint.content_sha256,
     }
 
@@ -106,13 +114,27 @@ def _fingerprint_from_dict(value: Any) -> resource_import.FileFingerprint | None
     if not isinstance(value, dict):
         raise ValueError("preview fingerprint must be an object or null")
     try:
+        raw_path = value["path"]
+        raw_size = value["size"]
+        raw_mtime = value["mtime_ns"]
+        raw_sha = value["content_sha256"]
+    except KeyError as exc:
+        raise ValueError("preview fingerprint is incomplete") from exc
+
+    if (
+        not isinstance(raw_mtime, str)
+        or not _CANONICAL_NON_NEGATIVE_INT_RE.fullmatch(raw_mtime)
+    ):
+        raise ValueError("preview fingerprint mtime_ns must be a canonical decimal integer string")
+
+    try:
         return resource_import.FileFingerprint(
-            path=str(value["path"]),
-            size=int(value["size"]),
-            mtime_ns=int(value["mtime_ns"]),
-            content_sha256=str(value["content_sha256"]),
+            path=str(raw_path),
+            size=int(raw_size),
+            mtime_ns=int(raw_mtime),
+            content_sha256=str(raw_sha),
         )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (TypeError, ValueError) as exc:
         raise ValueError("preview fingerprint is incomplete") from exc
 
 
@@ -503,6 +525,10 @@ def preview_from_dict(value: dict[str, Any]) -> resource_import.PreviewReport:
     return preview
 
 
+serialize_preview = preview_to_dict
+deserialize_preview = preview_from_dict
+
+
 def _safe_reason(bucket: str, reason: str) -> str:
     if bucket == resource_import.BUCKET_FILE_READ_ERROR:
         return "source file could not be read or parsed"
@@ -710,6 +736,8 @@ __all__ = (
     "commit_import",
     "preview_to_dict",
     "preview_from_dict",
+    "serialize_preview",
+    "deserialize_preview",
     "safe_report",
     "write_report_artifact",
     "list_resource_libraries",

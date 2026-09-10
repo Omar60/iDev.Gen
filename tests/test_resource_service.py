@@ -1,9 +1,11 @@
 """Task 2.5 tests for the shared resource application boundary."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -12,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import db
+import resource_import
 import resource_service
 import resource_store
 
@@ -457,3 +460,209 @@ def test_resource_session_and_limitations_docs_describe_delivered_contracts():
     assert "pixel-level continuity" in limitations
     assert "Untranslated resources remain pending" in limitations
     assert "AmazingDraw" in limitations
+
+
+def test_preview_mtime_ns_serialized_as_decimal_string_and_deserialized_as_int(tmp_path):
+    path = tmp_path / "resources.json"
+    _write(path, [_scene("scene_test", "invented room")])
+
+    preview = resource_service.preview_import(_selection(path))
+    serialized = resource_service.serialize_preview(preview)
+    mtime_wire = serialized["files"][0]["fingerprint"]["mtime_ns"]
+    assert isinstance(mtime_wire, str)
+    assert mtime_wire.isdigit() and mtime_wire.isascii()
+    assert mtime_wire == "0" or not mtime_wire.startswith("0")
+
+    restored = resource_service.deserialize_preview(serialized)
+    restored_mtime = restored.files[0].fingerprint.mtime_ns
+    assert isinstance(restored_mtime, int)
+    assert not isinstance(restored_mtime, bool)
+    assert restored_mtime == int(mtime_wire)
+    assert restored.counts_reconcile()
+
+
+def test_fingerprint_mtime_ns_exceeding_max_safe_integer_survives_exact():
+    large_val = 9007199254740993
+    assert large_val > 9007199254740991
+
+    fp = resource_import.FileFingerprint(
+        path="invented/test.json",
+        size=123,
+        mtime_ns=large_val,
+        content_sha256="a" * 64,
+    )
+    serialized = resource_service._fingerprint_to_dict(fp)
+    assert serialized["mtime_ns"] == "9007199254740993"
+    assert isinstance(serialized["mtime_ns"], str)
+
+    restored = resource_service._fingerprint_from_dict(serialized)
+    assert isinstance(restored.mtime_ns, int)
+    assert not isinstance(restored.mtime_ns, bool)
+    assert restored.mtime_ns == large_val
+
+
+def test_tampered_serialized_mtime_ns_invalidates_attestation(client, tmp_path):
+    path = tmp_path / "api-tampered-mtime.json"
+    _write(path, [_scene("scene_tamper", "invented room")])
+
+    preview = client.post(
+        "/api/resources/import/preview",
+        json={"selections": [{"path": str(path), "library_key": "api_library"}]},
+    ).json()["preview"]
+
+    tampered = copy.deepcopy(preview)
+    original_mtime = int(tampered["files"][0]["fingerprint"]["mtime_ns"])
+    tampered["files"][0]["fingerprint"]["mtime_ns"] = str(original_mtime + 1)
+
+    with pytest.raises(ValueError, match="serialized resource preview attestation is invalid"):
+        resource_service.preview_from_dict(tampered)
+
+    response = client.post(
+        "/api/resources/import/commit",
+        json={"preview": tampered},
+    )
+    assert response.status_code == 422
+    assert "serialized resource preview attestation is invalid" in response.json()["detail"]
+    assert db.q("SELECT * FROM resource_library") == []
+
+
+def test_fingerprint_rejects_non_string_wire_types_for_mtime_ns():
+    base = {
+        "path": "invented/test.json",
+        "size": 100,
+        "content_sha256": "0" * 64,
+    }
+    non_string_values = [
+        9007199254740993,
+        9007199254740993.0,
+        True,
+        False,
+        None,
+        ["9007199254740993"],
+        {"mtime_ns": "9007199254740993"},
+    ]
+    for val in non_string_values:
+        with pytest.raises(ValueError, match="preview fingerprint mtime_ns must be a canonical decimal integer string"):
+            resource_service._fingerprint_from_dict({**base, "mtime_ns": val})
+
+
+def test_fingerprint_rejects_malformed_decimal_strings_for_mtime_ns():
+    base = {
+        "path": "invented/test.json",
+        "size": 100,
+        "content_sha256": "0" * 64,
+    }
+    malformed_strings = [
+        "",
+        " ",
+        "  123  ",
+        "not_a_number",
+        "-1",
+        "-9007199254740993",
+        "+100",
+        "01",
+        "00",
+        "007",
+        "1.0",
+        "1e9",
+        "0x10",
+        "١٢٣",
+    ]
+    for text in malformed_strings:
+        with pytest.raises(ValueError, match="preview fingerprint mtime_ns must be a canonical decimal integer string"):
+            resource_service._fingerprint_from_dict({**base, "mtime_ns": text})
+
+    zero_fp = resource_service._fingerprint_from_dict({**base, "mtime_ns": "0"})
+    assert zero_fp.mtime_ns == 0
+    assert isinstance(zero_fp.mtime_ns, int)
+    assert not isinstance(zero_fp.mtime_ns, bool)
+
+
+def test_preview_from_dict_explicitly_refuses_previous_preview_version(client, tmp_path):
+    path = tmp_path / "resources.json"
+    _write(path, [_scene("v1_scene", "invented room")])
+
+    preview = resource_service.preview_import(_selection(path))
+    serialized = resource_service.preview_to_dict(preview)
+    v1_preview = copy.deepcopy(serialized)
+    v1_preview["version"] = 1
+
+    with pytest.raises(ValueError, match="unsupported resource preview version: 1"):
+        resource_service.preview_from_dict(v1_preview)
+
+    response = client.post(
+        "/api/resources/import/commit",
+        json={"preview": v1_preview},
+    )
+    assert response.status_code == 422
+    assert "unsupported resource preview version: 1" in response.json()["detail"]
+    assert db.q("SELECT * FROM resource_library") == []
+
+
+def test_node_javascript_corrupts_numeric_mtime_ns_exceeding_max_safe_integer():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("needs node")
+
+    unsafe_val = 9007199254740993
+    numeric_json = f'{{"mtime_ns": {unsafe_val}}}'
+    node_script = (
+        "const fs = require('fs');\n"
+        "const raw = fs.readFileSync(0, 'utf-8');\n"
+        "const parsed = JSON.parse(raw);\n"
+        "process.stdout.write(JSON.stringify(parsed));\n"
+    )
+    proc = subprocess.run(
+        [node, "-e", node_script],
+        input=numeric_json,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    js_output = json.loads(proc.stdout)
+    assert js_output["mtime_ns"] != unsafe_val
+
+
+def test_api_preview_commit_roundtrip_through_real_javascript_node(client, tmp_path):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("needs node")
+
+    path = tmp_path / "api-resources.json"
+    _write(path, [_scene("api_scene", "invented api room")])
+    assert path.stat().st_mtime_ns > 9007199254740991
+
+    preview_response = client.post(
+        "/api/resources/import/preview",
+        json={"selections": [{"path": str(path), "library_key": "api_library"}]},
+    )
+    assert preview_response.status_code == 200
+    preview_body = preview_response.json()
+    raw_preview = preview_body["preview"]
+
+    mtime_wire = raw_preview["files"][0]["fingerprint"]["mtime_ns"]
+    assert isinstance(mtime_wire, str)
+    assert int(mtime_wire) > 9007199254740991
+
+    node_script = (
+        "const fs = require('fs');\n"
+        "const raw = fs.readFileSync(0, 'utf-8');\n"
+        "const parsed = JSON.parse(raw);\n"
+        "process.stdout.write(JSON.stringify(parsed));\n"
+    )
+    node_proc = subprocess.run(
+        [node, "-e", node_script],
+        input=json.dumps(raw_preview),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    js_processed_preview = json.loads(node_proc.stdout)
+
+    commit_response = client.post(
+        "/api/resources/import/commit",
+        json={"preview": js_processed_preview},
+    )
+    assert commit_response.status_code == 200
+    assert commit_response.json()["report"]["phase"] == "commit"
+    assert len(resource_store.list_libraries()) == 1
