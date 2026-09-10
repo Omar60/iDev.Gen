@@ -70,6 +70,8 @@ the guard.
 
 ### Requirement: Source English text is stored unaltered
 
+For private database resource imports, accepted source objects SHALL be preserved in their original language separately from English translations. Missing English text or translations SHALL mark preparation readiness as pending rather than discard accepted source data. This exception SHALL NOT apply to tracked files, generated prompts or English user interface text. The translation and missing-English-text scenarios below apply to legacy seed imports; the import-side refusal of prohibited content is no longer in force on either path.
+
 The system SHALL store an accepted entry's English source text exactly as the
 source wrote it, with no trimming, rewording, summarising or reordering.
 
@@ -85,6 +87,8 @@ reported, not filled in by the importer.
 - **THEN** it is skipped and reported, and no placeholder text is invented for it
 
 ### Requirement: Non-English source text is carried across as an authored translation
+
+For private database resource imports, accepted source objects SHALL be preserved in their original language separately from English translations. Missing English text or translations SHALL mark preparation readiness as pending rather than discard accepted source data. This exception SHALL NOT apply to tracked files, generated prompts or English user interface text. The translation and missing-English-text scenarios below apply to legacy seed imports; the import-side refusal of prohibited content is no longer in force on either path.
 
 The system SHALL store an English translation of an accepted entry's non-English
 fields, and SHALL store it as text this project authored rather than as source

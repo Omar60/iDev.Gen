@@ -38,6 +38,8 @@ never of the trio.
 
 ### Requirement: The undressing is derived, never stored
 
+These requirements govern the legacy wardrobe catalogue and composer. Resource-session plans SHALL use explicit scoped wardrobe changes as defined by session-plan, SHALL keep wardrobe constant by default, and SHALL NOT automatically apply the legacy derived progression. Existing legacy outfit derivation and take override behavior SHALL remain unchanged.
+
 The system SHALL derive the wardrobe states of an outfit from its garment
 order: N garments SHALL produce N+1 states of undressing, one garment leaving
 at each step, and the last state SHALL be bare.
@@ -153,6 +155,8 @@ count of acts it could actually draw.
 - **THEN** each photograph carries no answer of its own and the run's fallback answer decides them all
 
 ### Requirement: A session dresses every photograph, a take may answer for itself
+
+These requirements govern the legacy wardrobe catalogue and composer. Resource-session plans SHALL use explicit scoped wardrobe changes as defined by session-plan, SHALL keep wardrobe constant by default, and SHALL NOT automatically apply the legacy derived progression. Existing legacy outfit derivation and take override behavior SHALL remain unchanged.
 
 The system SHALL let a session carry one wardrobe that every photograph of it
 starts from, and SHALL let a single take carry its own, which wins over the

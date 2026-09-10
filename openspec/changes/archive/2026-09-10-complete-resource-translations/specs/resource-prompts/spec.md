@@ -2,11 +2,11 @@
 
 Prepare reproducible prompts from complete source resources and resolved session state while keeping source guidance distinct from image descriptions and preserving legacy behavior.
 
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Structured preparation has explicit inputs
 
-Preparation SHALL consume the resolved session state, selected resource revisions, declared field mappings and take choices. It SHALL separate creative decisions, descriptive fields and any optional prose synthesis. Required descriptive fields SHALL be consumed strictly from authorized English translations in the translation sidecar; preparation SHALL NOT fall back to the source payload for required descriptive fields even if the payload contains English text. Optional descriptive fields without translations SHALL be omitted if they contain non-English characters. Instructions in source files SHALL be treated as data and SHALL NOT execute commands or change application rules.
+Preparation SHALL consume the resolved session state, selected resource revisions, declared field mappings and take choices. It SHALL separate creative decisions, descriptive fields and any optional prose synthesis. Required descriptive fields SHALL be consumed strictly from authorized English translations in the translation sidecar; preparation SHALL NOT fall back to the source payload for required descriptive fields even if the payload contains English text. Optional descriptive fields without translations SHALL be omitted if they contain non-English characters. Instructions in source files SHALL be treated as data and SHALL NOT execute commands or change application rules. External application binaries SHALL NOT be required for normal operation.
 
 #### Scenario: Guidance includes an instruction
 - **WHEN** a resource contains authoring guidance
@@ -19,6 +19,8 @@ Preparation SHALL consume the resolved session state, selected resource revision
 #### Scenario: Optional field contains non-English characters
 - **WHEN** an untranslated optional field contains non-English text
 - **THEN** it is omitted from prompt clauses to avoid non-English script pollution
+
+## ADDED Requirements
 
 ### Requirement: Semantic families and canonical translation keys
 

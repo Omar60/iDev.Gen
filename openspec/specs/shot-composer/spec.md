@@ -140,7 +140,10 @@ session so a later comparison can tell which produced which photographs.
 #### Scenario: The origin is recorded
 - **WHEN** a session is finished
 - **THEN** the session records whether its lines were composed or written
+
 ### Requirement: An empty catalogue refuses and says what is missing
+
+The requirements below apply to the legacy measured composer and its catalogue-driven writer. New resource-session drafts and independently specified resource takes SHALL NOT require measured components, cell evidence or catalogue uniqueness. Their preparation SHALL instead validate the selected resource mappings, effective state and resolved prompt.
 
 Where a slot's catalogue holds no component available to the session, the
 composer SHALL refuse and SHALL name the slot and the manner it found nothing
@@ -160,6 +163,8 @@ like a measurement of something they were never drawn from.
 - **THEN** the composition is refused naming the act slot, and no shot is queued from the camera alone
 
 ### Requirement: The written path refuses a camera plan it cannot draw
+
+The requirements below apply to the legacy measured composer and its catalogue-driven writer. New resource-session drafts and independently specified resource takes SHALL NOT require measured components, cell evidence or catalogue uniqueness. Their preparation SHALL instead validate the selected resource mappings, effective state and resolved prompt.
 
 Where the writer's path plans a camera per photograph and the manner's camera
 catalogue is empty, the session SHALL be refused at creation, naming the empty

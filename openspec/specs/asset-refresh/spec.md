@@ -11,23 +11,26 @@ somebody has to remember the arguments for.
 
 ### Requirement: One import pipeline, more than one entry
 
+These requirements apply to the legacy room-seed import path. The database resource import path SHALL instead follow resource-store, including complete private payload retention, explicit readiness and source revision preservation. The import-side refusal of prohibited content is no longer in force on either path. Translation readiness and destination handling are path-specific.
+
 The system SHALL implement the import of an asset library once, and SHALL expose
 it both as an operation inside the app and as a command-line entry that calls
 the same implementation.
 
 The two entries SHALL produce identical output for identical input. A second
-implementation of any step - the refusal rule, the translation lookup, the merge
-- SHALL NOT exist.
+implementation of any step - the translation lookup, the merge - SHALL NOT exist.
 
 #### Scenario: The same source through both entries
 - **WHEN** one source library is imported through the app and through the command line
 - **THEN** the resulting seed content is identical
 
 #### Scenario: A rule changed in one place
-- **WHEN** the refusal rule, the translation lookup or the merge changes
+- **WHEN** the translation lookup or the merge changes
 - **THEN** both entries change with it, because there is one implementation
 
 ### Requirement: Every source kind declares its handler and destination
+
+These requirements apply to the legacy room-seed import path. The database resource import path SHALL instead follow resource-store, including complete private payload retention, explicit readiness and source revision preservation. The import-side refusal of prohibited content is no longer in force on either path. Translation readiness and destination handling are path-specific.
 
 The system SHALL require each source library to be declared with the kind of
 material it carries and the destination its entries are written to, and SHALL
@@ -54,23 +57,22 @@ refused, naming what it could not identify, and SHALL write nothing.
 
 #### Scenario: A source this project does not adopt
 - **WHEN** a source declared as carrying material this project does not adopt is uploaded
-- **THEN** it is refused with that reason, distinct from both an unidentified file and a refusal by the deny-list, and nothing is written
+- **THEN** it is refused with that reason, distinct from an unidentified file, and nothing is written
 
 ### Requirement: Refusal and translation run before anything is written
 
-The system SHALL apply the refusal rule to every entry of an uploaded source
-before any of it is written, and SHALL resolve every non-English string against
-the translation map before any of it is written.
+These requirements apply to the legacy room-seed import path. The database resource import path SHALL instead follow resource-store, including complete private payload retention, explicit readiness and source revision preservation. The import-side refusal of prohibited content is no longer in force on either path. Translation readiness and destination handling are path-specific.
+
+The system SHALL resolve every non-English string against the translation map
+before any of it is written.
 
 An upload carrying non-English strings the map does not cover SHALL be refused
 in whole. The refusal SHALL list every uncovered string and the field it came
 from, so that the map can be completed and the same file uploaded again.
 
-A refused entry SHALL NOT be listed among the uncovered strings, because it is
-never translated.
-
-Nothing SHALL be written by an upload that is refused. A refused upload SHALL
-leave every destination exactly as it was.
+Nothing SHALL be written by an upload that has uncovered strings. An upload
+refused for missing translations SHALL leave every destination exactly as it
+was.
 
 #### Scenario: An updated source with new untranslated text
 - **WHEN** a refreshed source is uploaded carrying strings the map does not cover
@@ -81,10 +83,12 @@ leave every destination exactly as it was.
 - **THEN** the import proceeds
 
 #### Scenario: A refused entry in an uploaded source
-- **WHEN** an uploaded source contains a refused entry
-- **THEN** that entry is skipped, its strings are not listed as uncovered, and its text is not written or logged
+- **WHEN** an uploaded source contains an entry that the retired import-side content rule would have refused
+- **THEN** the entry follows the declared handler and translation path and is not filtered by content
 
 ### Requirement: A refresh preserves what has been measured
+
+These requirements apply to the legacy room-seed import path. The database resource import path SHALL instead follow resource-store, including complete private payload retention, explicit readiness and source revision preservation. The import-side refusal of prohibited content is no longer in force on either path. Translation readiness and destination handling are path-specific.
 
 The system SHALL treat a second import of a source as an update of the rows it
 already produced, matched by the source identifier the rows carry.
@@ -112,6 +116,8 @@ file survive a green test suite.
 - **THEN** no destination content changes
 
 ### Requirement: An import reports what it did before it is trusted
+
+These requirements apply to the legacy room-seed import path. The database resource import path SHALL instead follow resource-store, including complete private payload retention, explicit readiness and source revision preservation. The import-side refusal of prohibited content is no longer in force on either path. Translation readiness and destination handling are path-specific.
 
 The system SHALL report, for every import, how many entries were accepted,
 refused, created, updated, left unchanged and orphaned, broken down by

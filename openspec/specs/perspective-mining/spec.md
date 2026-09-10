@@ -11,6 +11,8 @@ attribute.
 
 ### Requirement: A fused entry is never imported whole
 
+The requirements below apply to decomposition into measured component rows and legacy room seeds. Accepted complete source objects SHALL also be stored intact in the private resource database, including unresolved placeholders as source data. Such placeholders SHALL block prompt finalization until explicitly resolved. Decomposition SHALL NOT be a prerequisite for resource storage or resource-session preparation.
+
 The system SHALL refuse to store a source entry that names both a camera
 position and a bodily act as a single row in any catalogue or seed.
 
@@ -35,6 +37,8 @@ from, so that the parts of one source entry can be found again together.
 - **THEN** each names the same source identifier
 
 ### Requirement: Template holes are resolved before storage
+
+The requirements below apply to decomposition into measured component rows and legacy room seeds. Accepted complete source objects SHALL also be stored intact in the private resource database, including unresolved placeholders as source data. Such placeholders SHALL block prompt finalization until explicitly resolved. Decomposition SHALL NOT be a prerequisite for resource storage or resource-session preparation.
 
 The system SHALL NOT store a row whose text still contains an unresolved
 template placeholder from the source.
