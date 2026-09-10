@@ -180,8 +180,8 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
   verify all outcomes (`new`, `unchanged`, `updated`, `unresolved`, auxiliary,
   duplicates, missing), and commit verified sets into SQLite.
 - **Translations & Readiness**: Preview and apply translation maps directly from
-  the UI, view real-time readiness status and diagnostic sidecar error banners,
-  and update single-revision translations.
+  the UI, and inspect real-time readiness status and diagnostic sidecar error banners.
+  (Single-revision translation updates are available via the HTTP API, not in the Resources UI).
 - **Start Session**: Ready and mapped revisions can start a `resource-v1`
   session draft bound to an explicitly chosen character model, with no CLI or
   external scripts needed.

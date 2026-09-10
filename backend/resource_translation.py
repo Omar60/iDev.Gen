@@ -514,13 +514,12 @@ def apply_translation_map(
 
             if trans_needs_update:
                 resource_store.update_translation(rev_id, merged)
-                resource_readiness.set_revision_readiness(rev_id, report.coverage)
                 updated += 1
-            elif cov_needs_update:
-                resource_readiness.set_revision_readiness(rev_id, report.coverage)
-                unchanged += 1
             else:
                 unchanged += 1
+
+            if cov_needs_update:
+                resource_readiness.set_revision_readiness(rev_id, report.coverage)
 
             if report.is_ready:
                 ready += 1

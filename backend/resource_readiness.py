@@ -26,13 +26,14 @@ Three rules are pinned here and nowhere else:
      verdict, and a future task that fills in the translation
      column changes the verdict without ever touching the payload.
 
-  3. Optional and unmapped fields are inspectable but never block
-     readiness. A field the `resource_prompts` contract declares
-     as `intentionally_unused` is reported as retained-but-unused
-     in the coverage record and is not a blocker. A field whose
-     name the contract does not name at all is reported as
-     unmapped and is not a blocker. The required-fields list is
-     the single source of truth for what blocks readiness.
+  3. Ordinary untranslated optional and unmapped fields are inspectable
+     but do not block readiness. A field the `resource_prompts` contract
+     declares as `intentionally_unused` is reported as retained-but-unused
+     in the coverage record and is not a blocker. A field whose name the
+     contract does not name at all is reported as unmapped and is not a
+     blocker. An invalid persisted translation sidecar entry (including
+     for optional fields), however, violates the contract and forces
+     overall pending status with diagnostic `sidecar_error` metadata.
 
 This module does NOT:
 

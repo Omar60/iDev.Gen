@@ -36,4 +36,6 @@
 - [x] 5.12 Descriptive source structural pre-validation: validate that optional descriptive list sources contain only string items before translation map matching, and enforce scalar string types for required descriptive fields.
 - [x] 5.13 Apply conflict handling for deleted libraries: raise HTTP 409 Conflict if target library is deleted between preview and apply.
 - [x] 5.14 No-op single revision update optimization: suppress redundant SQL updates when translation sidecar and coverage are semantically unchanged.
+- [x] 5.15 Synchronize OpenSpec proposal, design, and specs with delivered translation hardening invariants and correct documentation claims.
+- [x] 5.16 Decouple translation and coverage writes in bulk Apply to eliminate redundant coverage SQL updates.
 

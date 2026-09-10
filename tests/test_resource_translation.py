@@ -1251,3 +1251,67 @@ class TestCorrectiveHardening:
         audit_count_2 = db.one("SELECT COUNT(*) as cnt FROM test_rev_audit")["cnt"]
         assert audit_count_2 == audit_count_1
 
+    def test_bulk_apply_suppresses_redundant_coverage_updates_when_coverage_unchanged(self, isolated_db):
+        """Bulk apply updates translation without redundant coverage update when coverage is unchanged,
+        and repairs coverage without translation update when coverage is stale."""
+        lib_id = resource_store.ensure_library("cov_suppress_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "s1",
+            {"id": "s1", "label": "SRC1", "scene_theme": "SRC2"},
+            translation={"label": "Room Alpha", "scene_theme": "Theme Alpha"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        # Ensure initial coverage is populated
+        report = resource_readiness.evaluate_readiness("rooms", rev["payload"], rev["translation"])
+        resource_readiness.set_revision_readiness(rev_id, report.coverage)
+
+        db.run("CREATE TABLE test_audit_trans_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT)")
+        db.run("CREATE TABLE test_audit_cov_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT)")
+        db.run(
+            "CREATE TRIGGER test_audit_trans AFTER UPDATE OF translation ON asset_revision "
+            "BEGIN INSERT INTO test_audit_trans_log (ts) VALUES ('trans'); END;"
+        )
+        db.run(
+            "CREATE TRIGGER test_audit_cov AFTER UPDATE OF coverage ON asset_revision "
+            "BEGIN INSERT INTO test_audit_cov_log (ts) VALUES ('cov'); END;"
+        )
+
+        # 1. Update translation only: change label to Room Beta
+        # The coverage fields will remain translated=True and missing_translations=[]
+        map_update = {
+            "SRC1": {"source": "SRC1", "translation": "Room Beta", "fields": ["label"]},
+        }
+        prev = resource_translation.preview_translation_map("cov_suppress_lib", map_update)
+        assert prev["would_update"] == 1
+        res1 = resource_translation.apply_translation_map(
+            "cov_suppress_lib", map_update, prev["attestation_token"]
+        )
+        assert res1["updated"] == 1
+        assert res1["unchanged"] == 0
+
+        # Verify translation was updated, but coverage was NOT updated
+        trans_count_1 = db.one("SELECT COUNT(*) as cnt FROM test_audit_trans_log")["cnt"]
+        cov_count_1 = db.one("SELECT COUNT(*) as cnt FROM test_audit_cov_log")["cnt"]
+        assert trans_count_1 == 1
+        assert cov_count_1 == 0
+
+        # 2. Tamper coverage to simulate stale coverage repair
+        db.run("UPDATE asset_revision SET coverage = '{}' WHERE id = ?", rev_id)
+        # Coverage trigger fired once on the manual update
+        cov_count_tampered = db.one("SELECT COUNT(*) as cnt FROM test_audit_cov_log")["cnt"]
+        assert cov_count_tampered == 1
+
+        # Re-apply same map (translation is unchanged, but coverage is stale)
+        prev2 = resource_translation.preview_translation_map("cov_suppress_lib", map_update)
+        assert prev2["would_update"] == 0
+        res2 = resource_translation.apply_translation_map(
+            "cov_suppress_lib", map_update, prev2["attestation_token"]
+        )
+        assert res2["updated"] == 0
+        assert res2["unchanged"] == 1
+
+        # Translation was NOT updated, but coverage WAS repaired
+        trans_count_2 = db.one("SELECT COUNT(*) as cnt FROM test_audit_trans_log")["cnt"]
+        cov_count_2 = db.one("SELECT COUNT(*) as cnt FROM test_audit_cov_log")["cnt"]
+        assert trans_count_2 == 1  # unchanged
+        assert cov_count_2 == 2    # incremented by coverage repair
