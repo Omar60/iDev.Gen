@@ -20,11 +20,11 @@ The result is a technically capable system whose easiest path is still manual. T
 
 ### New Capabilities
 
-- `resource-workflow-ux`: simplify local resource ingestion and resource-session authoring while preserving the resource-store, session-plan and resource-prompts contracts introduced by the active resource planning changes.
+- `resource-workflow-ux`: simplify local resource ingestion and resource-session authoring while preserving the authoritative `resource-store`, `session-plan` and `resource-prompts` contracts.
 
 ## Dependencies
 
-This change builds on the active `adopt-resource-session-planning` change and its `resource-store`, `session-plan` and `resource-prompts` contracts. Translation-map file selection also builds on `complete-resource-translations`. These changes should be archived or otherwise treated as the authoritative prerequisite behavior before this change is archived into the main specification set.
+This change builds on the authoritative `resource-store`, `session-plan` and `resource-prompts` specifications established by the archived `adopt-resource-session-planning` change. Translation-map file selection also builds on the behavior established by the archived `complete-resource-translations` change.
 
 ## Impact
 
