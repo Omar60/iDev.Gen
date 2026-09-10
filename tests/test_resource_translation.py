@@ -713,3 +713,249 @@ class TestTranslationApiRoutes:
             "scene_theme": "Single Room Theme",
         }
 
+
+class TestCorrectiveHardening:
+    def test_attestation_key_scoped_to_active_db_and_isolates_directories(self, tmp_path):
+        """Private key .resource-translation-preview-key is scoped to active db directory.
+        Tokens from different databases/directories cannot cross-validate.
+        """
+        dir1 = tmp_path / "db1"
+        dir1.mkdir()
+        db1_path = dir1 / "test1.db"
+
+        dir2 = tmp_path / "db2"
+        dir2.mkdir()
+        db2_path = dir2 / "test2.db"
+
+        # 1. Preview in DB1
+        _open(db1_path)
+        lib1 = resource_store.ensure_library("key_scope_lib", kind="rooms")
+        resource_store.record_revision(lib1, "s1", {"id": "s1", "label": "SRC", "scene_theme": "THM"})
+        map1 = {"SRC": {"source": "SRC", "translation": "Room Alpha", "fields": ["label"]}}
+        prev1 = resource_translation.preview_translation_map("key_scope_lib", map1)
+        token1 = prev1["attestation_token"]
+        key1_path = dir1 / ".resource-translation-preview-key"
+        assert key1_path.is_file()
+        _close_silently()
+
+        # 2. Preview in DB2
+        _open(db2_path)
+        lib2 = resource_store.ensure_library("key_scope_lib", kind="rooms")
+        resource_store.record_revision(lib2, "s1", {"id": "s1", "label": "SRC", "scene_theme": "THM"})
+        prev2 = resource_translation.preview_translation_map("key_scope_lib", map1)
+        key2_path = dir2 / ".resource-translation-preview-key"
+        assert key2_path.is_file()
+        assert key1_path.read_bytes() != key2_path.read_bytes()
+
+        # Attempt to apply token1 in DB2 -> signature verification fails
+        with pytest.raises(ValueError) as exc:
+            resource_translation.apply_translation_map("key_scope_lib", map1, token1)
+        assert "signature verification failed" in str(exc.value)
+        _close_silently()
+
+    def test_old_static_salt_token_fails_verification(self, isolated_db):
+        """Tokens signed with old static salt are rejected."""
+        import base64
+        import hmac
+        lib = resource_store.ensure_library("salt_lib", kind="rooms")
+        resource_store.record_revision(lib, "s1", {"id": "s1", "label": "SRC", "scene_theme": "THM"})
+        map_data = {"SRC": {"source": "SRC", "translation": "Room Alpha", "fields": ["label"]}}
+        # Create key so key exists
+        resource_translation.preview_translation_map("salt_lib", map_data)
+
+        payload_data = {
+            "library_key": "salt_lib",
+            "library_id": lib,
+            "library_kind": "rooms",
+            "library_created_at": "2026-09-10T00:00:00Z",
+            "map_digest": "dummy",
+            "library_fingerprint": "dummy",
+            "exp": int(time.time()) + 3600,
+        }
+        b64 = base64.urlsafe_b64encode(json.dumps(payload_data).encode()).decode().rstrip("=")
+        old_sig = hmac.new(b"idevgen-resource-translation-attestation-v1", b64.encode(), "sha256").hexdigest()
+        old_token = f"{b64}.{old_sig}"
+
+        with pytest.raises(ValueError) as exc:
+            resource_translation.apply_translation_map("salt_lib", map_data, old_token)
+        assert "signature verification failed" in str(exc.value)
+
+    def test_metadata_drift_raises_409_before_map_field_authorization(self, isolated_db):
+        """If library metadata drifts, 409 TranslationConflictError is raised BEFORE 422 map check."""
+        lib = resource_store.ensure_library("drift_lib", kind="rooms")
+        resource_store.record_revision(lib, "s1", {"id": "s1", "label": "SRC", "scene_theme": "THM"})
+        # Map is valid for rooms (label is descriptive_input for rooms)
+        map_data = {"SRC": {"source": "SRC", "translation": "Room Alpha", "fields": ["label"]}}
+        prev = resource_translation.preview_translation_map("drift_lib", map_data)
+        token = prev["attestation_token"]
+
+        # Before apply, change library kind to fused_scenes where 'label' is NOT descriptive_input
+        db.run("UPDATE resource_library SET kind = 'fused_scenes' WHERE id = ?", lib)
+
+        with pytest.raises(resource_translation.TranslationConflictError) as exc:
+            resource_translation.apply_translation_map("drift_lib", map_data, token)
+        assert "metadata changed" in str(exc.value)
+
+    def test_raw_alias_mutation_raises_409_conflict(self, isolated_db):
+        """Changing raw translation sidecar JSON in DB invalidates the preview fingerprint (409)."""
+        lib = resource_store.ensure_library("raw_alias_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib, "s1",
+            {"id": "s1", "label": "SRC", "scene_theme": "THM"},
+            translation={"name": "Alpha"},
+        )
+        map_data = {"THM": {"source": "THM", "translation": "Theme Alpha", "fields": ["scene_theme"]}}
+        prev = resource_translation.preview_translation_map("raw_alias_lib", map_data)
+        token = prev["attestation_token"]
+
+        # Mutate raw JSON in DB to use 'label' instead of 'name' (same canonical family, different raw text)
+        db.run("UPDATE asset_revision SET translation = ? WHERE id = ?", json.dumps({"label": "Alpha"}), rev_id)
+
+        with pytest.raises(resource_translation.TranslationConflictError) as exc:
+            resource_translation.apply_translation_map("raw_alias_lib", map_data, token)
+        assert "state or translation map changed" in str(exc.value)
+
+    def test_stale_coverage_repair_on_apply_preserves_preview_counts(self, isolated_db):
+        """Coverage changes do NOT alter raw fingerprint; Apply repairs stale coverage while updated==would_update."""
+        lib = resource_store.ensure_library("stale_cov_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib, "s1",
+            {"id": "s1", "label": "SRC", "scene_theme": "THM"},
+            translation={"label": "Room Alpha", "scene_theme": "Theme Alpha"},
+        )
+        # Corrupt / make coverage stale
+        db.run("UPDATE asset_revision SET coverage = ? WHERE id = ?", json.dumps({"status": "pending"}), rev_id)
+
+        map_data = {"XYZ": {"source": "XYZ", "translation": "Something", "fields": ["label"]}}
+        prev = resource_translation.preview_translation_map("stale_cov_lib", map_data)
+        assert prev["would_update"] == 0
+        assert prev["unchanged"] == 1
+        assert prev["would_be_ready"] == 1
+
+        applied = resource_translation.apply_translation_map("stale_cov_lib", map_data, prev["attestation_token"])
+        assert applied["updated"] == 0  # would_update == updated
+        assert applied["unchanged"] == 1
+        assert applied["ready"] == 1
+
+        # Check that stored coverage was repaired in DB
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev["coverage"]["missing_translations"] == []
+
+    def test_upfront_map_field_authorization(self, isolated_db):
+        """Map entry with non-descriptive field is rejected up front with ValueError."""
+        lib = resource_store.ensure_library("upfront_lib", kind="rooms")
+        resource_store.record_revision(lib, "s1", {"id": "s1", "label": "SRC", "scene_theme": "THM"})
+
+        # 'weight' is selection_metadata, not descriptive_input
+        bad_map = {"SRC": {"source": "SRC", "translation": "Heavy", "fields": ["weight"]}}
+        with pytest.raises(ValueError) as exc:
+            resource_translation.preview_translation_map("upfront_lib", bad_map)
+        assert "selection_metadata" in str(exc.value)
+        assert "only descriptive input fields" in str(exc.value)
+
+    def test_inspect_translation_sidecar_pure_and_non_throwing(self):
+        """inspect_translation_sidecar does not throw on invalid/unmapped/conflicting fields."""
+        payload = {"label": "Habitación", "scene_theme": "Tema"}
+
+        # 1. Disallowed field
+        insp1 = resource_readiness.inspect_translation_sidecar(
+            "rooms", payload, {"label": "Room", "weight": "Heavy"}
+        )
+        assert not insp1.is_valid
+        assert any("weight" in e and "selection_metadata" in e for e in insp1.errors)
+        assert "weight" in insp1.invalid_families
+
+        # 2. Unmapped field
+        insp2 = resource_readiness.inspect_translation_sidecar(
+            "rooms", payload, {"label": "Room", "unknown_key": "val"}
+        )
+        assert not insp2.is_valid
+        assert any("unknown_key" in e and "unmapped" in e for e in insp2.errors)
+
+        # 3. Conflicting aliases
+        insp3 = resource_readiness.inspect_translation_sidecar(
+            "rooms", payload, {"label": "Room A", "name": "Room B"}
+        )
+        assert not insp3.is_valid
+        assert any("Conflicting alias entries" in e for e in insp3.errors)
+
+        # 4. Equal duplicate aliases -> valid!
+        insp4 = resource_readiness.inspect_translation_sidecar(
+            "rooms", payload, {"label": "Room A", "name": "Room A"}
+        )
+        assert insp4.is_valid
+        assert insp4.canonical_translation["label"] == "Room A"
+
+        # 5. List shape mismatch
+        insp5 = resource_readiness.inspect_translation_sidecar(
+            "rooms", payload, {"label": ["Room", "Alpha"]}
+        )
+        assert not insp5.is_valid
+        assert any("shape mismatch" in e for e in insp5.errors)
+
+    def test_optional_list_matching_semantics(self):
+        """List-valued optional fields: omission on untranslated non-English, candidate on clean English, no candidate if no match."""
+        # Case A: at least one match + other items already English -> candidate generated
+        payload_a = {"label": "Hab", "scene_theme": "Thm", "tags": ["terraza", "sunny"]}
+        map_a = {"terraza": {"source": "terraza", "translation": "terrace", "fields": ["tags"]}}
+        matches_a, matched_srcs_a = resource_translation.match_translation_map(payload_a, map_a, "rooms")
+        assert matches_a.get("tags") == ["terrace", "sunny"]
+        assert "terraza" in matched_srcs_a
+
+        # Case B: at least one match + other items untranslated non-English (CJK) -> candidate omitted, matched source tracked
+        payload_b = {"label": "Hab", "scene_theme": "Thm", "tags": ["terraza", "\u65e5\u5149"]}
+        matches_b, matched_srcs_b = resource_translation.match_translation_map(payload_b, map_a, "rooms")
+        assert "tags" not in matches_b
+        assert "terraza" in matched_srcs_b
+
+        # Case C: all items English, but NO map match -> candidate NOT generated
+        payload_c = {"label": "Hab", "scene_theme": "Thm", "tags": ["balcony", "sunny"]}
+        map_c = {"other": {"source": "other", "translation": "other", "fields": ["tags"]}}
+        matches_c, matched_srcs_c = resource_translation.match_translation_map(payload_c, map_c, "rooms")
+        assert "tags" not in matches_c
+        assert len(matched_srcs_c) == 0
+
+    def test_single_revision_atomic_validation(self, isolated_db):
+        """Single revision translation update rejects unauthorized fields and accepts equal aliases."""
+        lib = resource_store.ensure_library("single_atom_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib, "s1",
+            {"id": "s1", "label": "Hab", "scene_theme": "Thm"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+
+        # 1. Reject disallowed field
+        with pytest.raises(ValueError) as exc1:
+            resource_translation.apply_revision_translation(
+                "single_atom_lib", "s1", rev["content_digest"],
+                {"label": "Room", "weight": "Heavy"},
+            )
+        assert "selection_metadata" in str(exc1.value)
+
+        # 2. Reject conflicting aliases in update
+        with pytest.raises(ValueError) as exc2:
+            resource_translation.apply_revision_translation(
+                "single_atom_lib", "s1", rev["content_digest"],
+                {"label": "Room A", "name": "Room B"},
+            )
+        assert "Conflicting alias entries" in str(exc2.value)
+
+        # 3. Accept equal duplicate aliases
+        res3 = resource_translation.apply_revision_translation(
+            "single_atom_lib", "s1", rev["content_digest"],
+            {"label": "Room A", "name": "Room A", "scene_theme": "Theme A"},
+        )
+        assert res3["is_ready"] is True
+        assert res3["translation"]["label"] == "Room A"
+
+    def test_preview_feature_flag_503(self, client, monkeypatch):
+        """Preview route returns 503 when resource planning feature flag is disabled."""
+        import main
+        monkeypatch.setattr(main, "is_resource_planning_enabled", lambda: False)
+        resp = client.post(
+            "/api/resources/libraries/any_lib/translations/preview",
+            json={"translation_map": {}},
+        )
+        assert resp.status_code == 503
+        assert "Resource planning is disabled" in resp.json()["detail"]
+

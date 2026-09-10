@@ -918,21 +918,25 @@ def _prepare_resource(revision: dict) -> dict:
 
     raw_translation = revision.get("translation") or {}
     try:
-        canonical_translation = resource_prompts.canonicalize_translation_dict(raw_translation)
-    except Exception:
-        canonical_translation = raw_translation
+        canonical_translation = resource_readiness.validate_and_canonicalize_existing_translation(
+            kind, payload, raw_translation
+        )
+    except ValueError as exc:
+        raise PreparationFieldError(
+            f"Resource {source_id!r} has invalid translation sidecar: {exc}"
+        ) from exc
 
     effective_descriptive_inputs: dict[str, Any] = {}
 
     if kind == resource_prompts.KIND_ROOMS:
         label_val = canonical_translation.get("label")
-        if not resource_readiness._is_valid_english_translation(label_val):
+        if not resource_readiness.is_valid_english_translation_scalar(label_val):
             raise PreparationFieldError(
                 f"Resource {source_id!r} required field 'label' lacks an authorized "
                 f"English translation in the translation sidecar; cannot prepare."
             )
         theme_val = canonical_translation.get("scene_theme")
-        if not resource_readiness._is_valid_english_translation(theme_val):
+        if not resource_readiness.is_valid_english_translation_scalar(theme_val):
             raise PreparationFieldError(
                 f"Resource {source_id!r} required field 'scene_theme' lacks an authorized "
                 f"English translation in the translation sidecar; cannot prepare."
@@ -941,7 +945,7 @@ def _prepare_resource(revision: dict) -> dict:
         effective_descriptive_inputs["scene_theme"] = theme_val
     elif kind == resource_prompts.KIND_FUSED_SCENES:
         prompt_val = canonical_translation.get("prompt")
-        if not resource_readiness._is_valid_english_translation(prompt_val):
+        if not resource_readiness.is_valid_english_translation_scalar(prompt_val):
             raise PreparationFieldError(
                 f"Resource {source_id!r} required field 'prompt' lacks an authorized "
                 f"English translation in the translation sidecar; cannot prepare."
@@ -955,24 +959,23 @@ def _prepare_resource(revision: dict) -> dict:
             continue
         if c_field in canonical_translation:
             trans_val = canonical_translation[c_field]
-            if resource_readiness._is_valid_english_translation(trans_val):
+            if resource_readiness.is_valid_effective_translation_value(trans_val):
                 effective_descriptive_inputs[c_field] = trans_val
                 continue
-        # Untranslated: check if it contains non-English characters
-        is_non_eng = False
+        # Untranslated: check if it is clean English
         if isinstance(field_val, str):
-            is_non_eng = translation_map.contains_non_english(field_val)
+            if resource_readiness.is_valid_english_translation_scalar(field_val):
+                effective_descriptive_inputs[c_field] = field_val
         elif isinstance(field_val, list):
-            is_non_eng = any(isinstance(x, str) and translation_map.contains_non_english(x) for x in field_val)
-        if not is_non_eng:
-            effective_descriptive_inputs[c_field] = field_val
+            if all(isinstance(x, str) and resource_readiness.is_valid_english_translation_scalar(x) for x in field_val):
+                effective_descriptive_inputs[c_field] = field_val
 
     # Any extra descriptive fields provided in translation:
     for c_field, trans_val in canonical_translation.items():
         if c_field not in effective_descriptive_inputs:
             info = resource_prompts.classify_field(kind, c_field)
             if info.get("role") == resource_prompts.ROLE_DESCRIPTIVE_INPUT:
-                if resource_readiness._is_valid_english_translation(trans_val):
+                if resource_readiness.is_valid_effective_translation_value(trans_val):
                     effective_descriptive_inputs[c_field] = trans_val
 
     return {

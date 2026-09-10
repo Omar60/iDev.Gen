@@ -196,6 +196,32 @@ describe('resources module', () => {
       expect(verdict.isReady).toBe(false)
       expect(verdict.reasons).toContain('Revision is pending required translations or adaptations')
     })
+
+    it('surfaces sidecar_error from readiness coverage in reasons', () => {
+      const rev = {
+        readiness: {
+          status: 'pending',
+          coverage: {
+            sidecar_error: "Disallowed field in translation sidecar: 'weight'",
+          },
+        },
+      }
+      const verdict = checkReadiness(rev)
+      expect(verdict.isReady).toBe(false)
+      expect(verdict.reasons).toContain("Disallowed field in translation sidecar: 'weight'")
+    })
+
+    it('surfaces sidecar_error from top-level coverage in reasons', () => {
+      const rev = {
+        status: 'pending',
+        coverage: {
+          sidecar_error: 'Conflicting alias entries in translation sidecar',
+        },
+      }
+      const verdict = checkReadiness(rev)
+      expect(verdict.isReady).toBe(false)
+      expect(verdict.reasons).toContain('Conflicting alias entries in translation sidecar')
+    })
   })
 
   describe('session entry selection', () => {

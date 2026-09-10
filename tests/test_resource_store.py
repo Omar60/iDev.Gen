@@ -1404,7 +1404,6 @@ class TestReadinessEvaluation:
     # plus the optional descriptive inputs, used by the
     # "ready" tests.
     INV_ROOMS_FULL_TRANSLATION = {
-        "id": "inv_room_studio_dawn",
         "label": "invented studio at dawn",
         "scene_theme": (
             "A bare studio with a tall north-facing window. "
@@ -1413,13 +1412,11 @@ class TestReadinessEvaluation:
         ),
         "tags": ["indoor", "studio"],
         "props": ["chair", "sheet"],
-        "weight": 1.5,
     }
 
     # A partial translation: only the label is provided; the
     # scene_theme (the other required field) is missing.
     INV_ROOMS_PARTIAL_TRANSLATION = {
-        "id": "inv_room_studio_dawn",
         "label": "invented studio at dawn",
     }
 
@@ -1542,8 +1539,8 @@ class TestReadinessEvaluation:
         assert not report.is_pending
         assert report.pending_fields == {}
         assert report.pending_field_names == []
-        # Every required field is reported as translated.
-        required = ("id", "label", "scene_theme")
+        # Every required descriptive field is reported as translated.
+        required = ("label", "scene_theme")
         per_field = {fr.name: fr for fr in report.field_readiness}
         for name in required:
             assert per_field[name].translated is True, name
@@ -1756,10 +1753,6 @@ class TestReadinessEvaluation:
             "truly_unmapped_field": "an invented value, never a prompt input",
         }
         translation = dict(self.INV_ROOMS_FULL_TRANSLATION)
-        translation["mood_violet"] = "a quiet evening mood, in english"
-        translation["action_anchor"] = (
-            "she reaches for the cup with her right hand"
-        )
 
         lib_id = resource_store.ensure_library("inv_dynamic_lib", kind="rooms")
         rev_id = resource_store.record_revision(
@@ -1820,8 +1813,8 @@ class TestReadinessEvaluation:
         assert "action_anchor" in coverage["fields"], sorted(coverage["fields"])
         assert coverage["fields"]["mood_violet"]["role"] == "writer_guidance"
         assert coverage["fields"]["action_anchor"]["role"] == "writer_guidance"
-        assert coverage["fields"]["mood_violet"]["translated"] is True
-        assert coverage["fields"]["action_anchor"]["translated"] is True
+        assert coverage["fields"]["mood_violet"]["translated"] is False
+        assert coverage["fields"]["action_anchor"]["translated"] is False
 
         # The dynamic names MUST NOT appear in `unmapped_fields`:
         # the contract recognises them as writer guidance, and

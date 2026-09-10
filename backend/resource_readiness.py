@@ -164,7 +164,20 @@ class ReadinessReport:
 # -- Translation validation -------------------------------------------------
 
 
-def _is_valid_english_translation(value: Any) -> bool:
+@dataclass
+class SidecarInspection:
+    """The result of a pure, non-throwing translation sidecar inspection."""
+
+    canonical_translation: dict[str, Any]
+    errors: list[str]
+    invalid_families: set[str] = field(default_factory=set)
+
+    @property
+    def is_valid(self) -> bool:
+        return len(self.errors) == 0
+
+
+def is_valid_english_translation_scalar(value: Any) -> bool:
     """True when ``value`` is a non-empty English string.
 
     A valid English translation must be a string, non-empty after stripping,
@@ -180,27 +193,237 @@ def _is_valid_english_translation(value: Any) -> bool:
     return not translation_map.contains_non_english(stripped)
 
 
+_is_valid_english_translation = is_valid_english_translation_scalar
+
+
+def is_valid_effective_translation_value(value: Any) -> bool:
+    """True when ``value`` is a valid English scalar string or a non-empty list of valid English strings."""
+    if isinstance(value, str):
+        return is_valid_english_translation_scalar(value)
+    if isinstance(value, list):
+        if not value:
+            return False
+        return all(is_valid_english_translation_scalar(item) for item in value)
+    return False
+
+
+def resolve_source_field_and_value(canonical_field: str, payload: dict) -> tuple[str, Any]:
+    """Resolve the source field name and value from payload for canonical_field.
+
+    Raises ValueError if:
+    - payload is not a dict.
+    - payload contains no fields belonging to canonical_field's semantic family.
+    - payload contains conflicting alias keys for the same family with different values.
+    """
+    if not isinstance(payload, dict):
+        raise TypeError(f"Payload must be a dict, got {type(payload).__name__}")
+
+    family = resource_prompts.alias_family_for_field(canonical_field)
+    present_aliases = [(alias, payload[alias]) for alias in family if alias in payload]
+
+    if not present_aliases:
+        if canonical_field in payload:
+            return canonical_field, payload[canonical_field]
+        raise ValueError(
+            f"Translation field for canonical {canonical_field!r} has no corresponding source field in payload"
+        )
+
+    first_name, first_val = present_aliases[0]
+    if len(present_aliases) > 1:
+        if not all(val == first_val for _, val in present_aliases[1:]):
+            conflict_dict = {name: val for name, val in present_aliases}
+            raise ValueError(
+                f"Conflicting source aliases in payload for canonical field {canonical_field!r}: {conflict_dict!r}"
+            )
+    return first_name, first_val
+
+
+def validate_translation_value_for_source(
+    kind: str,
+    payload: dict,
+    canonical_field: str,
+    translation_value: Any,
+) -> None:
+    """Validate translation_value against the source field and shape in payload.
+
+    Raises ValueError if:
+    - canonical_field is not a ROLE_DESCRIPTIVE_INPUT field for kind.
+    - Source field resolution fails.
+    - Field is required descriptive, but source or translation is not a scalar string.
+    - Translation shape does not match source shape (scalar vs list).
+    - Source shape is unsupported.
+    - Translation value contains invalid English, empty strings, or mismatched list length.
+    """
+    info = resource_prompts.classify_field(kind, canonical_field)
+    role = info.get("role")
+    if role != resource_prompts.ROLE_DESCRIPTIVE_INPUT:
+        raise ValueError(
+            f"Disallowed field in translation sidecar: canonical {canonical_field!r} has role {role!r}; "
+            "only descriptive input fields may have translations"
+        )
+
+    source_name, source_val = resolve_source_field_and_value(canonical_field, payload)
+    is_required = bool(info.get("required"))
+
+    if is_required:
+        if not isinstance(source_val, str):
+            raise ValueError(
+                f"Required field {canonical_field!r} source value (from {source_name!r}) must be a scalar string, got {type(source_val).__name__}"
+            )
+        if not isinstance(translation_value, str):
+            raise ValueError(
+                f"Translation shape mismatch for required field {canonical_field!r}: translation value must be a scalar string, got {type(translation_value).__name__}"
+            )
+        if not is_valid_english_translation_scalar(translation_value):
+            raise ValueError(
+                f"Required field {canonical_field!r} translation value is not valid English: {translation_value!r}"
+            )
+        return
+
+    if isinstance(source_val, str):
+        if not isinstance(translation_value, str):
+            raise ValueError(
+                f"Translation shape mismatch for field {canonical_field!r}: source is scalar string, got {type(translation_value).__name__}"
+            )
+        if not is_valid_english_translation_scalar(translation_value):
+            raise ValueError(
+                f"Translation for field {canonical_field!r} is not valid English: {translation_value!r}"
+            )
+        return
+
+    if isinstance(source_val, list):
+        if not isinstance(translation_value, list):
+            raise ValueError(
+                f"Translation shape mismatch for field {canonical_field!r}: source is list, got {type(translation_value).__name__}"
+            )
+        if len(translation_value) != len(source_val):
+            raise ValueError(
+                f"Translation list length mismatch for field {canonical_field!r}: expected {len(source_val)}, got {len(translation_value)}"
+            )
+        for idx, item in enumerate(translation_value):
+            if not isinstance(item, str) or not is_valid_english_translation_scalar(item):
+                raise ValueError(
+                    f"Item {idx} in translation list for field {canonical_field!r} is not valid English: {item!r}"
+                )
+        return
+
+    raise ValueError(
+        f"Unsupported source value type for field {canonical_field!r}: {type(source_val).__name__}"
+    )
+
+
+def inspect_translation_sidecar(
+    kind: str,
+    payload: Any,
+    existing_translation: Any,
+) -> SidecarInspection:
+    """Pure, non-throwing inspection of an existing translation sidecar.
+
+    Safely inspects sidecar entries, classifies roles, validates aliases,
+    checks source-backing and structural constraints.
+
+    Returns a SidecarInspection with usable canonical translations, deterministic
+    errors, and invalid families. Never raises for expected validation errors.
+    """
+    if existing_translation is None:
+        existing_translation = {}
+    if not isinstance(existing_translation, dict):
+        return SidecarInspection(
+            canonical_translation={},
+            errors=[f"Translation sidecar must be a JSON object, got {type(existing_translation).__name__}"],
+            invalid_families=set(),
+        )
+    if not isinstance(payload, dict):
+        return SidecarInspection(
+            canonical_translation={},
+            errors=[f"Resource payload must be a JSON object, got {type(payload).__name__}"],
+            invalid_families=set(),
+        )
+
+    errors: list[str] = []
+    invalid_families: set[str] = set()
+    canonical_translation: dict[str, Any] = {}
+
+    entries_by_family: dict[str, list[tuple[str, Any]]] = {}
+    for raw_k, val in existing_translation.items():
+        c_k = resource_prompts.canonical_field_name(str(raw_k))
+        entries_by_family.setdefault(c_k, []).append((str(raw_k), val))
+
+    for c_k, entries in sorted(entries_by_family.items()):
+        info = resource_prompts.classify_field(kind, c_k)
+        role = info.get("role")
+        if role != resource_prompts.ROLE_DESCRIPTIVE_INPUT:
+            for raw_k, _ in entries:
+                errors.append(
+                    f"Disallowed field in translation sidecar: {raw_k!r} has role {role!r}; "
+                    "only descriptive input fields may have translations"
+                )
+            invalid_families.add(c_k)
+            continue
+
+        if len(entries) == 1:
+            raw_k, raw_val = entries[0]
+        else:
+            first_val = entries[0][1]
+            if all(val == first_val for _, val in entries[1:]):
+                raw_k = entries[0][0]
+                raw_val = first_val
+            else:
+                alias_dict = {k: v for k, v in entries}
+                errors.append(
+                    f"Conflicting alias entries in translation sidecar for canonical field {c_k!r} with different values: {alias_dict!r}"
+                )
+                invalid_families.add(c_k)
+                continue
+
+        try:
+            validate_translation_value_for_source(kind, payload, c_k, raw_val)
+            canonical_translation[c_k] = raw_val
+        except (ValueError, TypeError) as exc:
+            errors.append(str(exc))
+            invalid_families.add(c_k)
+
+    return SidecarInspection(
+        canonical_translation=canonical_translation,
+        errors=errors,
+        invalid_families=invalid_families,
+    )
+
+
+def validate_and_canonicalize_existing_translation(
+    kind: str,
+    payload: Any,
+    existing_translation: Any,
+) -> dict[str, Any]:
+    """Strict validation wrapper over inspect_translation_sidecar.
+
+    Raises ValueError on any sidecar validation error. Returns usable canonical translations.
+    """
+    inspection = inspect_translation_sidecar(kind, payload, existing_translation)
+    if inspection.errors:
+        raise ValueError(inspection.errors[0])
+    return inspection.canonical_translation
+
+
 # -- Per-field readiness ----------------------------------------------------
 
 
 def _field_readiness(
     field_name: str,
     role: str,
-    translation: Any,
+    usable_canonical: dict[str, Any],
 ) -> FieldReadiness:
     """The readiness verdict for one field.
 
-    A field is translated when `_is_valid_english_translation`
-    returns True for the value at `translation[field_name]` or its
-    canonical family key.
+    A field is translated when is_valid_effective_translation_value returns True
+    for the value at usable_canonical[canonical_name].
     """
     canonical_name = resource_prompts.canonical_field_name(field_name)
-    val = None
-    if isinstance(translation, dict):
-        val = translation.get(canonical_name)
-        if val is None and canonical_name != field_name:
-            val = translation.get(field_name)
-    translated = _is_valid_english_translation(val)
+    val = usable_canonical.get(canonical_name) if isinstance(usable_canonical, dict) else None
+    if role == resource_prompts.ROLE_DESCRIPTIVE_INPUT:
+        translated = is_valid_effective_translation_value(val)
+    else:
+        translated = is_valid_english_translation_scalar(val)
     if translated:
         return FieldReadiness(
             name=field_name, role=role, translated=True,
@@ -322,6 +545,10 @@ def evaluate_readiness(
             coverage=coverage,
         )
 
+    # 1. Inspect translation sidecar first (pure, non-throwing).
+    inspection = inspect_translation_sidecar(kind, payload, translation)
+    usable_canonical = inspection.canonical_translation
+
     mapping = resource_prompts.mapping_for_kind(kind)
     pending: dict[str, str] = {}
     per_field: list[FieldReadiness] = []
@@ -352,7 +579,7 @@ def evaluate_readiness(
         if source_field is None:
             source_field = field_name
 
-        verdict = _field_readiness(field_name, role, translation)
+        verdict = _field_readiness(field_name, role, usable_canonical)
         if not verdict.translated:
             pending[field_name] = _pending_reason_for(field_name, source_field=source_field)
         field_cov: dict[str, Any] = {
@@ -373,7 +600,7 @@ def evaluate_readiness(
         if field_name in coverage_fields:
             continue
         role = str(info.get("role", ""))
-        verdict = _field_readiness(field_name, role, translation)
+        verdict = _field_readiness(field_name, role, usable_canonical)
         coverage_fields[field_name] = {
             "role": role,
             "translated": verdict.translated,
@@ -406,7 +633,7 @@ def evaluate_readiness(
             continue
         verdict = _field_readiness(
             str(field_name), resource_prompts.ROLE_WRITER_GUIDANCE,
-            translation,
+            usable_canonical,
         )
         coverage_fields[str(field_name)] = {
             "role": resource_prompts.ROLE_WRITER_GUIDANCE,
@@ -419,8 +646,16 @@ def evaluate_readiness(
         "missing_translations": sorted(pending.keys()),
         "unmapped_fields": _unmapped_field_names(kind, payload),
     }
+    if inspection.errors:
+        coverage["sidecar_error"] = inspection.errors[0]
+
+    if inspection.errors:
+        status = STATUS_PENDING
+    else:
+        status = STATUS_READY if not pending else STATUS_PENDING
+
     return ReadinessReport(
-        status=STATUS_READY if not pending else STATUS_PENDING,
+        status=status,
         pending_fields=dict(sorted(pending.items())),
         field_readiness=per_field,
         coverage=coverage,
@@ -623,6 +858,13 @@ def _infer_kind_from_payload(payload: dict) -> str:
 __all__ = (
     "STATUS_READY", "STATUS_PENDING", "ALL_STATUSES",
     "FieldReadiness", "ReadinessReport",
+    "SidecarInspection",
+    "is_valid_english_translation_scalar",
+    "is_valid_effective_translation_value",
+    "resolve_source_field_and_value",
+    "validate_translation_value_for_source",
+    "inspect_translation_sidecar",
+    "validate_and_canonicalize_existing_translation",
     "evaluate_readiness",
     "evaluate_revision_readiness",
     "set_revision_readiness",

@@ -6110,3 +6110,67 @@ class TestTask44FinalizeTakePreparation:
             snapshot["effective_state"]["take_choices"]["pose"]
             == "leaning on the chair"
         )
+
+
+class TestPreparationSidecarHardening:
+    def test_preparation_fails_closed_on_invalid_sidecar_fields(self):
+        """Preparation raises PreparationFieldError when the translation sidecar has invalid fields."""
+        rev = {
+            "library_key": "test_lib",
+            "source_id": "room_01",
+            "content_digest": "dig_01",
+            "kind": "rooms",
+            "payload": {"label": "Hab", "scene_theme": "Thm"},
+            "translation": {"label": "Room Alpha", "scene_theme": "Theme Alpha", "weight": "Heavy"},
+        }
+        with pytest.raises(resource_preparation.PreparationFieldError) as exc:
+            resource_preparation._prepare_resource(rev)
+        assert "invalid translation sidecar" in str(exc.value)
+        assert "weight" in str(exc.value)
+
+    def test_preparation_fails_closed_on_conflicting_aliases_in_sidecar(self):
+        """Preparation raises PreparationFieldError when the translation sidecar has conflicting aliases."""
+        rev = {
+            "library_key": "test_lib",
+            "source_id": "room_01",
+            "content_digest": "dig_01",
+            "kind": "rooms",
+            "payload": {"label": "Hab", "scene_theme": "Thm"},
+            "translation": {"label": "Room Alpha", "name": "Room Beta", "scene_theme": "Theme Alpha"},
+        }
+        with pytest.raises(resource_preparation.PreparationFieldError) as exc:
+            resource_preparation._prepare_resource(rev)
+        assert "invalid translation sidecar" in str(exc.value)
+        assert "Conflicting alias" in str(exc.value)
+
+    def test_preparation_preserves_clean_english_optional_and_omits_non_english(self):
+        """Preparation omits non-English optional payload items (e.g. CJK) while preserving clean-English optional items."""
+        rev_non_eng = {
+            "library_key": "test_lib",
+            "source_id": "room_01",
+            "content_digest": "dig_01",
+            "kind": "rooms",
+            "payload": {
+                "label": "Hab",
+                "scene_theme": "Thm",
+                "tags": ["balcony", "\u65e5\u5149"],
+            },
+            "translation": {"label": "Room Alpha", "scene_theme": "Theme Alpha"},
+        }
+        prep_non_eng = resource_preparation._prepare_resource(rev_non_eng)
+        assert "tags" not in prep_non_eng["descriptive_inputs"]
+
+        rev_eng = {
+            "library_key": "test_lib",
+            "source_id": "room_02",
+            "content_digest": "dig_02",
+            "kind": "rooms",
+            "payload": {
+                "label": "Hab",
+                "scene_theme": "Thm",
+                "tags": ["balcony", "sunny terrace"],
+            },
+            "translation": {"label": "Room Alpha", "scene_theme": "Theme Alpha"},
+        }
+        prep_eng = resource_preparation._prepare_resource(rev_eng)
+        assert prep_eng["descriptive_inputs"].get("tags") == ["balcony", "sunny terrace"]

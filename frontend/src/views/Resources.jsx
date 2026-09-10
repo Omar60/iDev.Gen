@@ -425,6 +425,23 @@ export default function Resources({ requestedModelId = '' }) {
                                     Identity: <code>{detail.library_key}</code> · <code>{detail.source_id}</code> · <code>{detail.content_digest}</code>
                                   </p>
 
+                                  {detail.readiness?.coverage?.sidecar_error && (
+                                    <div
+                                      className="alert error"
+                                      style={{
+                                        margin: '0 0 12px',
+                                        padding: '8px 12px',
+                                        background: 'rgba(239, 68, 68, 0.12)',
+                                        border: '1px solid var(--bad)',
+                                        borderRadius: 4,
+                                        color: 'var(--bad)',
+                                        fontSize: 12,
+                                      }}
+                                    >
+                                      <b>Translation Sidecar Error:</b> {detail.readiness.coverage.sidecar_error}
+                                    </div>
+                                  )}
+
                                   <table style={{ marginBottom: 12, background: 'var(--panel)' }}>
                                     <thead>
                                       <tr>
@@ -465,9 +482,13 @@ export default function Resources({ requestedModelId = '' }) {
                                       </pre>
                                     </div>
                                     <div style={{ flex: 1 }}>
-                                      <h5 style={{ margin: '4px 0', color: 'var(--muted)' }}>Translation & Coverage</h5>
+                                      <h5 style={{ margin: '4px 0', color: 'var(--muted)' }}>Translation & Stored Coverage vs Live Readiness</h5>
                                       <pre style={{ margin: 0, padding: 8, background: 'var(--bg)', borderRadius: 4, maxHeight: 150, overflow: 'auto', fontSize: 11 }}>
-                                        {JSON.stringify({ translation: detail.translation, coverage: detail.coverage }, null, 2)}
+                                        {JSON.stringify({
+                                          translation: detail.translation,
+                                          stored_coverage: detail.coverage,
+                                          live_readiness: detail.readiness,
+                                        }, null, 2)}
                                       </pre>
                                     </div>
                                   </div>

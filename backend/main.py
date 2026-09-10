@@ -1369,6 +1369,8 @@ class ResourceRevisionTranslationIn(BaseModel):
 @app.post("/api/resources/libraries/{library_key}/translations/preview")
 def preview_resource_library_translations(library_key: str, p: ResourceTranslationPreviewIn):
     """Preview translation map application without modifying database state."""
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     map_input = p.translation_map if p.translation_map is not None else p.map_path
     if map_input is None:
         raise HTTPException(422, "Either translation_map or map_path must be provided")

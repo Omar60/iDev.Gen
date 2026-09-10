@@ -108,6 +108,17 @@ The app exposes:
   local attestation metadata required for the one-time commit.
 - `POST /api/resources/import/commit` with the serialized preview returned by
   preview. The commit rechecks every source fingerprint and is atomic.
+- `POST /api/resources/libraries/{library_key}/translations/preview` with
+  a translation map. Strictly read-only; validates map entries upfront for
+  descriptive input authorization, and issues an HMAC-SHA256 attestation token
+  signed with a private key (`.resource-translation-preview-key`) scoped to the
+  active SQLite database directory.
+- `POST /api/resources/libraries/{library_key}/translations/apply` with
+  the translation map and attestation token. Atomically verifies library metadata
+  and fingerprint against TOCTOU drift (raising HTTP 409 Conflict if modified),
+  merges canonical translations, and repairs stale coverage.
+- `POST /api/resources/revisions/{library_key}/{source_id}/{content_digest}/translation`
+  for atomic single-revision translation updates.
 
 The CLI uses the same service boundary as the app:
 
@@ -127,8 +138,10 @@ consumes it. A changed source requires a fresh preview. Re-importing a modified
 source creates an immutable new revision (`content_digest`); entries that
 disappear upstream are reported as missing in the import report rather than
 deleting previous revision history. Resource readiness is translation-pending
-until required English fields are available; importing data does not
-automatically make it generation-ready.
+until required English fields are available in the translation sidecar; importing data does not
+automatically make it generation-ready. Prompt preparation strictly consumes
+authorized English translations from the sidecar without falling back to the
+source payload for required fields, while omitting untranslated non-English optional content.
 
 ## Reaching the app from a phone
 

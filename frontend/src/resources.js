@@ -85,12 +85,17 @@ export function filterLibraries(libraries = [], { query = '', category = '' } = 
 
 /** Check whether a revision is ready for session draft initialization. */
 export function checkReadiness(revision) {
-  const status = revision?.readiness?.status || 'pending'
+  const status = revision?.readiness?.status || revision?.status || 'pending'
   const isReady = status === 'ready'
   const reasons = []
 
   if (!isReady) {
-    const pendingFields = revision?.readiness?.pending_fields || {}
+    const sidecarError = revision?.readiness?.coverage?.sidecar_error || revision?.coverage?.sidecar_error
+    if (sidecarError) {
+      reasons.push(String(sidecarError))
+    }
+
+    const pendingFields = revision?.readiness?.pending_fields || revision?.pending_fields || {}
     for (const [field, reason] of Object.entries(pendingFields)) {
       if (reason) {
         reasons.push(String(reason))
@@ -99,7 +104,7 @@ export function checkReadiness(revision) {
       }
     }
 
-    // Check individual field readiness if pendingFields was empty
+    // Check individual field readiness if pendingFields was empty and no reasons yet
     if (reasons.length === 0) {
       for (const item of revision?.readiness?.field_readiness || []) {
         if (item.reason) reasons.push(String(item.reason))
