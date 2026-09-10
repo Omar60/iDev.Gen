@@ -66,6 +66,7 @@ from typing import Any
 import db
 import resource_prompts
 import resource_store
+import translation_map
 
 
 # The verdict values the readiness evaluation returns. The set is
@@ -83,19 +84,18 @@ ALL_STATUSES: tuple[str, ...] = (STATUS_READY, STATUS_PENDING)
 # human-readable string naming the field that is blocking
 # readiness. The same string is what the operator sees in a UI
 # and what a test reads off a ReadinessReport.
-def _pending_reason_for(field_name: str) -> str:
+def _pending_reason_for(field_name: str, source_field: str | None = None) -> str:
     """The pending reason for a required field that lacks a
     valid English translation.
 
     A single template keeps the message style consistent across
     every blocked field, and a test that pins the template pins
-    the style. The wording names the field name and the rule
-    the field violated, so an operator who reads the message
-    knows which entry is blocking and which field on the entry
-    is the cause.
+    the style. If source_field is provided and differs from field_name,
+    the reason explicitly indicates the source field that was used.
     """
+    source_detail = f" (source_field = {source_field!r})" if source_field and source_field != field_name else ""
     return (
-        f"required field {field_name!r} lacks a valid English "
+        f"required field {field_name!r}{source_detail} lacks a valid English "
         f"translation; the revision stays inspectable but is "
         f"not ready for prompt preparation until a non-empty "
         f"English value is recorded in the translation column"
@@ -167,28 +167,17 @@ class ReadinessReport:
 def _is_valid_english_translation(value: Any) -> bool:
     """True when ``value`` is a non-empty English string.
 
-    A non-empty string with at least one ASCII letter is the
-    narrowest definition of "valid English" the readiness
-    layer needs: the legacy room importer enforces a stricter
-    CJK rule at import time, but the readiness layer is
-    asked to make a verdict on what is ALREADY in the
-    `translation` column, and the column's contract is
-    "English output". An empty string, a non-string, or a
-    string with no alphabetic content is not a translation;
-    every other string is.
-
-    The check is deliberately simple. A future task that
-    adds a stricter CJK check (the same one the legacy
-    importer uses) plugs in here without changing the
-    callers; the verdict names the field and the rule the
-    field violated, so a stricter check produces a more
-    specific reason without breaking the contract.
+    A valid English translation must be a string, non-empty after stripping,
+    contain at least one ASCII letter, and not contain non-English characters.
     """
     if not isinstance(value, str):
         return False
-    if not value:
+    stripped = value.strip()
+    if not stripped:
         return False
-    return any(("A" <= ch <= "Z") or ("a" <= ch <= "z") for ch in value)
+    if not any(("A" <= ch <= "Z") or ("a" <= ch <= "z") for ch in stripped):
+        return False
+    return not translation_map.contains_non_english(stripped)
 
 
 # -- Per-field readiness ----------------------------------------------------
@@ -202,13 +191,16 @@ def _field_readiness(
     """The readiness verdict for one field.
 
     A field is translated when `_is_valid_english_translation`
-    returns True for the value at `translation[field_name]`.
-    A required field that is not translated carries a
-    non-empty reason; an optional or non-required field that
-    is not translated carries an empty reason. The role is
-    what the per-kind preparation contract names.
+    returns True for the value at `translation[field_name]` or its
+    canonical family key.
     """
-    translated = _is_valid_english_translation(translation.get(field_name))
+    canonical_name = resource_prompts.canonical_field_name(field_name)
+    val = None
+    if isinstance(translation, dict):
+        val = translation.get(canonical_name)
+        if val is None and canonical_name != field_name:
+            val = translation.get(field_name)
+    translated = _is_valid_english_translation(val)
     if translated:
         return FieldReadiness(
             name=field_name, role=role, translated=True,
@@ -350,14 +342,28 @@ def evaluate_readiness(
     for field_name in required_descriptive:
         info = mapping.get(field_name, {})
         role = str(info.get("role", ""))
+
+        family = resource_prompts.alias_family_for_field(field_name)
+        source_field = None
+        for alias in family:
+            if alias in payload:
+                source_field = alias
+                break
+        if source_field is None:
+            source_field = field_name
+
         verdict = _field_readiness(field_name, role, translation)
         if not verdict.translated:
-            pending[field_name] = _pending_reason_for(field_name)
-        coverage_fields[field_name] = {
+            pending[field_name] = _pending_reason_for(field_name, source_field=source_field)
+        field_cov: dict[str, Any] = {
             "role": role,
             "translated": verdict.translated,
         }
+        if source_field != field_name:
+            field_cov["source_field"] = source_field
+        coverage_fields[field_name] = field_cov
         per_field.append(verdict)
+
 
     # All other named fields from the static mapping. The role
     # and the translated flag both go into the coverage record;

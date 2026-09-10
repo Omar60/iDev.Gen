@@ -200,10 +200,24 @@ INV_FAKE_INSTRUCTION = (
 # ---- Helpers -------------------------------------------------------------
 
 
-def _build_revision(library_key: str, source_id: str, payload: dict) -> dict:
+def _build_revision(
+    library_key: str, source_id: str, payload: dict, translation: dict | None = None,
+) -> dict:
     """Register a library, record a revision, return the stored row."""
     library_id = resource_store.ensure_library(library_key, kind="rooms")
-    revision_id = resource_store.record_revision(library_id, source_id, payload)
+    if translation is None:
+        translation = {}
+        if "label" in payload and isinstance(payload["label"], str):
+            translation["label"] = payload["label"]
+        elif "name" in payload and isinstance(payload["name"], str):
+            translation["label"] = payload["name"]
+        if "scene_theme" in payload and isinstance(payload["scene_theme"], str):
+            translation["scene_theme"] = payload["scene_theme"]
+        elif "theme" in payload and isinstance(payload["theme"], str):
+            translation["scene_theme"] = payload["theme"]
+    revision_id = resource_store.record_revision(
+        library_id, source_id, payload, translation=translation,
+    )
     revision = resource_store.get_revision(revision_id=revision_id)
     assert revision is not None
     return {
@@ -216,10 +230,16 @@ def _build_revision(library_key: str, source_id: str, payload: dict) -> dict:
 
 
 def _build_fused_revision(
-    library_key: str, source_id: str, payload: dict,
+    library_key: str, source_id: str, payload: dict, translation: dict | None = None,
 ) -> dict:
     library_id = resource_store.ensure_library(library_key, kind="fused_scenes")
-    revision_id = resource_store.record_revision(library_id, source_id, payload)
+    if translation is None:
+        translation = {}
+        if "prompt" in payload and isinstance(payload["prompt"], str):
+            translation["prompt"] = payload["prompt"]
+    revision_id = resource_store.record_revision(
+        library_id, source_id, payload, translation=translation,
+    )
     revision = resource_store.get_revision(revision_id=revision_id)
     assert revision is not None
     return {
@@ -1592,11 +1612,19 @@ class TestSelectedRevisionNotSubstituted:
         rev1 = resource_store.get_revision(
             revision_id=resource_store.record_revision(
                 library_id, "inv_room_refresh", INV_ROOMS_PAYLOAD,
+                translation={
+                    "label": INV_ROOMS_PAYLOAD["label"],
+                    "scene_theme": INV_ROOMS_PAYLOAD["scene_theme"],
+                },
             ),
         )
         rev2 = resource_store.get_revision(
             revision_id=resource_store.record_revision(
                 library_id, "inv_room_refresh", INV_ROOMS_PAYLOAD_V2,
+                translation={
+                    "label": INV_ROOMS_PAYLOAD_V2["label"],
+                    "scene_theme": INV_ROOMS_PAYLOAD_V2["scene_theme"],
+                },
             ),
         )
         assert rev1["content_digest"] != rev2["content_digest"]
@@ -2052,7 +2080,12 @@ def _store_fused_revision(
 ) -> dict:
     """Register a fused_scenes library, record a revision, return the row."""
     library_id = resource_store.ensure_library(library_key, kind="fused_scenes")
-    revision_id = resource_store.record_revision(library_id, source_id, payload)
+    translation = {}
+    if "prompt" in payload and isinstance(payload["prompt"], str):
+        translation["prompt"] = payload["prompt"]
+    revision_id = resource_store.record_revision(
+        library_id, source_id, payload, translation=translation,
+    )
     revision = resource_store.get_revision(revision_id=revision_id)
     assert revision is not None
     return {
@@ -2567,6 +2600,7 @@ class TestRevisionIdentityPreserved:
         rev1_id = resource_store.record_revision(
             library_id, "inv_fused_refresh",
             INV_FUSED_INCOMPATIBLE_PAYLOAD,
+            translation={"prompt": INV_FUSED_INCOMPATIBLE_PAYLOAD["prompt"]},
         )
         rev1 = resource_store.get_revision(revision_id=rev1_id)
         assert rev1 is not None
@@ -2586,6 +2620,13 @@ class TestRevisionIdentityPreserved:
             library_id, "inv_fused_refresh",
             {
                 **INV_FUSED_INCOMPATIBLE_PAYLOAD,
+                "prompt": (
+                    "She sits in a tall studio with the side "
+                    "window at her left. She wears a thin grey "
+                    "linen shirt and dark cotton trousers."
+                ),
+            },
+            translation={
                 "prompt": (
                     "She sits in a tall studio with the side "
                     "window at her left. She wears a thin grey "
@@ -2971,6 +3012,7 @@ class TestTask42PersistsAdaptations:
         rev1_id = resource_store.record_revision(
             library_id, "inv_fused_isolation_digest",
             INV_FUSED_INCOMPATIBLE_PAYLOAD,
+            translation={"prompt": INV_FUSED_INCOMPATIBLE_PAYLOAD["prompt"]},
         )
         rev1 = resource_store.get_revision(revision_id=rev1_id)
         assert rev1 is not None
@@ -3006,6 +3048,14 @@ class TestTask42PersistsAdaptations:
             library_id, "inv_fused_isolation_digest",
             {
                 **INV_FUSED_INCOMPATIBLE_PAYLOAD,
+                "prompt": (
+                    "She sits in the same studio with the side "
+                    "window at her left. She wears a thin grey "
+                    "linen shirt and dark cotton trousers, "
+                    "sleeves rolled to the elbows, bare feet."
+                ),
+            },
+            translation={
                 "prompt": (
                     "She sits in the same studio with the side "
                     "window at her left. She wears a thin grey "
@@ -3762,6 +3812,7 @@ class TestTask42PersistsAdaptations:
         rev_id = resource_store.record_revision(
             library_id, "inv_fused_nonapplicable",
             INV_FUSED_INCOMPATIBLE_PAYLOAD,
+            translation={"prompt": INV_FUSED_INCOMPATIBLE_PAYLOAD["prompt"]},
         )
         rev = resource_store.get_revision(revision_id=rev_id)
         assert rev is not None
@@ -3781,6 +3832,20 @@ class TestTask42PersistsAdaptations:
             other_library_id, other_id,
             {
                 **INV_FUSED_INCOMPATIBLE_PAYLOAD,
+                "prompt": (
+                    "She stands in a tall studio with the side "
+                    "window at her left. She wears the thin "
+                    "grey linen shirt and dark cotton trousers "
+                    "the session asked for, sleeves rolled to "
+                    "the elbows, bare feet."
+                ),
+                "scene_theme": (
+                    "a plain invented studio, compatible with the "
+                    "session's effective wardrobe"
+                ),
+                "label": "an invented compatible scene",
+            },
+            translation={
                 "prompt": (
                     "She stands in a tall studio with the side "
                     "window at her left. She wears the thin "
@@ -5610,6 +5675,10 @@ class TestTask44FinalizeTakePreparation:
         }
         new_rev_id = resource_store.record_revision(
             revision["library_id"], revision["source_id"], new_payload,
+            translation={
+                "label": new_payload["label"],
+                "scene_theme": new_payload["scene_theme"],
+            },
         )
         new_rev = resource_store.get_revision(revision_id=new_rev_id)
         assert new_rev["content_digest"] != original_digest

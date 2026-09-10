@@ -275,6 +275,29 @@ def list_revisions(
     return [_decode_revision(r) for r in rows]
 
 
+def update_translation(
+    revision_id: int,
+    translation: dict[str, Any],
+) -> None:
+    """Update the translation column for a revision.
+
+    The row is identified by ``revision_id``. The function encodes
+    ``translation`` as JSON and updates only the ``translation`` column.
+    The database trigger ``asset_revision_protect_immutable`` protects
+    all other columns against mutation.
+    """
+    if not isinstance(revision_id, int):
+        raise TypeError(f"revision_id must be an int, got {type(revision_id).__name__}")
+    if not isinstance(translation, dict):
+        raise TypeError(f"translation must be a dict, got {type(translation).__name__}")
+    encoded = _encode_json_object(translation)
+    db.run(
+        "UPDATE asset_revision SET translation = ? WHERE id = ?",
+        encoded,
+        revision_id,
+    )
+
+
 # -- Auxiliary resources ----------------------------------------------------
 
 

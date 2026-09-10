@@ -1,0 +1,715 @@
+"""Tests for the resource translation workflow and sidecar storage (task 2.2).
+
+Covers:
+  - Canonical field names and semantic family resolution;
+  - Stable canonical keys in pending_fields and source_field metadata;
+  - Rejection of alias collisions and conflicting map translations;
+  - Independent descriptive fields retention;
+  - Zero payload fallback for required descriptive fields during preparation;
+  - Omission of untranslated non-English optional descriptive fields;
+  - Two-phase preview -> apply with HMAC-SHA256 attestation;
+  - TOCTOU drift detection raising TranslationConflictError;
+  - Atomic database updates and validated merge semantics;
+  - Idempotency and safe handling of unmatched valid map entries;
+  - Immutability of historical finalized prompts.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sqlite3
+import time
+from typing import Any
+
+import pytest
+
+import db
+import resource_preparation
+import resource_prompts
+import resource_readiness
+import resource_store
+import resource_translation
+import session_plan
+
+
+INV_LOOK = "A clean portrait look with natural side lighting."
+INV_WARDROBE = "grey cotton shirt and dark trousers"
+
+
+def _open(path: Path) -> sqlite3.Connection:
+    """Open a fresh, isolated database for one test."""
+    db._conn = None  # noqa: SLF001
+    return db.connect(path)
+
+
+def _close_silently() -> None:
+    """Close current connection safely."""
+    conn = db._conn  # noqa: SLF001
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    db._conn = None  # noqa: SLF001
+
+
+@pytest.fixture
+def isolated_db(tmp_path):
+    """Yield a fresh isolated database for each test."""
+    path = Path(tmp_path) / "resource-translation.db"
+    _open(path)
+    try:
+        yield path
+    finally:
+        _close_silently()
+
+
+_SESSION_COUNTER: list[int] = [0]
+
+
+def _create_test_session(isolated_db: Any) -> int:
+    """Helper to create a minimal session for testing."""
+    now = db.now()
+    _SESSION_COUNTER[0] += 1
+    model_id = db.run(
+        "INSERT INTO model (name, created_at) VALUES (?, ?)",
+        f"invented translation model {_SESSION_COUNTER[0]}", now,
+    )
+    settings = json.dumps({"composition_mode": "resource-v1"})
+    return db.run(
+        "INSERT INTO session (model_id, name, settings, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        model_id,
+        f"invented translation session {_SESSION_COUNTER[0]}",
+        settings, now,
+    )
+
+
+class TestStrictPreparationContract:
+    def test_refuses_preparation_when_required_field_lacks_translation(self, isolated_db):
+        """Preparation strictly consumes the translation sidecar for required fields;
+        even if payload has English, lack of authorized translation sidecar raises
+        PreparationFieldError."""
+        library_id = resource_store.ensure_library("inv_rooms_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            library_id, "inv_room_01",
+            {
+                "id": "inv_room_01",
+                "label": "invented sunny room",
+                "scene_theme": "a bright sunny studio",
+            },
+            translation=None,
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+        full_rev = {**rev, "kind": "rooms", "library_key": "inv_rooms_lib"}
+
+        with pytest.raises(resource_preparation.PreparationFieldError) as exc_info:
+            resource_preparation._prepare_resource(full_rev)
+        assert "lacks an authorized English translation" in str(exc_info.value)
+        assert "label" in str(exc_info.value)
+
+    def test_accepts_preparation_when_required_fields_have_authorized_translation(self, isolated_db):
+        """When translation sidecar supplies authorized English for required fields,
+        preparation succeeds and populates descriptive_inputs."""
+        library_id = resource_store.ensure_library("inv_rooms_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            library_id, "inv_room_01",
+            {
+                "id": "inv_room_01",
+                "name": "SOURCE NAME",
+                "theme": "SOURCE THEME",
+            },
+            translation={
+                "label": "Authorized English Room",
+                "scene_theme": "Authorized English Theme",
+            },
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+        full_rev = {**rev, "kind": "rooms", "library_key": "inv_rooms_lib"}
+
+        prep = resource_preparation._prepare_resource(full_rev)
+        assert prep["descriptive_inputs"]["label"] == "Authorized English Room"
+        assert prep["descriptive_inputs"]["scene_theme"] == "Authorized English Theme"
+        assert prep["translation"]["label"] == "Authorized English Room"
+
+    def test_fused_scene_refuses_preparation_without_prompt_translation(self, isolated_db):
+        """Fused scene requires an authorized prompt translation in the sidecar."""
+        library_id = resource_store.ensure_library("inv_fused_lib", kind="fused_scenes")
+        rev_id = resource_store.record_revision(
+            library_id, "inv_fused_01",
+            {
+                "id": "inv_fused_01",
+                "prompt": "She stands in a tall studio.",
+            },
+            translation={},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+        full_rev = {**rev, "kind": "fused_scenes", "library_key": "inv_fused_lib"}
+
+        with pytest.raises(resource_preparation.PreparationFieldError) as exc_info:
+            resource_preparation._prepare_resource(full_rev)
+        assert "prompt" in str(exc_info.value)
+
+    def test_untranslated_non_english_optional_descriptive_field_is_omitted(self, isolated_db):
+        """Optional descriptive fields containing non-English text without translation
+        are omitted from descriptive_inputs to prevent foreign script leakage."""
+        library_id = resource_store.ensure_library("inv_rooms_lib", kind="rooms")
+        # Non-English unicode characters in description
+        non_english_desc = "\u30b9\u30bf\u30b8\u30aa\u306e\u98a8\u666f"
+        rev_id = resource_store.record_revision(
+            library_id, "inv_room_opt",
+            {
+                "id": "inv_room_opt",
+                "label": "room",
+                "scene_theme": "theme",
+                "description": non_english_desc,
+                "props": ["chair", "\u6728\u88fd\u306e\u673a"],
+            },
+            translation={
+                "label": "English Room",
+                "scene_theme": "English Theme",
+            },
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+        full_rev = {**rev, "kind": "rooms", "library_key": "inv_rooms_lib"}
+
+        prep = resource_preparation._prepare_resource(full_rev)
+        assert "description" not in prep["descriptive_inputs"]
+        # props had a non-English item, so omitted
+        assert "props" not in prep["descriptive_inputs"]
+
+    def test_translated_optional_descriptive_field_is_included(self, isolated_db):
+        """Optional descriptive fields with valid English translations are included."""
+        library_id = resource_store.ensure_library("inv_rooms_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            library_id, "inv_room_opt2",
+            {
+                "id": "inv_room_opt2",
+                "label": "room",
+                "scene_theme": "theme",
+                "description": "\u30b9\u30bf\u30b8\u30aa\u306e\u98a8\u666f",
+            },
+            translation={
+                "label": "English Room",
+                "scene_theme": "English Theme",
+                "description": "A view of the studio interior",
+            },
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+        full_rev = {**rev, "kind": "rooms", "library_key": "inv_rooms_lib"}
+
+        prep = resource_preparation._prepare_resource(full_rev)
+        assert prep["descriptive_inputs"]["description"] == "A view of the studio interior"
+
+    def test_independent_fields_do_not_satisfy_required_scene_theme(self, isolated_db):
+        """Supplying description or props does NOT satisfy required scene_theme."""
+        library_id = resource_store.ensure_library("inv_rooms_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            library_id, "inv_room_indep",
+            {
+                "id": "inv_room_indep",
+                "label": "room",
+                "description": "A quiet studio",
+            },
+            translation={
+                "label": "English Room",
+                "description": "A quiet studio",
+            },
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+        full_rev = {**rev, "kind": "rooms", "library_key": "inv_rooms_lib"}
+
+        with pytest.raises(resource_preparation.PreparationFieldError) as exc_info:
+            resource_preparation._prepare_resource(full_rev)
+        assert "scene_theme" in str(exc_info.value)
+
+
+class TestReadinessCanonicalKeys:
+    def test_pending_fields_uses_canonical_key_and_records_source_field(self, isolated_db):
+        """Pending fields use canonical key 'scene_theme' and indicate source_field = 'theme'."""
+        payload = {
+            "id": "inv_room_alias",
+            "name": "SOURCE NAME",
+            "theme": "SOURCE THEME",
+        }
+        report = resource_readiness.evaluate_readiness("rooms", payload, translation=None)
+        assert not report.is_ready
+        assert "label" in report.pending_fields
+        assert "scene_theme" in report.pending_fields
+        assert "source_field = 'theme'" in report.pending_fields["scene_theme"]
+        assert "source_field = 'name'" in report.pending_fields["label"]
+
+        cov = report.coverage
+        assert cov["fields"]["scene_theme"]["source_field"] == "theme"
+        assert cov["fields"]["label"]["source_field"] == "name"
+
+    def test_tag_alias_maps_to_canonical_tags(self):
+        """The alias 'tag' maps to the canonical family 'tags'."""
+        assert resource_prompts.canonical_field_name("tag") == "tags"
+        assert resource_prompts.canonical_field_name("tags") == "tags"
+        assert resource_prompts.is_canonical_family_alias("tag") is True
+        assert resource_prompts.is_canonical_family_alias("tags") is False
+
+
+class TestCanonicalTranslationValidation:
+    def test_rejects_alias_collision_in_translation(self):
+        """Supplying both canonical and alias names with conflicting values raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            resource_prompts.canonicalize_translation_dict({
+                "theme": "English Theme A",
+                "scene_theme": "English Theme B",
+            })
+        assert "Conflicting translations provided for semantic family 'scene_theme'" in str(exc_info.value)
+
+    def test_canonicalizes_allowed_aliases(self):
+        """Allowed aliases are canonicalized cleanly."""
+        result = resource_prompts.canonicalize_translation_dict({
+            "name": "Authorized Label",
+            "theme": "Authorized Theme",
+            "tag": ["outdoor", "morning"],
+        })
+        assert result == {
+            "label": "Authorized Label",
+            "scene_theme": "Authorized Theme",
+            "tags": ["outdoor", "morning"],
+        }
+
+
+class TestTwoPhaseTranslationMap:
+    def test_preview_is_read_only_and_issues_attestation_token(self, isolated_db):
+        """Preview validates translation map, calculates metrics, and issues token without modifying DB."""
+        library_id = resource_store.ensure_library("inv_preview_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            library_id, "inv_room_prev_01",
+            {
+                "id": "inv_room_prev_01",
+                "name": "CHAMBRE_SOLEIL",
+                "theme": "THEME_LUMIERE",
+            },
+            translation=None,
+        )
+
+        map_data = {
+            "CHAMBRE_SOLEIL": {
+                "source": "CHAMBRE_SOLEIL",
+                "translation": "Sunlit Room",
+                "fields": ["name"],
+            },
+            "THEME_LUMIERE": {
+                "source": "THEME_LUMIERE",
+                "translation": "Warm morning light across pale walls",
+                "fields": ["theme"],
+            },
+        }
+
+        # Check DB before preview
+        before_rev = resource_store.get_revision(revision_id=rev_id)
+        assert before_rev["translation"] == {}
+
+        preview = resource_translation.preview_translation_map("inv_preview_lib", map_data)
+        assert preview["library_key"] == "inv_preview_lib"
+        assert preview["total_revisions"] == 1
+        assert preview["matched_revisions"] == 1
+        assert preview["would_update"] == 1
+        assert preview["would_be_ready"] == 1
+        assert preview["would_remain_pending"] == 0
+        assert preview["unmatched_map_entries"] == 0
+        assert "attestation_token" in preview
+        assert preview["expires_at"] > time.time()
+
+        # Check DB after preview - strictly unchanged!
+        after_rev = resource_store.get_revision(revision_id=rev_id)
+        assert after_rev["translation"] == {}
+
+    def test_apply_translation_map_updates_database_atomically(self, isolated_db):
+        """Applying the map with valid attestation token updates translation sidecars atomically."""
+        library_id = resource_store.ensure_library("inv_apply_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            library_id, "inv_room_apply_01",
+            {
+                "id": "inv_room_apply_01",
+                "name": "CHAMBRE_SOLEIL",
+                "theme": "THEME_LUMIERE",
+            },
+            translation=None,
+        )
+
+        map_data = {
+            "CHAMBRE_SOLEIL": {
+                "source": "CHAMBRE_SOLEIL",
+                "translation": "Sunlit Room",
+                "fields": ["name"],
+            },
+            "THEME_LUMIERE": {
+                "source": "THEME_LUMIERE",
+                "translation": "Warm morning light across pale walls",
+                "fields": ["theme"],
+            },
+        }
+
+        preview = resource_translation.preview_translation_map("inv_apply_lib", map_data)
+        token = preview["attestation_token"]
+
+        result = resource_translation.apply_translation_map("inv_apply_lib", map_data, token)
+        assert result["updated"] == 1
+        assert result["ready"] == 1
+        assert result["pending"] == 0
+
+        # Check DB row
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+        assert rev["translation"] == {
+            "label": "Sunlit Room",
+            "scene_theme": "Warm morning light across pale walls",
+        }
+        # Payload remains strictly immutable!
+        assert rev["payload"]["name"] == "CHAMBRE_SOLEIL"
+        assert rev["payload"]["theme"] == "THEME_LUMIERE"
+
+        # Readiness is now ready
+        report = resource_readiness.evaluate_revision_readiness(
+            library_id, "inv_room_apply_01", content_digest=rev["content_digest"],
+        )
+        assert report.is_ready
+
+    def test_apply_is_idempotent(self, isolated_db):
+        """Re-applying the translation map without changes reports updated=0, unchanged=N."""
+        library_id = resource_store.ensure_library("inv_idem_lib", kind="rooms")
+        resource_store.record_revision(
+            library_id, "inv_room_idem",
+            {"id": "inv_room_idem", "name": "SRC_LABEL", "theme": "SRC_THEME"},
+            translation=None,
+        )
+        map_data = {
+            "SRC_LABEL": {"source": "SRC_LABEL", "translation": "Label", "fields": ["name"]},
+            "SRC_THEME": {"source": "SRC_THEME", "translation": "Theme", "fields": ["theme"]},
+        }
+
+        # First run
+        p1 = resource_translation.preview_translation_map("inv_idem_lib", map_data)
+        r1 = resource_translation.apply_translation_map("inv_idem_lib", map_data, p1["attestation_token"])
+        assert r1["updated"] == 1
+
+        # Second run
+        p2 = resource_translation.preview_translation_map("inv_idem_lib", map_data)
+        r2 = resource_translation.apply_translation_map("inv_idem_lib", map_data, p2["attestation_token"])
+        assert r2["updated"] == 0
+        assert r2["unchanged"] == 1
+
+    def test_invalid_translation_map_aborts_without_database_writes(self, isolated_db):
+        """Invalid map (non-English translation or missing fields) aborts with ValueError and no DB writes."""
+        library_id = resource_store.ensure_library("inv_invalid_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            library_id, "inv_room_inv",
+            {"id": "inv_room_inv", "name": "SRC_A", "theme": "SRC_B"},
+            translation=None,
+        )
+
+        bad_map = {
+            "SRC_A": {
+                "source": "SRC_A",
+                "translation": "\u65e5\u672c\u8a9e",  # Non-English!
+                "fields": ["name"],
+            },
+        }
+
+        with pytest.raises(ValueError) as exc_info:
+            resource_translation.preview_translation_map("inv_invalid_lib", bad_map)
+        assert "contains non-English characters" in str(exc_info.value)
+
+        # Ensure database is clean
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev["translation"] == {}
+
+    def test_unmatched_map_entries_are_reported_without_error(self, isolated_db):
+        """Unmatched entries in a valid translation map do not cause failure."""
+        library_id = resource_store.ensure_library("inv_unmatched_lib", kind="rooms")
+        resource_store.record_revision(
+            library_id, "inv_room_unm",
+            {"id": "inv_room_unm", "name": "SRC_MATCH", "theme": "SRC_THEME"},
+            translation=None,
+        )
+
+        map_data = {
+            "SRC_MATCH": {"source": "SRC_MATCH", "translation": "Matched Label", "fields": ["name"]},
+            "SRC_THEME": {"source": "SRC_THEME", "translation": "Matched Theme", "fields": ["theme"]},
+            "SRC_EXTRA": {"source": "SRC_EXTRA", "translation": "Unmatched Label", "fields": ["name"]},
+        }
+
+        preview = resource_translation.preview_translation_map("inv_unmatched_lib", map_data)
+        assert preview["unmatched_map_entries"] == 1
+        assert preview["matched_revisions"] == 1
+
+        result = resource_translation.apply_translation_map(
+            "inv_unmatched_lib", map_data, preview["attestation_token"],
+        )
+        assert result["updated"] == 1
+
+
+class TestAttestationAndTOCTOUProtection:
+    def test_apply_detects_library_drift_and_raises_conflict(self, isolated_db):
+        """When revisions in library change after preview, apply raises TranslationConflictError."""
+        library_id = resource_store.ensure_library("inv_toctou_lib", kind="rooms")
+        resource_store.record_revision(
+            library_id, "inv_room_t1",
+            {"id": "inv_room_t1", "name": "ROOM_A", "theme": "THEME_A"},
+            translation=None,
+        )
+        map_data = {
+            "ROOM_A": {"source": "ROOM_A", "translation": "Room A", "fields": ["name"]},
+            "THEME_A": {"source": "THEME_A", "translation": "Theme A", "fields": ["theme"]},
+        }
+
+        preview = resource_translation.preview_translation_map("inv_toctou_lib", map_data)
+        token = preview["attestation_token"]
+
+        # Interleaved mutation: add another revision to the library
+        resource_store.record_revision(
+            library_id, "inv_room_t2",
+            {"id": "inv_room_t2", "name": "ROOM_B", "theme": "THEME_B"},
+            translation=None,
+        )
+
+        with pytest.raises(resource_translation.TranslationConflictError) as exc_info:
+            resource_translation.apply_translation_map("inv_toctou_lib", map_data, token)
+        assert "changed since preview" in str(exc_info.value)
+
+    def test_apply_detects_map_drift_and_raises_conflict(self, isolated_db):
+        """When translation map content differs from the previewed one, apply raises TranslationConflictError."""
+        library_id = resource_store.ensure_library("inv_map_drift_lib", kind="rooms")
+        resource_store.record_revision(
+            library_id, "inv_room_md",
+            {"id": "inv_room_md", "name": "ROOM_A", "theme": "THEME_A"},
+            translation=None,
+        )
+        map_preview = {
+            "ROOM_A": {"source": "ROOM_A", "translation": "Room A", "fields": ["name"]},
+            "THEME_A": {"source": "THEME_A", "translation": "Theme A", "fields": ["theme"]},
+        }
+        preview = resource_translation.preview_translation_map("inv_map_drift_lib", map_preview)
+        token = preview["attestation_token"]
+
+        # Alter the map before apply
+        map_modified = {
+            "ROOM_A": {"source": "ROOM_A", "translation": "Modified Room A", "fields": ["name"]},
+            "THEME_A": {"source": "THEME_A", "translation": "Theme A", "fields": ["theme"]},
+        }
+
+        with pytest.raises(resource_translation.TranslationConflictError) as exc_info:
+            resource_translation.apply_translation_map("inv_map_drift_lib", map_modified, token)
+        assert "changed since preview" in str(exc_info.value)
+
+    def test_invalid_or_expired_token_raises_value_error(self, isolated_db):
+        """Tampered or invalid attestation token raises ValueError."""
+        library_id = resource_store.ensure_library("inv_bad_token_lib", kind="rooms")
+        map_data = {
+            "A": {"source": "A", "translation": "Alpha", "fields": ["name"]},
+        }
+        with pytest.raises(ValueError) as exc_info:
+            resource_translation.apply_translation_map("inv_bad_token_lib", map_data, "bad.token")
+        assert "signature verification failed" in str(exc_info.value)
+
+
+class TestSingleRevisionTranslation:
+    def test_apply_revision_translation_validates_and_merges(self, isolated_db):
+        """Updating single revision translation validates English, merges, and updates readiness."""
+        library_id = resource_store.ensure_library("inv_single_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            library_id, "inv_room_s1",
+            {"id": "inv_room_s1", "name": "SRC_NAME", "theme": "SRC_THEME"},
+            translation={"label": "Initial English Label"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+
+        res = resource_translation.apply_revision_translation(
+            "inv_single_lib", "inv_room_s1", rev["content_digest"],
+            {"theme": "Newly Added Theme"},  # Uses alias 'theme'
+        )
+        assert res["is_ready"] is True
+        # Merged and canonicalized!
+        assert res["translation"] == {
+            "label": "Initial English Label",
+            "scene_theme": "Newly Added Theme",
+        }
+
+    def test_apply_revision_translation_rejects_non_english(self, isolated_db):
+        """Single revision translation rejects non-English input."""
+        library_id = resource_store.ensure_library("inv_single_bad", kind="rooms")
+        rev_id = resource_store.record_revision(
+            library_id, "inv_room_s2",
+            {"id": "inv_room_s2", "name": "SRC_NAME", "theme": "SRC_THEME"},
+            translation=None,
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+
+        with pytest.raises(ValueError) as exc_info:
+            resource_translation.apply_revision_translation(
+                "inv_single_bad", "inv_room_s2", rev["content_digest"],
+                {"label": "\u30c6\u30b9\u30c8"},
+            )
+        assert "not valid English" in str(exc_info.value)
+
+
+class TestHistoricalPromptsImmutable:
+    def test_finalized_take_prompt_remains_immutable_after_translation_update(self, isolated_db):
+        """Finalized take preparations record an immutable snapshot that is never mutated
+        by subsequent translation updates."""
+        sid = _create_test_session(isolated_db)
+        library_id = resource_store.ensure_library("inv_hist_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            library_id, "inv_room_hist",
+            {
+                "id": "inv_room_hist",
+                "label": "Old Label",
+                "scene_theme": "A quiet vintage studio room",
+            },
+            translation={
+                "label": "Old Label",
+                "scene_theme": "A quiet vintage studio room",
+            },
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+
+        plan = {
+            "version": "resource-v1",
+            "look": INV_LOOK,
+            "initial_wardrobe": INV_WARDROBE,
+            "takes": [{
+                "take_id": "take-001",
+                "camera": "35mm",
+                "framing": "medium",
+                "pose": "standing",
+                "expression": "neutral",
+            }],
+            "selected_resources": [{
+                "library_key": "inv_hist_lib",
+                "source_id": "inv_room_hist",
+                "content_digest": rev["content_digest"],
+            }],
+            "wardrobe_changes": [],
+        }
+        session_plan.save_draft(sid, plan, expected_revision=0)
+
+        # Finalize take preparation
+        snapshot = resource_preparation.finalize_take_preparation(sid, 1, "take-001")
+        original_prompt = snapshot["final_prompt"]
+        assert "A quiet vintage studio room" in original_prompt
+
+        # Now update the translation sidecar for that revision
+        resource_translation.apply_revision_translation(
+            "inv_hist_lib", "inv_room_hist", rev["content_digest"],
+            {"scene_theme": "A totally renovated futuristic cyber studio"},
+        )
+
+        # The finalized snapshot in session_plan must remain 100% byte-for-byte unchanged!
+        saved_snapshot = resource_preparation.finalize_take_preparation(sid, 1, "take-001")
+        assert saved_snapshot is not None
+        assert saved_snapshot["final_prompt"] == original_prompt
+        assert "futuristic cyber studio" not in saved_snapshot["final_prompt"]
+
+        row = db.one(
+            "SELECT final_prompt FROM prepared_take "
+            "WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+            sid, 1, "take-001",
+        )
+        assert row is not None
+        assert row["final_prompt"] == original_prompt
+
+
+class TestTranslationApiRoutes:
+    def test_preview_and_apply_endpoints_round_trip(self, client):
+        lib_id = resource_store.ensure_library("api_preview_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "api_room_01",
+            {"id": "api_room_01", "name": "SALLE_A", "theme": "THEME_A"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+
+        map_data = {
+            "SALLE_A": {"source": "SALLE_A", "translation": "Room Alpha", "fields": ["name"]},
+            "THEME_A": {"source": "THEME_A", "translation": "Theme Alpha", "fields": ["theme"]},
+        }
+
+        # 1. Preview
+        resp = client.post(
+            "/api/resources/libraries/api_preview_lib/translations/preview",
+            json={"translation_map": map_data},
+        )
+        assert resp.status_code == 200
+        preview = resp.json()
+        assert preview["matched_revisions"] == 1
+        assert preview["would_update"] == 1
+        assert "attestation_token" in preview
+        token = preview["attestation_token"]
+
+        # 2. Apply
+        apply_resp = client.post(
+            "/api/resources/libraries/api_preview_lib/translations/apply",
+            json={"translation_map": map_data, "attestation_token": token},
+        )
+        assert apply_resp.status_code == 200
+        applied = apply_resp.json()
+        assert applied["updated"] == 1
+        assert applied["ready"] == 1
+
+        # 3. Check DB
+        updated_rev = resource_store.get_revision(revision_id=rev_id)
+        assert updated_rev["translation"] == {
+            "label": "Room Alpha",
+            "scene_theme": "Theme Alpha",
+        }
+
+    def test_preview_missing_library_returns_404(self, client):
+        resp = client.post(
+            "/api/resources/libraries/non_existent_lib/translations/preview",
+            json={"translation_map": {}},
+        )
+        assert resp.status_code == 404
+
+    def test_preview_invalid_map_returns_422(self, client):
+        lib_id = resource_store.ensure_library("api_err_lib", kind="rooms")
+        resp = client.post(
+            "/api/resources/libraries/api_err_lib/translations/preview",
+            json={"translation_map": "not valid json and not a file"},
+        )
+        assert resp.status_code == 422
+
+    def test_apply_tampered_token_returns_422(self, client):
+        lib_id = resource_store.ensure_library("api_bad_token_lib", kind="rooms")
+        resp = client.post(
+            "/api/resources/libraries/api_bad_token_lib/translations/apply",
+            json={"translation_map": {}, "attestation_token": "invalid.token"},
+        )
+        assert resp.status_code == 422
+
+    def test_single_revision_translation_endpoint(self, client):
+        lib_id = resource_store.ensure_library("api_single_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "api_single_01",
+            {"id": "api_single_01", "name": "SALLE_S", "theme": "THEME_S"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev is not None
+
+        resp = client.post(
+            f"/api/resources/revisions/api_single_lib/api_single_01/{rev['content_digest']}/translation",
+            json={"translation": {"name": "Single Room Label", "theme": "Single Room Theme"}},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["is_ready"] is True
+        assert data["translation"] == {
+            "label": "Single Room Label",
+            "scene_theme": "Single Room Theme",
+        }
+

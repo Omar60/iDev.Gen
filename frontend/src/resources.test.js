@@ -9,6 +9,7 @@ import {
   exactRevisionTriple,
   buildSessionDraftPayload,
   parsePreviewSummary,
+  parseTranslationPreview,
 } from './resources.js'
 
 describe('resources module', () => {
@@ -435,6 +436,41 @@ describe('resources module', () => {
         // Readiness is a separate property evaluated on stored revisions, not in the preview report
         expect(item.readiness).toBeUndefined()
       }
+    })
+  })
+
+  describe('parseTranslationPreview', () => {
+    it('returns null for null or empty input', () => {
+      expect(parseTranslationPreview(null)).toBeNull()
+      expect(parseTranslationPreview(undefined)).toBeNull()
+    })
+
+    it('parses and normalizes translation preview metrics correctly', () => {
+      const raw = {
+        library_key: 'test_rooms',
+        total_revisions: 10,
+        matched_revisions: 8,
+        unmatched_map_entries: 2,
+        would_update: 5,
+        unchanged: 3,
+        would_be_ready: 7,
+        would_remain_pending: 1,
+        attestation_token: 'token.sig123',
+        expires_at: 1700000000,
+      }
+      const parsed = parseTranslationPreview(raw)
+      expect(parsed).toEqual({
+        libraryKey: 'test_rooms',
+        totalRevisions: 10,
+        matchedRevisions: 8,
+        unmatchedEntries: 2,
+        wouldUpdate: 5,
+        unchanged: 3,
+        wouldBeReady: 7,
+        wouldRemainPending: 1,
+        attestationToken: 'token.sig123',
+        expiresAt: 1700000000,
+      })
     })
   })
 })

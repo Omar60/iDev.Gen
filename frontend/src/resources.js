@@ -267,3 +267,20 @@ export function parsePreviewSummary(rawReport) {
     missing,
   }
 }
+
+/** Parse and normalize translation preview metrics. */
+export function parseTranslationPreview(preview) {
+  if (!preview) return null
+  return {
+    libraryKey: preview.library_key || '',
+    totalRevisions: preview.total_revisions ?? 0,
+    matchedRevisions: preview.matched_revisions ?? 0,
+    unmatchedEntries: preview.unmatched_map_entries ?? 0,
+    wouldUpdate: preview.would_update ?? 0,
+    unchanged: preview.unchanged ?? 0,
+    wouldBeReady: preview.would_be_ready ?? 0,
+    wouldRemainPending: preview.would_remain_pending ?? 0,
+    attestationToken: preview.attestation_token || '',
+    expiresAt: preview.expires_at || 0,
+  }
+}

@@ -39,6 +39,7 @@ import db
 import resource_import
 import resource_preparation
 import resource_service
+import resource_store
 
 
 # ---- Database helpers ---------------------------------------------------
@@ -367,6 +368,13 @@ def _import_invented_resource(tmp_path: Path) -> dict:
         f"imported revision ({ACCEPTANCE_LIBRARY_KEY}, "
         f"{ACCEPTANCE_SOURCE_ID}, {outcome.new_content_digest}) "
         f"must be readable after commit"
+    )
+    resource_store.update_translation(
+        int(revision["revision_id"]),
+        {
+            "label": ACCEPTANCE_ROOM_PAYLOAD["label"],
+            "scene_theme": ACCEPTANCE_ROOM_PAYLOAD["scene_theme"],
+        },
     )
     return {
         "library_key": ACCEPTANCE_LIBRARY_KEY,

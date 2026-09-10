@@ -196,8 +196,10 @@ from typing import Any, Callable, Mapping
 import db
 import importer
 import resource_prompts
+import resource_readiness
 import resource_store
 import session_plan
+import translation_map
 # Re-export the persistence-error class the existing
 # ``session_plan`` API publishes, so a caller that reads
 # ``resource_preparation.PrearedTakePersistenceError``
@@ -769,6 +771,7 @@ def _load_resource_revision(
         "library_id": int(library["id"]),
         "kind": str(library["kind"]),
         "payload": revision["payload"],
+        "translation": revision.get("translation") or {},
         "revision_id": int(revision["id"]),
     }
 
@@ -902,32 +905,87 @@ def _classify_resource_fields(
 def _prepare_resource(revision: dict) -> dict:
     """Build the per-resource preparation entry for the plan.
 
-    The result is a dict the function composes with the rest
-    of the plan's resources. Every bucket the function
-    returns is the value the layer will surface to the future
-    assembly step. The entry carries:
-
-      * the immutable revision triple and the library's kind
-        (for provenance);
-      * the role-bucketed payload.
-
-    The function does NOT join the descriptive inputs into
-    prose; that is the future assembly step's job. The
-    function's only job is to keep the role separation
-    explicit so a future reviewer can read off which
-    fields the contract approved for prompt use.
+    Strictly consumes authorized English translations from the translation sidecar
+    for required descriptive fields (raising PreparationFieldError if missing or
+    invalid English, with zero payload fallback). For optional descriptive fields,
+    consumes translation if available, permits clean English payload values,
+    and omits untranslated non-English fields.
     """
     kind = revision["kind"]
     payload = revision["payload"]
+    source_id = revision.get("source_id", "")
     classified = _classify_resource_fields(kind, payload)
+
+    raw_translation = revision.get("translation") or {}
+    try:
+        canonical_translation = resource_prompts.canonicalize_translation_dict(raw_translation)
+    except Exception:
+        canonical_translation = raw_translation
+
+    effective_descriptive_inputs: dict[str, Any] = {}
+
+    if kind == resource_prompts.KIND_ROOMS:
+        label_val = canonical_translation.get("label")
+        if not resource_readiness._is_valid_english_translation(label_val):
+            raise PreparationFieldError(
+                f"Resource {source_id!r} required field 'label' lacks an authorized "
+                f"English translation in the translation sidecar; cannot prepare."
+            )
+        theme_val = canonical_translation.get("scene_theme")
+        if not resource_readiness._is_valid_english_translation(theme_val):
+            raise PreparationFieldError(
+                f"Resource {source_id!r} required field 'scene_theme' lacks an authorized "
+                f"English translation in the translation sidecar; cannot prepare."
+            )
+        effective_descriptive_inputs["label"] = label_val
+        effective_descriptive_inputs["scene_theme"] = theme_val
+    elif kind == resource_prompts.KIND_FUSED_SCENES:
+        prompt_val = canonical_translation.get("prompt")
+        if not resource_readiness._is_valid_english_translation(prompt_val):
+            raise PreparationFieldError(
+                f"Resource {source_id!r} required field 'prompt' lacks an authorized "
+                f"English translation in the translation sidecar; cannot prepare."
+            )
+        effective_descriptive_inputs["prompt"] = prompt_val
+
+    # Process optional descriptive inputs from payload:
+    for field_name, field_val in classified["descriptive_inputs"].items():
+        c_field = resource_prompts.canonical_field_name(field_name)
+        if c_field in effective_descriptive_inputs:
+            continue
+        if c_field in canonical_translation:
+            trans_val = canonical_translation[c_field]
+            if resource_readiness._is_valid_english_translation(trans_val):
+                effective_descriptive_inputs[c_field] = trans_val
+                continue
+        # Untranslated: check if it contains non-English characters
+        is_non_eng = False
+        if isinstance(field_val, str):
+            is_non_eng = translation_map.contains_non_english(field_val)
+        elif isinstance(field_val, list):
+            is_non_eng = any(isinstance(x, str) and translation_map.contains_non_english(x) for x in field_val)
+        if not is_non_eng:
+            effective_descriptive_inputs[c_field] = field_val
+
+    # Any extra descriptive fields provided in translation:
+    for c_field, trans_val in canonical_translation.items():
+        if c_field not in effective_descriptive_inputs:
+            info = resource_prompts.classify_field(kind, c_field)
+            if info.get("role") == resource_prompts.ROLE_DESCRIPTIVE_INPUT:
+                if resource_readiness._is_valid_english_translation(trans_val):
+                    effective_descriptive_inputs[c_field] = trans_val
+
     return {
         "library_key": revision["library_key"],
         "source_id": revision["source_id"],
         "content_digest": revision["content_digest"],
         "kind": kind,
+        "payload": payload,
+        "source_payload": payload,
+        "translation": raw_translation,
         "identity": classified["identity"],
         "selection_metadata": classified["selection_metadata"],
-        "descriptive_inputs": classified["descriptive_inputs"],
+        "descriptive_inputs": effective_descriptive_inputs,
         "writer_guidance": classified["writer_guidance"],
         "intentionally_unused": classified["intentionally_unused"],
         "auxiliary": classified["auxiliary"],

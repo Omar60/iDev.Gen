@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Any, Literal
 
 import crop
 import db
@@ -46,6 +46,7 @@ from backend import resource_service
 from backend import session_plan
 from backend import resource_preparation
 from backend.resource_import import CommitAborted, StaleFingerprintError
+from backend import resource_translation
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -1348,6 +1349,86 @@ def commit_resource_import(p: ResourceCommitIn):
     except (CommitAborted, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"report": resource_service.safe_report(report)}
+
+
+class ResourceTranslationPreviewIn(BaseModel):
+    translation_map: Any = None
+    map_path: str | None = None
+
+
+class ResourceTranslationApplyIn(BaseModel):
+    translation_map: Any = None
+    map_path: str | None = None
+    attestation_token: str
+
+
+class ResourceRevisionTranslationIn(BaseModel):
+    translation: dict[str, Any]
+
+
+@app.post("/api/resources/libraries/{library_key}/translations/preview")
+def preview_resource_library_translations(library_key: str, p: ResourceTranslationPreviewIn):
+    """Preview translation map application without modifying database state."""
+    map_input = p.translation_map if p.translation_map is not None else p.map_path
+    if map_input is None:
+        raise HTTPException(422, "Either translation_map or map_path must be provided")
+    try:
+        return resource_translation.preview_translation_map(library_key, map_input)
+    except ValueError as exc:
+        msg = str(exc).lower()
+        if ("library" in msg or "revision" in msg) and "not found" in msg:
+            raise HTTPException(404, str(exc)) from exc
+        raise HTTPException(422, str(exc)) from exc
+    except TypeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/resources/libraries/{library_key}/translations/apply")
+def apply_resource_library_translations(library_key: str, p: ResourceTranslationApplyIn):
+    """Atomically apply a translation map to a library with TOCTOU verification."""
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
+    if not p.attestation_token:
+        raise HTTPException(422, "attestation_token is required")
+    map_input = p.translation_map if p.translation_map is not None else p.map_path
+    if map_input is None:
+        raise HTTPException(422, "Either translation_map or map_path must be provided")
+    try:
+        return resource_translation.apply_translation_map(
+            library_key, map_input, p.attestation_token,
+        )
+    except resource_translation.TranslationConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        msg = str(exc).lower()
+        if ("library" in msg or "revision" in msg) and "not found" in msg:
+            raise HTTPException(404, str(exc)) from exc
+        raise HTTPException(422, str(exc)) from exc
+    except TypeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/resources/revisions/{library_key}/{source_id}/{content_digest}/translation")
+def update_resource_revision_translation(
+    library_key: str,
+    source_id: str,
+    content_digest: str,
+    p: ResourceRevisionTranslationIn,
+):
+    """Update translation sidecar for a single revision with validated merge."""
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
+    try:
+        return resource_translation.apply_revision_translation(
+            library_key, source_id, content_digest, p.translation,
+        )
+    except ValueError as exc:
+        msg = str(exc).lower()
+        if ("library" in msg or "revision" in msg) and "not found" in msg:
+            raise HTTPException(404, str(exc)) from exc
+        raise HTTPException(422, str(exc)) from exc
+    except TypeError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 def _adopt_config(cfg: dict) -> None:

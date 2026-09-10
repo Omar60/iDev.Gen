@@ -7819,10 +7819,14 @@ def test_api_take_adaptation_and_conflict_resolution(client, seeded):
     }).json()["id"]
 
     lib_id = resource_store.ensure_library("fused_scene_lib", kind="fused_scenes")
-    rev_id = resource_store.record_revision(lib_id, "scene-01", {
-        "id": "scene-01",
-        "prompt": "she is wearing a silk dress in the sunlit loft",
-    })
+    rev_id = resource_store.record_revision(
+        lib_id, "scene-01",
+        {
+            "id": "scene-01",
+            "prompt": "she is wearing a silk dress in the sunlit loft",
+        },
+        translation={"prompt": "she is wearing a silk dress in the sunlit loft"},
+    )
     rev_row = resource_store.get_revision(revision_id=rev_id)
     assert rev_row is not None
 

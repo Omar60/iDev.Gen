@@ -85,6 +85,72 @@ ALL_PREPARATION_ROLES: tuple[str, ...] = (
     ROLE_INTENTIONALLY_UNUSED,
 )
 
+# -- Semantic families and canonical aliases. ----------------------------
+# For fields with semantic aliases (e.g. name -> label, theme -> scene_theme,
+# tag -> tags, identifier/key -> id), these families declare the canonical
+# name and the recognized aliases.
+# Only canonical names are stored in translation sidecars (asset_revision.translation).
+# Independent descriptive fields (props, objects, furniture, uniform_fit, text,
+# description) are NOT in these families and retain their own field names.
+SEMANTIC_FAMILIES: dict[str, tuple[str, ...]] = {
+    "label": ("label", "name", "title", "display_name"),
+    "scene_theme": ("scene_theme", "theme", "theme_text"),
+    "tags": ("tags", "tag"),
+    "prompt": ("prompt",),
+    "id": ("id", "identifier", "key"),
+}
+
+_ALIAS_TO_CANONICAL: dict[str, str] = {
+    alias: canonical_name
+    for canonical_name, aliases in SEMANTIC_FAMILIES.items()
+    for alias in aliases
+}
+
+_CANONICAL_TO_FAMILY: dict[str, tuple[str, ...]] = dict(SEMANTIC_FAMILIES)
+
+
+def canonical_field_name(field_name: str) -> str:
+    """Return the canonical field name for an alias, or the field name itself if independent."""
+    return _ALIAS_TO_CANONICAL.get(field_name, field_name)
+
+
+def alias_family_for_field(field_name: str) -> tuple[str, ...]:
+    """Return all aliases in the family containing field_name, or (field_name,) if independent."""
+    canonical = canonical_field_name(field_name)
+    return _CANONICAL_TO_FAMILY.get(canonical, (field_name,))
+
+
+def is_canonical_family_alias(field_name: str) -> bool:
+    """Return True if field_name is an alias of a family but not the canonical name itself."""
+    canonical = _ALIAS_TO_CANONICAL.get(field_name)
+    return canonical is not None and canonical != field_name
+
+
+def canonicalize_translation_dict(updates: Mapping[str, Any]) -> dict[str, Any]:
+    """Canonicalize a translation dictionary to use only canonical keys.
+
+    Raw aliases ('name', 'theme', 'tag', etc.) are projected to their canonical keys
+    ('label', 'scene_theme', 'tags'). Independent fields retain their names.
+    Raises ValueError if conflicting translations are provided for the same family.
+    """
+    if not isinstance(updates, Mapping):
+        raise TypeError(
+            f"translation updates must be a mapping, got {type(updates).__name__}"
+        )
+    canonicalized: dict[str, Any] = {}
+    source_keys: dict[str, str] = {}
+    for key, val in updates.items():
+        c_key = canonical_field_name(str(key))
+        if c_key in canonicalized and canonicalized[c_key] != val:
+            raise ValueError(
+                f"Conflicting translations provided for semantic family {c_key!r}: "
+                f"{canonicalized[c_key]!r} (from {source_keys[c_key]!r}) vs {val!r} (from {key!r})"
+            )
+        canonicalized[c_key] = val
+        source_keys[c_key] = str(key)
+    return canonicalized
+
+
 # -- The six supported resource kinds in the preparation contract. ---------
 # Two are declared scene kinds and four are auxiliary schemas the ledger
 # records separately for source entries the operator selected.
@@ -837,10 +903,14 @@ def validate_resource_entry(
     # never blocking).
     if not is_auxiliary_kind(kind):
         for name, info in mapping.items():
-            if info.get("required") and name not in entry:
+            if not info.get("required"):
+                continue
+            family = alias_family_for_field(name)
+            if not any(alias in entry for alias in family):
                 reasons.append(
                     f"required field {name!r} is missing for kind {kind!r}"
                 )
+
 
     # Per-field check: an unknown field is reported with a field-
     # specific reason, the writer-guidance name rules are accepted,

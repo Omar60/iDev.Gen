@@ -9,6 +9,7 @@ import {
   buildSessionDraftPayload,
   parsePreviewSummary,
   selectAvailableModelId,
+  parseTranslationPreview,
 } from '../resources.js'
 
 export default function Resources({ requestedModelId = '' }) {
@@ -32,6 +33,65 @@ export default function Resources({ requestedModelId = '' }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+
+  // Translation mapping state per library key
+  const [translationState, setTranslationState] = useState({})
+
+  const updateTState = (libraryKey, patch) => {
+    setTranslationState((prev) => ({
+      ...prev,
+      [libraryKey]: { ...(prev[libraryKey] || {}), ...patch },
+    }))
+  }
+
+  const handlePreviewTranslations = async (libraryKey) => {
+    const tState = translationState[libraryKey] || {}
+    const mapPath = (tState.mapPath || '').trim()
+    if (!mapPath) return
+
+    updateTState(libraryKey, { busy: true, error: '', notice: '', preview: null })
+    try {
+      const res = await api.post(`/api/resources/libraries/${encodeURIComponent(libraryKey)}/translations/preview`, {
+        map_path: mapPath,
+      })
+      const parsed = parseTranslationPreview(res)
+      updateTState(libraryKey, {
+        preview: parsed,
+        notice: `Preview ready: ${parsed.matchedRevisions} of ${parsed.totalRevisions} revisions matched.`,
+      })
+    } catch (e) {
+      updateTState(libraryKey, { error: e.message })
+    } finally {
+      updateTState(libraryKey, { busy: false })
+    }
+  }
+
+  const handleApplyTranslations = async (libraryKey) => {
+    const tState = translationState[libraryKey] || {}
+    const mapPath = (tState.mapPath || '').trim()
+    if (!mapPath || !tState.preview?.attestationToken) return
+
+    updateTState(libraryKey, { busy: true, error: '', notice: '' })
+    try {
+      const res = await api.post(`/api/resources/libraries/${encodeURIComponent(libraryKey)}/translations/apply`, {
+        map_path: mapPath,
+        attestation_token: tState.preview.attestationToken,
+      })
+      updateTState(libraryKey, {
+        preview: null,
+        notice: `Translations applied: ${res.updated} updated, ${res.ready} ready, ${res.pending} pending.`,
+      })
+      reloadLibraries()
+    } catch (e) {
+      let msg = e.message
+      if (msg && (msg.includes('409') || msg.includes('drift') || msg.includes('changed since preview'))) {
+        msg = 'Library state or translation map changed since preview. Please preview again before applying.'
+      }
+      updateTState(libraryKey, { error: msg })
+    } finally {
+      updateTState(libraryKey, { busy: false })
+    }
+  }
 
   const reloadLibraries = () => {
     api.get('/api/resources/libraries')
@@ -457,6 +517,77 @@ export default function Resources({ requestedModelId = '' }) {
                     </table>
                   </div>
                 )}
+
+                {/* Translation Mapping section */}
+                <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <h4 style={{ margin: 0 }}>Translation Mapping</h4>
+                    <div className="row">
+                      <span className="badge ready" style={{ marginRight: 6 }}>
+                        {(lib.revisions || []).filter((r) => r.readiness?.status === 'ready').length} Ready
+                      </span>
+                      <span className="badge pending">
+                        {(lib.revisions || []).filter((r) => r.readiness?.status !== 'ready').length} Pending
+                      </span>
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const tState = translationState[lib.library_key] || {}
+                    return (
+                      <>
+                        <div className="row" style={{ alignItems: 'flex-end', gap: 8, marginBottom: 8 }}>
+                          <div style={{ flex: 1 }}>
+                            <label style={{ fontSize: 12 }}>Translation Map Path (beside source material or absolute JSON path)</label>
+                            <input
+                              value={tState.mapPath || ''}
+                              onChange={(e) => updateTState(lib.library_key, { mapPath: e.target.value })}
+                              placeholder="e.g. /path/to/translations.json or relative/path.json"
+                              disabled={tState.busy}
+                            />
+                          </div>
+                          <button
+                            onClick={() => handlePreviewTranslations(lib.library_key)}
+                            disabled={tState.busy || !(tState.mapPath || '').trim()}
+                            title="Preview matching without writing database state"
+                          >
+                            {tState.busy ? 'Working…' : 'Preview Translations'}
+                          </button>
+                        </div>
+
+                        {tState.error && <div className="error" style={{ fontSize: 12, marginBottom: 8 }}>{tState.error}</div>}
+                        {tState.notice && <div className="panel" style={{ fontSize: 12, marginBottom: 8, borderColor: 'var(--accent)' }}>{tState.notice}</div>}
+
+                        {tState.preview && (
+                          <div className="panel" style={{ background: 'var(--card-bg)', marginTop: 8, marginBottom: 8 }}>
+                            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                              <div style={{ fontSize: 13 }}>
+                                <b>Preview Summary:</b> {tState.preview.matchedRevisions} of {tState.preview.totalRevisions} revisions matched
+                                {' · '}
+                                <span style={{ color: 'var(--accent)' }}>{tState.preview.wouldUpdate} would update</span>
+                                {' · '}
+                                <span style={{ color: 'var(--success, #4caf50)' }}>{tState.preview.wouldBeReady} would be ready</span>
+                                {' · '}
+                                <span style={{ color: 'var(--warning, #ff9800)' }}>{tState.preview.wouldRemainPending} would remain pending</span>
+                                {tState.preview.unmatchedEntries > 0 && (
+                                  <span className="muted"> · {tState.preview.unmatchedEntries} unmatched entries</span>
+                                )}
+                              </div>
+                              <button
+                                className="primary"
+                                onClick={() => handleApplyTranslations(lib.library_key)}
+                                disabled={tState.busy}
+                                title="Atomically apply translations to library sidecars"
+                              >
+                                {tState.busy ? 'Applying…' : 'Confirm & Apply Translations'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )
+                  })()}
+                </div>
               </div>
             ))
           )}
