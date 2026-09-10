@@ -109,16 +109,21 @@ The app exposes:
 - `POST /api/resources/import/commit` with the serialized preview returned by
   preview. The commit rechecks every source fingerprint and is atomic.
 - `POST /api/resources/libraries/{library_key}/translations/preview` with
-  a translation map. Strictly read-only; validates map entries upfront for
-  descriptive input authorization, and issues an HMAC-SHA256 attestation token
-  signed with a private key (`.resource-translation-preview-key`) scoped to the
-  active SQLite database directory.
+  a translation map. Strictly read-only and does not mutate resource or database
+  state; validates map entries upfront for descriptive input authorization against
+  the library's kind, and issues an HMAC-SHA256 attestation token signed with a private
+  key (`.resource-translation-preview-key`) scoped to the active SQLite database directory.
 - `POST /api/resources/libraries/{library_key}/translations/apply` with
   the translation map and attestation token. Atomically verifies library metadata
-  and fingerprint against TOCTOU drift (raising HTTP 409 Conflict if modified),
-  merges canonical translations, and repairs stale coverage.
+  and fingerprint against TOCTOU drift (raising HTTP 409 Conflict if modified or deleted),
+  merges canonical translations inside an immediate transaction, and repairs stale coverage
+  so reported preview counts match applied updates.
 - `POST /api/resources/revisions/{library_key}/{source_id}/{content_digest}/translation`
-  for atomic single-revision translation updates.
+  for atomic single-revision translation updates, enforcing alias validation (accepting
+  consistent duplicate aliases and rejecting conflicts) and suppressing redundant SQL
+  writes on semantic no-ops. Stored revisions with invalid sidecars remain inspectable in
+  readiness reporting with diagnostic `sidecar_error` metadata, but fail closed during prompt
+  preparation.
 
 The CLI uses the same service boundary as the app:
 

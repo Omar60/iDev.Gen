@@ -1,6 +1,6 @@
 ## Context
 
-The resource planning subsystem introduced in `adopt-resource-session-planning` allows users to import complete source resources into SQLite (`asset_library` and `asset_revision` tables). When imported, foreign-language revisions are recorded with an initial empty translation sidecar (`asset_revision.translation`) and evaluate to `pending` readiness.
+The resource planning subsystem introduced in `adopt-resource-session-planning` allows users to import complete source resources into SQLite (`resource_library` and `asset_revision` tables). When imported, foreign-language revisions are recorded with an initial empty translation sidecar (`asset_revision.translation`) and evaluate to `pending` readiness.
 However, there is no end-to-end operational pipeline to match, preview, and apply translation maps to these revisions, nor to update individual revision translations. Furthermore, preparation must strictly consume authorized English translations from the sidecar without falling back to the source payload for required fields.
 
 ## Goals / Non-Goals

@@ -959,3 +959,295 @@ class TestCorrectiveHardening:
         assert resp.status_code == 503
         assert "Resource planning is disabled" in resp.json()["detail"]
 
+    def test_preview_changes_zero_database_state_and_reuses_signing_key(self, tmp_path):
+        """Preview changes zero resource/database state while permitting first-key file creation,
+        and reconnect to the same DB directory reuses the translation signing key."""
+        db_path = tmp_path / "test_zero_state.db"
+        _open(db_path)
+        lib_id = resource_store.ensure_library("zero_state_lib", kind="rooms")
+        resource_store.record_revision(
+            lib_id, "s1", {"id": "s1", "label": "SRC", "scene_theme": "THM"}
+        )
+        map_data = {"SRC": {"source": "SRC", "translation": "Room Alpha", "fields": ["label"]}}
+
+        key_file = tmp_path / ".resource-translation-preview-key"
+        assert not key_file.exists()
+
+        before_lib = db.q("SELECT * FROM resource_library")
+        before_rev = db.q("SELECT * FROM asset_revision")
+
+        prev = resource_translation.preview_translation_map("zero_state_lib", map_data)
+        assert prev["would_update"] == 1
+        assert key_file.is_file()
+        key_bytes = key_file.read_bytes()
+        assert len(key_bytes) == 32
+
+        after_lib = db.q("SELECT * FROM resource_library")
+        after_rev = db.q("SELECT * FROM asset_revision")
+        assert before_lib == after_lib
+        assert before_rev == after_rev
+
+        _close_silently()
+        _open(db_path)
+        prev2 = resource_translation.preview_translation_map("zero_state_lib", map_data)
+        assert key_file.read_bytes() == key_bytes
+        _close_silently()
+
+    def test_required_descriptive_fields_as_lists_fail_closed(self, isolated_db):
+        """Required descriptive fields (label, scene_theme, prompt) as lists must fail closed
+        both when translation map matches and when no map entry matches."""
+        # 1. rooms: label as list
+        payload_label_match = {"id": "r1", "label": ["SRC_LABEL"], "scene_theme": "Valid Theme"}
+        map_match_label = {"SRC_LABEL": {"source": "SRC_LABEL", "translation": "Room One", "fields": ["label"]}}
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_label_match, map_match_label, "rooms")
+        assert "Required field 'label'" in str(exc.value)
+        assert "must be a scalar string" in str(exc.value)
+
+        map_no_match = {"OTHER": {"source": "OTHER", "translation": "Other", "fields": ["label"]}}
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_label_match, map_no_match, "rooms")
+        assert "Required field 'label'" in str(exc.value)
+        assert "must be a scalar string" in str(exc.value)
+
+        # 2. rooms: scene_theme as list
+        payload_theme_match = {"id": "r2", "label": "Valid Room", "scene_theme": ["SRC_THEME"]}
+        map_match_theme = {"SRC_THEME": {"source": "SRC_THEME", "translation": "Theme One", "fields": ["scene_theme"]}}
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_theme_match, map_match_theme, "rooms")
+        assert "Required field 'scene_theme'" in str(exc.value)
+        assert "must be a scalar string" in str(exc.value)
+
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_theme_match, map_no_match, "rooms")
+        assert "Required field 'scene_theme'" in str(exc.value)
+        assert "must be a scalar string" in str(exc.value)
+
+        # 3. fused_scenes: prompt as list
+        payload_prompt_match = {"id": "fs1", "prompt": ["SRC_PROMPT"]}
+        map_match_prompt = {"SRC_PROMPT": {"source": "SRC_PROMPT", "translation": "Prompt One", "fields": ["prompt"]}}
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_prompt_match, map_match_prompt, "fused_scenes")
+        assert "Required field 'prompt'" in str(exc.value)
+        assert "must be a scalar string" in str(exc.value)
+
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_prompt_match, map_no_match, "fused_scenes")
+        assert "Required field 'prompt'" in str(exc.value)
+        assert "must be a scalar string" in str(exc.value)
+
+    def test_optional_descriptive_lists_structural_prevalidation(self, isolated_db):
+        """Optional descriptive list fields must fail closed if any item is not a string,
+        both when a map entry matches another item and when no map entry matches."""
+        # 1. ["chair", 4]
+        payload_int = {"id": "r1", "label": "Room", "scene_theme": "Theme", "tags": ["chair", 4]}
+        map_chair = {"chair": {"source": "chair", "translation": "chair", "fields": ["tags"]}}
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_int, map_chair, "rooms")
+        assert "contains non-string items; source lists must be list[str]" in str(exc.value)
+
+        map_other = {"other": {"source": "other", "translation": "other", "fields": ["tags"]}}
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_int, map_other, "rooms")
+        assert "contains non-string items; source lists must be list[str]" in str(exc.value)
+
+        # 2. ["chair", {"name": "table"}]
+        payload_dict = {"id": "r1", "label": "Room", "scene_theme": "Theme", "tags": ["chair", {"name": "table"}]}
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_dict, map_chair, "rooms")
+        assert "contains non-string items; source lists must be list[str]" in str(exc.value)
+
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_dict, map_other, "rooms")
+        assert "contains non-string items; source lists must be list[str]" in str(exc.value)
+
+        # 3. [None, "lamp"]
+        payload_none = {"id": "r1", "label": "Room", "scene_theme": "Theme", "tags": [None, "lamp"]}
+        map_lamp = {"lamp": {"source": "lamp", "translation": "lamp", "fields": ["tags"]}}
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_none, map_lamp, "rooms")
+        assert "contains non-string items; source lists must be list[str]" in str(exc.value)
+
+        with pytest.raises(ValueError) as exc:
+            resource_translation.match_translation_map(payload_none, map_other, "rooms")
+        assert "contains non-string items; source lists must be list[str]" in str(exc.value)
+
+        # 4. validate_translation_value_for_source with non-string source list
+        with pytest.raises(ValueError) as exc:
+            resource_readiness.validate_translation_value_for_source(
+                "rooms", {"tags": [1, 2]}, "tags", ["One", "Two"]
+            )
+        assert "contains non-string elements; only list[str] sources can be translated" in str(exc.value)
+
+        with pytest.raises(ValueError) as exc:
+            resource_readiness.validate_translation_value_for_source(
+                "rooms", {"tags": ["chair", {"name": "table"}]}, "tags", ["Chair", "Table"]
+            )
+        assert "contains non-string elements; only list[str] sources can be translated" in str(exc.value)
+
+    def test_translation_map_input_shapes_and_literal_keys(self, isolated_db):
+        """Direct dict, direct list, duplicate source rejection, literal source keys 'items' and 'translation_map'."""
+        lib = resource_store.ensure_library("map_shapes_lib", kind="rooms")
+        resource_store.record_revision(
+            lib, "s1",
+            {"id": "s1", "label": "SRC", "scene_theme": "THM", "description": "items"},
+        )
+
+        # 1. Historical direct dictionary map
+        dict_map = {
+            "SRC": {"source": "SRC", "translation": "Room Alpha", "fields": ["label"]},
+            "THM": {"source": "THM", "translation": "Theme Alpha", "fields": ["scene_theme"]},
+        }
+        normalized_dict = resource_translation.normalize_translation_map_input(dict_map)
+        assert len(normalized_dict) == 2
+        prev_dict = resource_translation.preview_translation_map("map_shapes_lib", dict_map)
+        assert prev_dict["would_update"] == 1
+
+        # 2. Current supported direct list map
+        list_map = [
+            {"source": "SRC", "translation": "Room Alpha", "fields": ["label"]},
+            {"source": "THM", "translation": "Theme Alpha", "fields": ["scene_theme"]},
+        ]
+        normalized_list = resource_translation.normalize_translation_map_input(list_map)
+        assert len(normalized_list) == 2
+
+        # 3. Duplicate source in list map is rejected
+        dup_list = [
+            {"source": "SRC", "translation": "Invalid Target", "fields": ["weight"]},
+            {"source": "SRC", "translation": "Valid Target", "fields": ["label"]},
+        ]
+        with pytest.raises(ValueError) as exc:
+            resource_translation.normalize_translation_map_input(dup_list)
+        assert "Duplicate source entry 'SRC' in translation map at index 1" in str(exc.value)
+
+        # 4. Literal source "items" works as normal direct map
+        items_map = {
+            "items": {"source": "items", "translation": "Items Description", "fields": ["description"]},
+        }
+        normalized_items = resource_translation.normalize_translation_map_input(items_map)
+        assert "items" in normalized_items
+        assert normalized_items["items"]["translation"] == "Items Description"
+
+        # 5. Literal source "translation_map" as sole entry
+        tmap_map = {
+            "translation_map": {"source": "translation_map", "translation": "Translation map", "fields": ["description"]},
+        }
+        normalized_tmap = resource_translation.normalize_translation_map_input(tmap_map)
+        assert "translation_map" in normalized_tmap
+        assert normalized_tmap["translation_map"]["translation"] == "Translation map"
+
+        # 6. Literal source "translation_map" with sibling entries
+        tmap_sibling_map = {
+            "translation_map": {"source": "translation_map", "translation": "Translation map", "fields": ["description"]},
+            "SRC": {"source": "SRC", "translation": "Room Alpha", "fields": ["label"]},
+        }
+        normalized_sibling = resource_translation.normalize_translation_map_input(tmap_sibling_map)
+        assert len(normalized_sibling) == 2
+        assert "translation_map" in normalized_sibling
+        assert "SRC" in normalized_sibling
+
+    def test_deleted_library_after_preview_raises_409_conflict(self, isolated_db, client):
+        """Deleting a library between Preview and Apply raises TranslationConflictError (HTTP 409)."""
+        lib_id = resource_store.ensure_library("del_lib", kind="rooms")
+        resource_store.record_revision(
+            lib_id, "s1", {"id": "s1", "label": "SRC", "scene_theme": "THM"}
+        )
+        map_data = {"SRC": {"source": "SRC", "translation": "Room Alpha", "fields": ["label"]}}
+
+        prev = resource_translation.preview_translation_map("del_lib", map_data)
+        token = prev["attestation_token"]
+
+        db.run("DELETE FROM resource_library WHERE library_key = 'del_lib'")
+
+        with pytest.raises(resource_translation.TranslationConflictError) as exc:
+            resource_translation.apply_translation_map("del_lib", map_data, token)
+        assert "deleted since preview" in str(exc.value)
+
+        lib_id2 = resource_store.ensure_library("del_api_lib", kind="rooms")
+        resource_store.record_revision(
+            lib_id2, "s1", {"id": "s1", "label": "SRC", "scene_theme": "THM"}
+        )
+        prev_resp = client.post(
+            "/api/resources/libraries/del_api_lib/translations/preview",
+            json={"translation_map": map_data},
+        )
+        assert prev_resp.status_code == 200
+        api_token = prev_resp.json()["attestation_token"]
+
+        db.run("DELETE FROM resource_library WHERE library_key = 'del_api_lib'")
+
+        apply_resp = client.post(
+            "/api/resources/libraries/del_api_lib/translations/apply",
+            json={"translation_map": map_data, "attestation_token": api_token},
+        )
+        assert apply_resp.status_code == 409
+        assert "deleted since preview" in apply_resp.json()["detail"]
+
+    def test_mixed_valid_and_invalid_map_rejected_atomically(self, isolated_db):
+        """Mixed valid and invalid map fails validation with zero database writes."""
+        lib_id = resource_store.ensure_library("atom_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "s1", {"id": "s1", "label": "SRC", "scene_theme": "THM"}
+        )
+        mixed_map = {
+            "SRC": {"source": "SRC", "translation": "Room Alpha", "fields": ["label"]},
+            "THM": {"source": "THM", "translation": "Heavy", "fields": ["weight"]},
+        }
+        with pytest.raises(ValueError):
+            resource_translation.preview_translation_map("atom_lib", mixed_map)
+
+        rev = resource_store.get_revision(revision_id=rev_id)
+        assert rev["translation"] == {}
+
+    def test_invalid_sidecar_inspectable_in_readiness_but_fails_preparation(self, isolated_db):
+        """Invalid sidecar remains inspectable by evaluate_readiness() with sidecar_error,
+        but fails closed during preparation with PreparationFieldError."""
+        lib_id = resource_store.ensure_library("bad_sidecar_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "s1",
+            {"id": "s1", "label": "SRC", "scene_theme": "THM"},
+            translation={"weight": "Heavy"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+
+        report = resource_readiness.evaluate_readiness("rooms", rev["payload"], rev["translation"])
+        assert not report.is_ready
+        assert report.coverage.get("sidecar_error") is not None
+        assert "weight" in report.coverage["sidecar_error"]
+
+        full_rev = {**rev, "kind": "rooms", "library_key": "bad_sidecar_lib"}
+        with pytest.raises(resource_preparation.PreparationFieldError) as exc:
+            resource_preparation._prepare_resource(full_rev)
+        assert "invalid translation sidecar" in str(exc.value)
+
+    def test_noop_single_revision_update_performs_no_unnecessary_sql_updates(self, isolated_db):
+        """Calling apply_revision_translation with identical translation executes no SQL updates."""
+        lib_id = resource_store.ensure_library("noop_rev_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "s1",
+            {"id": "s1", "label": "SRC", "scene_theme": "THM"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+
+        db.run("CREATE TABLE test_rev_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT)")
+        db.run(
+            "CREATE TRIGGER test_rev_update_trigger AFTER UPDATE ON asset_revision "
+            "BEGIN INSERT INTO test_rev_audit (ts) VALUES ('updated'); END;"
+        )
+
+        res1 = resource_translation.apply_revision_translation(
+            "noop_rev_lib", "s1", rev["content_digest"],
+            {"label": "Room Alpha", "scene_theme": "Theme Alpha"},
+        )
+        assert res1["is_ready"] is True
+        audit_count_1 = db.one("SELECT COUNT(*) as cnt FROM test_rev_audit")["cnt"]
+        assert audit_count_1 > 0
+
+        res2 = resource_translation.apply_revision_translation(
+            "noop_rev_lib", "s1", rev["content_digest"],
+            {"label": "Room Alpha", "scene_theme": "Theme Alpha"},
+        )
+        assert res2["is_ready"] is True
+        audit_count_2 = db.one("SELECT COUNT(*) as cnt FROM test_rev_audit")["cnt"]
+        assert audit_count_2 == audit_count_1
+

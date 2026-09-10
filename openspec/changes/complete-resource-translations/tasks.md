@@ -31,4 +31,9 @@
 - [x] 5.7 Atomic single-revision read-validate-merge-write inside `with db.transaction():` under `BEGIN IMMEDIATE`.
 - [x] 5.8 UI readiness diagnostic integration: surface `coverage.sidecar_error` in `checkReadiness()`, drawer alert banner, and separation of stored coverage from live readiness in `Resources.jsx`.
 - [x] 5.9 Feature flag 503 gating on translation preview endpoint when resource planning is disabled.
+- [x] 5.10 CI test runner environment: configure `tests/conftest.py` to ensure repository root is present on `sys.path` for bare `pytest` invocations.
+- [x] 5.11 Translation map input envelope grounding: remove ungrounded envelope unwrapping, preserve literal `"items"` and `"translation_map"` source keys, and reject duplicate source strings in list-form maps.
+- [x] 5.12 Descriptive source structural pre-validation: validate that optional descriptive list sources contain only string items before translation map matching, and enforce scalar string types for required descriptive fields.
+- [x] 5.13 Apply conflict handling for deleted libraries: raise HTTP 409 Conflict if target library is deleted between preview and apply.
+- [x] 5.14 No-op single revision update optimization: suppress redundant SQL updates when translation sidecar and coverage are semantically unchanged.
 

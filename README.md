@@ -134,6 +134,42 @@ secret stays in the configured data directory and is never serialized. It
 expires after one day and is consumed by a successful commit, so do not move
 or edit the preview between preview and commit.
 
+### Resource translations
+
+Foreign-language resource revisions are imported into SQLite with an initial
+pending status until authorized English translations are supplied for required
+descriptive fields (`label` and `scene_theme` for rooms, `prompt` for fused
+scenes). Prompt preparation consumes required descriptive inputs strictly from
+the translation sidecar without falling back to source payloads, and omits
+untranslated non-English optional prose to prevent foreign script pollution.
+
+The translation workflow provides a two-phase bulk process and atomic single-revision updates:
+
+- **Preview** (`POST /api/resources/libraries/{library_key}/translations/preview`):
+  Validates translation maps upfront against authorized descriptive input fields
+  for the library's kind. Strictly read-only; does not modify stored resources
+  or database records. Computes matching diffs and candidate readiness, returning
+  an HMAC-SHA256 attestation token signed by a private key
+  (`.resource-translation-preview-key`) scoped to the active SQLite database directory.
+- **Confirm & Apply** (`POST /api/resources/libraries/{library_key}/translations/apply`):
+  Validates the attestation token and re-verifies library metadata and revision
+  fingerprints inside an immediate database transaction (`BEGIN IMMEDIATE`). If
+  the library was modified or deleted between preview and apply, an HTTP `409 Conflict`
+  is raised to prevent TOCTOU drift. On match, canonical translations are merged
+  atomically into the sidecar and stored coverage is repaired so reported preview
+  counts match applied updates.
+- **Single-revision updates** (`POST /api/resources/revisions/{library_key}/{source_id}/{content_digest}/translation`):
+  Allows granular translation updates for individual revisions. Enforces alias
+  validation (accepting duplicate aliases when values are consistent, rejecting
+  conflicts) and suppresses redundant SQL updates when the sidecar and coverage
+  are semantically unchanged.
+- **Readiness diagnostics**:
+  Readiness reporting uses canonical pending keys (`label`, `scene_theme`,
+  `prompt`) and preserves source alias provenance (`source_field = "theme"`).
+  Revisions with malformed sidecars remain inspectable in readiness reporting
+  with diagnostic `sidecar_error` metadata, but fail closed during prompt
+  preparation (`PreparationFieldError`).
+
 The web UI provides a dedicated **Resources** view (`#/resources`):
 - **Inventory Browser**: Filter imported resources by free-text and data kind,
   inspect readiness, exact immutable revision identities
@@ -143,6 +179,9 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
 - **Import Preview & Commit**: Input source file selections, run a preview to
   verify all outcomes (`new`, `unchanged`, `updated`, `unresolved`, auxiliary,
   duplicates, missing), and commit verified sets into SQLite.
+- **Translations & Readiness**: Preview and apply translation maps directly from
+  the UI, view real-time readiness status and diagnostic sidecar error banners,
+  and update single-revision translations.
 - **Start Session**: Ready and mapped revisions can start a `resource-v1`
   session draft bound to an explicitly chosen character model, with no CLI or
   external scripts needed.

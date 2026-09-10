@@ -292,6 +292,11 @@ def validate_translation_value_for_source(
         return
 
     if isinstance(source_val, list):
+        if any(not isinstance(item, str) for item in source_val):
+            raise ValueError(
+                f"Source list for field {canonical_field!r} (from {source_name!r}) "
+                f"contains non-string elements; only list[str] sources can be translated"
+            )
         if not isinstance(translation_value, list):
             raise ValueError(
                 f"Translation shape mismatch for field {canonical_field!r}: source is list, got {type(translation_value).__name__}"

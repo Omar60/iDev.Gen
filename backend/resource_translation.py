@@ -32,16 +32,13 @@ class TranslationConflictError(Exception):
 def _database_directory() -> Path:
     """Return the directory containing the active SQLite database.
 
-    Mirrors the database location semantics used by the persistence layer,
-    falling back to IDEVGEN_DATA_DIR or 'data'.
+    Mirrors the database location semantics in resource_service.py,
+    falling back to IDEVGEN_DATA_DIR or 'data' for in-memory or unspecified databases.
     """
-    try:
-        row = db.one("PRAGMA database_list")
-        database_file = row.get("file") if row else None
-        if database_file and database_file != ":memory:":
-            return Path(database_file).resolve().parent
-    except Exception:
-        pass
+    row = db.one("PRAGMA database_list")
+    database_file = row.get("file") if row else None
+    if database_file and database_file != ":memory:":
+        return Path(database_file).resolve().parent
     configured = os.environ.get("IDEVGEN_DATA_DIR")
     return Path(configured or "data").resolve()
 
@@ -101,13 +98,6 @@ def normalize_translation_map_input(data: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(data, (dict, list)):
         raise TypeError(f"Translation map must be a dict or list, got {type(data).__name__}")
 
-    # Handle envelope formats: {"translation_map": ...}, {"items": ...}
-    if isinstance(data, dict):
-        if "translation_map" in data and isinstance(data["translation_map"], (dict, list)):
-            data = data["translation_map"]
-        elif "items" in data and isinstance(data["items"], (dict, list)):
-            data = data["items"]
-
     # Convert list of entry dicts to dict keyed by source
     if isinstance(data, list):
         converted: dict[str, Any] = {}
@@ -117,6 +107,8 @@ def normalize_translation_map_input(data: Any) -> dict[str, dict[str, Any]]:
             src = item.get("source")
             if not isinstance(src, str) or not src.strip():
                 raise ValueError(f"Translation map entry at index {idx} missing 'source' string")
+            if src in converted:
+                raise ValueError(f"Duplicate source entry {src!r} in translation map at index {idx}")
             converted[src] = item
         data = converted
 
@@ -274,7 +266,15 @@ def match_translation_map(
             continue
         canonical_field = resource_prompts.canonical_field_name(field_name)
 
-        if isinstance(val, str):
+        canonical_info = resource_prompts.classify_field(kind, canonical_field)
+        is_required = bool(canonical_info.get("required"))
+
+        if is_required:
+            if not isinstance(val, str):
+                raise ValueError(
+                    f"Required field {canonical_field!r} source value (from {field_name!r}) "
+                    f"must be a scalar string, got {type(val).__name__}"
+                )
             if val in validated_map:
                 entry = validated_map[val]
                 allowed_canonical_fields = {
@@ -292,45 +292,70 @@ def match_translation_map(
                     )
                     matches[canonical_field] = trans_val
                     matched_sources.add(val)
-        elif isinstance(val, list):
-            candidate_items: list[str] = []
-            matched_for_this_field: list[str] = []
-            has_map_match = False
-            has_untranslated_non_english = False
-
-            for item in val:
-                if not isinstance(item, str):
-                    candidate_items.append(item)  # type: ignore
-                    continue
-                if item in validated_map:
-                    entry = validated_map[item]
+        else:
+            if isinstance(val, str):
+                if val in validated_map:
+                    entry = validated_map[val]
                     allowed_canonical_fields = {
                         resource_prompts.canonical_field_name(f) for f in entry.get("fields", [])
                     }
                     if canonical_field in allowed_canonical_fields or field_name in entry.get("fields", []):
-                        candidate_items.append(entry["translation"])
-                        matched_for_this_field.append(item)
-                        has_map_match = True
+                        trans_val = entry["translation"]
+                        if canonical_field in matches and matches[canonical_field] != trans_val:
+                            raise ValueError(
+                                f"Conflicting translations matched for canonical field {canonical_field!r}: "
+                                f"{matches[canonical_field]!r} vs {trans_val!r}"
+                            )
+                        resource_readiness.validate_translation_value_for_source(
+                            kind, payload, canonical_field, trans_val
+                        )
+                        matches[canonical_field] = trans_val
+                        matched_sources.add(val)
+            elif isinstance(val, list):
+                if any(not isinstance(item, str) for item in val):
+                    raise ValueError(
+                        f"Optional descriptive field {canonical_field!r} source value (from {field_name!r}) "
+                        f"contains non-string items; source lists must be list[str]"
+                    )
+                candidate_items: list[str] = []
+                matched_for_this_field: list[str] = []
+                has_map_match = False
+                has_untranslated_non_english = False
+
+                for item in val:
+                    if item in validated_map:
+                        entry = validated_map[item]
+                        allowed_canonical_fields = {
+                            resource_prompts.canonical_field_name(f) for f in entry.get("fields", [])
+                        }
+                        if canonical_field in allowed_canonical_fields or field_name in entry.get("fields", []):
+                            candidate_items.append(entry["translation"])
+                            matched_for_this_field.append(item)
+                            has_map_match = True
+                        else:
+                            if resource_readiness.is_valid_english_translation_scalar(item):
+                                candidate_items.append(item)
+                            else:
+                                has_untranslated_non_english = True
+                                candidate_items.append(item)
                     else:
                         if resource_readiness.is_valid_english_translation_scalar(item):
                             candidate_items.append(item)
                         else:
                             has_untranslated_non_english = True
                             candidate_items.append(item)
-                else:
-                    if resource_readiness.is_valid_english_translation_scalar(item):
-                        candidate_items.append(item)
-                    else:
-                        has_untranslated_non_english = True
-                        candidate_items.append(item)
 
-            if has_map_match:
-                matched_sources.update(matched_for_this_field)
-                if not has_untranslated_non_english:
-                    resource_readiness.validate_translation_value_for_source(
-                        kind, payload, canonical_field, candidate_items
-                    )
-                    matches[canonical_field] = candidate_items
+                if has_map_match:
+                    matched_sources.update(matched_for_this_field)
+                    if not has_untranslated_non_english:
+                        resource_readiness.validate_translation_value_for_source(
+                            kind, payload, canonical_field, candidate_items
+                        )
+                        matches[canonical_field] = candidate_items
+            else:
+                raise ValueError(
+                    f"Unsupported source value type for field {canonical_field!r}: {type(val).__name__}"
+                )
 
     return matches, matched_sources
 
@@ -438,7 +463,9 @@ def apply_translation_map(
             library_key,
         )
         if library is None:
-            raise ValueError(f"Resource library {library_key!r} not found")
+            raise TranslationConflictError(
+                f"Resource library {library_key!r} was deleted since preview; generate a fresh preview before applying."
+            )
 
         library_id = int(library["id"])
         kind = str(library["kind"])
@@ -583,10 +610,18 @@ def apply_revision_translation(
         # Validate merged result strictly
         resource_readiness.validate_and_canonicalize_existing_translation(kind, payload, merged)
 
-        rev_id = int(rev["id"])
-        resource_store.update_translation(rev_id, merged)
+        raw_existing = rev.get("translation") or {}
+        stored_coverage = rev.get("coverage") or {}
         report = resource_readiness.evaluate_readiness(kind, payload, merged)
-        resource_readiness.set_revision_readiness(rev_id, report.coverage)
+
+        translation_changed = (merged != raw_existing)
+        coverage_changed = (report.coverage != stored_coverage)
+
+        rev_id = int(rev["id"])
+        if translation_changed:
+            resource_store.update_translation(rev_id, merged)
+        if coverage_changed:
+            resource_readiness.set_revision_readiness(rev_id, report.coverage)
 
         return {
             "library_key": library_key,
