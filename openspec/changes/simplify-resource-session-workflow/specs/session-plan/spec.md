@@ -46,7 +46,7 @@ Optional assistant suggestions for missing look/wardrobe SHALL be reviewed and a
 
 Automatic preparation SHALL consume takes in stable order and record predecessor snapshot identities/revisions with its exact bounded context. Brief, anchor, effective shared-state or policy changes SHALL invalidate affected ungenerated automatic preparations. Editing, removing or reordering a take SHALL conservatively invalidate later ungenerated automatic preparations from the earliest changed position, in addition to existing direct-input and wardrobe rules. Earlier unaffected ready results SHALL be reusable only through the verified current-revision copy-forward contract below. Manual work SHALL retain existing input-based invalidation.
 
-Mode-only changes SHALL revoke review and cancel old in-flight authoring while retaining completed choices with original provenance. Generated/queued snapshots SHALL remain immutable. Generated-state continuity protection SHALL include scene anchor and variation policy; brief changes SHALL affect only future ungenerated work without rewriting historical evidence.
+Mode-only changes SHALL revoke review and cancel old in-flight authoring while retaining completed choices with original provenance. Generated/queued snapshots SHALL remain immutable. Generated-state continuity protection SHALL include scene anchor, variation policy and the complete look_snapshot (including null versus non-null); brief changes SHALL affect only future ungenerated work without rewriting historical evidence.
 
 #### Scenario: Third take changes
 - **WHEN** take three changes after twelve automatic takes were prepared
@@ -223,9 +223,9 @@ Guided creation and new or growing authoring-v1 plans SHALL allow 1-500 takes in
 
 ### Requirement: Unchanged ready snapshots copy forward into the current revision
 
-A successful plan CAS SHALL atomically copy eligible unchanged ready, unlinked snapshots to the destination plan revision and preserve the originals as history. Eligibility SHALL require equivalent take choices, resolved shared/wardrobe state, exact resources and authorized translation/adaptation content, character/workflow binding, compiler/mapping versions and any consumed automatic intent/context, including ordinal/total and predecessor references. Predecessor equivalence SHALL compare original lineage/content rather than newly allocated copy row IDs. Changed or unverifiable inputs SHALL require preparation instead. Mode-only edits MAY preserve an assistant result when all consumed creative inputs remain equivalent.
+A successful plan CAS SHALL atomically copy eligible unchanged ready, unlinked snapshots together with their consumed verified adaptations to the destination plan revision and preserve the originals as history. Eligibility SHALL require equivalent take choices, resolved shared/wardrobe state, exact resources and authorized translation/adaptation content, character/workflow binding, compiler/mapping versions and any consumed automatic intent/context, including ordinal and predecessor references. Predecessor equivalence SHALL compare original lineage/content rather than newly allocated copy row IDs. Changed or unverifiable inputs SHALL require preparation instead. Mode-only edits MAY preserve an assistant result when all consumed creative inputs remain equivalent.
 
-The destination SHALL have exactly one ready row per session/revision/take, byte-identical final_prompt and preserved original synthesis/effective evidence, plus copy_forward provenance containing source prepared ID/revision, destination revision and validated input digest. The original assistant input SHALL NOT be rewritten to claim a new invocation. Destination binding metadata SHALL identify the current revision. Conflicting existing destination state SHALL fail atomically. Review SHALL be revoked; current-revision copies SHALL require explicit approval before submission.
+The destination SHALL have exactly one ready row per session/revision/take, byte-identical final_prompt and preserved original synthesis/effective evidence, plus copy_forward provenance containing source prepared ID/revision, destination revision, validated input digest and the consumed-adaptation lineage array required below. The original assistant input SHALL NOT be rewritten to claim a new invocation. Destination binding metadata SHALL identify the current revision; original writer/adaptation evidence SHALL keep its source revision, with copied current adaptation authorization resolved through the recorded lineage. Conflicting existing destination state SHALL fail atomically. Review SHALL be revoked; current-revision copies SHALL require explicit approval before submission.
 
 Pending, invalidated or linked/generated rows SHALL NOT be copied into ready state. Linked/generated history SHALL remain visibly already submitted and SHALL NOT be automatically authored or submitted again on resume. Old-revision submission SHALL remain stale even when an eligible current copy exists.
 
@@ -244,10 +244,75 @@ Pending, invalidated or linked/generated rows SHALL NOT be copied into ready sta
 - **THEN** the old snapshot is not copied as valid
 
 #### Scenario: Copy-forward fails during save
-- **WHEN** a destination conflict or write error occurs during copy-forward
-- **THEN** plan revision, copies and invalidations roll back together
+- **WHEN** a destination snapshot/adaptation conflict or write error occurs during copy-forward
+- **THEN** plan revision, snapshot copies, adaptation copies and invalidations roll back together
 
 #### Scenario: Earlier take was already submitted
 - **WHEN** an earlier snapshot is linked/generated before a later plan edit
 - **THEN** it remains historical submitted evidence
 - **AND** it produces neither a new ready copy nor a duplicate automatic generation
+
+### Requirement: Selective invalidation excludes total count from creative inputs
+
+Automatic writer requests and copy-forward creative digests SHALL omit total take count. It SHALL remain UI/progress metadata only; take ID and ordinal SHALL remain binding. Removing or adding later takes SHALL NOT alone invalidate equivalent earlier choices. Explicit brief content SHALL remain binding even when it mentions a count.
+
+#### Scenario: Later take is removed
+- **WHEN** take ten is removed from twelve prepared takes without changing other earlier inputs
+- **THEN** equivalent unlinked ready takes one through nine can copy forward without another assistant call
+- **AND** the new total does not independently invalidate them
+
+#### Scenario: Earlier insertion changes ordinals
+- **WHEN** a take is inserted before existing automatic takes
+- **THEN** changed ordinals invalidate affected later work under the selective rule
+
+### Requirement: Copy-forward carries only consumed verified adaptations
+
+An eligible snapshot copy-forward SHALL copy or reuse all and only its consumed, still-applicable reviewed adaptations under the destination session/revision/take/resource/field identity. Exact resource selection, field authorization, source/translation value, adapted value and fixed-state applicability SHALL be revalidated. source_value and adapted_value SHALL remain unchanged. Destination loaders SHALL continue resolving only the exact current revision.
+
+copy_forward.adaptations SHALL record an array of source_adaptation_id, source_plan_revision, destination_adaptation_id, destination_plan_revision and content_digest for each carried row. The digest SHALL cover the exact resource triple, field, source_value and adapted_value using the existing canonical digest algorithm. Identical existing destination rows SHALL be reused; incompatible destination rows SHALL abort CAS. Missing, changed or no-longer-applicable source approval SHALL make that take ineligible for a ready copy and require fresh review/preparation. Unconsumed adaptations SHALL NOT be inherited.
+
+Snapshot copies, adaptation copies, plan save and invalidation SHALL commit in one transaction. Original approvals and prepared evidence SHALL remain unchanged. General plan revision changes SHALL still not inherit adaptations; this verified carry-forward is the explicit exception.
+
+#### Scenario: Ready take used an adaptation
+- **WHEN** a later take edit permits an adapted ready take to copy forward
+- **THEN** its consumed adaptation also exists under the new revision with lineage
+- **AND** current-revision review and submission can resolve the same approved values
+
+#### Scenario: Destination adaptation conflicts
+- **WHEN** the destination already has different source/adapted values for that identity
+- **THEN** the entire plan CAS and all copies roll back without overwriting either approval
+
+#### Scenario: Adaptation no longer applies
+- **WHEN** consumed source/translation content or fixed state differs
+- **THEN** that take is not copied ready and fresh review/preparation is required
+
+### Requirement: Generated output freezes the complete saved-look snapshot
+
+After any take reaches generated/linked state, authoring.look_snapshot SHALL remain identical under canonical JSON comparison, including its null state, logical identity/version/digest, appearance, outfit identity, garment order, wording and aside. Matching effective look or initial_wardrobe strings SHALL NOT permit replacing a different snapshot. Selecting another preset/version SHALL require a new session. Existing explicit scoped wardrobe changes SHALL remain allowed under their established rules without changing the frozen source snapshot.
+
+#### Scenario: Different look version has identical initial text
+- **WHEN** generated output exists and a newer preset version preserves look/initial wardrobe text but changes version, order or aside
+- **THEN** applying it is refused for that session
+
+#### Scenario: Snapshot is echoed unchanged
+- **WHEN** a save echoes an equivalent snapshot without changing its strings or array order
+- **THEN** the snapshot freeze guard does not block otherwise permitted wardrobe changes
+
+### Requirement: Server-owned state changes through explicit operations
+
+Generic plan saves SHALL only echo evidence, look_snapshot and wardrobe_progression unchanged. Legitimate mutation SHALL use explicit compare-and-swap operations: accept a server-issued shared suggestion with user edits; apply a server-verified preset key/version; or apply a server-issued progression preview with reviewed merge/replace choices. Each SHALL validate current revision and generation guards, derive the resulting server-owned content and persist atomically.
+
+For generic user edits of effective look/initial_wardrobe strings, the server SHALL set the corresponding origin to user with null evidence_id, keeping old evidence historical; clients SHALL NOT fabricate provenance. Read normalization SHALL preserve empty take arrays and missing/invalid IDs for authoritative validation rather than inventing take-001 or other content. Stable IDs SHALL be allocated only by guided creation or explicit Add take.
+
+#### Scenario: Generic save replaces snapshot
+- **WHEN** a caller inserts, removes or changes a server-owned block through generic plan save
+- **THEN** it is rejected and the caller must use the appropriate explicit operation
+
+#### Scenario: User applies a saved preset
+- **WHEN** the explicit operation receives a valid preset key/version and current CAS revision
+- **THEN** the server loads verified content and applies it subject to conflict and freeze rules
+
+#### Scenario: Persisted plan has no takes
+- **WHEN** the frontend reads an empty or invalid take list
+- **THEN** normalization does not create a synthetic take
+- **AND** explicit creation/editing or validation handles the state

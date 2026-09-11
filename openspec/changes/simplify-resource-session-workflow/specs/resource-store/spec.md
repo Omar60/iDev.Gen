@@ -196,3 +196,73 @@ Image validation SHALL verify actual supported format and complete decode, not o
 #### Scenario: Correct data URI contains invalid image bytes
 - **WHEN** a syntactically valid supported data URI contains corrupt or truncated bytes
 - **THEN** complete decoding fails and no inference or look save occurs
+
+### Requirement: Portable look version one has a closed schema
+
+Portable export/import SHALL use exactly the following envelope and members; unknown keys or versions SHALL be refused before writes. Strings shown as example values below do not prescribe particular garments.
+
+```json
+{
+  "schema_version": 1,
+  "look": {
+    "key": "look-1",
+    "version": 1,
+    "name": "Blue outfit",
+    "appearance": "soft makeup",
+    "outfit": {"key": "outfit-1", "garment_keys": ["jacket-1"]}
+  },
+  "garments": [
+    {"key": "jacket-1", "wording": "a blue jacket", "aside": ""}
+  ],
+  "provenance": null
+}
+```
+
+look.key SHALL be the stable logical identity used as look_id in session snapshots; look.version SHALL be a positive integer; key/name SHALL be non-empty strings of at most 128 characters without surrounding whitespace or control characters. appearance SHALL be a string. outfit SHALL be null or exactly key (same key constraints) and garment_keys (non-empty ordered unique string keys). garments SHALL contain exactly key, wording and aside per record, with unique keys and full definitions for exactly the referenced garment set; null outfit SHALL require an empty garments array. Wording SHALL be non-empty without surrounding whitespace; aside SHALL be empty or non-empty without surrounding whitespace. Rendering SHALL follow the canonical wording rule.
+
+provenance SHALL be null or exactly {"source":"manual|photo|assistant|import","image_sha256":null}, where source is one of the four named values and image_sha256 is null or a 64-character lowercase hex digest (non-null only for photo). This is portable, untrusted origin annotation, never attestation of an assistant call or user approval. Full assistant evidence, images, credentials, private paths and sessions SHALL NOT be exported. Import SHALL record its local origin as import and preserve any portable annotation separately without promoting it to trusted evidence.
+
+The input garment array SHALL be ordered by outfit.garment_keys for canonical export/equality. Conversion to the session snapshot SHALL create outfit_key plus complete garments in that order; snapshot content_digest SHALL use the existing specified appearance/outfit digest, excluding display name, logical key/version and portable annotations. All referenced content SHALL be self-contained in the new envelope; legacy garment/outfit JSON compatibility remains a separate preflight adapter.
+
+Identity SHALL be (look.key, look.version). Re-import of canonically equal envelope content for that identity SHALL be a no-op. A new unused key MAY retain the declared version. For an existing key, a free version strictly above its latest version MAY be imported after preview; any occupied-different or older-unused version SHALL require explicit new-version or save-copy choice. new-version SHALL allocate latest version + 1 under the same key inside transactional revalidation. save-copy SHALL allocate a new unused logical key and version 1 while preserving reviewed appearance/outfit content. A concurrent identity/latest-version change SHALL invalidate preview instead of silently selecting another version or key. Neither operation SHALL mutate existing versions or reword legacy garment/outfit records; preview SHALL show any necessary garment/outfit key remapping before explicit application.
+
+#### Scenario: Export round trip
+- **WHEN** a look is exported and imported into an empty store
+- **THEN** normalized logical identity/version and full appearance/outfit content are preserved
+- **AND** a second identical import is a no-op
+
+#### Scenario: Same version has different content
+- **WHEN** imported content differs under an occupied key/version
+- **THEN** no write occurs until the user explicitly selects new-version or save-copy
+
+#### Scenario: Latest version changes after preview
+- **WHEN** another write changes the target identity/version allocation
+- **THEN** commit requires a fresh preview without overwriting stored versions
+
+### Requirement: Browser adapters resolve incomplete envelopes and ambiguous auxiliary kinds
+
+With an explicit effective target, browser import SHALL recognize an envelope-like object containing an items list and only collection metadata even when library is absent or invalid. It SHALL parse that list while preserving original staged bytes/fingerprint and full accounting. Objects also carrying conflicting entry-content fields SHALL remain unresolved. This adaptation SHALL apply identically during preview and commit revalidation; it SHALL NOT change legacy parser/API behavior or rewrite staged JSON.
+
+For auxiliary inputs with multiple structural kind candidates, the browser SHALL require explicit Advanced selection from those candidates. No first-match or filename rule SHALL silently decide between mined_families and mined_labels. The selected kind SHALL be bound to the selection manifest/revision and attestation, revalidated against the same bytes at commit, and used for canonical auxiliary persistence. Unsupported kind choices SHALL fail. Legacy callers without explicit browser adapter context SHALL retain existing behavior.
+
+#### Scenario: Collection lacks library
+- **WHEN** selected JSON contains an items list without library and the user chooses an effective target
+- **THEN** the browser adapter parses the collection with original-byte integrity preserved
+
+#### Scenario: Auxiliary shape has two meanings
+- **WHEN** a payload matches both mined_families and mined_labels
+- **THEN** preview requests an explicit kind choice
+- **AND** commit persists that verified kind rather than the parser's first match
+
+#### Scenario: Auxiliary kind changes after preview
+- **WHEN** the user changes the chosen kind
+- **THEN** the selection revision changes and old preview/commit authorization is invalidated
+
+### Requirement: Concurrent selection commits have one owner
+
+A selection/revision SHALL be claimed atomically before entering canonical import. Concurrent commit requests SHALL cause exactly one successful canonical import transaction; other callers SHALL receive the active operation or the same final recorded result. Ownership, import outcome and consumed-result recovery SHALL prevent a crash after successful import from causing another canonical commit. A failed rolled-back attempt MAY be retried after ownership release, never concurrently with a live owner.
+
+#### Scenario: Two commits arrive simultaneously
+- **WHEN** two requests commit the same current selection before either has completed
+- **THEN** only one enters canonical import
+- **AND** the other receives progress or the same final result without duplicate writes

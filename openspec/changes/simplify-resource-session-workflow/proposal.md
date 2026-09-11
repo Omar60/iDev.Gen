@@ -13,7 +13,7 @@ Resource import and session authoring expose backend paths and empty technical f
 - Persist session and initial plan atomically. Resolve optional look/wardrobe suggestions once in a shared-state summary before preparing takes.
 - Use ready structured room resources in the simple automatic path; retain fused descriptions through an explicitly reviewed advanced path without automatic decomposition.
 - Connect structured assistant output to existing preparation validation and provenance for unlocked camera, framing, pose and expression.
-- Persist incremental progress, prevent concurrent duplicate authoring, support cancellation/recovery and verified copy-forward into current revisions, and define downstream invalidation after edits.
+- Persist incremental progress, prevent concurrent duplicate authoring, support cancellation/recovery and verified snapshot-and-adaptation copy-forward into current revisions, and define downstream invalidation after edits.
 - Stop at review and retain explicit approval, submission and generation. Limit automatic batches to twenty takes, not sessions to twenty photos.
 
 Resource Delete/Restore, unrequested wardrobe progression, automatic fused-scene decomposition and a second provider stack are outside this change. Resource lifecycle management can be proposed separately.

@@ -4,7 +4,7 @@
 
 Automatic authoring SHALL use the configured assistant and preserve structured camera, framing, pose and expression output through validation. Only currently unlocked fields SHALL be requested and accepted. Output SHALL NOT be flattened into prose and reconstructed heuristically, or persisted as manual completion to bypass assistant provenance. Historical assistant callers SHALL retain their existing behavior.
 
-The request SHALL include persisted brief, exact scene anchor and authorized descriptions, accepted shared state, policy, current take ID/ordinal/total and at most five immediately preceding finalized take summaries in stable plan order. Each summary SHALL contain only take ID and the four creative fields. Images, arbitrary conversation and full historical prompts SHALL be excluded. Exact request context, validated output and predecessor snapshot identities/revisions SHALL remain replayable evidence.
+The request SHALL include persisted brief, exact scene anchor and authorized descriptions, accepted shared state, policy, current take ID/ordinal and at most five immediately preceding finalized take summaries in stable plan order. Each summary SHALL contain only take ID and the four creative fields. Images, arbitrary conversation and full historical prompts SHALL be excluded. Total take count SHALL remain UI-only metadata and SHALL NOT enter writer requests or creative digests. Exact request context, validated output and predecessor snapshot identities/revisions SHALL remain replayable evidence.
 
 #### Scenario: Structured output is returned
 - **WHEN** an assistant returns valid unlocked take fields
@@ -46,7 +46,7 @@ The advanced path SHALL display the full authorized description with effective s
 
 ### Requirement: Automatic variety exposes exact repeats without forbidding deliberate reuse
 
-Automatic preparation SHALL compare normalized four-field choice tuples against finalized takes across the session and flag exact duplicates for review. Normalization SHALL trim and collapse whitespace and compare case-insensitively without changing stored output. It SHALL NOT silently delete a repeated take or retry indefinitely. Explicitly reviewed repetition SHALL remain allowed, including a fixed camera across many takes. Five-predecessor context SHALL NOT be advertised as a whole-session uniqueness guarantee.
+Automatic preparation SHALL compare normalized four-field choice tuples against the lineage-aware finalized comparison universe defined below and flag exact duplicates for review. Normalization SHALL trim and collapse whitespace and compare case-insensitively without changing stored output. It SHALL NOT silently delete a repeated take or retry indefinitely. Explicitly reviewed repetition SHALL remain allowed, including a fixed camera across many takes. Five-predecessor context SHALL NOT be advertised as a whole-session uniqueness guarantee.
 
 #### Scenario: Distant duplicate
 - **WHEN** a prepared take repeats a finalized tuple outside its five-take context window
@@ -74,3 +74,30 @@ The writer SHALL receive resolved current clothing as fixed context and SHALL NO
 #### Scenario: Source still names the original outfit
 - **WHEN** a resource conflicts with the approved current wardrobe
 - **THEN** normal conflict review requires adaptation or another resource instead of silently combining both
+
+### Requirement: Duplicate comparison follows logical take lineage
+
+The duplicate comparison universe SHALL prefer current finalized choices, collapse verified copy-forward ancestors/copies to one representative per take/lineage, and include genuine linked/generated historical results once per lineage. Stale or invalidated unlinked rows SHALL be excluded. The candidate's own lineage SHALL be excluded, including all its historical ancestors. Distinct genuinely generated results SHALL not be collapsed merely because their text is identical.
+
+#### Scenario: Copied take compares with its own history
+- **WHEN** a ready take has an old ancestor and a current copy with the same tuple
+- **THEN** it is not flagged as its own duplicate
+
+#### Scenario: Another logical take repeats a copied choice
+- **WHEN** a different take matches a copied lineage's tuple
+- **THEN** one duplicate relationship is shown rather than one for every historical copy
+
+### Requirement: Garment wording has one canonical composition rule
+
+The canonical wardrobe sentence SHALL consume ordered complete wording strings from the validated snapshot, retaining their internal bytes. Validated wordings SHALL be non-empty with no leading/trailing whitespace. For zero garments the sentence SHALL be exactly "She wears nothing at all.". For one wording W it SHALL be "She wears " + W + ".". For two or more wordings it SHALL be "She wears " + the first N-1 wordings joined by ", " + ", and " + the final wording + ".". No additional punctuation stripping, paraphrase or case conversion SHALL occur at rendering.
+
+This same rule SHALL determine fully worn initial_wardrobe, progression stages and moved-aside wording composition. Frontend preview and backend verification/application SHALL agree byte-for-byte. The absent-outfit case SHALL still mean leave clothing unchanged, not invoke the zero-garment rule automatically.
+
+#### Scenario: Two garments compose
+- **WHEN** ordered wordings are "a blue jacket" and "black trousers"
+- **THEN** the sentence is exactly "She wears a blue jacket, and black trousers."
+
+#### Scenario: One garment or none remains
+- **WHEN** only "black trousers" remains
+- **THEN** the sentence is exactly "She wears black trousers."
+- **AND** an explicitly selected zero-garment stage becomes exactly "She wears nothing at all."
