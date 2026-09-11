@@ -122,3 +122,77 @@ Saved provenance SHALL retain the source digest, assistant request/output and us
 #### Scenario: Image exceeds limits or has invalid content
 - **WHEN** a selected image is oversized, exceeds decoded dimensions or is not a supported valid image
 - **THEN** it is refused before inference or saved-look persistence
+
+### Requirement: Browser upload selections are server-owned batches
+
+Before source uploads, the server SHALL issue a selection_id owning an ordered file manifest, selection_revision, aggregate byte/file accounting, effective targets and expires_at. File IDs SHALL belong to exactly that selection. Concurrent uploads SHALL reserve and enforce the same aggregate limits atomically using actual bytes; failed/incomplete uploads SHALL release reservations and SHALL NOT enter a valid manifest.
+
+Every file/target mutation SHALL increment selection_revision and invalidate previews. Preview and commit SHALL bind selection ID, revision, complete manifest digests and targets. Cross-selection IDs SHALL be rejected. Cancelled or expired selections SHALL refuse further preview/commit; expiry SHALL be fixed at 24 hours from selection creation. Successful commit SHALL consume the selection and repeated commit requests SHALL return its recorded result without duplicate persistence. Browser responses for superseded selection/revision pairs SHALL be ignored.
+
+#### Scenario: Concurrent uploads exceed aggregate capacity
+- **WHEN** two uploads would jointly exceed a selection's byte or file limit
+- **THEN** the backend refuses excess capacity atomically even if each file individually fits
+
+#### Scenario: File belongs to another selection
+- **WHEN** preview or commit mixes file IDs from different selections
+- **THEN** it is refused without importing resources
+
+#### Scenario: Old preview response arrives
+- **WHEN** a response names an earlier selection_revision
+- **THEN** the UI cannot use it to enable current Import
+
+#### Scenario: Commit is retried after success
+- **WHEN** the same consumed selection commit is retried
+- **THEN** its recorded result is returned without another import
+
+### Requirement: Manual translation rows use attested bulk application
+
+Manual and assistant-edited rows SHALL produce a direct translation_map and use the library bulk preview/apply contract with canonical authorization, map digest, attestation and library fingerprint. They SHALL NOT use the direct single-revision translation mutation as a shortcut. Duplicate source strings with incompatible translations SHALL be diagnosed before preview rather than silently collapsed.
+
+The 10 MiB limit SHALL apply to actual total HTTP request body bytes before JSON/model parsing. Declared content length SHALL NOT be the only check; missing or misleading lengths SHALL not bypass streaming limits. Oversized bodies SHALL fail with HTTP 413 before parsing or persistence.
+
+#### Scenario: Manual row is applied
+- **WHEN** a user accepts edited translation rows
+- **THEN** they undergo bulk preview and explicit attested apply
+- **AND** direct single-revision mutation is not called
+
+#### Scenario: Body streams without Content-Length
+- **WHEN** streamed translation content exceeds 10 MiB
+- **THEN** the request stops with 413 before JSON parsing or translation writes
+
+### Requirement: Look import and derivation preserve snapshot integrity
+
+Looks import SHALL validate every garment/outfit/preset and all identity conflicts before writing and SHALL recheck relevant store state inside the same transaction as all persistence. Matching identity alone SHALL NOT count as identical content. A late invalid garment or conflict SHALL leave zero writes. Existing legacy wardrobe import semantics SHALL remain unchanged.
+
+Progression SHALL derive exclusively from the complete supplied session look snapshot, not live catalogue globals. Missing, duplicate or inconsistent garment identities SHALL fail visibly rather than be filtered out. Changes or retirement in the live catalogue SHALL not alter snapshot-derived stages.
+
+#### Scenario: Later imported garment is invalid
+- **WHEN** a payload contains valid early garments followed by an invalid one
+- **THEN** no garments, outfits or looks from that payload persist
+
+#### Scenario: Store changes after look preview
+- **WHEN** a concurrent write introduces an identity conflict before commit
+- **THEN** transactional revalidation rejects stale application with zero writes
+
+#### Scenario: Live catalogue changes
+- **WHEN** a selected snapshot's source garments change or retire in the catalogue
+- **THEN** progression still derives identical text from the session snapshot
+
+#### Scenario: Snapshot contains a malformed garment
+- **WHEN** derivation encounters incomplete or duplicate garment identity
+- **THEN** it refuses rather than silently omitting the garment
+
+### Requirement: Photo evidence substitutes image digests for binary request content
+
+Persisted photo extraction evidence SHALL contain exact textual request structure, selected model identifier and non-secret generation parameters, validated output and user corrections. Each image request part SHALL be replaced in that persisted projection by an object with sha256, media_type, byte_count, width and height for the actual submitted image. SHA-256 SHALL be a lowercase 64-character hex digest. Binary bytes, data URIs, secret headers, credentials and private endpoint paths SHALL NOT be retained in that evidence or portable export. This projection SHALL NOT be described as the complete wire request.
+
+Image validation SHALL verify actual supported format and complete decode, not only extension or data-URI syntax. The system SHALL reject corrupt/truncated content or dimensions exceeding 25 megapixels before inference, as well as the existing 10 MiB byte limit.
+
+#### Scenario: Request contains an image data URI
+- **WHEN** photo extraction evidence is persisted
+- **THEN** the data URI is replaced with the digest and verified image metadata
+- **AND** text, non-secret model parameters, validated output and edits remain inspectable
+
+#### Scenario: Correct data URI contains invalid image bytes
+- **WHEN** a syntactically valid supported data URI contains corrupt or truncated bytes
+- **THEN** complete decoding fails and no inference or look save occurs

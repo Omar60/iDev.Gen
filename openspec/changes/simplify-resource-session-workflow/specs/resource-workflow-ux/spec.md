@@ -43,7 +43,7 @@ Users SHALL review translation proposals and explicitly preview/apply them. No m
 
 ### Requirement: Guided creation starts with four understandable inputs
 
-The initial normal creation surface SHALL show character, scene, photo count and optional brief only as authoring inputs. Known character/scene selections SHALL carry forward. Photo count SHALL default to twelve and require a positive integer; brief SHALL be limited to 2,000 characters. Automatic SHALL be the default when an assistant is configured; otherwise manual SHALL be the default with an action to configure an assistant.
+The initial normal creation surface SHALL show character, scene, photo count and optional brief only as authoring inputs. Known character/scene selections SHALL carry forward. Photo count SHALL default to twelve and require an integer from 1 through 500 for guided creation; brief SHALL be limited to 2,000 characters. Automatic SHALL be the default when an assistant is configured; otherwise manual SHALL be the default with an action to configure an assistant.
 
 Mode selection, complete fixed/vary policy, look/wardrobe overrides and raw creative fields SHALL remain available without being mandatory initial inputs. The normal policy SHALL vary all four creative dimensions. Fixed dimensions SHALL require explicit values only when users choose them. Automatic SHALL remain a valid persisted mode without current assistant availability, with synthesis disabled/explained rather than the draft invalidated.
 
