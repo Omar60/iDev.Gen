@@ -135,3 +135,12 @@ Guided sessions SHALL offer an optional Saved look selector in the shared-state 
 #### Scenario: User has no vision assistant
 - **WHEN** a photo cannot be analyzed automatically
 - **THEN** the same editor allows manual descriptions and garment creation with a clear explanation
+
+### Requirement: Resource drift has an explicit recovery action
+
+Review and recovery SHALL expose stale prepared inputs and offer Refresh resources with the affected takes and the need to prepare/review again. Refresh SHALL use the dedicated CAS operation without asking users to edit creative fields. Stale results SHALL NOT appear approved or submittable. Missing translations SHALL link to existing readiness correction. Refresh SHALL NOT trigger assistant calls or generation; subsequent Prepare and Approve remain explicit.
+
+#### Scenario: Ready take no longer matches authorized resources
+- **WHEN** a user opens Review after a consumed translation changes
+- **THEN** the UI explains why the prepared result is stale and offers Refresh resources
+- **AND** refreshing preserves creative choices while showing the new revision and preparation required

@@ -336,3 +336,41 @@ Before a persisted adaptation is applied in review, finalization, or copy-forwar
 #### Scenario: Required translation is absent
 - **WHEN** adaptation recording targets a required field without a valid authorized translation
 - **THEN** recording refuses the request without payload fallback or persistence
+
+### Requirement: Ready snapshots revalidate mutable resource dependencies before submission
+
+Each finalized prepared_take SHALL persist a versioned effective_resource_input_digest and its canonical input projection in provenance. Use the existing canonical SHA-256 algorithm over selected resource triples sorted by library_key/source_id/content_digest, each resource's effective authorized descriptive_inputs resolved by the shared preparation function (preserving field values and list order), and consumed adaptations sorted by resource triple/resource_field with exact source_value/adapted_value. Include all effective descriptive inputs supplied to preparation, even when no adaptation exists. Exclude unused sidecar metadata, timestamps, plan revision and allocated adaptation row IDs; copied equivalent inputs SHALL have the same digest. Missing/invalid required authorization SHALL fail revalidation rather than hash a payload fallback. This digest supplements, not replaces, existing fixed-state, workflow and copy-forward checks.
+
+Review display, authoritative Approve, ready-result recovery and Submit SHALL re-resolve that projection against current dependencies for unlinked ready snapshots. A missing, unverifiable or mismatched digest SHALL make the snapshot non-submittable and the plan's existing approval ineffective; Approve SHALL refuse it and require explicit resource refresh and preparation under a new plan revision. Historical rows without verifiable persisted evidence SHALL NOT be backfilled from current dependencies to claim past consumption. Read-only review MAY expose derived stale status without writing; approval validity SHALL never depend only on a stored approval row after drift. Once drift is recorded, refresh SHALL be required rather than silently rewriting ready evidence.
+
+Approve SHALL validate all unlinked ready snapshots covered by the plan review in the same serialized transaction that records approval. Submit SHALL perform the dependency check inside the same serialized database transaction as approval validation, shot insertion and snapshot linking, including direct domain callers and selected batch submission. Translation/adaptation writes SHALL NOT interleave between validation and linking. A stale member of a selected batch SHALL cause zero new shot/link writes for the batch. A failed transaction SHALL NOT leave a stale approval effective merely because a revocation write rolled back; every approval/submission check SHALL derive validity from current inputs. Changes committed after linking SHALL NOT invalidate or rewrite generated/linked history, nor duplicate shots on an otherwise valid idempotent retry.
+
+#### Scenario: Translation changes after approval without a plan edit
+- **WHEN** a take is ready and approved at revision four and its effective translation then changes under the same resource triple
+- **THEN** Review reports drift and Submit refuses it with no new shot or link
+- **AND** Refresh resources and new preparation/review are required even though the plan revision still equals four
+
+#### Scenario: Translation update races selected submission
+- **WHEN** translation persistence races the dependency check and linking of selected takes
+- **THEN** serialized transactions produce either submission against the still-current validated inputs or refusal with no partial batch writes
+- **AND** a later translation update preserves already-linked historical prompts
+
+#### Scenario: Only unused translation metadata changes
+- **WHEN** all effective descriptive inputs and consumed adaptations remain identical
+- **THEN** the resource-input digest remains equal and does not alone revoke approval
+
+### Requirement: Explicit resource refresh creates a dependency revision
+
+Provide POST /api/sessions/{session_id}/plan/refresh-resources with expected_revision and the same resource-mode/write gates as plan save. The server SHALL load the stored plan, verify CAS, and diagnose missing/unverifiable or changed effective resource dependencies against current-revision prepared evidence and persisted adaptation source values, including adaptations approved before finalization. Absence of a prepared row or adaptation alone SHALL NOT count as drift; missing verifiable dependency evidence on an existing ready row SHALL. Old-revision invalidated history SHALL NOT repeatedly trigger refresh after a successful dependency revision. When drift exists, one transaction SHALL create revision N+1 with unchanged normalized creative plan fields, stable take IDs, resource selections and frozen look_snapshot; revoke review, fence active authoring, and invalidate affected unlinked work. Apply existing downstream dependency rules and verified copy-forward only to demonstrably unaffected ready takes and consumed adaptations. Changed approvals SHALL remain historical; fresh adaptations can be approved under N+1. The response SHALL identify affected takes and required preparation; refresh SHALL NOT call the assistant, approve, submit or run generation.
+
+An unchanged dependency set SHALL return the current revision without writes. A stale expected_revision SHALL return the existing stale-CAS conflict without creating another revision, including retries after a successful refresh. Ordinary plan save SHALL retain its established behavior; no special no-op-save trigger SHALL be required for resource recovery. Missing/invalid translations MAY leave the refreshed draft blocked for preparation and SHALL be reported rather than substituted. Generated/linked evidence SHALL remain untouched. A further external change SHALL be detected again by the same dependency checks.
+
+#### Scenario: Refresh without a creative edit
+- **WHEN** a user explicitly refreshes drifted resources with expected_revision four
+- **THEN** the server creates revision five without fabricating creative changes
+- **AND** affected takes require new preparation and approval, while eligible unaffected results use verified copy-forward
+
+#### Scenario: Duplicate or unnecessary refresh
+- **WHEN** two refresh requests use the same expected revision, or a current request finds no dependency drift
+- **THEN** at most one revision is created for drift and stale CAS is refused
+- **AND** a no-drift current request leaves the revision unchanged

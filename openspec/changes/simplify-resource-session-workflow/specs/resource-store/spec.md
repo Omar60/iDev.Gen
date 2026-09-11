@@ -241,7 +241,7 @@ Identity SHALL be (look.key, look.version). Re-import of canonically equal envel
 
 ### Requirement: Browser adapters resolve incomplete envelopes and ambiguous auxiliary kinds
 
-With an explicit effective target, browser import SHALL recognize an envelope-like object containing an items list even when library is absent or invalid. This relaxed recognition SHALL use the same _ENTRY_CONTENT_MARKERS boundary as is_source_envelope and additionally allow only the top-level keys items and library (the latter optional). Any other top-level key, including random_payload, SHALL remain unresolved rather than be classified arbitrarily as collection metadata. This restriction applies to the new absent/invalid-library adapter; already-supported canonical envelopes retain their existing parser behavior. It SHALL parse that list while preserving original staged bytes/fingerprint and full accounting. Objects also carrying conflicting entry-content fields SHALL remain unresolved. This adaptation SHALL apply identically during preview and commit revalidation; it SHALL NOT change legacy parser/API behavior or rewrite staged JSON.
+With an explicit effective target, browser import SHALL recognize an envelope-like object containing an items list even when library is absent or invalid. Expose has_entry_content_markers(data) as the public shared predicate for the existing entry-content marker set; is_source_envelope and the browser adapter SHALL reuse it without changing legacy classification. This relaxed recognition SHALL use that same boundary and additionally allow only the top-level keys items and library (the latter optional). Any other top-level key, including random_payload, SHALL remain unresolved rather than be classified arbitrarily as collection metadata. This restriction applies to the new absent/invalid-library adapter; already-supported canonical envelopes retain their existing parser behavior. It SHALL parse that list while preserving original staged bytes/fingerprint and full accounting. Objects also carrying conflicting entry-content fields SHALL remain unresolved. This adaptation SHALL apply identically during preview and commit revalidation; it SHALL NOT change legacy parser/API behavior or rewrite staged JSON.
 
 For auxiliary inputs with multiple structural kind candidates, the browser SHALL require explicit Advanced selection from those candidates. No first-match or filename rule SHALL silently decide between mined_families and mined_labels. The selected kind SHALL be bound to the selection manifest/revision and attestation, revalidated against the same bytes at commit, and used for canonical auxiliary persistence. Unsupported kind choices SHALL fail. Legacy callers without explicit browser adapter context SHALL retain existing behavior.
 
@@ -259,7 +259,7 @@ For auxiliary inputs with multiple structural kind candidates, the browser SHALL
 - **THEN** the selection revision changes and old preview/commit authorization is invalidated
 
 #### Scenario: Unknown top-level content in a relaxed envelope
-- **WHEN** an object has items, no usable library and a random_payload field, or any _ENTRY_CONTENT_MARKERS key
+- **WHEN** an object has items, no usable library and a random_payload field, or any entry-content marker key
 - **THEN** the browser adapter leaves the object unresolved in both preview and commit revalidation
 - **AND** no top-level content is silently discarded
 
@@ -280,3 +280,14 @@ The 10 MiB portable-look-v1 JSON import limit SHALL count actual total streamed 
 - **WHEN** actual streamed look-import body bytes exceed 10 MiB with missing or falsely small Content-Length
 - **THEN** the server returns HTTP 413 before invoking JSON/Pydantic deserialization
 - **AND** no look, garment or outfit is written
+
+### Requirement: Portable import equality survives local key remapping
+
+Before local garment/outfit or logical identity allocation, compute portable_content_digest from the complete validated portable envelope using the existing canonical SHA-256 algorithm and the specified garment-array ordering. Persist a server-owned import receipt atomically with the imported version: original look key/version, portable_content_digest, destination look key/version and the exact original-to-local garment/outfit key mapping. Include portable annotation in envelope equality but never promote it to trusted evidence. Keep this digest distinct from the session look snapshot content_digest. The receipt SHALL be local import evidence, not added to the closed portable-look-v1 envelope.
+
+Preview and commit SHALL check an existing receipt for the original identity and canonical pre-remap content before allocating records or declaring a conflict. An exact match with its intact immutable destination SHALL return that existing version as a no-op, including when the original operation selected new-version/save-copy. Differing original content SHALL still require the defined conflict resolution. Receipt creation and uniqueness for the original identity/digest SHALL be enforced in the same transaction as version and garment/outfit writes, preventing concurrent duplicate imports. A missing/inconsistent receipt destination SHALL be diagnosed rather than silently creating replacement records. Export SHALL remain the closed self-contained envelope of the stored version with its local keys; canonical equality with that stored export SHALL also remain a no-op. Neither comparison SHALL mutate previous versions or receipts.
+
+#### Scenario: Identical import after garment and outfit key remapping
+- **WHEN** an envelope defining jacket-1 as blue required remapping because local jacket-1 is red, and the exact original envelope is imported again
+- **THEN** its pre-remap digest resolves to the same stored look version
+- **AND** no additional garment, outfit, look version or import receipt is created
