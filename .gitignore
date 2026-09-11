@@ -67,3 +67,10 @@ rewrite-counterargument.md
 translation_map*.json
 translation-map*.json
 *-translation-map*.json
+
+# codex-workflow-managed-start
+.codex_workflow_hidden_resources/
+AGENTS.md
+# codex-workflow-managed-end
+.external_handoffs/
+.workflow_metrics/
