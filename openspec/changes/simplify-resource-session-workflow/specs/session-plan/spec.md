@@ -269,7 +269,7 @@ Automatic writer requests and copy-forward creative digests SHALL omit total tak
 
 An eligible snapshot copy-forward SHALL copy or reuse all and only its consumed, still-applicable reviewed adaptations under the destination session/revision/take/resource/field identity. Exact resource selection, field authorization, source/translation value, adapted value and fixed-state applicability SHALL be revalidated. source_value and adapted_value SHALL remain unchanged. Destination loaders SHALL continue resolving only the exact current revision.
 
-copy_forward.adaptations SHALL record an array of source_adaptation_id, source_plan_revision, destination_adaptation_id, destination_plan_revision and content_digest for each carried row. The digest SHALL cover the exact resource triple, field, source_value and adapted_value using the existing canonical digest algorithm. Identical existing destination rows SHALL be reused; incompatible destination rows SHALL abort CAS. Missing, changed or no-longer-applicable source approval SHALL make that take ineligible for a ready copy and require fresh review/preparation. Unconsumed adaptations SHALL NOT be inherited.
+copy_forward.adaptations SHALL record an array of source_adaptation_id, source_plan_revision, destination_adaptation_id, destination_plan_revision and adaptation_digest for each carried row. adaptation_digest SHALL be distinct from asset_revision.content_digest and SHALL cover the exact resource triple, field, source_value and adapted_value using the existing canonical digest algorithm. Identical existing destination rows SHALL be reused; incompatible destination rows SHALL abort CAS. Missing, changed or no-longer-applicable source approval SHALL make that take ineligible for a ready copy and require fresh review/preparation. Unconsumed adaptations SHALL NOT be inherited.
 
 Snapshot copies, adaptation copies, plan save and invalidation SHALL commit in one transaction. Original approvals and prepared evidence SHALL remain unchanged. General plan revision changes SHALL still not inherit adaptations; this verified carry-forward is the explicit exception.
 
@@ -316,3 +316,23 @@ For generic user edits of effective look/initial_wardrobe strings, the server SH
 - **WHEN** the frontend reads an empty or invalid take list
 - **THEN** normalization does not create a synthetic take
 - **AND** explicit creation/editing or validation handles the state
+
+### Requirement: Adaptation approval binds the effective authorized descriptive value
+
+take_resource_adaptation.source_value SHALL be the exact effective authorized descriptive input consumed before adaptation, not necessarily the original asset_revision.payload string. Recording SHALL use _prepare_resource() or the same shared field-resolution function as actual preparation, including canonical translation authorization, required-field refusal without payload fallback, and existing optional-field rules. Original payloads SHALL remain immutable.
+
+Before a persisted adaptation is applied in review, finalization, or copy-forward, the shared applicability boundary SHALL compare its source_value exactly with the current effective authorized descriptive input for the same resource triple and field. Identity/revision equality alone SHALL NOT authorize reuse. Missing, unauthorized or changed inputs SHALL make the approval inapplicable and require fresh review/preparation; no stale adapted value SHALL reach a new ready snapshot. Existing rows whose source_value reflects an obsolete payload value SHALL NOT be silently rewritten or reauthorized. Preserve immutable historical rows and obtain new approval under a new plan revision when the existing unique identity cannot hold a replacement. Historical generated snapshots SHALL remain unchanged.
+
+#### Scenario: Translation differs from original payload
+- **WHEN** a required descriptive field has an authorized translation different from its payload and the user approves an adaptation
+- **THEN** the saved source_value equals the effective translation byte-for-byte
+- **AND** review, finalization and copy-forward use the same source-value contract
+
+#### Scenario: Translation changes without changing the resource triple
+- **WHEN** an authorized descriptive value changes after adaptation approval, including for a legacy row recorded from payload
+- **THEN** the existing approval is inapplicable despite matching resource identity and revision
+- **AND** it cannot authorize finalization or ready copy-forward without fresh review/preparation
+
+#### Scenario: Required translation is absent
+- **WHEN** adaptation recording targets a required field without a valid authorized translation
+- **THEN** recording refuses the request without payload fallback or persistence

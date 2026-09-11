@@ -241,7 +241,7 @@ Identity SHALL be (look.key, look.version). Re-import of canonically equal envel
 
 ### Requirement: Browser adapters resolve incomplete envelopes and ambiguous auxiliary kinds
 
-With an explicit effective target, browser import SHALL recognize an envelope-like object containing an items list and only collection metadata even when library is absent or invalid. It SHALL parse that list while preserving original staged bytes/fingerprint and full accounting. Objects also carrying conflicting entry-content fields SHALL remain unresolved. This adaptation SHALL apply identically during preview and commit revalidation; it SHALL NOT change legacy parser/API behavior or rewrite staged JSON.
+With an explicit effective target, browser import SHALL recognize an envelope-like object containing an items list even when library is absent or invalid. This relaxed recognition SHALL use the same _ENTRY_CONTENT_MARKERS boundary as is_source_envelope and additionally allow only the top-level keys items and library (the latter optional). Any other top-level key, including random_payload, SHALL remain unresolved rather than be classified arbitrarily as collection metadata. This restriction applies to the new absent/invalid-library adapter; already-supported canonical envelopes retain their existing parser behavior. It SHALL parse that list while preserving original staged bytes/fingerprint and full accounting. Objects also carrying conflicting entry-content fields SHALL remain unresolved. This adaptation SHALL apply identically during preview and commit revalidation; it SHALL NOT change legacy parser/API behavior or rewrite staged JSON.
 
 For auxiliary inputs with multiple structural kind candidates, the browser SHALL require explicit Advanced selection from those candidates. No first-match or filename rule SHALL silently decide between mined_families and mined_labels. The selected kind SHALL be bound to the selection manifest/revision and attestation, revalidated against the same bytes at commit, and used for canonical auxiliary persistence. Unsupported kind choices SHALL fail. Legacy callers without explicit browser adapter context SHALL retain existing behavior.
 
@@ -258,6 +258,11 @@ For auxiliary inputs with multiple structural kind candidates, the browser SHALL
 - **WHEN** the user changes the chosen kind
 - **THEN** the selection revision changes and old preview/commit authorization is invalidated
 
+#### Scenario: Unknown top-level content in a relaxed envelope
+- **WHEN** an object has items, no usable library and a random_payload field, or any _ENTRY_CONTENT_MARKERS key
+- **THEN** the browser adapter leaves the object unresolved in both preview and commit revalidation
+- **AND** no top-level content is silently discarded
+
 ### Requirement: Concurrent selection commits have one owner
 
 A selection/revision SHALL be claimed atomically before entering canonical import. Concurrent commit requests SHALL cause exactly one successful canonical import transaction; other callers SHALL receive the active operation or the same final recorded result. Ownership, import outcome and consumed-result recovery SHALL prevent a crash after successful import from causing another canonical commit. A failed rolled-back attempt MAY be retried after ownership release, never concurrently with a live owner.
@@ -266,3 +271,12 @@ A selection/revision SHALL be claimed atomically before entering canonical impor
 - **WHEN** two requests commit the same current selection before either has completed
 - **THEN** only one enters canonical import
 - **AND** the other receives progress or the same final result without duplicate writes
+
+### Requirement: Portable look imports enforce a bounded HTTP body
+
+The 10 MiB portable-look-v1 JSON import limit SHALL count actual total streamed HTTP request body bytes before JSON/Pydantic deserialization at every preview/import/commit boundary receiving the JSON content. Content-Length MAY support early rejection but SHALL NOT replace actual byte counting. Missing or misleading Content-Length SHALL NOT bypass the limit. Oversized requests SHALL return HTTP 413 before deserialization or writes; the same boundary SHALL cover legacy garment/outfit JSON accepted through the new look import flow.
+
+#### Scenario: Oversized look body without a reliable declared length
+- **WHEN** actual streamed look-import body bytes exceed 10 MiB with missing or falsely small Content-Length
+- **THEN** the server returns HTTP 413 before invoking JSON/Pydantic deserialization
+- **AND** no look, garment or outfit is written
