@@ -184,3 +184,62 @@ def test_a_session_written_before_the_room_key_reads_an_empty_key(tmp_path):
     cols = {r[1] for r in fresh.execute("PRAGMA table_info(session)")}
     fresh.close()
     assert "room_key" in cols, sorted(cols)
+
+
+def test_resource_selection_tables_created_on_migration_of_older_database(tmp_path):
+    """Task 1.1: opening an older database created before resource_selection
+    finds resource_selection and resource_selection_file created empty,
+    with existing models, sessions, and shots byte-for-byte intact.
+    """
+    p = Path(tmp_path) / "pre_resource_selection.db"
+    conn = db.connect(p)
+    # Seed model, session, shot
+    conn.execute("INSERT INTO model (name, trigger, created_at) VALUES ('char_a', 'trigger_a', 'now')")
+    mid = conn.execute("SELECT id FROM model").fetchone()["id"]
+    sess_look = "A sunny loft room with soft morning light"
+    conn.execute(
+        "INSERT INTO session (model_id, name, look, wardrobe, created_at) VALUES (?, 'session_1', ?, 'linen dress', 'now')",
+        (mid, sess_look),
+    )
+    sid = conn.execute("SELECT id FROM session").fetchone()["id"]
+    shot_prompt = "sitting at the kitchen counter reading a book"
+    conn.execute(
+        "INSERT INTO shot (session_id, prompt, created_at) VALUES (?, ?, 'now')",
+        (sid, shot_prompt),
+    )
+    # Simulate older DB without the new selection tables
+    conn.execute("DROP TABLE IF EXISTS resource_selection_file")
+    conn.execute("DROP TABLE IF EXISTS resource_selection")
+    conn.commit()
+    conn.close()
+
+    # Re-open through db.connect (which executes SCHEMA and _migrate)
+    conn2 = db.connect(p)
+    tables = {r["name"] for r in conn2.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "resource_selection" in tables
+    assert "resource_selection_file" in tables
+
+    # Tables start empty
+    c_sel = conn2.execute("SELECT COUNT(*) AS c FROM resource_selection").fetchone()["c"]
+    c_files = conn2.execute("SELECT COUNT(*) AS c FROM resource_selection_file").fetchone()["c"]
+    assert c_sel == 0
+    assert c_files == 0
+
+    # Existing data is byte-for-byte intact
+    s_row = conn2.execute("SELECT name, look, wardrobe FROM session WHERE id=?", (sid,)).fetchone()
+    assert s_row["name"] == "session_1"
+    assert s_row["look"] == sess_look
+    assert s_row["wardrobe"] == "linen dress"
+
+    shot_row = conn2.execute("SELECT prompt FROM shot WHERE session_id=?", (sid,)).fetchone()
+    assert shot_row["prompt"] == shot_prompt
+
+    conn2.close()
+
+    # Verify SCHEMA alone declares the tables
+    mem_conn = sqlite3.connect(":memory:")
+    mem_conn.executescript(db.SCHEMA)
+    mem_tables = {r[0] for r in mem_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    mem_conn.close()
+    assert "resource_selection" in mem_tables
+    assert "resource_selection_file" in mem_tables

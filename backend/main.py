@@ -47,6 +47,7 @@ from backend import session_plan
 from backend import resource_preparation
 from backend.resource_import import CommitAborted, StaleFingerprintError
 from backend import resource_translation
+from backend import resource_selection
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -89,6 +90,7 @@ async def lifespan(app: FastAPI):
     # A session left 'running' by a crash owns no job: nothing is polling it.
     db.run("UPDATE session SET status='failed' WHERE status='running'")
     db.run("UPDATE shot SET status='failed', error='interrupted when the app closed' WHERE status='running'")
+    resource_selection.startup_recovery()
     yield
 
 

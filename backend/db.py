@@ -11,6 +11,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 import threading
+from typing import Callable
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS workflow (
@@ -648,7 +649,78 @@ END;
 -- raising, and ``updated_at`` may always change. The
 -- seven-column identity that pins "a persisted
 -- adaptation only resolves the exact conflict it was
--- approved for" stays protected at the SQL level.
+-- Browser-selected resource import persistence (simplify-resource-session-workflow Task 1.1)
+CREATE TABLE IF NOT EXISTS resource_selection (
+    id                      INTEGER PRIMARY KEY,
+    selection_id            TEXT NOT NULL UNIQUE,
+    request_id              TEXT NOT NULL UNIQUE,
+    selection_revision      INTEGER NOT NULL DEFAULT 0,
+    state                   TEXT NOT NULL DEFAULT 'open',
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL,
+    expires_at              TEXT NOT NULL,
+    total_reserved_bytes    INTEGER NOT NULL DEFAULT 0,
+    active_file_count       INTEGER NOT NULL DEFAULT 0,
+    preview_token           TEXT,
+    preview_manifest_digest TEXT,
+    preview_committable     INTEGER,
+    preview_report          TEXT,
+    preview_created_at      TEXT,
+    claim_commit_token      TEXT,
+    claim_revision          INTEGER,
+    claim_preview_token     TEXT,
+    claim_manifest_digest   TEXT,
+    claim_lease_deadline    TEXT,
+    committed_revision      INTEGER,
+    committed_preview_token TEXT,
+    committed_manifest_digest TEXT,
+    commit_result           TEXT,
+    committed_at            TEXT,
+    cleanup_state           TEXT NOT NULL DEFAULT 'none',
+    cleanup_warning         TEXT NOT NULL DEFAULT '',
+    purged_at               TEXT,
+    CHECK (state IN ('open', 'committing', 'committed', 'cancelled', 'expired')),
+    CHECK (selection_revision >= 0 AND selection_revision <= 9007199254740991),
+    CHECK (total_reserved_bytes >= 0 AND total_reserved_bytes <= 52428800),
+    CHECK (active_file_count >= 0 AND active_file_count <= 20),
+    CHECK (cleanup_state IN ('none', 'pending', 'cleaned', 'failed'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_resource_selection_state_expires
+    ON resource_selection(state, expires_at);
+
+CREATE TABLE IF NOT EXISTS resource_selection_file (
+    id                      INTEGER PRIMARY KEY,
+    selection_id            TEXT NOT NULL REFERENCES resource_selection(selection_id) ON DELETE CASCADE,
+    file_id                 TEXT NOT NULL UNIQUE,
+    upload_id               TEXT NOT NULL,
+    file_name               TEXT NOT NULL,
+    order_index             INTEGER NOT NULL DEFAULT 0,
+    status                  TEXT NOT NULL DEFAULT 'reserved',
+    byte_count              INTEGER NOT NULL DEFAULT 0,
+    reserved_bytes          INTEGER NOT NULL DEFAULT 0,
+    declared_library        TEXT,
+    effective_library_key   TEXT,
+    matched_auxiliary_kinds TEXT NOT NULL DEFAULT '[]',
+    effective_auxiliary_kind TEXT,
+    staged_path             TEXT NOT NULL DEFAULT '',
+    staged_size             INTEGER NOT NULL DEFAULT 0,
+    staged_mtime_ns         TEXT NOT NULL DEFAULT '',
+    staged_sha256           TEXT NOT NULL DEFAULT '',
+    fingerprint             TEXT NOT NULL DEFAULT '',
+    cleanup_state           TEXT NOT NULL DEFAULT 'none',
+    cleanup_warning         TEXT NOT NULL DEFAULT '',
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL,
+    UNIQUE (selection_id, upload_id),
+    CHECK (status IN ('reserved', 'staged', 'failed', 'removed')),
+    CHECK (byte_count >= 0 AND byte_count <= 10485760),
+    CHECK (reserved_bytes >= 0 AND reserved_bytes <= 10485760),
+    CHECK (cleanup_state IN ('none', 'pending', 'cleaned', 'failed'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_resource_selection_file_sel_order
+    ON resource_selection_file(selection_id, order_index);
 """
 
 _conn: sqlite3.Connection | None = None
@@ -663,6 +735,23 @@ _conn: sqlite3.Connection | None = None
 # and undoes both.
 _tx_depth: int = 0
 _tx_lock = threading.RLock()
+_post_commit_hooks: list[Callable[[], None]] = []
+
+
+def on_commit(fn: Callable[[], None]) -> None:
+    """Register a callback to run after the outermost transaction commits.
+
+    If called outside an active transaction, runs immediately.
+    If the transaction rolls back, registered callbacks are discarded without running.
+    """
+    run_now = False
+    with _tx_lock:
+        if _tx_depth == 0:
+            run_now = True
+        else:
+            _post_commit_hooks.append(fn)
+    if run_now:
+        fn()
 
 
 @contextlib.contextmanager
@@ -677,6 +766,7 @@ def transaction():
     final COMMIT or ROLLBACK.
     """
     global _tx_depth
+    callbacks_to_run: list[Callable[[], None]] = []
     with _tx_lock:
         c = conn()
         if _tx_depth == 0:
@@ -686,6 +776,7 @@ def transaction():
             yield
         except BaseException:
             if _tx_depth == 1:
+                _post_commit_hooks.clear()
                 try:
                     c.execute("ROLLBACK")
                 except sqlite3.Error:
@@ -697,7 +788,12 @@ def transaction():
         else:
             if _tx_depth == 1:
                 c.execute("COMMIT")
+                callbacks_to_run = list(_post_commit_hooks)
+                _post_commit_hooks.clear()
             _tx_depth -= 1
+
+    for cb in callbacks_to_run:
+        cb()
 
 
 
@@ -954,6 +1050,83 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
         """)
     elif "axis" not in reading_cols:
         conn.execute("ALTER TABLE reading ADD COLUMN axis TEXT NOT NULL DEFAULT ''")
+
+    # Resource selection and selection file tables (simplify-resource-session-workflow Task 1.1)
+    existing_tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "resource_selection" not in existing_tables:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS resource_selection (
+            id                      INTEGER PRIMARY KEY,
+            selection_id            TEXT NOT NULL UNIQUE,
+            request_id              TEXT NOT NULL UNIQUE,
+            selection_revision      INTEGER NOT NULL DEFAULT 0,
+            state                   TEXT NOT NULL DEFAULT 'open',
+            created_at              TEXT NOT NULL,
+            updated_at              TEXT NOT NULL,
+            expires_at              TEXT NOT NULL,
+            total_reserved_bytes    INTEGER NOT NULL DEFAULT 0,
+            active_file_count       INTEGER NOT NULL DEFAULT 0,
+            preview_token           TEXT,
+            preview_manifest_digest TEXT,
+            preview_committable     INTEGER,
+            preview_report          TEXT,
+            preview_created_at      TEXT,
+            claim_commit_token      TEXT,
+            claim_revision          INTEGER,
+            claim_preview_token     TEXT,
+            claim_manifest_digest   TEXT,
+            claim_lease_deadline    TEXT,
+            committed_revision      INTEGER,
+            committed_preview_token TEXT,
+            committed_manifest_digest TEXT,
+            commit_result           TEXT,
+            committed_at            TEXT,
+            cleanup_state           TEXT NOT NULL DEFAULT 'none',
+            cleanup_warning         TEXT NOT NULL DEFAULT '',
+            purged_at               TEXT,
+            CHECK (state IN ('open', 'committing', 'committed', 'cancelled', 'expired')),
+            CHECK (selection_revision >= 0 AND selection_revision <= 9007199254740991),
+            CHECK (total_reserved_bytes >= 0 AND total_reserved_bytes <= 52428800),
+            CHECK (active_file_count >= 0 AND active_file_count <= 20),
+            CHECK (cleanup_state IN ('none', 'pending', 'cleaned', 'failed'))
+        );
+        CREATE INDEX IF NOT EXISTS ix_resource_selection_state_expires
+            ON resource_selection(state, expires_at);
+        """)
+    if "resource_selection_file" not in existing_tables:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS resource_selection_file (
+            id                      INTEGER PRIMARY KEY,
+            selection_id            TEXT NOT NULL REFERENCES resource_selection(selection_id) ON DELETE CASCADE,
+            file_id                 TEXT NOT NULL UNIQUE,
+            upload_id               TEXT NOT NULL,
+            file_name               TEXT NOT NULL,
+            order_index             INTEGER NOT NULL DEFAULT 0,
+            status                  TEXT NOT NULL DEFAULT 'reserved',
+            byte_count              INTEGER NOT NULL DEFAULT 0,
+            reserved_bytes          INTEGER NOT NULL DEFAULT 0,
+            declared_library        TEXT,
+            effective_library_key   TEXT,
+            matched_auxiliary_kinds TEXT NOT NULL DEFAULT '[]',
+            effective_auxiliary_kind TEXT,
+            staged_path             TEXT NOT NULL DEFAULT '',
+            staged_size             INTEGER NOT NULL DEFAULT 0,
+            staged_mtime_ns         TEXT NOT NULL DEFAULT '',
+            staged_sha256           TEXT NOT NULL DEFAULT '',
+            fingerprint             TEXT NOT NULL DEFAULT '',
+            cleanup_state           TEXT NOT NULL DEFAULT 'none',
+            cleanup_warning         TEXT NOT NULL DEFAULT '',
+            created_at              TEXT NOT NULL,
+            updated_at              TEXT NOT NULL,
+            UNIQUE (selection_id, upload_id),
+            CHECK (status IN ('reserved', 'staged', 'failed', 'removed')),
+            CHECK (byte_count >= 0 AND byte_count <= 10485760),
+            CHECK (reserved_bytes >= 0 AND reserved_bytes <= 10485760),
+            CHECK (cleanup_state IN ('none', 'pending', 'cleaned', 'failed'))
+        );
+        CREATE INDEX IF NOT EXISTS ix_resource_selection_file_sel_order
+            ON resource_selection_file(selection_id, order_index);
+        """)
 
 
 def conn() -> sqlite3.Connection:

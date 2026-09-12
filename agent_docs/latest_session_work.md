@@ -2,41 +2,62 @@
 
 ## Detailed Current State
 
-The initial codex_workflow bootstrap established project documentation for the
-local FastAPI/React application, its SQLite and ComfyUI boundaries, its
-legacy/resource session paths, and its test strategy. No implementation task
-was assigned or started.
+The Heavy-route deployment independently reviewed repair 3 of the external
+Task 1.1 implementation for `simplify-resource-session-workflow`. OpenSpec
+remains valid, and Task 1.1 is now explicitly accepted and marked complete.
+Progress is 1 of 72 tasks; Task 1.2 has not started.
+
+The approved artifacts remain committed at `766782b` with subject
+`docs(openspec): finalize simplify resource session workflow spec`. MiniMax
+added the expected backend selection module, additive schema, startup hook, and
+focused tests in the shared uncommitted working tree. No OpenSpec, route,
+frontend, or canonical-import implementation was added.
 
 ## Session Changes
 
-Only these framework documents were initialized:
+The current Task 1.1 implementation surface is:
 
-- `agent_docs/latest_session_work.md`
-- `agent_docs/project_core_tech.md`
-- `agent_docs/project_diary.md`
-- `agent_docs/project_overview.md`
-- `agent_docs/project_progress.md`
-- `agent_docs/project_structure.md`
+- modified `backend/db.py` and `backend/main.py`;
+- new `backend/resource_selection.py`;
+- modified `tests/test_db_migrate.py` and new
+  `tests/test_resource_selection.py`.
 
-Pre-existing worktree changes outside this documentation surface were left
-untouched.
+MiniMax applied repair 3. It made open-selection file rows with pending or
+failed cleanup eligible for record-local and startup recovery, and made the
+bounded opportunistic sweep select their parent selection. Four focused tests
+simulate callback loss across startup, record-local, opportunistic, and
+failure/retry paths. No production or test file was edited by the main agent.
 
 ## Verification
 
-Repository layout, README/docs, dependency manifests, entry points, selected
-backend modules, frontend routing, tests, CI, and the unarchived OpenSpec
-change were inspected. The six files exist, contain verified English context,
-and no longer contain the bootstrap template marker. Code tests were not run
-because this bootstrap made documentation-only changes.
+Independent verification completed:
+
+- focused backend tests: 30 passed, 1 warning;
+- complete backend suite: 1382 passed, 3 warnings;
+- privacy tests: 10 passed, 1 warning;
+- `git diff --check`: exit 0 with only LF/CRLF working-copy warnings in
+  `agent_docs/`;
+- strict OpenSpec validation: valid.
+
+Independent probes simulated process loss immediately after the removal commit
+by capturing but not running its callback. Each began with an open parent,
+revision 2, zero counters, invalidated preview/manifest, a `removed`/`pending`
+file row, and exact bytes still present. Startup recovery, record-local
+recovery, and `opportunistic_sweep(limit=1)` each removed only the staged bytes,
+marked cleanup complete, and preserved authoritative selection state. A forced
+delete failure produced a path-free warning, and the next pass retried without
+restoring the manifest or changing revision/counters.
 
 ## Pending Work and Blockers
 
-There are no bootstrap blockers. No deployment plan is active; future work
-must choose an authorized OpenSpec task before implementation.
+There is no Task 1.1 blocker or outstanding correction. The main agent accepted
+the implementation after direct diff inspection and independent verification.
+Only its task checkbox, durable closure documentation, isolated acceptance
+commit, and deployment token report belong to this closure.
 
 ## Next Entry Point
 
-Start with the current worktree and root `AGENTS.md`, then read the selected
-OpenSpec change and its governing specification before editing its bounded
-implementation surface. Keep unrelated work preserved and leave
-implementation changes uncommitted for independent review.
+Task 1.2 is the next pending OpenSpec unit, but it has not been started. Do not
+begin it automatically. Under a new explicit request, first inspect the accepted
+Task 1.1 commit and prepare one self-contained external implementation handoff
+for Task 1.2 without changing production.
