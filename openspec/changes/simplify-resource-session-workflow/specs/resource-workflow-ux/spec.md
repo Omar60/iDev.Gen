@@ -8,7 +8,9 @@ Let ordinary users turn selected mined resource files into a reviewed photograph
 
 The normal source-import UI SHALL use browser file selection without typed paths or library keys for valid declared sources with no historical ambiguity. Preview SHALL present new, updated, unchanged and needs-attention outcomes separately from readiness. Import SHALL require a current preview. Advanced compatibility targeting SHALL support legacy identities and supported non-envelope sources without source JSON editing.
 
-Safe technical diagnostics SHALL remain expandable. Physical staging paths SHALL NOT be displayed. File/target changes and late responses SHALL NOT allow stale Import actions. Import SHALL NOT automatically translate, create a session or generate images.
+Safe technical diagnostics SHALL remain expandable. The UI SHALL retain the highest server selection revision and consume only the safe selection/preview projection. Physical staging paths, raw fingerprints and nanosecond timestamps SHALL NOT be displayed or round-tripped. File/target changes and late responses SHALL NOT allow stale Import actions. Import SHALL NOT automatically translate, create a session or generate images.
+
+Resource Browser free-text filtering SHALL use only fields delivered by the safe library-list response: library key, source ID, content digest and translated display values. It SHALL NOT assume an omitted raw payload is present or expose original source payload merely to support search.
 
 #### Scenario: Normal source selection
 - **WHEN** a user selects supported files with valid unambiguous declarations
@@ -17,6 +19,14 @@ Safe technical diagnostics SHALL remain expandable. Physical staging paths SHALL
 #### Scenario: Selection changes during preview
 - **WHEN** an old preview response arrives after the selection changes
 - **THEN** it cannot enable Import for the newer selection
+
+#### Scenario: Server fingerprint exceeds JavaScript precision
+- **WHEN** a selected file has server metadata outside JavaScript's safe integer range
+- **THEN** the UI continues through opaque string tokens/digests without parsing or echoing that metadata
+
+#### Scenario: Browser filters a safe library-list response
+- **WHEN** a library-list row omits the raw resource payload
+- **THEN** search uses its delivered safe identifiers, digest and translation values without throwing or silently depending on payload fields
 
 #### Scenario: Compatibility choice is necessary
 - **WHEN** a source lacks a usable declaration or overlaps a differently keyed historical library
@@ -43,7 +53,7 @@ Users SHALL review translation proposals and explicitly preview/apply them. No m
 
 ### Requirement: Guided creation starts with four understandable inputs
 
-The initial normal creation surface SHALL show character, scene, photo count and optional brief only as authoring inputs. Known character/scene selections SHALL carry forward. Photo count SHALL default to twelve and require an integer from 1 through 500 for guided creation; brief SHALL be limited to 2,000 characters. Automatic SHALL be the default when an assistant is configured; otherwise manual SHALL be the default with an action to configure an assistant.
+The initial normal creation surface SHALL show character, scene, photo count and optional brief only as authoring inputs. Known character/scene selections SHALL carry forward. Photo count SHALL default to twelve and require an integer from 1 through 500 for guided creation; brief SHALL be limited to 2,000 characters. Automatic SHALL be the default when an assistant is configured; otherwise manual SHALL be the default with an action to configure an assistant. The server SHALL use the selected character's default workflow unless Advanced supplies an override. A character with neither SHALL show an actionable workflow-required error before creation; it SHALL NOT create an orphan or guess a workflow.
 
 Mode selection, complete fixed/vary policy, look/wardrobe overrides and raw creative fields SHALL remain available without being mandatory initial inputs. The normal policy SHALL vary all four creative dimensions. Fixed dimensions SHALL require explicit values only when users choose them. Automatic SHALL remain a valid persisted mode without current assistant availability, with synthesis disabled/explained rather than the draft invalidated.
 
@@ -58,7 +68,11 @@ Mode selection, complete fixed/vary policy, look/wardrobe overrides and raw crea
 
 #### Scenario: Advanced control is wanted
 - **WHEN** a user opens Advanced
-- **THEN** manual editing, shared overrides and variation locks are available without another session type
+- **THEN** workflow override, manual editing, shared overrides and variation locks are available without another session type
+
+#### Scenario: Character has no default workflow
+- **WHEN** the selected character has no workflow and Advanced has no override
+- **THEN** creation identifies assigning a default or choosing an override as the two remedies
 
 ### Requirement: Shared choices and fused limitations are visible
 
@@ -76,7 +90,7 @@ A fused resource SHALL offer advanced editing or selection of a structured scene
 
 ### Requirement: Preparation progress and review are user operations
 
-The UI SHALL show completed, failed and remaining takes, with Prepare, Cancel and Resume actions reflecting backend ownership. Each automatic action SHALL prepare at most twenty takes; larger sessions SHALL offer Continue preparation. Saved work SHALL survive browser closure.
+The UI SHALL show the backend operation ID/state plus completed, failed and remaining takes, with Prepare, Cancel and Resume actions reflecting backend ownership. Each automatic action SHALL prepare at most twenty takes; larger sessions SHALL offer Continue preparation. Saved work SHALL survive browser closure. Start retries SHALL reuse a client request ID; a second tab SHALL display active operation progress from `409 authoring_active` rather than launching another call. Stale-revision, assistant-unavailable, cancelled, expired and failed states SHALL retain distinct next actions.
 
 Effective choices SHALL be the primary review surface; final prompts, provenance and diagnostics SHALL be inspectable. Editing SHALL explain affected downstream work. Exact duplicate tuples SHALL be flagged for explicit review without removing deliberate repetitions.
 
@@ -85,6 +99,10 @@ Preparation SHALL stop at Review and SHALL NOT approve review, submit shots or s
 #### Scenario: User resumes a partial session
 - **WHEN** three of twelve takes were saved before interruption
 - **THEN** reopening shows those results and offers preparation of the remaining work
+
+#### Scenario: Another tab already owns authoring
+- **WHEN** Prepare receives active-operation status from another tab
+- **THEN** the UI adopts that operation view and offers status/cancel controls without another assistant call
 
 #### Scenario: Session exceeds one batch
 - **WHEN** twenty of forty takes finish
@@ -112,6 +130,18 @@ Acceptance SHALL demonstrate a normal journey from unimported invented source fi
 - **WHEN** no assistant or translation map exists
 - **THEN** manual translation rows and manual take choices allow preparation and review using the same persistence and generation gates
 
+### Requirement: Resource session lists use plan-owned constants
+
+Resource-v1 session detail, cards and search SHALL display/filter the authoritative plan look and initial wardrobe. They SHALL NOT display stale legacy session-column values after a plan edit. Legacy session cards/search SHALL continue using existing session values. A resource-v1 session missing its plan SHALL show an inconsistent-state diagnostic rather than silently substituting legacy columns.
+
+#### Scenario: Plan look changes after guided creation
+- **WHEN** a resource-v1 look changes through plan CAS
+- **THEN** session detail, listing and search use the changed plan value without a mirrored session write
+
+#### Scenario: Legacy session remains searchable
+- **WHEN** a legacy session has only session-row look and wardrobe
+- **THEN** its existing display and search results remain unchanged
+
 ### Requirement: Reusable looks have a discoverable personal editor
 
 The application SHALL offer a personal Looks surface with Create, Import JSON, Export JSON and From photo actions. Users SHALL be able to name looks, edit constant appearance, add/reuse individual garments and confirm removal order without technical keys. Image extraction SHALL be an explicit action producing an editable proposal, not an immediate saved look.
@@ -133,8 +163,9 @@ Guided sessions SHALL offer an optional Saved look selector in the shared-state 
 - **AND** constant appearance remains visibly separate
 
 #### Scenario: User has no vision assistant
-- **WHEN** a photo cannot be analyzed automatically
-- **THEN** the same editor allows manual descriptions and garment creation with a clear explanation
+- **WHEN** the text assistant is configured but no explicit verified/declarative vision model exists
+- **THEN** Extract is unavailable before image transmission and offers Configure vision
+- **AND** the same editor still allows manual descriptions and garment creation
 
 ### Requirement: Resource drift has an explicit recovery action
 

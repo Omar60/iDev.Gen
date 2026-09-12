@@ -2,13 +2,21 @@
 
 ### Requirement: Automatic take synthesis preserves structured provenance
 
-Automatic authoring SHALL use the configured assistant and preserve structured camera, framing, pose and expression output through validation. Only currently unlocked fields SHALL be requested and accepted. Output SHALL NOT be flattened into prose and reconstructed heuristically, or persisted as manual completion to bypass assistant provenance. Historical assistant callers SHALL retain their existing behavior.
+Automatic authoring SHALL use the configured assistant through a current fenced server-owned operation and preserve structured camera, framing, pose and expression output through validation. Only currently unlocked fields SHALL be requested and accepted. Output SHALL NOT be flattened into prose and reconstructed heuristically, persisted as manual completion, or accepted from a browser-supplied final snapshot to bypass assistant provenance. Historical assistant callers and pre-authoring expert plans SHALL retain their existing behavior.
 
-The request SHALL include persisted brief, exact scene anchor and authorized descriptions, accepted shared state, policy, current take ID/ordinal and at most five immediately preceding finalized take summaries in stable plan order. Each summary SHALL contain only take ID and the four creative fields. Images, arbitrary conversation and full historical prompts SHALL be excluded. Total take count SHALL remain UI-only metadata and SHALL NOT enter writer requests or creative digests. Exact request context, validated output and predecessor snapshot identities/revisions SHALL remain replayable evidence.
+The request SHALL include persisted brief, exact scene anchor and authorized descriptions, accepted shared state, frozen workflow binding, policy, current take ID/ordinal and at most five immediately preceding finalized take summaries in stable plan order. Each summary SHALL contain only take ID and the four creative fields. Images, arbitrary conversation and full historical prompts SHALL be excluded. Total take count SHALL remain UI-only metadata and SHALL NOT enter writer requests or creative digests. Exact request context, validated output, operation identity and predecessor snapshot identities/revisions SHALL remain server-owned replayable evidence. Final prompt, effective state, compiler/mapping versions, resource projection/digest and provenance SHALL be derived by server preparation from those inputs and the validated output.
 
 #### Scenario: Structured output is returned
 - **WHEN** an assistant returns valid unlocked take fields
 - **THEN** preparation validates them as fields and records assistant synthesis input/output
+
+#### Scenario: Client submits forged automatic evidence
+- **WHEN** a caller supplies assistant output, final prompt, effective state, provenance or dependency digest outside the fenced automatic operation
+- **THEN** the values are rejected and no approvable ready result is created
+
+#### Scenario: Automatic caller supplies manual fields
+- **WHEN** automatic preparation includes `manual_completion`
+- **THEN** it fails before an assistant call or prepared-state mutation
 
 #### Scenario: Writer changes a locked field
 - **WHEN** output contains a fixed or otherwise unauthorized field

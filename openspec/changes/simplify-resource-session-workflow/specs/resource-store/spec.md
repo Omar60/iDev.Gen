@@ -95,11 +95,13 @@ Personal looks SHALL remain separate from immutable mined resources. Editing a s
 
 ### Requirement: Photo look extraction is an explicitly reviewed proposal
 
-The system SHALL accept one browser-selected JPEG, PNG or WebP look image per operation, up to 10 MiB file bytes and 25 megapixels decoded. It SHALL validate actual image content, stage it privately behind opaque identifiers, and require an explicit extraction action before sending it to the configured vision assistant. It SHALL NOT infer person identity, unseen garments, background, camera or pose as accepted look content.
+The system SHALL accept one browser-selected JPEG, PNG or WebP look image per operation, up to 10 MiB file bytes and 25 megapixels decoded. It SHALL validate actual image content, stage it privately behind opaque identifiers, and require an explicit extraction action before sending it to the configured vision assistant. Extraction SHALL be considered available only when the normal assistant endpoint/model are configured and a non-empty `llm_vision_model` has been selected from verified discovery or explicitly declared by the local operator. A detected visual text model SHALL be stored explicitly as that vision model. Extraction SHALL never fall back from an empty vision-model setting to the text-only model. It SHALL NOT infer person identity, unseen garments, background, camera or pose as accepted look content.
 
-Extraction SHALL produce editable visible appearance/garment proposals with unresolved details identified. Users SHALL confirm removal order and review or edit content before saving. Failed extraction or invalid output SHALL save no look. Without vision support, manual entry SHALL remain available and extraction unavailability SHALL be explained.
+Extraction SHALL produce editable visible appearance/garment proposals with unresolved details identified. Users SHALL confirm removal order and review or edit content before saving. Failed extraction or invalid output SHALL save no look. An empty vision-model setting SHALL return `409 vision_unavailable` before image transmission and offer Configure vision or manual entry. Provider image refusal or invalid visual output SHALL return `502 vision_request_failed`, save no look and retain preview until cancel/expiry for retry.
 
 Saved provenance SHALL retain the source digest, assistant request/output and user edits without embedding image bytes in ordinary metadata or portable JSON. Temporary images SHALL expire after 24 hours and be cleaned after save/cancel when no longer needed. Saved looks SHALL remain usable without the original image or another assistant call. Look images SHALL NOT automatically become generation references.
+
+Startup and each photo-stage access SHALL expire overdue records and retry eligible cleanup. Save/cancel SHALL remove bytes only after saved redacted provenance or cancellation is durable. Cleanup failure SHALL remain a visible retryable warning and SHALL NOT undo a saved look.
 
 #### Scenario: Image is selected
 - **WHEN** a photo is selected but Extract look has not been invoked
@@ -113,6 +115,11 @@ Saved provenance SHALL retain the source digest, assistant request/output and us
 - **WHEN** the configured assistant cannot process the image
 - **THEN** extraction fails visibly without saving
 - **AND** photo preview and manual creation remain available
+
+#### Scenario: Only a text model is configured
+- **WHEN** the assistant has a text model but no explicit verified/declarative vision model
+- **THEN** extraction returns vision unavailable before sending image bytes
+- **AND** manual look creation and Configure vision remain available
 
 #### Scenario: Saved look outlives the photo
 - **WHEN** temporary image content has been cleaned
@@ -144,6 +151,33 @@ Every file/target mutation SHALL increment selection_revision and invalidate pre
 #### Scenario: Commit is retried after success
 - **WHEN** the same consumed selection commit is retried
 - **THEN** its recorded result is returned without another import
+
+### Requirement: Browser selection HTTP exposes only safe revisioned state
+
+The browser selection API SHALL use `POST /api/resources/import-selections` to create, `POST .../{selection_id}/files` for one multipart file plus upload request ID, `DELETE .../files/{file_id}` to remove, `PATCH .../files/{file_id}` to choose effective library/auxiliary kind, `POST .../preview`, `POST .../commit`, `POST .../cancel` and `GET .../{selection_id}` for status. Selection-creation request IDs SHALL be globally unique; upload request IDs SHALL be unique within their selection. Either ID SHALL replay the same selection/file when normalized metadata and exact byte digest match and SHALL return `409 idempotency_conflict` when reused for different content. Remove, choice, preview, commit and cancel SHALL require exact expected selection revision. New create/upload SHALL return `201`, ordinary state reads/mutations and terminal replay `200`, and an already-owned valid commit `202` without launching a second import.
+
+The public selection view SHALL contain opaque IDs, a JavaScript-safe integer revision, state (`open`, `committing`, `committed`, `cancelled` or `expired`), fixed expiry, ordered safe file metadata, nullable preview and nullable commit result. Preview SHALL include opaque preview token, lowercase-hex manifest digest, committable status and readable canonical report projection. Files SHALL expose only ID, display filename, bounded byte count, declared/effective library, structurally matched/effective auxiliary kind and status. Physical paths, device/inode values, nanosecond timestamps, raw fingerprints, attestation secrets and staged bytes SHALL remain server-owned. All exposed integers SHALL be no greater than `Number.MAX_SAFE_INTEGER`; digests/tokens SHALL be strings and `mtime_ns` SHALL never be round-tripped through JavaScript.
+
+Stale revision or preview/manifest mismatch SHALL return `409`; invalid target/kind or unresolved commit `422`; file/body/aggregate excess `413`; cancelled/expired mutation `410`; missing selection or cross-selection file ID `404`; disabled mutation `503`. Error detail SHALL include a stable machine code, readable message and current safe view when relevant. Commit while another owner holds the same tuple SHALL return active state; another tuple SHALL conflict. Cancel while the canonical commit transaction is active SHALL return `409 commit_active`.
+
+Startup and every selection access SHALL recover expired/stale commit ownership and perform bounded cleanup. A claim with no atomic import result SHALL return to open before fixed expiry; a committed result SHALL never be inferred. Commit/cancel SHALL remove bytes only after terminal state is durable. Expiry SHALL remove bytes and retain status/result tombstone for 24 additional hours; cleanup failure SHALL be visible and retryable without changing committed resources.
+
+#### Scenario: Filesystem fingerprint exceeds JavaScript precision
+- **WHEN** canonical staging metadata contains an `mtime_ns` or another integer greater than `Number.MAX_SAFE_INTEGER`
+- **THEN** it remains server-side while the browser receives only bounded counts and string digests/tokens
+- **AND** preview/commit attestation remains exact
+
+#### Scenario: Upload response arrives out of order
+- **WHEN** concurrent upload responses carry different monotonically increasing revisions
+- **THEN** the browser retains the highest revision and cannot re-enable preview/commit from the lower response
+
+#### Scenario: Selection mutation uses a stale revision
+- **WHEN** remove, target choice, preview, commit or cancel uses an older revision
+- **THEN** it returns a revision conflict with the current safe view and performs no requested mutation
+
+#### Scenario: Another commit owner exists
+- **WHEN** a second commit names the same valid selection/revision/preview tuple
+- **THEN** it receives committing status or the recorded result without a second canonical import
 
 ### Requirement: Manual translation rows use attested bulk application
 

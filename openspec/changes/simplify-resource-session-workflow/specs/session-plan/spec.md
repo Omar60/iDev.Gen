@@ -2,13 +2,34 @@
 
 ### Requirement: Guided creation persists a compatible authoring plan atomically
 
-Guided creation SHALL validate a selected character/workflow, ready stored rooms scene anchor, integer photo count from 1 through 500, optional brief of at most 2,000 characters and complete variation policy. The exact anchor triple SHALL also appear in selected_resources. Session and initial plan SHALL become durable atomically with stable take IDs before assistant calls. Failure SHALL leave no orphan session.
+`POST /api/sessions/guided` SHALL accept a client `request_id`, selected character, optional Advanced workflow override, ready stored rooms scene anchor, integer photo count from 1 through 500, optional brief of at most 2,000 characters, authoring mode, complete variation policy and explicit look/initial-wardrobe overrides. The server SHALL resolve the effective workflow from the explicit override or the character's current default, in that order. The workflow SHALL exist and satisfy the existing resource preparation/submission compatibility checks. No default and no override SHALL fail with `422 workflow_required` before persistence and identify both available remedies. The exact anchor triple SHALL also appear in selected_resources.
+
+The initial authoring plan SHALL persist a server-owned workflow binding containing the effective workflow ID, kind, canonical graph digest and canonical node-map digest. The session SHALL persist that effective workflow ID. The binding SHALL participate in preparation evidence, the automatic creative-input digest and copy-forward equality; the resource/adaptation-only effective_resource_input_digest SHALL remain unchanged in scope. A later character-default change SHALL NOT affect the session. A missing or content-changed bound workflow SHALL block new preparation, approval and submission with `409 workflow_changed`; authoring-v1 workflow changes after creation SHALL require another session. Existing plans without authoring metadata SHALL retain established workflow behavior.
+
+The server SHALL treat guided `request_id` as globally unique, canonicalize and hash the validated request excluding it, then persist one guided-request record, session, initial plan, stable take IDs and stored success response in one serialized transaction before assistant calls. A new creation SHALL return `201` with session ID, revision one and plan. The same request ID and digest SHALL return that stored result with `200` after a lost response or concurrent retry. The same request ID with different normalized content SHALL return `409 idempotency_conflict`. Failure SHALL leave no request record or orphan session; concurrent calls using one request ID SHALL create at most one session/plan. Errors SHALL use a stable `detail.code` and readable `detail.message`.
 
 The normalized authoring block SHALL use authoring.mode with automatic or manual, brief, scene_anchor, variation_policy and shared-state resolution metadata. The default policy SHALL vary camera, framing, pose and expression. A fixed dimension SHALL require a non-empty user value and SHALL reject conflicting explicit take choices. Automatic batch limits SHALL NOT impose a twenty-take plan limit. Older/expert plans without authoring metadata SHALL retain existing behavior without silent migration.
 
 #### Scenario: Guided creation fails
 - **WHEN** validation or initial plan persistence fails
-- **THEN** no orphan session remains and no assistant call starts
+- **THEN** no idempotency record or orphan session remains and no assistant call starts
+
+#### Scenario: Character has no effective workflow
+- **WHEN** neither the character default nor an Advanced override supplies a compatible workflow
+- **THEN** creation fails before writes with actions to assign a default or choose an override
+
+#### Scenario: Creation response is lost
+- **WHEN** two concurrent requests or a later retry use the same request ID and normalized body
+- **THEN** they resolve to one stored session/plan result without duplicate allocation
+
+#### Scenario: Creation token is reused for another body
+- **WHEN** a request ID already bound to one normalized creation is sent with different content
+- **THEN** creation returns an idempotency conflict and writes nothing
+
+#### Scenario: Bound workflow changes after creation
+- **WHEN** the stored workflow graph or node map no longer matches the frozen binding
+- **THEN** new preparation, approval and submission fail without reinterpreting or copying prior work
+- **AND** the user is directed to create another session
 
 #### Scenario: Forty-photo session
 - **WHEN** valid guided inputs request forty photos
@@ -44,9 +65,9 @@ Optional assistant suggestions for missing look/wardrobe SHALL be reviewed and a
 
 ### Requirement: Automatic authoring edits invalidate downstream dependencies
 
-Automatic preparation SHALL consume takes in stable order and record predecessor snapshot identities/revisions with its exact bounded context. Brief, anchor, effective shared-state or policy changes SHALL invalidate affected ungenerated automatic preparations. Editing, removing or reordering a take SHALL conservatively invalidate later ungenerated automatic preparations from the earliest changed position, in addition to existing direct-input and wardrobe rules. Earlier unaffected ready results SHALL be reusable only through the verified current-revision copy-forward contract below. Manual work SHALL retain existing input-based invalidation.
+Automatic preparation SHALL consume takes in stable order and record predecessor snapshot identities/revisions with its exact bounded context. Brief, anchor, workflow binding, effective shared-state or policy changes SHALL invalidate affected ungenerated automatic preparations. Editing, removing or reordering a take SHALL conservatively invalidate later ungenerated automatic preparations from the earliest changed position, in addition to existing direct-input and wardrobe rules. Earlier unaffected ready results SHALL be reusable only through the verified current-revision copy-forward contract below. Manual work SHALL retain existing input-based invalidation.
 
-Mode-only changes SHALL revoke review and cancel old in-flight authoring while retaining completed choices with original provenance. Generated/queued snapshots SHALL remain immutable. Generated-state continuity protection SHALL include scene anchor, variation policy and the complete look_snapshot (including null versus non-null); brief changes SHALL affect only future ungenerated work without rewriting historical evidence.
+Mode-only changes SHALL revoke review and cancel old in-flight authoring while retaining completed choices with original provenance. Generated/queued snapshots SHALL remain immutable. Generated-state continuity protection SHALL include scene anchor, workflow binding, variation policy and the complete look_snapshot (including null versus non-null); brief changes SHALL affect only future ungenerated work without rewriting historical evidence.
 
 #### Scenario: Third take changes
 - **WHEN** take three changes after twelve automatic takes were prepared
@@ -63,14 +84,20 @@ Mode-only changes SHALL revoke review and cancel old in-flight authoring while r
 - **AND** completed choices retain assistant provenance rather than becoming falsely manual
 
 #### Scenario: Generated continuity cannot change
-- **WHEN** an edit would change scene anchor or fixed continuity policy after generated state exists
+- **WHEN** an edit would change scene anchor, workflow binding or fixed continuity policy after generated state exists
 - **THEN** it is refused under continuity freeze rules without rewriting history
 
 ### Requirement: Authoring operations have exclusive recoverable ownership
 
-The system SHALL prevent concurrent shared-state suggestion and automatic take-preparation operations for the same session from launching duplicate work. It SHALL track operation ownership, plan revision and progress and refuse stale or expired owners' writes. Cancellation SHALL stop new calls and discard late responses. Plan changes SHALL revoke old operation ownership.
+The system SHALL prevent concurrent shared-state suggestion and automatic take-preparation operations for the same session from launching duplicate work. Each persisted operation SHALL have opaque operation ID, client request ID, session ID, plan revision, kind (`shared_suggestions` or `prepare_takes`), canonical request digest, state, monotonic fencing token, lease expiry, ordered targets/completed/remaining references, nullable failed item/error, nullable result and timestamps. The client request ID SHALL be unique within the session and MAY be reused in another session. Non-terminal states SHALL be `active` and `cancel_requested`; terminal states SHALL be `succeeded`, `failed`, `cancelled` and `expired`. At most one non-terminal operation SHALL exist per session across both kinds.
 
-Completed take snapshots SHALL persist incrementally. Failure SHALL report completed, failed and remaining work. Reopening SHALL recover progress and permit resuming incomplete work after abandoned ownership expires. Ready/generated snapshots SHALL NOT be regenerated merely to resume. Ready results from older revisions SHALL use verified copy-forward; linked/generated history SHALL remain already-submitted history, never become a new ready copy or trigger duplicate automatic authoring. Retrying an unpersisted remote response after a crash MAY make another assistant call; exactly-once remote billing SHALL NOT be promised.
+`POST /api/sessions/{session_id}/plan/authoring/operations` SHALL start work from request ID, expected revision, kind and kind-valid targets. It SHALL return `202` for a new active operation and `200` for an identical active or terminal replay. `GET .../operations/{operation_id}` SHALL return current state/progress. `POST .../{operation_id}/cancel` SHALL return `202` while an in-flight result must be discarded or `200` once terminal. `POST .../{operation_id}/resume` SHALL return `202` with a new fenced lease or `200` when already active/succeeded. A succeeded shared-suggestion operation SHALL be accepted only through `POST .../{operation_id}/accept` with expected revision and reviewed values; identical acceptance SHALL replay its stored plan result.
+
+The public operation view SHALL expose operation/session/revision/kind/state/timestamps, nullable lease expiry, progress, nullable result/error and `can_cancel`/`can_resume`, but SHALL NOT expose the owner or fencing token. Progress SHALL identify requested, ordered completed, nullable failed take/readable error and ordered remaining items. A different active request SHALL return `409 authoring_active` with that view; stale plan, idempotency conflict, missing assistant and malformed targets SHALL be distinguished. Start/resume/accept SHALL return `503` while resource planning is disabled; status and cancellation SHALL remain available.
+
+The lease SHALL be ten minutes and SHALL be renewed only by the backend immediately before a remote call and before scheduling another item. No transaction SHALL span a remote call. Before accepting each response, one transaction SHALL verify matching operation/fencing token, active/unexpired ownership, unchanged plan revision/request inputs and current resource/workflow validity, then persist result and progress together. A failed check SHALL discard the response. Cancellation SHALL stop new calls and discard late responses. Plan changes SHALL fence and cancel old ownership.
+
+Completed take snapshots SHALL persist incrementally. Failure SHALL terminate with completed, one failed item and remaining work. Resume SHALL retry from the failed item without regenerating completed ready/generated snapshots. Reopening SHALL recover progress and permit resuming failed/cancelled/expired work only while the original revision and inputs remain current. Same request ID and digest SHALL replay one operation; changed content under the ID SHALL conflict. Ready results from older revisions SHALL use verified copy-forward; linked/generated history SHALL remain already-submitted history, never become a new ready copy or trigger duplicate automatic authoring. Retrying an unpersisted remote response after a crash MAY make another assistant call; exactly-once remote billing SHALL NOT be promised.
 
 #### Scenario: Two tabs prepare simultaneously
 - **WHEN** a second request arrives while the same session is being authored
@@ -91,6 +118,18 @@ Completed take snapshots SHALL persist incrementally. Failure SHALL report compl
 #### Scenario: Partial failure
 - **WHEN** one take fails in a batch
 - **THEN** completed results survive and the failed and remaining takes are visible for retry
+
+#### Scenario: Start response is lost
+- **WHEN** the same request ID and normalized operation body are retried after an unknown response
+- **THEN** the existing active or terminal operation is returned without launching duplicate work
+
+#### Scenario: Lease owner returns late
+- **WHEN** a prior owner returns after expiry or Resume has issued a newer fencing token
+- **THEN** its output is discarded in the response-persistence transaction
+
+#### Scenario: Terminal suggestion acceptance is retried
+- **WHEN** an accepted suggestion plan mutation succeeded but its response was lost
+- **THEN** the same acceptance content returns the stored plan result without a second revision
 
 ### Requirement: Selected looks are snapshotted into session state
 
@@ -155,6 +194,12 @@ A plan with authoring SHALL carry exactly the members shown below. All members S
       "source_id": "scene-1",
       "content_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     },
+    "workflow_binding": {
+      "workflow_id": 7,
+      "kind": "t2i",
+      "graph_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "node_map_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
     "variation_policy": {
       "camera": {"mode": "vary"},
       "framing": {"mode": "vary"},
@@ -172,7 +217,7 @@ A plan with authoring SHALL carry exactly the members shown below. All members S
 }
 ```
 
-mode SHALL be automatic or manual; brief SHALL be a string of at most 2,000 characters. scene_anchor SHALL use the existing exact revision triple contract. variation_policy SHALL contain exactly camera, framing, pose and expression. Each member SHALL be exactly {"mode":"vary"} or {"mode":"fixed","value":"non-empty string","value_origin":"user"}. A vary member SHALL NOT carry value/origin; fixed values SHALL NOT be unresolved or assistant-origin in version one.
+mode SHALL be automatic or manual; brief SHALL be a string of at most 2,000 characters. scene_anchor SHALL use the existing exact revision triple contract. workflow_binding SHALL be server-owned and contain exactly workflow_id (positive integer), kind (stored workflow kind string), graph_digest and node_map_digest (canonical lowercase SHA-256 values). It SHALL match the session's effective workflow and clients SHALL only echo it unchanged. variation_policy SHALL contain exactly camera, framing, pose and expression. Each member SHALL be exactly {"mode":"vary"} or {"mode":"fixed","value":"non-empty string","value_origin":"user"}. A vary member SHALL NOT carry value/origin; fixed values SHALL NOT be unresolved or assistant-origin in version one.
 
 shared_state SHALL contain exactly look and initial_wardrobe metadata, with origin in none, user, assistant, assistant_edited or saved_look and evidence_id a string or null. Effective strings SHALL remain solely in plan.look and plan.initial_wardrobe. none SHALL require an empty effective string and null evidence_id. user SHALL require null evidence_id; user may explicitly accept an empty value. saved_look SHALL require look_snapshot and null evidence_id. assistant/assistant_edited SHALL reference an evidence entry that records the suggestion and acceptance. Changed accepted assistant suggestions SHALL use assistant_edited rather than mislabeling them as untouched output. Pending suggestions SHALL remain operation state outside the authoritative plan.
 
@@ -206,8 +251,32 @@ wardrobe_progression SHALL be null or exactly {"source_look_digest":"64 lowercas
 - **THEN** validation refuses it instead of normalizing away the error
 
 #### Scenario: Browser fabricates accepted provenance
-- **WHEN** a save changes server-owned evidence or supplies an unverified look snapshot
+- **WHEN** a save changes server-owned evidence or workflow binding or supplies an unverified look snapshot
 - **THEN** the change is refused without modifying the plan
+
+### Requirement: Preparation authority is mode-specific
+
+An authoring-v1 automatic take SHALL reach ready state only through a current fenced `prepare_takes` operation. It SHALL reject `manual_completion` and direct begin/complete compatibility calls with `409`; clients SHALL NOT supply final prompts, effective state, versions, assistant request/output, predecessor/resource projections, provenance, duplicate flags or dependency digests. The server SHALL derive and persist all of them from current validated inputs and the actual assistant response.
+
+An authoring-v1 manual take SHALL reach ready state through the validated manual prepare boundary. `manual_completion` SHALL be accepted only for currently unset and unlocked creative fields and SHALL be recorded as manual input; the server SHALL still derive effective state, final prompt, versions, resource projection/digest and provenance. Fixed values, resources, shared state and adaptations SHALL NOT be overridden. Resource-v1 plans without authoring metadata and legacy sessions SHALL retain their established completion/composition behavior without being labelled automatic.
+
+Review, recovery, Approve and Submit SHALL reject an authoring-v1 ready row whose required server-owned evidence is missing, altered, client-invented or inconsistent with its mode. They SHALL NOT backfill current values to legitimize unverifiable history.
+
+#### Scenario: Automatic caller supplies manual completion
+- **WHEN** an automatic authoring request includes `manual_completion` or calls the raw begin/complete compatibility route
+- **THEN** it is rejected without a ready row or assistant call
+
+#### Scenario: Caller fabricates prepared evidence
+- **WHEN** a client supplies a final prompt, effective state, assistant provenance or dependency digest for an authoring-v1 take
+- **THEN** the supplied evidence cannot create an approvable or submittable ready snapshot
+
+#### Scenario: Manual authoring fills an unlocked field
+- **WHEN** a manual authoring take supplies a valid value for a still-unset unlocked creative field
+- **THEN** server preparation records it as manual input and derives the authoritative ready snapshot
+
+#### Scenario: Pre-authoring expert plan completes through compatibility API
+- **WHEN** a resource-v1 plan has no authoring block and uses its existing begin/complete flow
+- **THEN** the established expert behavior remains available without an automatic-authoring provenance claim
 
 ### Requirement: Guided allocation has a separate operational count limit
 
@@ -300,7 +369,7 @@ After any take reaches generated/linked state, authoring.look_snapshot SHALL rem
 
 ### Requirement: Server-owned state changes through explicit operations
 
-Generic plan saves SHALL only echo evidence, look_snapshot and wardrobe_progression unchanged. Legitimate mutation SHALL use explicit compare-and-swap operations: accept a server-issued shared suggestion with user edits; apply a server-verified preset key/version; or apply a server-issued progression preview with reviewed merge/replace choices. Each SHALL validate current revision and generation guards, derive the resulting server-owned content and persist atomically.
+Generic plan saves SHALL only echo workflow_binding, evidence, look_snapshot and wardrobe_progression unchanged. Legitimate mutation SHALL use explicit compare-and-swap operations: accept a server-issued shared suggestion with user edits; apply a server-verified preset key/version; or apply a server-issued progression preview with reviewed merge/replace choices. Each SHALL validate current revision and generation guards, derive the resulting server-owned content and persist atomically.
 
 For generic user edits of effective look/initial_wardrobe strings, the server SHALL set the corresponding origin to user with null evidence_id, keeping old evidence historical; clients SHALL NOT fabricate provenance. Read normalization SHALL preserve empty take arrays and missing/invalid IDs for authoritative validation rather than inventing take-001 or other content. Stable IDs SHALL be allocated only by guided creation or explicit Add take.
 
@@ -374,3 +443,61 @@ An unchanged dependency set SHALL return the current revision without writes. A 
 - **WHEN** two refresh requests use the same expected revision, or a current request finds no dependency drift
 - **THEN** at most one revision is created for drift and stale CAS is refused
 - **AND** a no-drift current request leaves the revision unchanged
+
+### Requirement: Resource session presentation projects authoritative plan constants
+
+For a resource-v1 session with a plan, `plan.look` and `plan.initial_wardrobe` SHALL be the sole effective look and wardrobe. Resource preparation SHALL NOT consult or synchronize the legacy session columns. Guided creation SHALL leave those legacy columns empty. Session detail/list responses SHALL project the plan values through the existing readable `look` and `wardrobe` fields, and session free-text filtering SHALL search the same projected values. Legacy sessions SHALL continue to read and search their session columns unchanged.
+
+A resource-v1 session missing its plan SHALL report inconsistent state instead of silently falling back to session-column values. Generic session PATCH of look or wardrobe for resource-v1 SHALL return `409 plan_field_required`; plan CAS remains the only edit path. Existing stored session columns SHALL remain untouched historical compatibility data rather than a second source of truth.
+
+#### Scenario: Resource look changes through plan CAS
+- **WHEN** a resource-v1 plan changes look or initial wardrobe
+- **THEN** subsequent detail, listing and search project the new plan values
+- **AND** no session-column mirror write is required
+
+#### Scenario: Legacy session is listed
+- **WHEN** a legacy session has look and wardrobe only in its session row
+- **THEN** existing listing, filtering and composition behavior remains unchanged
+
+#### Scenario: Resource constants are patched through the legacy route
+- **WHEN** a caller PATCHes session look or wardrobe for a resource-v1 session
+- **THEN** the request is refused and identifies plan CAS as the authoritative path
+
+### Requirement: Transient staging and operation ownership recover without deleting durable work
+
+Application startup SHALL expire authoring ownership left by the prior process, preserve completed progress, release an unfinished import commit claim with no atomic result when still within selection lifetime, expire overdue import/photo staging and attempt eligible file cleanup before requests are served. Each status or mutation of a selection, operation or photo stage SHALL also perform record-local lazy recovery plus bounded opportunistic cleanup. Authoring leases SHALL expire ten minutes after their last backend renewal. Selection and photo expiry SHALL remain fixed at 24 hours from creation and SHALL NOT extend on access.
+
+Import commit or cancel and photo save or cancel SHALL remove staged bytes only after terminal database state or saved redacted provenance is durable. Expiry SHALL remove staged bytes and retain a terminal tombstone/status for 24 additional hours before optional purge. Cleanup failure SHALL remain a visible retryable warning and SHALL NOT delete or roll back committed resources, saved looks, plans, prepared snapshots or generated history. No background scheduler or new queue framework SHALL be required.
+
+#### Scenario: Process restarts during authoring
+- **WHEN** startup finds an active operation from the prior process
+- **THEN** it becomes expired with completed progress preserved for a valid Resume
+
+#### Scenario: Commit bytes outlive a successful import
+- **WHEN** canonical import and its durable selection result commit successfully
+- **THEN** staged bytes are removed and replay returns the recorded result without re-import
+
+#### Scenario: Cleanup cannot remove a staged file
+- **WHEN** filesystem cleanup fails after a terminal database transition
+- **THEN** the durable result remains correct and status exposes a warning for a later cleanup retry
+
+### Requirement: Operational disablement protects authoring metadata across downgrade
+
+With `resource_planning_enabled=false`, the system SHALL return `503` for new browser-selection mutations, translation proposal/application, guided creation, authoring plan saves, suggestion start/resume/accept, automatic/manual authoring preparation, adaptation writes, dependency refresh, review approval, saved-look create/edit/import, photo stage/extract/save, preset application and progression application. Existing translation write gates SHALL remain. Selection/operation status and cancellation, resource/session/plan/look/review/recovery reads and photo preview SHALL remain available. Existing path-backed resource import and legacy garment/outfit import SHALL retain their prior flag behavior.
+
+Disabling while a remote call is in flight SHALL prevent another call and SHALL make the fenced response transaction discard output and cancel the operation. Already ready and authoritatively approved snapshots SHALL retain existing idempotent Submit and runner execution behavior; disablement SHALL NOT permit new approval or preparation.
+
+Before starting a rollback-compatible older binary, the operator SHALL create and verify the existing SQLite backup, disable resource planning in persisted configuration or the target process environment, cancel or observe terminal active operations, verify disabled state, and stop the current process cleanly. The older binary SHALL run with the flag disabled so generic plan saves cannot drop unknown authoring metadata. A binary predating the flag SHALL NOT open the upgraded database for writes; rollback SHALL restore the verified pre-upgrade backup instead. Re-enabling writes SHALL require a binary that understands the closed authoring schema.
+
+#### Scenario: New mutation is attempted while disabled
+- **WHEN** any newly introduced authoring, selection, translation or look write is requested with the feature flag off
+- **THEN** it fails with `503` before remote calls or durable writes
+
+#### Scenario: Approved prepared work exists before disablement
+- **WHEN** a ready snapshot was already authoritatively approved before the flag was disabled
+- **THEN** existing idempotent submission and runner execution remain available
+- **AND** no new work can be prepared or approved
+
+#### Scenario: Compatible downgrade opens an authoring plan
+- **WHEN** the verified backup/disable/stop procedure is followed before launching a rollback-compatible older binary
+- **THEN** plans remain inspectable while plan mutations are blocked from dropping unknown metadata
