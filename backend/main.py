@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import base64
 import collections
+from email.message import EmailMessage
+import hashlib
 import heapq
 import io
 import json
@@ -22,11 +24,14 @@ import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.datastructures import Headers, UploadFile as StarletteUploadFile
 from PIL import Image, ImageDraw, ImageFont
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Any, Literal
 
 import crop
@@ -95,6 +100,208 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="iDev.Gen", lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Global Exception Handlers — Stable Envelope for Every Validation Error
+# ---------------------------------------------------------------------------
+#
+# The OpenSpec contract requires every validation/parsing failure on
+# the import-selections boundary to be returned through the stable
+# envelope. FastAPI's default handlers return their own shape (``detail``
+# with a list of Pydantic errors, or an HTML error page) which would
+# break the contract. The handlers below convert each common failure
+# shape into the same envelope the routes emit directly, and they
+# never echo Pydantic error text or stack traces into the body.
+#
+# Scopes:
+#   * ``RequestValidationError`` — Pydantic body/query/path failures
+#     (missing required field, wrong type, extra fields, oversized
+#     integer, multipart cardinality).
+#   * ``HTTPException`` — propagated from the route layer (e.g. our
+#     ``_coerce_public_revision`` raises it). If the handler already
+#     produced a stable envelope ``detail`` dict, the body is reused
+#     verbatim; otherwise the standard message is wrapped.
+#   * ``Exception`` — last-resort guard so the framework never returns
+#     a stack trace or a generic HTML error page through this route.
+
+
+def _validation_error_code(exc: RequestValidationError) -> str:
+    """Pick a stable code for a Pydantic validation error.
+
+    The choice is intentionally narrow: every Pydantic error gets one
+    of three codes so the client has a deterministic switch. More
+    specific errors (``empty PATCH``, ``extra field``) are emitted by
+    the route layer and arrive as their own envelope, so this handler
+    only sees generic shape/type/required failures.
+    """
+    for err in exc.errors() or []:
+        loc = err.get("loc") or ()
+        # Field ``extra_forbidden`` is raised when ``extra="forbid"``
+        # rejects an unknown key. The route never sees those directly
+        # because Pydantic raises before the handler runs; the handler
+        # is the only place that turns them into a stable envelope.
+        if err.get("type") == "extra_forbidden":
+            return "extra_field_forbidden"
+        if err.get("type") == "missing":
+            return "missing_field"
+        if "expected_revision" in loc or "revision" in loc or "expected_revision" in str(err.get("msg", "")):
+            return "invalid_revision"
+        # Multipart cardinality lives under ``body`` with type=value_error.
+        if "multipart" in str(err.get("input", "")).lower() or "multipart" in str(err.get("msg", "")).lower():
+            return "invalid_multipart"
+        # Path/query parameter that failed ge/le/... bounds.
+        if loc and loc[0] in ("query", "path"):
+            return "invalid_parameter"
+    return "invalid_request"
+
+
+_STABLE_ENVELOPE_PATH_PREFIX: str = "/api/resources/import-selections"
+
+
+def _is_stable_envelope_path(path: str) -> bool:
+    """Return ``True`` when the request path is on the import-selections boundary.
+
+    The stable envelope is a Task 1.2 contract for the
+    import-selections routes only. Other routes (sessions, plan,
+    workflow, etc.) keep their existing error shapes — converting
+    those into the new envelope would silently break ~100 tests that
+    pin the legacy ``detail`` strings. The handler limits itself to
+    this prefix so the rest of the API keeps its own contract.
+    """
+    return path.startswith(_STABLE_ENVELOPE_PATH_PREFIX)
+
+
+def _safe_get_current_view(path: str) -> dict | None:
+    """Extract selection_id from path if present and return its safe SelectionView."""
+    parts = path.strip("/").split("/")
+    if len(parts) >= 4 and parts[0] == "api" and parts[1] == "resources" and parts[2] == "import-selections":
+        candidate = parts[3]
+        if candidate and candidate != "files":
+            try:
+                return resource_selection.build_selection_view(candidate)
+            except Exception:
+                return None
+    return None
+
+
+def _format_validation_messages(exc: RequestValidationError) -> str:
+    """Build a deterministic, framework-independent message string.
+
+    The Pydantic ``loc`` tuple always starts with the request scope
+    (``body``, ``query``, ``path``). When the field name lives in
+    ``loc`` it is the first non-scope token; when the body is fully
+    missing, ``loc`` is ``('body',)`` and the field name has to be
+    recovered from the route's pydantic model so the message still
+    tells the client which field is required.
+    """
+    messages: list[str] = []
+    for err in exc.errors() or []:
+        if err.get("type") == "extra_forbidden":
+            messages.append("Extra fields are not permitted")
+            continue
+        loc_parts = list(err.get("loc") or ())
+        scope = loc_parts[0] if loc_parts else None
+        field_parts = [p for p in loc_parts[1:] if p != "body"]
+        msg = err.get("msg") or "validation failed"
+        if field_parts:
+            field = ".".join(str(p) for p in field_parts)
+            messages.append(f"{scope}.{field}: {msg}" if scope else f"{field}: {msg}")
+        elif scope == "body":
+            # ``loc=('body',)`` with ``type='missing'`` means the body
+            # itself was not provided. Fall back to the route's primary
+            # model so the message keeps the field name.
+            primary = err.get("input", None)
+            # Try to recover the field name from the model class.
+            ctx = err.get("ctx") or {}
+            field_name = ctx.get("field_name")
+            if field_name:
+                messages.append(f"body.{field_name}: {msg}")
+            else:
+                messages.append(f"body: {msg}")
+        else:
+            messages.append(msg)
+    return "; ".join(messages) if messages else "Request validation failed"
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Convert Pydantic validation errors on the import-selections boundary.
+
+    The handler only wraps requests whose path lives under
+    ``/api/resources/import-selections``. Other routes fall back to
+    FastAPI's default ``RequestValidationError`` handler so the
+    existing tests for those routes stay green. The handler never
+    includes the raw Pydantic ``errors()`` list in the body; the
+    contract pins ``code`` and ``message`` to a deterministic shape.
+    """
+    if not _is_stable_envelope_path(request.url.path):
+        # Defer to FastAPI's default validation handler.
+        from fastapi.exception_handlers import request_validation_exception_handler
+        return await request_validation_exception_handler(request, exc)
+    code = _validation_error_code(exc)
+    message = _format_validation_messages(exc)
+    current = _safe_get_current_view(request.url.path)
+    return _stable_error(422, code, message, current=current)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Wrap ``HTTPException`` through the stable envelope on the boundary.
+
+    On the import-selections boundary, every ``HTTPException`` is
+    converted to the stable envelope. Outside that prefix, the
+    framework's default handler is reused (delegated back through
+    FastAPI's ``http_exception_handler``) so the rest of the API keeps
+    its existing detail string contract.
+
+    Routes that already raised a structured ``detail`` (``code`` +
+    ``message``) keep that shape verbatim; plain string details are
+    wrapped into the envelope with a deterministic ``http_error`` code
+    so the client still has a stable switch.
+    """
+    if not _is_stable_envelope_path(request.url.path):
+        # Delegate back to FastAPI's default HTTPException handler so
+        # ``detail`` strings remain the verbatim message the existing
+        # tests pin (e.g. "composition_mode is a reserved field; ...").
+        from fastapi.exception_handlers import http_exception_handler
+        return await http_exception_handler(request, exc)
+    current = _safe_get_current_view(request.url.path)
+    detail = exc.detail
+    if (
+        isinstance(detail, dict)
+        and "code" in detail
+        and "message" in detail
+    ):
+        if "current" not in detail and current is not None:
+            detail["current"] = current
+        return JSONResponse(status_code=exc.status_code, content={"detail": detail})
+    if exc.status_code == 400:
+        return _stable_error(422, "invalid_multipart", str(detail) if detail else "Malformed request", current=current)
+    return _stable_error(
+        exc.status_code,
+        "http_error",
+        str(detail) if detail is not None else exc.__class__.__name__,
+        current=current,
+    )
+
+
+@app.exception_handler(resource_selection.SelectionStateInvalidError)
+async def _selection_state_invalid_handler(request: Request, exc: resource_selection.SelectionStateInvalidError):
+    return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    """Last-resort guard for the import-selections boundary only.
+
+    Other routes fall back to Starlette's default 500 page so the
+    existing tests are not silently changed.
+    """
+    if not _is_stable_envelope_path(request.url.path):
+        from starlette.responses import PlainTextResponse
+        return PlainTextResponse("Internal Server Error", status_code=500)
+    return _stable_error(500, "internal_error", "Unexpected server error")
 
 
 # ------------------------------------------------------------------ schemas
@@ -1351,6 +1558,1039 @@ def commit_resource_import(p: ResourceCommitIn):
     except (CommitAborted, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"report": resource_service.safe_report(report)}
+
+
+# ---------------------------------------------------------------------------
+# Resource Import Selections HTTP Boundary (Task 1.2)
+# ---------------------------------------------------------------------------
+#
+# These six routes are the ONLY public boundary for ``resource_selection``
+# during Task 1.2. Every successful response is the safe ``SelectionView``
+# projection built by ``backend.resource_selection.build_selection_view``
+# and contains no internal paths, fingerprints, mtime_ns values, claim
+# tokens, or reservation counters. Error responses follow the stable
+# envelope ``{"detail": {"code": ..., "message": ..., "current": ...}}``
+# where ``current`` is the same safe view when the request touched an
+# existing selection, and is omitted otherwise.
+#
+# Cross-cutting rules enforced here (and pinned by the API tests):
+#   * Reads (``GET``) stay available when resource planning is disabled.
+#   * Writes return ``503 resource_planning_disabled`` when disabled.
+#   * ``selection_id`` from URL and ``file_id`` from URL must match a
+#     row in the same selection; mismatched or unknown IDs return
+#     path-free 404 with no leakage of which selection the file
+#     actually belongs to.
+#   * Multipart uploads stream chunks through ``stage_file_chunk`` so
+#     per-file/aggregate byte caps are enforced before the body is fully
+#     read into memory.
+#   * Replay of the same ``upload_id`` with different bytes returns 409
+#     and does not overwrite the existing staged file.
+#   * Cancel during committing returns 409 ``commit_active``.
+
+
+_SELECTION_UPLOAD_CHUNK_BYTES: int = 64 * 1024
+
+
+# Re-exported here so the route layer can pin the per-file byte cap
+# without going through the resource_selection namespace at every read.
+# The constant lives in ``resource_selection`` so a single source of
+# truth gates both the reservation API and the HTTP boundary.
+MAX_BYTES_PER_FILE: int = resource_selection.MAX_BYTES_PER_FILE
+MAX_FILES_PER_SELECTION: int = resource_selection.MAX_FILES_PER_SELECTION
+MAX_SAFE_INTEGER: int = resource_selection.MAX_SAFE_INTEGER
+
+
+class ResourceSelectionCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: str
+
+    @field_validator("request_id", mode="before")
+    @classmethod
+    def validate_request_id_strict(cls, v: Any) -> str:
+        return resource_selection.normalize_client_uuid(v)
+
+
+class ResourceSelectionTargetIn(BaseModel):
+    """Closed body for PATCH /api/resources/import-selections/{sid}/files/{fid}.
+
+    The body must contain exactly ``expected_revision`` plus at least
+    one of the two effective fields. Extra keys are refused at the
+    Pydantic layer (``extra="forbid"``); an empty PATCH (only the
+    revision) is refused by the route handler with the stable envelope
+    so the rule is independent of the framework's validation order.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+    effective_library_key: str | None = None
+    effective_auxiliary_kind: str | None = None
+
+    @field_validator("expected_revision", mode="before")
+    @classmethod
+    def validate_revision_strict(cls, v: Any) -> int:
+        return resource_selection.validate_json_revision(v)
+
+    @field_validator("effective_library_key", mode="before")
+    @classmethod
+    def validate_library_key_strict(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        return resource_selection.validate_target_library_key(v)
+
+    @field_validator("effective_auxiliary_kind", mode="before")
+    @classmethod
+    def validate_auxiliary_kind_strict(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        return resource_selection.validate_target_auxiliary_kind(v)
+
+
+class ResourceSelectionCancelIn(BaseModel):
+    """Closed body for POST /api/resources/import-selections/{sid}/cancel.
+
+    ``expected_revision`` is mandatory so the cancel always participates
+    in the optimistic concurrency contract. Extra keys are refused at
+    the Pydantic layer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+
+    @field_validator("expected_revision", mode="before")
+    @classmethod
+    def validate_revision_strict(cls, v: Any) -> int:
+        return resource_selection.validate_json_revision(v)
+
+
+_MULTIPART_TOKEN_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+    "!#$%&'*+-.^_`|~"
+)
+
+_MULTIPART_BCHARS_NO_SPACE = frozenset(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+    "'()+_,-./:=?"
+)
+
+_MULTIPART_BCHARS = _MULTIPART_BCHARS_NO_SPACE | {" "}
+
+
+def parse_and_validate_multipart_content_type(header_bytes: bytes | str) -> tuple[str, str]:
+    """Parse and validate Content-Type header strictly according to RFC 2046 and RFC 7230/2045.
+
+    Returns:
+        tuple (normalized_header_str, boundary_str)
+
+    Raises:
+        ValueError on any formatting, cardinality, syntax, quoting, or grammar failure.
+    """
+    if not isinstance(header_bytes, (bytes, bytearray)):
+        if isinstance(header_bytes, str):
+            header_bytes = header_bytes.encode("latin1")
+        else:
+            raise ValueError("Content-Type must be bytes or string")
+
+    try:
+        header_str = header_bytes.decode("ascii")
+    except (UnicodeDecodeError, AttributeError) as exc:
+        raise ValueError("Content-Type must be valid ASCII") from exc
+
+    # Reject CR, LF, and ASCII control characters anywhere in the header
+    for ch in header_str:
+        code = ord(ch)
+        if (code < 32 and ch != "\t") or code == 127:
+            raise ValueError("Content-Type contains illegal control characters")
+
+    parts = header_str.split(";", 1)
+    media_type = parts[0].strip()
+    if "/" not in media_type:
+        raise ValueError("Malformed media type")
+    type_part, subtype_part = media_type.split("/", 1)
+    if not type_part or not subtype_part:
+        raise ValueError("Malformed media type")
+    if not all(c in _MULTIPART_TOKEN_CHARS for c in type_part) or not all(c in _MULTIPART_TOKEN_CHARS for c in subtype_part):
+        raise ValueError("Media type contains illegal characters")
+    if media_type.lower() != "multipart/form-data":
+        raise ValueError(f"Expected media type multipart/form-data, got {media_type}")
+
+    if len(parts) < 2:
+        raise ValueError("Missing boundary parameter")
+
+    params_str = parts[1]
+    params: list[tuple[str, str]] = []
+    seen_names: set[str] = set()
+
+    i = 0
+    n = len(params_str)
+    while i < n:
+        while i < n and params_str[i] in (" ", "\t"):
+            i += 1
+        if i == n:
+            break
+
+        name_start = i
+        while i < n and params_str[i] in _MULTIPART_TOKEN_CHARS:
+            i += 1
+        if i == name_start:
+            raise ValueError("Missing parameter name")
+        param_name = params_str[name_start:i]
+
+        while i < n and params_str[i] in (" ", "\t"):
+            i += 1
+        if i == n or params_str[i] != "=":
+            raise ValueError(f"Expected '=' after parameter {param_name!r}")
+        i += 1
+
+        while i < n and params_str[i] in (" ", "\t"):
+            i += 1
+        if i == n:
+            raise ValueError(f"Missing value for parameter {param_name!r}")
+
+        if params_str[i] == '"':
+            i += 1
+            val_chars = []
+            closed = False
+            while i < n:
+                ch = params_str[i]
+                if ch == '"':
+                    closed = True
+                    i += 1
+                    break
+                elif ch == "\\":
+                    i += 1
+                    if i >= n:
+                        raise ValueError("Dangling escape in quoted parameter value")
+                    esc = params_str[i]
+                    if esc not in ('"', '\\'):
+                        raise ValueError(f"Illegal escape sequence in quoted value: \\{esc}")
+                    val_chars.append(esc)
+                    i += 1
+                else:
+                    if (ord(ch) < 32 and ch != "\t") or ord(ch) > 126:
+                        raise ValueError("Invalid character in quoted value")
+                    val_chars.append(ch)
+                    i += 1
+            if not closed:
+                raise ValueError("Unterminated quoted parameter value")
+            param_val = "".join(val_chars)
+
+            while i < n and params_str[i] in (" ", "\t"):
+                i += 1
+            if i < n and params_str[i] != ";":
+                raise ValueError("Unexpected character after closing quote")
+            if i < n and params_str[i] == ";":
+                i += 1
+                peek = i
+                while peek < n and params_str[peek] in (" ", "\t"):
+                    peek += 1
+                if peek == n:
+                    raise ValueError("Trailing semicolon in parameter list")
+        else:
+            val_start = i
+            while i < n and params_str[i] in _MULTIPART_TOKEN_CHARS:
+                i += 1
+            if i == val_start:
+                raise ValueError(f"Empty or illegal unquoted value for parameter {param_name!r}")
+            param_val = params_str[val_start:i]
+
+            while i < n and params_str[i] in (" ", "\t"):
+                i += 1
+            if i < n and params_str[i] != ";":
+                raise ValueError(f"Illegal character in parameter value: {params_str[i]!r}")
+            if i < n and params_str[i] == ";":
+                i += 1
+                peek = i
+                while peek < n and params_str[peek] in (" ", "\t"):
+                    peek += 1
+                if peek == n:
+                    raise ValueError("Trailing semicolon in parameter list")
+
+        norm_name = param_name.lower()
+        if norm_name in seen_names:
+            raise ValueError(f"Duplicate parameter name: {param_name!r}")
+        seen_names.add(norm_name)
+        params.append((param_name, param_val))
+
+    boundary_entries = [v for k, v in params if k.lower() == "boundary"]
+    if len(boundary_entries) != 1:
+        raise ValueError("Content-Type must contain exactly one boundary parameter")
+
+    boundary = boundary_entries[0]
+    if not boundary:
+        raise ValueError("Boundary must not be empty")
+    if len(boundary) > 70:
+        raise ValueError(f"Boundary length ({len(boundary)}) exceeds 70 characters")
+    if not all(c in _MULTIPART_BCHARS for c in boundary):
+        raise ValueError("Boundary contains illegal characters")
+    if boundary[-1] not in _MULTIPART_BCHARS_NO_SPACE:
+        raise ValueError("Boundary must not end in whitespace")
+
+    formatted_params = []
+    for k, v in params:
+        if all(c in _MULTIPART_TOKEN_CHARS for c in v) and v:
+            formatted_params.append(f"{k}={v}")
+        else:
+            escaped_v = v.replace("\\", "\\\\").replace('"', '\\"')
+            formatted_params.append(f'{k}="{escaped_v}"')
+
+    normalized_header = "multipart/form-data; " + "; ".join(formatted_params)
+    return normalized_header, boundary
+
+
+def _stable_error(
+    status_code: int,
+    code: str,
+    message: str,
+    current: dict | None = None,
+) -> JSONResponse:
+    """Build a stable error envelope response.
+
+    The envelope is the public contract for every error on the
+    import-selections routes. ``code`` is a machine-readable identifier
+    the client should switch on; ``message`` is human-readable text safe
+    to render to a user; ``current`` is the safe ``SelectionView`` if
+    the request touched an existing selection.
+    """
+    payload: dict[str, Any] = {
+        "detail": {
+            "code": code,
+            "message": message,
+        }
+    }
+    if current is not None and code != "selection_state_invalid" and status_code != 500:
+        payload["detail"]["current"] = current
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+def _view_or_404(selection_id: str) -> dict | JSONResponse:
+    """Return the public view of ``selection_id`` or a 404 envelope."""
+    try:
+        view = resource_selection.build_selection_view(selection_id)
+    except resource_selection.SelectionStateInvalidError:
+        return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+    if view is None:
+        return _stable_error(404, "selection_not_found", "Selection not found")
+    return view
+
+
+def _authoritative_selection_view_or_error(selection_id: str) -> dict | JSONResponse:
+    """Return the authoritative SelectionView after durable success, or a 500 error.
+
+    After a domain operation has confirmed or mutated durable selection state,
+    unexpected disappearance or corrupted state is an internal integrity failure
+    (status 500 with code 'selection_state_invalid'), never 404 or synthetic success.
+    """
+    try:
+        view = resource_selection.build_selection_view(selection_id)
+    except resource_selection.SelectionStateInvalidError:
+        return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+    if view is None:
+        return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+    return view
+
+
+def _resource_planning_gate(current: dict | None = None) -> JSONResponse | None:
+    """Return a 503 envelope when resource planning is disabled, else ``None``."""
+    if is_resource_planning_enabled():
+        return None
+    return _stable_error(
+        503,
+        "resource_planning_disabled",
+        "Resource planning is disabled by configuration",
+        current=current,
+    )
+
+
+def _selection_terminal_view(view: dict) -> JSONResponse | None:
+    """Return a 410 envelope when ``view`` is in a terminal state, else ``None``."""
+    if view.get("state") == "open":
+        return None
+    state = view.get("state") or "unknown"
+    if state == "committing":
+        return _stable_error(
+            409, "commit_active", "Selection is currently committing", current=view
+        )
+    if state == "committed":
+        return _stable_error(
+            410, "selection_terminal", "Selection is already committed", current=view
+        )
+    if state == "cancelled":
+        return _stable_error(
+            410, "selection_terminal", "Selection is cancelled", current=view
+        )
+    if state == "expired":
+        return _stable_error(
+            410, "selection_terminal", "Selection is expired", current=view
+        )
+    return _stable_error(
+        410, "selection_terminal", f"Selection is in terminal state {state!r}",
+        current=view,
+    )
+
+
+def _coerce_public_revision(value: Any, current: dict | None = None) -> int:
+    """Validate a candidate revision value at the route boundary.
+
+    Returns the int when accepted, else raises ``HTTPException`` with the
+    stable envelope inside ``detail``. The envelope is built so the test
+    layer can pin ``code``/``message`` independently of the surrounding
+    Pydantic machinery.
+    """
+    try:
+        return resource_selection.validate_public_revision(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_revision",
+                "message": "expected_revision must be an integer",
+                "current": current,
+            },
+        ) from exc
+
+
+def _map_resource_selection_exception(
+    exc: resource_selection.ResourceSelectionError,
+    selection_id: str,
+) -> JSONResponse:
+    """Translate a domain exception into a stable error envelope."""
+    if isinstance(exc, resource_selection.SelectionStateInvalidError):
+        return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+    try:
+        current = resource_selection.build_selection_view(selection_id) if selection_id else None
+    except Exception:
+        current = None
+    if isinstance(exc, resource_selection.SelectionNotFoundError):
+        return _stable_error(404, "selection_not_found", "Selection not found")
+    if isinstance(exc, resource_selection.SelectionExpiredError):
+        return _stable_error(
+            410, "selection_expired", "Selection has expired", current=current
+        )
+    if isinstance(exc, resource_selection.SelectionCancelledError):
+        return _stable_error(
+            410, "selection_terminal", "Selection is cancelled", current=current
+        )
+    if isinstance(exc, resource_selection.SelectionNotOpenError):
+        return _stable_error(
+            410,
+            "selection_terminal",
+            "Selection is not open",
+            current=current,
+        )
+    if isinstance(exc, resource_selection.CommitActiveError):
+        return _stable_error(
+            409, "commit_active", "Selection is currently committing", current=current
+        )
+    if isinstance(exc, resource_selection.IdempotencyConflictError):
+        return _stable_error(
+            409,
+            "idempotency_conflict",
+            "Reused upload_id with conflicting file_name or bytes",
+            current=current,
+        )
+    if isinstance(exc, resource_selection.StaleRevisionError):
+        return _stable_error(
+            409,
+            "selection_revision_stale",
+            "expected_revision does not match current selection_revision",
+            current=current,
+        )
+    if isinstance(exc, resource_selection.FileCountLimitExceededError):
+        return _stable_error(
+            413,
+            "file_count_limit",
+            "Selection has reached the per-selection file limit",
+            current=current,
+        )
+    if isinstance(exc, resource_selection.FileByteLimitExceededError):
+        return _stable_error(
+            413,
+            "size_limit_exceeded",
+            "File exceeds the per-file byte limit",
+            current=current,
+        )
+    if isinstance(exc, resource_selection.AggregateByteLimitExceededError):
+        return _stable_error(
+            413,
+            "size_limit_exceeded",
+            "Selection exceeds the aggregate byte limit",
+            current=current,
+        )
+    if isinstance(exc, resource_selection.FileNotFoundInSelectionError):
+        return _stable_error(404, "file_not_found", "File not found in selection")
+    if isinstance(exc, resource_selection.PreviewMismatchError):
+        return _stable_error(
+            409, "preview_mismatch", "Preview binding mismatch", current=current
+        )
+    if isinstance(exc, resource_selection.InvalidTargetError):
+        return _stable_error(422, "invalid_request", str(exc), current=current)
+    return _stable_error(
+        422, "invalid_request", "Invalid request", current=current
+    )
+
+
+@app.post("/api/resources/import-selections", status_code=201)
+def create_import_selection(p: ResourceSelectionCreateIn):
+    """Create a new import selection or replay an existing ``request_id``.
+
+    The route is idempotent: a request with the same ``request_id`` as a
+    prior selection returns ``200`` with the existing selection (same
+    ``selection_id`` and ``expires_at``). A genuinely new request
+    returns ``201`` with the freshly minted selection. The
+    new-vs-replay disposition is computed atomically inside the domain
+    helper ``create_or_replay_selection`` so concurrent calls with the
+    same ``request_id`` cannot race past the decision.
+    """
+    gate = _resource_planning_gate()
+    if gate is not None:
+        return gate
+
+    try:
+        norm_request_id = resource_selection.normalize_client_uuid(p.request_id)
+    except ValueError as exc:
+        return _stable_error(422, "invalid_request", str(exc))
+
+    try:
+        view, was_new = resource_selection.create_or_replay_selection(
+            request_id=norm_request_id,
+        )
+    except resource_selection.ResourceSelectionError as exc:
+        return _map_resource_selection_exception(exc, "")
+
+    if was_new:
+        return JSONResponse(content=view, status_code=201)
+    return JSONResponse(content=view, status_code=200)
+
+
+@app.get("/api/resources/import-selections/{selection_id}")
+def get_import_selection(selection_id: str):
+    """Return the safe current view of ``selection_id`` (404 if unknown)."""
+    view_or_err = _view_or_404(selection_id)
+    if isinstance(view_or_err, JSONResponse):
+        return view_or_err
+    return JSONResponse(content=view_or_err, status_code=200)
+
+
+@app.post("/api/resources/import-selections/{selection_id}/files")
+async def upload_import_selection_file(
+    selection_id: str,
+    request: Request,
+):
+    """Stream-upload one file into a selection, idempotent on ``upload_id``.
+
+    The body is parsed as multipart with exactly one file field and
+    exactly one form field ``upload_id``. The route streams chunks through
+    ``stage_file_chunk`` so the 10 MiB per-file and 50 MiB aggregate
+    limits are enforced before the body is fully buffered.
+
+    Disposition (set inside ``reserve_file_slot``):
+      * ``fresh`` -> 201 with the freshly finalized view.
+      * ``completed`` (existing staged file) -> 200 only when bytes
+        match the stored digest; 409 idempotency_conflict otherwise.
+      * ``active`` (existing in-flight upload) -> 409 idempotency_conflict
+        without streaming, without leaking internal state.
+
+    Every failure path that aborts after a fresh reservation has been
+    made calls ``abort_file_reservation`` so the per-file reservation
+    counter and the on-disk staged bytes are reconciled before the
+    request returns.
+    """
+    gate = _resource_planning_gate()
+    if gate is not None:
+        return gate
+
+    raw_headers = request.scope.get("headers", [])
+    ct_headers = [v for k, v in raw_headers if k.lower() == b"content-type"]
+    if len(ct_headers) != 1:
+        return _stable_error(
+            422,
+            "invalid_multipart",
+            "Content-Type must be multipart/form-data with a valid boundary",
+        )
+
+    try:
+        normalized_ct, boundary = parse_and_validate_multipart_content_type(ct_headers[0])
+    except ValueError:
+        return _stable_error(
+            422,
+            "invalid_multipart",
+            "Content-Type must be multipart/form-data with a valid boundary",
+        )
+
+    # Starlette's request.form() performs a case-sensitive check on b"multipart/form-data".
+    # Replace exactly the one validated Content-Type header in request.scope and request._headers.
+    new_headers = []
+    for k, v in raw_headers:
+        if k.lower() == b"content-type":
+            new_headers.append((b"content-type", normalized_ct.encode("latin1")))
+        else:
+            new_headers.append((k, v))
+    request.scope["headers"] = new_headers
+    request._headers = Headers(scope=request.scope)
+
+    try:
+        view = resource_selection.build_selection_view(selection_id)
+    except resource_selection.SelectionStateInvalidError:
+        return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+
+    if view is None:
+        return _stable_error(404, "selection_not_found", "Selection not found")
+
+    terminal = _selection_terminal_view(view)
+    if terminal is not None:
+        return terminal
+
+    try:
+        form = await request.form()
+    except Exception:
+        return _stable_error(
+            422,
+            "invalid_multipart",
+            "Malformed multipart body",
+            current=view,
+        )
+
+    file_parts: list[UploadFile] = []
+    upload_id_parts: list[str] = []
+    other_parts: list[str] = []
+
+    for key, val in form.multi_items():
+        if key == "file":
+            if isinstance(val, (UploadFile, StarletteUploadFile)):
+                file_parts.append(val)
+            else:
+                return _stable_error(
+                    422,
+                    "invalid_multipart",
+                    "Part 'file' must be an uploaded file",
+                    current=view,
+                )
+        elif key == "upload_id":
+            if isinstance(val, str):
+                upload_id_parts.append(val)
+            else:
+                return _stable_error(
+                    422,
+                    "invalid_multipart",
+                    "Part 'upload_id' must be a text field",
+                    current=view,
+                )
+        else:
+            other_parts.append(key)
+
+    if other_parts:
+        for fp in file_parts:
+            try:
+                await fp.close()
+            except Exception:
+                pass
+        return _stable_error(
+            422,
+            "invalid_multipart",
+            "Unexpected multipart field",
+            current=view,
+        )
+
+    if len(file_parts) == 0:
+        return _stable_error(
+            422,
+            "missing_field",
+            "Missing required multipart file part 'file'",
+            current=view,
+        )
+    if len(file_parts) > 1:
+        for fp in file_parts:
+            try:
+                await fp.close()
+            except Exception:
+                pass
+        return _stable_error(
+            422,
+            "invalid_multipart",
+            "Expected exactly one 'file' part",
+            current=view,
+        )
+
+    if len(upload_id_parts) == 0:
+        for fp in file_parts:
+            try:
+                await fp.close()
+            except Exception:
+                pass
+        return _stable_error(
+            422,
+            "missing_field",
+            "Missing required multipart field 'upload_id'",
+            current=view,
+        )
+    if len(upload_id_parts) > 1:
+        for fp in file_parts:
+            try:
+                await fp.close()
+            except Exception:
+                pass
+        return _stable_error(
+            422,
+            "invalid_multipart",
+            "Expected exactly one 'upload_id' part",
+            current=view,
+        )
+
+    upload_id = upload_id_parts[0].strip()
+    if not upload_id:
+        for fp in file_parts:
+            try:
+                await fp.close()
+            except Exception:
+                pass
+        return _stable_error(
+            422,
+            "invalid_request",
+            "upload_id cannot be empty",
+            current=view,
+        )
+
+    file = file_parts[0]
+    file_name = resource_selection.normalize_display_filename(file.filename)
+
+    try:
+        f_row = resource_selection.reserve_file_slot(
+            selection_id=selection_id,
+            upload_id=upload_id,
+            file_name=file_name,
+        )
+    except resource_selection.ResourceSelectionError as exc:
+        try:
+            await file.close()
+        except Exception:
+            pass
+        return _map_resource_selection_exception(exc, selection_id)
+
+    file_id = f_row["file_id"]
+    disposition = f_row.get("_disposition", "fresh")
+
+    if disposition == "active":
+        try:
+            await file.close()
+        except Exception:
+            pass
+        return _stable_error(
+            409,
+            "idempotency_conflict",
+            "Upload is currently being streamed by another request",
+        )
+
+    hasher = hashlib.sha256()
+    bytes_seen = 0
+
+    if disposition == "fresh":
+        stream_err: Exception | None = None
+        size_limit_err: Exception | None = None
+        try:
+            while True:
+                chunk = await file.read(_SELECTION_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                bytes_seen += len(chunk)
+                try:
+                    resource_selection.stage_file_chunk(selection_id, file_id, chunk)
+                except (resource_selection.AggregateByteLimitExceededError,
+                        resource_selection.FileByteLimitExceededError) as exc:
+                    size_limit_err = exc
+                    break
+        except Exception as exc:
+            stream_err = exc
+
+        try:
+            await file.close()
+        except Exception:
+            pass
+
+        if size_limit_err is not None:
+            resource_selection.abort_file_reservation(
+                selection_id, file_id, reason="size_limit_exceeded"
+            )
+            current_or_err = _authoritative_selection_view_or_error(selection_id)
+            if isinstance(current_or_err, JSONResponse):
+                return current_or_err
+            return _stable_error(
+                413,
+                "size_limit_exceeded",
+                "File or aggregate byte limit exceeded",
+                current=current_or_err,
+            )
+
+        if stream_err is not None:
+            resource_selection.abort_file_reservation(
+                selection_id,
+                file_id,
+                reason="upload_failed",
+            )
+            current_or_err = _authoritative_selection_view_or_error(selection_id)
+            if isinstance(current_or_err, JSONResponse):
+                return current_or_err
+            return _stable_error(
+                422, "upload_failed", "Upload failed before finalization", current=current_or_err
+            )
+
+        if bytes_seen == 0:
+            resource_selection.abort_file_reservation(
+                selection_id, file_id, reason="empty_file"
+            )
+            current_or_err = _authoritative_selection_view_or_error(selection_id)
+            if isinstance(current_or_err, JSONResponse):
+                return current_or_err
+            return _stable_error(422, "empty_file", "Uploaded file is empty", current=current_or_err)
+
+        try:
+            resource_selection.finalize_staged_file(
+                selection_id=selection_id, file_id=file_id, declared_library=None
+            )
+        except resource_selection.ResourceSelectionError as exc:
+            resource_selection.abort_file_reservation(
+                selection_id,
+                file_id,
+                reason="finalize_failed",
+            )
+            return _map_resource_selection_exception(exc, selection_id)
+        except Exception:
+            resource_selection.abort_file_reservation(
+                selection_id,
+                file_id,
+                reason="finalize_failed",
+            )
+            current_or_err = _authoritative_selection_view_or_error(selection_id)
+            if isinstance(current_or_err, JSONResponse):
+                return current_or_err
+            return _stable_error(
+                422, "finalize_failed", "Failed to finalize upload", current=current_or_err
+            )
+
+        view_or_err = _authoritative_selection_view_or_error(selection_id)
+        if isinstance(view_or_err, JSONResponse):
+            return view_or_err
+        return JSONResponse(content=view_or_err, status_code=201)
+
+    # ``completed`` disposition:
+    existing_byte_count = int(f_row.get("byte_count") or 0)
+    if existing_byte_count < 0 or existing_byte_count > MAX_SAFE_INTEGER:
+        try:
+            await file.close()
+        except Exception:
+            pass
+        return _stable_error(
+            422, "upload_failed", "Persisted byte_count is out of range"
+        )
+    existing_digest = (f_row.get("staged_sha256") or "").lower()
+    bound = int(existing_byte_count)
+    replay_err = None
+    try:
+        while True:
+            chunk = await file.read(_SELECTION_UPLOAD_CHUNK_BYTES)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            bytes_seen += len(chunk)
+            if bytes_seen > bound:
+                break
+    except Exception as exc:
+        replay_err = exc
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass
+
+    if replay_err is not None:
+        return _stable_error(422, "upload_failed", "Failed to consume replay body")
+
+    new_digest = hasher.hexdigest()
+    if (
+        new_digest != existing_digest
+        or bytes_seen != existing_byte_count
+        or bytes_seen > existing_byte_count
+    ):
+        current_or_err = _authoritative_selection_view_or_error(selection_id)
+        if isinstance(current_or_err, JSONResponse):
+            return current_or_err
+        return _stable_error(
+            409,
+            "idempotency_conflict",
+            "Uploaded bytes do not match the previously staged file",
+            current=current_or_err,
+        )
+
+    view_or_err = _authoritative_selection_view_or_error(selection_id)
+    if isinstance(view_or_err, JSONResponse):
+        return view_or_err
+    return JSONResponse(content=view_or_err, status_code=200)
+
+
+@app.delete("/api/resources/import-selections/{selection_id}/files/{file_id}")
+def delete_import_selection_file(
+    selection_id: str,
+    file_id: str,
+    expected_revision: Any = Query(..., description="Current selection revision (optimistic concurrency)"),
+):
+    """Remove a staged file from a selection, bumping revision.
+
+    The route REQUIRES ``expected_revision`` so the remove participates
+    in the optimistic concurrency contract. A missing or out-of-range
+    value is rejected with the stable envelope; a stale value is
+    rejected with 409 ``selection_revision_stale``.
+    """
+    gate = _resource_planning_gate()
+    if gate is not None:
+        return gate
+
+    try:
+        view = resource_selection.build_selection_view(selection_id)
+    except resource_selection.SelectionStateInvalidError:
+        return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+
+    if view is None:
+        return _stable_error(404, "selection_not_found", "Selection not found")
+
+    terminal = _selection_terminal_view(view)
+    if terminal is not None:
+        return terminal
+
+    try:
+        rev = resource_selection.validate_query_revision(expected_revision)
+    except ValueError:
+        return _stable_error(
+            422,
+            "invalid_revision",
+            "expected_revision must be an integer",
+            current=view,
+        )
+
+    try:
+        resource_selection.remove_staged_file(
+            selection_id=selection_id,
+            file_id=file_id,
+            expected_revision=rev,
+        )
+    except resource_selection.ResourceSelectionError as exc:
+        return _map_resource_selection_exception(exc, selection_id)
+
+    refreshed_or_err = _authoritative_selection_view_or_error(selection_id)
+    if isinstance(refreshed_or_err, JSONResponse):
+        return refreshed_or_err
+    return JSONResponse(content=refreshed_or_err, status_code=200)
+
+
+@app.patch("/api/resources/import-selections/{selection_id}/files/{file_id}")
+def patch_import_selection_file_target(
+    selection_id: str,
+    file_id: str,
+    p: ResourceSelectionTargetIn,
+):
+    """Update effective target fields on a staged file, bumping revision.
+
+    The body is closed (``extra="forbid"``) and must contain exactly
+    ``expected_revision`` plus at least one of the two effective fields.
+    An empty PATCH (revision only) is rejected with the stable envelope
+    so the rule is independent of framework validation order and the
+    revision never advances for a no-op call.
+    """
+    gate = _resource_planning_gate()
+    if gate is not None:
+        return gate
+
+    try:
+        view = resource_selection.build_selection_view(selection_id)
+    except resource_selection.SelectionStateInvalidError:
+        return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+
+    if view is None:
+        return _stable_error(404, "selection_not_found", "Selection not found")
+
+    terminal = _selection_terminal_view(view)
+    if terminal is not None:
+        return terminal
+
+    has_lib = "effective_library_key" in p.model_fields_set
+    has_aux = "effective_auxiliary_kind" in p.model_fields_set
+    if not has_lib and not has_aux:
+        return _stable_error(
+            422,
+            "invalid_request",
+            "PATCH body must include at least one of "
+            "'effective_library_key' or 'effective_auxiliary_kind'",
+            current=view,
+        )
+
+    effective_lib = p.effective_library_key if has_lib else resource_selection.TARGET_OMITTED
+    effective_aux = p.effective_auxiliary_kind if has_aux else resource_selection.TARGET_OMITTED
+
+    try:
+        resource_selection.update_file_targets(
+            selection_id=selection_id,
+            file_id=file_id,
+            expected_revision=p.expected_revision,
+            effective_library_key=effective_lib,
+            effective_auxiliary_kind=effective_aux,
+        )
+    except resource_selection.ResourceSelectionError as exc:
+        return _map_resource_selection_exception(exc, selection_id)
+
+    refreshed_or_err = _authoritative_selection_view_or_error(selection_id)
+    if isinstance(refreshed_or_err, JSONResponse):
+        return refreshed_or_err
+    return JSONResponse(content=refreshed_or_err, status_code=200)
+
+
+@app.post("/api/resources/import-selections/{selection_id}/cancel")
+def cancel_import_selection(selection_id: str, p: ResourceSelectionCancelIn):
+    """Cancel an open selection and clean staged files.
+
+    The body is REQUIRED and must contain exactly ``expected_revision``
+    so cancel always participates in the optimistic concurrency
+    contract. Missing or empty body returns the stable envelope.
+    """
+    gate = _resource_planning_gate()
+    if gate is not None:
+        return gate
+
+    try:
+        view = resource_selection.build_selection_view(selection_id)
+    except resource_selection.SelectionStateInvalidError:
+        return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+
+    if view is None:
+        return _stable_error(404, "selection_not_found", "Selection not found")
+
+    if view["state"] == "committing":
+        return _stable_error(
+            409, "commit_active", "Selection is currently committing", current=view
+        )
+    if view["state"] in ("committed", "cancelled", "expired"):
+        return _stable_error(
+            410,
+            "selection_terminal",
+            f"Selection is already {view['state']}",
+            current=view,
+        )
+
+    rev = p.expected_revision
+
+    try:
+        resource_selection.cancel_selection(
+            selection_id=selection_id, expected_revision=rev
+        )
+    except resource_selection.ResourceSelectionError as exc:
+        return _map_resource_selection_exception(exc, selection_id)
+
+    refreshed_or_err = _authoritative_selection_view_or_error(selection_id)
+    if isinstance(refreshed_or_err, JSONResponse):
+        return refreshed_or_err
+    return JSONResponse(content=refreshed_or_err, status_code=200)
 
 
 class ResourceTranslationPreviewIn(BaseModel):

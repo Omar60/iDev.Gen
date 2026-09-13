@@ -40,6 +40,54 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
 
 
+def _canonical_preview_report() -> dict:
+    return {
+        "version": 1,
+        "phase": "preview",
+        "summary": {
+            "files": 0,
+            "inputs": 0,
+            "accepted": 0,
+            "auxiliary": 0,
+            "duplicates": 0,
+            "unresolved": 0,
+            "new": 0,
+            "unchanged": 0,
+            "updated": 0,
+            "missing": 0,
+        },
+        "files": [],
+        "missing_source_entries": [],
+    }
+
+
+def _canonical_commit_report() -> dict:
+    return {
+        "version": 1,
+        "phase": "commit",
+        "summary": {
+            "files": 0,
+            "inputs": 0,
+            "accepted": 0,
+            "auxiliary": 0,
+            "duplicates": 0,
+            "unresolved": 0,
+            "new": 0,
+            "unchanged": 0,
+            "updated": 0,
+            "missing": 0,
+            "recorded": 0,
+            "new_scene_revisions": 0,
+            "unchanged_scene_revisions": 0,
+            "updated_scene_revisions": 0,
+            "new_auxiliary_revisions": 0,
+            "unchanged_auxiliary_revisions": 0,
+        },
+        "files": [],
+        "missing_source_entries": [],
+    }
+
+
 @pytest.fixture(autouse=True)
 def reset_clock():
     rs.set_clock(None)
@@ -278,14 +326,14 @@ def test_complete_staging_preserves_bytes_evidence_advances_revision_and_invalid
         sid,
         expected_revision=0,
         preview_token="prev_tok_001",
-        manifest_digest="man_dig_001",
+        manifest_digest="a" * 64,
         committable=True,
-        report={"valid": True, "count": 0},
+        report=_canonical_preview_report(),
     )
     assert saved is True
     p_sel = rs.get_selection(sid)
     assert p_sel["preview_token"] == "prev_tok_001"
-    assert p_sel["preview_manifest_digest"] == "man_dig_001"
+    assert p_sel["preview_manifest_digest"] == "a" * 64
 
     # Reserve slot, stream payload
     file_info = rs.reserve_file_slot(sid, "up-full-1", "rooms.json")
@@ -449,7 +497,7 @@ def test_commit_claims_simultaneous_ownership_and_release(test_db):
 
     manifest = rs.get_selection_manifest(sid)
     m_digest = rs.compute_manifest_digest(manifest)
-    rs.save_preview(sid, expected_revision=1, preview_token="tok_alpha", manifest_digest=m_digest, committable=True)
+    rs.save_preview(sid, expected_revision=1, preview_token="tok_alpha", manifest_digest=m_digest, committable=True, report=_canonical_preview_report())
 
     # Concurrently race two claim attempts for the SAME tuple using a Barrier
     barrier = threading.Barrier(2)
@@ -535,7 +583,7 @@ def test_startup_and_lazy_recovery_lifecycle_and_purge(test_db):
     rs.stage_file_chunk(sid1, f1["file_id"], b"data", now_iso=t0_iso)
     rs.finalize_staged_file(sid1, f1["file_id"], now_iso=t0_iso)
     m1 = rs.compute_manifest_digest(rs.get_selection_manifest(sid1))
-    rs.save_preview(sid1, expected_revision=1, preview_token="p1", manifest_digest=m1, committable=True, now_iso=t0_iso)
+    rs.save_preview(sid1, expected_revision=1, preview_token="p1", manifest_digest=m1, committable=True, report=_canonical_preview_report(), now_iso=t0_iso)
     c1 = rs.acquire_commit_claim(sid1, 1, "p1", m1, lease_seconds=300, now_iso=t0_iso)
     assert c1.status == "acquired"
 
@@ -552,14 +600,14 @@ def test_startup_and_lazy_recovery_lifecycle_and_purge(test_db):
     res_recorded = rs.record_commit_result(
         sid1,
         c1_again.commit_token,
-        {"imported_libraries": ["custom_rooms"], "total_assets": 1},
+        _canonical_commit_report(),
         now_iso=_iso(t0 + timedelta(hours=2)),
     )
     assert res_recorded is True
 
     committed_sel = rs.get_selection(sid1, perform_recovery=False)
     assert committed_sel["state"] == "committed"
-    assert "imported_libraries" in committed_sel["commit_result"]
+    assert "version" in committed_sel["commit_result"]
 
     # Recovery at T0 + 30 hours (> 24h) must preserve committed state
     rs.startup_recovery(now_iso=_iso(t0 + timedelta(hours=30)))
@@ -680,7 +728,7 @@ def test_resource_isolation_never_mutates_seeded_resource_tables(test_db):
     rs.abort_file_reservation(sid, f2["file_id"])
 
     m_dig = rs.compute_manifest_digest(rs.get_selection_manifest(sid))
-    rs.save_preview(sid, expected_revision=1, preview_token="p_iso", manifest_digest=m_dig, committable=True)
+    rs.save_preview(sid, expected_revision=1, preview_token="p_iso", manifest_digest=m_dig, committable=True, report=_canonical_preview_report())
 
     claim = rs.acquire_commit_claim(sid, 1, "p_iso", m_dig)
     assert claim.status == "acquired"
@@ -697,21 +745,45 @@ def test_resource_isolation_never_mutates_seeded_resource_tables(test_db):
 
 
 # ---------------------------------------------------------------------------
-# Test 11: No New Route Exists and Path API/CLI Remains Untouched
+# Test 11: HTTP Boundary Surface (Task 1.2)
 # ---------------------------------------------------------------------------
 
-def test_no_new_route_exists_and_existing_api_untouched():
-    """11. No new route exists on FastAPI app and path API remains untouched."""
-    routes = [r.path for r in app.routes]
+def test_http_boundary_surface_for_import_selections():
+    """11. The import-selections HTTP boundary from Task 1.2 is mounted.
 
-    # Task 1.1 must NOT implement any HTTP routes for import selections
-    for r in routes:
-        assert not r.startswith("/api/resources/import-selections"), f"Unexpected route found: {r}"
+    Task 1.1 deliberately added no HTTP routes; Task 1.2 exposes the
+    import-selections domain through six routes under
+    ``/api/resources/import-selections``. The exact set is the public
+    contract — adding or removing a route here is a breaking change and
+    must be a deliberate edit, not a side effect.
+    """
+    route_paths = []
+    for r in app.routes:
+        if not hasattr(r, "path"):
+            continue
+        if not r.path.startswith("/api/resources/import-selections"):
+            continue
+        methods = sorted(getattr(r, "methods", set()) or set())
+        for m in methods:
+            route_paths.append((m, r.path))
+
+    expected = {
+        ("GET", "/api/resources/import-selections/{selection_id}"),
+        ("POST", "/api/resources/import-selections"),
+        ("POST", "/api/resources/import-selections/{selection_id}/files"),
+        ("POST", "/api/resources/import-selections/{selection_id}/cancel"),
+        ("DELETE", "/api/resources/import-selections/{selection_id}/files/{file_id}"),
+        ("PATCH", "/api/resources/import-selections/{selection_id}/files/{file_id}"),
+    }
+    assert set(route_paths) == expected, (
+        f"unexpected import-selections route surface: got {sorted(route_paths)}, expected {sorted(expected)}"
+    )
 
     # Existing resource path endpoints must still exist
-    assert "/api/resources/libraries" in routes
-    assert "/api/resources/import/preview" in routes
-    assert "/api/resources/import/commit" in routes
+    route_set = {r.path for r in app.routes}
+    assert "/api/resources/libraries" in route_set
+    assert "/api/resources/import/preview" in route_set
+    assert "/api/resources/import/commit" in route_set
 
 
 # ---------------------------------------------------------------------------
@@ -747,14 +819,14 @@ def test_outer_transaction_rollback_preserves_staged_bytes(test_db):
     # 2. Test commit-result rollback
     manifest = rs.get_selection_manifest(sid)
     m_digest = rs.compute_manifest_digest(manifest)
-    rs.save_preview(sid, expected_revision=1, preview_token="p_tx", manifest_digest=m_digest, committable=True)
+    rs.save_preview(sid, expected_revision=1, preview_token="p_tx", manifest_digest=m_digest, committable=True, report=_canonical_preview_report())
     claim = rs.acquire_commit_claim(sid, 1, "p_tx", m_digest)
     assert claim.status == "acquired"
     token = claim.commit_token
 
     try:
         with db.transaction():
-            rs.record_commit_result(sid, token, {"result": "ok"})
+            rs.record_commit_result(sid, token, _canonical_commit_report())
             raise RuntimeError("simulated commit rollback")
     except RuntimeError:
         pass
@@ -766,7 +838,7 @@ def test_outer_transaction_rollback_preserves_staged_bytes(test_db):
     assert staged_path.is_file()
 
     # When commit completes without rollback, bytes are cleaned
-    res = rs.record_commit_result(sid, token, {"result": "ok"})
+    res = rs.record_commit_result(sid, token, _canonical_commit_report())
     assert res is True
     assert not staged_path.is_file()
     committed_sel = rs.get_selection(sid, perform_recovery=False)
@@ -939,7 +1011,7 @@ def test_lazy_recovery_releases_expired_claim_within_lifetime(test_db):
 
     manifest = rs.get_selection_manifest(sid)
     m_digest = rs.compute_manifest_digest(manifest)
-    rs.save_preview(sid, expected_revision=1, preview_token="p_lazy", manifest_digest=m_digest, committable=True, now_iso=t0_iso)
+    rs.save_preview(sid, expected_revision=1, preview_token="p_lazy", manifest_digest=m_digest, committable=True, report=_canonical_preview_report(), now_iso=t0_iso)
 
     # Claim acquired with 300s lease
     claim = rs.acquire_commit_claim(sid, 1, "p_lazy", m_digest, lease_seconds=300, now_iso=t0_iso)
@@ -978,7 +1050,7 @@ def test_remove_staged_file_outer_rollback_preserves_bytes_and_state(test_db):
     assert staged_path.is_file()
 
     m_digest = rs.compute_manifest_digest(manifest_before)
-    rs.save_preview(sid, expected_revision=1, preview_token="p_prev_rm", manifest_digest=m_digest, committable=True)
+    rs.save_preview(sid, expected_revision=1, preview_token="p_prev_rm", manifest_digest=m_digest, committable=True, report=_canonical_preview_report())
 
     before_sel = rs.get_selection(sid, perform_recovery=False)
     assert before_sel["selection_revision"] == 1
@@ -1160,7 +1232,7 @@ def test_expired_claim_in_outer_rollback_preserves_bytes(test_db):
 
     manifest = rs.get_selection_manifest(sid)
     m_digest = rs.compute_manifest_digest(manifest)
-    rs.save_preview(sid, expected_revision=1, preview_token="p_exp_claim", manifest_digest=m_digest, committable=True, now_iso=t0_iso)
+    rs.save_preview(sid, expected_revision=1, preview_token="p_exp_claim", manifest_digest=m_digest, committable=True, report=_canonical_preview_report(), now_iso=t0_iso)
 
     expired_iso = _iso(t0 + timedelta(hours=25))
 
@@ -1470,3 +1542,856 @@ def test_pending_removal_cleanup_failure_and_retry_preserves_manifest_and_revisi
     assert after_sel["active_file_count"] == 0
     assert after_sel["cleanup_state"] == "none"
     assert after_sel["cleanup_warning"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Test 26: Repair 4A — update_file_targets Domain Validation & Snapshot Tests
+# ---------------------------------------------------------------------------
+
+from backend import resource_parser
+
+
+def _domain_selection_snapshot(selection_id: str) -> dict:
+    """Capture complete selection and file state for domain tests, masking paths."""
+    sel_row = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
+    file_rows = db.q(
+        "SELECT * FROM resource_selection_file WHERE selection_id = ? ORDER BY order_index, id",
+        selection_id,
+    )
+    safe_sel = dict(sel_row) if sel_row else None
+    safe_files = []
+    file_bytes = {}
+    for f in file_rows:
+        fd = dict(f)
+        path_str = fd.get("staged_path") or ""
+        p = Path(path_str) if path_str else None
+        if p and p.exists():
+            file_bytes[fd["file_id"]] = p.read_bytes()
+        else:
+            file_bytes[fd["file_id"]] = None
+        fd["staged_path"] = "<staged_path>" if path_str else ""
+        safe_files.append(fd)
+    return {
+        "selection": safe_sel,
+        "files": safe_files,
+        "file_bytes": file_bytes,
+    }
+
+
+def _setup_selection_with_file(sid_prefix: str = "tgt-test"):
+    sel = rs.create_selection(f"req-{sid_prefix}")
+    sid = sel["selection_id"]
+    f = rs.reserve_file_slot(sid, f"up-{sid_prefix}", "test_file.json")
+    fid = f["file_id"]
+    payload = b'{"hello": "domain"}'
+    rs.stage_file_chunk(sid, fid, payload)
+    rs.finalize_staged_file(sid, fid)
+    return sid, fid
+
+
+@pytest.mark.parametrize(
+    ("lib_key", "is_valid"),
+    [
+        ("a", True),
+        ("k" * 128, True),
+        ("k" * 129, False),
+        ("", False),
+        ("   ", False),
+        ("  leading", False),
+        ("trailing  ", False),
+        (".", False),
+        ("..", False),
+        ("path/key", False),
+        ("path\\key", False),
+        ("\x00key", False),
+        ("key\nwith_newline", False),
+        ("key\twith_tab", False),
+        ("key\x7fdel", False),
+        ("MixedCase_Library-1.0", True),
+    ],
+)
+def test_domain_update_targets_library_key_boundaries(test_db, lib_key, is_valid):
+    sid, fid = _setup_selection_with_file(f"bnd-{lib_key[:4]}")
+    sel_before = rs.get_selection(sid)
+    rev = sel_before["selection_revision"]
+    snap_before = _domain_selection_snapshot(sid)
+
+    if is_valid:
+        updated = rs.update_file_targets(
+            sid, fid, expected_revision=rev, effective_library_key=lib_key
+        )
+        assert updated["selection_revision"] == rev + 1
+        f_row = db.one("SELECT * FROM resource_selection_file WHERE file_id = ?", fid)
+        assert f_row["effective_library_key"] == lib_key
+    else:
+        with pytest.raises(rs.InvalidTargetError):
+            rs.update_file_targets(
+                sid, fid, expected_revision=rev, effective_library_key=lib_key
+            )
+        snap_after = _domain_selection_snapshot(sid)
+        assert snap_after == snap_before
+
+
+@pytest.mark.parametrize("target_field", ["effective_library_key", "effective_auxiliary_kind"])
+@pytest.mark.parametrize("bad_val", [True, False, 1, 1.0, [], {}])
+def test_domain_update_targets_strict_types_rejected(test_db, target_field, bad_val):
+    sid, fid = _setup_selection_with_file(f"strict-{target_field[:3]}")
+    sel_before = rs.get_selection(sid)
+    rev = sel_before["selection_revision"]
+    snap_before = _domain_selection_snapshot(sid)
+
+    kwargs = {target_field: bad_val}
+    with pytest.raises(rs.InvalidTargetError):
+        rs.update_file_targets(sid, fid, expected_revision=rev, **kwargs)
+
+    snap_after = _domain_selection_snapshot(sid)
+    assert snap_after == snap_before
+
+
+@pytest.mark.parametrize("kind", list(resource_parser.ALL_AUXILIARY_KINDS))
+def test_domain_update_targets_auxiliary_kind_valid_members(test_db, kind):
+    sid, fid = _setup_selection_with_file(f"aux-ok-{kind[:4]}")
+    sel_before = rs.get_selection(sid)
+    rev = sel_before["selection_revision"]
+
+    updated = rs.update_file_targets(
+        sid, fid, expected_revision=rev, effective_auxiliary_kind=kind
+    )
+    assert updated["selection_revision"] == rev + 1
+    f_row = db.one("SELECT * FROM resource_selection_file WHERE file_id = ?", fid)
+    assert f_row["effective_auxiliary_kind"] == kind
+
+
+@pytest.mark.parametrize(
+    "bad_kind",
+    [
+        "invented_kind",
+        "CUT_MAP",
+        "Cut_Map",
+        "TRANSLATION_MAP",
+        "Mined_Families",
+        "",
+        "   ",
+        "cut/map",
+        "cut\nmap",
+        "cut\\map",
+    ],
+)
+def test_domain_update_targets_auxiliary_kind_invalid_rejected(test_db, bad_kind):
+    sid, fid = _setup_selection_with_file(f"aux-bad-{bad_kind[:3]}")
+    sel_before = rs.get_selection(sid)
+    rev = sel_before["selection_revision"]
+    snap_before = _domain_selection_snapshot(sid)
+
+    with pytest.raises(rs.InvalidTargetError):
+        rs.update_file_targets(
+            sid, fid, expected_revision=rev, effective_auxiliary_kind=bad_kind
+        )
+
+    snap_after = _domain_selection_snapshot(sid)
+    assert snap_after == snap_before
+
+
+def test_domain_update_targets_presence_and_explicit_null(test_db):
+    sid, fid = _setup_selection_with_file("pres-null")
+    sel_before = rs.get_selection(sid)
+    rev = sel_before["selection_revision"]
+
+    # Set initial targets
+    rs.update_file_targets(
+        sid, fid, expected_revision=rev,
+        effective_library_key="initial_lib",
+        effective_auxiliary_kind="cut_map",
+    )
+    f_row = db.one("SELECT * FROM resource_selection_file WHERE file_id = ?", fid)
+    assert f_row["effective_library_key"] == "initial_lib"
+    assert f_row["effective_auxiliary_kind"] == "cut_map"
+
+    # 1. Clear library key with explicit null, omit auxiliary kind
+    rs.update_file_targets(
+        sid, fid, expected_revision=rev + 1,
+        effective_library_key=None,
+    )
+    f_row = db.one("SELECT * FROM resource_selection_file WHERE file_id = ?", fid)
+    assert f_row["effective_library_key"] is None
+    assert f_row["effective_auxiliary_kind"] == "cut_map"
+
+    # 2. Clear auxiliary kind with explicit null, assign new library key
+    rs.update_file_targets(
+        sid, fid, expected_revision=rev + 2,
+        effective_library_key="second_lib",
+        effective_auxiliary_kind=None,
+    )
+    f_row = db.one("SELECT * FROM resource_selection_file WHERE file_id = ?", fid)
+    assert f_row["effective_library_key"] == "second_lib"
+    assert f_row["effective_auxiliary_kind"] is None
+
+    # 3. Clear both with explicit null
+    rs.update_file_targets(
+        sid, fid, expected_revision=rev + 3,
+        effective_library_key=None,
+        effective_auxiliary_kind=None,
+    )
+    f_row = db.one("SELECT * FROM resource_selection_file WHERE file_id = ?", fid)
+    assert f_row["effective_library_key"] is None
+    assert f_row["effective_auxiliary_kind"] is None
+
+    # 4. Both omitted -> raises InvalidTargetError, zero mutation
+    snap_before_omitted = _domain_selection_snapshot(sid)
+    with pytest.raises(rs.InvalidTargetError):
+        rs.update_file_targets(sid, fid, expected_revision=rev + 4)
+    assert _domain_selection_snapshot(sid) == snap_before_omitted
+
+    # 5. One valid, one invalid -> atomic rejection, neither written
+    snap_before_atomic = _domain_selection_snapshot(sid)
+    with pytest.raises(rs.InvalidTargetError):
+        rs.update_file_targets(
+            sid, fid, expected_revision=rev + 4,
+            effective_library_key="good_lib",
+            effective_auxiliary_kind="bad_kind",
+        )
+    assert _domain_selection_snapshot(sid) == snap_before_atomic
+
+
+def test_domain_update_targets_invalidates_preview_and_increments_revision_once(test_db):
+    sid, fid = _setup_selection_with_file("prev-inv")
+    sel_before = rs.get_selection(sid)
+    rev_before = sel_before["selection_revision"]
+
+    # Bind active preview
+    preview_saved = rs.save_preview(
+        sid,
+        expected_revision=rev_before,
+        preview_token="prev_tok_domain_12345",
+        manifest_digest="b" * 64,
+        committable=True,
+        report=_canonical_preview_report(),
+    )
+    assert preview_saved is True
+
+    sel_with_prev = rs.get_selection(sid)
+    assert sel_with_prev["preview_token"] == "prev_tok_domain_12345"
+
+    updated = rs.update_file_targets(
+        sid, fid, expected_revision=rev_before, effective_library_key="new_dom_lib"
+    )
+    assert updated["selection_revision"] == rev_before + 1
+
+    # Assert preview columns invalidated
+    sel_after = rs.get_selection(sid)
+    assert sel_after["preview_token"] is None
+    assert sel_after["preview_manifest_digest"] is None
+    assert sel_after["preview_committable"] is None
+    assert sel_after["preview_report"] is None
+    assert sel_after["preview_created_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# Test 27: Repair 4A Fix 1 — Reject str Subclasses in Validators & Domain
+# ---------------------------------------------------------------------------
+
+class StringSubclass(str):
+    """Invented str subclass to verify exact built-in str type requirement."""
+    pass
+
+
+def test_validator_rejects_str_subclasses():
+    """Both canonical target validators directly reject str subclasses."""
+    subclass_key = StringSubclass("ValidLookingKey")
+    with pytest.raises(rs.InvalidTargetError) as exc_info_key:
+        rs.validate_target_library_key(subclass_key)
+    assert "effective_library_key must be a string" in str(exc_info_key.value)
+
+    subclass_kind = StringSubclass("cut_map")
+    with pytest.raises(rs.InvalidTargetError) as exc_info_kind:
+        rs.validate_target_auxiliary_kind(subclass_kind)
+    assert "effective_auxiliary_kind must be a string" in str(exc_info_kind.value)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "subclass_val"),
+    [
+        ("effective_library_key", StringSubclass("ValidLookingKey")),
+        ("effective_auxiliary_kind", StringSubclass("cut_map")),
+    ],
+)
+def test_domain_update_targets_rejects_str_subclass_with_zero_mutation(
+    test_db, monkeypatch, field_name, subclass_val
+):
+    """Direct update_file_targets rejects str subclasses before transaction, executing zero SQL UPDATEs."""
+    sid, fid = _setup_selection_with_file(f"subclass-{field_name[:3]}")
+    sel_before = rs.get_selection(sid)
+    rev_before = sel_before["selection_revision"]
+
+    # Set valid initial targets
+    rs.update_file_targets(
+        sid, fid, expected_revision=rev_before,
+        effective_library_key="initial_valid_lib",
+        effective_auxiliary_kind="translation_map",
+    )
+    rev_after_target = rev_before + 1
+
+    # Bind active preview
+    preview_saved = rs.save_preview(
+        sid,
+        expected_revision=rev_after_target,
+        preview_token=f"prev_subclass_{field_name[:3]}",
+        manifest_digest="c" * 64,
+        committable=True,
+        report=_canonical_preview_report(),
+    )
+    assert preview_saved is True
+
+    # Capture complete existing Repair 4A before-snapshot
+    snap_before = _domain_selection_snapshot(sid)
+
+    # Instrument to prove no SQL UPDATE executes during rejected call
+    executed_sqls: list[str] = []
+    real_conn = db.conn()
+
+    class ConnWrapper:
+        def __getattr__(self, name):
+            return getattr(real_conn, name)
+
+        def execute(self, sql, *args, **kwargs):
+            executed_sqls.append(str(sql))
+            return real_conn.execute(sql, *args, **kwargs)
+
+    wrapper = ConnWrapper()
+    monkeypatch.setattr(db, "conn", lambda: wrapper)
+
+    # Call update_file_targets directly, bypassing Pydantic
+    kwargs = {field_name: subclass_val}
+    with pytest.raises(rs.InvalidTargetError):
+        rs.update_file_targets(
+            sid, fid, expected_revision=rev_after_target, **kwargs
+        )
+
+    # Prove no SQL UPDATE was executed (and no SQL was executed at all)
+    update_statements = [s for s in executed_sqls if "UPDATE" in s.upper()]
+    assert len(update_statements) == 0, f"Expected 0 UPDATE statements, got: {update_statements}"
+    assert len(executed_sqls) == 0
+
+    # Compare complete after-snapshot with before-snapshot
+    snap_after = _domain_selection_snapshot(sid)
+    assert snap_after == snap_before
+
+    # Explicit checks on critical fields
+    assert snap_after["selection"]["selection_revision"] == snap_before["selection"]["selection_revision"]
+    assert snap_after["selection"]["preview_token"] == snap_before["selection"]["preview_token"]
+    assert snap_after["selection"]["updated_at"] == snap_before["selection"]["updated_at"]
+    assert snap_after["files"][0]["effective_library_key"] == "initial_valid_lib"
+    assert snap_after["files"][0]["effective_auxiliary_kind"] == "translation_map"
+    assert snap_after["files"][0]["updated_at"] == snap_before["files"][0]["updated_at"]
+
+
+# ---------------------------------------------------------------------------
+# Test 28: Repair 4C — Strict Persisted State & Writer/Reader Invariants
+# ---------------------------------------------------------------------------
+
+class IntSubclass(int):
+    """Invented int subclass to verify exact built-in int type requirement."""
+    pass
+
+
+def test_validate_matched_auxiliary_kinds_strict():
+    """_validate_matched_auxiliary_kinds enforces exact types, allowlist, and uniqueness."""
+    # Rejects non-string input or empty input
+    for bad_val in (None, "", 123, [], {}, True, False, StringSubclass("[]")):
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._validate_matched_auxiliary_kinds(bad_val)
+
+    # Rejects malformed JSON
+    for bad_json in ("not json", "{malformed", "['cut_map']", "[cut_map]"):
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._validate_matched_auxiliary_kinds(bad_json)
+
+    # Rejects non-list decoded types
+    for non_list in ("null", "123", '"cut_map"', "true", "false", '{"kind": "cut_map"}'):
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._validate_matched_auxiliary_kinds(non_list)
+
+    # Rejects non-string members
+    for bad_member in ("[123]", "[true]", "[null]", "[[1]]", '[{"k": "cut_map"}]'):
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._validate_matched_auxiliary_kinds(bad_member)
+
+    # Rejects duplicate members
+    for dup in (
+        json.dumps(["cut_map", "cut_map"]),
+        json.dumps(["translation_map", "mined_families", "translation_map"]),
+    ):
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._validate_matched_auxiliary_kinds(dup)
+
+    # Rejects invented or unallowlisted kinds
+    for invented in (json.dumps(["invented_kind"]), json.dumps(["cut_map", "fake_aux"])):
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._validate_matched_auxiliary_kinds(invented)
+
+    # Rejects wrong casing of canonical kinds
+    for bad_case in (
+        json.dumps(["Cut_Map"]),
+        json.dumps(["TRANSLATION_MAP"]),
+        json.dumps(["Mined_Labels"]),
+    ):
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._validate_matched_auxiliary_kinds(bad_case)
+
+    # Accepts valid empty array
+    assert rs._validate_matched_auxiliary_kinds("[]") == []
+
+    # Accepts each canonical auxiliary kind
+    for kind in ("translation_map", "cut_map", "mined_families", "mined_labels"):
+        assert rs._validate_matched_auxiliary_kinds(json.dumps([kind])) == [kind]
+
+    # Accepts ordered multi-kind array and preserves order
+    ordered = ["mined_labels", "cut_map", "translation_map"]
+    assert rs._validate_matched_auxiliary_kinds(json.dumps(ordered)) == ordered
+
+
+def test_save_preview_rejection_zero_mutation_snapshot(test_db):
+    """save_preview validates all inputs before transaction, executing zero SQL and leaving row identical."""
+    sel = rs.create_selection("req-prev-zero-mut")
+    sid = sel["selection_id"]
+
+    snap_before = rs.get_selection(sid, perform_recovery=False)
+
+    valid_token = "prev_tok_canon_123"
+    valid_digest = "e" * 64
+    valid_report = _canonical_preview_report()
+
+    # 1. Invalid tokens
+    for bad_token in ("", None, 123, True, "/unsafe/path", "tok\x00null"):
+        with pytest.raises((ValueError, TypeError)):
+            rs.save_preview(sid, 0, bad_token, valid_digest, True, valid_report)
+        assert rs.get_selection(sid, perform_recovery=False) == snap_before
+
+    # 2. Invalid manifest digests
+    for bad_digest in ("", None, 123, "short", "a" * 63, "a" * 65, "G" * 64, "A" * 64):
+        with pytest.raises((ValueError, TypeError)):
+            rs.save_preview(sid, 0, valid_token, bad_digest, True, valid_report)
+        assert rs.get_selection(sid, perform_recovery=False) == snap_before
+
+    # 3. Invalid committable types (must be exact bool, reject int 0/1, floats, str, subclasses)
+    for bad_comm in (0, 1, 1.0, 0.0, "true", "false", None, IntSubclass(1)):
+        with pytest.raises(TypeError):
+            rs.save_preview(sid, 0, valid_token, valid_digest, bad_comm, valid_report)
+        assert rs.get_selection(sid, perform_recovery=False) == snap_before
+
+    # 4. Invalid reports
+    for bad_rep in (
+        None,
+        "",
+        123,
+        "not json",
+        {"version": 1, "phase": "commit"},  # wrong phase
+        {"version": 1, "phase": "preview", "summary": {"files": 5}, "files": []},  # unreconciled
+    ):
+        with pytest.raises((ValueError, TypeError)):
+            rs.save_preview(sid, 0, valid_token, valid_digest, True, bad_rep)
+        assert rs.get_selection(sid, perform_recovery=False) == snap_before
+
+    # 5. Invalid expected revision
+    for bad_rev in (-1, rs.MAX_SAFE_INTEGER + 1, "0", 0.0, None, True):
+        with pytest.raises((ValueError, TypeError)):
+            rs.save_preview(sid, bad_rev, valid_token, valid_digest, True, valid_report)
+        assert rs.get_selection(sid, perform_recovery=False) == snap_before
+
+
+def test_record_commit_result_rejection_zero_mutation_snapshot(test_db):
+    """record_commit_result validates report and token before mutation, leaving row identical."""
+    sel = rs.create_selection("req-commit-zero-mut")
+    sid = sel["selection_id"]
+
+    # Set up active claim
+    rs.save_preview(
+        sid, 0, "prev_tok_commit", "f" * 64, True, _canonical_preview_report()
+    )
+    claim = rs.acquire_commit_claim(sid, 0, "prev_tok_commit", "f" * 64)
+    assert claim.status == "acquired"
+    token = claim.commit_token
+
+    snap_before = rs.get_selection(sid, perform_recovery=False)
+    assert snap_before["state"] == "committing"
+
+    # 1. Invalid commit_token
+    for bad_tok in ("", None, 123, True, "../unsafe"):
+        with pytest.raises((ValueError, TypeError)):
+            rs.record_commit_result(sid, bad_tok, _canonical_commit_report())
+        assert rs.get_selection(sid, perform_recovery=False) == snap_before
+
+    # 2. Invalid commit results
+    for bad_res in (
+        None,
+        "",
+        123,
+        True,
+        "invalid json",
+        _canonical_preview_report(),  # wrong phase (preview instead of commit)
+        {"result": "unstructured"},
+        {"version": 1, "phase": "commit", "summary": {"files": 10}, "files": []},  # unreconciled
+    ):
+        with pytest.raises((ValueError, TypeError)):
+            rs.record_commit_result(sid, token, bad_res)
+        assert rs.get_selection(sid, perform_recovery=False) == snap_before
+
+
+def test_writer_reader_roundtrip_preview_and_commit(test_db):
+    """Canonical reports written by domain writers are accepted and accurately projected by the reader."""
+    sel = rs.create_selection("req-writer-reader-rt")
+    sid = sel["selection_id"]
+
+    # Write preview with canonical report and exact bool
+    preview_rep = _canonical_preview_report()
+    saved = rs.save_preview(sid, 0, "prev_tok_roundtrip", "a" * 64, True, preview_rep)
+    assert saved is True
+
+    # Read through build_selection_view
+    view_prev = rs.build_selection_view(sid)
+    assert view_prev is not None
+    assert view_prev["preview"] is not None
+    assert view_prev["preview"]["preview_token"] == "prev_tok_roundtrip"
+    assert view_prev["preview"]["manifest_digest"] == "a" * 64
+    assert view_prev["preview"]["committable"] is True
+    assert type(view_prev["preview"]["committable"]) is bool
+    assert view_prev["preview"]["report"] == preview_rep
+    assert view_prev["commit_result"] is None
+
+    # Acquire claim and commit with canonical commit report
+    claim = rs.acquire_commit_claim(sid, 0, "prev_tok_roundtrip", "a" * 64)
+    assert claim.status == "acquired"
+
+    commit_rep = _canonical_commit_report()
+    recorded = rs.record_commit_result(sid, claim.commit_token, commit_rep)
+    assert recorded is True
+
+    # Read through build_selection_view
+    view_committed = rs.build_selection_view(sid)
+    assert view_committed is not None
+    assert view_committed["state"] == "committed"
+    assert view_committed["commit_result"] == commit_rep
+    assert view_committed["preview"] is not None
+    assert view_committed["preview"]["report"] == preview_rep
+
+
+def test_direct_preview_view_committable_exact_int():
+    """_build_preview_view accepts only exact int 0 or 1 for preview_committable."""
+    base_row = {
+        "preview_token": "tok_123",
+        "preview_manifest_digest": "a" * 64,
+        "preview_report": json.dumps(_canonical_preview_report()),
+        "preview_created_at": rs._now_iso(),
+    }
+
+    # Valid 0 -> False, 1 -> True
+    row_0 = dict(base_row, preview_committable=0)
+    assert rs._build_preview_view(row_0)["committable"] is False
+
+    row_1 = dict(base_row, preview_committable=1)
+    assert rs._build_preview_view(row_1)["committable"] is True
+
+    # Rejects Python bool (True, False), float, string, out of domain integers, and int subclasses
+    for bad_comm in (True, False, 1.0, 0.0, "1", "0", 2, -1, 100, IntSubclass(1)):
+        row_bad = dict(base_row, preview_committable=bad_comm)
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._build_preview_view(row_bad)
+
+
+def test_direct_preview_view_all_or_none_tuple():
+    """_build_preview_view strictly enforces all-or-none for the 5-field preview tuple."""
+    # Complete absence -> returns None
+    empty_row = {
+        "preview_token": None,
+        "preview_manifest_digest": None,
+        "preview_committable": None,
+        "preview_report": None,
+        "preview_created_at": None,
+    }
+    assert rs._build_preview_view(empty_row) is None
+
+    valid_vals = {
+        "preview_token": "tok_valid",
+        "preview_manifest_digest": "b" * 64,
+        "preview_committable": 1,
+        "preview_report": json.dumps(_canonical_preview_report()),
+        "preview_created_at": rs._now_iso(),
+    }
+
+    # Each field present alone -> fails closed
+    for k in valid_vals:
+        single_row = dict(empty_row)
+        single_row[k] = valid_vals[k]
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._build_preview_view(single_row)
+
+    # Each field omitted from an otherwise complete tuple -> fails closed
+    for k in valid_vals:
+        missing_one = dict(valid_vals)
+        missing_one[k] = None
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._build_preview_view(missing_one)
+
+    # Empty string in text fields -> fails closed
+    for text_k in ("preview_token", "preview_manifest_digest", "preview_report", "preview_created_at"):
+        empty_text_row = dict(valid_vals)
+        empty_text_row[text_k] = ""
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._build_preview_view(empty_text_row)
+
+
+def test_direct_state_matrix_claim_and_commit_invariants():
+    """_validate_selection_state_matrix enforces claim and commit state coherence."""
+    valid_prev = {
+        "preview_token": "p_tok",
+        "manifest_digest": "c" * 64,
+        "committable": True,
+        "report": _canonical_preview_report(),
+    }
+
+    # 1. committed state requires complete commit tuple matching revision and preview
+    complete_committed_row = {
+        "committed_revision": 1,
+        "committed_preview_token": "p_tok",
+        "committed_manifest_digest": "c" * 64,
+        "commit_result": json.dumps(_canonical_commit_report()),
+        "committed_at": rs._now_iso(),
+        "claim_commit_token": None,
+        "claim_revision": None,
+        "claim_preview_token": None,
+        "claim_manifest_digest": None,
+        "claim_lease_deadline": None,
+    }
+    # Success on valid row
+    assert rs._validate_selection_state_matrix(complete_committed_row, valid_prev, revision=1, state="committed") is not None
+
+    # Fails if any committed member is missing
+    for k in ("committed_revision", "committed_preview_token", "committed_manifest_digest", "commit_result", "committed_at"):
+        broken = dict(complete_committed_row, **{k: None})
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._validate_selection_state_matrix(broken, valid_prev, revision=1, state="committed")
+
+    # Fails if commit_result is empty string
+    with pytest.raises(rs.SelectionStateInvalidError):
+        rs._validate_selection_state_matrix(dict(complete_committed_row, commit_result=""), valid_prev, revision=1, state="committed")
+
+    # Fails if revision mismatches
+    with pytest.raises(rs.SelectionStateInvalidError):
+        rs._validate_selection_state_matrix(complete_committed_row, valid_prev, revision=2, state="committed")
+
+    # Fails if committed token or digest mismatches preview
+    with pytest.raises(rs.SelectionStateInvalidError):
+        rs._validate_selection_state_matrix(dict(complete_committed_row, committed_preview_token="other"), valid_prev, revision=1, state="committed")
+
+    # Fails if any active claim field is present on committed state
+    with pytest.raises(rs.SelectionStateInvalidError):
+        rs._validate_selection_state_matrix(dict(complete_committed_row, claim_commit_token="stray_claim"), valid_prev, revision=1, state="committed")
+
+    # 2. Non-committed states must have NO commit evidence
+    for st in ("open", "committing", "cancelled", "expired"):
+        bad_st_row = dict(complete_committed_row)
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._validate_selection_state_matrix(bad_st_row, valid_prev, revision=1, state=st)
+
+    # 3. committing state requires complete claim tuple matching revision and preview
+    complete_committing_row = {
+        "committed_revision": None,
+        "committed_preview_token": None,
+        "committed_manifest_digest": None,
+        "commit_result": None,
+        "committed_at": None,
+        "claim_commit_token": "c_tok",
+        "claim_revision": 1,
+        "claim_preview_token": "p_tok",
+        "claim_manifest_digest": "c" * 64,
+        "claim_lease_deadline": "2099-01-01T00:00:00+00:00",
+    }
+    # Success on valid committing row
+    assert rs._validate_selection_state_matrix(complete_committing_row, valid_prev, revision=1, state="committing") is None
+
+    # Fails if any claim member is missing
+    for k in ("claim_commit_token", "claim_revision", "claim_preview_token", "claim_manifest_digest", "claim_lease_deadline"):
+        broken_claim = dict(complete_committing_row, **{k: None})
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._validate_selection_state_matrix(broken_claim, valid_prev, revision=1, state="committing")
+
+    # Fails if claim token/digest mismatches preview
+    with pytest.raises(rs.SelectionStateInvalidError):
+        rs._validate_selection_state_matrix(dict(complete_committing_row, claim_preview_token="other"), valid_prev, revision=1, state="committing")
+
+    # Fails if preview is missing entirely on committing state
+    with pytest.raises(rs.SelectionStateInvalidError):
+        rs._validate_selection_state_matrix(complete_committing_row, preview=None, revision=1, state="committing")
+
+    # 4. open, cancelled, expired must have NO active claim fields
+    for st in ("open", "cancelled", "expired"):
+        with pytest.raises(rs.SelectionStateInvalidError):
+            rs._validate_selection_state_matrix(complete_committing_row, valid_prev, revision=1, state=st)
+
+
+def test_lazy_claim_recovery_regression(test_db):
+    """Legitimate expired lease is recovered by lazy recovery and then readable as 200 open selection."""
+    sel = rs.create_selection("req-lazy-regress")
+    sid = sel["selection_id"]
+
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t0_iso = _iso(t0)
+
+    rs.save_preview(sid, 0, "p_tok_regress", "d" * 64, True, _canonical_preview_report(), now_iso=t0_iso)
+    claim = rs.acquire_commit_claim(sid, 0, "p_tok_regress", "d" * 64, lease_seconds=300, now_iso=t0_iso)
+    assert claim.status == "acquired"
+
+    # Read after lease deadline (T0 + 400s < 24h)
+    t_after_lease = _iso(t0 + timedelta(seconds=400))
+    view = rs.build_selection_view(sid, now_iso=t_after_lease)
+    assert view is not None
+    assert view["state"] == "open"
+    assert view["commit_result"] is None
+    # Claim fields are now cleared, preview is preserved
+    assert view["preview"] is not None
+    assert view["preview"]["preview_token"] == "p_tok_regress"
+
+
+def test_domain_create_or_replay_selection_contract(test_db):
+    """create_or_replay_selection returns canonical SelectionView and deterministic was_new flag."""
+    req_id = "00000000-0000-4000-8000-000000000001"
+
+    # 1. Fresh create
+    view1, was_new1 = rs.create_or_replay_selection(req_id)
+    assert was_new1 is True
+    assert isinstance(view1, dict)
+    assert view1["selection_revision"] == 0
+    assert view1["state"] == "open"
+    assert view1["files"] == []
+    assert view1["preview"] is None
+    assert view1["commit_result"] is None
+    sid = view1["selection_id"]
+
+    # Verify durable row exists
+    row = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", sid)
+    assert row is not None
+    assert row["request_id"] == req_id
+
+    # 2. Equivalent replay
+    view2, was_new2 = rs.create_or_replay_selection(req_id)
+    assert was_new2 is False
+    assert view2["selection_id"] == sid
+    assert view2["selection_revision"] == 0
+    assert view2["state"] == "open"
+    assert view2["expires_at"] == view1["expires_at"]
+
+    # 3. Compatibility wrapper create_selection returns the raw DB row dict
+    raw_row = rs.create_selection(req_id)
+    assert isinstance(raw_row, dict)
+    assert raw_row["selection_id"] == sid
+    assert "created_at" in raw_row
+    assert "active_file_count" in raw_row
+    assert raw_row["active_file_count"] == 0
+
+
+def test_domain_create_replay_performs_in_transaction_recovery(test_db):
+    """Replaying an existing selection that requires recovery recovers it atomically inside transaction."""
+    req_id = "00000000-0000-4000-8000-000000000002"
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t0_iso = _iso(t0)
+
+    view, was_new = rs.create_or_replay_selection(req_id, now_iso=t0_iso)
+    assert was_new is True
+    sid = view["selection_id"]
+
+    # Acquire a claim with 300s lease
+    rs.save_preview(sid, 0, "p_tok_c", "e" * 64, True, _canonical_preview_report(), now_iso=t0_iso)
+    claim = rs.acquire_commit_claim(sid, 0, "p_tok_c", "e" * 64, lease_seconds=300, now_iso=t0_iso)
+    assert claim.status == "acquired"
+
+    # Replay at T0 + 400s (lease expired, but before 24h selection expiry)
+    t_after_lease = _iso(t0 + timedelta(seconds=400))
+    replay_view, was_new_replay = rs.create_or_replay_selection(req_id, now_iso=t_after_lease)
+    assert was_new_replay is False
+    assert replay_view["selection_id"] == sid
+    assert replay_view["state"] == "open"
+
+    # Check that in the database, claim fields were cleared
+    row = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", sid)
+    assert row["state"] == "open"
+    assert row["claim_commit_token"] is None
+    assert row["claim_revision"] is None
+
+
+def test_domain_create_replay_fails_closed_on_purged_tombstone(test_db):
+    """Replay of a selection past tombstone purge window raises SelectionStateInvalidError."""
+    req_id = "00000000-0000-4000-8000-000000000003"
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t0_iso = _iso(t0)
+
+    view, was_new = rs.create_or_replay_selection(req_id, now_iso=t0_iso)
+    assert was_new is True
+    sid = view["selection_id"]
+
+    # Mark as expired and cleaned
+    db.run(
+        "UPDATE resource_selection SET state = 'expired', cleanup_state = 'cleaned', expires_at = ? WHERE selection_id = ?",
+        t0_iso,
+        sid,
+    )
+
+    # 48 hours later (past 24h tombstone window)
+    t_purge = _iso(t0 + timedelta(hours=48))
+    with pytest.raises(rs.SelectionStateInvalidError):
+        rs.create_or_replay_selection(req_id, now_iso=t_purge)
+
+
+def test_create_selection_normal_wrapper_contract(test_db):
+    """create_selection returns the persisted row with compatibility fields."""
+    req_id = "00000000-0000-4000-8000-000000000010"
+    row = rs.create_selection(req_id)
+    assert isinstance(row, dict)
+    sid = row["selection_id"]
+    assert sid.startswith("sel_")
+    assert row["request_id"] == req_id
+    assert row["selection_revision"] == 0
+    assert row["state"] == "open"
+    # Verify compatibility-only persisted fields
+    assert "created_at" in row
+    assert "updated_at" in row
+    assert "expires_at" in row
+    assert "active_file_count" in row
+    assert row["active_file_count"] == 0
+    assert "total_reserved_bytes" in row
+    assert row["total_reserved_bytes"] == 0
+    assert "cleanup_state" in row
+    assert row["cleanup_state"] == "none"
+    assert "cleanup_warning" in row
+    assert row["cleanup_warning"] == ""
+
+    # Verify single durable row in database
+    db_rows = db.q("SELECT * FROM resource_selection WHERE selection_id = ?", sid)
+    assert len(db_rows) == 1
+    assert db_rows[0]["request_id"] == req_id
+
+
+def test_create_selection_authoritative_reload_loss_raises_selection_state_invalid(test_db, monkeypatch):
+    """When the post-success row reload returns None, create_selection raises SelectionStateInvalidError and never returns view."""
+    req_id = "00000000-0000-4000-8000-000000000011"
+
+    # Pre-create the selection so create_or_replay_selection finishes cleanly on replay
+    view, was_new = rs.create_or_replay_selection(req_id)
+    assert was_new is True
+    sid = view["selection_id"]
+
+    orig_one = db.one
+    def mock_one(sql, *args, **kwargs):
+        if args and args[0] == sid and "SELECT * FROM resource_selection WHERE selection_id = ?" in sql:
+            import inspect
+            cur_frame = inspect.currentframe()
+            outer = cur_frame.f_back if cur_frame else None
+            if outer and outer.f_code.co_name == "create_selection":
+                return None
+        return orig_one(sql, *args, **kwargs)
+
+    monkeypatch.setattr(db, "one", mock_one)
+
+    with pytest.raises(rs.SelectionStateInvalidError) as exc_info:
+        rs.create_selection(req_id)
+
+    assert "Selection unexpectedly missing after create or replay" in str(exc_info.value)

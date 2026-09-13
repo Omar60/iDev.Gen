@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 import db
 import resource_import
+import resource_parser
 import resource_readiness
 import resource_store
 
@@ -529,69 +530,424 @@ serialize_preview = preview_to_dict
 deserialize_preview = preview_from_dict
 
 
-def _safe_reason(bucket: str, reason: str) -> str:
-    if bucket == resource_import.BUCKET_FILE_READ_ERROR:
-        return "source file could not be read or parsed"
-    return reason
+MAX_SAFE_INTEGER: int = 9007199254740991
+
+_TOP_LEVEL_KEYS: frozenset[str] = frozenset({
+    "version", "phase", "summary", "files", "missing_source_entries"
+})
+_PREVIEW_SUMMARY_KEYS: frozenset[str] = frozenset({
+    "files", "inputs", "accepted", "auxiliary", "duplicates",
+    "unresolved", "new", "unchanged", "updated", "missing"
+})
+_COMMIT_SUMMARY_KEYS: frozenset[str] = frozenset({
+    "files", "inputs", "accepted", "auxiliary", "duplicates",
+    "unresolved", "new", "unchanged", "updated", "missing",
+    "recorded", "new_scene_revisions", "unchanged_scene_revisions",
+    "updated_scene_revisions", "new_auxiliary_revisions",
+    "unchanged_auxiliary_revisions"
+})
+_FILE_REPORT_KEYS: frozenset[str] = frozenset({
+    "library_key", "total_inputs", "accepted", "auxiliary",
+    "duplicates", "unresolved"
+})
+_ACCEPTED_KEYS: frozenset[str] = frozenset({
+    "source_id", "library_key", "kind", "classification",
+    "new_content_digest", "previous_content_digest"
+})
+_AUXILIARY_KEYS: frozenset[str] = frozenset({
+    "library_key", "kind", "classification",
+    "new_content_digest", "previous_content_digest"
+})
+_DUPLICATE_KEYS: frozenset[str] = frozenset({
+    "source_id", "occurrences"
+})
+_UNRESOLVED_KEYS: frozenset[str] = frozenset({
+    "bucket", "index", "reason", "received_type",
+    "expected_kind", "identifier_fields"
+})
+_MISSING_SOURCE_KEYS: frozenset[str] = frozenset({
+    "library_key", "source_id", "latest_content_digest"
+})
+
+_ACCEPTED_SCENE_KINDS: frozenset[str] = frozenset((
+    resource_parser.KIND_ROOMS,
+    resource_parser.KIND_FUSED_SCENES,
+))
+_AUXILIARY_KINDS: frozenset[str] = frozenset(resource_parser.ALL_AUXILIARY_KINDS)
+_CLASSIFICATIONS: frozenset[str] = frozenset(resource_import.ALL_CLASSIFICATIONS)
+_UNRESOLVED_BUCKETS: frozenset[str] = frozenset(resource_import.ALL_UNRESOLVED_BUCKETS)
+_EXPECTED_KINDS: frozenset[str] = frozenset((
+    "",
+    resource_parser.KIND_ROOMS,
+    resource_parser.KIND_FUSED_SCENES,
+))
 
 
-def _safe_file_report(value: resource_import.FileReport) -> dict[str, Any]:
-    """Return report data without source paths or source payloads."""
+def _validate_safe_int(v: Any, min_val: int = 0) -> int:
+    if type(v) is not int:
+        raise ValueError(f"integer required, got {type(v).__name__}")
+    if v < min_val or v > MAX_SAFE_INTEGER:
+        raise ValueError(f"integer {v} out of range {min_val}..{MAX_SAFE_INTEGER}")
+    return v
+
+
+def _validate_canonical_sha256(v: Any) -> str:
+    if type(v) is not str:
+        raise ValueError("content digest must be an exact string")
+    if len(v) != 64:
+        raise ValueError(f"content digest length must be exactly 64, got {len(v)}")
+    if not all(c in "0123456789abcdef" for c in v):
+        raise ValueError("content digest must be canonical lowercase hexadecimal")
+    return v
+
+
+def _validate_library_key(key: Any) -> str:
+    if type(key) is not str:
+        raise ValueError("library_key must be an exact string")
+    if not (1 <= len(key) <= 128):
+        raise ValueError("library_key must be between 1 and 128 characters")
+    if key != key.strip():
+        raise ValueError("library_key cannot contain leading or trailing whitespace")
+    if key in (".", ".."):
+        raise ValueError("library_key cannot be '.' or '..'")
+    if "/" in key or "\\" in key:
+        raise ValueError("library_key cannot contain '/' or '\\'")
+    if any(ord(c) < 32 or ord(c) == 127 for c in key):
+        raise ValueError("library_key cannot contain ASCII control characters")
+    return key
+
+
+def _validate_source_id(source_id: Any) -> str:
+    if type(source_id) is not str:
+        raise ValueError("source_id must be an exact string")
+    if not source_id:
+        raise ValueError("source_id cannot be empty")
+    if any(ord(c) < 32 or ord(c) == 127 for c in source_id):
+        raise ValueError("source_id cannot contain ASCII control characters")
+    return source_id
+
+
+def _validate_identifier_fields(raw: Any) -> list[str]:
+    if type(raw) is not list:
+        raise ValueError("identifier_fields must be an exact list")
+    canon = list(resource_parser.IDENTIFIER_FIELDS)
+    curr_idx = -1
+    result: list[str] = []
+    for item in raw:
+        if type(item) is not str:
+            raise ValueError("identifier_field item must be an exact string")
+        try:
+            pos = canon.index(item)
+        except ValueError:
+            raise ValueError(f"unknown identifier_field: {item!r}")
+        if pos <= curr_idx:
+            raise ValueError(f"identifier_fields out of order or duplicated: {item!r}")
+        curr_idx = pos
+        result.append(item)
+    return result
+
+
+def _validate_classification_relationship(
+    classification: str,
+    new_content_digest: str,
+    previous_content_digest: str | None,
+) -> None:
+    if classification == resource_import.CLASSIFICATION_NEW:
+        if previous_content_digest is not None:
+            raise ValueError("classification 'new' requires previous_content_digest to be None")
+    elif classification == resource_import.CLASSIFICATION_UNCHANGED:
+        if previous_content_digest is None:
+            raise ValueError("classification 'unchanged' requires previous_content_digest to be non-None")
+        if previous_content_digest != new_content_digest:
+            raise ValueError("classification 'unchanged' requires previous_content_digest to equal new_content_digest")
+    elif classification == resource_import.CLASSIFICATION_UPDATED:
+        if previous_content_digest is None:
+            raise ValueError("classification 'updated' requires previous_content_digest to be non-None")
+        if previous_content_digest == new_content_digest:
+            raise ValueError("classification 'updated' requires previous_content_digest to differ from new_content_digest")
+    else:
+        raise ValueError(f"invalid classification: {classification!r}")
+
+
+def _canonicalize_safe_report(value: Any, expected_phase: str | None = None) -> dict[str, Any]:
+    if type(value) is not dict:
+        raise ValueError("report must be a dictionary")
+
+    if set(value.keys()) != _TOP_LEVEL_KEYS:
+        raise ValueError(f"invalid report top-level keys: {set(value.keys())}")
+
+    version = value["version"]
+    if type(version) is not int or version != 1:
+        raise ValueError("report version must be integer 1")
+
+    phase = value["phase"]
+    if type(phase) is not str or phase not in ("preview", "commit"):
+        raise ValueError("phase must be 'preview' or 'commit'")
+    if expected_phase is not None and phase != expected_phase:
+        raise ValueError(f"expected phase {expected_phase!r}, got {phase!r}")
+
+    raw_summary = value["summary"]
+    if type(raw_summary) is not dict:
+        raise ValueError("summary must be a dictionary")
+
+    expected_summary_keys = _PREVIEW_SUMMARY_KEYS if phase == "preview" else _COMMIT_SUMMARY_KEYS
+    if set(raw_summary.keys()) != expected_summary_keys:
+        raise ValueError(f"invalid summary keys: {set(raw_summary.keys())}")
+
+    summary_copy: dict[str, int] = {}
+    for k in (
+        "files", "inputs", "accepted", "auxiliary", "duplicates",
+        "unresolved", "new", "unchanged", "updated", "missing"
+    ):
+        summary_copy[k] = _validate_safe_int(raw_summary[k])
+
+    if phase == "commit":
+        for k in (
+            "recorded", "new_scene_revisions", "unchanged_scene_revisions",
+            "updated_scene_revisions", "new_auxiliary_revisions",
+            "unchanged_auxiliary_revisions"
+        ):
+            summary_copy[k] = _validate_safe_int(raw_summary[k])
+
+    raw_files = value["files"]
+    if type(raw_files) is not list:
+        raise ValueError("files must be a list")
+
+    files_copy: list[dict[str, Any]] = []
+    for f in raw_files:
+        if type(f) is not dict:
+            raise ValueError("file report item must be a dictionary")
+        if set(f.keys()) != _FILE_REPORT_KEYS:
+            raise ValueError(f"invalid file report keys: {set(f.keys())}")
+
+        lib_key = _validate_library_key(f["library_key"])
+        tot_inputs = _validate_safe_int(f["total_inputs"])
+
+        raw_accepted = f["accepted"]
+        if type(raw_accepted) is not list:
+            raise ValueError("accepted must be a list")
+        accepted_copy: list[dict[str, Any]] = []
+        for acc in raw_accepted:
+            if type(acc) is not dict:
+                raise ValueError("accepted item must be a dictionary")
+            if set(acc.keys()) != _ACCEPTED_KEYS:
+                raise ValueError(f"invalid accepted item keys: {set(acc.keys())}")
+            s_id = _validate_source_id(acc["source_id"])
+            a_lib = _validate_library_key(acc["library_key"])
+            kind = acc["kind"]
+            if type(kind) is not str or kind not in _ACCEPTED_SCENE_KINDS:
+                raise ValueError(f"invalid accepted scene kind: {kind!r}")
+            clsf = acc["classification"]
+            if type(clsf) is not str or clsf not in _CLASSIFICATIONS:
+                raise ValueError(f"invalid classification: {clsf!r}")
+            new_dig = _validate_canonical_sha256(acc["new_content_digest"])
+            prev = acc["previous_content_digest"]
+            prev_dig = _validate_canonical_sha256(prev) if prev is not None else None
+            _validate_classification_relationship(clsf, new_dig, prev_dig)
+            accepted_copy.append({
+                "source_id": s_id,
+                "library_key": a_lib,
+                "kind": kind,
+                "classification": clsf,
+                "new_content_digest": new_dig,
+                "previous_content_digest": prev_dig,
+            })
+
+        raw_aux = f["auxiliary"]
+        if type(raw_aux) is not list:
+            raise ValueError("auxiliary must be a list")
+        aux_copy: list[dict[str, Any]] = []
+        for aux in raw_aux:
+            if type(aux) is not dict:
+                raise ValueError("auxiliary item must be a dictionary")
+            if set(aux.keys()) != _AUXILIARY_KEYS:
+                raise ValueError(f"invalid auxiliary item keys: {set(aux.keys())}")
+            aux_lib = _validate_library_key(aux["library_key"])
+            kind = aux["kind"]
+            if type(kind) is not str or kind not in _AUXILIARY_KINDS:
+                raise ValueError(f"invalid auxiliary kind: {kind!r}")
+            clsf = aux["classification"]
+            if type(clsf) is not str or clsf not in _CLASSIFICATIONS:
+                raise ValueError(f"invalid classification: {clsf!r}")
+            new_dig = _validate_canonical_sha256(aux["new_content_digest"])
+            prev = aux["previous_content_digest"]
+            prev_dig = _validate_canonical_sha256(prev) if prev is not None else None
+            _validate_classification_relationship(clsf, new_dig, prev_dig)
+            aux_copy.append({
+                "library_key": aux_lib,
+                "kind": kind,
+                "classification": clsf,
+                "new_content_digest": new_dig,
+                "previous_content_digest": prev_dig,
+            })
+
+        raw_dups = f["duplicates"]
+        if type(raw_dups) is not list:
+            raise ValueError("duplicates must be a list")
+        dups_copy: list[dict[str, Any]] = []
+        for dup in raw_dups:
+            if type(dup) is not dict:
+                raise ValueError("duplicate item must be a dictionary")
+            if set(dup.keys()) != _DUPLICATE_KEYS:
+                raise ValueError(f"invalid duplicate item keys: {set(dup.keys())}")
+            s_id = _validate_source_id(dup["source_id"])
+            occ = _validate_safe_int(dup["occurrences"], min_val=2)
+            dups_copy.append({
+                "source_id": s_id,
+                "occurrences": occ,
+            })
+
+        raw_unres = f["unresolved"]
+        if type(raw_unres) is not list:
+            raise ValueError("unresolved must be a list")
+        unres_copy: list[dict[str, Any]] = []
+        for unres in raw_unres:
+            if type(unres) is not dict:
+                raise ValueError("unresolved item must be a dictionary")
+            if set(unres.keys()) != _UNRESOLVED_KEYS:
+                raise ValueError(f"invalid unresolved item keys: {set(unres.keys())}")
+            bkt = unres["bucket"]
+            if type(bkt) is not str or bkt not in _UNRESOLVED_BUCKETS:
+                raise ValueError(f"invalid unresolved bucket: {bkt!r}")
+            idx = _validate_safe_int(unres["index"], min_val=0)
+            rsn = unres["reason"]
+            if type(rsn) is not str or not rsn:
+                raise ValueError("unresolved reason must be a non-empty string")
+            if any(ord(c) < 32 or ord(c) == 127 for c in rsn):
+                raise ValueError("unresolved reason cannot contain ASCII control characters")
+            if bkt == resource_import.BUCKET_FILE_READ_ERROR and rsn != "source file could not be read or parsed":
+                raise ValueError("file_read_error bucket must have sanitized reason 'source file could not be read or parsed'")
+
+            rec_type = unres["received_type"]
+            if type(rec_type) is not str:
+                raise ValueError("unresolved received_type must be a string")
+            if any(ord(c) < 32 or ord(c) == 127 for c in rec_type):
+                raise ValueError("unresolved received_type cannot contain ASCII control characters")
+
+            exp_kind = unres["expected_kind"]
+            if type(exp_kind) is not str or exp_kind not in _EXPECTED_KINDS:
+                raise ValueError(f"invalid expected_kind: {exp_kind!r}")
+
+            idf_copy = _validate_identifier_fields(unres["identifier_fields"])
+            unres_copy.append({
+                "bucket": bkt,
+                "index": idx,
+                "reason": rsn,
+                "received_type": rec_type,
+                "expected_kind": exp_kind,
+                "identifier_fields": idf_copy,
+            })
+
+        file_expected_inputs = len(accepted_copy) + len(aux_copy) + len(dups_copy) + len(unres_copy)
+        if tot_inputs != file_expected_inputs:
+            raise ValueError(
+                f"file report total_inputs ({tot_inputs}) does not reconcile with item counts ({file_expected_inputs})"
+            )
+
+        files_copy.append({
+            "library_key": lib_key,
+            "total_inputs": tot_inputs,
+            "accepted": accepted_copy,
+            "auxiliary": aux_copy,
+            "duplicates": dups_copy,
+            "unresolved": unres_copy,
+        })
+
+    raw_missing = value["missing_source_entries"]
+    if type(raw_missing) is not list:
+        raise ValueError("missing_source_entries must be a list")
+    missing_copy: list[dict[str, Any]] = []
+    for m in raw_missing:
+        if type(m) is not dict:
+            raise ValueError("missing source entry item must be a dictionary")
+        if set(m.keys()) != _MISSING_SOURCE_KEYS:
+            raise ValueError(f"invalid missing source entry keys: {set(m.keys())}")
+        m_lib = _validate_library_key(m["library_key"])
+        s_id = _validate_source_id(m["source_id"])
+        lat_dig = _validate_canonical_sha256(m["latest_content_digest"])
+        missing_copy.append({
+            "library_key": m_lib,
+            "source_id": s_id,
+            "latest_content_digest": lat_dig,
+        })
+
+    if summary_copy["files"] != len(files_copy):
+        raise ValueError(f"summary files ({summary_copy['files']}) != len(files) ({len(files_copy)})")
+    expected_inputs = sum(f["total_inputs"] for f in files_copy)
+    if summary_copy["inputs"] != expected_inputs:
+        raise ValueError(f"summary inputs ({summary_copy['inputs']}) != sum of file inputs ({expected_inputs})")
+
+    total_acc = sum(len(f["accepted"]) for f in files_copy)
+    total_aux = sum(len(f["auxiliary"]) for f in files_copy)
+    total_dup = sum(len(f["duplicates"]) for f in files_copy)
+    total_unres = sum(len(f["unresolved"]) for f in files_copy)
+    total_missing = len(missing_copy)
+
+    if summary_copy["accepted"] != total_acc:
+        raise ValueError(f"summary accepted ({summary_copy['accepted']}) != total accepted items ({total_acc})")
+    if summary_copy["auxiliary"] != total_aux:
+        raise ValueError(f"summary auxiliary ({summary_copy['auxiliary']}) != total auxiliary items ({total_aux})")
+    if summary_copy["duplicates"] != total_dup:
+        raise ValueError(f"summary duplicates ({summary_copy['duplicates']}) != total duplicate items ({total_dup})")
+    if summary_copy["unresolved"] != total_unres:
+        raise ValueError(f"summary unresolved ({summary_copy['unresolved']}) != total unresolved items ({total_unres})")
+    if summary_copy["missing"] != total_missing:
+        raise ValueError(f"summary missing ({summary_copy['missing']}) != total missing entries ({total_missing})")
+
+    acc_new = sum(1 for f in files_copy for a in f["accepted"] if a["classification"] == resource_import.CLASSIFICATION_NEW)
+    acc_unchanged = sum(1 for f in files_copy for a in f["accepted"] if a["classification"] == resource_import.CLASSIFICATION_UNCHANGED)
+    acc_updated = sum(1 for f in files_copy for a in f["accepted"] if a["classification"] == resource_import.CLASSIFICATION_UPDATED)
+
+    if summary_copy["new"] != acc_new:
+        raise ValueError(f"summary new ({summary_copy['new']}) != accepted new count ({acc_new})")
+    if summary_copy["unchanged"] != acc_unchanged:
+        raise ValueError(f"summary unchanged ({summary_copy['unchanged']}) != accepted unchanged count ({acc_unchanged})")
+    if summary_copy["updated"] != acc_updated:
+        raise ValueError(f"summary updated ({summary_copy['updated']}) != accepted updated count ({acc_updated})")
+    if summary_copy["new"] + summary_copy["unchanged"] + summary_copy["updated"] != summary_copy["accepted"]:
+        raise ValueError("summary new + unchanged + updated != summary accepted")
+
+    if phase == "commit":
+        if summary_copy["recorded"] != total_acc + total_aux:
+            raise ValueError(f"commit recorded ({summary_copy['recorded']}) != accepted + auxiliary ({total_acc + total_aux})")
+        if summary_copy["new_scene_revisions"] != acc_new + acc_updated:
+            raise ValueError(f"commit new_scene_revisions ({summary_copy['new_scene_revisions']}) != accepted new + updated ({acc_new + acc_updated})")
+        if summary_copy["unchanged_scene_revisions"] != acc_unchanged:
+            raise ValueError(f"commit unchanged_scene_revisions ({summary_copy['unchanged_scene_revisions']}) != accepted unchanged ({acc_unchanged})")
+        if summary_copy["updated_scene_revisions"] != acc_updated:
+            raise ValueError(f"commit updated_scene_revisions ({summary_copy['updated_scene_revisions']}) != accepted updated ({acc_updated})")
+        if summary_copy["new_auxiliary_revisions"] + summary_copy["unchanged_auxiliary_revisions"] != total_aux:
+            raise ValueError(f"commit new_auxiliary_revisions + unchanged_auxiliary_revisions != total auxiliary ({total_aux})")
+
     return {
-        "library_key": value.library_key,
-        "total_inputs": value.total_inputs,
-        "accepted": [_accepted_to_dict(item) for item in value.accepted_outcomes],
-        "auxiliary": [_auxiliary_to_dict(item) for item in value.auxiliary_outcomes],
-        "duplicates": [
-            {
-                "source_id": item.source_id,
-                "occurrences": item.occurrences,
-            }
-            for item in value.duplicate_identifiers
-        ],
-        "unresolved": [
-            {
-                "bucket": item.bucket,
-                "index": item.index,
-                "reason": _safe_reason(item.bucket, item.reason),
-                "received_type": item.received_type,
-                "expected_kind": item.expected_kind,
-                "identifier_fields": list(item.identifier_fields),
-            }
-            for item in value.unresolved
-        ],
+        "version": 1,
+        "phase": phase,
+        "summary": summary_copy,
+        "files": files_copy,
+        "missing_source_entries": missing_copy,
     }
 
 
 def safe_report(report: resource_import.PreviewReport | resource_import.CommitReport) -> dict[str, Any]:
     """Create the stable, path-free report shown by the app and CLI."""
-    result: dict[str, Any] = {
-        "version": 1,
-        "phase": "commit" if isinstance(report, resource_import.CommitReport) else "preview",
-        "summary": {
-            "files": report.total_files,
-            "inputs": report.total_inputs,
-            "accepted": report.total_accepted,
-            "auxiliary": report.total_auxiliary,
-            "duplicates": report.total_duplicate,
-            "unresolved": report.total_unresolved,
-            "new": report.total_new,
-            "unchanged": report.total_unchanged,
-            "updated": report.total_updated,
-            "missing": report.total_missing,
-        },
-        "files": [_safe_file_report(item) for item in report.files],
-        "missing_source_entries": [
-            {
-                "library_key": item.library_key,
-                "source_id": item.source_id,
-                "latest_content_digest": item.latest_content_digest,
-            }
-            for item in report.missing_source_entries
-        ],
+    if not isinstance(report, (resource_import.PreviewReport, resource_import.CommitReport)):
+        raise TypeError("report must be a PreviewReport or CommitReport")
+
+    phase = "commit" if isinstance(report, resource_import.CommitReport) else "preview"
+    summary: dict[str, int] = {
+        "files": report.total_files,
+        "inputs": report.total_inputs,
+        "accepted": report.total_accepted,
+        "auxiliary": report.total_auxiliary,
+        "duplicates": report.total_duplicate,
+        "unresolved": report.total_unresolved,
+        "new": report.total_new,
+        "unchanged": report.total_unchanged,
+        "updated": report.total_updated,
+        "missing": report.total_missing,
     }
     if isinstance(report, resource_import.CommitReport):
-        result["summary"].update({
+        summary.update({
             "recorded": report.total_recorded,
             "new_scene_revisions": report.total_new_scene_revisions,
             "unchanged_scene_revisions": report.total_unchanged_scene_revisions,
@@ -599,7 +955,89 @@ def safe_report(report: resource_import.PreviewReport | resource_import.CommitRe
             "new_auxiliary_revisions": report.total_new_auxiliary_revisions,
             "unchanged_auxiliary_revisions": report.total_unchanged_auxiliary_revisions,
         })
-    return result
+
+    files: list[dict[str, Any]] = [
+        {
+            "library_key": item.library_key,
+            "total_inputs": item.total_inputs,
+            "accepted": [
+                {
+                    "source_id": a.source_id,
+                    "library_key": a.library_key,
+                    "kind": a.kind,
+                    "classification": a.classification,
+                    "new_content_digest": a.new_content_digest,
+                    "previous_content_digest": a.previous_content_digest,
+                }
+                for a in item.accepted_outcomes
+            ],
+            "auxiliary": [
+                {
+                    "library_key": aux.library_key,
+                    "kind": aux.kind,
+                    "classification": aux.classification,
+                    "new_content_digest": aux.new_content_digest,
+                    "previous_content_digest": aux.previous_content_digest,
+                }
+                for aux in item.auxiliary_outcomes
+            ],
+            "duplicates": [
+                {
+                    "source_id": d.source_id,
+                    "occurrences": d.occurrences,
+                }
+                for d in item.duplicate_identifiers
+            ],
+            "unresolved": [
+                {
+                    "bucket": u.bucket,
+                    "index": u.index,
+                    "reason": "source file could not be read or parsed" if u.bucket == resource_import.BUCKET_FILE_READ_ERROR else u.reason,
+                    "received_type": u.received_type,
+                    "expected_kind": u.expected_kind,
+                    "identifier_fields": list(u.identifier_fields),
+                }
+                for u in item.unresolved
+            ],
+        }
+        for item in report.files
+    ]
+
+    missing_source_entries: list[dict[str, Any]] = [
+        {
+            "library_key": m.library_key,
+            "source_id": m.source_id,
+            "latest_content_digest": m.latest_content_digest,
+        }
+        for m in report.missing_source_entries
+    ]
+
+    projected: dict[str, Any] = {
+        "version": 1,
+        "phase": phase,
+        "summary": summary,
+        "files": files,
+        "missing_source_entries": missing_source_entries,
+    }
+    return _canonicalize_safe_report(projected, expected_phase=phase)
+
+
+def validate_safe_report(value: Any, expected_phase: str | None = None) -> dict[str, Any]:
+    """Validate and return a canonical copy of a safe report.
+
+    Accepts only the exact structure emitted by safe_report for the expected phase.
+    Rejects unknown fields, wrong types, out-of-range integers, booleans as integers,
+    malformed JSON, non-canonical digests, invalid enums, classification mismatches,
+    or unreconciled counters.
+    """
+    if isinstance(value, str):
+        if type(value) is not str:
+            raise ValueError("persisted report JSON must be a built-in string")
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError("malformed JSON in report") from exc
+    return _canonicalize_safe_report(value, expected_phase=expected_phase)
 
 
 def write_report_artifact(
@@ -739,6 +1177,7 @@ __all__ = (
     "serialize_preview",
     "deserialize_preview",
     "safe_report",
+    "validate_safe_report",
     "write_report_artifact",
     "list_resource_libraries",
     "get_resource_library",

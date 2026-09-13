@@ -16,14 +16,23 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
+import sqlite3
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 import db
+import resource_parser
+import resource_service
+
+
+# Sentinel to distinguish an omitted target field from an explicit null assignment.
+TARGET_OMITTED: object = object()
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +54,12 @@ PUBLIC_SELECTION_STATES: tuple[str, ...] = (
     "expired",
 )
 
+# Number.MAX_SAFE_INTEGER. The schema CHECK on ``selection_revision``
+# already pins the value to this range, so a revision read out of the
+# database never exceeds it; the constant is the single source of truth
+# for any guard that validates a public numeric before serializing.
+MAX_SAFE_INTEGER: int = 9007199254740991
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -52,6 +67,14 @@ PUBLIC_SELECTION_STATES: tuple[str, ...] = (
 
 class ResourceSelectionError(Exception):
     """Base exception for resource selection domain errors."""
+
+
+class InvalidTargetError(ResourceSelectionError, ValueError):
+    """Raised when an effective target assignment is invalid."""
+
+
+class SelectionStateInvalidError(ResourceSelectionError):
+    """Raised when persisted selection or file state is invalid or inconsistent."""
 
 
 class SelectionNotFoundError(ResourceSelectionError):
@@ -156,12 +179,15 @@ def _now_iso(override: str | None = None) -> str:
 
 
 def _parse_iso(s: str) -> datetime:
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    dt = datetime.fromisoformat(s)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception as exc:
+        raise SelectionStateInvalidError(f"Invalid ISO timestamp: {s}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -273,30 +299,213 @@ def create_selection(
     selection_id: str | None = None,
     now_iso: str | None = None,
 ) -> dict:
-    """Create a new import selection or replay existing request_id."""
-    if not request_id or not request_id.strip():
+    """Create a new import selection or replay existing request_id.
+
+    Kept for backwards compatibility with Task 1.1 callers and tests;
+    new callers SHOULD use :func:`create_or_replay_selection` which
+    returns a deterministic ``was_new`` disposition and authoritative view.
+    """
+    view, _was_new = create_or_replay_selection(
+        request_id=request_id,
+        selection_id=selection_id,
+        now_iso=now_iso,
+    )
+    row = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", view["selection_id"])
+    if not row:
+        raise SelectionStateInvalidError("Selection unexpectedly missing after create or replay")
+    return dict(row)
+
+
+def normalize_client_uuid(value: Any) -> str:
+    """Validate and canonicalize a client UUID string into lowercase hyphenated UUID format."""
+    if not isinstance(value, str) or isinstance(value, bool):
+        raise ValueError("UUID must be a string")
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("UUID cannot be empty")
+    try:
+        parsed = uuid.UUID(cleaned)
+    except Exception as exc:
+        raise ValueError("Invalid UUID") from exc
+    return str(parsed).lower()
+
+
+def normalize_display_filename(name: Any) -> str:
+    """Normalize client-provided filename to a safe final display component."""
+    if not isinstance(name, str) or isinstance(name, bool):
+        return "upload.bin"
+    sanitized = "".join(c for c in name if ord(c) >= 32 and ord(c) != 127).strip()
+    if not sanitized:
+        return "upload.bin"
+    if sanitized.lower().startswith("file:"):
+        sanitized = sanitized[5:].lstrip("/")
+    sanitized = sanitized.replace("\\", "/")
+    parts = [p.strip() for p in sanitized.split("/") if p.strip()]
+    candidate = parts[-1] if parts else ""
+    if ":" in candidate:
+        candidate = candidate.split(":")[-1].strip()
+    if not candidate or not candidate.strip("."):
+        return "upload.bin"
+    if not _is_safe_display_filename(candidate):
+        return "upload.bin"
+    return candidate
+
+
+def validate_json_revision(value: Any) -> int:
+    """Validate a JSON revision value.
+
+    Accepts only a Python int that is not bool and lies in 0..MAX_SAFE_INTEGER.
+    Rejects strings, booleans, integral/fractional floats, null, and all other types.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or isinstance(value, float):
+        raise ValueError("expected_revision must be an integer")
+    if value < 0 or value > MAX_SAFE_INTEGER:
+        raise ValueError(f"expected_revision must be in 0..{MAX_SAFE_INTEGER}")
+    return value
+
+
+def validate_query_revision(value: Any) -> int:
+    """Validate a query parameter revision value.
+
+    Accepts only an ASCII decimal integer representation in 0..MAX_SAFE_INTEGER.
+    Rejects decimal points, exponent notation, signs, boolean words, whitespace-only
+    input, and non-decimal forms.
+    """
+    if not isinstance(value, str) or isinstance(value, bool):
+        raise ValueError("expected_revision must be an integer")
+    if not value or not value.isascii() or not value.isdigit():
+        raise ValueError("expected_revision must be an integer")
+    try:
+        candidate = int(value, 10)
+    except ValueError as exc:
+        raise ValueError("expected_revision must be an integer") from exc
+    if candidate < 0 or candidate > MAX_SAFE_INTEGER:
+        raise ValueError(f"expected_revision must be in 0..{MAX_SAFE_INTEGER}")
+    return candidate
+
+
+def validate_target_library_key(key: Any) -> str:
+    """Validate effective_library_key according to OpenSpec identity grammar.
+
+    - 1 to 128 characters
+    - no leading or trailing whitespace
+    - no ASCII control characters (0x00-0x1F, 0x7F)
+    - no slash or backslash
+    - not '.' or '..'
+    - exact type str (no boolean, numeric coercion, or str subclasses)
+    """
+    if type(key) is not str:
+        raise InvalidTargetError("effective_library_key must be a string")
+    if not (1 <= len(key) <= 128):
+        raise InvalidTargetError("effective_library_key must be between 1 and 128 characters")
+    if key != key.strip():
+        raise InvalidTargetError("effective_library_key cannot contain leading or trailing whitespace")
+    if key in (".", ".."):
+        raise InvalidTargetError("effective_library_key cannot be '.' or '..'")
+    if "/" in key or "\\" in key:
+        raise InvalidTargetError("effective_library_key cannot contain '/' or '\\'")
+    for ch in key:
+        code = ord(ch)
+        if (0 <= code <= 31) or code == 127:
+            raise InvalidTargetError("effective_library_key cannot contain ASCII control characters")
+    return key
+
+
+def validate_target_auxiliary_kind(kind: Any) -> str:
+    """Validate effective_auxiliary_kind against canonical allowlist.
+
+    - exact member of resource_parser.ALL_AUXILIARY_KINDS
+    - case-sensitive
+    - exact type str (no coercion, no str subclasses)
+    """
+    if type(kind) is not str:
+        raise InvalidTargetError("effective_auxiliary_kind must be a string")
+    if kind not in resource_parser.ALL_AUXILIARY_KINDS:
+        raise InvalidTargetError(
+            f"effective_auxiliary_kind must be one of {list(resource_parser.ALL_AUXILIARY_KINDS)}"
+        )
+    return kind
+
+
+def create_or_replay_selection(
+    request_id: str,
+    selection_id: str | None = None,
+    now_iso: str | None = None,
+) -> tuple[dict, bool]:
+    """Create or replay a selection in a single atomic transaction.
+
+    Returns ``(selection_view, was_new)``. ``was_new`` is ``True`` only
+    when this call inserted a new ``resource_selection`` row. A replay
+    of the same ``request_id`` returns ``was_new=False`` even under
+    concurrent load: the SELECT-then-INSERT is wrapped in a single
+    transaction with an explicit check, and the unique constraint on
+    ``request_id`` is the second line of defense. The return value is
+    the authoritative, canonical ``SelectionView`` projected directly
+    from durable state.
+    """
+    if not request_id or not str(request_id).strip():
         raise ResourceSelectionError("request_id cannot be empty")
+
+    try:
+        canonical_request_id = normalize_client_uuid(request_id)
+    except ValueError:
+        canonical_request_id = str(request_id).strip()
 
     now = _now_iso(now_iso)
     now_dt = _parse_iso(now)
     expires_at = _format_iso(now_dt + timedelta(seconds=SELECTION_LIFETIME_SECONDS))
 
-    with db.transaction():
-        existing = db.one("SELECT * FROM resource_selection WHERE request_id = ?", request_id)
-        if existing:
-            return dict(existing)
+    with db._tx_lock:
+        with db.transaction():
+            existing = db.one(
+                "SELECT * FROM resource_selection WHERE request_id = ?",
+                canonical_request_id,
+            )
+            if existing:
+                recovered_sel = _recover_selection_in_tx(existing["selection_id"], now_dt=now_dt, now_iso=now)
+                if recovered_sel is None:
+                    raise SelectionStateInvalidError("Selection was purged or state is invalid")
+                target_sid = existing["selection_id"]
+                was_new = False
+            else:
+                sel_id = selection_id or f"sel_{secrets.token_hex(16)}"
+                try:
+                    db.conn().execute(
+                        "INSERT INTO resource_selection ("
+                        "    selection_id, request_id, selection_revision, state, "
+                        "    created_at, updated_at, expires_at, "
+                        "    total_reserved_bytes, active_file_count, "
+                        "    cleanup_state, cleanup_warning"
+                        ") VALUES (?, ?, 0, 'open', ?, ?, ?, 0, 0, 'none', '')",
+                        (sel_id, canonical_request_id, now, now, expires_at),
+                    )
+                    target_sid = sel_id
+                    was_new = True
+                except sqlite3.IntegrityError:
+                    # A concurrent request inserted the same request_id between
+                    # our SELECT and INSERT. Re-read and treat as replay.
+                    existing = db.one(
+                        "SELECT * FROM resource_selection WHERE request_id = ?",
+                        canonical_request_id,
+                    )
+                    if existing is None:
+                        raise
+                    recovered_sel = _recover_selection_in_tx(existing["selection_id"], now_dt=now_dt, now_iso=now)
+                    if recovered_sel is None:
+                        raise SelectionStateInvalidError("Selection was purged or state is invalid")
+                    target_sid = existing["selection_id"]
+                    was_new = False
 
-        sel_id = selection_id or f"sel_{secrets.token_hex(16)}"
-        db.conn().execute(
-            "INSERT INTO resource_selection ("
-            "    selection_id, request_id, selection_revision, state, "
-            "    created_at, updated_at, expires_at, "
-            "    total_reserved_bytes, active_file_count, "
-            "    cleanup_state, cleanup_warning"
-            ") VALUES (?, ?, 0, 'open', ?, ?, ?, 0, 0, 'none', '')",
-            (sel_id, request_id, now, now, expires_at),
-        )
-        return dict(db.one("SELECT * FROM resource_selection WHERE selection_id = ?", sel_id))
+        target_row = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", target_sid)
+        if not target_row:
+            raise SelectionStateInvalidError("Selection unexpectedly missing after commit")
+        target_sel = dict(target_row)
+
+        view = _project_selection_view(target_sel)
+        if view is None:
+            raise SelectionStateInvalidError("Selection view is None")
+
+    return view, was_new
 
 
 def get_selection(
@@ -350,7 +559,15 @@ def reserve_file_slot(
     file_id: str | None = None,
     now_iso: str | None = None,
 ) -> dict:
-    """Atomically reserve one file slot before streaming bytes."""
+    """Atomically reserve one file slot before streaming bytes.
+
+    The returned dict carries a ``_disposition`` key the public route
+    switches on to decide between a fresh upload, a completed same-ID
+    replay, an active same-ID upload (still being streamed), or a
+    cleanup retry. The disposition is set inside the same transaction
+    that performs the reservation, so concurrent calls with the same
+    ``upload_id`` cannot race past it.
+    """
     now = _now_iso(now_iso)
     now_dt = _parse_iso(now)
 
@@ -373,9 +590,23 @@ def reserve_file_slot(
         )
         if existing_file:
             if existing_file["file_name"] != file_name:
-                raise IdempotencyConflictError(f"upload_id {upload_id} already exists with different file_name")
-            if existing_file["status"] in ("reserved", "staged"):
-                return dict(existing_file)
+                raise IdempotencyConflictError(
+                    f"upload_id {upload_id} already exists with different file_name"
+                )
+            if existing_file["status"] == "reserved":
+                # Same upload_id is still streaming. The public route
+                # MUST refuse the second stream with a stable, non-
+                # mutating 409 idempotency_conflict. The disposition is
+                # the single switch the route reads.
+                row = dict(existing_file)
+                row["_disposition"] = "active"
+                return row
+            if existing_file["status"] == "staged":
+                # The file is already complete. The route reads the
+                # stored digest and compares the incoming body.
+                row = dict(existing_file)
+                row["_disposition"] = "completed"
+                return row
             if existing_file["status"] == "failed":
                 ok, warning = _safe_delete_file(existing_file["staged_path"])
                 if not ok:
@@ -414,7 +645,9 @@ def reserve_file_slot(
             ") VALUES (?, ?, ?, ?, 'reserved', 0, 0, ?, ?, ?)",
             (selection_id, fid, upload_id, file_name, str(staged_path), now, now),
         )
-        return dict(db.one("SELECT * FROM resource_selection_file WHERE file_id = ?", fid))
+        row = dict(db.one("SELECT * FROM resource_selection_file WHERE file_id = ?", fid))
+        row["_disposition"] = "fresh"
+        return row
 
 
 def reserve_file_bytes(
@@ -759,11 +992,31 @@ def update_file_targets(
     selection_id: str,
     file_id: str,
     expected_revision: int,
-    effective_library_key: str | None = None,
-    effective_auxiliary_kind: str | None = None,
+    effective_library_key: Any = TARGET_OMITTED,
+    effective_auxiliary_kind: Any = TARGET_OMITTED,
     now_iso: str | None = None,
 ) -> dict:
-    """Update effective target fields, bump revision, and invalidate preview."""
+    """Update effective target fields, bump revision, and invalidate preview.
+
+    Validates targets and expected_revision before entering the transaction.
+    If validation fails, zero mutation occurs.
+    """
+    try:
+        expected_revision = validate_json_revision(expected_revision)
+    except ValueError as exc:
+        raise InvalidTargetError(str(exc)) from exc
+
+    if effective_library_key is TARGET_OMITTED and effective_auxiliary_kind is TARGET_OMITTED:
+        raise InvalidTargetError(
+            "PATCH body must include at least one of 'effective_library_key' or 'effective_auxiliary_kind'"
+        )
+
+    if effective_library_key is not TARGET_OMITTED and effective_library_key is not None:
+        validate_target_library_key(effective_library_key)
+
+    if effective_auxiliary_kind is not TARGET_OMITTED and effective_auxiliary_kind is not None:
+        validate_target_auxiliary_kind(effective_auxiliary_kind)
+
     now = _now_iso(now_iso)
     now_dt = _parse_iso(now)
 
@@ -789,14 +1042,18 @@ def update_file_targets(
         if not file_row or file_row["status"] != "staged":
             raise FileNotFoundInSelectionError(f"File {file_id} not found or not staged")
 
-        db.conn().execute(
-            "UPDATE resource_selection_file "
-            "SET effective_library_key = COALESCE(?, effective_library_key), "
-            "    effective_auxiliary_kind = COALESCE(?, effective_auxiliary_kind), "
-            "    updated_at = ? "
-            "WHERE id = ?",
-            (effective_library_key, effective_auxiliary_kind, now, file_row["id"]),
-        )
+        set_clauses = ["updated_at = ?"]
+        params: list[Any] = [now]
+        if effective_library_key is not TARGET_OMITTED:
+            set_clauses.append("effective_library_key = ?")
+            params.append(effective_library_key)
+        if effective_auxiliary_kind is not TARGET_OMITTED:
+            set_clauses.append("effective_auxiliary_kind = ?")
+            params.append(effective_auxiliary_kind)
+        params.append(file_row["id"])
+
+        sql = f"UPDATE resource_selection_file SET {', '.join(set_clauses)} WHERE id = ?"
+        db.conn().execute(sql, params)
         _bump_revision_and_invalidate_preview(selection_id, now_iso=now)
         return dict(db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id))
 
@@ -807,12 +1064,34 @@ def save_preview(
     preview_token: str,
     manifest_digest: str,
     committable: bool,
-    report: dict | None = None,
+    report: dict | str,
     now_iso: str | None = None,
 ) -> bool:
     """Bind preview token, manifest digest, committable status, and report to an open selection."""
+    if type(selection_id) is not str or not selection_id or not _is_safe_public_string(selection_id):
+        raise ValueError("selection_id is invalid")
+    validate_json_revision(expected_revision)
+    if type(preview_token) is not str or not preview_token or not _is_safe_public_string(preview_token):
+        raise ValueError("preview_token is invalid")
+    if (
+        type(manifest_digest) is not str
+        or len(manifest_digest) != 64
+        or not all(c in "0123456789abcdef" for c in manifest_digest)
+    ):
+        raise ValueError("manifest_digest must be 64 lowercase hex characters")
+    if type(committable) is not bool:
+        raise TypeError("committable must be a boolean")
+    if report is None or report == "":
+        raise ValueError("report cannot be null or empty")
+    if type(report) is not str and type(report) is not dict:
+        raise TypeError("report must be a dict or JSON string")
+
+    validated_report = resource_service.validate_safe_report(report, expected_phase="preview")
+    report_json = json.dumps(validated_report)
+
+    if now_iso is not None:
+        _parse_iso(now_iso)
     now = _now_iso(now_iso)
-    report_json = json.dumps(report) if report is not None else None
 
     with db.transaction():
         cur = db.conn().execute(
@@ -1033,8 +1312,21 @@ def record_commit_result(
     now_iso: str | None = None,
 ) -> bool:
     """Record final committed result atomically, mark terminal committed, and clean staged files."""
+    if type(selection_id) is not str or not selection_id or not _is_safe_public_string(selection_id):
+        raise ValueError("selection_id is invalid")
+    if type(commit_token) is not str or not commit_token or not _is_safe_public_string(commit_token):
+        raise ValueError("commit_token is invalid")
+    if result is None or result == "":
+        raise ValueError("commit result cannot be null or empty")
+    if type(result) is not str and type(result) is not dict:
+        raise TypeError("commit result must be a dict or JSON string")
+
+    validated_result = resource_service.validate_safe_report(result, expected_phase="commit")
+    result_json = json.dumps(validated_result)
+
+    if now_iso is not None:
+        _parse_iso(now_iso)
     now = _now_iso(now_iso)
-    result_json = result if isinstance(result, str) else json.dumps(result)
 
     with db.transaction():
         sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
@@ -1159,21 +1451,32 @@ def _clean_selection_files(selection_id: str) -> tuple[bool, str]:
     return all_ok, last_warning
 
 
-def recover_selection(selection_id: str, now_iso: str | None = None) -> dict | None:
-    """Record-local lazy recovery for a single selection."""
-    now = _now_iso(now_iso)
-    now_dt = _parse_iso(now)
+def _recover_selection_in_tx(
+    selection_id: str,
+    now_dt: datetime,
+    now_iso: str,
+) -> dict | None:
+    """Record-local lazy recovery logic executed within an existing transaction."""
+    now = now_iso
+    sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
+    if not sel:
+        return None
 
-    with db.transaction():
-        sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
-        if not sel:
-            return None
+    # 1. Recover stale claim lease
+    if sel["state"] == "committing":
+        claim_tok = sel.get("claim_commit_token")
+        claim_rev = sel.get("claim_revision")
+        claim_prev_tok = sel.get("claim_preview_token")
+        claim_prev_dig = sel.get("claim_manifest_digest")
+        deadline_str = sel.get("claim_lease_deadline")
 
-        # 1. Recover stale claim lease
-        if sel["state"] == "committing":
-            deadline_str = sel.get("claim_lease_deadline")
-            deadline_dt = _parse_iso(deadline_str) if deadline_str else now_dt
-            if now_dt >= deadline_dt:
+        claim_tuple = (claim_tok, claim_rev, claim_prev_tok, claim_prev_dig, deadline_str)
+        if not any(x is None for x in claim_tuple):
+            try:
+                deadline_dt = _parse_iso(deadline_str)
+            except Exception:
+                deadline_dt = None
+            if deadline_dt is not None and now_dt >= deadline_dt:
                 if now_dt < _parse_iso(sel["expires_at"]):
                     db.conn().execute(
                         "UPDATE resource_selection "
@@ -1211,73 +1514,87 @@ def recover_selection(selection_id: str, now_iso: str | None = None) -> dict | N
                             )
                     db.on_commit(_do_recover_stale_claim_cleanup)
 
-        # 2. Check 24-hour fixed expiry on open selections
-        sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
-        if sel and sel["state"] == "open" and now_dt >= _parse_iso(sel["expires_at"]):
-            db.conn().execute(
-                "UPDATE resource_selection SET state = 'expired', cleanup_state = 'pending', updated_at = ? WHERE selection_id = ?",
-                (now, selection_id),
-            )
-            def _do_recover_expiry_cleanup():
-                all_ok, warning = _clean_selection_files(selection_id)
-                cleanup_st = "cleaned" if all_ok else "failed"
-                with db.transaction():
-                    db.conn().execute(
-                        "UPDATE resource_selection SET cleanup_state = ?, cleanup_warning = ?, updated_at = ? WHERE selection_id = ?",
-                        (cleanup_st, warning, _now_iso(), selection_id),
-                    )
-            db.on_commit(_do_recover_expiry_cleanup)
+    # 2. Check 24-hour fixed expiry on open selections
+    sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
+    if sel and sel["state"] == "open" and now_dt >= _parse_iso(sel["expires_at"]):
+        db.conn().execute(
+            "UPDATE resource_selection SET state = 'expired', cleanup_state = 'pending', updated_at = ? WHERE selection_id = ?",
+            (now, selection_id),
+        )
+        def _do_recover_expiry_cleanup():
+            all_ok, warning = _clean_selection_files(selection_id)
+            cleanup_st = "cleaned" if all_ok else "failed"
+            with db.transaction():
+                db.conn().execute(
+                    "UPDATE resource_selection SET cleanup_state = ?, cleanup_warning = ?, updated_at = ? WHERE selection_id = ?",
+                    (cleanup_st, warning, _now_iso(), selection_id),
+                )
+        db.on_commit(_do_recover_expiry_cleanup)
 
-        # 3. Clean pending/failed files in open selection (aborted uploads or removed files)
-        sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
-        if sel and sel["state"] == "open":
-            failed_files = db.q(
-                "SELECT * FROM resource_selection_file "
-                "WHERE selection_id = ? AND (cleanup_state IN ('pending', 'failed') OR status = 'failed')",
-                selection_id,
-            )
-            if failed_files:
-                def _do_recover_failed_files():
-                    for ff in failed_files:
-                        ok, warning = _safe_delete_file(ff["staged_path"])
-                        with db.transaction():
-                            if ok:
-                                if ff["status"] == "removed":
-                                    db.conn().execute(
-                                        "UPDATE resource_selection_file SET cleanup_state = 'cleaned', cleanup_warning = '', updated_at = ? WHERE id = ?",
-                                        (_now_iso(), ff["id"]),
-                                    )
-                                else:
-                                    db.conn().execute("DELETE FROM resource_selection_file WHERE id = ?", (ff["id"],))
-                            else:
-                                db.conn().execute(
-                                    "UPDATE resource_selection_file SET cleanup_state = 'failed', cleanup_warning = ?, updated_at = ? WHERE id = ?",
-                                    (warning, _now_iso(), ff["id"]),
-                                )
+    # 3. Clean pending/failed files in open selection (aborted uploads or removed files)
+    sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
+    if sel and sel["state"] == "open":
+        failed_files = db.q(
+            "SELECT * FROM resource_selection_file "
+            "WHERE selection_id = ? AND (cleanup_state IN ('pending', 'failed') OR status = 'failed')",
+            selection_id,
+        )
+        if failed_files:
+            def _do_recover_failed_files():
+                for ff in failed_files:
+                    ok, warning = _safe_delete_file(ff["staged_path"])
                     with db.transaction():
-                        _reconcile_selection_warning(selection_id, _now_iso())
-                db.on_commit(_do_recover_failed_files)
-
-        # 4. Retry cleanup if terminal and uncleaned
-        sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
-        if sel and sel["state"] in ("cancelled", "expired", "committed") and sel["cleanup_state"] != "cleaned":
-            def _do_recover_terminal_cleanup():
-                all_ok, warning = _clean_selection_files(selection_id)
-                cleanup_st = "cleaned" if all_ok else "failed"
+                        if ok:
+                            if ff["status"] == "removed":
+                                db.conn().execute(
+                                    "UPDATE resource_selection_file SET cleanup_state = 'cleaned', cleanup_warning = '', updated_at = ? WHERE id = ?",
+                                    (_now_iso(), ff["id"]),
+                                )
+                            else:
+                                db.conn().execute("DELETE FROM resource_selection_file WHERE id = ?", (ff["id"],))
+                        else:
+                            db.conn().execute(
+                                "UPDATE resource_selection_file SET cleanup_state = 'failed', cleanup_warning = ?, updated_at = ? WHERE id = ?",
+                                (warning, _now_iso(), ff["id"]),
+                            )
                 with db.transaction():
-                    db.conn().execute(
-                        "UPDATE resource_selection SET cleanup_state = ?, cleanup_warning = ?, updated_at = ? WHERE selection_id = ?",
-                        (cleanup_st, warning, _now_iso(), selection_id),
-                    )
-            db.on_commit(_do_recover_terminal_cleanup)
+                    _reconcile_selection_warning(selection_id, _now_iso())
+            db.on_commit(_do_recover_failed_files)
 
-        # 5. Check purge window: 24 hours after expires_at
-        sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
-        if sel and sel["state"] in ("cancelled", "expired") and sel["cleanup_state"] == "cleaned":
-            purge_boundary = _parse_iso(sel["expires_at"]) + timedelta(seconds=TOMBSTONE_RETENTION_SECONDS)
-            if now_dt >= purge_boundary:
-                db.conn().execute("DELETE FROM resource_selection WHERE selection_id = ?", (selection_id,))
-                return None
+    # 4. Retry cleanup if terminal and uncleaned
+    sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
+    if sel and sel["state"] in ("cancelled", "expired", "committed") and sel["cleanup_state"] != "cleaned":
+        def _do_recover_terminal_cleanup():
+            all_ok, warning = _clean_selection_files(selection_id)
+            cleanup_st = "cleaned" if all_ok else "failed"
+            with db.transaction():
+                db.conn().execute(
+                    "UPDATE resource_selection SET cleanup_state = ?, cleanup_warning = ?, updated_at = ? WHERE selection_id = ?",
+                    (cleanup_st, warning, _now_iso(), selection_id),
+                )
+        db.on_commit(_do_recover_terminal_cleanup)
+
+    # 5. Check purge window: 24 hours after expires_at
+    sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
+    if sel and sel["state"] in ("cancelled", "expired") and sel["cleanup_state"] == "cleaned":
+        purge_boundary = _parse_iso(sel["expires_at"]) + timedelta(seconds=TOMBSTONE_RETENTION_SECONDS)
+        if now_dt >= purge_boundary:
+            db.conn().execute("DELETE FROM resource_selection WHERE selection_id = ?", (selection_id,))
+            return None
+
+    final_row = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
+    return dict(final_row) if final_row else None
+
+
+def recover_selection(selection_id: str, now_iso: str | None = None) -> dict | None:
+    """Record-local lazy recovery for a single selection."""
+    now = _now_iso(now_iso)
+    now_dt = _parse_iso(now)
+
+    with db.transaction():
+        res = _recover_selection_in_tx(selection_id, now_dt=now_dt, now_iso=now)
+        if res is None:
+            return None
 
     final_row = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
     return dict(final_row) if final_row else None
@@ -1540,3 +1857,574 @@ def opportunistic_sweep(limit: int = 10, now_iso: str | None = None) -> dict:
         recover_selection(r["selection_id"], now_iso=now)
         recovered += 1
     return {"swept": recovered}
+
+
+# ---------------------------------------------------------------------------
+# Public SelectionView Projection (Task 1.2)
+# ---------------------------------------------------------------------------
+#
+# The selection row in ``resource_selection`` and the per-file rows in
+# ``resource_selection_file`` carry internal evidence that must NEVER reach
+# the public boundary: physical staging paths, SQLite surrogate IDs,
+# ``staged_mtime_ns``, fingerprint blobs, claim tokens, cleanup internals,
+# reservation counters, staged bytes, raw SHA-256 evidence fields, etc.
+# The schema's CHECK constraints already gate the unsafe integers to
+# ``0..MAX_SAFE_INTEGER`` (and the per-file/aggregate byte caps), but the
+# *fields themselves* would still travel if the route returned the raw
+# row dict. The projection below is the only public shape: every route
+# under ``/api/resources/import-selections`` serializes through
+# ``build_selection_view`` and nothing else.
+#
+# The view is intentionally narrow. It does NOT expose:
+#   * any surrogate primary key;
+#   * any path under ``staged_path`` or its parent directories;
+#   * any field that names ``mtime_ns``, ``fingerprint``, ``sha256``,
+#     ``claim_*``, ``*_lease_deadline``, ``cleanup_*``, ``reserved_*``,
+#     ``purged_*``, ``byte_count`` of the internal reservation counter
+#     (only the public ``byte_count`` of the finalized file), or any
+#     preview/claim/attestation secret.
+#
+# The fields exposed are exactly the contract the OpenSpec design
+# approved: ``selection_id``, ``selection_revision``, ``state``,
+# ``expires_at``, ordered ``files`` (with ``file_id``, ``file_name``,
+# ``byte_count``, ``declared_library``, ``effective_library_key``,
+# ``matched_auxiliary_kinds``, ``effective_auxiliary_kind``, ``status``),
+# nullable ``preview`` (opaque token, lowercase-hex digest, committable
+# boolean, readable report projection), and nullable ``commit_result``
+# (the safe canonical import result only).
+
+# The literal set of keys the public view is allowed to carry, used by
+# the public serializer and asserted by the API tests so a new column
+# added to ``resource_selection`` (or to ``resource_selection_file``)
+# cannot silently widen the public surface.
+SELECTION_VIEW_KEYS: frozenset[str] = frozenset({
+    "selection_id",
+    "selection_revision",
+    "state",
+    "expires_at",
+    "files",
+    "preview",
+    "commit_result",
+})
+
+FILE_VIEW_KEYS: frozenset[str] = frozenset({
+    "file_id",
+    "file_name",
+    "byte_count",
+    "declared_library",
+    "effective_library_key",
+    "matched_auxiliary_kinds",
+    "effective_auxiliary_kind",
+    "status",
+})
+
+PREVIEW_VIEW_KEYS: frozenset[str] = frozenset({
+    "preview_token",
+    "manifest_digest",
+    "committable",
+    "report",
+})
+
+# Internal/private field names that must NEVER appear at any depth in a
+# public success or error response. The list is deliberately broad: a
+# field added to the row by a future task that lands on this list would
+# fail the public projection test, which is the structural guard the
+# design relies on (a missing sentinel on a new column is how a private
+# path would leak).
+PRIVATE_SELECTION_FIELDS: frozenset[str] = frozenset({
+    "id",
+    "staged_path",
+    "staged_size",
+    "staged_mtime_ns",
+    "staged_sha256",
+    "fingerprint",
+    "reserved_bytes",
+    "claim_commit_token",
+    "claim_revision",
+    "claim_preview_token",
+    "claim_manifest_digest",
+    "claim_lease_deadline",
+    "committed_revision",
+    "committed_preview_token",
+    "committed_manifest_digest",
+    "committed_at",
+    "cleanup_state",
+    "cleanup_warning",
+    "purged_at",
+    "created_at",
+    "updated_at",
+    "total_reserved_bytes",
+    "active_file_count",
+    "request_id",
+})
+
+
+# Names that are explicitly public on the SelectionView. They MUST stay
+# allowed by ``_is_private_field_name`` even if a future suffix matches.
+PUBLIC_FIELD_ALLOWLIST: frozenset[str] = frozenset({
+    "selection_id",
+    "selection_revision",
+    "state",
+    "expires_at",
+    "files",
+    "preview",
+    "commit_result",
+    "file_id",
+    "file_name",
+    "byte_count",
+    "declared_library",
+    "effective_library_key",
+    "matched_auxiliary_kinds",
+    "effective_auxiliary_kind",
+    "status",
+    "preview_token",
+    "manifest_digest",
+    "committable",
+    "report",
+})
+
+
+def assert_selection_view_is_public(value: Any, _seen: set | None = None) -> None:
+    """Recursively assert that ``value`` carries no private field at any depth."""
+    if _seen is None:
+        _seen = set()
+    if isinstance(value, dict):
+        key = id(value)
+        if key in _seen:
+            return
+        _seen.add(key)
+        for k, v in value.items():
+            if isinstance(k, str) and _is_private_field_name(k):
+                raise AssertionError(
+                    f"private field {k!r} leaked into public selection view"
+                )
+            assert_selection_view_is_public(v, _seen)
+    elif isinstance(value, list):
+        key = id(value)
+        if key in _seen:
+            return
+        _seen.add(key)
+        for item in value:
+            assert_selection_view_is_public(item, _seen)
+
+
+def _is_private_field_name(name: str) -> bool:
+    """Return ``True`` when ``name`` is a private field name the public view must not carry."""
+    if name in PUBLIC_FIELD_ALLOWLIST:
+        return False
+    if name in PRIVATE_SELECTION_FIELDS:
+        return True
+    suffixes = (
+        "_mtime_ns",
+        "_sha256",
+        "_fingerprint",
+        "_lease_deadline",
+        "_attestation",
+        "_attestation_token",
+        "_path",
+        "_secret",
+    )
+    return any(name.endswith(s) for s in suffixes)
+
+
+def _is_safe_display_filename(s: str) -> bool:
+    if not isinstance(s, str) or isinstance(s, bool):
+        return False
+    if not s or not s.strip():
+        return False
+    if any(ord(c) < 32 or ord(c) == 127 for c in s):
+        return False
+    if "/" in s or "\\" in s:
+        return False
+    if "file:" in s.lower():
+        return False
+    if re.search(r"^[a-zA-Z]:", s):
+        return False
+    if not s.strip("."):
+        return False
+    if _is_private_field_name(s) or "claim_" in s or "staged_" in s or "attestation" in s.lower():
+        return False
+    return True
+
+
+def _is_safe_public_string(s: str) -> bool:
+    if not isinstance(s, str) or isinstance(s, bool):
+        return False
+    if not s or not s.strip():
+        return False
+    if any(ord(c) < 32 or ord(c) == 127 for c in s):
+        return False
+    s_clean = s.strip()
+    if "/" in s_clean or "\\" in s_clean:
+        return False
+    if "file:" in s_clean.lower():
+        return False
+    if re.search(r"[a-zA-Z]:[/\\]", s_clean):
+        return False
+    if s_clean.startswith((".", "..")):
+        return False
+    if _is_private_field_name(s_clean):
+        return False
+    if any(s_clean.endswith(suf) for suf in (
+        "_mtime_ns", "_sha256", "_fingerprint", "_lease_deadline",
+        "_attestation", "_attestation_token", "_path", "_secret"
+    )):
+        return False
+    if "claim_commit_token" in s_clean or "staged_path" in s_clean or "attestation" in s_clean.lower():
+        return False
+    return True
+
+
+def _validate_matched_auxiliary_kinds(value: Any) -> list[str]:
+    if type(value) is not str or not value:
+        raise SelectionStateInvalidError("matched_auxiliary_kinds must be a non-empty JSON string")
+    try:
+        decoded = json.loads(value)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise SelectionStateInvalidError("matched_auxiliary_kinds contains malformed JSON") from exc
+    if type(decoded) is not list:
+        raise SelectionStateInvalidError("matched_auxiliary_kinds must be a JSON array")
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in decoded:
+        if type(item) is not str:
+            raise SelectionStateInvalidError("matched_auxiliary_kinds member must be a string")
+        if item not in resource_parser.ALL_AUXILIARY_KINDS:
+            raise SelectionStateInvalidError(f"matched_auxiliary_kinds member {item!r} is not an allowed auxiliary kind")
+        if item in seen:
+            raise SelectionStateInvalidError(f"matched_auxiliary_kinds contains duplicate member {item!r}")
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _build_file_view(file_row: dict) -> dict:
+    file_id = file_row.get("file_id")
+    if type(file_id) is not str or not file_id:
+        raise SelectionStateInvalidError("file_id must be a non-empty string")
+    if not _is_safe_public_string(file_id):
+        raise SelectionStateInvalidError("file_id contains unsafe characters")
+
+    raw_file_name = file_row.get("file_name")
+    if type(raw_file_name) is not str or not raw_file_name:
+        raise SelectionStateInvalidError("file_name must be a non-empty string")
+    if not _is_safe_display_filename(raw_file_name):
+        raise SelectionStateInvalidError("file_name is not a normalized display filename")
+
+    byte_count = file_row.get("byte_count")
+    if type(byte_count) is not int or byte_count < 0 or byte_count > MAX_SAFE_INTEGER or byte_count > MAX_BYTES_PER_FILE:
+        raise SelectionStateInvalidError("byte_count must be a safe integer in bounds")
+
+    declared_lib = file_row.get("declared_library")
+    if declared_lib is not None:
+        if type(declared_lib) is not str or not _is_safe_public_string(declared_lib):
+            raise SelectionStateInvalidError("declared_library contains unsafe characters")
+
+    effective_lib = file_row.get("effective_library_key")
+    if effective_lib is not None:
+        if type(effective_lib) is not str or not _is_safe_public_string(effective_lib):
+            raise SelectionStateInvalidError("effective_library_key contains unsafe characters")
+
+    matched_kinds = _validate_matched_auxiliary_kinds(file_row.get("matched_auxiliary_kinds"))
+
+    effective_aux = file_row.get("effective_auxiliary_kind")
+    if effective_aux is not None:
+        if type(effective_aux) is not str or not _is_safe_public_string(effective_aux):
+            raise SelectionStateInvalidError("effective_auxiliary_kind contains unsafe characters")
+
+    status = file_row.get("status")
+    if status != "staged":
+        raise SelectionStateInvalidError("file status must be 'staged'")
+
+    return {
+        "file_id": file_id,
+        "file_name": raw_file_name,
+        "byte_count": byte_count,
+        "declared_library": declared_lib,
+        "effective_library_key": effective_lib,
+        "matched_auxiliary_kinds": matched_kinds,
+        "effective_auxiliary_kind": effective_aux,
+        "status": status,
+    }
+
+
+def _build_preview_view(sel_row: dict) -> dict | None:
+    token = sel_row.get("preview_token")
+    digest = sel_row.get("preview_manifest_digest")
+    committable_raw = sel_row.get("preview_committable")
+    report_raw = sel_row.get("preview_report")
+    created_at = sel_row.get("preview_created_at")
+
+    if (
+        token is None
+        and digest is None
+        and committable_raw is None
+        and report_raw is None
+        and created_at is None
+    ):
+        return None
+
+    if (
+        token is None
+        or digest is None
+        or committable_raw is None
+        or report_raw is None
+        or created_at is None
+    ):
+        raise SelectionStateInvalidError("Incomplete persisted preview evidence")
+
+    if type(token) is not str or not token:
+        raise SelectionStateInvalidError("Persisted preview_token is invalid")
+    if not _is_safe_public_string(token):
+        raise SelectionStateInvalidError("Persisted preview_token contains unsafe characters")
+
+    if (
+        type(digest) is not str
+        or len(digest) != 64
+        or not all(c in "0123456789abcdef" for c in digest)
+    ):
+        raise SelectionStateInvalidError("Persisted preview_manifest_digest must be canonical lowercase hex")
+
+    if type(committable_raw) is not int or committable_raw not in (0, 1):
+        raise SelectionStateInvalidError("Persisted preview_committable must be exact integer 0 or 1")
+    committable = (committable_raw == 1)
+
+    if type(report_raw) is str:
+        if not report_raw:
+            raise SelectionStateInvalidError("Persisted preview_report is empty")
+    elif type(report_raw) is not dict:
+        raise SelectionStateInvalidError("Persisted preview_report must be JSON string or dict")
+
+    try:
+        report = resource_service.validate_safe_report(report_raw, expected_phase="preview")
+    except Exception as exc:
+        raise SelectionStateInvalidError("Persisted preview_report is invalid") from exc
+
+    if type(created_at) is not str or not created_at:
+        raise SelectionStateInvalidError("Persisted preview_created_at is invalid")
+    try:
+        _parse_iso(created_at)
+    except Exception as exc:
+        raise SelectionStateInvalidError("Persisted preview_created_at is invalid timestamp") from exc
+
+    return {
+        "preview_token": token,
+        "manifest_digest": digest,
+        "committable": committable,
+        "report": report,
+    }
+
+
+def _validate_selection_state_matrix(
+    sel_row: dict,
+    preview: dict | None,
+    revision: int,
+    state: str,
+) -> dict | None:
+    """Validate claim and commit evidence tuples against the selection state.
+
+    Returns the canonical commit_result dictionary if state is 'committed',
+    or None if state is not 'committed'. Fails closed with
+    SelectionStateInvalidError on any partial, contradictory, or malformed state.
+    """
+    committed_rev = sel_row.get("committed_revision")
+    committed_tok = sel_row.get("committed_preview_token")
+    committed_dig = sel_row.get("committed_manifest_digest")
+    commit_res_raw = sel_row.get("commit_result")
+    committed_at = sel_row.get("committed_at")
+
+    claim_tok = sel_row.get("claim_commit_token")
+    claim_rev = sel_row.get("claim_revision")
+    claim_prev_tok = sel_row.get("claim_preview_token")
+    claim_prev_dig = sel_row.get("claim_manifest_digest")
+    claim_deadline = sel_row.get("claim_lease_deadline")
+
+    commit_tuple = (committed_rev, committed_tok, committed_dig, commit_res_raw, committed_at)
+    claim_tuple = (claim_tok, claim_rev, claim_prev_tok, claim_prev_dig, claim_deadline)
+
+    if state == "committed":
+        if any(x is None for x in commit_tuple):
+            raise SelectionStateInvalidError("Committed selection has incomplete commit evidence")
+
+        if type(committed_rev) is not int or committed_rev < 0 or committed_rev > MAX_SAFE_INTEGER:
+            raise SelectionStateInvalidError("committed_revision must be a safe integer")
+        if committed_rev != revision:
+            raise SelectionStateInvalidError("committed_revision does not match selection_revision")
+
+        if type(committed_tok) is not str or not committed_tok or not _is_safe_public_string(committed_tok):
+            raise SelectionStateInvalidError("committed_preview_token is invalid")
+
+        if (
+            type(committed_dig) is not str
+            or len(committed_dig) != 64
+            or not all(c in "0123456789abcdef" for c in committed_dig)
+        ):
+            raise SelectionStateInvalidError("committed_manifest_digest is invalid")
+
+        if preview is not None:
+            if (
+                committed_tok != preview["preview_token"]
+                or committed_dig != preview["manifest_digest"]
+            ):
+                raise SelectionStateInvalidError(
+                    "committed preview token or digest does not match retained preview"
+                )
+
+        if commit_res_raw == "":
+            raise SelectionStateInvalidError("commit_result cannot be empty")
+        if type(commit_res_raw) is not str and type(commit_res_raw) is not dict:
+            raise SelectionStateInvalidError("commit_result must be JSON string or dict")
+
+        try:
+            validated_commit = resource_service.validate_safe_report(
+                commit_res_raw, expected_phase="commit"
+            )
+        except Exception as exc:
+            raise SelectionStateInvalidError("commit_result is invalid") from exc
+
+        if type(committed_at) is not str or not committed_at:
+            raise SelectionStateInvalidError("committed_at is invalid")
+        try:
+            _parse_iso(committed_at)
+        except Exception as exc:
+            raise SelectionStateInvalidError("committed_at is invalid timestamp") from exc
+
+        if any(x is not None for x in claim_tuple):
+            raise SelectionStateInvalidError("Committed selection has active claim fields")
+
+        return validated_commit
+
+    else:
+        if any(x is not None for x in commit_tuple):
+            raise SelectionStateInvalidError(
+                f"Selection in state {state!r} has unexpected commit evidence"
+            )
+
+        if state == "committing":
+            if any(x is None for x in claim_tuple):
+                raise SelectionStateInvalidError("Committing selection has incomplete claim evidence")
+
+            if type(claim_tok) is not str or not claim_tok or not _is_safe_public_string(claim_tok):
+                raise SelectionStateInvalidError("claim_commit_token is invalid")
+
+            if type(claim_rev) is not int or claim_rev < 0 or claim_rev > MAX_SAFE_INTEGER:
+                raise SelectionStateInvalidError("claim_revision must be a safe integer")
+            if claim_rev != revision:
+                raise SelectionStateInvalidError("claim_revision does not match selection_revision")
+
+            if (
+                type(claim_prev_tok) is not str
+                or not claim_prev_tok
+                or not _is_safe_public_string(claim_prev_tok)
+            ):
+                raise SelectionStateInvalidError("claim_preview_token is invalid")
+
+            if (
+                type(claim_prev_dig) is not str
+                or len(claim_prev_dig) != 64
+                or not all(c in "0123456789abcdef" for c in claim_prev_dig)
+            ):
+                raise SelectionStateInvalidError("claim_manifest_digest is invalid")
+
+            if type(claim_deadline) is not str or not claim_deadline:
+                raise SelectionStateInvalidError("claim_lease_deadline is invalid")
+            try:
+                _parse_iso(claim_deadline)
+            except Exception as exc:
+                raise SelectionStateInvalidError("claim_lease_deadline is invalid timestamp") from exc
+
+            if preview is None:
+                raise SelectionStateInvalidError("Committing selection lacks retained preview evidence")
+            if (
+                claim_prev_tok != preview["preview_token"]
+                or claim_prev_dig != preview["manifest_digest"]
+            ):
+                raise SelectionStateInvalidError(
+                    "claim preview token or digest does not match retained preview"
+                )
+
+        else:
+            if any(x is not None for x in claim_tuple):
+                raise SelectionStateInvalidError(
+                    f"Selection in state {state!r} has unexpected active claim fields"
+                )
+
+        return None
+
+
+def _project_selection_view(sel: dict) -> dict:
+    """Pure canonical projector and validator of a persisted selection row to SelectionView."""
+    sid = sel.get("selection_id")
+    if type(sid) is not str or not sid or not _is_safe_public_string(sid):
+        raise SelectionStateInvalidError("selection_id is invalid")
+
+    revision = sel.get("selection_revision")
+    if type(revision) is not int or revision < 0 or revision > MAX_SAFE_INTEGER:
+        raise SelectionStateInvalidError("selection_revision must be safe integer")
+
+    state = sel.get("state")
+    if type(state) is not str or state not in PUBLIC_SELECTION_STATES:
+        raise SelectionStateInvalidError("state is invalid")
+
+    expires_at = sel.get("expires_at")
+    if type(expires_at) is not str or not expires_at:
+        raise SelectionStateInvalidError("expires_at is invalid")
+    try:
+        _parse_iso(expires_at)
+    except Exception as exc:
+        raise SelectionStateInvalidError("expires_at is invalid ISO format") from exc
+
+    file_rows = db.q(
+        "SELECT file_id, file_name, byte_count, declared_library, "
+        "       effective_library_key, matched_auxiliary_kinds, "
+        "       effective_auxiliary_kind, status "
+        "FROM resource_selection_file "
+        "WHERE selection_id = ? "
+        "ORDER BY order_index ASC, id ASC",
+        sid,
+    )
+
+    files = []
+    for row in file_rows:
+        st = row.get("status")
+        if type(st) is not str or st not in ("reserved", "staged", "removed", "finalized", "failed"):
+            raise SelectionStateInvalidError("file status is invalid")
+        if st == "staged":
+            files.append(_build_file_view(row))
+    preview = _build_preview_view(sel)
+    commit_result = _validate_selection_state_matrix(sel, preview, revision, state)
+
+    return {
+        "selection_id": sid,
+        "selection_revision": revision,
+        "state": state,
+        "expires_at": expires_at,
+        "files": files,
+        "preview": preview,
+        "commit_result": commit_result,
+    }
+
+
+def build_selection_view(
+    selection_id: str,
+    now_iso: str | None = None,
+) -> dict | None:
+    """Return the public, safe projection of one selection, or ``None``.
+
+    The function runs record-local lazy recovery first (so a read after
+    expiry sees the expired state, not the stale-open row), then
+    serializes through the validated public shape. Fails closed with
+    ``SelectionStateInvalidError`` on any inconsistent or malformed
+    persisted evidence.
+    """
+    sel = recover_selection(selection_id, now_iso=now_iso)
+    if sel is None:
+        return None
+    return _project_selection_view(sel)
+
+
+def validate_public_revision(value: Any) -> int:
+    """Validate a revision value (compatibility wrapper)."""
+    if isinstance(value, str):
+        return validate_query_revision(value)
+    return validate_json_revision(value)

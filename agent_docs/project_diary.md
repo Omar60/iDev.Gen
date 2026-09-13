@@ -53,3 +53,73 @@
   file outside the manifest, preserves revision, counters, and invalidated
   preview fields, and changes only cleanup evidence while startup, record-local,
   and bounded opportunistic paths remove the recorded staged bytes.
+- Task 1.2 is an HTTP/projection boundary over Task 1.1, not the canonical
+  import bridge. Upload replay must prove exact incoming-byte identity after
+  response loss; matching only `upload_id` and display filename is insufficient.
+  The public `SelectionView` must be an explicit whitelist that never serializes
+  database rows, paths, fingerprints, claim data, cleanup internals, or
+  nanosecond timestamps. Preview/commit integration, compatibility parsing, and
+  frontend stale-response handling remain in Tasks 1.3, 1.4, and 1.5.
+- Green route tests are not semantic proof when they encode optional values that
+  OpenSpec requires. Task 1.2 review must explicitly probe omitted revisions,
+  empty/extra PATCH bodies, framework-generated validation errors, concurrent
+  replay ownership, finalize failures, and persisted nested private/unsafe
+  values. A whitelist of top-level `SelectionView` keys is insufficient if
+  nested preview or commit dictionaries are passed through unchanged.
+- Framework type coercion and multipart parameter binding are part of the HTTP
+  trust boundary. A typed `int` model can turn JSON booleans, strings, or
+  integral floats into a revision before a domain validator sees them, while a
+  single `UploadFile`/`Form` signature can silently select one duplicate part.
+  Acceptance must probe raw HTTP shapes and zero-mutation outcomes, not only
+  call the post-binding model or domain helper.
+- A denylist of private-looking key names is not a canonical projection.
+  Unknown keys and path values under innocuous names still escape. Preview and
+  commit results need explicit shape-aware allowlists plus persisted sentinel
+  tests for both branches.
+- A safe projection must preserve the repository's actual authoritative
+  canonical report shape. A second test-shaped schema can both discard real
+  fields and reasons and add speculative fields, even when its top-level
+  allowlist looks restrictive.
+- Persisted preview evidence must be validated, not coerced: preview tokens are
+  opaque strings, manifest digests are lowercase hexadecimal strings, and
+  committability is boolean. Invalid stored evidence fails closed rather than
+  becoming a plausible public value.
+- Equivalent transport forms belong to one trust boundary. Media types require
+  semantic case-insensitive parsing, and every revision transport must reject
+  booleans, floats, and strings before framework coercion changes their type.
+- Client filenames, invalid identifiers, and multipart field names are
+  untrusted display and error inputs. Public filenames must be display-only,
+  and stable errors must not echo path-like client data.
+- A synthesized public view after an authoritative lookup fails can conceal an
+  ownership or transaction-visibility defect. Idempotent replay must return the
+  persisted authoritative result or fail explicitly; a fallback response is
+  not proof of the invariant.
+- Task 1.2 repair 3 must use transport-specific decoding into shared canonical
+  values: JSON revisions retain their original type, query revisions use an
+  explicit decimal grammar, and both meet one safe-integer range invariant.
+- Canonical report safety belongs beside `resource_service.safe_report`.
+  SelectionView may validate and copy that exact shape, but must not maintain a
+  second legacy/speculative projection or partially repair malformed evidence.
+- Corrupt persisted public evidence is a server-integrity failure. Return one
+  fixed path-free error without a fabricated current view; never turn invalid
+  storage into zeros, strings, booleans, empty lists, or partial reports.
+- A validator placed beside a canonical producer is not automatically the same
+  contract. It must accept every genuine producer output and reject impossible
+  enum, digest, count and phase combinations; otherwise it is still a second
+  hand-maintained schema with a new location.
+- Validate target values before their CAS transaction. Rejecting them only when
+  serializing the response can commit invalid data and a revision bump, then
+  return `500`, violating both stable `422` behavior and zero-mutation safety.
+- Fail-closed state validation includes relationships, not only scalar types:
+  committed state requires its atomic commit result, and an empty serialized
+  result is malformed evidence rather than an absent nullable value.
+- A durable idempotency decision is incomplete if the HTTP response performs a
+  second mutable recovery read. Create/replay now projects its authoritative
+  view while the durable decision remains serialized, so concurrent equivalent
+  requests converge through one response contract.
+- Compatibility wrappers must fail closed after durable state disappears. A
+  previously canonical view is still stale evidence after an authoritative
+  reload returns no row and must never become a success fallback.
+- Task 1.2 aggregate acceptance requires both semantic probes and sustained
+  post-load concurrency. Thirty synchronized five-request batches passed after
+  the focused suites before the task was marked complete.

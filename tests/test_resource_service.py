@@ -15,6 +15,7 @@ import pytest
 
 import db
 import resource_import
+import resource_parser
 import resource_service
 import resource_store
 
@@ -757,3 +758,660 @@ def test_api_preview_and_commit_envelope_source_file(client, tmp_path):
     assert api_rev2["source_id"] == "invented_scene_02"
     assert api_rev2["payload"]["theme"] == "Invented garden environment"
     assert "library" not in api_rev2["payload"]
+
+
+def test_validate_safe_report_valid_preview_and_commit(tmp_path):
+    path = tmp_path / "resources.json"
+    _write(path, [_scene("scene_valid", "invented room")])
+
+    preview = resource_service.preview_import(_selection(path))
+    preview_safe = resource_service.safe_report(preview)
+    validated_preview = resource_service.validate_safe_report(preview_safe, expected_phase="preview")
+    assert validated_preview["phase"] == "preview"
+    assert validated_preview["summary"]["inputs"] == 1
+    assert len(validated_preview["files"]) == 1
+
+    commit_report = resource_service.commit_import(resource_service.preview_to_dict(preview))
+    commit_safe = resource_service.safe_report(commit_report)
+    validated_commit = resource_service.validate_safe_report(commit_safe, expected_phase="commit")
+    assert validated_commit["phase"] == "commit"
+    assert validated_commit["summary"]["recorded"] == 1
+
+
+@pytest.mark.parametrize(
+    "corrupt_report",
+    [
+        "not a dict",
+        None,
+        [],
+        {"phase": "other", "summary": {}, "files": [], "missing_source_entries": []},
+        {"phase": "preview", "summary": {"total_inputs": True}, "files": [], "missing_source_entries": []},
+        {"phase": "preview", "summary": {"total_inputs": -1}, "files": [], "missing_source_entries": []},
+        {"phase": "preview", "summary": {"total_inputs": "1"}, "files": [], "missing_source_entries": []},
+        {"phase": "preview", "summary": {}, "files": "not a list", "missing_source_entries": []},
+        {"phase": "preview", "summary": {}, "files": [{"file_name": "../../etc/passwd", "library_key": "k", "total_inputs": 1, "accepted": [], "unresolved": []}], "missing_source_entries": []},
+        {"phase": "preview", "summary": {}, "files": [{"file_name": "f.json", "library_key": "k", "total_inputs": 1, "accepted": [{"source_id": "s", "library_key": "k", "new_content_digest": "INVALID_HEX"}], "unresolved": []}], "missing_source_entries": []},
+        {"phase": "preview", "summary": {}, "files": [], "missing_source_entries": "not a list"},
+        {"phase": "preview", "summary": {}, "files": [], "missing_source_entries": [{"source_id": "s", "library_key": "k", "content_digest": "not-64-hex"}]},
+    ],
+)
+def test_validate_safe_report_rejects_corrupt_payloads(corrupt_report):
+    with pytest.raises((ValueError, TypeError)):
+        resource_service.validate_safe_report(corrupt_report)
+
+
+# ---------------------------------------------------------------------------
+# Repair 4B Tests: Canonical Safe Report Contract
+# ---------------------------------------------------------------------------
+
+class StringSubclass(str):
+    """Subclass of str to verify exact type checks."""
+    pass
+
+
+class IntSubclass(int):
+    """Subclass of int to verify exact type checks."""
+    pass
+
+
+def _valid_canonical_preview_dict() -> dict[str, Any]:
+    """Helper returning a fully-populated, reconciled preview report dict."""
+    digest_a = "a" * 64
+    digest_b = "b" * 64
+    digest_prev = "d" * 64
+    digest_aux = "e" * 64
+    digest_miss = "f" * 64
+    return {
+        "version": 1,
+        "phase": "preview",
+        "summary": {
+            "files": 1,
+            "inputs": 5,
+            "accepted": 2,
+            "auxiliary": 1,
+            "duplicates": 1,
+            "unresolved": 1,
+            "new": 1,
+            "unchanged": 0,
+            "updated": 1,
+            "missing": 1,
+        },
+        "files": [
+            {
+                "library_key": "canon_lib",
+                "total_inputs": 5,
+                "accepted": [
+                    {
+                        "source_id": "scene_new",
+                        "library_key": "canon_lib",
+                        "kind": "rooms",
+                        "classification": "new",
+                        "new_content_digest": digest_a,
+                        "previous_content_digest": None,
+                    },
+                    {
+                        "source_id": "scene_upd",
+                        "library_key": "canon_lib",
+                        "kind": "fused_scenes",
+                        "classification": "updated",
+                        "new_content_digest": digest_b,
+                        "previous_content_digest": digest_prev,
+                    },
+                ],
+                "auxiliary": [
+                    {
+                        "library_key": "canon_lib",
+                        "kind": "translation_map",
+                        "classification": "unchanged",
+                        "new_content_digest": digest_aux,
+                        "previous_content_digest": digest_aux,
+                    }
+                ],
+                "duplicates": [
+                    {
+                        "source_id": "dup_01",
+                        "occurrences": 2,
+                    }
+                ],
+                "unresolved": [
+                    {
+                        "bucket": "malformed",
+                        "index": 4,
+                        "reason": "missing required prompt field",
+                        "received_type": "dict",
+                        "expected_kind": "fused_scenes",
+                        "identifier_fields": ["id", "key"],
+                    }
+                ],
+            }
+        ],
+        "missing_source_entries": [
+            {
+                "library_key": "canon_lib",
+                "source_id": "scene_missing",
+                "latest_content_digest": digest_miss,
+            }
+        ],
+    }
+
+
+def _valid_canonical_commit_dict() -> dict[str, Any]:
+    """Helper returning a fully-populated, reconciled commit report dict."""
+    d = _valid_canonical_preview_dict()
+    d["phase"] = "commit"
+    d["summary"].update({
+        "recorded": 3,
+        "new_scene_revisions": 2,
+        "unchanged_scene_revisions": 0,
+        "updated_scene_revisions": 1,
+        "new_auxiliary_revisions": 0,
+        "unchanged_auxiliary_revisions": 1,
+    })
+    return d
+
+
+def test_repair_4b_producer_validator_equivalence(tmp_path):
+    # 1. Empty reports
+    empty_prev = resource_import.PreviewReport()
+    safe_empty_prev = resource_service.safe_report(empty_prev)
+    assert resource_service.validate_safe_report(safe_empty_prev, expected_phase="preview") == safe_empty_prev
+    assert resource_service.validate_safe_report(json.dumps(safe_empty_prev), expected_phase="preview") == safe_empty_prev
+
+    empty_commit = resource_import.CommitReport()
+    safe_empty_commit = resource_service.safe_report(empty_commit)
+    assert resource_service.validate_safe_report(safe_empty_commit, expected_phase="commit") == safe_empty_commit
+    assert resource_service.validate_safe_report(json.dumps(safe_empty_commit), expected_phase="commit") == safe_empty_commit
+
+    # 2. Genuine preview and commit from real files
+    path1 = tmp_path / "scenes1.json"
+    _write(path1, [
+        _scene("sc_01", "room 1"),
+        _scene("sc_02", "room 2"),
+        {"translation_map": {"a": "b"}},
+        {"invalid": "unsupported"},
+    ])
+    path2 = tmp_path / "scenes2.json"
+    _write(path2, [
+        _scene("sc_03", "room 3"),
+    ])
+
+    preview = resource_service.preview_import([(str(path1), "lib_1"), (str(path2), "lib_2")])
+    safe_prev = resource_service.safe_report(preview)
+    val_prev = resource_service.validate_safe_report(safe_prev, expected_phase="preview")
+    assert val_prev == safe_prev
+    assert resource_service.validate_safe_report(json.dumps(safe_prev), expected_phase="preview") == safe_prev
+
+    # Commit the preview
+    commit = resource_service.commit_import(resource_service.preview_to_dict(preview))
+    safe_commit = resource_service.safe_report(commit)
+    val_commit = resource_service.validate_safe_report(safe_commit, expected_phase="commit")
+    assert val_commit == safe_commit
+    assert resource_service.validate_safe_report(json.dumps(safe_commit), expected_phase="commit") == safe_commit
+
+
+def test_repair_4b_enum_matrices():
+    # 1. Accepted scene kinds
+    for valid_kind in (resource_parser.KIND_ROOMS, resource_parser.KIND_FUSED_SCENES):
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["accepted"][0]["kind"] = valid_kind
+        assert resource_service.validate_safe_report(d)["files"][0]["accepted"][0]["kind"] == valid_kind
+
+    for invalid_kind in ("ROOMS", "Rooms", "rooms ", "fused", "character", ""):
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["accepted"][0]["kind"] = invalid_kind
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # 2. Auxiliary kinds
+    for valid_aux in resource_parser.ALL_AUXILIARY_KINDS:
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["auxiliary"][0]["kind"] = valid_aux
+        assert resource_service.validate_safe_report(d)["files"][0]["auxiliary"][0]["kind"] == valid_aux
+
+    for invalid_aux in ("TRANSLATION_MAP", "Cut_Map", "custom", "auxiliary", ""):
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["auxiliary"][0]["kind"] = invalid_aux
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # 3. Classifications
+    for invalid_clsf in ("NEW", "Unchanged", "updated_scene", "deleted", ""):
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["accepted"][0]["classification"] = invalid_clsf
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # 4. Unresolved buckets
+    for valid_bkt in resource_import.ALL_UNRESOLVED_BUCKETS:
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["unresolved"][0]["bucket"] = valid_bkt
+        if valid_bkt == resource_import.BUCKET_FILE_READ_ERROR:
+            d["files"][0]["unresolved"][0]["reason"] = "source file could not be read or parsed"
+        assert resource_service.validate_safe_report(d)["files"][0]["unresolved"][0]["bucket"] == valid_bkt
+
+    for invalid_bkt in ("MALFORMED", "error", "missing", "unknown_bucket", ""):
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["unresolved"][0]["bucket"] = invalid_bkt
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # 5. Expected kinds in unresolved
+    for valid_exp in ("", resource_parser.KIND_ROOMS, resource_parser.KIND_FUSED_SCENES):
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["unresolved"][0]["expected_kind"] = valid_exp
+        assert resource_service.validate_safe_report(d)["files"][0]["unresolved"][0]["expected_kind"] == valid_exp
+
+    for invalid_exp in ("ROOMS", "scene", "translation_map"):
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["unresolved"][0]["expected_kind"] = invalid_exp
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # 6. Identifier fields
+    valid_subsets = [
+        [],
+        ["id"],
+        ["identifier"],
+        ["key"],
+        ["id", "identifier"],
+        ["id", "key"],
+        ["identifier", "key"],
+        ["id", "identifier", "key"],
+    ]
+    for sub in valid_subsets:
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["unresolved"][0]["identifier_fields"] = sub
+        assert resource_service.validate_safe_report(d)["files"][0]["unresolved"][0]["identifier_fields"] == sub
+
+    invalid_subsets = [
+        ["key", "id"],
+        ["identifier", "id"],
+        ["id", "id"],
+        ["id", "key", "key"],
+        ["unknown"],
+        ["ID"],
+        ("id",),
+    ]
+    for sub in invalid_subsets:
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["unresolved"][0]["identifier_fields"] = sub
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+
+def test_repair_4b_digest_variants():
+    invalid_digests = [
+        "a" * 63,
+        "a" * 65,
+        "a" * 16,
+        "a" * 128,
+        "A" * 64,
+        "a" * 63 + "F",
+        "g" * 64,
+        "",
+        " " + "a" * 63,
+        "a" * 64 + " ",
+        "sha256:" + "a" * 64,
+        123,
+        True,
+        StringSubclass("a" * 64),
+    ]
+
+    # Test new_content_digest in accepted
+    for bad in invalid_digests:
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["accepted"][0]["new_content_digest"] = bad
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # Test previous_content_digest in accepted (updated item)
+    for bad in invalid_digests:
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["accepted"][1]["previous_content_digest"] = bad
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # Test auxiliary new_content_digest
+    for bad in invalid_digests:
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["auxiliary"][0]["new_content_digest"] = bad
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # Test missing_source_entries latest_content_digest
+    for bad in invalid_digests:
+        d = _valid_canonical_preview_dict()
+        d["missing_source_entries"][0]["latest_content_digest"] = bad
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+
+def test_repair_4b_classification_relationships():
+    # 1. Accepted items
+    # new with previous digest
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["accepted"][0]["previous_content_digest"] = "d" * 64
+    with pytest.raises(ValueError, match="classification 'new' requires previous_content_digest to be None"):
+        resource_service.validate_safe_report(d)
+
+    # unchanged with no previous digest
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["accepted"][0]["classification"] = "unchanged"
+    d["files"][0]["accepted"][0]["previous_content_digest"] = None
+    with pytest.raises(ValueError, match="classification 'unchanged' requires previous_content_digest to be non-None"):
+        resource_service.validate_safe_report(d)
+
+    # unchanged with different previous digest
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["accepted"][0]["classification"] = "unchanged"
+    d["files"][0]["accepted"][0]["previous_content_digest"] = "z" * 64
+    with pytest.raises(ValueError):
+        resource_service.validate_safe_report(d)
+
+    # updated with no previous digest
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["accepted"][1]["previous_content_digest"] = None
+    with pytest.raises(ValueError, match="classification 'updated' requires previous_content_digest to be non-None"):
+        resource_service.validate_safe_report(d)
+
+    # updated with equal previous digest
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["accepted"][1]["previous_content_digest"] = d["files"][0]["accepted"][1]["new_content_digest"]
+    with pytest.raises(ValueError, match="classification 'updated' requires previous_content_digest to differ"):
+        resource_service.validate_safe_report(d)
+
+    # 2. Auxiliary items
+    # new with previous digest
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["auxiliary"][0]["classification"] = "new"
+    d["files"][0]["auxiliary"][0]["previous_content_digest"] = "e" * 64
+    with pytest.raises(ValueError, match="classification 'new' requires previous_content_digest to be None"):
+        resource_service.validate_safe_report(d)
+
+    # unchanged with no previous digest
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["auxiliary"][0]["classification"] = "unchanged"
+    d["files"][0]["auxiliary"][0]["previous_content_digest"] = None
+    with pytest.raises(ValueError, match="classification 'unchanged' requires previous_content_digest to be non-None"):
+        resource_service.validate_safe_report(d)
+
+    # unchanged with different previous digest
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["auxiliary"][0]["classification"] = "unchanged"
+    d["files"][0]["auxiliary"][0]["previous_content_digest"] = "1" * 64
+    with pytest.raises(ValueError):
+        resource_service.validate_safe_report(d)
+
+    # updated with no previous digest
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["auxiliary"][0]["classification"] = "updated"
+    d["files"][0]["auxiliary"][0]["previous_content_digest"] = None
+    with pytest.raises(ValueError, match="classification 'updated' requires previous_content_digest to be non-None"):
+        resource_service.validate_safe_report(d)
+
+    # updated with equal previous digest
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["auxiliary"][0]["classification"] = "updated"
+    d["files"][0]["auxiliary"][0]["previous_content_digest"] = d["files"][0]["auxiliary"][0]["new_content_digest"]
+    with pytest.raises(ValueError, match="classification 'updated' requires previous_content_digest to differ"):
+        resource_service.validate_safe_report(d)
+
+
+def test_repair_4b_integer_and_counter_variants():
+    bad_ints = [True, False, 1.0, "1", IntSubclass(1), -1, 9007199254740992]
+
+    # Version rejected
+    for bad in bad_ints:
+        d = _valid_canonical_preview_dict()
+        d["version"] = bad
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # Summary integer rejected
+    for bad in bad_ints:
+        d = _valid_canonical_preview_dict()
+        d["summary"]["inputs"] = bad
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # File total_inputs rejected
+    for bad in bad_ints:
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["total_inputs"] = bad
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # Duplicate occurrences: 0 and 1 rejected, 2 and higher accepted
+    for bad_occ in (0, 1, -1, True, 2.0, "2", IntSubclass(2)):
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["duplicates"][0]["occurrences"] = bad_occ
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["duplicates"][0]["occurrences"] = 2
+    assert resource_service.validate_safe_report(d)["files"][0]["duplicates"][0]["occurrences"] == 2
+
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["duplicates"][0]["occurrences"] = 99
+    assert resource_service.validate_safe_report(d)["files"][0]["duplicates"][0]["occurrences"] == 99
+
+    # Unresolved index rejected
+    for bad in (True, 1.0, -1, "0"):
+        d = _valid_canonical_preview_dict()
+        d["files"][0]["unresolved"][0]["index"] = bad
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # Summary counter mutations away from derived contents
+    for key, bad_val in [
+        ("files", 2),
+        ("inputs", 6),
+        ("accepted", 3),
+        ("auxiliary", 0),
+        ("duplicates", 0),
+        ("unresolved", 0),
+        ("missing", 0),
+        ("new", 0),
+        ("unchanged", 1),
+        ("updated", 0),
+    ]:
+        d = _valid_canonical_preview_dict()
+        d["summary"][key] = bad_val
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # File total_inputs mismatch with items
+    d = _valid_canonical_preview_dict()
+    d["files"][0]["total_inputs"] = 4  # items sum to 5
+    with pytest.raises(ValueError, match="total_inputs"):
+        resource_service.validate_safe_report(d)
+
+    # Commit counters mutations
+    for key, bad_val in [
+        ("recorded", 4),
+        ("new_scene_revisions", 1),
+        ("unchanged_scene_revisions", 1),
+        ("updated_scene_revisions", 0),
+        ("new_auxiliary_revisions", 1),
+        ("unchanged_auxiliary_revisions", 0),
+    ]:
+        d = _valid_canonical_commit_dict()
+        d["summary"][key] = bad_val
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d, expected_phase="commit")
+
+    # Multi-file reconciliation test
+    d = _valid_canonical_preview_dict()
+    f2 = copy.deepcopy(d["files"][0])
+    f2["library_key"] = "lib_2"
+    f2["accepted"][0]["source_id"] = "f2_sc_new"
+    f2["accepted"][1]["source_id"] = "f2_sc_upd"
+    d["files"].append(f2)
+    d["summary"]["files"] = 2
+    d["summary"]["inputs"] = 10
+    d["summary"]["accepted"] = 4
+    d["summary"]["auxiliary"] = 2
+    d["summary"]["duplicates"] = 2
+    d["summary"]["unresolved"] = 2
+    d["summary"]["new"] = 2
+    d["summary"]["updated"] = 2
+    assert resource_service.validate_safe_report(d)["summary"]["inputs"] == 10
+
+    # If second file's total_inputs is wrong, fails
+    d["files"][1]["total_inputs"] = 4
+    with pytest.raises(ValueError):
+        resource_service.validate_safe_report(d)
+
+
+def test_repair_4b_semantic_path_like_identifiers(tmp_path):
+    semantic_ids = [
+        "../relative/path/id",
+        "./local/scene",
+        "folder/item_01",
+        "folder\\subfolder\\item_02",
+        "C:\\semantic\\drive\\scene",
+        "file:resource_uri_spec",
+        "staged_path",
+        "fingerprint",
+        "claim_commit_token",
+        "attestation",
+    ]
+
+    scenes = [{"id": s_id, "label": f"label {s_id}", "theme": "t", "tags": []} for s_id in semantic_ids]
+    json_path = tmp_path / "semantic.json"
+    _write(json_path, scenes)
+
+    preview = resource_service.preview_import([(str(json_path), "semantic_lib")])
+    safe = resource_service.safe_report(preview)
+
+    validated = resource_service.validate_safe_report(safe, expected_phase="preview")
+    assert validated == safe
+
+    # Verify all semantic source_ids survived unchanged
+    emitted_ids = [acc["source_id"] for acc in validated["files"][0]["accepted"]]
+    assert emitted_ids == semantic_ids
+
+    # Verify physical file_path and fingerprint do NOT appear anywhere in the safe report
+    safe_json = json.dumps(safe)
+    assert str(tmp_path) not in safe_json
+    assert "semantic.json" not in safe_json
+    assert "fingerprint" not in safe["files"][0]
+    assert "file_path" not in safe["files"][0]
+
+
+def test_repair_4b_structural_private_field_injection():
+    private_injections = [
+        ("top", {"file_path": "/etc/passwd"}),
+        ("top", {"staged_path": "/staged/test"}),
+        ("top", {"fingerprint": {"mtime_ns": 123}}),
+        ("top", {"mtime_ns": 123}),
+        ("top", {"attestation": "token"}),
+        ("top", {"unknown_key": "val"}),
+        ("summary", {"mtime_ns": 123}),
+        ("summary", {"fingerprint": "xyz"}),
+        ("file", {"file_path": "/var/log"}),
+        ("file", {"fingerprint": "xyz"}),
+        ("file", {"staged_path": "/tmp/staged"}),
+        ("file", {"mtime_ns": 100}),
+        ("accepted", {"file_path": "/tmp/p"}),
+        ("accepted", {"staged_path": "/tmp/s"}),
+        ("accepted", {"fingerprint": "xyz"}),
+        ("accepted", {"device": 1}),
+        ("auxiliary", {"file_path": "/tmp/p"}),
+        ("auxiliary", {"staged_path": "/tmp/s"}),
+        ("duplicate", {"file_path": "/tmp/p"}),
+        ("duplicate", {"reason": "dropped"}),
+        ("unresolved", {"file_path": "/tmp/p"}),
+        ("missing", {"file_path": "/tmp/p"}),
+        ("missing", {"reason": "legacy"}),
+    ]
+
+    for target, injection in private_injections:
+        d = _valid_canonical_preview_dict()
+        if target == "top":
+            d.update(injection)
+        elif target == "summary":
+            d["summary"].update(injection)
+        elif target == "file":
+            d["files"][0].update(injection)
+        elif target == "accepted":
+            d["files"][0]["accepted"][0].update(injection)
+        elif target == "auxiliary":
+            d["files"][0]["auxiliary"][0].update(injection)
+        elif target == "duplicate":
+            d["files"][0]["duplicates"][0].update(injection)
+        elif target == "unresolved":
+            d["files"][0]["unresolved"][0].update(injection)
+        elif target == "missing":
+            d["missing_source_entries"][0].update(injection)
+
+        with pytest.raises(ValueError):
+            resource_service.validate_safe_report(d)
+
+    # Recursive check on valid reports
+    def _assert_no_private_keys(obj):
+        forbidden = {
+            "file_path", "staged_path", "fingerprint", "mtime_ns",
+            "device", "inode", "attestation", "attestation_token",
+            "claim_commit_token", "staged_bytes",
+        }
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                assert k not in forbidden, f"Forbidden private key found: {k}"
+                _assert_no_private_keys(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _assert_no_private_keys(item)
+
+    _assert_no_private_keys(_valid_canonical_preview_dict())
+    _assert_no_private_keys(_valid_canonical_commit_dict())
+
+
+def test_repair_4b_reason_safety_and_preservation():
+    # Build PreviewReport with file read error and legitimate reasons
+    unres_read_err = resource_import.UnresolvedItem(
+        bucket=resource_import.BUCKET_FILE_READ_ERROR,
+        index=0,
+        reason="could not read /secret/private/path/to/file.json: Permission denied",
+    )
+    unres_malformed = resource_import.UnresolvedItem(
+        bucket=resource_import.BUCKET_MALFORMED,
+        index=1,
+        reason="field 'prompt' must be a non-empty string",
+    )
+    unres_unsupported = resource_import.UnresolvedItem(
+        bucket=resource_import.BUCKET_UNSUPPORTED,
+        index=2,
+        reason="unsupported root schema: expected array or object",
+    )
+
+    file_report = resource_import.FileReport(
+        file_path="/secret/private/path/to/file.json",
+        library_key="test_lib",
+        total_inputs=3,
+        unresolved=[unres_read_err, unres_malformed, unres_unsupported],
+    )
+    preview = resource_import.PreviewReport(files=[file_report])
+
+    safe = resource_service.safe_report(preview)
+
+    # 1. Verify BUCKET_FILE_READ_ERROR has sanitized reason
+    assert safe["files"][0]["unresolved"][0]["reason"] == "source file could not be read or parsed"
+    assert "/secret/private/path" not in json.dumps(safe)
+
+    # 2. Verify legitimate reasons are preserved byte-for-byte
+    assert safe["files"][0]["unresolved"][1]["reason"] == "field 'prompt' must be a non-empty string"
+    assert safe["files"][0]["unresolved"][2]["reason"] == "unsupported root schema: expected array or object"
+
+    # 3. Verify validate_safe_report round-trip preserves list order and reasons
+    validated = resource_service.validate_safe_report(safe, expected_phase="preview")
+    assert validated == safe
+    json_validated = resource_service.validate_safe_report(json.dumps(safe), expected_phase="preview")
+    assert json_validated == safe
+
+    # 4. If someone tries to validate a file_read_error with unsanitized reason, it is rejected
+    mutated = copy.deepcopy(safe)
+    mutated["files"][0]["unresolved"][0]["reason"] = "could not read /secret/private/path"
+    with pytest.raises(ValueError, match="file_read_error bucket must have sanitized reason"):
+        resource_service.validate_safe_report(mutated)

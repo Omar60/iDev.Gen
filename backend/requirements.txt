@@ -2,3 +2,9 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 httpx>=0.27
 Pillow>=12.3
+# Required by Task 1.2 (`/api/resources/import-selections/{sid}/files`) for
+# streamed multipart parsing. FastAPI raises at route registration time
+# without it; stdlib does not expose a streaming multipart parser. Used
+# only by the import-selections upload route; no other endpoint depends
+# on this package.
+python-multipart>=0.0.9

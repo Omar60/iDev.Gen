@@ -9,22 +9,21 @@ agent.
 
 ## Overall Progress
 
-OpenSpec reports a valid `spec-driven` change with 1 of 72 tasks complete. The
-approved planning artifacts are committed at `766782b` and strict validation
-passes. MiniMax produced the Task 1.1 implementation and three focused repairs.
-Independent verification now passes, and the main agent explicitly accepted
-Task 1.1 as the first completed implementation unit.
+OpenSpec is a valid `spec-driven` change with 2 of 72 tasks complete. Task 1.1
+was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`. Task 1.2 has passed
+independent unit reviews and its aggregate final gate.
 
 ## Current Position
 
-Task 1.1 is complete. Its backend-only selection/file/claim persistence,
-streaming reservations, fixed expiry, recovery, and retryable cleanup remain
-separate from the later HTTP and canonical-import layers. Repair 3 made durable
-`removed`/`pending` files recoverable through startup, record-local, and
-opportunistic paths after process loss between commit and callback.
+Task 1.2 is complete. The backend now provides the closed
+create/upload/remove/choice/status/cancel selection boundary, canonical safe
+report projection, strict persisted-state integrity, transport-first multipart
+validation, authoritative post-durable visibility, and convergent create/replay
+responses. The final concurrency regression passed 30 consecutive five-request
+batches after the focused suites, with exactly one `201`, four `200` responses,
+one durable row and one shared selection ID per batch.
 
 ## Next Milestone
 
-Close the accepted Task 1.1 unit with its isolated acceptance commit and token
-report. Task 1.2 remains the next pending task but has not been started; begin it
-only under a new explicit implementation request and a fresh bounded handoff.
+Task 1.3 remains pending and untouched. Do not begin it automatically; prepare
+its bounded external implementation handoff only when explicitly requested.
