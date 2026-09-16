@@ -774,6 +774,8 @@ def test_http_boundary_surface_for_import_selections():
         ("POST", "/api/resources/import-selections/{selection_id}/cancel"),
         ("DELETE", "/api/resources/import-selections/{selection_id}/files/{file_id}"),
         ("PATCH", "/api/resources/import-selections/{selection_id}/files/{file_id}"),
+        ("POST", "/api/resources/import-selections/{selection_id}/preview"),
+        ("POST", "/api/resources/import-selections/{selection_id}/commit"),
     }
     assert set(route_paths) == expected, (
         f"unexpected import-selections route surface: got {sorted(route_paths)}, expected {sorted(expected)}"

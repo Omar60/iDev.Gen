@@ -123,3 +123,19 @@
 - Task 1.2 aggregate acceptance requires both semantic probes and sustained
   post-load concurrency. Thirty synchronized five-request batches passed after
   the focused suites before the task was marked complete.
+- Task 1.3 browser attestations must bind the complete canonical preview,
+  selection identity, revision, manifest digest, and effective targets. Browser
+  commits therefore use a SQLite claim rather than consuming the legacy
+  filesystem `.claimed` marker; path imports retain that marker's one-shot
+  semantics.
+- Accepted resources, derived coverage, and the selection `commit_result` must
+  remain inside one outer SQLite transaction. Crashes before durable commit
+  leave zero partial rows and a lease-recoverable selection, while crashes after
+  commit replay the stored result without re-import.
+- Response loss is a durable-state case, not a new import request. Replay must
+  return the authoritative stored result, preserve accounting and revision
+  identity, and leave cleanup as retryable post-commit work that cannot remove
+  committed resources.
+- Task 1.3 acceptance required adversarial fingerprint/attestation mutation,
+  ownership-loss, exception-sanitization, atomicity, concurrency, crash-window,
+  cleanup, and legacy compatibility probes in addition to the repository gates.

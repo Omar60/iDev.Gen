@@ -14,13 +14,19 @@ from pathlib import Path
 import re
 import secrets
 import time
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import db
 import resource_import
 import resource_parser
 import resource_readiness
 import resource_store
+import sys
+
+if __name__ == "backend.resource_service" and "resource_service" not in sys.modules:
+    sys.modules["resource_service"] = sys.modules[__name__]
+elif __name__ == "resource_service" and "backend.resource_service" not in sys.modules:
+    sys.modules["backend.resource_service"] = sys.modules[__name__]
 
 
 PREVIEW_VERSION = 2
@@ -30,6 +36,9 @@ _ATTESTATION_DIR_NAME = ".resource-preview-attestations"
 _ATTESTATION_TOKEN_MIN_LENGTH = 32
 _CANONICAL_NON_NEGATIVE_INT_RE = re.compile(r"^(0|[1-9][0-9]*)$")
 
+PURPOSE_PATH_IMPORT = "path_import"
+PURPOSE_BROWSER_SELECTION = "browser_selection"
+
 
 def preview_import(selections: Iterable[tuple[str | Path, str]]) -> resource_import.PreviewReport:
     """Preview selected files without writing application state."""
@@ -38,8 +47,21 @@ def preview_import(selections: Iterable[tuple[str | Path, str]]) -> resource_imp
     )
 
 
+def _canonical_commit_core(
+    preview: resource_import.PreviewReport,
+    failure_injector: Callable[[int], None] | None = None,
+) -> resource_import.CommitReport:
+    """Execute canonical import and persist coverage in the active transaction."""
+    report = resource_import.commit_import(
+        preview, failure_injector=failure_injector
+    )
+    _persist_new_revision_coverage(preview)
+    return report
+
+
 def commit_import(
     preview: resource_import.PreviewReport | dict[str, Any],
+    failure_injector: Callable[[int], None] | None = None,
 ) -> resource_import.CommitReport:
     """Commit an exact preview, rehydrating its typed state when needed."""
     if isinstance(preview, dict):
@@ -58,12 +80,50 @@ def commit_import(
     claim = _claim_attestation(body, token)
     try:
         with db.transaction():
-            report = resource_import.commit_import(preview)
-            _persist_new_revision_coverage(preview)
+            report = _canonical_commit_core(
+                preview, failure_injector=failure_injector
+            )
     except BaseException:
         _restore_attestation(claim, token)
         raise
     return report
+
+
+def commit_selection_import(
+    preview: resource_import.PreviewReport,
+    preview_token: str,
+    selection_id: str,
+    selection_revision: int,
+    manifest_digest: str,
+    failure_injector: Callable[[int], None] | None = None,
+) -> resource_import.CommitReport:
+    """Selection-only commit boundary.
+
+    - Verifies the immutable HMAC attestation and exact server-owned selection context.
+    - Never calls _claim_attestation().
+    - Requires an already-active caller-owned SQLite transaction.
+    - Calls the same canonical core.
+    - Returns the same typed CommitReport.
+    """
+    if not isinstance(preview, resource_import.PreviewReport):
+        raise TypeError("preview must be a PreviewReport")
+    if not isinstance(preview_token, str) or not preview_token:
+        raise ValueError("preview_token is invalid")
+
+    # Requires an already-active caller-owned SQLite transaction
+    if not (db.conn().in_transaction or getattr(db, "_tx_depth", 0) > 0):
+        raise RuntimeError("commit_selection_import requires an active caller-owned transaction")
+
+    body = _preview_body(preview)
+    verify_browser_attestation(
+        body=body,
+        token=preview_token,
+        selection_id=selection_id,
+        selection_revision=selection_revision,
+        manifest_digest=manifest_digest,
+    )
+
+    return _canonical_commit_core(preview, failure_injector=failure_injector)
 
 
 def _persist_new_revision_coverage(preview: resource_import.PreviewReport) -> None:
@@ -388,6 +448,29 @@ def _write_new_attestation(path: Path, state: dict[str, Any]) -> None:
         stream.write(encoded)
 
 
+def _canonical_browser_payload(
+    body: dict[str, Any],
+    selection_id: str,
+    selection_revision: int,
+    manifest_digest: str,
+) -> bytes:
+    data = {
+        "body": body,
+        "context": {
+            "manifest_digest": manifest_digest,
+            "purpose": PURPOSE_BROWSER_SELECTION,
+            "selection_id": selection_id,
+            "selection_revision": selection_revision,
+        },
+    }
+    return json.dumps(
+        data,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
 def _new_attestation(body: dict[str, Any]) -> str:
     key = _attestation_key(create=True)
     mac = hmac.new(key, _canonical_preview_body(body), hashlib.sha256).hexdigest()
@@ -401,6 +484,54 @@ def _new_attestation(body: dict[str, Any]) -> str:
                     "created_at": int(time.time()),
                     "expires_at": int(time.time()) + PREVIEW_TTL_SECONDS,
                     "mac": mac,
+                    "purpose": PURPOSE_PATH_IMPORT,
+                },
+            )
+            return token
+        except FileExistsError:
+            continue
+    raise ValueError("could not create resource preview attestation")
+
+
+def create_browser_attestation(
+    preview: resource_import.PreviewReport,
+    selection_id: str,
+    selection_revision: int,
+    manifest_digest: str,
+) -> str:
+    """Create an immutable browser-scoped attestation bound to selection context."""
+    if not isinstance(preview, resource_import.PreviewReport):
+        raise TypeError("preview must be a PreviewReport")
+    if not isinstance(selection_id, str) or not selection_id:
+        raise ValueError("selection_id is invalid")
+    if not isinstance(selection_revision, int) or isinstance(selection_revision, bool) or selection_revision < 0:
+        raise ValueError("selection_revision is invalid")
+    if not isinstance(manifest_digest, str) or len(manifest_digest) != 64:
+        raise ValueError("manifest_digest is invalid")
+
+    body = _preview_body(preview)
+    payload_bytes = _canonical_browser_payload(
+        body=body,
+        selection_id=selection_id,
+        selection_revision=selection_revision,
+        manifest_digest=manifest_digest,
+    )
+    key = _attestation_key(create=True)
+    mac = hmac.new(key, payload_bytes, hashlib.sha256).hexdigest()
+    for _ in range(3):
+        token = secrets.token_urlsafe(32)
+        try:
+            _write_new_attestation(
+                _attestation_path(token),
+                {
+                    "version": PREVIEW_VERSION,
+                    "created_at": int(time.time()),
+                    "expires_at": int(time.time()) + PREVIEW_TTL_SECONDS,
+                    "mac": mac,
+                    "purpose": PURPOSE_BROWSER_SELECTION,
+                    "selection_id": selection_id,
+                    "selection_revision": selection_revision,
+                    "manifest_digest": manifest_digest,
                 },
             )
             return token
@@ -425,6 +556,10 @@ def _load_attestation(body: dict[str, Any], token: str) -> dict[str, Any]:
         raise ValueError("serialized resource preview attestation is invalid")
     if state.get("consumed_at") is not None:
         raise ValueError("serialized resource preview has already been consumed")
+    if state.get("purpose") == PURPOSE_BROWSER_SELECTION:
+        raise ValueError(
+            "serialized resource preview attestation is scoped for browser selection and cannot be consumed via path import"
+        )
     try:
         expires_at = int(state["expires_at"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -439,6 +574,101 @@ def _load_attestation(body: dict[str, Any], token: str) -> dict[str, Any]:
     if not isinstance(state.get("mac"), str) or not hmac.compare_digest(state["mac"], expected):
         raise ValueError("serialized resource preview attestation is invalid")
     return state
+
+
+def verify_browser_attestation(
+    body: dict[str, Any],
+    token: str,
+    selection_id: str,
+    selection_revision: int,
+    manifest_digest: str,
+) -> dict[str, Any]:
+    """Verify an immutable browser-scoped attestation against selection context.
+
+    Does NOT check or create a filesystem claim (.claimed file).
+    """
+    path = _attestation_path(token)
+    try:
+        state = json.loads(path.read_text(encoding="ascii"))
+    except FileNotFoundError as exc:
+        raise ValueError("serialized resource preview attestation is unavailable") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError("serialized resource preview attestation is invalid") from exc
+
+    if not isinstance(state, dict):
+        raise ValueError("serialized resource preview attestation is invalid")
+    if state.get("version") != PREVIEW_VERSION:
+        raise ValueError("serialized resource preview attestation is invalid")
+    if state.get("purpose") != PURPOSE_BROWSER_SELECTION:
+        raise ValueError("serialized resource preview attestation is not scoped for browser selection")
+    if state.get("selection_id") != selection_id:
+        raise ValueError("attestation selection_id mismatch")
+    if state.get("selection_revision") != selection_revision:
+        raise ValueError("attestation selection_revision mismatch")
+    if state.get("manifest_digest") != manifest_digest:
+        raise ValueError("attestation manifest_digest mismatch")
+
+    try:
+        expires_at = int(state["expires_at"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("serialized resource preview attestation is invalid") from exc
+    if expires_at <= int(time.time()):
+        raise ValueError("serialized resource preview attestation has expired")
+
+    payload_bytes = _canonical_browser_payload(
+        body=body,
+        selection_id=selection_id,
+        selection_revision=selection_revision,
+        manifest_digest=manifest_digest,
+    )
+    expected = hmac.new(
+        _attestation_key(create=False),
+        payload_bytes,
+        hashlib.sha256,
+    ).hexdigest()
+    if not isinstance(state.get("mac"), str) or not hmac.compare_digest(state["mac"], expected):
+        raise ValueError("serialized resource preview attestation is invalid")
+    return state
+
+
+_attestation_cleanup_hook: Callable[[str], bool | None] | None = None
+
+
+def set_attestation_cleanup_hook(hook: Callable[[str], bool | None] | None) -> None:
+    global _attestation_cleanup_hook
+    _attestation_cleanup_hook = hook
+
+
+def delete_attestation(token: str) -> tuple[bool, str]:
+    """Safely delete an attestation file during cleanup.
+
+    Returns (success, safe_warning).
+    Never leaks physical paths in the warning message.
+    """
+    if not isinstance(token, str) or len(token) < _ATTESTATION_TOKEN_MIN_LENGTH:
+        return True, ""
+
+    if _attestation_cleanup_hook is not None:
+        try:
+            res = _attestation_cleanup_hook(token)
+            if res is False:
+                return False, "Attestation file cleanup failed: InjectedFailure. Retrying on next recovery sweep."
+        except Exception as exc:
+            return False, f"Attestation file cleanup failed: {type(exc).__name__}. Retrying on next recovery sweep."
+
+    path = _attestation_directory() / f"{token}.json"
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        return False, f"Attestation file cleanup failed: {type(exc).__name__}. Retrying on next recovery sweep."
+
+    claim = _attestation_directory() / f"{token}.claimed"
+    try:
+        claim.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    return True, ""
 
 
 def _verify_attestation(body: dict[str, Any], token: str) -> None:
@@ -1170,8 +1400,15 @@ def get_resource_revision(
 
 __all__ = (
     "PREVIEW_VERSION",
+    "PURPOSE_PATH_IMPORT",
+    "PURPOSE_BROWSER_SELECTION",
     "preview_import",
     "commit_import",
+    "commit_selection_import",
+    "create_browser_attestation",
+    "verify_browser_attestation",
+    "delete_attestation",
+    "set_attestation_cleanup_hook",
     "preview_to_dict",
     "preview_from_dict",
     "serialize_preview",

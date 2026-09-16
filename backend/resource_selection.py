@@ -27,8 +27,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 import db
+import resource_import
 import resource_parser
 import resource_service
+import sys
+
+if __name__ == "backend.resource_selection" and "resource_selection" not in sys.modules:
+    sys.modules["resource_selection"] = sys.modules[__name__]
+elif __name__ == "resource_selection" and "backend.resource_selection" not in sys.modules:
+    sys.modules["backend.resource_selection"] = sys.modules[__name__]
 
 
 # Sentinel to distinguish an omitted target field from an explicit null assignment.
@@ -101,6 +108,10 @@ class CommitActiveError(SelectionStateError):
     """Raised when attempting to cancel or mutate a selection with an active commit."""
 
 
+class CommitConflictError(ResourceSelectionError):
+    """Raised when a conflicting commit claim is active."""
+
+
 class IdempotencyConflictError(ResourceSelectionError):
     """Raised when an ID is reused with conflicting metadata or content."""
 
@@ -155,6 +166,39 @@ def set_clock(clock_fn: Callable[[], datetime] | None) -> None:
     """Inject a custom UTC clock function for testing."""
     global _clock_fn
     _clock_fn = clock_fn
+
+
+# Test hooks for deterministic race / failure simulation
+_commit_failure_injector: Callable[[int], None] | None = None
+_commit_before_tx_hook: Callable[[], None] | None = None
+_commit_after_tx_hook: Callable[[], None] | None = None
+
+
+def set_commit_failure_injector(injector: Callable[[int], None] | None) -> None:
+    """Inject a failure callback during canonical commit persistence for testing."""
+    global _commit_failure_injector
+    _commit_failure_injector = injector
+
+
+def set_commit_before_tx_hook(hook: Callable[[], None] | None) -> None:
+    """Inject a callback invoked before entering the commit transaction for testing."""
+    global _commit_before_tx_hook
+    _commit_before_tx_hook = hook
+
+
+def set_commit_after_tx_hook(hook: Callable[[], None] | None) -> None:
+    """Inject a callback invoked immediately after the commit transaction commits for testing."""
+    global _commit_after_tx_hook
+    _commit_after_tx_hook = hook
+
+
+_commit_before_record_result_hook: Callable[[], None] | None = None
+
+
+def set_commit_before_record_result_hook(hook: Callable[[], None] | None) -> None:
+    """Inject a callback invoked after resources/coverage but before record_commit_result for testing."""
+    global _commit_before_record_result_hook
+    _commit_before_record_result_hook = hook
 
 
 def _now_dt() -> datetime:
@@ -531,20 +575,30 @@ def get_selection_manifest(selection_id: str) -> list[dict]:
     return [db.jload(dict(r), "matched_auxiliary_kinds") for r in rows]
 
 
-def compute_manifest_digest(files: list[dict]) -> str:
-    """Compute deterministic SHA-256 digest of ordered manifest entries."""
+def compute_manifest_digest(
+    files: list[dict],
+    selection_revision: int | None = None,
+) -> str:
+    """Compute deterministic SHA-256 digest of ordered manifest entries and optional revision."""
     entries = []
     for f in files:
         entries.append({
             "file_id": f["file_id"],
             "file_name": f["file_name"],
+            "order_index": f.get("order_index", 0),
             "byte_count": f["byte_count"],
-            "sha256": f["staged_sha256"],
+            "staged_size": f.get("staged_size", f["byte_count"]),
+            "staged_mtime_ns": str(f.get("staged_mtime_ns", "")),
+            "staged_sha256": f.get("staged_sha256", f.get("sha256", "")),
+            "fingerprint": f.get("fingerprint", ""),
             "declared_library": f.get("declared_library"),
             "effective_library_key": f.get("effective_library_key"),
             "effective_auxiliary_kind": f.get("effective_auxiliary_kind"),
         })
-    canonical_bytes = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload: dict[str, Any] = {"files": entries}
+    if selection_revision is not None:
+        payload["selection_revision"] = selection_revision
+    canonical_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(canonical_bytes).hexdigest()
 
 
@@ -1422,7 +1476,7 @@ def cancel_selection(
 # ---------------------------------------------------------------------------
 
 def _clean_selection_files(selection_id: str) -> tuple[bool, str]:
-    """Clean all staged files for a given selection."""
+    """Clean all staged files and any associated preview attestation for a given selection."""
     files = db.q("SELECT * FROM resource_selection_file WHERE selection_id = ?", selection_id)
     all_ok = True
     last_warning = ""
@@ -1448,6 +1502,21 @@ def _clean_selection_files(selection_id: str) -> tuple[bool, str]:
                         "WHERE id = ?",
                         (warning, now, f["id"]),
                     )
+
+    # Clean browser attestation if selection is in a terminal state
+    sel = db.one(
+        "SELECT state, preview_token, committed_preview_token FROM resource_selection WHERE selection_id = ?",
+        selection_id,
+    )
+    if sel and sel["state"] in ("committed", "cancelled", "expired"):
+        tok = sel.get("committed_preview_token") or sel.get("preview_token")
+        if tok:
+            tok_ok, tok_warn = resource_service.delete_attestation(tok)
+            if not tok_ok:
+                all_ok = False
+                if not last_warning:
+                    last_warning = tok_warn
+
     return all_ok, last_warning
 
 
@@ -2428,3 +2497,347 @@ def validate_public_revision(value: Any) -> int:
     if isinstance(value, str):
         return validate_query_revision(value)
     return validate_json_revision(value)
+
+
+def preview_selection(
+    selection_id: str,
+    expected_revision: int,
+    now_iso: str | None = None,
+) -> dict:
+    """Run canonical preview for the ordered staged manifest of an open selection.
+
+    Validates exact expected_revision, requires open state and resolved effective targets,
+    runs canonical preview_import, computes committable status, saves preview evidence,
+    and returns the authoritative updated SelectionView.
+    """
+    if type(selection_id) is not str or not selection_id or not _is_safe_public_string(selection_id):
+        raise ValueError("selection_id is invalid")
+    validate_json_revision(expected_revision)
+
+    sel = recover_selection(selection_id, now_iso=now_iso)
+    if not sel:
+        raise SelectionNotFoundError(f"Selection {selection_id} not found")
+
+    now = _now_iso(now_iso)
+    now_dt = _parse_iso(now)
+    if now_dt >= _parse_iso(sel["expires_at"]):
+        raise SelectionExpiredError("Selection has expired")
+
+    if sel["state"] == "committing":
+        raise CommitActiveError("Cannot preview while commit is active")
+    if sel["state"] in ("committed", "cancelled", "expired"):
+        if sel["state"] == "expired":
+            raise SelectionExpiredError("Selection has expired")
+        if sel["state"] == "cancelled":
+            raise SelectionCancelledError("Selection is cancelled")
+        raise SelectionStateError(f"Selection is already {sel['state']}")
+    if sel["state"] != "open":
+        raise SelectionNotOpenError(f"Selection is {sel['state']}")
+
+    if sel["selection_revision"] != expected_revision:
+        raise StaleRevisionError(
+            f"Revision {expected_revision} is stale, current is {sel['selection_revision']}"
+        )
+
+    manifest = get_selection_manifest(selection_id)
+    if not manifest:
+        raise InvalidTargetError("Selection contains no staged files to preview")
+
+    selections: list[tuple[str | Path, str]] = []
+    for f in manifest:
+        lib_key = f.get("effective_library_key")
+        if not lib_key:
+            raise InvalidTargetError(f"File {f['file_id']} has no effective library target")
+        validate_target_library_key(lib_key)
+        aux_kind = f.get("effective_auxiliary_kind")
+        if aux_kind is not None:
+            validate_target_auxiliary_kind(aux_kind)
+        selections.append((f["staged_path"], lib_key))
+
+    preview_rep = resource_service.preview_import(selections)
+    manifest_digest = compute_manifest_digest(manifest, selection_revision=expected_revision)
+    preview_token = resource_service.create_browser_attestation(
+        preview=preview_rep,
+        selection_id=selection_id,
+        selection_revision=expected_revision,
+        manifest_digest=manifest_digest,
+    )
+    safe_rep = resource_service.safe_report(preview_rep)
+    committable = (
+        (preview_rep.total_accepted + preview_rep.total_auxiliary > 0)
+        and (preview_rep.total_unresolved == 0)
+    )
+
+    saved = save_preview(
+        selection_id=selection_id,
+        expected_revision=expected_revision,
+        preview_token=preview_token,
+        manifest_digest=manifest_digest,
+        committable=committable,
+        report=safe_rep,
+        now_iso=now_iso,
+    )
+    if not saved:
+        raise StaleRevisionError("Selection was modified concurrently during preview")
+
+    view = build_selection_view(selection_id, now_iso=now_iso)
+    if view is None:
+        raise SelectionStateInvalidError("Selection disappeared after preview save")
+    return view
+
+
+def commit_selection(
+    selection_id: str,
+    expected_revision: int,
+    preview_token: str,
+    now_iso: str | None = None,
+    failure_injector: Callable[[int], None] | None = None,
+) -> tuple[str, dict]:
+    """Atomically commit an exact previewed selection.
+
+    Returns (disposition, view), where disposition is one of:
+      - "committed": genuinely new successful commit (HTTP 200)
+      - "replay": idempotent replay of already committed tuple (HTTP 200)
+      - "active_same_tuple": another owner is actively committing (HTTP 202)
+    """
+    if type(selection_id) is not str or not selection_id or not _is_safe_public_string(selection_id):
+        raise ValueError("selection_id is invalid")
+    validate_json_revision(expected_revision)
+    if type(preview_token) is not str or not preview_token or not _is_safe_public_string(preview_token):
+        raise ValueError("preview_token is invalid")
+
+    sel = recover_selection(selection_id, now_iso=now_iso)
+    if not sel:
+        raise SelectionNotFoundError(f"Selection {selection_id} not found")
+
+    now = _now_iso(now_iso)
+    now_dt = _parse_iso(now)
+    if now_dt >= _parse_iso(sel["expires_at"]):
+        raise SelectionExpiredError("Selection has expired")
+
+    # 1. Replay check for committed selection
+    if sel["state"] == "committed":
+        if (
+            sel.get("committed_revision") == expected_revision
+            and sel.get("committed_preview_token") == preview_token
+        ):
+            durable_view = build_selection_view(selection_id, now_iso=now_iso)
+            if durable_view is None:
+                raise SelectionStateInvalidError("Selection view missing for committed selection")
+            return "replay", durable_view
+        raise SelectionStateError("Selection is already committed")
+
+    if sel["state"] == "cancelled":
+        raise SelectionCancelledError("Selection is cancelled")
+    if sel["state"] == "expired":
+        raise SelectionExpiredError("Selection has expired")
+
+    # 2. Check committing / open state
+    manifest = get_selection_manifest(selection_id)
+    computed_manifest_digest = (
+        compute_manifest_digest(manifest, selection_revision=expected_revision)
+        if manifest
+        else ""
+    )
+
+    if sel["state"] == "open":
+        if sel["selection_revision"] != expected_revision:
+            raise StaleRevisionError(
+                f"Revision {expected_revision} is stale, current is {sel['selection_revision']}"
+            )
+
+        if not sel.get("preview_token") or sel["preview_token"] != preview_token:
+            raise PreviewMismatchError("Preview token does not match current preview")
+
+        if sel.get("preview_committable") != 1:
+            raise InvalidTargetError("Selection preview is not committable")
+
+        if not manifest:
+            raise InvalidTargetError("Selection contains no staged files to commit")
+
+        if computed_manifest_digest != sel.get("preview_manifest_digest"):
+            raise PreviewMismatchError("Manifest digest does not match preview")
+
+    # Acquire commit claim atomically
+    claim_res = acquire_commit_claim(
+        selection_id=selection_id,
+        expected_revision=expected_revision,
+        preview_token=preview_token,
+        manifest_digest=computed_manifest_digest,
+        now_iso=now_iso,
+    )
+    if claim_res.status == "active_same_tuple":
+        committing_view = build_selection_view(selection_id, now_iso=now_iso)
+        if committing_view is None:
+            raise SelectionStateInvalidError("Selection missing during committing state")
+        return "active_same_tuple", committing_view
+    elif claim_res.status == "conflict":
+        raise CommitConflictError("Conflicting active commit claim in progress")
+    elif claim_res.status == "stale_revision":
+        raise StaleRevisionError(claim_res.detail)
+    elif claim_res.status == "preview_mismatch":
+        raise PreviewMismatchError(claim_res.detail)
+    elif claim_res.status == "already_committed":
+        durable_view = build_selection_view(selection_id, now_iso=now_iso)
+        if durable_view is None:
+            raise SelectionStateInvalidError("Selection view missing for committed selection")
+        return "replay", durable_view
+    elif claim_res.status == "expired":
+        raise SelectionExpiredError("Selection has expired")
+    elif claim_res.status == "terminal":
+        raise SelectionStateError(claim_res.detail)
+    elif claim_res.status != "acquired":
+        raise SelectionStateError(f"Unexpected claim status: {claim_res.status}")
+
+    commit_token = claim_res.commit_token
+    assert commit_token is not None
+
+    # Re-fetch selection to have latest preview_report
+    sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
+
+    # Revalidate disk files and canonical report integrity while holding claim:
+    manifest = get_selection_manifest(selection_id)
+    selections: list[tuple[str | Path, str]] = []
+    for f in manifest:
+        staged_p = Path(f["staged_path"])
+        if not staged_p.is_file():
+            release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+            raise PreviewMismatchError("Staged file missing on disk; fresh preview required")
+        stat_res = staged_p.stat()
+        staged_size = f.get("staged_size", f["byte_count"])
+        if stat_res.st_size != staged_size or stat_res.st_size != f["byte_count"]:
+            release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+            raise PreviewMismatchError("Staged file size changed after preview; fresh preview required")
+        if str(stat_res.st_mtime_ns) != str(f.get("staged_mtime_ns", "")):
+            release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+            raise PreviewMismatchError("Staged file mtime changed after preview; fresh preview required")
+        hasher = hashlib.sha256()
+        with open(staged_p, "rb") as fp:
+            while chunk := fp.read(65536):
+                hasher.update(chunk)
+        disk_sha = hasher.hexdigest()
+        if disk_sha != f["staged_sha256"]:
+            release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+            raise PreviewMismatchError("Staged file content changed after preview; fresh preview required")
+        expected_fp = f"{disk_sha}:{stat_res.st_size}:{stat_res.st_mtime_ns}"
+        if f.get("fingerprint") and f["fingerprint"] != expected_fp:
+            release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+            raise PreviewMismatchError("Staged file fingerprint mismatch; fresh preview required")
+        lib_key = f.get("effective_library_key")
+        if not lib_key:
+            release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+            raise InvalidTargetError("Selection file lacks effective library target")
+        selections.append((staged_p, lib_key))
+
+    # Rebuild preview report deterministically and verify attestation
+    try:
+        preview_rep = resource_service.preview_import(selections)
+        rebuilt_safe = resource_service.safe_report(preview_rep)
+        persisted_report_raw = sel.get("preview_report") if sel else None
+        if persisted_report_raw is None:
+            raise PreviewMismatchError("Persisted preview report is missing")
+        persisted_safe = (
+            json.loads(persisted_report_raw)
+            if isinstance(persisted_report_raw, str)
+            else persisted_report_raw
+        )
+        if rebuilt_safe != persisted_safe:
+            raise PreviewMismatchError(
+                "Canonical report outcomes do not match preview; a fresh preview is required"
+            )
+        preview_body = resource_service._preview_body(preview_rep)
+        resource_service.verify_browser_attestation(
+            body=preview_body,
+            token=preview_token,
+            selection_id=selection_id,
+            selection_revision=expected_revision,
+            manifest_digest=computed_manifest_digest,
+        )
+    except BaseException as exc:
+        release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+        if isinstance(exc, ResourceSelectionError):
+            raise
+        raise PreviewMismatchError("Canonical preview revalidation failed") from exc
+
+    if _commit_before_tx_hook is not None:
+        try:
+            _commit_before_tx_hook()
+        except BaseException:
+            release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+            raise
+
+    # Verify claim ownership before entering transaction
+    sel_check = db.one(
+        "SELECT claim_commit_token, claim_revision, claim_preview_token, claim_manifest_digest, state FROM resource_selection WHERE selection_id = ?",
+        selection_id,
+    )
+    if (
+        not sel_check
+        or sel_check["state"] != "committing"
+        or sel_check.get("claim_commit_token") != commit_token
+        or sel_check.get("claim_revision") != expected_revision
+        or sel_check.get("claim_preview_token") != preview_token
+        or sel_check.get("claim_manifest_digest") != computed_manifest_digest
+    ):
+        raise CommitConflictError("Commit claim ownership lost")
+
+    # Execute atomic SQLite transaction: commit_selection_import + coverage + record_commit_result
+    try:
+        with db.transaction():
+            # Verify claim ownership inside transaction before resource writes
+            sel_in_tx = db.one(
+                "SELECT claim_commit_token, claim_revision, claim_preview_token, claim_manifest_digest, state FROM resource_selection WHERE selection_id = ?",
+                selection_id,
+            )
+            if (
+                not sel_in_tx
+                or sel_in_tx["state"] != "committing"
+                or sel_in_tx.get("claim_commit_token") != commit_token
+                or sel_in_tx.get("claim_revision") != expected_revision
+                or sel_in_tx.get("claim_preview_token") != preview_token
+                or sel_in_tx.get("claim_manifest_digest") != computed_manifest_digest
+            ):
+                raise CommitConflictError("Commit claim ownership lost")
+
+            commit_report = resource_service.commit_selection_import(
+                preview=preview_rep,
+                preview_token=preview_token,
+                selection_id=selection_id,
+                selection_revision=expected_revision,
+                manifest_digest=computed_manifest_digest,
+                failure_injector=failure_injector or _commit_failure_injector,
+            )
+            commit_safe = resource_service.safe_report(commit_report)
+            commit_safe = resource_service.validate_safe_report(commit_safe, expected_phase="commit")
+
+            if _commit_before_record_result_hook is not None:
+                _commit_before_record_result_hook()
+
+            ok = record_commit_result(
+                selection_id=selection_id,
+                commit_token=commit_token,
+                result=commit_safe,
+                now_iso=now_iso,
+            )
+            if not ok:
+                raise CommitConflictError("Commit claim ownership lost")
+    except ValueError as exc:
+        release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+        raise PreviewMismatchError("Attestation validation failed") from exc
+    except resource_import.StaleFingerprintError as exc:
+        release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+        raise PreviewMismatchError("Staged content changed during commit") from exc
+    except CommitConflictError:
+        # Defect 3: Owner whose fence changed must NOT release the new owner's claim!
+        raise
+    except BaseException:
+        release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+        raise
+
+    if _commit_after_tx_hook is not None:
+        _commit_after_tx_hook()
+
+    final_view = build_selection_view(selection_id, now_iso=now_iso)
+    if final_view is None:
+        raise SelectionStateInvalidError("Selection disappeared after commit")
+    return "committed", final_view

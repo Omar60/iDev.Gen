@@ -1415,3 +1415,54 @@ def test_repair_4b_reason_safety_and_preservation():
     mutated["files"][0]["unresolved"][0]["reason"] = "could not read /secret/private/path"
     with pytest.raises(ValueError, match="file_read_error bucket must have sanitized reason"):
         resource_service.validate_safe_report(mutated)
+
+
+def test_browser_scoped_attestation_rejected_by_path_commit(tmp_path):
+    path = tmp_path / "resources.json"
+    _write(path, [_scene("scene_browser_token", "invented room")])
+
+    preview = resource_service.preview_import(_selection(path))
+    token = resource_service.create_browser_attestation(
+        preview=preview,
+        selection_id="sel_browser_test_123",
+        selection_revision=0,
+        manifest_digest="0" * 64,
+    )
+
+    body = resource_service._preview_body(preview)
+    serialized = {
+        **body,
+        "binding": resource_service._preview_binding(body),
+        "attestation": token,
+    }
+
+    # Path commit must reject browser-scoped attestation
+    with pytest.raises(ValueError, match="scoped for browser selection"):
+        resource_service.commit_import(serialized)
+
+    assert db.q("SELECT * FROM resource_library") == []
+    assert db.q("SELECT * FROM asset_revision") == []
+    claim_path = resource_service._attestation_directory() / f"{token}.claimed"
+    assert not claim_path.exists()
+
+
+def test_commit_selection_import_requires_active_transaction(tmp_path):
+    path = tmp_path / "resources.json"
+    _write(path, [_scene("scene_tx_test", "invented room")])
+
+    preview = resource_service.preview_import(_selection(path))
+    token = resource_service.create_browser_attestation(
+        preview=preview,
+        selection_id="sel_tx_test_123",
+        selection_revision=0,
+        manifest_digest="0" * 64,
+    )
+
+    with pytest.raises(RuntimeError, match="requires an active caller-owned transaction"):
+        resource_service.commit_selection_import(
+            preview=preview,
+            preview_token=token,
+            selection_id="sel_tx_test_123",
+            selection_revision=0,
+            manifest_digest="0" * 64,
+        )

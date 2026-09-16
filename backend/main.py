@@ -1662,6 +1662,47 @@ class ResourceSelectionCancelIn(BaseModel):
         return resource_selection.validate_json_revision(v)
 
 
+class ResourceSelectionPreviewIn(BaseModel):
+    """Closed body for POST /api/resources/import-selections/{sid}/preview.
+
+    ``expected_revision`` is mandatory so preview always participates
+    in the optimistic concurrency contract. Extra keys are refused at
+    the Pydantic layer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+
+    @field_validator("expected_revision", mode="before")
+    @classmethod
+    def validate_revision_strict(cls, v: Any) -> int:
+        return resource_selection.validate_json_revision(v)
+
+
+class ResourceSelectionCommitIn(BaseModel):
+    """Closed body for POST /api/resources/import-selections/{sid}/commit.
+
+    ``expected_revision`` and ``preview_token`` are mandatory.
+    Extra keys are refused at the Pydantic layer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+    preview_token: str
+
+    @field_validator("expected_revision", mode="before")
+    @classmethod
+    def validate_revision_strict(cls, v: Any) -> int:
+        return resource_selection.validate_json_revision(v)
+
+    @field_validator("preview_token", mode="before")
+    @classmethod
+    def validate_preview_token_strict(cls, v: Any) -> str:
+        if type(v) is not str or not v or not resource_selection._is_safe_public_string(v):
+            raise ValueError("preview_token must be a non-empty safe string")
+        return v
+
+
 _MULTIPART_TOKEN_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -1962,6 +2003,8 @@ def _map_resource_selection_exception(
         return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
     try:
         current = resource_selection.build_selection_view(selection_id) if selection_id else None
+    except resource_selection.SelectionStateInvalidError:
+        return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
     except Exception:
         current = None
     if isinstance(exc, resource_selection.SelectionNotFoundError):
@@ -2024,10 +2067,23 @@ def _map_resource_selection_exception(
         return _stable_error(404, "file_not_found", "File not found in selection")
     if isinstance(exc, resource_selection.PreviewMismatchError):
         return _stable_error(
-            409, "preview_mismatch", "Preview binding mismatch", current=current
+            409, "preview_mismatch", "Staged content or preview binding mismatch; create a fresh preview", current=current
+        )
+    if isinstance(exc, resource_selection.CommitConflictError):
+        return _stable_error(
+            409, "commit_conflict", "Conflicting active commit claim in progress", current=current
         )
     if isinstance(exc, resource_selection.InvalidTargetError):
-        return _stable_error(422, "invalid_request", str(exc), current=current)
+        return _stable_error(
+            422,
+            "invalid_request",
+            str(exc) if str(exc) else "Invalid effective target or uncommittable preview",
+            current=current,
+        )
+    if isinstance(exc, resource_selection.SelectionStateError):
+        return _stable_error(
+            410, "selection_terminal", "Selection is in a terminal state", current=current
+        )
     return _stable_error(
         422, "invalid_request", "Invalid request", current=current
     )
@@ -2591,6 +2647,140 @@ def cancel_import_selection(selection_id: str, p: ResourceSelectionCancelIn):
     if isinstance(refreshed_or_err, JSONResponse):
         return refreshed_or_err
     return JSONResponse(content=refreshed_or_err, status_code=200)
+
+
+@app.post("/api/resources/import-selections/{selection_id}/preview")
+def preview_import_selection(selection_id: str, p: ResourceSelectionPreviewIn):
+    """Preview staged files in the selection without mutating application state.
+
+    The body is closed (``extra="forbid"``) and must contain exactly
+    ``expected_revision``.
+    """
+    gate = _resource_planning_gate()
+    if gate is not None:
+        return gate
+
+    try:
+        view = resource_selection.build_selection_view(selection_id)
+    except resource_selection.SelectionStateInvalidError:
+        return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+
+    if view is None:
+        return _stable_error(404, "selection_not_found", "Selection not found")
+
+    if view["state"] == "committing":
+        return _stable_error(
+            409, "commit_active", "Selection is currently committing", current=view
+        )
+    if view["state"] in ("committed", "cancelled", "expired"):
+        if view["state"] == "expired":
+            return _stable_error(
+                410, "selection_expired", "Selection has expired", current=view
+            )
+        return _stable_error(
+            410,
+            "selection_terminal",
+            f"Selection is already {view['state']}",
+            current=view,
+        )
+
+    if view["selection_revision"] != p.expected_revision:
+        return _stable_error(
+            409,
+            "selection_revision_stale",
+            "expected_revision does not match current selection_revision",
+            current=view,
+        )
+
+    try:
+        updated_view = resource_selection.preview_selection(
+            selection_id=selection_id,
+            expected_revision=p.expected_revision,
+        )
+    except resource_selection.ResourceSelectionError as exc:
+        return _map_resource_selection_exception(exc, selection_id)
+    except Exception:
+        try:
+            current_view = resource_selection.build_selection_view(selection_id)
+        except resource_selection.SelectionStateInvalidError:
+            return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+        except Exception:
+            current_view = None
+        return _stable_error(
+            500,
+            "preview_failed",
+            "Preview failed due to internal error",
+            current=current_view,
+        )
+
+    return JSONResponse(content=updated_view, status_code=200)
+
+
+@app.post("/api/resources/import-selections/{selection_id}/commit")
+def commit_import_selection(selection_id: str, p: ResourceSelectionCommitIn):
+    """Commit an exact previewed selection atomically.
+
+    The body is closed (``extra="forbid"``) and must contain exactly
+    ``expected_revision`` and ``preview_token``.
+    """
+    gate = _resource_planning_gate()
+    if gate is not None:
+        return gate
+
+    try:
+        view = resource_selection.build_selection_view(selection_id)
+    except resource_selection.SelectionStateInvalidError:
+        return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+
+    if view is None:
+        return _stable_error(404, "selection_not_found", "Selection not found")
+
+    if view["state"] == "committed":
+        prev = view.get("preview")
+        if (
+            view.get("selection_revision") == p.expected_revision
+            and prev is not None
+            and prev.get("preview_token") == p.preview_token
+        ):
+            return JSONResponse(content=view, status_code=200)
+        return _stable_error(
+            410, "selection_terminal", "Selection is already committed", current=view
+        )
+
+    if view["state"] == "cancelled":
+        return _stable_error(
+            410, "selection_terminal", "Selection is cancelled", current=view
+        )
+    if view["state"] == "expired":
+        return _stable_error(
+            410, "selection_expired", "Selection has expired", current=view
+        )
+
+    try:
+        disposition, result_view = resource_selection.commit_selection(
+            selection_id=selection_id,
+            expected_revision=p.expected_revision,
+            preview_token=p.preview_token,
+        )
+    except resource_selection.ResourceSelectionError as exc:
+        return _map_resource_selection_exception(exc, selection_id)
+    except Exception:
+        try:
+            current_view = resource_selection.build_selection_view(selection_id)
+        except resource_selection.SelectionStateInvalidError:
+            return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+        except Exception:
+            current_view = None
+        return _stable_error(
+            500,
+            "commit_failed",
+            "Commit failed due to internal error",
+            current=current_view,
+        )
+
+    if disposition == "active_same_tuple":
+        return JSONResponse(content=result_view, status_code=202)
+    return JSONResponse(content=result_view, status_code=200)
 
 
 class ResourceTranslationPreviewIn(BaseModel):
