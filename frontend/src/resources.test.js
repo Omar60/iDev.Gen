@@ -10,6 +10,9 @@ import {
   buildSessionDraftPayload,
   parsePreviewSummary,
   parseTranslationPreview,
+  normalizeSelectionView,
+  reduceSelectionView,
+  isImportEligible,
 } from './resources.js'
 
 describe('resources module', () => {
@@ -497,6 +500,440 @@ describe('resources module', () => {
         attestationToken: 'token.sig123',
         expiresAt: 1700000000,
       })
+    })
+  })
+
+  describe('filterLibraries with safe payload-free responses', () => {
+    const PAYLOAD_FREE_LIBRARIES = [
+      {
+        library_key: 'safe_rooms',
+        display_name: 'Safe Rooms Library',
+        kind: 'rooms',
+        revisions: [
+          {
+            source_id: 'studio_01',
+            content_digest: 'digest_alpha_111',
+            translation: { title: 'Bright Studio Room', mood: 'Airy atmosphere' },
+            readiness: { status: 'ready' },
+          },
+          {
+            source_id: 'kitchen_02',
+            content_digest: 'digest_beta_222',
+            translation: { title: 'Modern Kitchen' },
+            readiness: { status: 'pending' },
+          },
+        ],
+        auxiliary: [
+          {
+            kind: 'translation_map',
+            content_digest: 'aux_digest_333',
+          },
+        ],
+      },
+    ]
+
+    it('filters correctly when revisions completely omit payload property', () => {
+      // By library key
+      const matchKey = filterLibraries(PAYLOAD_FREE_LIBRARIES, { query: 'safe_rooms' })
+      expect(matchKey).toHaveLength(1)
+
+      // By source ID
+      const matchSource = filterLibraries(PAYLOAD_FREE_LIBRARIES, { query: 'kitchen_02' })
+      expect(matchSource).toHaveLength(1)
+      expect(matchSource[0].revisions).toHaveLength(1)
+      expect(matchSource[0].revisions[0].source_id).toBe('kitchen_02')
+
+      // By content digest
+      const matchDigest = filterLibraries(PAYLOAD_FREE_LIBRARIES, { query: 'digest_alpha_111' })
+      expect(matchDigest).toHaveLength(1)
+      expect(matchDigest[0].revisions).toHaveLength(1)
+      expect(matchDigest[0].revisions[0].source_id).toBe('studio_01')
+
+      // By translated value
+      const matchTrans = filterLibraries(PAYLOAD_FREE_LIBRARIES, { query: 'Airy atmosphere' })
+      expect(matchTrans).toHaveLength(1)
+      expect(matchTrans[0].revisions[0].source_id).toBe('studio_01')
+
+      // By auxiliary content digest
+      const matchAux = filterLibraries(PAYLOAD_FREE_LIBRARIES, { query: 'aux_digest_333' })
+      expect(matchAux).toHaveLength(1)
+      expect(matchAux[0].auxiliary).toHaveLength(1)
+    })
+
+    it('never accesses or requires payload on revision objects', () => {
+      const protectedRev = {
+        source_id: 'no_payload_source',
+        content_digest: 'digest_safe_444',
+        translation: { description: 'Verified safe' },
+      }
+      Object.defineProperty(protectedRev, 'payload', {
+        get() {
+          throw new Error('Forbidden: payload was accessed during library filtering')
+        },
+      })
+
+      const testLibs = [
+        {
+          library_key: 'protected_lib',
+          display_name: 'Protected Lib',
+          kind: 'custom',
+          revisions: [protectedRev],
+          auxiliary: [],
+        },
+      ]
+
+      expect(() => {
+        const result = filterLibraries(testLibs, { query: 'Verified safe' })
+        expect(result).toHaveLength(1)
+      }).not.toThrow()
+    })
+  })
+
+  describe('normalizeSelectionView (Public Boundary & Privacy Enforcement)', () => {
+    const validRawView = {
+      selection_id: 'sel_test_norm',
+      selection_revision: 2,
+      state: 'open',
+      expires_at: '2026-09-18T12:00:00Z',
+      files: [
+        {
+          file_id: 'fid_1',
+          file_name: 'test.json',
+          byte_count: 120,
+          declared_library: 'characters',
+          effective_library_key: 'characters',
+          matched_auxiliary_kinds: ['camera_preset'],
+          effective_auxiliary_kind: null,
+          status: 'staged',
+          staged_path: '/tmp/private/internal/staged/character.json',
+          mtime_ns: 123456789,
+          fingerprint: 'sha256-abc',
+        },
+      ],
+      preview: {
+        preview_token: 'ptok_123',
+        manifest_digest: '0123456789abcdef',
+        committable: true,
+        report: {
+          summary: { files: 1, accepted: 1 },
+          outcomes: { accepted: 1 },
+          details: [{ library_key: 'characters', source_id: 'c1', action: 'accept', reason: 'ok' }],
+        },
+        private_hash_tree: { secret: 'do_not_leak' },
+      },
+      commit_result: null,
+      cleanup_warning: 'Cleanup warning text',
+      cleanup_state: { attempts: 3, last_error: 'disk_busy' },
+      raw_payload: { raw: 'data' },
+    }
+
+    it('reconstructs a clean SelectionView and strictly strips private fields', () => {
+      const normalized = normalizeSelectionView(validRawView)
+      expect(normalized).not.toBeNull()
+
+      // Allowlisted public fields
+      expect(normalized.selection_id).toBe('sel_test_norm')
+      expect(normalized.selection_revision).toBe(2)
+      expect(normalized.state).toBe('open')
+      expect(normalized.expires_at).toBe('2026-09-18T12:00:00Z')
+      expect(normalized.cleanup_warning).toBe('Cleanup warning text')
+      expect(normalized.files).toHaveLength(1)
+      expect(normalized.files[0]).toEqual({
+        file_id: 'fid_1',
+        file_name: 'test.json',
+        byte_count: 120,
+        declared_library: 'characters',
+        effective_library_key: 'characters',
+        matched_auxiliary_kinds: ['camera_preset'],
+        effective_auxiliary_kind: null,
+        status: 'staged',
+      })
+      expect(normalized.preview).toEqual({
+        preview_token: 'ptok_123',
+        manifest_digest: '0123456789abcdef',
+        committable: true,
+        report: expect.objectContaining({
+          phase: 'preview',
+          summary: expect.objectContaining({ files: 1, accepted: 1 }),
+        }),
+      })
+
+      // Forbidden private fields must not exist
+      expect(normalized.cleanup_state).toBeUndefined()
+      expect(normalized.raw_payload).toBeUndefined()
+      expect(normalized.files[0].staged_path).toBeUndefined()
+      expect(normalized.files[0].mtime_ns).toBeUndefined()
+      expect(normalized.files[0].fingerprint).toBeUndefined()
+      expect(normalized.preview.private_hash_tree).toBeUndefined()
+
+      // Exact allowed keys
+      expect(Object.keys(normalized).sort()).toEqual([
+        'cleanup_warning',
+        'commit_result',
+        'expires_at',
+        'files',
+        'preview',
+        'selection_id',
+        'selection_revision',
+        'state',
+      ])
+    })
+
+    it('never evaluates getters for private fields during normalization', () => {
+      const objectWithThrowingGetters = {
+        selection_id: 'sel_getter_test',
+        selection_revision: 1,
+        state: 'open',
+        expires_at: '2026-09-18T12:00:00Z',
+        files: [],
+        preview: null,
+        commit_result: null,
+        cleanup_warning: null,
+      }
+      Object.defineProperty(objectWithThrowingGetters, 'staged_path', {
+        get() {
+          throw new Error('Forbidden: staged_path getter called!')
+        },
+      })
+      Object.defineProperty(objectWithThrowingGetters, 'cleanup_state', {
+        get() {
+          throw new Error('Forbidden: cleanup_state getter called!')
+        },
+      })
+      Object.defineProperty(objectWithThrowingGetters, 'raw_payload', {
+        get() {
+          throw new Error('Forbidden: raw_payload getter called!')
+        },
+      })
+
+      expect(() => {
+        const normalized = normalizeSelectionView(objectWithThrowingGetters)
+        expect(normalized).not.toBeNull()
+        expect(normalized.selection_id).toBe('sel_getter_test')
+      }).not.toThrow()
+    })
+
+    it('fails closed (returns null) on missing mandatory fields or invalid types', () => {
+      expect(normalizeSelectionView(null)).toBeNull()
+      expect(normalizeSelectionView(undefined)).toBeNull()
+      expect(normalizeSelectionView([])).toBeNull()
+      expect(normalizeSelectionView({})).toBeNull()
+      expect(normalizeSelectionView({ ...validRawView, selection_id: '' })).toBeNull()
+      expect(normalizeSelectionView({ ...validRawView, selection_id: 123 })).toBeNull()
+      expect(normalizeSelectionView({ ...validRawView, selection_revision: -1 })).toBeNull()
+      expect(normalizeSelectionView({ ...validRawView, selection_revision: 1.5 })).toBeNull()
+      expect(normalizeSelectionView({ ...validRawView, selection_revision: '2' })).toBeNull()
+      expect(normalizeSelectionView({ ...validRawView, selection_revision: 9007199254740992 })).toBeNull()
+      expect(normalizeSelectionView({ ...validRawView, state: 'invalid_state' })).toBeNull()
+      expect(normalizeSelectionView({ ...validRawView, expires_at: '' })).toBeNull()
+      expect(normalizeSelectionView({ ...validRawView, files: 'not_an_array' })).toBeNull()
+      expect(normalizeSelectionView({ ...validRawView, files: [{ file_id: 'f1' }] })).toBeNull() // missing byte_count
+      expect(normalizeSelectionView({ ...validRawView, preview: 'not_an_object' })).toBeNull()
+      expect(normalizeSelectionView({ ...validRawView, commit_result: 'not_an_object' })).toBeNull()
+    })
+  })
+
+  describe('reduceSelectionView (Highest Revision Wins & Stale Response Protection)', () => {
+    const viewRev3 = {
+      selection_id: 'sel_123',
+      selection_revision: 3,
+      state: 'open',
+      expires_at: '2026-09-18T12:00:00Z',
+      files: [],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    const viewRev4 = {
+      selection_id: 'sel_123',
+      selection_revision: 4,
+      state: 'open',
+      expires_at: '2026-09-18T12:00:00Z',
+      files: [{ file_id: 'f1', file_name: 'test.json', byte_count: 100 }],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    it('accepts the initial candidate view', () => {
+      const res = reduceSelectionView(null, viewRev3, { activeSelectionId: 'sel_123' })
+      expect(res.accepted).toBe(true)
+      expect(res.view.selection_id).toBe('sel_123')
+      expect(res.view.selection_revision).toBe(3)
+    })
+
+    it('rejects candidate for a different selection_id within same epoch', () => {
+      const differentSel = { ...viewRev3, selection_id: 'sel_other' }
+      const res = reduceSelectionView(null, differentSel, { activeSelectionId: 'sel_123' })
+      expect(res.accepted).toBe(false)
+      expect(res.view).toBeNull()
+
+      const res2 = reduceSelectionView(viewRev3, differentSel)
+      expect(res2.accepted).toBe(false)
+      expect(res2.view).toEqual(viewRev3)
+    })
+
+    it('rejects malformed views and non-safe integer revisions', () => {
+      expect(reduceSelectionView(viewRev3, null).accepted).toBe(false)
+      expect(reduceSelectionView(viewRev3, { selection_id: 'sel_123' }).accepted).toBe(false)
+      expect(reduceSelectionView(viewRev3, { selection_id: 'sel_123', selection_revision: -1 }).accepted).toBe(false)
+      expect(reduceSelectionView(viewRev3, { selection_id: 'sel_123', selection_revision: '4' }).accepted).toBe(false)
+      expect(reduceSelectionView(viewRev3, { selection_id: 'sel_123', selection_revision: 9007199254740992 }).accepted).toBe(false)
+    })
+
+    it('Case A: drops responses from older epoch (candidateEpoch < currentEpoch)', () => {
+      const current = { ...viewRev3, selection_id: 'sel_new', selection_revision: 1 }
+      const olderCandidate = { ...viewRev4, selection_id: 'sel_old', selection_revision: 10 }
+      const res = reduceSelectionView(current, olderCandidate, {
+        activeSelectionId: 'sel_new',
+        currentEpoch: 2,
+        candidateEpoch: 1,
+        currentGen: 1,
+        candidateGen: 5,
+      })
+      expect(res.accepted).toBe(false)
+      expect(res.view).toEqual(current)
+    })
+
+    it('Case B: adopts candidate from newer epoch (candidateEpoch > currentEpoch)', () => {
+      const current = { ...viewRev3, selection_id: 'sel_old', selection_revision: 5 }
+      const newerCandidate = { ...viewRev4, selection_id: 'sel_new', selection_revision: 1 }
+      const res = reduceSelectionView(current, newerCandidate, {
+        activeSelectionId: 'sel_old',
+        currentEpoch: 1,
+        candidateEpoch: 2,
+        currentGen: 5,
+        candidateGen: 1,
+      })
+      expect(res.accepted).toBe(true)
+      expect(res.view.selection_id).toBe('sel_new')
+      expect(res.view.selection_revision).toBe(1)
+    })
+
+    it('Case C: request A initiated first (gen 1) but completes with rev 4; request B initiated later (gen 2) completes with rev 3 -> rev 4 wins', () => {
+      let state = { view: null, gen: 0 }
+      // Response B arrives first with rev 3
+      const step1 = reduceSelectionView(state.view, viewRev3, {
+        activeSelectionId: 'sel_123',
+        currentGen: state.gen,
+        candidateGen: 2,
+      })
+      expect(step1.accepted).toBe(true)
+      state = { view: step1.view, gen: step1.gen }
+      expect(state.view.selection_revision).toBe(3)
+
+      // Response A arrives later with rev 4 (higher revision despite earlier initiation gen 1)
+      const step2 = reduceSelectionView(state.view, viewRev4, {
+        activeSelectionId: 'sel_123',
+        currentGen: state.gen,
+        candidateGen: 1,
+      })
+      expect(step2.accepted).toBe(true)
+      expect(step2.view.selection_revision).toBe(4)
+    })
+
+    it('Case D: rev 4 arrives first, rev 3 arrives later -> rev 4 remains', () => {
+      let state = { view: null, gen: 0 }
+      // Response B (rev 4) arrives first
+      const step1 = reduceSelectionView(state.view, viewRev4, {
+        activeSelectionId: 'sel_123',
+        currentGen: state.gen,
+        candidateGen: 2,
+      })
+      expect(step1.accepted).toBe(true)
+      state = { view: step1.view, gen: step1.gen }
+      expect(state.view.selection_revision).toBe(4)
+
+      // Response A (rev 3) arrives later
+      const step2 = reduceSelectionView(state.view, viewRev3, {
+        activeSelectionId: 'sel_123',
+        currentGen: state.gen,
+        candidateGen: 1,
+      })
+      expect(step2.accepted).toBe(false)
+      expect(step2.view.selection_revision).toBe(4)
+    })
+
+    it('protects equal revisions using operation generation fencing', () => {
+      const candidateOlder = { ...viewRev4, state: 'committing' }
+      const candidateNewer = { ...viewRev4, state: 'committed' }
+
+      // Newer generation accepted
+      const resNewer = reduceSelectionView(viewRev4, candidateNewer, {
+        activeSelectionId: 'sel_123',
+        currentGen: 5,
+        candidateGen: 6,
+      })
+      expect(resNewer.accepted).toBe(true)
+      expect(resNewer.view.state).toBe('committed')
+
+      // Older generation rejected
+      const resOlder = reduceSelectionView(resNewer.view, candidateOlder, {
+        activeSelectionId: 'sel_123',
+        currentGen: 6,
+        candidateGen: 4,
+      })
+      expect(resOlder.accepted).toBe(false)
+      expect(resOlder.view.state).toBe('committed')
+    })
+  })
+
+  describe('isImportEligible', () => {
+    const baseView = {
+      selection_id: 'sel_100',
+      selection_revision: 2,
+      state: 'open',
+      preview: {
+        committable: true,
+        preview_token: 'tok_valid_123',
+        manifest_digest: '0123456789abcdef',
+        report: { summary: { files: 1 } },
+      },
+    }
+
+    it('returns true for an open view with complete committable preview and no pending mutations', () => {
+      expect(isImportEligible(baseView, { activeSelectionId: 'sel_100', pendingMutation: false })).toBe(true)
+    })
+
+    it('returns false when preview is missing or not committable', () => {
+      expect(isImportEligible({ ...baseView, preview: null })).toBe(false)
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, committable: false } })).toBe(false)
+    })
+
+    it('returns false when preview_token is missing, null, empty or whitespace', () => {
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, preview_token: null } })).toBe(false)
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, preview_token: '' } })).toBe(false)
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, preview_token: '   ' } })).toBe(false)
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, preview_token: 123 } })).toBe(false)
+    })
+
+    it('returns false when manifest_digest is missing, non-hex, too short, too long or uppercase', () => {
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, manifest_digest: null } })).toBe(false)
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, manifest_digest: '' } })).toBe(false)
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, manifest_digest: 'shorthex123' } })).toBe(false) // < 16
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, manifest_digest: 'not_hex_chars_at_all!' } })).toBe(false)
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, manifest_digest: '0123456789ABCDEF' } })).toBe(false) // uppercase
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, manifest_digest: 'a'.repeat(65) } })).toBe(false) // > 64
+    })
+
+    it('returns false when report is missing, null, or not an object', () => {
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, report: null } })).toBe(false)
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, report: [] } })).toBe(false)
+      expect(isImportEligible({ ...baseView, preview: { ...baseView.preview, report: 'string' } })).toBe(false)
+    })
+
+    it('returns false when state is terminal or committing', () => {
+      expect(isImportEligible({ ...baseView, state: 'committing' })).toBe(false)
+      expect(isImportEligible({ ...baseView, state: 'committed' })).toBe(false)
+      expect(isImportEligible({ ...baseView, state: 'cancelled' })).toBe(false)
+      expect(isImportEligible({ ...baseView, state: 'expired' })).toBe(false)
+    })
+
+    it('returns false when a mutation is in-flight or selection ID does not match', () => {
+      expect(isImportEligible(baseView, { activeSelectionId: 'sel_100', pendingMutation: true })).toBe(false)
+      expect(isImportEligible(baseView, { activeSelectionId: 'sel_different', pendingMutation: false })).toBe(false)
+      expect(isImportEligible(null)).toBe(false)
     })
   })
 })

@@ -7,7 +7,10 @@ async function req(method, path, body) {
   if (!res.ok) {
     let detail = res.statusText
     try { detail = (await res.json()).detail ?? detail } catch { /* response was not JSON */ }
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    const err = new Error(typeof detail === 'string' ? detail : (detail?.message || JSON.stringify(detail)))
+    err.detail = detail
+    err.status = res.status
+    throw err
   }
   return res.status === 204 ? null : res.json()
 }
@@ -23,9 +26,28 @@ async function upload(path, file) {
   if (!res.ok) {
     let detail = res.statusText
     try { detail = (await res.json()).detail ?? detail } catch { /* response was not JSON */ }
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    const err = new Error(typeof detail === 'string' ? detail : (detail?.message || JSON.stringify(detail)))
+    err.detail = detail
+    err.status = res.status
+    throw err
   }
   return res.json()
+}
+
+async function uploadMultipart(path, formData) {
+  const res = await fetch(path, {
+    method: 'POST',
+    body: formData,
+  })
+  if (!res.ok) {
+    let detail = res.statusText
+    try { detail = (await res.json()).detail ?? detail } catch { /* response was not JSON */ }
+    const err = new Error(typeof detail === 'string' ? detail : (detail?.message || JSON.stringify(detail)))
+    err.detail = detail
+    err.status = res.status
+    throw err
+  }
+  return res.status === 204 ? null : res.json()
 }
 
 export const api = {
@@ -34,6 +56,7 @@ export const api = {
   patch: (p, b) => req('PATCH', p, b),
   del: (p) => req('DELETE', p),
   upload,
+  uploadMultipart,
 }
 
 export const shotImage = (id) => `/api/shots/${id}/image`

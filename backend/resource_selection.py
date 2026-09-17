@@ -2071,6 +2071,8 @@ def opportunistic_sweep(limit: int = 10, now_iso: str | None = None) -> dict:
 # boolean, readable report projection), and nullable ``commit_result``
 # (the safe canonical import result only).
 
+GENERIC_CLEANUP_WARNING: str = "Temporary cleanup is incomplete and will be retried automatically."
+
 # The literal set of keys the public view is allowed to carry, used by
 # the public serializer and asserted by the API tests so a new column
 # added to ``resource_selection`` (or to ``resource_selection_file``)
@@ -2083,6 +2085,7 @@ SELECTION_VIEW_KEYS: frozenset[str] = frozenset({
     "files",
     "preview",
     "commit_result",
+    "cleanup_warning",
 })
 
 FILE_VIEW_KEYS: frozenset[str] = frozenset({
@@ -2127,7 +2130,6 @@ PRIVATE_SELECTION_FIELDS: frozenset[str] = frozenset({
     "committed_manifest_digest",
     "committed_at",
     "cleanup_state",
-    "cleanup_warning",
     "purged_at",
     "created_at",
     "updated_at",
@@ -2147,6 +2149,7 @@ PUBLIC_FIELD_ALLOWLIST: frozenset[str] = frozenset({
     "files",
     "preview",
     "commit_result",
+    "cleanup_warning",
     "file_id",
     "file_name",
     "byte_count",
@@ -2555,7 +2558,7 @@ def _project_selection_view(sel: dict) -> dict:
     file_rows = db.q(
         "SELECT file_id, file_name, byte_count, declared_library, "
         "       effective_library_key, matched_auxiliary_kinds, "
-        "       effective_auxiliary_kind, status "
+        "       effective_auxiliary_kind, status, cleanup_state "
         "FROM resource_selection_file "
         "WHERE selection_id = ? "
         "ORDER BY order_index ASC, id ASC",
@@ -2572,6 +2575,13 @@ def _project_selection_view(sel: dict) -> dict:
     preview = _build_preview_view(sel)
     commit_result = _validate_selection_state_matrix(sel, preview, revision, state)
 
+    has_cleanup_failure = (
+        sel.get("cleanup_state") == "failed"
+        or bool(sel.get("cleanup_warning"))
+        or any(row.get("cleanup_state") == "failed" for row in file_rows)
+    )
+    cleanup_warning = GENERIC_CLEANUP_WARNING if has_cleanup_failure else None
+
     return {
         "selection_id": sid,
         "selection_revision": revision,
@@ -2580,6 +2590,7 @@ def _project_selection_view(sel: dict) -> dict:
         "files": files,
         "preview": preview,
         "commit_result": commit_result,
+        "cleanup_warning": cleanup_warning,
     }
 
 

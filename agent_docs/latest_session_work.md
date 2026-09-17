@@ -2,32 +2,34 @@
 
 ## Detailed Current State
 
-Task 1.4 of `simplify-resource-session-workflow` passed independent acceptance
-over the complete working-tree delta from the accepted Task 1.3 baseline
-`c2f3d2ea20f0b5e0915b1d22a24c50cde48a6445` and is formally closed.
+Task 1.5 of `simplify-resource-session-workflow` passed independent acceptance
+over the complete working-tree delta from the accepted Task 1.4 baseline
+`dbd87cc1ca21c68e1de8a0713f8ada4ef10bb554` and is formally closed.
 
-The accepted implementation applies exact declared library defaults, adapts
-collection-only `items` envelopes only in the browser path, preserves staged
-bytes, and keeps preview/commit interpretation identical. Auxiliary candidates
-are recalculated from staged evidence and explicit choices outside the matched
-set fail closed before resource writes. Browser-only attestation metadata is
-kept separate from the unchanged legacy parser and path/API/CLI preview
-serializer. Historical/new target overlap, unknown top-level payloads,
-marker-bearing ambiguity, and legacy classification were independently
-verified.
+The accepted implementation uses browser file selection backed only by an
+allowlisted SelectionView. It reconstructs public responses before React state,
+retains the highest `selection_revision` within the active selection, and uses
+epoch fencing only to reject responses from superseded selections. It keeps
+private paths, fingerprints, timestamps, and payloads out of browser state and
+the DOM; requires a complete current preview before Import; preserves
+committing state for HTTP 202 until status reaches committed; and retains the
+legacy path compatibility surface. The contractual `cleanup_warning` remains a
+stable sanitized public message.
 
 ## Verification
 
-- Task 1.4 candidate-choice, browser-envelope, overlap, parser-differential,
-  legacy-serialization, and browser-metadata probes passed.
-- Task 1.3 canonical preview/commit, duplicate accounting, atomic rollback,
-  concurrency, conflict, tamper, and replay contracts remained green.
-- The focused backend gate, complete repository suite, and privacy suite passed
-  before closure; strict OpenSpec validation also passed.
-- No frontend changes or unrelated OpenSpec/agent-doc changes are included in
-  this closure.
+- The independent Task 1.5 probes covered superseded selections, real
+  out-of-order Promises, revision-versus-generation ordering, `detail.current`
+  high/low responses, allowlist privacy, incomplete previews, cancel/status,
+  terminal states, HTTP 202 polling, and payload-free filtering.
+- The focused backend gate, frontend contract gate, complete repository suite,
+  frontend build, privacy suite, control-character scan, and strict OpenSpec
+  validation passed before closure.
+- The accepted closure includes the Task 1.5 implementation and tests, the
+  cleanup-warning contract, the required frontend dependency, OpenSpec task
+  state, and these workflow documents only.
 
 ## Next Entry Point
 
-Task 1.4 is accepted and checked. Task 1.5 remains pending and unimplemented.
-Do not begin Task 1.5 automatically; select and verify its own scope first.
+Task 1.5 is accepted and checked. Task 1.6 remains pending and unimplemented.
+Do not begin Task 1.6 automatically; select and verify its own scope first.

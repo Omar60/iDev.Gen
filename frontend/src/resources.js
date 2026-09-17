@@ -54,11 +54,8 @@ export function filterLibraries(libraries = [], { query = '', category = '' } = 
       const matchedRevisions = (lib.revisions || []).filter((rev) => {
         if ((rev.source_id || '').toLowerCase().includes(q)) return true
         if ((rev.content_digest || '').toLowerCase().includes(q)) return true
-        // Check translated values or payload values
+        // Check translated values only (no raw source payload)
         for (const val of Object.values(rev.translation || {})) {
-          if (typeof val === 'string' && val.toLowerCase().includes(q)) return true
-        }
-        for (const val of Object.values(rev.payload || {})) {
           if (typeof val === 'string' && val.toLowerCase().includes(q)) return true
         }
         return false
@@ -229,28 +226,24 @@ export function parsePreviewSummary(rawReport) {
     for (const acc of f.accepted || []) {
       accepted.push({
         ...acc,
-        file_path: f.file_path || '',
         library_key: acc.library_key || f.library_key || '',
       })
     }
     for (const aux of f.auxiliary || []) {
       auxiliary.push({
         ...aux,
-        file_path: f.file_path || '',
         library_key: aux.library_key || f.library_key || '',
       })
     }
     for (const un of f.unresolved || []) {
       unresolved.push({
         ...un,
-        file_path: f.file_path || '',
         library_key: f.library_key || '',
       })
     }
     for (const dup of f.duplicates || []) {
       duplicates.push({
         ...dup,
-        file_path: f.file_path || '',
         library_key: f.library_key || '',
       })
     }
@@ -288,4 +281,325 @@ export function parseTranslationPreview(preview) {
     attestationToken: preview.attestation_token || '',
     expiresAt: preview.expires_at || 0,
   }
+}
+
+/**
+ * Normalizes and validates a raw SelectionView against the closed public specification.
+ * Reconstructs a clean public object containing ONLY allowed fields.
+ * Strips any private fields (e.g. staged_path, cleanup_state, raw_payload) and
+ * fails closed (returns null) if mandatory fields are missing or of invalid type.
+ */
+export function normalizeSelectionView(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null
+  }
+
+  const {
+    selection_id,
+    selection_revision,
+    state,
+    expires_at,
+    files,
+    preview,
+    commit_result,
+    cleanup_warning,
+  } = raw
+
+  // Validate selection_id
+  if (typeof selection_id !== 'string' || !selection_id.trim()) {
+    return null
+  }
+
+  // Validate selection_revision
+  if (
+    typeof selection_revision !== 'number' ||
+    !Number.isInteger(selection_revision) ||
+    selection_revision < 0 ||
+    selection_revision > Number.MAX_SAFE_INTEGER
+  ) {
+    return null
+  }
+
+  // Validate state
+  const VALID_STATES = ['open', 'committing', 'committed', 'cancelled', 'expired']
+  if (typeof state !== 'string' || !VALID_STATES.includes(state)) {
+    return null
+  }
+
+  // Validate expires_at
+  if (typeof expires_at !== 'string' || !expires_at.trim()) {
+    return null
+  }
+
+  // Validate files array
+  if (!Array.isArray(files)) {
+    return null
+  }
+
+  const normalizedFiles = []
+  for (const f of files) {
+    if (!f || typeof f !== 'object' || Array.isArray(f)) {
+      return null
+    }
+    if (typeof f.file_id !== 'string' || !f.file_id.trim()) {
+      return null
+    }
+    if (
+      typeof f.byte_count !== 'number' ||
+      !Number.isInteger(f.byte_count) ||
+      f.byte_count < 0 ||
+      f.byte_count > Number.MAX_SAFE_INTEGER
+    ) {
+      return null
+    }
+
+    normalizedFiles.push({
+      file_id: String(f.file_id),
+      file_name: typeof f.file_name === 'string' ? f.file_name : '',
+      byte_count: f.byte_count,
+      declared_library: typeof f.declared_library === 'string' ? f.declared_library : null,
+      effective_library_key: typeof f.effective_library_key === 'string' ? f.effective_library_key : null,
+      matched_auxiliary_kinds: Array.isArray(f.matched_auxiliary_kinds)
+        ? f.matched_auxiliary_kinds.filter((k) => typeof k === 'string').map(String)
+        : [],
+      effective_auxiliary_kind: typeof f.effective_auxiliary_kind === 'string' ? f.effective_auxiliary_kind : null,
+      status: typeof f.status === 'string' ? f.status : 'staged',
+    })
+  }
+
+  // Normalize preview
+  let normalizedPreview = null
+  if (preview !== null && preview !== undefined) {
+    if (typeof preview !== 'object' || Array.isArray(preview)) {
+      return null
+    }
+
+    const { preview_token, manifest_digest, committable, report } = preview
+    const normToken = typeof preview_token === 'string' && preview_token.trim() ? preview_token.trim() : null
+    const normDigest = typeof manifest_digest === 'string' && /^[0-9a-f]{16,64}$/.test(manifest_digest.trim())
+      ? manifest_digest.trim()
+      : null
+    const normCommittable = Boolean(committable)
+
+    let normReport = null
+    if (report && typeof report === 'object' && !Array.isArray(report)) {
+      normReport = normalizeReport(report)
+    }
+
+    normalizedPreview = {
+      preview_token: normToken,
+      manifest_digest: normDigest,
+      committable: normCommittable,
+      report: normReport,
+    }
+  }
+
+  // Normalize commit_result
+  let normalizedCommitResult = null
+  if (commit_result !== null && commit_result !== undefined) {
+    if (typeof commit_result !== 'object' || Array.isArray(commit_result)) {
+      return null
+    }
+    const { committed, report } = commit_result
+    normalizedCommitResult = {
+      committed: Boolean(committed),
+      report: report && typeof report === 'object' && !Array.isArray(report) ? normalizeReport(report) : null,
+    }
+  }
+
+  // Normalize cleanup_warning
+  const normalizedCleanupWarning = typeof cleanup_warning === 'string' && cleanup_warning.trim()
+    ? cleanup_warning.trim()
+    : null
+
+  // Reconstruct clean object strictly without spread or Object.assign
+  return {
+    selection_id: String(selection_id),
+    selection_revision,
+    state: String(state),
+    expires_at: String(expires_at),
+    files: normalizedFiles,
+    preview: normalizedPreview,
+    commit_result: normalizedCommitResult,
+    cleanup_warning: normalizedCleanupWarning,
+  }
+}
+
+function normalizeReport(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+
+  const summary = raw.summary && typeof raw.summary === 'object' ? {
+    files: Number(raw.summary.files ?? 0),
+    inputs: Number(raw.summary.inputs ?? 0),
+    accepted: Number(raw.summary.accepted ?? 0),
+    auxiliary: Number(raw.summary.auxiliary ?? 0),
+    duplicates: Number(raw.summary.duplicates ?? 0),
+    unresolved: Number(raw.summary.unresolved ?? 0),
+    new: Number(raw.summary.new ?? 0),
+    unchanged: Number(raw.summary.unchanged ?? 0),
+    updated: Number(raw.summary.updated ?? 0),
+    missing: Number(raw.summary.missing ?? 0),
+    recorded: Number(raw.summary.recorded ?? 0),
+    new_scene_revisions: Number(raw.summary.new_scene_revisions ?? 0),
+    updated_scene_revisions: Number(raw.summary.updated_scene_revisions ?? 0),
+    unchanged_scene_revisions: Number(raw.summary.unchanged_scene_revisions ?? 0),
+  } : undefined
+
+  const outcomes = raw.outcomes && typeof raw.outcomes === 'object' ? {
+    new: Number(raw.outcomes.new ?? 0),
+    updated: Number(raw.outcomes.updated ?? 0),
+    unchanged: Number(raw.outcomes.unchanged ?? 0),
+    accepted: Number(raw.outcomes.accepted ?? 0),
+    auxiliary: Number(raw.outcomes.auxiliary ?? 0),
+    duplicate: Number(raw.outcomes.duplicate ?? 0),
+    unresolved: Number(raw.outcomes.unresolved ?? 0),
+    missing: Number(raw.outcomes.missing ?? 0),
+  } : undefined
+
+  const details = Array.isArray(raw.details) ? raw.details.map((d) => ({
+    library_key: typeof d?.library_key === 'string' ? d.library_key : '',
+    source_id: typeof d?.source_id === 'string' ? d.source_id : '',
+    action: typeof d?.action === 'string' ? d.action : '',
+    reason: typeof d?.reason === 'string' ? d.reason : '',
+  })) : undefined
+
+  const files = Array.isArray(raw.files) ? raw.files.map((f) => ({
+    library_key: typeof f?.library_key === 'string' ? f.library_key : '',
+    file_name: typeof f?.file_name === 'string' ? f.file_name : '',
+    accepted: Array.isArray(f?.accepted) ? f.accepted.map(normalizeOutcomeItem) : [],
+    auxiliary: Array.isArray(f?.auxiliary) ? f.auxiliary.map(normalizeOutcomeItem) : [],
+    unresolved: Array.isArray(f?.unresolved) ? f.unresolved.map(normalizeOutcomeItem) : [],
+    duplicates: Array.isArray(f?.duplicates) ? f.duplicates.map(normalizeOutcomeItem) : [],
+  })) : undefined
+
+  const missing_source_entries = Array.isArray(raw.missing_source_entries)
+    ? raw.missing_source_entries.map((m) => ({
+        library_key: typeof m?.library_key === 'string' ? m.library_key : '',
+        source_id: typeof m?.source_id === 'string' ? m.source_id : '',
+        latest_content_digest: typeof m?.latest_content_digest === 'string' ? m.latest_content_digest : '',
+      }))
+    : undefined
+
+  const res = {
+    phase: typeof raw.phase === 'string' ? raw.phase : 'preview',
+  }
+  if (summary !== undefined) res.summary = summary
+  if (outcomes !== undefined) res.outcomes = outcomes
+  if (details !== undefined) res.details = details
+  if (files !== undefined) res.files = files
+  if (missing_source_entries !== undefined) res.missing_source_entries = missing_source_entries
+  return res
+}
+
+function normalizeOutcomeItem(item) {
+  if (!item || typeof item !== 'object') return {}
+  return {
+    library_key: typeof item.library_key === 'string' ? item.library_key : '',
+    source_id: typeof item.source_id === 'string' ? item.source_id : '',
+    kind: typeof item.kind === 'string' ? item.kind : '',
+    bucket: typeof item.bucket === 'string' ? item.bucket : '',
+    index: typeof item.index === 'number' ? item.index : 0,
+    reason: typeof item.reason === 'string' ? item.reason : '',
+    occurrences: typeof item.occurrences === 'number' ? item.occurrences : undefined,
+    received_type: typeof item.received_type === 'string' ? item.received_type : '',
+    expected_kind: typeof item.expected_kind === 'string' ? item.expected_kind : '',
+  }
+}
+
+/** Pure reducer for SelectionView response acceptance with highest-revision-wins and epoch rules. */
+export function reduceSelectionView(
+  currentView,
+  candidateView,
+  {
+    activeSelectionId = null,
+    currentEpoch = 0,
+    candidateEpoch = 0,
+    currentGen = 0,
+    candidateGen = 0,
+  } = {}
+) {
+  // 1. Normalize and validate candidate through public boundary
+  const normalized = normalizeSelectionView(candidateView)
+  if (!normalized) {
+    return { view: currentView, accepted: false, epoch: currentEpoch, gen: currentGen }
+  }
+
+  // 2. Epoch rule: an old epoch can NEVER affect or overwrite current epoch
+  if (candidateEpoch < currentEpoch) {
+    return { view: currentView, accepted: false, epoch: currentEpoch, gen: currentGen }
+  }
+
+  // 3. Newer epoch: candidate from newer epoch supersedes previous selection
+  if (candidateEpoch > currentEpoch) {
+    return { view: normalized, accepted: true, epoch: candidateEpoch, gen: candidateGen }
+  }
+
+  // Within the same epoch:
+  const { selection_id, selection_revision } = normalized
+
+  // Reject responses for a different selection than the active one for this epoch
+  if (activeSelectionId && selection_id !== activeSelectionId) {
+    return { view: currentView, accepted: false, epoch: currentEpoch, gen: currentGen }
+  }
+
+  // First view accepted for this epoch
+  if (!currentView) {
+    return { view: normalized, accepted: true, epoch: candidateEpoch, gen: candidateGen }
+  }
+
+  // Reject if currentView is for a different selection
+  if (currentView.selection_id && selection_id !== currentView.selection_id) {
+    return { view: currentView, accepted: false, epoch: currentEpoch, gen: currentGen }
+  }
+
+  // Within the active selection: highest selection_revision wins!
+  // A response with higher revision is never discarded just because its request started earlier.
+  if (selection_revision > currentView.selection_revision) {
+    return { view: normalized, accepted: true, epoch: candidateEpoch, gen: Math.max(currentGen, candidateGen) }
+  }
+
+  // Lower revision is strictly ignored
+  if (selection_revision < currentView.selection_revision) {
+    return { view: currentView, accepted: false, epoch: currentEpoch, gen: currentGen }
+  }
+
+  // Equal revision: request generation fencing
+  if (candidateGen >= currentGen) {
+    return { view: normalized, accepted: true, epoch: candidateEpoch, gen: candidateGen }
+  }
+
+  return { view: currentView, accepted: false, epoch: currentEpoch, gen: currentGen }
+}
+
+/** Pure evaluator of whether Import action is eligible on the current selection. */
+export function isImportEligible(
+  selectionView,
+  { activeSelectionId = null, pendingMutation = false } = {}
+) {
+  if (!selectionView || typeof selectionView !== 'object') return false
+  if (activeSelectionId && selectionView.selection_id !== activeSelectionId) return false
+  if (typeof selectionView.selection_id !== 'string' || !selectionView.selection_id.trim()) return false
+  if (
+    typeof selectionView.selection_revision !== 'number' ||
+    !Number.isInteger(selectionView.selection_revision) ||
+    selectionView.selection_revision < 0 ||
+    selectionView.selection_revision > Number.MAX_SAFE_INTEGER
+  ) {
+    return false
+  }
+  if (selectionView.state !== 'open') return false
+  if (pendingMutation) return false
+
+  const preview = selectionView.preview
+  if (!preview || typeof preview !== 'object') return false
+  if (preview.committable !== true) return false
+  if (typeof preview.preview_token !== 'string' || !preview.preview_token.trim()) return false
+  if (typeof preview.manifest_digest !== 'string' || !/^[0-9a-f]{16,64}$/.test(preview.manifest_digest.trim())) {
+    return false
+  }
+  if (!preview.report || typeof preview.report !== 'object' || Array.isArray(preview.report)) {
+    return false
+  }
+
+  return true
 }

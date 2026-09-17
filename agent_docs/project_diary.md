@@ -147,3 +147,10 @@
   empty, out-of-set, or changed choices must fail closed before resource writes.
 - Browser-only preview metadata belongs in the browser attestation body and
   must not be added to the legacy serialized preview contract.
+- Task 1.5 acceptance uses two separate ordering authorities: `selection_revision`
+  decides ordering within one active selection, while an epoch rejects responses
+  from a superseded selection. A request that started earlier can still win when
+  it returns the higher server revision.
+- The browser must reconstruct the closed SelectionView allowlist before storing
+  it in React state. Import requires the complete current preview tuple, and HTTP
+  202 remains visibly committing until status returns the durable committed view.

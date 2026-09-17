@@ -5165,3 +5165,56 @@ rs.commit_selection('{sid}', expected_revision={rev}, preview_token='{token}')
     resp_read = client.get(f"/api/resources/import-selections/{sid}")
     assert resp_read.status_code == 200
     assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+
+
+def test_selection_view_includes_cleanup_warning_and_excludes_cleanup_state(client, fresh_db):
+    """Task 1.5: SelectionView carries cleanup_warning (null ordinarily) and never cleanup_state."""
+    resp = client.post("/api/resources/import-selections", json={"request_id": _unique_request_id()})
+    assert resp.status_code == 201
+    view = resp.json()
+    assert set(view.keys()) == rs.SELECTION_VIEW_KEYS
+    assert "cleanup_warning" in view
+    assert view["cleanup_warning"] is None
+    assert "cleanup_state" not in view
+    _assert_view_is_public(view)
+
+
+def test_selection_view_cleanup_failure_projects_sanitized_generic_warning(client, fresh_db):
+    """Task 1.5: Injected cleanup failure produces sanitized generic warning and never leaks private details."""
+    resp = client.post("/api/resources/import-selections", json={"request_id": _unique_request_id()})
+    assert resp.status_code == 201
+    sid = resp.json()["selection_id"]
+
+    # Inject internal cleanup failure with private path and exception detail into database
+    private_internal_warning = "Cleanup failed for C:\\secret\\staged\\file_123.staged: OSError [Errno 13] Permission denied"
+    with db.transaction():
+        db.conn().execute(
+            "UPDATE resource_selection SET cleanup_state = 'failed', cleanup_warning = ? WHERE selection_id = ?",
+            (private_internal_warning, sid),
+        )
+
+    # 1. GET returns sanitized warning
+    get_resp = client.get(f"/api/resources/import-selections/{sid}")
+    assert get_resp.status_code == 200
+    view = get_resp.json()
+    assert set(view.keys()) == rs.SELECTION_VIEW_KEYS
+    assert view["cleanup_warning"] == rs.GENERIC_CLEANUP_WARNING
+    assert "cleanup_state" not in view
+    assert "secret" not in json.dumps(view).lower()
+    assert "permission denied" not in json.dumps(view).lower()
+    assert "oserror" not in json.dumps(view).lower()
+    _assert_view_is_public(view)
+
+    # 2. Error response with detail.current returns sanitized warning
+    err_resp = client.post(
+        f"/api/resources/import-selections/{sid}/preview",
+        json={"expected_revision": 999},
+    )
+    assert err_resp.status_code == 409
+    detail = _stable_detail(err_resp)
+    assert "current" in detail
+    cur_view = detail["current"]
+    assert cur_view["cleanup_warning"] == rs.GENERIC_CLEANUP_WARNING
+    assert "cleanup_state" not in cur_view
+    assert "secret" not in json.dumps(cur_view).lower()
+    _assert_view_is_public(cur_view)
