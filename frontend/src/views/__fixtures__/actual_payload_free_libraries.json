@@ -1,0 +1,1211 @@
+[
+  {
+    "id": 1,
+    "library_key": "rooms_studio_gallery",
+    "display_name": "Studio Gallery Rooms",
+    "kind": "rooms",
+    "created_at": "2026-09-17T12:00:00+00:00",
+    "revision_count": 2,
+    "auxiliary_count": 0,
+    "revisions": [
+      {
+        "revision_id": 1,
+        "library_key": "rooms_studio_gallery",
+        "library_id": 1,
+        "source_id": "room_grand_loft",
+        "content_digest": "2ab93b86e1563ebc5720fb33a84cec1cbcdf9d46556b0a1327b6ef2d3d4c5a7d",
+        "created_at": "2026-09-17T12:00:00+00:00",
+        "translation": {
+          "label": "Grand Sunlight Loft",
+          "scene_theme": "High ceiling loft with warm natural light"
+        },
+        "coverage": {
+          "status": "ready"
+        },
+        "readiness": {
+          "status": "ready",
+          "pending_fields": {},
+          "field_readiness": [
+            {
+              "name": "label",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "scene_theme",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "id",
+              "role": "identity",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "identifier",
+              "role": "identity",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "key",
+              "role": "identity",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "library",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "source_library",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "lib",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "version",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "category",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "kind",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "source_family",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "family",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "profile_key",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "profile",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "body_profile",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "weight",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "enabled",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "name",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "title",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "display_name",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "theme",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "theme_text",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "text",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "description",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "tags",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "tag",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "props",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "objects",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "furniture",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "uniform_fit",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "notes",
+              "role": "writer_guidance",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "anchors",
+              "role": "writer_guidance",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "mood",
+              "role": "writer_guidance",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "body_focus",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "costume_hint",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "dominance_axis",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "entry_schema",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "intensity_level",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "items",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "keywords",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "lighting_hint",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "moods",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "play_axis",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "pose_hint",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "privacy_level",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "prop_hint",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            }
+          ],
+          "coverage": {
+            "fields": {
+              "label": {
+                "role": "descriptive_input",
+                "translated": true,
+                "source_field": "name"
+              },
+              "scene_theme": {
+                "role": "descriptive_input",
+                "translated": true,
+                "source_field": "theme"
+              },
+              "id": {
+                "role": "identity",
+                "translated": false
+              },
+              "identifier": {
+                "role": "identity",
+                "translated": false
+              },
+              "key": {
+                "role": "identity",
+                "translated": false
+              },
+              "library": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "source_library": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "lib": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "version": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "category": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "kind": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "source_family": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "family": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "profile_key": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "profile": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "body_profile": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "weight": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "enabled": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "name": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "title": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "display_name": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "theme": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "theme_text": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "text": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "description": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "tags": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "tag": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "props": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "objects": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "furniture": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "uniform_fit": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "notes": {
+                "role": "writer_guidance",
+                "translated": false
+              },
+              "anchors": {
+                "role": "writer_guidance",
+                "translated": false
+              },
+              "mood": {
+                "role": "writer_guidance",
+                "translated": false
+              },
+              "body_focus": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "costume_hint": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "dominance_axis": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "entry_schema": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "intensity_level": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "items": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "keywords": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "lighting_hint": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "moods": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "play_axis": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "pose_hint": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "privacy_level": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "prop_hint": {
+                "role": "intentionally_unused",
+                "translated": false
+              }
+            },
+            "missing_translations": [],
+            "unmapped_fields": []
+          }
+        }
+      },
+      {
+        "revision_id": 2,
+        "library_key": "rooms_studio_gallery",
+        "library_id": 1,
+        "source_id": "room_concrete_minimal",
+        "content_digest": "a17d94ed2dda60b055c8514a06695632343a72058a34485580f84395239a5a74",
+        "created_at": "2026-09-17T12:00:00+00:00",
+        "translation": {
+          "label": "Brutalist Concrete Space",
+          "scene_theme": "Raw grey concrete walls and architectural shadows"
+        },
+        "coverage": {
+          "status": "ready"
+        },
+        "readiness": {
+          "status": "ready",
+          "pending_fields": {},
+          "field_readiness": [
+            {
+              "name": "label",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "scene_theme",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "id",
+              "role": "identity",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "identifier",
+              "role": "identity",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "key",
+              "role": "identity",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "library",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "source_library",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "lib",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "version",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "category",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "kind",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "source_family",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "family",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "profile_key",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "profile",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "body_profile",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "weight",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "enabled",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "name",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "title",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "display_name",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "theme",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "theme_text",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "text",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "description",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "tags",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "tag",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "props",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "objects",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "furniture",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "uniform_fit",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "notes",
+              "role": "writer_guidance",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "anchors",
+              "role": "writer_guidance",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "mood",
+              "role": "writer_guidance",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "body_focus",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "costume_hint",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "dominance_axis",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "entry_schema",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "intensity_level",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "items",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "keywords",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "lighting_hint",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "moods",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "play_axis",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "pose_hint",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "privacy_level",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "prop_hint",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            }
+          ],
+          "coverage": {
+            "fields": {
+              "label": {
+                "role": "descriptive_input",
+                "translated": true,
+                "source_field": "name"
+              },
+              "scene_theme": {
+                "role": "descriptive_input",
+                "translated": true,
+                "source_field": "theme"
+              },
+              "id": {
+                "role": "identity",
+                "translated": false
+              },
+              "identifier": {
+                "role": "identity",
+                "translated": false
+              },
+              "key": {
+                "role": "identity",
+                "translated": false
+              },
+              "library": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "source_library": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "lib": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "version": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "category": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "kind": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "source_family": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "family": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "profile_key": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "profile": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "body_profile": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "weight": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "enabled": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "name": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "title": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "display_name": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "theme": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "theme_text": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "text": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "description": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "tags": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "tag": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "props": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "objects": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "furniture": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "uniform_fit": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "notes": {
+                "role": "writer_guidance",
+                "translated": false
+              },
+              "anchors": {
+                "role": "writer_guidance",
+                "translated": false
+              },
+              "mood": {
+                "role": "writer_guidance",
+                "translated": false
+              },
+              "body_focus": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "costume_hint": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "dominance_axis": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "entry_schema": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "intensity_level": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "items": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "keywords": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "lighting_hint": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "moods": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "play_axis": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "pose_hint": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "privacy_level": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "prop_hint": {
+                "role": "intentionally_unused",
+                "translated": false
+              }
+            },
+            "missing_translations": [],
+            "unmapped_fields": []
+          }
+        }
+      }
+    ],
+    "auxiliary": []
+  },
+  {
+    "id": 2,
+    "library_key": "fused_scenes_couture",
+    "display_name": "Summer Couture Scenes",
+    "kind": "fused_scenes",
+    "created_at": "2026-09-17T12:00:00+00:00",
+    "revision_count": 1,
+    "auxiliary_count": 1,
+    "revisions": [
+      {
+        "revision_id": 3,
+        "library_key": "fused_scenes_couture",
+        "library_id": 2,
+        "source_id": "scene_silk_slip",
+        "content_digest": "5d16aeb81e4900b4514a189081dee70d1445d837f97f5ef6dfd3c96924e79cd2",
+        "created_at": "2026-09-17T12:00:00+00:00",
+        "translation": {
+          "label": "Silk Slip Dress",
+          "prompt": "Ivory Silk Slip Dress Scene"
+        },
+        "coverage": {
+          "status": "ready"
+        },
+        "readiness": {
+          "status": "ready",
+          "pending_fields": {},
+          "field_readiness": [
+            {
+              "name": "prompt",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "id",
+              "role": "identity",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "identifier",
+              "role": "identity",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "library",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "weight",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "source_family",
+              "role": "selection_metadata",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "label",
+              "role": "descriptive_input",
+              "translated": true,
+              "reason": ""
+            },
+            {
+              "name": "scene_theme",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "tags",
+              "role": "descriptive_input",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "keywords",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "lighting_hint",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "moods",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "pose_hint",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "prop_hint",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            },
+            {
+              "name": "items",
+              "role": "intentionally_unused",
+              "translated": false,
+              "reason": ""
+            }
+          ],
+          "coverage": {
+            "fields": {
+              "prompt": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "id": {
+                "role": "identity",
+                "translated": false
+              },
+              "identifier": {
+                "role": "identity",
+                "translated": false
+              },
+              "library": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "weight": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "source_family": {
+                "role": "selection_metadata",
+                "translated": false
+              },
+              "label": {
+                "role": "descriptive_input",
+                "translated": true
+              },
+              "scene_theme": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "tags": {
+                "role": "descriptive_input",
+                "translated": false
+              },
+              "keywords": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "lighting_hint": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "moods": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "pose_hint": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "prop_hint": {
+                "role": "intentionally_unused",
+                "translated": false
+              },
+              "items": {
+                "role": "intentionally_unused",
+                "translated": false
+              }
+            },
+            "missing_translations": [],
+            "unmapped_fields": [
+              "name"
+            ]
+          }
+        }
+      }
+    ],
+    "auxiliary": [
+      {
+        "auxiliary_id": 1,
+        "library_key": "fused_scenes_couture",
+        "kind": "mined_labels",
+        "content_digest": "a5569f82bfb8bfee54ef8975753ee78d48f8769cabc2e51d06f791587d4efc7a",
+        "created_at": "2026-09-17T12:00:00+00:00"
+      }
+    ]
+  }
+]

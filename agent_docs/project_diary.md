@@ -154,3 +154,18 @@
 - The browser must reconstruct the closed SelectionView allowlist before storing
   it in React state. Import requires the complete current preview tuple, and HTTP
   202 remains visibly committing until status returns the durable committed view.
+- Task 1.6 is formally closed at 6 of 72 tasks after independent backend and
+  real frontend contract acceptance. Its integration gate covers stale and
+  terminal selection states, duplicate accounting, crash recovery, cancel/commit
+  races, safe public response shapes, and an actual payload-free library-list
+  fixture. Task 2.1 is the next pending task.
+- The final SafeCommitReport boundary is structural in the frontend: exact public
+  keys, JSON types, nullability, arrays/objects, JavaScript-safe integers, and
+  explicit allowlisted reconstruction. Buckets, kinds, classifications,
+  identifier vocabulary, library naming, importer accounting, and digest
+  relationships remain backend semantics. A present invalid `preview.report`
+  rejects the complete SelectionView; there is no canonical-to-legacy fallback.
+- A superseded browser attestation may remain as a physical orphan without
+  authority. The durable selection row determines the usable preview, TTL is a
+  logical expiry boundary, terminal cleanup removes the authoritative token,
+  and Task 1.6 introduces no global filesystem sweep.

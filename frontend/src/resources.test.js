@@ -612,12 +612,43 @@ describe('resources module', () => {
       ],
       preview: {
         preview_token: 'ptok_123',
-        manifest_digest: '0123456789abcdef',
+        manifest_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         committable: true,
         report: {
-          summary: { files: 1, accepted: 1 },
-          outcomes: { accepted: 1 },
-          details: [{ library_key: 'characters', source_id: 'c1', action: 'accept', reason: 'ok' }],
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [
+            {
+              library_key: 'characters',
+              total_inputs: 1,
+              accepted: [
+                {
+                  source_id: 'c1',
+                  library_key: 'characters',
+                  kind: 'rooms',
+                  classification: 'new',
+                  new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                  previous_content_digest: null,
+                },
+              ],
+              auxiliary: [],
+              duplicates: [],
+              unresolved: [],
+            },
+          ],
+          missing_source_entries: [],
         },
         private_hash_tree: { secret: 'do_not_leak' },
       },
@@ -650,7 +681,7 @@ describe('resources module', () => {
       })
       expect(normalized.preview).toEqual({
         preview_token: 'ptok_123',
-        manifest_digest: '0123456789abcdef',
+        manifest_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
         committable: true,
         report: expect.objectContaining({
           phase: 'preview',
@@ -730,6 +761,908 @@ describe('resources module', () => {
       expect(normalizeSelectionView({ ...validRawView, files: [{ file_id: 'f1' }] })).toBeNull() // missing byte_count
       expect(normalizeSelectionView({ ...validRawView, preview: 'not_an_object' })).toBeNull()
       expect(normalizeSelectionView({ ...validRawView, commit_result: 'not_an_object' })).toBeNull()
+    })
+  })
+
+  describe('normalizeSelectionView - SafeCommitReport strict validation (A6)', () => {
+    const validSafeCommitReport = {
+      version: 1,
+      phase: 'commit',
+      summary: {
+        files: 1,
+        inputs: 1,
+        accepted: 1,
+        auxiliary: 0,
+        duplicates: 0,
+        unresolved: 0,
+        new: 1,
+        unchanged: 0,
+        updated: 0,
+        missing: 0,
+        recorded: 1,
+        new_scene_revisions: 1,
+        unchanged_scene_revisions: 0,
+        updated_scene_revisions: 0,
+        new_auxiliary_revisions: 0,
+        unchanged_auxiliary_revisions: 0,
+      },
+      files: [
+        {
+          library_key: 'scenes',
+          total_inputs: 1,
+          accepted: [
+            {
+              source_id: 'scene_1',
+              library_key: 'scenes',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            },
+          ],
+          auxiliary: [],
+          duplicates: [],
+          unresolved: [],
+        },
+      ],
+      missing_source_entries: [],
+    }
+
+    const baseCommittedView = {
+      selection_id: 'sel_committed_strict',
+      selection_revision: 3,
+      state: 'committed',
+      expires_at: '2026-09-18T12:00:00Z',
+      files: [
+        {
+          file_id: 'fid_1',
+          file_name: 'test.json',
+          byte_count: 120,
+          declared_library: 'scenes',
+          effective_library_key: 'scenes',
+          matched_auxiliary_kinds: [],
+          effective_auxiliary_kind: null,
+          status: 'staged',
+        },
+      ],
+      preview: null,
+      commit_result: validSafeCommitReport,
+      cleanup_warning: null,
+    }
+
+    // 1. Valid direct SafeCommitReport -> accepted and reconstructed exactly
+    it('1. accepts valid direct SafeCommitReport and reconstructs it exactly', () => {
+      const normalized = normalizeSelectionView(baseCommittedView)
+      expect(normalized).not.toBeNull()
+      expect(normalized.commit_result).toEqual(validSafeCommitReport)
+      expect(Object.keys(normalized.commit_result).sort()).toEqual([
+        'files',
+        'missing_source_entries',
+        'phase',
+        'summary',
+        'version',
+      ])
+    })
+
+    // 2. Incomplete direct commit_result (e.g. only phase) -> rejected / fail closed
+    it('2. rejects incomplete direct commit_result that only provides phase', () => {
+      const view = {
+        ...baseCommittedView,
+        commit_result: { phase: 'commit' },
+      }
+      expect(normalizeSelectionView(view)).toBeNull()
+    })
+
+    // 3. Incomplete direct commit_result (e.g. only summary) -> rejected / fail closed
+    it('3. rejects incomplete direct commit_result that only provides summary', () => {
+      const view = {
+        ...baseCommittedView,
+        commit_result: { summary: { files: 1, recorded: 1 } },
+      }
+      expect(normalizeSelectionView(view)).toBeNull()
+    })
+
+    // 4. Private direct commit_result with staged_path/fingerprint/raw_payload -> rejected, NOT simply sanitized
+    it('4. rejects private direct commit_result with private fields rather than silently sanitizing them', () => {
+      // Top-level private field
+      const viewWithTopPrivate = {
+        ...baseCommittedView,
+        commit_result: {
+          ...validSafeCommitReport,
+          staged_path: '/tmp/private/internal/path.json',
+        },
+      }
+      expect(normalizeSelectionView(viewWithTopPrivate)).toBeNull()
+
+      // Nested private field in files
+      const viewWithFilePrivate = {
+        ...baseCommittedView,
+        commit_result: {
+          ...validSafeCommitReport,
+          files: [
+            {
+              ...validSafeCommitReport.files[0],
+              staged_path: '/tmp/private/internal/path.json',
+            },
+          ],
+        },
+      }
+      expect(normalizeSelectionView(viewWithFilePrivate)).toBeNull()
+
+      // Nested private field in accepted outcome
+      const viewWithAcceptedPrivate = {
+        ...baseCommittedView,
+        commit_result: {
+          ...validSafeCommitReport,
+          files: [
+            {
+              ...validSafeCommitReport.files[0],
+              accepted: [
+                {
+                  ...validSafeCommitReport.files[0].accepted[0],
+                  fingerprint: 'sha256-secret-hash',
+                },
+              ],
+            },
+          ],
+        },
+      }
+      expect(normalizeSelectionView(viewWithAcceptedPrivate)).toBeNull()
+    })
+
+    // 5. Extra unknown field -> closed behavior according to contract
+    it('5. rejects commit_result with extra unknown field according to closed contract', () => {
+      const viewWithUnknown = {
+        ...baseCommittedView,
+        commit_result: {
+          ...validSafeCommitReport,
+          extra_unknown_property: 'not_allowed',
+        },
+      }
+      expect(normalizeSelectionView(viewWithUnknown)).toBeNull()
+
+      const viewWithFileUnknown = {
+        ...baseCommittedView,
+        commit_result: {
+          ...validSafeCommitReport,
+          files: [
+            {
+              ...validSafeCommitReport.files[0],
+              extra_file_property: 123,
+            },
+          ],
+        },
+      }
+      expect(normalizeSelectionView(viewWithFileUnknown)).toBeNull()
+    })
+
+    // 6. Malformed nested summary/files -> rejected (structural-only contract)
+    it('6. rejects malformed nested summary/files and counter types per the structural contract', () => {
+      // Negative counter in summary (transport contract: integer >= 0)
+      const viewNegCounter = {
+        ...baseCommittedView,
+        commit_result: {
+          ...validSafeCommitReport,
+          summary: { ...validSafeCommitReport.summary, recorded: -1 },
+        },
+      }
+      expect(normalizeSelectionView(viewNegCounter)).toBeNull()
+
+      // Non-integer counter (transport contract: integer type)
+      const viewNonIntegerCounter = {
+        ...baseCommittedView,
+        commit_result: {
+          ...validSafeCommitReport,
+          summary: { ...validSafeCommitReport.summary, recorded: 1.5 },
+        },
+      }
+      expect(normalizeSelectionView(viewNonIntegerCounter)).toBeNull()
+
+      // Non-string digest (transport contract: string)
+      const viewBadDigestType = {
+        ...baseCommittedView,
+        commit_result: {
+          ...validSafeCommitReport,
+          files: [
+            {
+              ...validSafeCommitReport.files[0],
+              accepted: [
+                {
+                  ...validSafeCommitReport.files[0].accepted[0],
+                  new_content_digest: 123,
+                },
+              ],
+            },
+          ],
+        },
+      }
+      expect(normalizeSelectionView(viewBadDigestType)).toBeNull()
+
+      // malformed nested files (not a list)
+      const viewFilesNotArray = {
+        ...baseCommittedView,
+        commit_result: {
+          ...validSafeCommitReport,
+          files: 'not_an_array',
+        },
+      }
+      expect(normalizeSelectionView(viewFilesNotArray)).toBeNull()
+
+      // malformed nested summary (not a dict)
+      const viewSummaryNotDict = {
+        ...baseCommittedView,
+        commit_result: {
+          ...validSafeCommitReport,
+          summary: null,
+        },
+      }
+      expect(normalizeSelectionView(viewSummaryNotDict)).toBeNull()
+
+      // missing_source_entries not an array
+      const viewMissingNotArray = {
+        ...baseCommittedView,
+        commit_result: {
+          ...validSafeCommitReport,
+          missing_source_entries: 'not_an_array',
+        },
+      }
+      expect(normalizeSelectionView(viewMissingNotArray)).toBeNull()
+    })
+
+    // 7. Canonical committed SelectionView complete -> accepted
+    it('7. accepts canonical committed SelectionView complete', () => {
+      const normalized = normalizeSelectionView(baseCommittedView)
+      expect(normalized).not.toBeNull()
+      expect(normalized.state).toBe('committed')
+      expect(normalized.selection_id).toBe('sel_committed_strict')
+      expect(normalized.selection_revision).toBe(3)
+      expect(normalized.files).toHaveLength(1)
+      expect(normalized.commit_result).toEqual(validSafeCommitReport)
+      expect(normalized.preview).toBeNull()
+      expect(normalized.cleanup_warning).toBeNull()
+    })
+
+    // ---------------------------------------------------------------------
+    // Positive regression (A6.4): backend-canonical responses must be accepted.
+    // The frontend validates ONLY the public transport contract.
+    // ---------------------------------------------------------------------
+    describe('positive regression - backend-canonical SafeCommitReport (A6.4)', () => {
+      const prevSummaryKeys = [
+        'accepted', 'auxiliary', 'duplicates', 'files', 'inputs',
+        'missing', 'new', 'unchanged', 'unresolved', 'updated',
+      ]
+      const commitSummaryKeys = [
+        'accepted', 'auxiliary', 'duplicates', 'files', 'inputs',
+        'missing', 'new', 'new_auxiliary_revisions', 'new_scene_revisions',
+        'recorded', 'unchanged', 'unchanged_auxiliary_revisions',
+        'unchanged_scene_revisions', 'unresolved', 'updated', 'updated_scene_revisions',
+      ]
+      const allZeroSummary = (keys) => Object.fromEntries(keys.map((k) => [k, 0]))
+      const baseFileShape = (overrides = {}) => ({
+        library_key: 'scenes',
+        total_inputs: 0,
+        accepted: [],
+        auxiliary: [],
+        duplicates: [],
+        unresolved: [],
+        ...overrides,
+      })
+      // Wrap a canonical report into a SelectionView envelope. The report's
+      // `phase` determines whether it is placed in `commit_result` (commit)
+      // or `preview.report` (preview). Both paths must validate identically.
+      const wrapReport = (report) => {
+        if (report.phase === 'preview') {
+          return {
+            ...baseCommittedView,
+            selection_revision: 4,
+            state: 'open',
+            commit_result: null,
+            preview: {
+              preview_token: 'ptok_canon',
+              manifest_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              committable: true,
+              report,
+            },
+          }
+        }
+        return {
+          ...baseCommittedView,
+          commit_result: report,
+        }
+      }
+      // Resolve the normalized report back from a SelectionView envelope,
+      // regardless of whether it landed in commit_result or preview.report.
+      const readReport = (normalized, phase) => {
+        if (!normalized) return null
+        if (phase === 'preview') return normalized.preview?.report ?? null
+        return normalized.commit_result
+      }
+
+      it('A. accepts empty canonical report when the backend permits it', () => {
+        const report = {
+          version: 1,
+          phase: 'commit',
+          summary: allZeroSummary(commitSummaryKeys),
+          files: [],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(normalized.commit_result).toEqual(report)
+      })
+
+      it('B. accepts a canonical commit with only `new` accepted items', () => {
+        const newDigest = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        const report = {
+          version: 1,
+          phase: 'commit',
+          summary: { ...allZeroSummary(commitSummaryKeys), files: 1, inputs: 1, accepted: 1, new: 1, recorded: 1, new_scene_revisions: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            accepted: [{
+              source_id: 'src_new',
+              library_key: 'scenes',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: newDigest,
+              previous_content_digest: null,
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(normalized.commit_result.files[0].accepted[0].classification).toBe('new')
+      })
+
+      it('C. accepts a canonical commit with only `updated` accepted items', () => {
+        const oldDigest = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+        const newDigest = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
+        const report = {
+          version: 1,
+          phase: 'commit',
+          summary: { ...allZeroSummary(commitSummaryKeys), files: 1, inputs: 1, accepted: 1, updated: 1, recorded: 1, new_scene_revisions: 1, updated_scene_revisions: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            accepted: [{
+              source_id: 'src_updated',
+              library_key: 'scenes',
+              kind: 'rooms',
+              classification: 'updated',
+              new_content_digest: newDigest,
+              previous_content_digest: oldDigest,
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(normalized.commit_result.files[0].accepted[0].classification).toBe('updated')
+      })
+
+      it('D. accepts a canonical commit with only `unchanged` accepted items', () => {
+        const sameDigest = 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
+        const report = {
+          version: 1,
+          phase: 'commit',
+          summary: { ...allZeroSummary(commitSummaryKeys), files: 1, inputs: 1, accepted: 1, unchanged: 1, recorded: 1, unchanged_scene_revisions: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            accepted: [{
+              source_id: 'src_unchanged',
+              library_key: 'scenes',
+              kind: 'rooms',
+              classification: 'unchanged',
+              new_content_digest: sameDigest,
+              previous_content_digest: sameDigest,
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(normalized.commit_result.files[0].accepted[0].classification).toBe('unchanged')
+      })
+
+      it('E. accepts a canonical commit with auxiliary items', () => {
+        const auxDigest = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+        const report = {
+          version: 1,
+          phase: 'commit',
+          summary: { ...allZeroSummary(commitSummaryKeys), files: 1, inputs: 1, auxiliary: 1, recorded: 1, new_auxiliary_revisions: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            auxiliary: [{
+              library_key: 'scenes',
+              kind: 'translation_map',
+              classification: 'new',
+              new_content_digest: auxDigest,
+              previous_content_digest: null,
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(normalized.commit_result.files[0].auxiliary[0].kind).toBe('translation_map')
+      })
+
+      it('F. accepts canonical missing_source_entries', () => {
+        const digest = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
+        const report = {
+          version: 1,
+          phase: 'commit',
+          summary: { ...allZeroSummary(commitSummaryKeys), missing: 1 },
+          files: [],
+          missing_source_entries: [{
+            library_key: 'scenes',
+            source_id: 'src_missing',
+            latest_content_digest: digest,
+          }],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(normalized.commit_result.missing_source_entries).toHaveLength(1)
+        expect(normalized.commit_result.missing_source_entries[0].source_id).toBe('src_missing')
+      })
+
+      it('G. accepts unresolved bucket "malformed"', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'malformed',
+              index: 0,
+              reason: 'payload could not be parsed',
+              received_type: 'object',
+              expected_kind: '',
+              identifier_fields: [],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].bucket).toBe('malformed')
+      })
+
+      it('H. accepts unresolved bucket "unsupported"', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'unsupported',
+              index: 1,
+              reason: 'shape not supported by importer',
+              received_type: 'array',
+              expected_kind: '',
+              identifier_fields: [],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].bucket).toBe('unsupported')
+      })
+
+      it('I. accepts unresolved bucket "ambiguous_identifier"', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'ambiguous_identifier',
+              index: 2,
+              reason: 'multiple identifier fields present',
+              received_type: 'object',
+              expected_kind: 'rooms',
+              identifier_fields: ['id', 'identifier'],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].bucket).toBe('ambiguous_identifier')
+      })
+
+      it('J. accepts unresolved bucket "missing_identifier"', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'missing_identifier',
+              index: 0,
+              reason: 'no identifier provided',
+              received_type: 'object',
+              expected_kind: 'fused_scenes',
+              identifier_fields: [],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].bucket).toBe('missing_identifier')
+      })
+
+      it('K. accepts unresolved bucket "duplicate_identifier"', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'duplicate_identifier',
+              index: 4,
+              reason: 'two items carry the same identifier',
+              received_type: 'object',
+              expected_kind: 'rooms',
+              identifier_fields: ['key'],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].bucket).toBe('duplicate_identifier')
+      })
+
+      it('L. accepts unresolved bucket "auxiliary"', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'auxiliary',
+              index: 0,
+              reason: 'moved to auxiliary bucket',
+              received_type: 'object',
+              expected_kind: '',
+              identifier_fields: ['id'],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].bucket).toBe('auxiliary')
+      })
+
+      it('M. accepts unresolved bucket "file_read_error" with its exact canonical reason', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'file_read_error',
+              index: 0,
+              reason: 'source file could not be read or parsed',
+              received_type: 'io_error',
+              expected_kind: '',
+              identifier_fields: [],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].bucket).toBe('file_read_error')
+      })
+
+      it('N. accepts identifier_fields = [] (empty)', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'malformed',
+              index: 0,
+              reason: 'no identifiers',
+              received_type: 'object',
+              expected_kind: '',
+              identifier_fields: [],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].identifier_fields).toEqual([])
+      })
+
+      it('O. accepts identifier_fields = ["id"]', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'malformed',
+              index: 0,
+              reason: 'single identifier',
+              received_type: 'object',
+              expected_kind: '',
+              identifier_fields: ['id'],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].identifier_fields).toEqual(['id'])
+      })
+
+      it('P. accepts identifier_fields = ["identifier"]', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'malformed',
+              index: 0,
+              reason: 'single identifier',
+              received_type: 'object',
+              expected_kind: '',
+              identifier_fields: ['identifier'],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].identifier_fields).toEqual(['identifier'])
+      })
+
+      it('Q. accepts identifier_fields = ["key"]', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'malformed',
+              index: 0,
+              reason: 'single identifier',
+              received_type: 'object',
+              expected_kind: '',
+              identifier_fields: ['key'],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].identifier_fields).toEqual(['key'])
+      })
+
+      it('R. accepts identifier_fields ordered combos from {id, identifier, key}', () => {
+        const baseSummary = { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 }
+        const buildReport = (idFields) => ({
+          version: 1,
+          phase: 'preview',
+          summary: baseSummary,
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'ambiguous_identifier',
+              index: 0,
+              reason: 'multiple identifiers',
+              received_type: 'object',
+              expected_kind: '',
+              identifier_fields: idFields,
+            }],
+          }],
+          missing_source_entries: [],
+        })
+        expect(normalizeSelectionView(wrapReport(buildReport(['id', 'identifier'])))).not.toBeNull()
+        expect(normalizeSelectionView(wrapReport(buildReport(['identifier', 'key'])))).not.toBeNull()
+        expect(normalizeSelectionView(wrapReport(buildReport(['id', 'key'])))).not.toBeNull()
+        expect(normalizeSelectionView(wrapReport(buildReport(['id', 'identifier', 'key'])))).not.toBeNull()
+      })
+
+      it('S. accepts a legal library_key like "fingerprint_archive"', () => {
+        const newDigest = '1111111111111111111111111111111111111111111111111111111111111111'
+        const report = {
+          version: 1,
+          phase: 'commit',
+          summary: { ...allZeroSummary(commitSummaryKeys), files: 1, inputs: 1, accepted: 1, new: 1, recorded: 1, new_scene_revisions: 1 },
+          files: [{
+            library_key: 'fingerprint_archive',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 'fingerprint_scene',
+              library_key: 'fingerprint_archive',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: newDigest,
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(normalized.commit_result.files[0].library_key).toBe('fingerprint_archive')
+        expect(normalized.commit_result.files[0].accepted[0].library_key).toBe('fingerprint_archive')
+      })
+
+      it('T. preserves opaque identifier_fields strings without allowlist or ordering semantics', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'ambiguous_identifier',
+              index: 0,
+              reason: '',
+              received_type: '',
+              expected_kind: 'future_kind',
+              identifier_fields: ['future_identifier', 'key', 'id'],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0]).toEqual(
+          report.files[0].unresolved[0]
+        )
+      })
+
+      it('U. accepts an arbitrary future unresolved bucket and opaque diagnostic strings', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'future_backend_bucket',
+              index: 0,
+              reason: '',
+              received_type: '',
+              expected_kind: 'future_kind',
+              identifier_fields: ['name'],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(readReport(normalized, 'preview').files[0].unresolved[0].bucket).toBe('future_backend_bucket')
+      })
+
+      it('V. treats library_key and digest contents as opaque strings', () => {
+        const newDigest = '2222222222222222222222222222222222222222222222222222222222222222'
+        const report = {
+          version: 1,
+          phase: 'commit',
+          summary: { ...allZeroSummary(commitSummaryKeys), files: 1, inputs: 1, accepted: 1, new: 1, recorded: 1, new_scene_revisions: 1 },
+          files: [{
+            library_key: 'backend-owned/library',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 'src',
+              library_key: 'backend-owned/library',
+              kind: 'future_scene_kind',
+              classification: 'future_classification',
+              new_content_digest: 'opaque-digest',
+              previous_content_digest: newDigest,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(normalized.commit_result.files[0].accepted[0]).toEqual(report.files[0].accepted[0])
+      })
+
+      it('W. rejects canonical-invalid preview.report even with otherwise valid preview envelope', () => {
+        // phase-only object, structurally invalid canonical report
+        const badReport = { phase: 'preview' }
+        const view = {
+          ...baseCommittedView,
+          selection_revision: 4,
+          state: 'open',
+          commit_result: null,
+          preview: {
+            preview_token: 'ptok-bad-report',
+            manifest_digest: '0123456789abcdef',
+            committable: true,
+            report: badReport,
+          },
+        }
+        expect(normalizeSelectionView(view)).toBeNull()
+      })
+
+      it('X. accepts backend-valid received_type="" through the real SelectionView path', () => {
+        const report = {
+          version: 1,
+          phase: 'preview',
+          summary: { ...allZeroSummary(prevSummaryKeys), files: 1, inputs: 1, unresolved: 1 },
+          files: [{
+            ...baseFileShape(),
+            total_inputs: 1,
+            unresolved: [{
+              bucket: 'malformed',
+              index: 0,
+              reason: 'Invalid input',
+              received_type: '',
+              expected_kind: '',
+              identifier_fields: [],
+            }],
+          }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(normalized.preview.report.files[0].unresolved[0].received_type).toBe('')
+      })
+
+      it('Y. accepts a backend-valid Unicode library_key beyond 64 UTF-16 code units', () => {
+        const unicodeLibraryKey = '🎨'.repeat(40)
+        expect(unicodeLibraryKey.length).toBeGreaterThan(64)
+        const report = {
+          version: 1,
+          phase: 'commit',
+          summary: { ...allZeroSummary(commitSummaryKeys), files: 1 },
+          files: [{ ...baseFileShape(), library_key: unicodeLibraryKey }],
+          missing_source_entries: [],
+        }
+        const normalized = normalizeSelectionView(wrapReport(report))
+        expect(normalized).not.toBeNull()
+        expect(normalized.commit_result.files[0].library_key).toBe(unicodeLibraryKey)
+      })
     })
   })
 

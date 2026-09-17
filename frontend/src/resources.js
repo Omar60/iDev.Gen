@@ -381,10 +381,8 @@ export function normalizeSelectionView(raw) {
       : null
     const normCommittable = Boolean(committable)
 
-    let normReport = null
-    if (report && typeof report === 'object' && !Array.isArray(report)) {
-      normReport = normalizeReport(report)
-    }
+    const normReport = normalizeSafeReport(report, 'preview')
+    if (!normReport) return null
 
     normalizedPreview = {
       preview_token: normToken,
@@ -397,13 +395,9 @@ export function normalizeSelectionView(raw) {
   // Normalize commit_result
   let normalizedCommitResult = null
   if (commit_result !== null && commit_result !== undefined) {
-    if (typeof commit_result !== 'object' || Array.isArray(commit_result)) {
+    normalizedCommitResult = normalizeSafeReport(commit_result, 'commit')
+    if (!normalizedCommitResult) {
       return null
-    }
-    const { committed, report } = commit_result
-    normalizedCommitResult = {
-      committed: Boolean(committed),
-      report: report && typeof report === 'object' && !Array.isArray(report) ? normalizeReport(report) : null,
     }
   }
 
@@ -425,84 +419,201 @@ export function normalizeSelectionView(raw) {
   }
 }
 
-function normalizeReport(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+// Public transport contract keys for SafeCommitReport.
+// These are the EXACT keys a canonical backend response MUST carry.
+const SAFE_REPORT_TOP_KEYS = ['files', 'missing_source_entries', 'phase', 'summary', 'version']
+const PREVIEW_SUMMARY_KEYS = [
+  'accepted', 'auxiliary', 'duplicates', 'files', 'inputs',
+  'missing', 'new', 'unchanged', 'unresolved', 'updated',
+]
+const COMMIT_SUMMARY_KEYS = [
+  'accepted', 'auxiliary', 'duplicates', 'files', 'inputs',
+  'missing', 'new', 'new_auxiliary_revisions', 'new_scene_revisions',
+  'recorded', 'unchanged', 'unchanged_auxiliary_revisions',
+  'unchanged_scene_revisions', 'unresolved', 'updated', 'updated_scene_revisions',
+]
+const FILE_REPORT_KEYS = ['accepted', 'auxiliary', 'duplicates', 'library_key', 'total_inputs', 'unresolved']
+const ACCEPTED_ITEM_KEYS = ['classification', 'kind', 'library_key', 'new_content_digest', 'previous_content_digest', 'source_id']
+const AUXILIARY_ITEM_KEYS = ['classification', 'kind', 'library_key', 'new_content_digest', 'previous_content_digest']
+const DUPLICATE_ITEM_KEYS = ['occurrences', 'source_id']
+const UNRESOLVED_ITEM_KEYS = ['bucket', 'expected_kind', 'identifier_fields', 'index', 'reason', 'received_type']
+const MISSING_SOURCE_KEYS = ['latest_content_digest', 'library_key', 'source_id']
 
-  const summary = raw.summary && typeof raw.summary === 'object' ? {
-    files: Number(raw.summary.files ?? 0),
-    inputs: Number(raw.summary.inputs ?? 0),
-    accepted: Number(raw.summary.accepted ?? 0),
-    auxiliary: Number(raw.summary.auxiliary ?? 0),
-    duplicates: Number(raw.summary.duplicates ?? 0),
-    unresolved: Number(raw.summary.unresolved ?? 0),
-    new: Number(raw.summary.new ?? 0),
-    unchanged: Number(raw.summary.unchanged ?? 0),
-    updated: Number(raw.summary.updated ?? 0),
-    missing: Number(raw.summary.missing ?? 0),
-    recorded: Number(raw.summary.recorded ?? 0),
-    new_scene_revisions: Number(raw.summary.new_scene_revisions ?? 0),
-    updated_scene_revisions: Number(raw.summary.updated_scene_revisions ?? 0),
-    unchanged_scene_revisions: Number(raw.summary.unchanged_scene_revisions ?? 0),
-  } : undefined
-
-  const outcomes = raw.outcomes && typeof raw.outcomes === 'object' ? {
-    new: Number(raw.outcomes.new ?? 0),
-    updated: Number(raw.outcomes.updated ?? 0),
-    unchanged: Number(raw.outcomes.unchanged ?? 0),
-    accepted: Number(raw.outcomes.accepted ?? 0),
-    auxiliary: Number(raw.outcomes.auxiliary ?? 0),
-    duplicate: Number(raw.outcomes.duplicate ?? 0),
-    unresolved: Number(raw.outcomes.unresolved ?? 0),
-    missing: Number(raw.outcomes.missing ?? 0),
-  } : undefined
-
-  const details = Array.isArray(raw.details) ? raw.details.map((d) => ({
-    library_key: typeof d?.library_key === 'string' ? d.library_key : '',
-    source_id: typeof d?.source_id === 'string' ? d.source_id : '',
-    action: typeof d?.action === 'string' ? d.action : '',
-    reason: typeof d?.reason === 'string' ? d.reason : '',
-  })) : undefined
-
-  const files = Array.isArray(raw.files) ? raw.files.map((f) => ({
-    library_key: typeof f?.library_key === 'string' ? f.library_key : '',
-    file_name: typeof f?.file_name === 'string' ? f.file_name : '',
-    accepted: Array.isArray(f?.accepted) ? f.accepted.map(normalizeOutcomeItem) : [],
-    auxiliary: Array.isArray(f?.auxiliary) ? f.auxiliary.map(normalizeOutcomeItem) : [],
-    unresolved: Array.isArray(f?.unresolved) ? f.unresolved.map(normalizeOutcomeItem) : [],
-    duplicates: Array.isArray(f?.duplicates) ? f.duplicates.map(normalizeOutcomeItem) : [],
-  })) : undefined
-
-  const missing_source_entries = Array.isArray(raw.missing_source_entries)
-    ? raw.missing_source_entries.map((m) => ({
-        library_key: typeof m?.library_key === 'string' ? m.library_key : '',
-        source_id: typeof m?.source_id === 'string' ? m.source_id : '',
-        latest_content_digest: typeof m?.latest_content_digest === 'string' ? m.latest_content_digest : '',
-      }))
-    : undefined
-
-  const res = {
-    phase: typeof raw.phase === 'string' ? raw.phase : 'preview',
-  }
-  if (summary !== undefined) res.summary = summary
-  if (outcomes !== undefined) res.outcomes = outcomes
-  if (details !== undefined) res.details = details
-  if (files !== undefined) res.files = files
-  if (missing_source_entries !== undefined) res.missing_source_entries = missing_source_entries
-  return res
+function isSafeInteger(v, minVal = 0) {
+  return typeof v === 'number' && Number.isInteger(v) && v >= minVal && v <= Number.MAX_SAFE_INTEGER
 }
 
-function normalizeOutcomeItem(item) {
-  if (!item || typeof item !== 'object') return {}
+function hasExactKeys(obj, expectedSortedKeys) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false
+  const keys = Object.keys(obj).sort()
+  if (keys.length !== expectedSortedKeys.length) return false
+  for (let i = 0; i < keys.length; i++) {
+    if (keys[i] !== expectedSortedKeys[i]) return false
+  }
+  return true
+}
+
+function copyStringArray(raw) {
+  if (!Array.isArray(raw)) return null
+  const result = []
+  for (const item of raw) {
+    if (typeof item !== 'string') return null
+    result.push(item)
+  }
+  return result
+}
+
+/**
+ * Validate and canonicalize a SafeCommitReport against the public transport contract.
+ * Fails closed (returns null) on any structural violation.
+ *
+ * Scope of validation: ONLY the public transport contract.
+ *   - top-level shape (exact keys, version=1, phase discriminator)
+ *   - summary structural keys per phase and integer counters
+ *   - file report structure (exact keys, primitive types, total_inputs integer)
+ *   - per-file item structures (accepted/auxiliary/duplicates/unresolved/missing_source_entries)
+ *
+ * Out of scope (backend business semantics — NOT validated here):
+ *   - reconciliation between summary counters and files/missing entries
+ *   - commit-specific counters (recorded, new_scene_revisions, ...) consistency
+ *   - kind / classification / bucket / expected_kind / auxiliary-kind enum closure
+ *   - classification <-> previous_content_digest relationship invariants
+ *   - file_read_error exact reason match
+ *   - digest spelling, library/source naming, and diagnostic string content
+ *   - identifier_fields vocabulary and ordering
+ *   - new/updated/unchanged business rules
+ */
+export function normalizeSafeReport(raw, expectedPhase = null) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+
+  if (!hasExactKeys(raw, SAFE_REPORT_TOP_KEYS)) return null
+  if (raw.version !== 1) return null
+
+  const phase = raw.phase
+  if (phase !== 'preview' && phase !== 'commit') return null
+  if (expectedPhase !== null && phase !== expectedPhase) return null
+
+  const rawSummary = raw.summary
+  if (!rawSummary || typeof rawSummary !== 'object' || Array.isArray(rawSummary)) return null
+  const expectedSummaryKeys = phase === 'preview' ? PREVIEW_SUMMARY_KEYS : COMMIT_SUMMARY_KEYS
+  if (!hasExactKeys(rawSummary, expectedSummaryKeys)) return null
+
+  const summary = {}
+  for (const k of expectedSummaryKeys) {
+    if (!isSafeInteger(rawSummary[k], 0)) return null
+    summary[k] = rawSummary[k]
+  }
+
+  if (!Array.isArray(raw.files)) return null
+  const files = []
+  for (const f of raw.files) {
+    if (!hasExactKeys(f, FILE_REPORT_KEYS)) return null
+    if (typeof f.library_key !== 'string') return null
+    if (!isSafeInteger(f.total_inputs, 0)) return null
+
+    if (!Array.isArray(f.accepted)) return null
+    const accepted = []
+    for (const item of f.accepted) {
+      if (!hasExactKeys(item, ACCEPTED_ITEM_KEYS)) return null
+      if (typeof item.source_id !== 'string') return null
+      if (typeof item.library_key !== 'string') return null
+      if (typeof item.kind !== 'string') return null
+      if (typeof item.classification !== 'string') return null
+      if (typeof item.new_content_digest !== 'string') return null
+      const prev = item.previous_content_digest
+      if (prev !== null && typeof prev !== 'string') return null
+      accepted.push({
+        source_id: item.source_id,
+        library_key: item.library_key,
+        kind: item.kind,
+        classification: item.classification,
+        new_content_digest: item.new_content_digest,
+        previous_content_digest: prev,
+      })
+    }
+
+    if (!Array.isArray(f.auxiliary)) return null
+    const auxiliary = []
+    for (const item of f.auxiliary) {
+      if (!hasExactKeys(item, AUXILIARY_ITEM_KEYS)) return null
+      if (typeof item.library_key !== 'string') return null
+      if (typeof item.kind !== 'string') return null
+      if (typeof item.classification !== 'string') return null
+      if (typeof item.new_content_digest !== 'string') return null
+      const prev = item.previous_content_digest
+      if (prev !== null && typeof prev !== 'string') return null
+      auxiliary.push({
+        library_key: item.library_key,
+        kind: item.kind,
+        classification: item.classification,
+        new_content_digest: item.new_content_digest,
+        previous_content_digest: prev,
+      })
+    }
+
+    if (!Array.isArray(f.duplicates)) return null
+    const duplicates = []
+    for (const item of f.duplicates) {
+      if (!hasExactKeys(item, DUPLICATE_ITEM_KEYS)) return null
+      if (typeof item.source_id !== 'string') return null
+      if (!isSafeInteger(item.occurrences, 0)) return null
+      duplicates.push({
+        source_id: item.source_id,
+        occurrences: item.occurrences,
+      })
+    }
+
+    if (!Array.isArray(f.unresolved)) return null
+    const unresolved = []
+    for (const item of f.unresolved) {
+      if (!hasExactKeys(item, UNRESOLVED_ITEM_KEYS)) return null
+      if (typeof item.bucket !== 'string') return null
+      if (!isSafeInteger(item.index, 0)) return null
+      if (typeof item.reason !== 'string') return null
+      if (typeof item.received_type !== 'string') return null
+      if (typeof item.expected_kind !== 'string') return null
+      const idFields = copyStringArray(item.identifier_fields)
+      if (idFields === null) return null
+      unresolved.push({
+        bucket: item.bucket,
+        index: item.index,
+        reason: item.reason,
+        received_type: item.received_type,
+        expected_kind: item.expected_kind,
+        identifier_fields: idFields,
+      })
+    }
+
+    files.push({
+      library_key: f.library_key,
+      total_inputs: f.total_inputs,
+      accepted,
+      auxiliary,
+      duplicates,
+      unresolved,
+    })
+  }
+
+  if (!Array.isArray(raw.missing_source_entries)) return null
+  const missingSourceEntries = []
+  for (const m of raw.missing_source_entries) {
+    if (!hasExactKeys(m, MISSING_SOURCE_KEYS)) return null
+    if (typeof m.library_key !== 'string') return null
+    if (typeof m.source_id !== 'string') return null
+    if (typeof m.latest_content_digest !== 'string') return null
+    missingSourceEntries.push({
+      library_key: m.library_key,
+      source_id: m.source_id,
+      latest_content_digest: m.latest_content_digest,
+    })
+  }
+
   return {
-    library_key: typeof item.library_key === 'string' ? item.library_key : '',
-    source_id: typeof item.source_id === 'string' ? item.source_id : '',
-    kind: typeof item.kind === 'string' ? item.kind : '',
-    bucket: typeof item.bucket === 'string' ? item.bucket : '',
-    index: typeof item.index === 'number' ? item.index : 0,
-    reason: typeof item.reason === 'string' ? item.reason : '',
-    occurrences: typeof item.occurrences === 'number' ? item.occurrences : undefined,
-    received_type: typeof item.received_type === 'string' ? item.received_type : '',
-    expected_kind: typeof item.expected_kind === 'string' ? item.expected_kind : '',
+    version: 1,
+    phase,
+    summary,
+    files,
+    missing_source_entries: missingSourceEntries,
   }
 }
 

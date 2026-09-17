@@ -1,4 +1,4 @@
-"""HTTP boundary tests for resource import selections (Task 1.2).
+﻿"""HTTP boundary tests for resource import selections (Task 1.2).
 
 The domain primitives live in ``backend.resource_selection``; Task 1.2
 exposes them through six routes under
@@ -10,7 +10,7 @@ contract of those routes:
      cancel, and read.
   3. The stable error envelope (``{"detail": {"code", "message",
      "current"}}``) and the absence of any private field at any
-     depth of any response — success or failure.
+     depth of any response â€” success or failure.
   4. The idempotency guarantees: same ``request_id`` replays as the
      same selection; same ``upload_id`` + same bytes returns 200 with
      the existing view; same ``upload_id`` + different bytes is
@@ -27,11 +27,15 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timedelta, timezone
+import threading
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -1147,7 +1151,7 @@ def test_validate_public_revision_accepts_max_safe_integer():
 
 
 # ---------------------------------------------------------------------------
-# Repair Group Tests — Concurrency, Idempotency, Projection Safety, Cleanup
+# Repair Group Tests â€” Concurrency, Idempotency, Projection Safety, Cleanup
 # ---------------------------------------------------------------------------
 
 
@@ -5218,3 +5222,1907 @@ def test_selection_view_cleanup_failure_projects_sanitized_generic_warning(clien
     assert "cleanup_state" not in cur_view
     assert "secret" not in json.dumps(cur_view).lower()
     _assert_view_is_public(cur_view)
+
+
+# ===========================================================================
+# Task 1.6 Integration Gate Tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 1. Selection Limits (Task 1.6 Item 1)
+# ---------------------------------------------------------------------------
+
+
+def test_selection_limits_20_files_accepted_21st_rejected_with_413_file_count_limit(client, fresh_db):
+    """Task 1.6: 20 files accepted, 21st rejected with 413 file_count_limit."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+    for i in range(1, 21):
+        payload = json.dumps([{"id": f"room_{i}", "label": f"Room {i}", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+        res = _upload_file(client, sid, upload_id=_unique(f"u_{i}"), file_name=f"room_{i}.json", payload=payload)
+        assert res.status_code == 201
+        assert res.json()["selection_revision"] == i
+        assert len(res.json()["files"]) == i
+
+    # 21st file rejected with 413
+    payload_21 = json.dumps([{"id": "room_21", "label": "Room 21", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    res_21 = _upload_file(client, sid, upload_id=_unique("u_21"), file_name="room_21.json", payload=payload_21)
+    assert res_21.status_code == 413
+    detail = _stable_detail(res_21)
+    assert detail["code"] == "file_count_limit"
+    assert "current" in detail
+    cur = detail["current"]
+    assert cur["selection_revision"] == 20
+    assert len(cur["files"]) == 20
+    _assert_view_is_public(cur)
+
+    # Check public view via GET is also 20
+    get_res = client.get(f"/api/resources/import-selections/{sid}")
+    assert get_res.status_code == 200
+    assert len(get_res.json()["files"]) == 20
+    _assert_view_is_public(get_res.json())
+
+
+def test_selection_limits_exact_10mib_accepted_and_plus_one_byte_rejected(client, fresh_db):
+    """Task 1.6: 10 MiB exact file accepted, 10 MiB + 1 byte rejected with reservation freed."""
+    exact_bytes = rs.MAX_BYTES_PER_FILE
+    sel1 = _create_open_selection(client)
+    sid1 = sel1["selection_id"]
+
+    prefix = b'{"library":"lib_exact","items":[],"padding":"'
+    suffix = b'"}'
+    pad_len = exact_bytes - len(prefix) - len(suffix)
+    payload_exact = prefix + (b"x" * pad_len) + suffix
+    assert len(payload_exact) == exact_bytes
+
+    res_exact = _upload_file(client, sid1, upload_id=_unique("u_exact"), file_name="exact_10m.json", payload=payload_exact)
+    assert res_exact.status_code == 201
+    view1 = res_exact.json()
+    assert view1["files"][0]["byte_count"] == exact_bytes
+    assert view1["selection_revision"] == 1
+    _assert_view_is_public(view1)
+
+    # 10 MiB + 1 byte
+    sel2 = _create_open_selection(client)
+    sid2 = sel2["selection_id"]
+    payload_oversized = payload_exact + b"1"
+    assert len(payload_oversized) == exact_bytes + 1
+
+    res_over = _upload_file(client, sid2, upload_id=_unique("u_over"), file_name="over_10m.json", payload=payload_oversized)
+    assert res_over.status_code == 413
+    detail = _stable_detail(res_over)
+    assert detail["code"] == "size_limit_exceeded"
+    assert "current" in detail
+    cur = detail["current"]
+    assert cur["selection_revision"] == 0
+    assert len(cur["files"]) == 0
+    _assert_view_is_public(cur)
+
+    # Verify reservation was completely released and a subsequent upload succeeds
+    small_payload = json.dumps([{"id": "r_ok", "label": "Ok", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    res_next = _upload_file(client, sid2, upload_id=_unique("u_next"), file_name="next.json", payload=small_payload)
+    assert res_next.status_code == 201
+    assert res_next.json()["files"][0]["byte_count"] == len(small_payload)
+
+
+def test_selection_limits_exact_50mib_aggregate_accepted_and_plus_one_byte_rejected(client, fresh_db):
+    """Task 1.6: 50 MiB exact aggregate accepted, +1 byte rejected without reservation leak."""
+    file_size = rs.MAX_BYTES_PER_FILE
+    prefix = b'{"library":"lib_agg","items":[],"padding":"'
+    suffix = b'"}'
+    pad_len = file_size - len(prefix) - len(suffix)
+    payload_chunk = prefix + (b"y" * pad_len) + suffix
+    assert len(payload_chunk) == file_size
+
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    for i in range(1, 6):
+        resp = _upload_file(client, sid, upload_id=_unique(f"u_agg_{i}"), file_name=f"f_{i}.json", payload=payload_chunk)
+        assert resp.status_code == 201
+
+    row = db.one("SELECT total_reserved_bytes, active_file_count FROM resource_selection WHERE selection_id = ?", sid)
+    assert row["total_reserved_bytes"] == rs.MAX_BYTES_PER_SELECTION
+    assert row["active_file_count"] == 5
+
+    # 6th file with 1 byte exceeds aggregate limit
+    resp_over = _upload_file(client, sid, upload_id=_unique("u_agg_6"), file_name="f_6.json", payload=b"z")
+    assert resp_over.status_code == 413
+    detail = _stable_detail(resp_over)
+    assert detail["code"] == "size_limit_exceeded"
+
+    row_after = db.one("SELECT total_reserved_bytes, active_file_count FROM resource_selection WHERE selection_id = ?", sid)
+    assert row_after["total_reserved_bytes"] == rs.MAX_BYTES_PER_SELECTION
+    assert row_after["active_file_count"] == 5
+
+
+def test_selection_limits_incomplete_upload_releases_reservation(client, fresh_db):
+    """Task 1.6: Incomplete upload releases file count and reserved bytes capacity."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    fid = "file_test_incomplete"
+    upload_id = _unique("u_incomp")
+    rs.reserve_file_slot(selection_id=sid, upload_id=upload_id, file_name="incomp.bin", file_id=fid)
+    rs.stage_file_chunk(sid, fid, b"part_bytes_12345")
+
+    row_res = db.one("SELECT total_reserved_bytes, active_file_count FROM resource_selection WHERE selection_id = ?", sid)
+    assert row_res["total_reserved_bytes"] == 16
+    assert row_res["active_file_count"] == 1
+
+    rs.abort_file_reservation(sid, fid, reason="client_disconnect")
+
+    row_clean = db.one("SELECT total_reserved_bytes, active_file_count FROM resource_selection WHERE selection_id = ?", sid)
+    assert row_clean["total_reserved_bytes"] == 0
+    assert row_clean["active_file_count"] == 0
+
+    valid_payload = json.dumps([{"id": "r_clean", "label": "L", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    resp = _upload_file(client, sid, upload_id=_unique("u_valid"), file_name="valid.json", payload=valid_payload)
+    assert resp.status_code == 201
+
+
+def test_selection_limits_actual_streamed_bytes_prevail_over_false_content_length(client, fresh_db):
+    """Task 1.6: Actual streamed bytes trigger limit even when Content-Length header is false."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    oversized_len = rs.MAX_BYTES_PER_FILE + 500
+    prefix = b'{"library":"lib_fake_len","items":[],"padding":"'
+    suffix = b'"}'
+    payload = prefix + (b"k" * (oversized_len - len(prefix) - len(suffix))) + suffix
+    assert len(payload) == oversized_len
+
+    resp = client.post(
+        f"/api/resources/import-selections/{sid}/files",
+        files={"file": ("fake_cl.json", io.BytesIO(payload), "application/octet-stream")},
+        data={"upload_id": _unique("u_fake_cl")},
+        headers={"Content-Length": "100"},
+    )
+    assert resp.status_code == 413
+    detail = _stable_detail(resp)
+    assert detail["code"] == "size_limit_exceeded"
+
+    sel_row = db.one("SELECT total_reserved_bytes, active_file_count FROM resource_selection WHERE selection_id = ?", sid)
+    assert sel_row["total_reserved_bytes"] == 0
+    assert sel_row["active_file_count"] == 0
+    assert db.one("SELECT COUNT(*) AS c FROM resource_selection_file WHERE selection_id = ?", sid)["c"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 2. Cross-Selection IDs (Task 1.6 Item 2)
+# ---------------------------------------------------------------------------
+
+
+def test_cross_selection_patch_and_delete_isolation(client, fresh_db):
+    """Task 1.6: Cross-selection file_id mutation/delete fails 404 with no leakage or mutation."""
+    sel_a = _create_open_selection(client)
+    sid_a = sel_a["selection_id"]
+    sel_b = _create_open_selection(client)
+    sid_b = sel_b["selection_id"]
+
+    payload_a = json.dumps([{"id": "scene_a", "label": "A", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    payload_b = json.dumps([{"id": "scene_b", "label": "B", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+
+    u_a = _upload_file(client, sid_a, upload_id=_unique("u_a"), file_name="file_a.json", payload=payload_a)
+    fid_a = u_a.json()["files"][0]["file_id"]
+
+    u_b = _upload_file(client, sid_b, upload_id=_unique("u_b"), file_name="file_b.json", payload=payload_b)
+    fid_b = u_b.json()["files"][0]["file_id"]
+
+    # DELETE on B using A's file_id
+    del_resp = client.delete(f"/api/resources/import-selections/{sid_b}/files/{fid_a}?expected_revision=1")
+    assert del_resp.status_code == 404
+    detail_del = _stable_detail(del_resp)
+    assert detail_del["code"] == "file_not_found"
+    assert sid_a not in del_resp.text
+
+    # PATCH on B using A's file_id
+    patch_resp = client.patch(
+        f"/api/resources/import-selections/{sid_b}/files/{fid_a}",
+        json={"expected_revision": 1, "effective_library_key": "injected_lib"},
+    )
+    assert patch_resp.status_code == 404
+    detail_patch = _stable_detail(patch_resp)
+    assert detail_patch["code"] == "file_not_found"
+    assert sid_a not in patch_resp.text
+
+    # Verify Selection A is untouched
+    get_a = client.get(f"/api/resources/import-selections/{sid_a}").json()
+    assert get_a["selection_revision"] == 1
+    assert len(get_a["files"]) == 1
+    assert get_a["files"][0]["file_id"] == fid_a
+
+    # Verify Selection B is untouched
+    get_b = client.get(f"/api/resources/import-selections/{sid_b}").json()
+    assert get_b["selection_revision"] == 1
+    assert len(get_b["files"]) == 1
+    assert get_b["files"][0]["file_id"] == fid_b
+
+
+def test_cross_selection_upload_id_scoping_no_replay_or_leak(client, fresh_db):
+    """Task 1.6: upload_id is scoped to a selection; reusing string in B does not replay or leak A."""
+    sel_a = _create_open_selection(client)
+    sid_a = sel_a["selection_id"]
+    sel_b = _create_open_selection(client)
+    sid_b = sel_b["selection_id"]
+
+    shared_upload_id = "scoped_client_upload_12345"
+    payload_a = json.dumps([{"id": "scene_a", "label": "A", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    payload_b = json.dumps([{"id": "scene_b", "label": "B", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+
+    u_a = _upload_file(client, sid_a, upload_id=shared_upload_id, file_name="a.json", payload=payload_a)
+    assert u_a.status_code == 201
+    fid_a = u_a.json()["files"][0]["file_id"]
+
+    u_b = _upload_file(client, sid_b, upload_id=shared_upload_id, file_name="b.json", payload=payload_b)
+    assert u_b.status_code == 201
+    fid_b = u_b.json()["files"][0]["file_id"]
+
+    assert fid_a != fid_b
+    assert u_a.json()["files"][0]["file_name"] == "a.json"
+    assert u_b.json()["files"][0]["file_name"] == "b.json"
+
+
+def test_cross_selection_preview_token_cannot_commit_foreign_selection(client, fresh_db):
+    """Task 1.6: Preview token from selection A fails closed when submitted to selection B."""
+    sel_a = _create_open_selection(client)
+    sid_a = sel_a["selection_id"]
+    sel_b = _create_open_selection(client)
+    sid_b = sel_b["selection_id"]
+
+    payload_a = json.dumps([{"id": "scene_a", "label": "Scene A", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    payload_b = json.dumps([{"id": "scene_b", "label": "Scene B", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+
+    u_a = _upload_file(client, sid_a, upload_id=_unique("u_a"), file_name="a.json", payload=payload_a)
+    fid_a = u_a.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid_a}/files/{fid_a}", json={"expected_revision": 1, "effective_library_key": "cross_lib_a"})
+    prev_a = client.post(f"/api/resources/import-selections/{sid_a}/preview", json={"expected_revision": 2})
+    token_a = prev_a.json()["preview"]["preview_token"]
+
+    u_b = _upload_file(client, sid_b, upload_id=_unique("u_b"), file_name="b.json", payload=payload_b)
+    fid_b = u_b.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid_b}/files/{fid_b}", json={"expected_revision": 1, "effective_library_key": "cross_lib_b"})
+    prev_b = client.post(f"/api/resources/import-selections/{sid_b}/preview", json={"expected_revision": 2})
+    token_b = prev_b.json()["preview"]["preview_token"]
+
+    # Submit token_a to Selection B
+    commit_b_bad = client.post(
+        f"/api/resources/import-selections/{sid_b}/commit",
+        json={"expected_revision": 2, "preview_token": token_a},
+    )
+    assert commit_b_bad.status_code == 409
+    detail = _stable_detail(commit_b_bad)
+    assert detail["code"] == "preview_mismatch"
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 0
+
+    # Both selections commit successfully with their own tokens
+    commit_a = client.post(
+        f"/api/resources/import-selections/{sid_a}/commit",
+        json={"expected_revision": 2, "preview_token": token_a},
+    )
+    assert commit_a.status_code == 200
+
+    commit_b = client.post(
+        f"/api/resources/import-selections/{sid_b}/commit",
+        json={"expected_revision": 2, "preview_token": token_b},
+    )
+    assert commit_b.status_code == 200
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 2
+
+
+def test_cross_selection_commit_foreign_context_zero_writes(client, fresh_db):
+    """Task 1.6: Submitting token A to selection B without files returns 409 and performs 0 writes."""
+    sel_a = _create_open_selection(client)
+    sid_a = sel_a["selection_id"]
+    sel_b = _create_open_selection(client)
+    sid_b = sel_b["selection_id"]
+
+    payload_a = json.dumps([{"id": "scene_a", "label": "A", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u_a = _upload_file(client, sid_a, upload_id=_unique("u_a"), file_name="a.json", payload=payload_a)
+    fid_a = u_a.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid_a}/files/{fid_a}", json={"expected_revision": 1, "effective_library_key": "lib_a"})
+    prev_a = client.post(f"/api/resources/import-selections/{sid_a}/preview", json={"expected_revision": 2})
+    token_a = prev_a.json()["preview"]["preview_token"]
+
+    # Selection B has no staged files
+    commit_b_bad = client.post(
+        f"/api/resources/import-selections/{sid_b}/commit",
+        json={"expected_revision": 0, "preview_token": token_a},
+    )
+    assert commit_b_bad.status_code == 409
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 0
+    assert client.get(f"/api/resources/import-selections/{sid_b}").json()["state"] == "open"
+
+
+# ---------------------------------------------------------------------------
+# 3. Stale Revision & Preview Integration (Task 1.6 Item 3)
+# ---------------------------------------------------------------------------
+
+
+def test_stale_revision_preview_invalidated_by_upload(client, fresh_db):
+    """Task 1.6: Uploading a file after preview bumps revision, clears preview, and fails stale commit."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload1 = json.dumps([{"id": "scene_1", "label": "S1", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u1 = _upload_file(client, sid, upload_id=_unique("u1"), file_name="f1.json", payload=payload1)
+    f1_id = u1.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid}/files/{f1_id}", json={"expected_revision": 1, "effective_library_key": "stale_lib"})
+
+    prev1 = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    assert prev1.status_code == 200
+    token1 = prev1.json()["preview"]["preview_token"]
+
+    # Upload second file
+    payload2 = json.dumps([{"id": "scene_2", "label": "S2", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u2 = _upload_file(client, sid, upload_id=_unique("u2"), file_name="f2.json", payload=payload2)
+    view2 = u2.json()
+    assert view2["selection_revision"] == 3
+    assert view2["preview"] is None
+
+    # Stale expected_revision=2 commit fails
+    c_stale = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 2, "preview_token": token1},
+    )
+    assert c_stale.status_code == 409
+    det_stale = _stable_detail(c_stale)
+    assert det_stale["code"] == "selection_revision_stale"
+    assert det_stale["current"]["selection_revision"] == 3
+    assert det_stale["current"]["preview"] is None
+
+    # Stale preview_token with current revision=3 fails preview_mismatch
+    c_mismatch = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 3, "preview_token": token1},
+    )
+    assert c_mismatch.status_code == 409
+    det_mm = _stable_detail(c_mismatch)
+    assert det_mm["code"] == "preview_mismatch"
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 0
+
+
+def test_stale_revision_preview_invalidated_by_remove(client, fresh_db):
+    """Task 1.6: Removing a file after preview bumps revision, clears preview, and fails stale commit."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload1 = json.dumps([{"id": "s1", "label": "S1", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    payload2 = json.dumps([{"id": "s2", "label": "S2", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+
+    u1 = _upload_file(client, sid, upload_id=_unique("u1"), file_name="f1.json", payload=payload1)
+    f1_id = u1.json()["files"][0]["file_id"]
+    u2 = _upload_file(client, sid, upload_id=_unique("u2"), file_name="f2.json", payload=payload2)
+    f2_id = [f["file_id"] for f in u2.json()["files"] if f["file_id"] != f1_id][0]
+
+    client.patch(f"/api/resources/import-selections/{sid}/files/{f1_id}", json={"expected_revision": 2, "effective_library_key": "stale_rem_lib"})
+    client.patch(f"/api/resources/import-selections/{sid}/files/{f2_id}", json={"expected_revision": 3, "effective_library_key": "stale_rem_lib"})
+
+    prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 4})
+    token = prev.json()["preview"]["preview_token"]
+
+    # Remove file 2
+    del_res = client.delete(f"/api/resources/import-selections/{sid}/files/{f2_id}?expected_revision=4")
+    assert del_res.status_code == 200
+    assert del_res.json()["selection_revision"] == 5
+    assert del_res.json()["preview"] is None
+
+    # Stale commit fails
+    c_res = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 4, "preview_token": token},
+    )
+    assert c_res.status_code == 409
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 0
+
+
+def test_stale_revision_preview_invalidated_by_target_mutation(client, fresh_db):
+    """Task 1.6: Mutating target after preview bumps revision, clears preview, and fails stale commit."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{"id": "s1", "label": "S1", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u = _upload_file(client, sid, upload_id=_unique("u1"), file_name="f1.json", payload=payload)
+    fid = u.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "initial_lib"})
+
+    prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    token = prev.json()["preview"]["preview_token"]
+
+    # Target mutation
+    patch_res = client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 2, "effective_library_key": "changed_lib"})
+    assert patch_res.status_code == 200
+    assert patch_res.json()["selection_revision"] == 3
+    assert patch_res.json()["preview"] is None
+
+    # Commit with old token fails
+    c_res = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 3, "preview_token": token},
+    )
+    assert c_res.status_code == 409
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 0
+
+
+def test_stale_revision_preview_invalidated_by_auxiliary_mutation(client, fresh_db):
+    """Task 1.6: Mutating auxiliary kind after preview bumps revision, clears preview, and fails stale commit."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps({"row1": "label1", "row2": "label2"}).encode("utf-8")
+    u = _upload_file(client, sid, upload_id=_unique("u_aux"), file_name="aux.json", payload=payload)
+    fid = u.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "aux_lib", "effective_auxiliary_kind": "mined_labels"})
+
+    prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    token = prev.json()["preview"]["preview_token"]
+
+    # Mutate auxiliary kind to mined_families
+    patch_res = client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 2, "effective_auxiliary_kind": "mined_families"})
+    assert patch_res.status_code == 200
+    assert patch_res.json()["selection_revision"] == 3
+    assert patch_res.json()["preview"] is None
+
+    c_res = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 3, "preview_token": token},
+    )
+    assert c_res.status_code == 409
+    assert db.one("SELECT COUNT(*) AS c FROM auxiliary_resource")["c"] == 0
+
+
+def test_stale_expected_revision_on_mutations_returns_authoritative_current_view(client, fresh_db):
+    """Task 1.6: Passing stale expected_revision returns 409 with authoritative current view."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload1 = json.dumps([{"id": "s1", "label": "S1", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    payload2 = json.dumps([{"id": "s2", "label": "S2", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u1 = _upload_file(client, sid, upload_id=_unique("u1"), file_name="f1.json", payload=payload1)
+    f1_id = u1.json()["files"][0]["file_id"]
+    u2 = _upload_file(client, sid, upload_id=_unique("u2"), file_name="f2.json", payload=payload2)
+    current_rev = u2.json()["selection_revision"]
+    assert current_rev == 2
+
+    # Stale DELETE
+    d_resp = client.delete(f"/api/resources/import-selections/{sid}/files/{f1_id}?expected_revision=0")
+    assert d_resp.status_code == 409
+    det_d = _stable_detail(d_resp)
+    assert det_d["code"] == "selection_revision_stale"
+    assert det_d["current"]["selection_revision"] == 2
+
+    # Stale PATCH
+    p_resp = client.patch(f"/api/resources/import-selections/{sid}/files/{f1_id}", json={"expected_revision": 1, "effective_library_key": "new_l"})
+    assert p_resp.status_code == 409
+    det_p = _stable_detail(p_resp)
+    assert det_p["code"] == "selection_revision_stale"
+    assert det_p["current"]["selection_revision"] == 2
+
+    # Stale CANCEL
+    c_resp = client.post(f"/api/resources/import-selections/{sid}/cancel", json={"expected_revision": 1})
+    assert c_resp.status_code == 409
+    det_c = _stable_detail(c_resp)
+    assert det_c["code"] == "selection_revision_stale"
+    assert det_c["current"]["selection_revision"] == 2
+
+    # Stale PREVIEW
+    pv_resp = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 1})
+    assert pv_resp.status_code == 409
+    det_pv = _stable_detail(pv_resp)
+    assert det_pv["code"] == "selection_revision_stale"
+    assert det_pv["current"]["selection_revision"] == 2
+
+
+# ---------------------------------------------------------------------------
+# 4. Expiry, Tombstone, Purge & Cleanup (Task 1.6 Item 4)
+# ---------------------------------------------------------------------------
+
+
+def test_expiry_lifecycle_fixed_24h_tombstone_and_purge(client, fresh_db):
+    """Task 1.6 Item 4: Fixed 24h expiry, tombstone retention window, and exact purge boundaries."""
+    t0 = datetime(2026, 9, 17, 12, 0, 0, tzinfo=timezone.utc)
+    rs.set_clock(lambda: t0)
+
+    try:
+        # A. Selection with files
+        sel = _create_open_selection(client)
+        sid = sel["selection_id"]
+
+        payload = json.dumps([{"id": "scene_exp", "label": "Exp", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+        u = _upload_file(client, sid, upload_id=_unique("u_exp"), file_name="exp.json", payload=payload)
+        fid = u.json()["files"][0]["file_id"]
+
+        f_row = db.one("SELECT staged_path FROM resource_selection_file WHERE file_id = ?", fid)
+        staged_path = Path(f_row["staged_path"])
+        assert staged_path.is_file()
+
+        # 1. expires_at - 1s -> remains open, staging file intact
+        rs.set_clock(lambda: t0 + timedelta(seconds=rs.SELECTION_LIFETIME_SECONDS - 1))
+        get_before = client.get(f"/api/resources/import-selections/{sid}")
+        assert get_before.status_code == 200
+        assert get_before.json()["state"] == "open"
+        assert staged_path.is_file()
+
+        # 2. exactly at expires_at -> transitions to expired, cleans staging file
+        rs.set_clock(lambda: t0 + timedelta(seconds=rs.SELECTION_LIFETIME_SECONDS))
+        get_at = client.get(f"/api/resources/import-selections/{sid}")
+        assert get_at.status_code == 200
+        assert get_at.json()["state"] == "expired"
+        assert not staged_path.exists()
+        # expires_at has NOT been extended
+        assert get_at.json()["expires_at"] == sel["expires_at"]
+
+        # 3. Inside tombstone window at exact boundary - 1s (expires_at + TOMBSTONE_RETENTION_SECONDS - 1s)
+        # GET returns 200 tombstone; mutations return 410
+        rs.set_clock(lambda: t0 + timedelta(seconds=rs.SELECTION_LIFETIME_SECONDS + rs.TOMBSTONE_RETENTION_SECONDS - 1))
+        get_tombstone = client.get(f"/api/resources/import-selections/{sid}")
+        assert get_tombstone.status_code == 200
+        assert get_tombstone.json()["state"] == "expired"
+
+        mut_resp = client.post(
+            f"/api/resources/import-selections/{sid}/preview",
+            json={"expected_revision": 1},
+        )
+        assert mut_resp.status_code == 410
+        det_mut = _stable_detail(mut_resp)
+        assert det_mut["code"] == "selection_expired"
+        assert det_mut["current"]["state"] == "expired"
+
+        # 4. Exactly at purge boundary (expires_at + TOMBSTONE_RETENTION_SECONDS) -> purged, returns 404
+        rs.set_clock(lambda: t0 + timedelta(seconds=rs.SELECTION_LIFETIME_SECONDS + rs.TOMBSTONE_RETENTION_SECONDS))
+        get_purged_exact = client.get(f"/api/resources/import-selections/{sid}")
+        assert get_purged_exact.status_code == 404
+        assert db.one("SELECT COUNT(*) AS c FROM resource_selection WHERE selection_id = ?", sid)["c"] == 0
+
+        # 5. Past purge boundary (+1s) -> remains 404
+        rs.set_clock(lambda: t0 + timedelta(seconds=rs.SELECTION_LIFETIME_SECONDS + rs.TOMBSTONE_RETENTION_SECONDS + 1))
+        get_purged_plus1 = client.get(f"/api/resources/import-selections/{sid}")
+        assert get_purged_plus1.status_code == 404
+
+        # B. Selection without files (empty selection)
+        rs.set_clock(lambda: t0)
+        sel_empty = _create_open_selection(client)
+        sid_empty = sel_empty["selection_id"]
+
+        # Exactly at expires_at -> transitions to expired
+        rs.set_clock(lambda: t0 + timedelta(seconds=rs.SELECTION_LIFETIME_SECONDS))
+        get_empty_exp = client.get(f"/api/resources/import-selections/{sid_empty}")
+        assert get_empty_exp.status_code == 200
+        assert get_empty_exp.json()["state"] == "expired"
+
+        # Tombstone at -1s before purge boundary
+        rs.set_clock(lambda: t0 + timedelta(seconds=rs.SELECTION_LIFETIME_SECONDS + rs.TOMBSTONE_RETENTION_SECONDS - 1))
+        get_empty_tomb = client.get(f"/api/resources/import-selections/{sid_empty}")
+        assert get_empty_tomb.status_code == 200
+        assert get_empty_tomb.json()["state"] == "expired"
+
+        # Exactly at purge boundary -> purged (404)
+        rs.set_clock(lambda: t0 + timedelta(seconds=rs.SELECTION_LIFETIME_SECONDS + rs.TOMBSTONE_RETENTION_SECONDS))
+        assert client.get(f"/api/resources/import-selections/{sid_empty}").status_code == 404
+        assert db.one("SELECT COUNT(*) AS c FROM resource_selection WHERE selection_id = ?", sid_empty)["c"] == 0
+
+        # At +1s past purge boundary -> 404
+        rs.set_clock(lambda: t0 + timedelta(seconds=rs.SELECTION_LIFETIME_SECONDS + rs.TOMBSTONE_RETENTION_SECONDS + 1))
+        assert client.get(f"/api/resources/import-selections/{sid_empty}").status_code == 404
+    finally:
+        rs.set_clock(None)
+
+
+def test_committed_selection_and_canonical_resources_preserved_after_24h_plus(client, fresh_db):
+    """Task 1.6: Committed selections and canonical resource rows are not purged by tombstone sweep."""
+    t0 = datetime(2026, 9, 17, 12, 0, 0, tzinfo=timezone.utc)
+    rs.set_clock(lambda: t0)
+
+    try:
+        sel = _create_open_selection(client)
+        sid = sel["selection_id"]
+
+        payload = json.dumps([{"id": "scene_preserved", "label": "Preserved", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+        u = _upload_file(client, sid, upload_id=_unique("u_pres"), file_name="pres.json", payload=payload)
+        fid = u.json()["files"][0]["file_id"]
+        client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "pres_lib"})
+        prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+        client.post(f"/api/resources/import-selections/{sid}/commit", json={"expected_revision": 2, "preview_token": prev.json()["preview"]["preview_token"]})
+
+        assert db.one("SELECT state FROM resource_selection WHERE selection_id = ?", sid)["state"] == "committed"
+        assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+
+        # Advance clock past 24h and past 48h
+        rs.set_clock(lambda: t0 + timedelta(hours=60))
+        rs.startup_recovery(limit=50)
+
+        # Committed selection remains readable and intact
+        get_resp = client.get(f"/api/resources/import-selections/{sid}")
+        assert get_resp.status_code == 200
+        view = get_resp.json()
+        assert view["state"] == "committed"
+        assert view["commit_result"] is not None
+        assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+    finally:
+        rs.set_clock(None)
+
+
+def test_cleanup_failure_projects_sanitized_generic_warning_and_cleans_on_recovery(client, fresh_db):
+    """Task 1.6: Injected cleanup failure projects sanitized generic warning; recovery sweep clears it."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{"id": "scene_cf", "label": "CF", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    _upload_file(client, sid, upload_id=_unique("u_cf"), file_name="cf.json", payload=payload)
+
+    # Force cleanup to fail on cancel
+    resource_service.set_attestation_cleanup_hook(lambda tok: False)
+    try:
+        # Also simulate safe file deletion failure
+        with db.transaction():
+            db.conn().execute(
+                "UPDATE resource_selection SET cleanup_state = 'failed', cleanup_warning = 'PrivatePathC:\\secret\\file.staged: failed' WHERE selection_id = ?",
+                (sid,),
+            )
+
+        resp = client.get(f"/api/resources/import-selections/{sid}")
+        assert resp.status_code == 200
+        view = resp.json()
+        assert view["cleanup_warning"] == rs.GENERIC_CLEANUP_WARNING
+        assert "cleanup_state" not in view
+        assert "secret" not in json.dumps(view).lower()
+
+        # When obstacle cleared, recovery clears warning
+        with db.transaction():
+            db.conn().execute(
+                "UPDATE resource_selection SET cleanup_state = 'cleaned', cleanup_warning = '' WHERE selection_id = ?",
+                (sid,),
+            )
+        resp_clean = client.get(f"/api/resources/import-selections/{sid}")
+        assert resp_clean.status_code == 200
+        assert resp_clean.json()["cleanup_warning"] is None
+    finally:
+        resource_service.set_attestation_cleanup_hook(None)
+
+
+# ---------------------------------------------------------------------------
+# 5. Cancel / Commit Races (Task 1.6 Item 5)
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_before_commit_claim_cancel_wins(client, fresh_db, monkeypatch):
+    """Task 1.6 Item 5: Real race where cancel runs concurrently before commit acquires claim; cancel wins and commit receives 410."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{"id": "scene_cbc", "label": "CBC", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u = _upload_file(client, sid, upload_id=_unique("u_cbc"), file_name="cbc.json", payload=payload)
+    fid = u.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "cbc_lib"})
+    prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    token = prev.json()["preview"]["preview_token"]
+
+    commit_started = threading.Event()
+    cancel_done = threading.Event()
+
+    orig_acquire = rs.acquire_commit_claim
+
+    def _hooked_acquire(*args, **kwargs):
+        commit_started.set()
+        assert cancel_done.wait(timeout=5)
+        return orig_acquire(*args, **kwargs)
+
+    monkeypatch.setattr(rs, "acquire_commit_claim", _hooked_acquire)
+
+    commit_res_holder = []
+
+    def _do_commit():
+        res = client.post(
+            f"/api/resources/import-selections/{sid}/commit",
+            json={"expected_revision": 2, "preview_token": token},
+        )
+        commit_res_holder.append(res)
+
+    t = threading.Thread(target=_do_commit)
+    t.start()
+
+    try:
+        assert commit_started.wait(timeout=5)
+        cancel_res = client.post(f"/api/resources/import-selections/{sid}/cancel", json={"expected_revision": 2})
+        assert cancel_res.status_code == 200
+        assert cancel_res.json()["state"] == "cancelled"
+    finally:
+        cancel_done.set()
+        t.join(timeout=5)
+
+    assert len(commit_res_holder) == 1
+    commit_res = commit_res_holder[0]
+    assert commit_res.status_code == 410
+
+    # Verification: terminal cancelled, 0 imports, null commit_result, 0 partial writes
+    row = db.one("SELECT state, commit_result, claim_commit_token FROM resource_selection WHERE selection_id = ?", sid)
+    assert row["state"] == "cancelled"
+    assert row["commit_result"] is None
+    assert row["claim_commit_token"] is None
+
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 0
+    assert db.one("SELECT COUNT(*) AS c FROM resource_library")["c"] == 0
+
+    view_resp = client.get(f"/api/resources/import-selections/{sid}")
+    assert view_resp.status_code == 200
+    view_data = view_resp.json()
+    assert view_data["state"] == "cancelled"
+    assert view_data["commit_result"] is None
+
+
+def test_commit_claim_active_cancel_returns_409_commit_active(client, fresh_db):
+    """Task 1.6: Commit claim active blocks cancel with 409 commit_active; commit completes."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{"id": "r_ca", "label": "CA", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u = _upload_file(client, sid, upload_id=_unique("u_ca"), file_name="ca.json", payload=payload)
+    fid = u.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "ca_lib"})
+    prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    token = prev.json()["preview"]["preview_token"]
+
+    claim_acquired = threading.Event()
+    release_commit = threading.Event()
+
+    def _hook():
+        claim_acquired.set()
+        release_commit.wait(timeout=5)
+
+    rs.set_commit_before_tx_hook(_hook)
+    commit_resp_holder = []
+
+    def _do_commit():
+        res = client.post(
+            f"/api/resources/import-selections/{sid}/commit",
+            json={"expected_revision": 2, "preview_token": token},
+        )
+        commit_resp_holder.append(res)
+
+    t = threading.Thread(target=_do_commit)
+    t.start()
+
+    try:
+        assert claim_acquired.wait(timeout=5)
+        cancel_resp = client.post(
+            f"/api/resources/import-selections/{sid}/cancel",
+            json={"expected_revision": 2},
+        )
+        assert cancel_resp.status_code == 409
+        detail = _stable_detail(cancel_resp)
+        assert detail["code"] == "commit_active"
+    finally:
+        release_commit.set()
+        t.join(timeout=5)
+        rs.set_commit_before_tx_hook(None)
+
+    assert len(commit_resp_holder) == 1
+    assert commit_resp_holder[0].status_code == 200
+    assert db.one("SELECT state FROM resource_selection WHERE selection_id = ?", sid)["state"] == "committed"
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+
+
+def test_commit_conflicting_tuple_while_claim_active_returns_409(client, fresh_db):
+    """Task 1.6 Item 5: Conflicting commit tuple while claim is active returns 409 commit_conflict with asymmetric winner outcome."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{"id": "r_conf", "label": "Conf", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u = _upload_file(client, sid, upload_id=_unique("u_conf"), file_name="conf.json", payload=payload)
+    fid = u.json()["files"][0]["file_id"]
+
+    # Tuple A: derived from Preview 1 on conf_lib_a (revision 2)
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "conf_lib_a"})
+    prev_a = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    assert prev_a.status_code == 200
+    token_a = prev_a.json()["preview"]["preview_token"]
+
+    # Mutate selection to generate Tuple B: derived from Preview 2 on conf_lib_b (revision 3)
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 2, "effective_library_key": "conf_lib_b"})
+    prev_b = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 3})
+    assert prev_b.status_code == 200
+    token_b = prev_b.json()["preview"]["preview_token"]
+    assert token_a != token_b
+
+    claim_acquired = threading.Event()
+    release_commit = threading.Event()
+
+    def _hook():
+        claim_acquired.set()
+        release_commit.wait(timeout=5)
+
+    rs.set_commit_before_tx_hook(_hook)
+    commit_resp_holder = []
+
+    # Winner Tuple B starts commit and acquires active claim
+    def _do_commit_b():
+        res = client.post(
+            f"/api/resources/import-selections/{sid}/commit",
+            json={"expected_revision": 3, "preview_token": token_b},
+        )
+        commit_resp_holder.append(res)
+
+    t = threading.Thread(target=_do_commit_b)
+    t.start()
+
+    try:
+        assert claim_acquired.wait(timeout=5)
+        # Loser Tuple A attempts commit while claim is actively held by Tuple B
+        conf_resp = client.post(
+            f"/api/resources/import-selections/{sid}/commit",
+            json={"expected_revision": 2, "preview_token": token_a},
+        )
+        assert conf_resp.status_code == 409
+        detail = _stable_detail(conf_resp)
+        assert detail["code"] == "commit_conflict"
+    finally:
+        release_commit.set()
+        t.join(timeout=5)
+        rs.set_commit_before_tx_hook(None)
+
+    assert len(commit_resp_holder) == 1
+    assert commit_resp_holder[0].status_code == 200
+
+    # Asymmetric outcome verification:
+    # 0 writes from loser (conf_lib_a never created)
+    assert db.one("SELECT COUNT(*) AS c FROM resource_library WHERE library_key = 'conf_lib_a'")["c"] == 0
+
+    # Exactly 1 durable accepted-set (from winner Tuple B in conf_lib_b)
+    assert db.one("SELECT COUNT(*) AS c FROM resource_library WHERE library_key = 'conf_lib_b'")["c"] == 1
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+
+    # Durable result only reflects winner
+    durable_view = client.get(f"/api/resources/import-selections/{sid}").json()
+    assert durable_view["state"] == "committed"
+    assert durable_view["commit_result"] is not None
+    assert durable_view["files"][0]["effective_library_key"] == "conf_lib_b"
+
+    # A2: Replay winner tuple in the same scenario
+    winner_commit_result = durable_view["commit_result"]
+
+    # Capture all relevant durable counts before replay
+    count_lib_a_before = db.one("SELECT COUNT(*) AS c FROM resource_library WHERE library_key = 'conf_lib_a'")["c"]
+    count_lib_b_before = db.one("SELECT COUNT(*) AS c FROM resource_library WHERE library_key = 'conf_lib_b'")["c"]
+    count_asset_rev_before = db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"]
+    count_aux_res_before = db.one("SELECT COUNT(*) AS c FROM auxiliary_resource")["c"]
+    count_sel_files_before = db.one("SELECT COUNT(*) AS c FROM resource_selection_file WHERE selection_id = ?", sid)["c"]
+    count_selections_before = db.one("SELECT COUNT(*) AS c FROM resource_selection")["c"]
+
+    # Replay winner commit with exact same winning tuple (revision 3, token_b)
+    replay_resp = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 3, "preview_token": token_b},
+    )
+    assert replay_resp.status_code == 200
+    replay_body = replay_resp.json()
+    assert replay_body["selection_id"] == sid
+    assert replay_body["selection_revision"] == 3
+    assert replay_body["state"] == "committed"
+    assert replay_body["commit_result"] == winner_commit_result
+
+    # Confirm all durable counters remain identical (no additional writes, no new import)
+    assert db.one("SELECT COUNT(*) AS c FROM resource_library WHERE library_key = 'conf_lib_a'")["c"] == count_lib_a_before
+    assert db.one("SELECT COUNT(*) AS c FROM resource_library WHERE library_key = 'conf_lib_b'")["c"] == count_lib_b_before
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == count_asset_rev_before
+    assert db.one("SELECT COUNT(*) AS c FROM auxiliary_resource")["c"] == count_aux_res_before
+    assert db.one("SELECT COUNT(*) AS c FROM resource_selection_file WHERE selection_id = ?", sid)["c"] == count_sel_files_before
+    assert db.one("SELECT COUNT(*) AS c FROM resource_selection")["c"] == count_selections_before
+
+    # Confirm exactly one accepted-set continues to exist
+    assert count_lib_b_before == 1
+    assert count_asset_rev_before == 1
+    assert count_lib_a_before == 0
+
+
+def test_commit_same_tuple_retry_returns_202_while_active_and_replays_stored_result(client, fresh_db):
+    """Task 1.6: Same-tuple retry returns 202 while active and replays stored result after completion."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{"id": "r_st", "label": "ST", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u = _upload_file(client, sid, upload_id=_unique("u_st"), file_name="st.json", payload=payload)
+    fid = u.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "st_lib"})
+    prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    token = prev.json()["preview"]["preview_token"]
+
+    claim_acquired = threading.Event()
+    release_commit = threading.Event()
+
+    def _hook():
+        claim_acquired.set()
+        release_commit.wait(timeout=5)
+
+    rs.set_commit_before_tx_hook(_hook)
+    commit_resp_holder = []
+
+    def _do_commit():
+        res = client.post(
+            f"/api/resources/import-selections/{sid}/commit",
+            json={"expected_revision": 2, "preview_token": token},
+        )
+        commit_resp_holder.append(res)
+
+    t = threading.Thread(target=_do_commit)
+    t.start()
+
+    try:
+        assert claim_acquired.wait(timeout=5)
+        retry_202 = client.post(
+            f"/api/resources/import-selections/{sid}/commit",
+            json={"expected_revision": 2, "preview_token": token},
+        )
+        assert retry_202.status_code == 202
+        view_202 = retry_202.json()
+        assert view_202["state"] == "committing"
+        _assert_view_is_public(view_202)
+    finally:
+        release_commit.set()
+        t.join(timeout=5)
+        rs.set_commit_before_tx_hook(None)
+
+    assert len(commit_resp_holder) == 1
+    assert commit_resp_holder[0].status_code == 200
+    first_commit_result = commit_resp_holder[0].json()["commit_result"]
+
+    # Replay after completion returns 200 with same result
+    replay_200 = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 2, "preview_token": token},
+    )
+    assert replay_200.status_code == 200
+    assert replay_200.json()["commit_result"] == first_commit_result
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+
+
+def test_commit_durable_before_cancel_does_not_revert_commit(client, fresh_db):
+    """Task 1.6: Cancel after durable commit returns terminal error and does not revert resources."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{"id": "r_dur", "label": "Dur", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u = _upload_file(client, sid, upload_id=_unique("u_dur"), file_name="dur.json", payload=payload)
+    fid = u.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "dur_lib"})
+    prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    token = prev.json()["preview"]["preview_token"]
+
+    commit_res = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 2, "preview_token": token},
+    )
+    assert commit_res.status_code == 200
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+
+    # Cancel on committed selection fails
+    cancel_res = client.post(f"/api/resources/import-selections/{sid}/cancel", json={"expected_revision": 2})
+    assert cancel_res.status_code in (409, 410)
+    assert db.one("SELECT state FROM resource_selection WHERE selection_id = ?", sid)["state"] == "committed"
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 6. Same-Library Multi-File Duplicates Matrix (Task 1.6 Item 6)
+# ---------------------------------------------------------------------------
+
+
+def test_same_library_multi_file_duplicates_matrix(client, fresh_db):
+    """Task 1.6: Same-library multi-file duplicate matrix with new, updated, unchanged, and reversed order."""
+    # Pre-seed store with 2 items: 'scene_unchanged' and 'scene_updated'
+    sel_seed = _create_open_selection(client)
+    sid_seed = sel_seed["selection_id"]
+    payload_seed = json.dumps([
+        {"id": "scene_unchanged", "label": "Original Unchanged", "scene_theme": "t", "tags": ["tag"]},
+        {"id": "scene_updated", "label": "Original V1", "scene_theme": "t", "tags": ["tag"]},
+    ]).encode("utf-8")
+    u_s = _upload_file(client, sid_seed, upload_id=_unique("u_seed"), file_name="seed.json", payload=payload_seed)
+    fid_s = u_s.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid_seed}/files/{fid_s}", json={"expected_revision": 1, "effective_library_key": "shared_matrix_lib"})
+    prev_s = client.post(f"/api/resources/import-selections/{sid_seed}/preview", json={"expected_revision": 2})
+    client.post(f"/api/resources/import-selections/{sid_seed}/commit", json={"expected_revision": 2, "preview_token": prev_s.json()["preview"]["preview_token"]})
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 2
+
+    # File 1 payload:
+    # - 'scene_unchanged' (same content as seed -> unchanged)
+    # - 'scene_updated' (new content -> updated)
+    # - 'scene_distinct_1' (new)
+    # - 'dup_identical' (identical in file 1 and 2)
+    # - 'dup_different' (diff content in file 1 and 2)
+    payload_f1 = json.dumps([
+        {"id": "scene_unchanged", "label": "Original Unchanged", "scene_theme": "t", "tags": ["tag"]},
+        {"id": "scene_updated", "label": "Updated V2", "scene_theme": "t", "tags": ["tag"]},
+        {"id": "scene_distinct_1", "label": "Distinct 1", "scene_theme": "t", "tags": ["tag"]},
+        {"id": "dup_identical", "label": "Identical Dup", "scene_theme": "t", "tags": ["tag"]},
+        {"id": "dup_different", "label": "Diff V1", "scene_theme": "t", "tags": ["tag"]},
+    ]).encode("utf-8")
+
+    # File 2 payload:
+    # - 'scene_distinct_2' (new)
+    # - 'dup_identical' (same content -> dup)
+    # - 'dup_different' (different content -> dup)
+    payload_f2 = json.dumps([
+        {"id": "scene_distinct_2", "label": "Distinct 2", "scene_theme": "t", "tags": ["tag"]},
+        {"id": "dup_identical", "label": "Identical Dup", "scene_theme": "t", "tags": ["tag"]},
+        {"id": "dup_different", "label": "Diff V2", "scene_theme": "t", "tags": ["tag"]},
+    ]).encode("utf-8")
+
+    # Selection 1: File 1 then File 2
+    sel_1 = _create_open_selection(client)
+    sid_1 = sel_1["selection_id"]
+    u1 = _upload_file(client, sid_1, upload_id=_unique("u_m1"), file_name="f1.json", payload=payload_f1)
+    fid_1 = u1.json()["files"][0]["file_id"]
+    u2 = _upload_file(client, sid_1, upload_id=_unique("u_m2"), file_name="f2.json", payload=payload_f2)
+    fid_2 = [f["file_id"] for f in u2.json()["files"] if f["file_id"] != fid_1][0]
+    client.patch(f"/api/resources/import-selections/{sid_1}/files/{fid_1}", json={"expected_revision": 2, "effective_library_key": "shared_matrix_lib"})
+    client.patch(f"/api/resources/import-selections/{sid_1}/files/{fid_2}", json={"expected_revision": 3, "effective_library_key": "shared_matrix_lib"})
+
+    prev_1 = client.post(f"/api/resources/import-selections/{sid_1}/preview", json={"expected_revision": 4})
+    assert prev_1.status_code == 200
+    rep_1 = prev_1.json()["preview"]["report"]["summary"]
+
+    assert rep_1["files"] == 2
+    assert rep_1["inputs"] == 8
+    assert rep_1["duplicates"] == 4
+    assert rep_1["accepted"] == 4
+    assert rep_1["new"] == 2
+    assert rep_1["updated"] == 1
+    assert rep_1["unchanged"] == 1
+
+    # Step 1: Initial durable state check before Order 1
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 2
+    assert db.one("SELECT COUNT(*) AS c FROM resource_library WHERE library_key = 'shared_matrix_lib'")["c"] == 1
+    assert db.one("SELECT COUNT(*) AS c FROM auxiliary_resource")["c"] == 0
+
+    # Step 2 & 3: Run preview and commit for Order 1 (f1 then f2)
+    commit_1 = client.post(
+        f"/api/resources/import-selections/{sid_1}/commit",
+        json={"expected_revision": 4, "preview_token": prev_1.json()["preview"]["preview_token"]},
+    )
+    assert commit_1.status_code == 200
+    c_rep_1 = commit_1.json()["commit_result"]["summary"]
+    assert c_rep_1["recorded"] == 4
+    assert c_rep_1["duplicates"] == 4
+
+    # Step 4 & 5: Exact COUNT(*) assertions on canonical tables after Order 1 commit
+    count_asset_rev_1 = db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"]
+    count_lib_1 = db.one("SELECT COUNT(*) AS c FROM resource_library WHERE library_key = 'shared_matrix_lib'")["c"]
+    count_aux_1 = db.one("SELECT COUNT(*) AS c FROM auxiliary_resource")["c"]
+    assert count_lib_1 == 1
+    assert count_aux_1 == 0
+    # Expected total cardinality: exactly 5 (2 pre-existing seed + 1 updated + 2 new)
+    assert count_asset_rev_1 == 5
+
+    # Step 6: Exact cardinality per source_id identity
+    # - each new entry -> exactly 1 durable revision
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'scene_distinct_1'")["c"] == 1
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'scene_distinct_2'")["c"] == 1
+    # - scene_updated -> exactly 2 durable revisions (original seed V1 + updated V2)
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'scene_updated'")["c"] == 2
+    # - scene_unchanged -> exactly 1 durable revision (original seed, no extra write)
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'scene_unchanged'")["c"] == 1
+    # - duplicate identical -> 0 writes
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'dup_identical'")["c"] == 0
+    # - duplicate divergent -> 0 writes
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'dup_different'")["c"] == 0
+
+    # Step 7: Confirm no unexpected duplicate (source_id, content_digest) exists
+    dups_1 = db.q(
+        "SELECT source_id, content_digest, COUNT(*) AS c FROM asset_revision "
+        "GROUP BY source_id, content_digest HAVING COUNT(*) > 1"
+    )
+    assert dups_1 == []
+
+    # Capture exact canonical multiset for Order 1
+    multiset_1 = [
+        (r["source_id"], r["content_digest"])
+        for r in db.q("SELECT source_id, content_digest FROM asset_revision ORDER BY source_id, content_digest")
+    ]
+    assert len(multiset_1) == 5
+
+    # Selection 2: Reversed file order (f2 then f1) in clean DB state
+    with db.transaction():
+        db.run("DELETE FROM asset_revision")
+        db.run("DELETE FROM resource_library")
+        db.run("DELETE FROM resource_selection_file")
+        db.run("DELETE FROM resource_selection")
+
+    # Re-seed exactly identical initial state
+    sel_seed2 = _create_open_selection(client)
+    sid_s2 = sel_seed2["selection_id"]
+    u_s2 = _upload_file(client, sid_s2, upload_id=_unique("u_s2"), file_name="seed.json", payload=payload_seed)
+    fid_s2 = u_s2.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid_s2}/files/{fid_s2}", json={"expected_revision": 1, "effective_library_key": "shared_matrix_lib"})
+    prev_s2 = client.post(f"/api/resources/import-selections/{sid_s2}/preview", json={"expected_revision": 2})
+    client.post(f"/api/resources/import-selections/{sid_s2}/commit", json={"expected_revision": 2, "preview_token": prev_s2.json()["preview"]["preview_token"]})
+
+    # Initial durable state check before Order 2
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 2
+    assert db.one("SELECT COUNT(*) AS c FROM resource_library WHERE library_key = 'shared_matrix_lib'")["c"] == 1
+    assert db.one("SELECT COUNT(*) AS c FROM auxiliary_resource")["c"] == 0
+
+    # Upload File 2 FIRST, then File 1
+    sel_rev = _create_open_selection(client)
+    sid_rev = sel_rev["selection_id"]
+    u_r1 = _upload_file(client, sid_rev, upload_id=_unique("u_rf2"), file_name="f2.json", payload=payload_f2)
+    fid_r1 = u_r1.json()["files"][0]["file_id"]
+    u_r2 = _upload_file(client, sid_rev, upload_id=_unique("u_rf1"), file_name="f1.json", payload=payload_f1)
+    fid_r2 = [f["file_id"] for f in u_r2.json()["files"] if f["file_id"] != fid_r1][0]
+    client.patch(f"/api/resources/import-selections/{sid_rev}/files/{fid_r1}", json={"expected_revision": 2, "effective_library_key": "shared_matrix_lib"})
+    client.patch(f"/api/resources/import-selections/{sid_rev}/files/{fid_r2}", json={"expected_revision": 3, "effective_library_key": "shared_matrix_lib"})
+
+    prev_rev = client.post(f"/api/resources/import-selections/{sid_rev}/preview", json={"expected_revision": 4})
+    assert prev_rev.status_code == 200
+    rep_rev = prev_rev.json()["preview"]["report"]["summary"]
+
+    assert rep_rev["files"] == 2
+    assert rep_rev["inputs"] == 8
+    assert rep_rev["duplicates"] == 4
+    assert rep_rev["accepted"] == 4
+    assert rep_rev["new"] == 2
+    assert rep_rev["updated"] == 1
+    assert rep_rev["unchanged"] == 1
+
+    # Commit reversed selection
+    commit_rev = client.post(
+        f"/api/resources/import-selections/{sid_rev}/commit",
+        json={"expected_revision": 4, "preview_token": prev_rev.json()["preview"]["preview_token"]},
+    )
+    assert commit_rev.status_code == 200
+    c_rep_rev = commit_rev.json()["commit_result"]["summary"]
+
+    # Compare preview vs commit
+    assert c_rep_1["recorded"] == rep_1["accepted"] == 4
+    assert c_rep_1["duplicates"] == rep_1["duplicates"] == 4
+    assert c_rep_rev["recorded"] == rep_rev["accepted"] == 4
+    assert c_rep_rev["duplicates"] == rep_rev["duplicates"] == 4
+
+    # Compare normal vs reversed (order invariance)
+    assert rep_1 == rep_rev
+    assert c_rep_1 == c_rep_rev
+
+    # Exact COUNT(*) assertions on canonical tables after Order 2 commit
+    count_asset_rev_2 = db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"]
+    count_lib_2 = db.one("SELECT COUNT(*) AS c FROM resource_library WHERE library_key = 'shared_matrix_lib'")["c"]
+    count_aux_2 = db.one("SELECT COUNT(*) AS c FROM auxiliary_resource")["c"]
+    assert count_lib_2 == 1
+    assert count_aux_2 == 0
+    # Total asset_revision cardinality: exactly 5
+    assert count_asset_rev_2 == 5
+
+    # Exact cardinality per source_id identity for Order 2
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'scene_distinct_1'")["c"] == 1
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'scene_distinct_2'")["c"] == 1
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'scene_updated'")["c"] == 2
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'scene_unchanged'")["c"] == 1
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'dup_identical'")["c"] == 0
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision WHERE source_id = 'dup_different'")["c"] == 0
+
+    # Confirm no unexpected duplicate (source_id, content_digest) exists in Order 2
+    dups_2 = db.q(
+        "SELECT source_id, content_digest, COUNT(*) AS c FROM asset_revision "
+        "GROUP BY source_id, content_digest HAVING COUNT(*) > 1"
+    )
+    assert dups_2 == []
+
+    # Capture exact canonical multiset for Order 2
+    multiset_2 = [
+        (r["source_id"], r["content_digest"])
+        for r in db.q("SELECT source_id, content_digest FROM asset_revision ORDER BY source_id, content_digest")
+    ]
+    assert len(multiset_2) == 5
+
+    # Order invariance proof: normal and reversed orders produce the identical canonical multiset
+    assert multiset_1 == multiset_2
+
+
+# ---------------------------------------------------------------------------
+# 7. Crash Recovery Integration (Task 1.6 Item 7)
+# ---------------------------------------------------------------------------
+
+
+def test_crash_recovery_pre_claim_no_import_and_exact_retry(client, fresh_db):
+    """Task 1.6 Item 7: Crash before commit claim leaves zero rows, null commit_result, selection open; recovery + retry succeeds."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{"id": "scene_pc", "label": "PC", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u = _upload_file(client, sid, upload_id=_unique("u_pc"), file_name="pc.json", payload=payload)
+    fid = u.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "pc_lib"})
+    prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    token = prev.json()["preview"]["preview_token"]
+
+    child_code = f"""
+import os, db
+from pathlib import Path
+import backend.resource_selection as rs
+
+db.connect(Path(os.environ['IDEVGEN_DATA_DIR']) / 'idevgen.db')
+
+def pre_claim_crash(*args, **kwargs):
+    # Injected failure: abrupt termination immediately before acquiring commit claim
+    os._exit(44)
+
+rs.acquire_commit_claim = pre_claim_crash
+rs.commit_selection('{sid}', expected_revision=2, preview_token='{token}')
+"""
+    res = _run_child_worker(child_code)
+    assert res.returncode == 44
+
+    # Verify zero writes and null commit_result post-crash
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 0
+    assert db.one("SELECT COUNT(*) AS c FROM resource_library")["c"] == 0
+    row_after = db.one("SELECT state, commit_result, claim_commit_token FROM resource_selection WHERE selection_id = ?", sid)
+    assert row_after["state"] == "open"
+    assert row_after["commit_result"] is None
+    assert row_after["claim_commit_token"] is None
+
+    # Run startup_recovery() and lazy recovery
+    rs.startup_recovery()
+    rs.recover_selection(sid)
+    view = rs.build_selection_view(sid)
+    assert view is not None
+    assert view["state"] == "open"
+    assert view["commit_result"] is None
+
+    # Exact retry succeeds and imports exactly once
+    commit_res = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 2, "preview_token": token},
+    )
+    assert commit_res.status_code == 200
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+    assert db.one("SELECT COUNT(*) AS c FROM resource_library")["c"] == 1
+    row_final = db.one("SELECT state, commit_result FROM resource_selection WHERE selection_id = ?", sid)
+    assert row_final["state"] == "committed"
+    assert row_final["commit_result"] is not None
+
+
+def test_crash_recovery_after_claim_startup_and_lazy_recovery_and_exact_retry(client, fresh_db):
+    """Task 1.6: Crash while committing is reopened by recovery and exact retry succeeds."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{"id": "scene_rec", "label": "Rec", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u = _upload_file(client, sid, upload_id=_unique("u_rec"), file_name="rec.json", payload=payload)
+    fid = u.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "rec_lib"})
+    prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    token = prev.json()["preview"]["preview_token"]
+
+    child_code = f"""
+import os, db
+from pathlib import Path
+import backend.resource_selection as rs
+db.connect(Path(os.environ['IDEVGEN_DATA_DIR']) / 'idevgen.db')
+rs.set_commit_before_tx_hook(lambda: os._exit(77))
+rs.commit_selection('{sid}', expected_revision=2, preview_token='{token}')
+"""
+    res = _run_child_worker(child_code)
+    assert res.returncode == 77
+
+    assert db.one("SELECT state FROM resource_selection WHERE selection_id = ?", sid)["state"] == "committing"
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 0
+
+    # Advance clock past claim lease deadline (5 min = 300s)
+    t_after_lease = datetime.now(timezone.utc) + timedelta(seconds=rs.DEFAULT_COMMIT_LEASE_SECONDS + 10)
+    rs.startup_recovery(limit=50, now_iso=t_after_lease.isoformat())
+
+    # State reopened to open
+    assert db.one("SELECT state FROM resource_selection WHERE selection_id = ?", sid)["state"] == "open"
+
+    # Exact retry commits successfully
+    retry_resp = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 2, "preview_token": token},
+    )
+    assert retry_resp.status_code == 200
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+
+
+def test_crash_recovery_post_commit_replay_with_zero_additional_writes(client, fresh_db):
+    """Task 1.6: Crash after durable commit replays stored result with 0 additional writes."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{"id": "scene_replay", "label": "Replay", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u = _upload_file(client, sid, upload_id=_unique("u_rep"), file_name="rep.json", payload=payload)
+    fid = u.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "rep_lib"})
+    prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    token = prev.json()["preview"]["preview_token"]
+
+    child_code = f"""
+import os, db
+from pathlib import Path
+import backend.resource_selection as rs
+db.connect(Path(os.environ['IDEVGEN_DATA_DIR']) / 'idevgen.db')
+rs.set_commit_after_tx_hook(lambda: os._exit(88))
+rs.commit_selection('{sid}', expected_revision=2, preview_token='{token}')
+"""
+    res = _run_child_worker(child_code)
+    assert res.returncode == 88
+
+    # Commit is already durable in database
+    assert db.one("SELECT state FROM resource_selection WHERE selection_id = ?", sid)["state"] == "committed"
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+
+    # Replay returns 200 with recorded result and 0 additional writes
+    replay_resp = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 2, "preview_token": token},
+    )
+    assert replay_resp.status_code == 200
+    assert replay_resp.json()["state"] == "committed"
+    assert replay_resp.json()["commit_result"] is not None
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == 1
+
+
+def test_browser_attestation_separated_from_legacy_path_attestation(client, fresh_db):
+    """Task 1.6: Browser attestation does not create .claimed file; tokens cannot cross boundaries."""
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{"id": "scene_sep", "label": "Sep", "scene_theme": "t", "tags": ["tag"]}]).encode("utf-8")
+    u = _upload_file(client, sid, upload_id=_unique("u_sep"), file_name="sep.json", payload=payload)
+    fid = u.json()["files"][0]["file_id"]
+    client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "sep_lib"})
+    prev = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    token = prev.json()["preview"]["preview_token"]
+
+    claim_path = resource_service._claim_path(token)
+    assert not claim_path.exists(), "Browser preview must not create .claimed file"
+
+    # Browser token cannot be consumed by legacy path commit
+    legacy_resp = client.post(
+        "/api/resources/import/commit",
+        json={"preview": {"attestation": token}},
+    )
+    assert legacy_resp.status_code in (400, 422, 500)
+    assert not claim_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# 8. Safe Response Shapes & Sentinels (Task 1.6 Item 8)
+# ---------------------------------------------------------------------------
+
+
+def test_safe_response_shapes_and_sentinel_rejection_across_all_endpoints(client, fresh_db):
+    """Task 1.6 Item 8: Comprehensive safe response shape verification and private sentinel rejection across all 12 states."""
+    PRIVATE_PATH_ONLY = "sentinel_staged_path_private_never_leak"
+    PRIVATE_FINGERPRINT_ONLY = "sentinel_fingerprint_private_never_leak"
+    PRIVATE_MTIME_ONLY = 1777777777777777
+    PRIVATE_EXCEPTION_ONLY = "sentinel_raw_exception_traceback_never_leak"
+    PRIVATE_PAYLOAD_ONLY = "sentinel_raw_payload_content_never_leak"
+
+    sentinels = [
+        PRIVATE_PATH_ONLY,
+        PRIVATE_FINGERPRINT_ONLY,
+        str(PRIVATE_MTIME_ONLY),
+        PRIVATE_EXCEPTION_ONLY,
+        PRIVATE_PAYLOAD_ONLY,
+    ]
+
+    def _verify_response_safety(resp):
+        for s in sentinels:
+            assert s not in resp.text, f"Private sentinel {s} leaked into response text: {resp.text}"
+        data = resp.json()
+        if isinstance(data, dict):
+            if "detail" in data and isinstance(data["detail"], dict):
+                detail = data["detail"]
+                assert "code" in detail and "message" in detail
+                if "current" in detail and detail["current"] is not None:
+                    assert set(detail["current"].keys()) == rs.SELECTION_VIEW_KEYS
+                    _assert_view_is_public(detail["current"])
+            elif "selection_id" in data:
+                assert set(data.keys()) == rs.SELECTION_VIEW_KEYS
+                _assert_view_is_public(data)
+
+    # 1. State 1: Create selection (201 Created)
+    c_resp = client.post("/api/resources/import-selections", json={"request_id": _unique_request_id()})
+    assert c_resp.status_code == 201
+    _verify_response_safety(c_resp)
+    sid = c_resp.json()["selection_id"]
+
+    # 2. State 2: Get status open (200 OK)
+    g_resp = client.get(f"/api/resources/import-selections/{sid}")
+    assert g_resp.status_code == 200
+    _verify_response_safety(g_resp)
+
+    # 3. State 3: Upload file (201 Created) with payload containing PRIVATE_PAYLOAD_ONLY
+    payload = json.dumps([{"id": "safe_s1", "label": "Safe", "scene_theme": "t", "tags": ["tag"], "priv": PRIVATE_PAYLOAD_ONLY}]).encode("utf-8")
+    u_resp = _upload_file(client, sid, upload_id=_unique("u_safe"), file_name="safe.json", payload=payload)
+    assert u_resp.status_code == 201
+    _verify_response_safety(u_resp)
+    fid = u_resp.json()["files"][0]["file_id"]
+
+    # Injected DB sentinels:
+    # Update resource_selection_file with real disk path containing PRIVATE_PATH_ONLY,
+    # and set cleanup_warning in DB to PRIVATE_EXCEPTION_ONLY
+    f_row = db.one("SELECT staged_path, staged_sha256 FROM resource_selection_file WHERE file_id = ?", fid)
+    old_staged = Path(f_row["staged_path"])
+    new_dir = old_staged.parent / PRIVATE_PATH_ONLY
+    new_dir.mkdir(parents=True, exist_ok=True)
+    new_staged = new_dir / old_staged.name
+    shutil.copy(old_staged, new_staged)
+
+    stat_res = new_staged.stat()
+    disk_sha = f_row["staged_sha256"]
+    real_fp = f"{disk_sha}:{stat_res.st_size}:{stat_res.st_mtime_ns}"
+    real_mtime = str(stat_res.st_mtime_ns)
+
+    db.run(
+        "UPDATE resource_selection_file SET staged_path = ?, fingerprint = ?, staged_mtime_ns = ? WHERE file_id = ?",
+        str(new_staged),
+        real_fp,
+        real_mtime,
+        fid,
+    )
+    # Inject PRIVATE_EXCEPTION_ONLY into cleanup_warning in DB
+    db.run(
+        "UPDATE resource_selection SET cleanup_warning = ? WHERE selection_id = ?",
+        PRIVATE_EXCEPTION_ONLY,
+        sid,
+    )
+
+    # 4. State 4: Target patch / mutation (200 OK)
+    p_resp = client.patch(f"/api/resources/import-selections/{sid}/files/{fid}", json={"expected_revision": 1, "effective_library_key": "safe_lib"})
+    assert p_resp.status_code == 200
+    _verify_response_safety(p_resp)
+    assert p_resp.json()["cleanup_warning"] == rs.GENERIC_CLEANUP_WARNING
+
+    # 5. State 5: Preview (200 OK)
+    prev_resp = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 2})
+    assert prev_resp.status_code == 200
+    _verify_response_safety(prev_resp)
+    token = prev_resp.json()["preview"]["preview_token"]
+
+    # 6. State 6: Stale 409 error with detail.current
+    stale_resp = client.post(f"/api/resources/import-selections/{sid}/preview", json={"expected_revision": 999})
+    assert stale_resp.status_code == 409
+    _verify_response_safety(stale_resp)
+
+    # 7. State 7: Validation error 422/409 with detail
+    bad_req_resp = client.post(f"/api/resources/import-selections/{sid}/commit", json={"expected_revision": 2, "preview_token": "wrong_token_hex"})
+    assert bad_req_resp.status_code == 409
+    _verify_response_safety(bad_req_resp)
+
+    # 8. State 8: Committing state 202 (same-tuple concurrent request while claim active)
+    claim_acquired = threading.Event()
+    release_commit = threading.Event()
+
+    def _hook():
+        claim_acquired.set()
+        release_commit.wait(timeout=5)
+
+    rs.set_commit_before_tx_hook(_hook)
+    commit_resp_holder = []
+
+    def _do_commit():
+        res = client.post(
+            f"/api/resources/import-selections/{sid}/commit",
+            json={"expected_revision": 2, "preview_token": token},
+        )
+        commit_resp_holder.append(res)
+
+    t = threading.Thread(target=_do_commit)
+    t.start()
+
+    try:
+        assert claim_acquired.wait(timeout=5)
+        res_202 = client.post(
+            f"/api/resources/import-selections/{sid}/commit",
+            json={"expected_revision": 2, "preview_token": token},
+        )
+        assert res_202.status_code == 202
+        _verify_response_safety(res_202)
+    finally:
+        release_commit.set()
+        t.join(timeout=5)
+        rs.set_commit_before_tx_hook(None)
+
+    # 9. State 9: Commit completion (200 OK)
+    assert len(commit_resp_holder) == 1
+    commit_resp = commit_resp_holder[0]
+    assert commit_resp.status_code == 200
+    _verify_response_safety(commit_resp)
+
+    # 10. State 10: Replay committed (200 OK)
+    replay_resp = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": 2, "preview_token": token},
+    )
+    assert replay_resp.status_code == 200
+    _verify_response_safety(replay_resp)
+
+    # 11. State 11: Cancelled state (200 on cancel, 410 on access)
+    c2 = client.post("/api/resources/import-selections", json={"request_id": _unique_request_id()})
+    sid2 = c2.json()["selection_id"]
+    u2 = _upload_file(client, sid2, upload_id=_unique("u_s2"), file_name="s2.json", payload=payload)
+    fid2 = u2.json()["files"][0]["file_id"]
+    db.run(
+        "UPDATE resource_selection_file SET staged_path = ?, fingerprint = ?, staged_mtime_ns = ? WHERE file_id = ?",
+        str(new_staged),
+        PRIVATE_FINGERPRINT_ONLY,
+        PRIVATE_MTIME_ONLY,
+        fid2,
+    )
+    db.run("UPDATE resource_selection SET cleanup_warning = ? WHERE selection_id = ?", PRIVATE_EXCEPTION_ONLY, sid2)
+
+    # Verify detail.current safely omits PRIVATE_FINGERPRINT_ONLY and PRIVATE_MTIME_ONLY
+    stale_s2 = client.post(f"/api/resources/import-selections/{sid2}/preview", json={"expected_revision": 999})
+    assert stale_s2.status_code == 409
+    _verify_response_safety(stale_s2)
+
+    cancel_resp = client.post(f"/api/resources/import-selections/{sid2}/cancel", json={"expected_revision": 1})
+    assert cancel_resp.status_code == 200
+    _verify_response_safety(cancel_resp)
+
+    term_resp = client.post(f"/api/resources/import-selections/{sid2}/preview", json={"expected_revision": 1})
+    assert term_resp.status_code == 410
+    _verify_response_safety(term_resp)
+
+    # 12. State 12: Expired / tombstone / cleanup warning state
+    t0 = datetime(2026, 9, 17, 12, 0, 0, tzinfo=timezone.utc)
+    rs.set_clock(lambda: t0)
+    try:
+        c3 = client.post("/api/resources/import-selections", json={"request_id": _unique_request_id()})
+        sid3 = c3.json()["selection_id"]
+        u3 = _upload_file(client, sid3, upload_id=_unique("u_s3"), file_name="s3.json", payload=payload)
+        fid3 = u3.json()["files"][0]["file_id"]
+        db.run("UPDATE resource_selection_file SET staged_path = ?, fingerprint = ?, staged_mtime_ns = ? WHERE file_id = ?", str(new_staged), PRIVATE_FINGERPRINT_ONLY, PRIVATE_MTIME_ONLY, fid3)
+        db.run("UPDATE resource_selection SET cleanup_warning = ? WHERE selection_id = ?", PRIVATE_EXCEPTION_ONLY, sid3)
+
+        rs.set_clock(lambda: t0 + timedelta(seconds=rs.SELECTION_LIFETIME_SECONDS + 10))
+        tomb_resp = client.get(f"/api/resources/import-selections/{sid3}")
+        assert tomb_resp.status_code == 200
+        _verify_response_safety(tomb_resp)
+        assert tomb_resp.json()["state"] == "expired"
+
+        exp_mut_resp = client.post(f"/api/resources/import-selections/{sid3}/preview", json={"expected_revision": 1})
+        assert exp_mut_resp.status_code == 410
+        _verify_response_safety(exp_mut_resp)
+    finally:
+        rs.set_clock(None)
+
+    # 13. State 13: Cleanup failure state safely surfaces generic warning
+    c4 = client.post("/api/resources/import-selections", json={"request_id": _unique_request_id()})
+    sid4 = c4.json()["selection_id"]
+    u4 = _upload_file(client, sid4, upload_id=_unique("u_s4"), file_name="s4.json", payload=payload)
+    with mock.patch("backend.resource_selection._safe_delete_file", return_value=(False, PRIVATE_EXCEPTION_ONLY)):
+        can4_resp = client.post(f"/api/resources/import-selections/{sid4}/cancel", json={"expected_revision": 1})
+        assert can4_resp.status_code == 200
+        _verify_response_safety(can4_resp)
+        assert can4_resp.json()["cleanup_warning"] == rs.GENERIC_CLEANUP_WARNING
+
+        g4_resp = client.get(f"/api/resources/import-selections/{sid4}")
+        assert g4_resp.status_code == 200
+        _verify_response_safety(g4_resp)
+        assert g4_resp.json()["cleanup_warning"] == rs.GENERIC_CLEANUP_WARNING
+
+
+# ---------------------------------------------------------------------------
+# 9. Superseded Browser Attestation Probe (Task 1.6 Item 11)
+# ---------------------------------------------------------------------------
+
+
+def test_superseded_browser_attestation_lifecycle_probe(client, fresh_db, monkeypatch):
+    """Task 1.6 A10: Deterministic concurrent race + TTL probe for superseded attestations.
+
+    Proves that an in-flight stale preview (A) cannot regain authority after a
+    revision-changing mutation, even though its attestation file was created first
+    and remains physically valid until TTL.  Uses a real overlap: Thread A runs
+    preview_selection at revision R and is blocked between create_browser_attestation
+    and save_preview; the main thread mutates the selection (R -> R+1), runs
+    Preview B which becomes the durable current preview, then releases A whose
+    late save_preview CAS fails.
+
+    TTL is tested by monkeypatching resource_service.time.time without real sleeps.
+
+    Policy: an unreferenced superseded attestation is a physical orphan with no
+    authority.  Row-based cleanup and recovery target only the token referenced in
+    the durable selection row.  No filesystem sweep, garbage collector, or eager
+    deletion of superseded attestations is required or implemented.
+    """
+    import time as _stdlib_time
+
+    # -----------------------------------------------------------------------
+    # Step 0: Prepare one resolved staged file at revision R
+    # -----------------------------------------------------------------------
+    sel = _create_open_selection(client)
+    sid = sel["selection_id"]
+
+    payload = json.dumps([{
+        "id": "scene_race_a10", "label": "A10", "scene_theme": "t", "tags": ["tag"],
+    }]).encode("utf-8")
+    up = _upload_file(client, sid, upload_id=_unique("u_a10"), file_name="a10.json", payload=payload)
+    assert up.status_code == 201
+    f_id = up.json()["files"][0]["file_id"]
+    rev = up.json()["selection_revision"]  # R after upload = 1
+
+    patch_resp = client.patch(
+        f"/api/resources/import-selections/{sid}/files/{f_id}",
+        json={"expected_revision": rev, "effective_library_key": "a10_lib"},
+    )
+    assert patch_resp.status_code == 200
+    R = patch_resp.json()["selection_revision"]  # R after target = 2
+
+    # -----------------------------------------------------------------------
+    # Synchronization primitives for the real race
+    # -----------------------------------------------------------------------
+    a_attestation_created = threading.Event()
+    release_a = threading.Event()
+
+    # Captured values from thread A
+    captured = {}
+    thread_result = {"status_code": None, "body": None, "error": None}
+
+    # -----------------------------------------------------------------------
+    # TTL clock: mutable epoch for resource_service.time.time only
+    # -----------------------------------------------------------------------
+    T0 = int(_stdlib_time.time())
+    attestation_clock = [T0]
+
+    def fake_attestation_time():
+        return float(attestation_clock[0])
+
+    monkeypatch.setattr(resource_service.time, "time", fake_attestation_time)
+
+    # -----------------------------------------------------------------------
+    # Monkeypatch create_browser_attestation to intercept revision R
+    # -----------------------------------------------------------------------
+    real_create = resource_service.create_browser_attestation.__wrapped__ if hasattr(resource_service.create_browser_attestation, "__wrapped__") else resource_service.create_browser_attestation
+
+    def intercepting_create(preview, selection_id, selection_revision, manifest_digest):
+        token = real_create(
+            preview=preview,
+            selection_id=selection_id,
+            selection_revision=selection_revision,
+            manifest_digest=manifest_digest,
+        )
+        if selection_revision == R:
+            # Capture A's context for later direct verification
+            captured["token"] = token
+            captured["body"] = resource_service._browser_preview_body(preview)
+            captured["selection_id"] = selection_id
+            captured["selection_revision"] = selection_revision
+            captured["manifest_digest"] = manifest_digest
+            a_attestation_created.set()
+            # Block A before save_preview until main thread releases
+            released = release_a.wait(timeout=5.0)
+            assert released, "Thread A timed out waiting for release_a"
+        return token
+
+    monkeypatch.setattr(resource_service, "create_browser_attestation", intercepting_create)
+
+    # -----------------------------------------------------------------------
+    # Step 1-2: Thread A starts preview at R; blocks after attestation creation
+    # -----------------------------------------------------------------------
+    def thread_a_work():
+        try:
+            resp = client.post(
+                f"/api/resources/import-selections/{sid}/preview",
+                json={"expected_revision": R},
+            )
+            thread_result["status_code"] = resp.status_code
+            thread_result["body"] = resp.json()
+        except Exception as exc:
+            thread_result["error"] = exc
+
+    t_a = threading.Thread(target=thread_a_work, name="preview-A", daemon=True)
+    t_a.start()
+
+    # Wait for A to have created its attestation file
+    assert a_attestation_created.wait(timeout=5.0), "Thread A did not create attestation"
+
+    # A's attestation file exists on disk
+    token_a = captured["token"]
+    att_a_path = resource_service._attestation_path(token_a)
+    assert att_a_path.is_file(), "A's attestation file must exist after creation"
+
+    # Snapshot resource counts before any failed A operation
+    resource_count_before = db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"]
+    aux_count_before = db.one("SELECT COUNT(*) AS c FROM auxiliary_resource")["c"]
+
+    try:
+        # -------------------------------------------------------------------
+        # Step 3: Main thread changes the file's effective target at R -> R+1
+        # -------------------------------------------------------------------
+        # Restore real create so B does not block
+        monkeypatch.setattr(resource_service, "create_browser_attestation", real_create)
+
+        patch2 = client.patch(
+            f"/api/resources/import-selections/{sid}/files/{f_id}",
+            json={"expected_revision": R, "effective_library_key": "a10_lib_updated"},
+        )
+        assert patch2.status_code == 200
+        R_plus_1 = patch2.json()["selection_revision"]
+        assert R_plus_1 == R + 1
+
+        # -------------------------------------------------------------------
+        # Step 4: Main thread runs Preview B at R+1
+        # -------------------------------------------------------------------
+        # Advance attestation clock slightly for B's creation time
+        attestation_clock[0] = T0 + resource_service.PREVIEW_TTL_SECONDS - 60
+
+        p_b = client.post(
+            f"/api/resources/import-selections/{sid}/preview",
+            json={"expected_revision": R_plus_1},
+        )
+        assert p_b.status_code == 200
+        token_b = p_b.json()["preview"]["preview_token"]
+        manifest_digest_b = p_b.json()["preview"]["manifest_digest"]
+        assert token_b != token_a
+
+        att_b_path = resource_service._attestation_path(token_b)
+        assert att_b_path.is_file(), "B's attestation file must exist"
+        assert att_a_path.is_file(), "A's attestation must still exist"
+
+        # Durable state must show B as the current preview
+        sel_row = db.one(
+            "SELECT preview_token, preview_manifest_digest, selection_revision "
+            "FROM resource_selection WHERE selection_id = ?", sid,
+        )
+        assert sel_row["preview_token"] == token_b
+        assert sel_row["preview_manifest_digest"] == manifest_digest_b
+        assert sel_row["selection_revision"] == R_plus_1
+
+        # -------------------------------------------------------------------
+        # Step 5: Attempt commit with token A at current revision R+1
+        # -------------------------------------------------------------------
+        commit_a = client.post(
+            f"/api/resources/import-selections/{sid}/commit",
+            json={"expected_revision": R_plus_1, "preview_token": token_a},
+        )
+        assert commit_a.status_code == 409
+        det_a = _stable_detail(commit_a)
+        assert det_a["code"] == "preview_mismatch"
+
+        # Zero accepted-resource writes from the failed A commit
+        assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == resource_count_before
+        assert db.one("SELECT COUNT(*) AS c FROM auxiliary_resource")["c"] == aux_count_before
+
+        # Durable state still shows B after the failed A commit
+        sel_after_a_commit = db.one(
+            "SELECT preview_token FROM resource_selection WHERE selection_id = ?", sid,
+        )
+        assert sel_after_a_commit["preview_token"] == token_b
+
+    finally:
+        # -------------------------------------------------------------------
+        # Step 6: Release A (its save_preview CAS fails because revision is R+1)
+        # -------------------------------------------------------------------
+        release_a.set()
+
+    # Join thread A with bounded timeout
+    t_a.join(timeout=5.0)
+    assert not t_a.is_alive(), "Thread A must have finished"
+    assert thread_result["error"] is None, f"Thread A raised: {thread_result['error']}"
+
+    # A's preview request must return 409 (revision stale: R != R+1)
+    assert thread_result["status_code"] == 409
+    a_detail = thread_result["body"].get("detail", {})
+    assert a_detail.get("code") == "selection_revision_stale"
+
+    # The current safe view in A's error response shows revision R+1
+    if "current" in a_detail:
+        assert a_detail["current"]["selection_revision"] == R_plus_1
+
+    # Durable state still shows B after A's late save_preview failure
+    sel_after_release = db.one(
+        "SELECT preview_token, selection_revision FROM resource_selection WHERE selection_id = ?", sid,
+    )
+    assert sel_after_release["preview_token"] == token_b
+    assert sel_after_release["selection_revision"] == R_plus_1
+
+    # Both attestation files still exist
+    assert att_a_path.is_file()
+    assert att_b_path.is_file()
+
+    # -----------------------------------------------------------------------
+    # Step 7: TTL probe â€” A's attestation expires, B is still valid
+    # -----------------------------------------------------------------------
+
+    # 7a. Before A's TTL boundary, direct verification of A succeeds
+    # (cryptographic validity is not authority)
+    pre_ttl_clock = T0 + resource_service.PREVIEW_TTL_SECONDS - 1
+    attestation_clock[0] = pre_ttl_clock
+    verified_a_pre = resource_service.verify_browser_attestation(
+        body=captured["body"],
+        token=token_a,
+        selection_id=captured["selection_id"],
+        selection_revision=captured["selection_revision"],
+        manifest_digest=captured["manifest_digest"],
+    )
+    assert verified_a_pre is not None, "A must verify before TTL"
+
+    # 7b. At exactly A's TTL boundary, verification must fail with expiration
+    attestation_clock[0] = T0 + resource_service.PREVIEW_TTL_SECONDS
+    with pytest.raises(ValueError, match="expired"):
+        resource_service.verify_browser_attestation(
+            body=captured["body"],
+            token=token_a,
+            selection_id=captured["selection_id"],
+            selection_revision=captured["selection_revision"],
+            manifest_digest=captured["manifest_digest"],
+        )
+
+    # A's file is still physically present (TTL is logical, not filesystem deletion)
+    assert att_a_path.is_file()
+
+    # 7c. B still verifies at the same clock value (B was created later)
+    files_for_b = db.q(
+        "SELECT * FROM resource_selection_file WHERE selection_id = ? ORDER BY order_index", sid,
+    )
+    selections_b = [
+        (Path(r["staged_path"]), r["effective_library_key"],
+         {"effective_auxiliary_kind": r["effective_auxiliary_kind"], "is_browser_mode": True})
+        for r in files_for_b
+    ]
+    preview_rep_b = resource_service.preview_import(selections_b)
+    body_b = resource_service._browser_preview_body(preview_rep_b)
+    verified_b = resource_service.verify_browser_attestation(
+        body=body_b,
+        token=token_b,
+        selection_id=sid,
+        selection_revision=R_plus_1,
+        manifest_digest=manifest_digest_b,
+    )
+    assert verified_b is not None, "B must still verify at A's TTL boundary"
+
+    # -----------------------------------------------------------------------
+    # Step 8: Commit B successfully
+    # -----------------------------------------------------------------------
+    commit_b = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": R_plus_1, "preview_token": token_b},
+    )
+    assert commit_b.status_code == 200
+    commit_view = commit_b.json()
+    assert commit_view["state"] == "committed"
+    assert commit_view["commit_result"] is not None
+    commit_result_b = commit_view["commit_result"]
+
+    # Durable committed row contains B's tuple
+    committed_row = db.one(
+        "SELECT committed_revision, committed_preview_token, committed_manifest_digest, "
+        "commit_result FROM resource_selection WHERE selection_id = ?", sid,
+    )
+    assert committed_row["committed_revision"] == R_plus_1
+    assert committed_row["committed_preview_token"] == token_b
+    assert committed_row["committed_manifest_digest"] == manifest_digest_b
+    assert committed_row["commit_result"] is not None
+
+    # Terminal cleanup deletes B's attestation (referenced in committed row)
+    assert not att_b_path.exists(), "B's attestation must be cleaned after terminal commit"
+
+    # A's orphan remains (row-based cleanup did not target it)
+    assert att_a_path.is_file(), "A's orphan attestation must remain on disk"
+
+    # -----------------------------------------------------------------------
+    # Step 9: Replay B and recovery
+    # -----------------------------------------------------------------------
+    resource_count_after_commit = db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"]
+
+    replay_resp = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": R_plus_1, "preview_token": token_b},
+    )
+    assert replay_resp.status_code == 200
+    replay_view = replay_resp.json()
+    assert replay_view["commit_result"] == commit_result_b
+
+    # Replay does not create additional canonical persistence
+    assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == resource_count_after_commit
+
+    # Lazy recovery and startup recovery do not make A authoritative or delete it
+    rs.recover_selection(sid)
+    rs.startup_recovery()
+    assert att_a_path.is_file(), "Recovery must not delete orphan A by scanning filesystem"
+
+    # A with committed selection fails closed (410 terminal)
+    commit_a_after = client.post(
+        f"/api/resources/import-selections/{sid}/commit",
+        json={"expected_revision": R_plus_1, "preview_token": token_a},
+    )
+    assert commit_a_after.status_code == 410

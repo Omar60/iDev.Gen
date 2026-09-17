@@ -1529,3 +1529,97 @@ def test_legacy_preview_serialization_matches_baseline_keys_without_browser_fiel
             selection_revision=0,
             manifest_digest="1" * 64,
         )
+
+
+def test_actual_payload_free_libraries_response_matches_contract_and_fixture(client, tmp_path, monkeypatch):
+    """Task 1.6 Item 9: /api/resources/libraries omits raw payload and matches the frontend fixture contract."""
+    for table in ("auxiliary_resource", "asset_revision", "resource_library"):
+        db.run(f"DELETE FROM {table}")
+
+    fixed_now = "2026-09-17T12:00:00+00:00"
+    monkeypatch.setattr(db, "now", lambda: fixed_now)
+
+    lib1_id = resource_store.ensure_library(
+        "rooms_studio_gallery",
+        display_name="Studio Gallery Rooms",
+        kind="rooms",
+    )
+    resource_store.record_revision(
+        lib1_id,
+        "room_grand_loft",
+        {"name": "Grand Sunlight Loft", "theme": "High ceiling loft with warm natural light"},
+        translation={"label": "Grand Sunlight Loft", "scene_theme": "High ceiling loft with warm natural light"},
+        coverage={"status": "ready"},
+    )
+    resource_store.record_revision(
+        lib1_id,
+        "room_concrete_minimal",
+        {"name": "Brutalist Concrete Space", "theme": "Raw grey concrete walls and architectural shadows"},
+        translation={"label": "Brutalist Concrete Space", "scene_theme": "Raw grey concrete walls and architectural shadows"},
+        coverage={"status": "ready"},
+    )
+
+    lib2_id = resource_store.ensure_library(
+        "fused_scenes_couture",
+        display_name="Summer Couture Scenes",
+        kind="fused_scenes",
+    )
+    resource_store.record_revision(
+        lib2_id,
+        "scene_silk_slip",
+        {"name": "Silk Slip Dress", "prompt": "Ivory Silk Slip Dress Scene"},
+        translation={"label": "Silk Slip Dress", "prompt": "Ivory Silk Slip Dress Scene"},
+        coverage={"status": "ready"},
+    )
+    resource_store.record_auxiliary(
+        lib2_id,
+        "mined_labels",
+        payload={"labels": ["silk", "couture"]},
+    )
+
+    resp = client.get("/api/resources/libraries")
+    assert resp.status_code == 200
+    libraries = resp.json()
+    assert len(libraries) == 2
+
+    def _assert_no_payload(obj, current_path=""):
+        if isinstance(obj, dict):
+            assert "payload" not in obj, f"Forbidden 'payload' key leaked at {current_path}"
+            for k, v in obj.items():
+                _assert_no_payload(v, f"{current_path}.{k}")
+        elif isinstance(obj, list):
+            for idx, item in enumerate(obj):
+                _assert_no_payload(item, f"{current_path}[{idx}]")
+
+    _assert_no_payload(libraries, "libraries")
+
+    fixture_path = ROOT / "frontend" / "src" / "views" / "__fixtures__" / "actual_payload_free_libraries.json"
+    assert fixture_path.is_file(), f"Fixture missing at {fixture_path}"
+    fixture_data = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert isinstance(fixture_data, list)
+    assert len(fixture_data) == 2
+
+    _assert_no_payload(fixture_data, "fixture")
+    # Assert exact recursive structural equality between backend response and fixture
+    assert libraries == fixture_data
+
+    required_lib_keys = {
+        "id", "library_key", "display_name", "kind", "created_at",
+        "revision_count", "auxiliary_count", "revisions", "auxiliary",
+    }
+    required_rev_keys = {
+        "revision_id", "library_key", "library_id", "source_id",
+        "content_digest", "created_at", "translation", "coverage", "readiness",
+    }
+    required_aux_keys = {
+        "auxiliary_id", "library_key", "kind", "content_digest", "created_at",
+    }
+
+    for item in libraries + fixture_data:
+        assert required_lib_keys.issubset(set(item.keys()))
+        for rev in item.get("revisions", []):
+            assert required_rev_keys.issubset(set(rev.keys()))
+            assert "payload" not in rev
+        for aux in item.get("auxiliary", []):
+            assert required_aux_keys.issubset(set(aux.keys()))
+            assert "payload" not in aux

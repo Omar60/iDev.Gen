@@ -6,6 +6,7 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import Resources from './Resources.jsx'
 import { api } from '../api.js'
+import actualPayloadFreeLibraries from './__fixtures__/actual_payload_free_libraries.json'
 
 describe('Resources Component - Task 1.5 Specification & Contract Tests', () => {
   let container = null
@@ -285,7 +286,38 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
         preview_token: 'ptok-valid',
         manifest_digest: '0123456789abcdef',
         committable: true,
-        report: { outcomes: { new: 1, updated: 0, unchanged: 0, accepted: 1, auxiliary: 0, duplicate: 0, unresolved: 0, missing: 0 }, details: [] },
+        report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [{
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 's1',
+              library_key: 'lib1',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        },
       },
     }
 
@@ -348,7 +380,38 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
         preview_token: 'ptok-valid-2',
         manifest_digest: '0123456789abcdef',
         committable: true,
-        report: { outcomes: { new: 1, updated: 0, unchanged: 0, accepted: 1, auxiliary: 0, duplicate: 0, unresolved: 0, missing: 0 }, details: [] },
+        report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [{
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 's1',
+              library_key: 'lib1',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        },
       },
     }
 
@@ -428,7 +491,38 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
         preview_token: 'ptok-rm',
         manifest_digest: '0123456789abcdef',
         committable: true,
-        report: { outcomes: { new: 1, updated: 0, unchanged: 0, accepted: 1, auxiliary: 0, duplicate: 0, unresolved: 0, missing: 0 }, details: [] },
+        report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [{
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 's1',
+              library_key: 'lib1',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        },
       },
     }
 
@@ -488,7 +582,38 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
         preview_token: 'ptok-rev-7',
         manifest_digest: '0123456789abcdef',
         committable: true,
-        report: { outcomes: { new: 1, updated: 0, unchanged: 0, accepted: 1, auxiliary: 0, duplicate: 0, unresolved: 0, missing: 0 }, details: [] },
+        report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [{
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 's1',
+              library_key: 'lib1',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        },
       },
       commit_result: null,
       cleanup_warning: null,
@@ -540,7 +665,38 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
         preview_token: 'ptok-term',
         manifest_digest: '0123456789abcdef',
         committable: true,
-        report: { outcomes: { new: 1, updated: 0, unchanged: 0, accepted: 1, auxiliary: 0, duplicate: 0, unresolved: 0, missing: 0 }, details: [] },
+        report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [{
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 's1',
+              library_key: 'lib1',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        },
       },
       commit_result: null,
       cleanup_warning: null,
@@ -551,8 +707,46 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       selection_revision: 2,
       state: 'committed',
       commit_result: {
-        committed: true,
-        report: { summary: { recorded: 1, new_scene_revisions: 1, updated_scene_revisions: 0, unchanged_scene_revisions: 0 }, details: [] },
+        version: 1,
+        phase: 'commit',
+        summary: {
+          files: 1,
+          inputs: 1,
+          accepted: 1,
+          auxiliary: 0,
+          duplicates: 0,
+          unresolved: 0,
+          new: 1,
+          unchanged: 0,
+          updated: 0,
+          missing: 0,
+          recorded: 1,
+          new_scene_revisions: 1,
+          unchanged_scene_revisions: 0,
+          updated_scene_revisions: 0,
+          new_auxiliary_revisions: 0,
+          unchanged_auxiliary_revisions: 0,
+        },
+        files: [
+          {
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [
+              {
+                source_id: 's1',
+                library_key: 'lib1',
+                kind: 'rooms',
+                classification: 'new',
+                new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                previous_content_digest: null,
+              },
+            ],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          },
+        ],
+        missing_source_entries: [],
       },
     }
 
@@ -908,7 +1102,38 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
         preview_token: 'ptok-privacy-safe',
         manifest_digest: '0123456789abcdef',
         committable: true,
-        report: { outcomes: { new: 1, updated: 0, unchanged: 0, accepted: 1, auxiliary: 0, duplicate: 0, unresolved: 0, missing: 0 }, details: [] },
+        report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [{
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 's1',
+              library_key: 'lib1',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        },
       },
       commit_result: null,
       cleanup_warning: null,
@@ -958,7 +1183,38 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
         preview_token: 'ptok-old-rev1',
         manifest_digest: '0123456789abcdef',
         committable: true,
-        report: { outcomes: { new: 1, updated: 0, unchanged: 0, accepted: 1, auxiliary: 0, duplicate: 0, unresolved: 0, missing: 0 }, details: [] },
+        report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [{
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 's1',
+              library_key: 'lib1',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        },
       },
     }
 
@@ -1221,8 +1477,49 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     const committedView = {
       ...openView,
       selection_revision: 3,
+      commit_result: {
+        version: 1,
+        phase: 'commit',
+        summary: {
+          files: 1,
+          inputs: 1,
+          accepted: 1,
+          auxiliary: 0,
+          duplicates: 0,
+          unresolved: 0,
+          new: 1,
+          unchanged: 0,
+          updated: 0,
+          missing: 0,
+          recorded: 1,
+          new_scene_revisions: 1,
+          unchanged_scene_revisions: 0,
+          updated_scene_revisions: 0,
+          new_auxiliary_revisions: 0,
+          unchanged_auxiliary_revisions: 0,
+        },
+        files: [
+          {
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [
+              {
+                source_id: 's1',
+                library_key: 'lib1',
+                kind: 'rooms',
+                classification: 'new',
+                new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                previous_content_digest: null,
+              },
+            ],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          },
+        ],
+        missing_source_entries: [],
+      },
       state: 'committed',
-      commit_result: { committed: true, report: { summary: { recorded: 1 } } },
     }
 
     vi.spyOn(api, 'post').mockResolvedValue(openView)
@@ -1263,10 +1560,54 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       files: [{ file_id: 'f1', file_name: 'f1.json', byte_count: 10, declared_library: 'lib1', effective_library_key: 'lib1', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' }],
       preview: null,
       commit_result: {
-        committed: true,
-        report: {
-          summary: { recorded: 2, new_scene_revisions: 2, updated_scene_revisions: 0, unchanged_scene_revisions: 0 },
+        version: 1,
+        phase: 'commit',
+        summary: {
+          files: 1,
+          inputs: 2,
+          accepted: 2,
+          auxiliary: 0,
+          duplicates: 0,
+          unresolved: 0,
+          new: 2,
+          unchanged: 0,
+          updated: 0,
+          missing: 0,
+          recorded: 2,
+          new_scene_revisions: 2,
+          unchanged_scene_revisions: 0,
+          updated_scene_revisions: 0,
+          new_auxiliary_revisions: 0,
+          unchanged_auxiliary_revisions: 0,
         },
+        files: [
+          {
+            library_key: 'lib1',
+            total_inputs: 2,
+            accepted: [
+              {
+                source_id: 's1',
+                library_key: 'lib1',
+                kind: 'rooms',
+                classification: 'new',
+                new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                previous_content_digest: null,
+              },
+              {
+                source_id: 's2',
+                library_key: 'lib1',
+                kind: 'rooms',
+                classification: 'new',
+                new_content_digest: 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
+                previous_content_digest: null,
+              },
+            ],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          },
+        ],
+        missing_source_entries: [],
       },
       cleanup_warning: null,
     }
@@ -1352,7 +1693,38 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
         preview_token: 'ptok-202',
         manifest_digest: '0123456789abcdef',
         committable: true,
-        report: { outcomes: { new: 1, updated: 0, unchanged: 0, accepted: 1, auxiliary: 0, duplicate: 0, unresolved: 0, missing: 0 }, details: [] },
+        report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [{
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 's1',
+              library_key: 'lib1',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        },
       },
       commit_result: null,
       cleanup_warning: null,
@@ -1368,7 +1740,48 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       ...committingView,
       selection_revision: 4,
       state: 'committed',
-      commit_result: { committed: true, report: { summary: { recorded: 1 } } },
+      commit_result: {
+        version: 1,
+        phase: 'commit',
+        summary: {
+          files: 1,
+          inputs: 1,
+          accepted: 1,
+          auxiliary: 0,
+          duplicates: 0,
+          unresolved: 0,
+          new: 1,
+          unchanged: 0,
+          updated: 0,
+          missing: 0,
+          recorded: 1,
+          new_scene_revisions: 1,
+          unchanged_scene_revisions: 0,
+          updated_scene_revisions: 0,
+          new_auxiliary_revisions: 0,
+          unchanged_auxiliary_revisions: 0,
+        },
+        files: [
+          {
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [
+              {
+                source_id: 's1',
+                library_key: 'lib1',
+                kind: 'rooms',
+                classification: 'new',
+                new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                previous_content_digest: null,
+              },
+            ],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          },
+        ],
+        missing_source_entries: [],
+      },
     }
 
     let librariesReloaded = 0
@@ -1571,7 +1984,38 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
         preview_token: 'ptok-valid-token',
         manifest_digest: '0123456789abcdef',
         committable: true,
-        report: { outcomes: { new: 1, updated: 0, unchanged: 0, accepted: 1, auxiliary: 0, duplicate: 0, unresolved: 0, missing: 0 }, details: [] },
+        report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [{
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 's1',
+              library_key: 'lib1',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        },
         ...previewPatch,
       },
       commit_result: null,
@@ -1611,5 +2055,923 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     await selectFiles([new File(['4'], 'f4.json', { type: 'application/json' })])
     await clickUpload()
     expect(commitBtn.disabled).toBe(true)
+  })
+
+  it('rejects canonical-invalid preview.report without rendering a synthetic zero-count preview', async () => {
+    const createdSelection = {
+      selection_id: 'sel-invalid-preview',
+      selection_revision: 0,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+    const invalidPreviewSelection = {
+      ...createdSelection,
+      selection_revision: 1,
+      files: [{
+        file_id: 'f1',
+        file_name: 'invalid-preview.json',
+        byte_count: 10,
+        declared_library: 'lib1',
+        effective_library_key: 'lib1',
+        matched_auxiliary_kinds: [],
+        effective_auxiliary_kind: null,
+        status: 'staged',
+      }],
+      preview: {
+        preview_token: 'ptok-invalid-preview',
+        manifest_digest: '0123456789abcdef',
+        committable: true,
+        report: { phase: 'preview' },
+      },
+    }
+
+    vi.spyOn(api, 'post').mockResolvedValue(createdSelection)
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValue(invalidPreviewSelection)
+
+    await renderComponent()
+    await switchToImportTab()
+    await selectFiles([new File(['invalid'], 'invalid-preview.json', { type: 'application/json' })])
+    await clickUpload()
+
+    expect(container.textContent).not.toContain('Import Preview Results')
+    expect(container.textContent).not.toContain('New: 0')
+    expect(container.textContent).not.toContain('Accepted: 0')
+    const commitButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent.includes('Commit Import')
+    )
+    expect(commitButton).toBeTruthy()
+    expect(commitButton.disabled).toBe(true)
+  })
+
+  // =========================================================================
+  // Task 1.6 - Integration & Contract Suite (Section 3.2)
+  // =========================================================================
+
+  // 1. Full flow guided by real contract: create -> upload -> target/auxiliary -> preview -> commit
+  it('1.6-1. executes full flow: create -> upload -> target/auxiliary -> preview -> commit with exact SelectionView shapes', async () => {
+    const sel0 = {
+      selection_id: 'sel-flow-101',
+      selection_revision: 0,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    const sel1 = {
+      selection_id: 'sel-flow-101',
+      selection_revision: 1,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [
+        {
+          file_id: 'fid-101',
+          file_name: 'scenes.json',
+          byte_count: 240,
+          declared_library: 'fused_scenes',
+          effective_library_key: 'fused_scenes',
+          matched_auxiliary_kinds: ['mined_labels'],
+          effective_auxiliary_kind: null,
+          status: 'staged',
+        },
+      ],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    const sel2 = {
+      ...sel1,
+      selection_revision: 2,
+      files: [
+        {
+          ...sel1.files[0],
+          effective_library_key: 'scenes_v2',
+          effective_auxiliary_kind: 'mined_labels',
+        },
+      ],
+    }
+
+    const selPreview = {
+      ...sel2,
+      selection_revision: 2,
+      preview: {
+        preview_token: 'ptok-flow-valid-hex-token-1234',
+        manifest_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        committable: true,
+        report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 1,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [
+            {
+              library_key: 'scenes_v2',
+              total_inputs: 1,
+              accepted: [
+                {
+                  library_key: 'scenes_v2',
+                  source_id: 'scene_flow_1',
+                  kind: 'fused_scenes',
+                  classification: 'new',
+                  new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                  previous_content_digest: null,
+                },
+              ],
+              auxiliary: [
+                {
+                  library_key: 'scenes_v2',
+                  kind: 'mined_labels',
+                  classification: 'new',
+                  new_content_digest: 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
+                  previous_content_digest: null,
+                },
+              ],
+              unresolved: [],
+              duplicates: [],
+            },
+          ],
+          missing_source_entries: [],
+        },
+      },
+    }
+
+    const selCommitted = {
+      ...selPreview,
+      selection_revision: 3,
+      state: 'committed',
+      preview: null,
+      commit_result: {
+        version: 1,
+        phase: 'commit',
+        summary: {
+          files: 1,
+          inputs: 2,
+          accepted: 1,
+          auxiliary: 1,
+          duplicates: 0,
+          unresolved: 0,
+          new: 1,
+          unchanged: 0,
+          updated: 0,
+          missing: 0,
+          recorded: 2,
+          new_scene_revisions: 1,
+          unchanged_scene_revisions: 0,
+          updated_scene_revisions: 0,
+          new_auxiliary_revisions: 1,
+          unchanged_auxiliary_revisions: 0,
+        },
+        files: [
+          {
+            library_key: 'scenes_v2',
+            total_inputs: 2,
+            accepted: [
+              {
+                source_id: 'scene_flow_1',
+                library_key: 'scenes_v2',
+                kind: 'fused_scenes',
+                classification: 'new',
+                new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                previous_content_digest: null,
+              },
+            ],
+            auxiliary: [
+              {
+                library_key: 'scenes_v2',
+                kind: 'mined_labels',
+                classification: 'new',
+                new_content_digest: 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
+                previous_content_digest: null,
+              },
+            ],
+            duplicates: [],
+            unresolved: [],
+          },
+        ],
+        missing_source_entries: [],
+      },
+    }
+
+    const postSpy = vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url === '/api/resources/import-selections') return sel0
+      if (url === '/api/resources/import-selections/sel-flow-101/preview') return selPreview
+      if (url === '/api/resources/import-selections/sel-flow-101/commit') return selCommitted
+      return {}
+    })
+
+    const uploadSpy = vi.spyOn(api, 'uploadMultipart').mockResolvedValue(sel1)
+    const patchSpy = vi.spyOn(api, 'patch').mockResolvedValue(sel2)
+
+    await renderComponent()
+    await switchToImportTab()
+
+    // Step 1: Upload file
+    const file = new File(['{"items":[]}'], 'scenes.json', { type: 'application/json' })
+    await selectFiles([file])
+    await clickUpload()
+
+    expect(postSpy).toHaveBeenCalledWith('/api/resources/import-selections', expect.objectContaining({ request_id: expect.any(String) }))
+    expect(uploadSpy).toHaveBeenCalledWith('/api/resources/import-selections/sel-flow-101/files', expect.any(FormData))
+    expect(container.textContent).toContain('Revision: 1')
+    expect(container.textContent).toContain('scenes.json')
+
+    // Step 2: Open advanced options and patch target / auxiliary
+    const advBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Show Advanced Compatibility Options'))
+    expect(advBtn).toBeTruthy()
+    await act(async () => {
+      advBtn.click()
+    })
+
+    const applyBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Apply Choice')
+    expect(applyBtn).toBeTruthy()
+    const auxSelect = Array.from(container.querySelectorAll('select')).find((s) => s.innerHTML.includes('mined_labels'))
+    expect(auxSelect).toBeTruthy()
+    setSelectValue(auxSelect, 'mined_labels')
+
+    await act(async () => {
+      applyBtn.click()
+    })
+    expect(patchSpy).toHaveBeenCalledWith(
+      '/api/resources/import-selections/sel-flow-101/files/fid-101',
+      expect.objectContaining({ expected_revision: 1, effective_auxiliary_kind: 'mined_labels' })
+    )
+    expect(container.textContent).toContain('Revision: 2')
+
+    // Step 3: Run preview
+    const previewBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Import')
+    expect(previewBtn).toBeTruthy()
+    await act(async () => {
+      previewBtn.click()
+    })
+    expect(postSpy).toHaveBeenCalledWith('/api/resources/import-selections/sel-flow-101/preview', { expected_revision: 2 })
+
+    // Step 4: Commit import
+    const commitBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Commit Import'))
+    expect(commitBtn.disabled).toBe(false)
+    await act(async () => {
+      commitBtn.click()
+      await Promise.resolve()
+    })
+    expect(postSpy).toHaveBeenCalledWith('/api/resources/import-selections/sel-flow-101/commit', {
+      expected_revision: 2,
+      preview_token: 'ptok-flow-valid-hex-token-1234',
+    })
+
+    // Step 5: Verify committed state
+    expect(container.textContent).toContain('committed')
+    expect(container.textContent).toContain('Revision: 3')
+    expect(container.textContent).toContain('Import committed successfully')
+
+    // Verify absence of any private fields in DOM
+    const html = container.innerHTML
+    expect(html).not.toContain('staged_path')
+    expect(html).not.toContain('cleanup_state')
+    expect(html).not.toContain('storage_path')
+    expect(html).not.toContain('source_digest')
+  })
+
+  // 2. Out-of-order responses: if response with revision 3 arrives after revision 4, view retains revision 4
+  it('1.6-2. out-of-order responses: view retains revision 4 when revision 3 arrives later', async () => {
+    let resolveUpload1, resolveUpload2
+    const uploadPromise1 = new Promise((res) => { resolveUpload1 = res })
+    const uploadPromise2 = new Promise((res) => { resolveUpload2 = res })
+
+    const sel0 = {
+      selection_id: 'sel-ooo-1',
+      selection_revision: 0,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    vi.spyOn(api, 'post').mockResolvedValue(sel0)
+    let callCount = 0
+    vi.spyOn(api, 'uploadMultipart').mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return uploadPromise1
+      return uploadPromise2
+    })
+
+    await renderComponent()
+    await switchToImportTab()
+
+    const f1 = new File(['1'], 'f1.json', { type: 'application/json' })
+    const f2 = new File(['2'], 'f2.json', { type: 'application/json' })
+    await selectFiles([f1, f2])
+
+    const uploadBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Upload 2 file(s)'))
+    act(() => {
+      uploadBtn.click()
+    })
+
+    const viewRev4 = {
+      selection_id: 'sel-ooo-1',
+      selection_revision: 4,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [
+        { file_id: 'f2', file_name: 'f2.json', byte_count: 1, declared_library: 'lib', effective_library_key: 'lib', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' },
+      ],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    await act(async () => {
+      resolveUpload2(viewRev4)
+    })
+    expect(container.textContent).toContain('Revision: 4')
+
+    const viewRev3 = {
+      selection_id: 'sel-ooo-1',
+      selection_revision: 3,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [
+        { file_id: 'f1', file_name: 'f1.json', byte_count: 1, declared_library: 'lib', effective_library_key: 'lib', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' },
+      ],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    await act(async () => {
+      resolveUpload1(viewRev3)
+    })
+
+    expect(container.textContent).toContain('Revision: 4')
+    expect(container.textContent).not.toContain('Revision: 3')
+  })
+
+  // 3. Out-of-order promises: request A starting before request B but resolving after adopts superior revision (rev 4 > rev 3)
+  it('1.6-3. out-of-order promises: request A starting before request B but resolving after adopts superior revision (rev 4 > rev 3)', async () => {
+    let resolveUploadA, resolveUploadB
+    const promiseA = new Promise((res) => { resolveUploadA = res })
+    const promiseB = new Promise((res) => { resolveUploadB = res })
+
+    const selInit = {
+      selection_id: 'sel-prom-1',
+      selection_revision: 0,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    vi.spyOn(api, 'post').mockResolvedValue(selInit)
+
+    let uploadCallIndex = 0
+    vi.spyOn(api, 'uploadMultipart').mockImplementation(() => {
+      uploadCallIndex++
+      if (uploadCallIndex === 1) return promiseA // Request A started first
+      return promiseB                           // Request B started second
+    })
+
+    await renderComponent()
+    await switchToImportTab()
+
+    const fA = new File(['A'], 'fileA.json', { type: 'application/json' })
+    const fB = new File(['B'], 'fileB.json', { type: 'application/json' })
+    await selectFiles([fA, fB])
+
+    // Trigger concurrent upload of both files
+    const uploadBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Upload 2 file(s)'))
+    act(() => {
+      uploadBtn.click()
+    })
+
+    // Request B (started second) finishes first with revision 3
+    const rev3View = {
+      selection_id: 'sel-prom-1',
+      selection_revision: 3,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [
+        { file_id: 'fB', file_name: 'fileB.json', byte_count: 1, declared_library: 'libB', effective_library_key: 'libB', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' },
+      ],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+    await act(async () => {
+      resolveUploadB(rev3View)
+    })
+    expect(container.textContent).toContain('Revision: 3')
+    expect(container.textContent).toContain('fileB.json')
+
+    // Request A (started first) finishes later with superior revision 4
+    const rev4View = {
+      selection_id: 'sel-prom-1',
+      selection_revision: 4,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [
+        { file_id: 'fA', file_name: 'fileA.json', byte_count: 1, declared_library: 'libA', effective_library_key: 'libA', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' },
+      ],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+    await act(async () => {
+      resolveUploadA(rev4View)
+    })
+
+    // View MUST adopt revision 4 and fileA.json because revision 4 > revision 3
+    expect(container.textContent).toContain('Revision: 4')
+    expect(container.textContent).toContain('fileA.json')
+    expect(container.textContent).not.toContain('Revision: 3')
+  })
+
+  // 4. Selection epoch fencing: responses belonging to cancelled/replaced selection are ignored
+  it('1.6-4. selection epoch fencing: responses from old/replaced selection are ignored and do not paint old data', async () => {
+    let resolveOldUpload
+    const oldUploadPromise = new Promise((res) => { resolveOldUpload = res })
+
+    const selOld1 = {
+      selection_id: 'sel-epoch-old',
+      selection_revision: 1,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [{ file_id: 'f0', file_name: 'f0.json', byte_count: 10, declared_library: 'lib_old', effective_library_key: 'lib_old', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' }],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    vi.spyOn(api, 'post').mockResolvedValue(selOld1)
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValueOnce(selOld1)
+
+    await renderComponent()
+    await switchToImportTab()
+    await selectFiles([new File(['0'], 'f0.json', { type: 'application/json' })])
+    await clickUpload()
+    expect(container.textContent).toContain('sel-epoch-old')
+
+    // Now selection 1 is active and "New Selection" button is in DOM
+    vi.spyOn(api, 'uploadMultipart').mockReturnValueOnce(oldUploadPromise)
+    await selectFiles([new File(['old'], 'old_secret_file.json', { type: 'application/json' })])
+    act(() => {
+      const uploadBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Upload'))
+      uploadBtn.click()
+    })
+
+    // User resets via New Selection button -> increments epoch
+    const newSelBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('New Selection'))
+    expect(newSelBtn).toBeTruthy()
+    await act(async () => {
+      newSelBtn.click()
+    })
+
+    // Now resolve old upload with sel-epoch-old
+    const oldResolvedView = {
+      selection_id: 'sel-epoch-old',
+      selection_revision: 5,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [
+        { file_id: 'f-old', file_name: 'old_secret_file.json', byte_count: 50, declared_library: 'lib_old', effective_library_key: 'lib_old', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' },
+      ],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    await act(async () => {
+      resolveOldUpload(oldResolvedView)
+    })
+
+    // Old selection data must NOT be painted!
+    expect(container.textContent).not.toContain('old_secret_file.json')
+    expect(container.textContent).not.toContain('sel-epoch-old')
+  })
+
+  // 5. Stale preview arriving after mutation leaves Import disabled
+  it('1.6-5. stale preview arriving after mutation is discarded and leaves Import disabled', async () => {
+    let resolvePreview
+    const previewPromise = new Promise((res) => { resolvePreview = res })
+
+    const selView1 = {
+      selection_id: 'sel-stale-prev',
+      selection_revision: 1,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [
+        { file_id: 'fid-1', file_name: 'f1.json', byte_count: 10, declared_library: 'lib1', effective_library_key: 'lib1', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' },
+      ],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    const selView2 = {
+      ...selView1,
+      selection_revision: 2,
+      files: [],
+    }
+
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url === '/api/resources/import-selections') return selView1
+      if (url === '/api/resources/import-selections/sel-stale-prev/preview') return previewPromise
+      return {}
+    })
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValue(selView1)
+    vi.spyOn(api, 'del').mockResolvedValue(selView2)
+
+    await renderComponent()
+    await switchToImportTab()
+    await selectFiles([new File(['1'], 'f1.json', { type: 'application/json' })])
+    await clickUpload()
+    expect(container.textContent).toContain('Revision: 1')
+
+    // Click Preview Import
+    const prevBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Import')
+    act(() => {
+      prevBtn.click()
+    })
+
+    // User removes file (mutates selection to revision 2)
+    const removeBtn = container.querySelector('button[title="Remove file from selection"]')
+    expect(removeBtn).toBeTruthy()
+    await act(async () => {
+      removeBtn.click()
+    })
+    expect(container.textContent).toContain('Revision: 2')
+
+    // Stale preview finishes for revision 1
+    const stalePreviewView = {
+      ...selView1,
+      selection_revision: 1,
+      preview: {
+        preview_token: 'ptok-stale-token',
+        manifest_digest: '0123456789abcdef0123456789abcdef',
+        committable: true,
+        report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [{
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 's1',
+              library_key: 'lib1',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        },
+      },
+    }
+
+    await act(async () => {
+      resolvePreview(stalePreviewView)
+    })
+
+    expect(container.textContent).toContain('Revision: 2')
+    const commitBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Commit Import'))
+    expect(commitBtn.disabled).toBe(true)
+  })
+
+  // 6. 202 Committing polling: transition from 202 committing to 200/committed without premature reload
+  it('1.6-6. orderly 202 committing polling transition to committed without premature reload of libraries', async () => {
+    vi.useFakeTimers()
+    try {
+      const selOpen = {
+        selection_id: 'sel-poll-1',
+        selection_revision: 1,
+        state: 'open',
+        expires_at: '2026-09-17T20:00:00Z',
+        files: [
+          { file_id: 'fid-1', file_name: 'f1.json', byte_count: 10, declared_library: 'lib1', effective_library_key: 'lib1', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' },
+        ],
+        preview: {
+          preview_token: 'ptok-poll-token',
+          manifest_digest: '0123456789abcdef0123456789abcdef',
+          committable: true,
+          report: {
+          version: 1,
+          phase: 'preview',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+          },
+          files: [{
+            library_key: 'lib1',
+            total_inputs: 1,
+            accepted: [{
+              source_id: 's1',
+              library_key: 'lib1',
+              kind: 'rooms',
+              classification: 'new',
+              new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              previous_content_digest: null,
+            }],
+            auxiliary: [],
+            duplicates: [],
+            unresolved: [],
+          }],
+          missing_source_entries: [],
+        },
+        },
+        commit_result: null,
+        cleanup_warning: null,
+      }
+
+      const selCommitting = {
+        ...selOpen,
+        selection_revision: 2,
+        state: 'committing',
+      }
+
+      const selCommitted = {
+        ...selOpen,
+        selection_revision: 2,
+        state: 'committed',
+        commit_result: {
+          version: 1,
+          phase: 'commit',
+          summary: {
+            files: 1,
+            inputs: 1,
+            accepted: 1,
+            auxiliary: 0,
+            duplicates: 0,
+            unresolved: 0,
+            new: 1,
+            unchanged: 0,
+            updated: 0,
+            missing: 0,
+            recorded: 1,
+            new_scene_revisions: 1,
+            unchanged_scene_revisions: 0,
+            updated_scene_revisions: 0,
+            new_auxiliary_revisions: 0,
+            unchanged_auxiliary_revisions: 0,
+          },
+          files: [
+            {
+              library_key: 'lib1',
+              total_inputs: 1,
+              accepted: [
+                {
+                  source_id: 's1',
+                  library_key: 'lib1',
+                  kind: 'rooms',
+                  classification: 'new',
+                  new_content_digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+                  previous_content_digest: null,
+                },
+              ],
+              auxiliary: [],
+              duplicates: [],
+              unresolved: [],
+            },
+          ],
+          missing_source_entries: [],
+        },
+      }
+
+      let libFetchCount = 0
+      let getSelectionPollCount = 0
+
+      vi.spyOn(api, 'get').mockImplementation(async (url) => {
+        if (url === '/api/resources/libraries') {
+          libFetchCount++
+          return []
+        }
+        if (url === '/api/resources/import-selections/sel-poll-1') {
+          getSelectionPollCount++
+          if (getSelectionPollCount === 1) return selCommitting
+          return selCommitted
+        }
+        return []
+      })
+
+      vi.spyOn(api, 'post').mockImplementation(async (url) => {
+        if (url === '/api/resources/import-selections') return selOpen
+        if (url === '/api/resources/import-selections/sel-poll-1/commit') return selCommitting
+        return {}
+      })
+      vi.spyOn(api, 'uploadMultipart').mockResolvedValue(selOpen)
+
+      await renderComponent()
+      await switchToImportTab()
+      await selectFiles([new File(['1'], 'f1.json', { type: 'application/json' })])
+      await clickUpload()
+
+      const initialLibFetches = libFetchCount
+
+      // Click Commit Import -> receives 202 committing
+      const commitBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Commit Import'))
+      await act(async () => {
+        commitBtn.click()
+      })
+
+      expect(container.textContent).toContain('committing')
+      // Libraries must NOT have reloaded yet!
+      expect(libFetchCount).toBe(initialLibFetches)
+
+      // Advance timer for first poll (2000ms) -> still committing
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000)
+      })
+      expect(getSelectionPollCount).toBe(1)
+      expect(libFetchCount).toBe(initialLibFetches)
+
+      // Advance timer for second poll (2000ms) -> becomes committed
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000)
+      })
+      expect(getSelectionPollCount).toBe(2)
+      expect(container.textContent).toContain('committed')
+      // Now libraries must be reloaded!
+      expect(libFetchCount).toBe(initialLibFetches + 1)
+      expect(container.textContent).toContain('Import committed successfully')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 7. detail.current adoption: adopts higher revision; rejects lower/equal
+  it('1.6-7. detail.current adoption: adopts current view on 409 conflict if revision is higher; rejects if lower/equal', async () => {
+    const selInit = {
+      selection_id: 'sel-det-1',
+      selection_revision: 2,
+      state: 'open',
+      expires_at: '2026-09-17T20:00:00Z',
+      files: [
+        { file_id: 'fid-1', file_name: 'f1.json', byte_count: 10, declared_library: 'lib1', effective_library_key: 'lib1', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' },
+      ],
+      preview: null,
+      commit_result: null,
+      cleanup_warning: null,
+    }
+
+    vi.spyOn(api, 'post').mockResolvedValue(selInit)
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValue(selInit)
+
+    await renderComponent()
+    await switchToImportTab()
+    await selectFiles([new File(['1'], 'f1.json', { type: 'application/json' })])
+    await clickUpload()
+    expect(container.textContent).toContain('Revision: 2')
+
+    // Case A: 409 with higher revision 5
+    const conflictHigher = new Error('Conflict')
+    conflictHigher.detail = {
+      current: {
+        ...selInit,
+        selection_revision: 5,
+        files: [
+          { file_id: 'fid-1', file_name: 'f1.json', byte_count: 10, declared_library: 'lib1', effective_library_key: 'lib1', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' },
+          { file_id: 'fid-2', file_name: 'f2_server_added.json', byte_count: 20, declared_library: 'lib1', effective_library_key: 'lib1', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' },
+        ],
+      },
+    }
+
+    vi.spyOn(api, 'patch').mockRejectedValueOnce(conflictHigher)
+
+    const advBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Show Advanced'))
+    await act(async () => { advBtn.click() })
+    const applyBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Apply Choice')
+    const input = container.querySelector('input[placeholder="Target library key"]')
+    setInputValue(input, 'target_new')
+
+    await act(async () => {
+      applyBtn.click()
+      await Promise.resolve()
+    })
+
+    // Adopts revision 5 and f2_server_added.json
+    expect(container.textContent).toContain('Revision: 5')
+    expect(container.textContent).toContain('f2_server_added.json')
+
+    // Case B: 409 with lower revision 3 (when current is 5)
+    const conflictLower = new Error('Conflict')
+    conflictLower.detail = {
+      current: {
+        ...selInit,
+        selection_revision: 3,
+        files: [],
+      },
+    }
+
+    vi.spyOn(api, 'patch').mockRejectedValueOnce(conflictLower)
+    setInputValue(input, 'target_new_2')
+    await act(async () => {
+      applyBtn.click()
+      await Promise.resolve()
+    })
+
+    // Must retain revision 5, not downgrade to 3
+    expect(container.textContent).toContain('Revision: 5')
+    expect(container.textContent).toContain('f2_server_added.json')
+  })
+
+  // 8. Resource Browser search against actual_payload_free_libraries fixture
+  it('1.6-8. Resource Browser search against actual_payload_free_libraries fixture operates payload-free without detail fetches', async () => {
+    const getSpy = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return actualPayloadFreeLibraries
+      if (url === '/api/models') return []
+      if (url.startsWith('/api/resources/revisions/')) {
+        throw new Error('UNEXPECTED_DETAIL_FETCH: browser search must not fetch revision details')
+      }
+      return []
+    })
+
+    await renderComponent()
+
+    expect(container.textContent).toContain('Studio Gallery Rooms')
+    expect(container.textContent).toContain('Summer Couture Scenes')
+
+    const searchInput = container.querySelector('input[placeholder="Search resources..."]')
+    expect(searchInput).toBeTruthy()
+
+    // 1. Search by library_key: 'rooms_studio_gallery'
+    await act(async () => {
+      setInputValue(searchInput, 'rooms_studio_gallery')
+    })
+    expect(container.textContent).toContain('Studio Gallery Rooms')
+    expect(container.textContent).not.toContain('Summer Couture Scenes')
+
+    // 2. Search by source_id: 'room_grand_loft'
+    await act(async () => {
+      setInputValue(searchInput, 'room_grand_loft')
+    })
+    expect(container.textContent).toContain('Grand Sunlight Loft')
+    expect(container.textContent).toContain('room_grand_loft')
+    expect(container.textContent).not.toContain('Summer Couture Scenes')
+
+    // 3. Search by content_digest: exact digest from actualPayloadFreeLibraries fixture
+    await act(async () => {
+      setInputValue(searchInput, actualPayloadFreeLibraries[0].revisions[0].content_digest)
+    })
+    expect(container.textContent).toContain('Grand Sunlight Loft')
+    expect(container.textContent).not.toContain('Brutalist Concrete Space')
+
+    // 4. Search by translated value: 'Brutalist Concrete Space'
+    await act(async () => {
+      setInputValue(searchInput, 'Brutalist Concrete Space')
+    })
+    expect(container.textContent).toContain('Brutalist Concrete Space')
+    expect(container.textContent).not.toContain('Grand Sunlight Loft')
+
+    // 5. Search with no matches: 'nonexistent_needle_xyz'
+    await act(async () => {
+      setInputValue(searchInput, 'nonexistent_needle_xyz')
+    })
+    expect(container.textContent).not.toContain('Studio Gallery Rooms')
+    expect(container.textContent).not.toContain('Summer Couture Scenes')
+
+    // 6. Verify that NO revision detail endpoints were fetched during any of these searches
+    const revisionCalls = getSpy.mock.calls.filter(([url]) => url.startsWith('/api/resources/revisions/'))
+    expect(revisionCalls.length).toBe(0)
   })
 })
