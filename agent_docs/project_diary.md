@@ -139,3 +139,11 @@
 - Task 1.3 acceptance required adversarial fingerprint/attestation mutation,
   ownership-loss, exception-sanitization, atomicity, concurrency, crash-window,
   cleanup, and legacy compatibility probes in addition to the repository gates.
+- Browser compatibility is an adapter boundary: collection-only `items`
+  envelopes are relaxed only in browser mode, while legacy parser
+  classification and path/API/CLI preview serialization remain unchanged.
+- An auxiliary choice is valid only when it matches candidates recalculated from
+  fingerprint-verified staged bytes. An allowlisted kind is not sufficient;
+  empty, out-of-set, or changed choices must fail closed before resource writes.
+- Browser-only preview metadata belongs in the browser attestation body and
+  must not be added to the legacy serialized preview contract.

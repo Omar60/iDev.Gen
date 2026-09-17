@@ -98,6 +98,7 @@ into the `payload` column.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -396,6 +397,8 @@ class FileReport:
     auxiliary_outcomes: list[AuxiliaryOutcome] = field(default_factory=list)
     duplicate_identifiers: list[DuplicateIdentifier] = field(default_factory=list)
     unresolved: list[UnresolvedItem] = field(default_factory=list)
+    effective_auxiliary_kind: str | None = None
+    is_browser_mode: bool = False
 
     @property
     def is_readable(self) -> bool:
@@ -712,7 +715,97 @@ def _build_unresolved_from_parser(
     return items
 
 
-def _build_file_report(file_path: Path, library_key: str) -> FileReport:
+def _parse_payload_for_import(
+    payload: Any,
+    effective_auxiliary_kind: str | None = None,
+    is_browser_mode: bool = False,
+) -> resource_parser.ParseResult:
+    """Parse a source payload, applying the browser adapter when requested."""
+    if not is_browser_mode:
+        return resource_parser.parse_source_payload(payload)
+
+    # Browser mode adapter:
+    # 0. If an explicit auxiliary kind is specified, it MUST be validated against
+    # structural candidates and NEVER fall through to ordinary parsing.
+    if effective_auxiliary_kind is not None:
+        candidates = resource_parser.detect_auxiliary_candidates(payload)
+        if not candidates or effective_auxiliary_kind not in candidates:
+            res = resource_parser.ParseResult()
+            res.unsupported.append(resource_parser.UnsupportedShape(
+                index=0,
+                reason=(
+                    f"Explicit auxiliary kind {effective_auxiliary_kind!r} is invalid "
+                    f"(matched candidates: {candidates})"
+                ),
+                received_type="dict" if isinstance(payload, dict) else type(payload).__name__,
+            ))
+            return res
+        res = resource_parser.ParseResult()
+        res.auxiliary.append(resource_parser.AuxiliaryResource(
+            kind=effective_auxiliary_kind,
+            payload=copy.deepcopy(payload),
+            entry_count=len(payload),
+            shadow_matches=[m for m in candidates if m != effective_auxiliary_kind],
+        ))
+        return res
+
+    # 1. Valid canonical envelopes retain standard parsing behavior
+    if resource_parser.is_source_envelope(payload):
+        return resource_parser.parse_source_payload(payload)
+
+    # 2. Relaxed collection-only envelope: items list, keys <= {"items", "library"}, no content markers
+    if (
+        isinstance(payload, dict)
+        and "items" in payload
+        and isinstance(payload["items"], list)
+        and (set(payload.keys()) <= {"items", "library"})
+        and not resource_parser.has_entry_content_markers(payload)
+    ):
+        return resource_parser.parse_source_payload(payload["items"])
+
+    # 3. Auxiliary candidates detection when effective_auxiliary_kind is None
+    candidates = resource_parser.detect_auxiliary_candidates(payload)
+    if candidates:
+        if len(candidates) == 1:
+            res = resource_parser.ParseResult()
+            res.auxiliary.append(resource_parser.AuxiliaryResource(
+                kind=candidates[0],
+                payload=copy.deepcopy(payload),
+                entry_count=len(payload),
+                shadow_matches=[],
+            ))
+            return res
+        else:
+            # Ambiguous without explicit valid choice: unresolved
+            res = resource_parser.ParseResult()
+            res.unsupported.append(resource_parser.UnsupportedShape(
+                index=0,
+                reason=f"Ambiguous auxiliary candidates {candidates}; explicit choice required",
+                received_type="dict" if isinstance(payload, dict) else type(payload).__name__,
+            ))
+            return res
+
+    # 4. In browser mode, objects with "items" that had extra keys or entry-content markers
+    # remain unresolved so no content is silently dropped.
+    if isinstance(payload, dict) and "items" in payload:
+        res = resource_parser.ParseResult()
+        res.unsupported.append(resource_parser.UnsupportedShape(
+            index=0,
+            reason="Object with 'items' and extra/content keys cannot be adapted without discarding content",
+            received_type="dict",
+        ))
+        return res
+
+    # 5. Default fallback
+    return resource_parser.parse_source_payload(payload)
+
+
+def _build_file_report(
+    file_path: Path,
+    library_key: str,
+    effective_auxiliary_kind: str | None = None,
+    is_browser_mode: bool = False,
+) -> FileReport:
     """Build one file's ``FileReport`` from a preview pass.
 
     The file is read once, the bytes are parsed once, and the
@@ -738,15 +831,25 @@ def _build_file_report(file_path: Path, library_key: str) -> FileReport:
                 index=0,
                 reason=read.reason,
             )],
+            effective_auxiliary_kind=effective_auxiliary_kind,
+            is_browser_mode=is_browser_mode,
         )
     fingerprint, data = read
-    return _build_file_report_from_verified(fingerprint, data, library_key)
+    return _build_file_report_from_verified(
+        fingerprint,
+        data,
+        library_key,
+        effective_auxiliary_kind=effective_auxiliary_kind,
+        is_browser_mode=is_browser_mode,
+    )
 
 
 def _build_file_report_from_verified(
     fingerprint: FileFingerprint,
     data: bytes,
     library_key: str,
+    effective_auxiliary_kind: str | None = None,
+    is_browser_mode: bool = False,
 ) -> FileReport:
     """Classify bytes already read and fingerprinted by the caller."""
     payload = _parse_payload(data, fingerprint.path)
@@ -765,8 +868,14 @@ def _build_file_report_from_verified(
                 index=0,
                 reason=payload.reason,
             )],
+            effective_auxiliary_kind=effective_auxiliary_kind,
+            is_browser_mode=is_browser_mode,
         )
-    result = resource_parser.parse_source_payload(payload)
+    result = _parse_payload_for_import(
+        payload,
+        effective_auxiliary_kind=effective_auxiliary_kind,
+        is_browser_mode=is_browser_mode,
+    )
     library_row = db.one(
         "SELECT id FROM resource_library WHERE library_key = ?",
         library_key,
@@ -790,6 +899,8 @@ def _build_file_report_from_verified(
         accepted_outcomes=accepted_outcomes,
         auxiliary_outcomes=auxiliary_outcomes,
         unresolved=unresolved,
+        effective_auxiliary_kind=effective_auxiliary_kind,
+        is_browser_mode=is_browser_mode,
     )
 
 
@@ -891,22 +1002,32 @@ def _compute_missing_source_entries(
 
 
 def preview_import(
-    selections: Iterable[tuple[Path, str]],
+    selections: Iterable[tuple[Path, str] | tuple[Path, str, dict[str, Any]]],
 ) -> PreviewReport:
     """Preview a set of operator-selected source files.
 
-    `selections` is an iterable of ``(file_path, library_key)``
-    pairs. The library_key names the resource_library the
-    accepted entries and auxiliary resources will be written
-    under; the file is read, parsed, and the outcomes are
-    classified against the database.
+    `selections` is an iterable of ``(file_path, library_key)`` or
+    ``(file_path, library_key, context_dict)`` pairs. The library_key names the
+    resource_library the accepted entries and auxiliary resources will be written
+    under; the file is read, parsed, and the outcomes are classified against the
+    database.
 
     The function never writes. The returned report accounts for
     every input and reconciles its counts.
     """
     files: list[FileReport] = []
-    for path, library_key in selections:
-        files.append(_build_file_report(Path(path), library_key))
+    for item in selections:
+        path = item[0]
+        library_key = item[1]
+        context = item[2] if len(item) > 2 and isinstance(item[2], dict) else {}
+        files.append(
+            _build_file_report(
+                Path(path),
+                library_key,
+                effective_auxiliary_kind=context.get("effective_auxiliary_kind"),
+                is_browser_mode=bool(context.get("is_browser_mode", False)),
+            )
+        )
     _detect_cross_file_duplicates(files)
     missing = _compute_missing_source_entries(files)
     return PreviewReport(files=files, missing_source_entries=missing)
@@ -1170,6 +1291,8 @@ def _file_reports_equal(expected: FileReport, supplied: FileReport) -> bool:
         expected.file_path != supplied.file_path
         or expected.library_key != supplied.library_key
         or expected.total_inputs != supplied.total_inputs
+        or expected.effective_auxiliary_kind != supplied.effective_auxiliary_kind
+        or expected.is_browser_mode != supplied.is_browser_mode
         or len(expected.accepted_outcomes) != len(supplied.accepted_outcomes)
         or len(expected.auxiliary_outcomes) != len(supplied.auxiliary_outcomes)
         or len(expected.duplicate_identifiers) != len(supplied.duplicate_identifiers)
@@ -1217,6 +1340,8 @@ def _validate_unreadable_report(file_report: FileReport) -> None:
             index=0,
             reason=current.reason,
         )],
+        effective_auxiliary_kind=file_report.effective_auxiliary_kind,
+        is_browser_mode=file_report.is_browser_mode,
     )
     if not _file_reports_equal(expected, file_report):
         raise PreviewMismatchError(
@@ -1249,7 +1374,11 @@ def _validate_preview_matches_source(
         fingerprint, data = verified_data
         expected_files.append(
             _build_file_report_from_verified(
-                fingerprint, data, file_report.library_key,
+                fingerprint,
+                data,
+                file_report.library_key,
+                effective_auxiliary_kind=file_report.effective_auxiliary_kind,
+                is_browser_mode=file_report.is_browser_mode,
             )
         )
 
@@ -1307,9 +1436,9 @@ def commit_import(
          commit raises `CommitAborted` with the cause and the
          count of operations that were about to be committed.
       6. On success, return a `CommitReport` with the actual
-         per-entry outcomes from the write phase, including the
-         unresolved file reports that were preserved from the
-         preview.
+      per-entry outcomes from the write phase, including the
+      unresolved file reports that were preserved from the
+      preview.
     """
     (
         to_persist,
@@ -1361,7 +1490,11 @@ def commit_import(
                         f"{payload.reason}",
                         processed=processed,
                     )
-                result = resource_parser.parse_source_payload(payload)
+                result = _parse_payload_for_import(
+                    payload,
+                    effective_auxiliary_kind=file_report.effective_auxiliary_kind,
+                    is_browser_mode=file_report.is_browser_mode,
+                )
                 # Use the preview's FileReport directly: the
                 # cross-file duplicate detection already
                 # applied there is the source of truth the

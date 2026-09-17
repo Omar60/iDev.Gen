@@ -40,11 +40,17 @@ PURPOSE_PATH_IMPORT = "path_import"
 PURPOSE_BROWSER_SELECTION = "browser_selection"
 
 
-def preview_import(selections: Iterable[tuple[str | Path, str]]) -> resource_import.PreviewReport:
+def preview_import(
+    selections: Iterable[tuple[str | Path, str] | tuple[str | Path, str, dict[str, Any]]],
+) -> resource_import.PreviewReport:
     """Preview selected files without writing application state."""
-    return resource_import.preview_import(
-        (Path(path), library_key) for path, library_key in selections
-    )
+    normalized: list[tuple[Path, str, dict[str, Any]]] = []
+    for item in selections:
+        path = item[0]
+        library_key = item[1]
+        context = item[2] if len(item) > 2 and isinstance(item[2], dict) else {}
+        normalized.append((Path(path), library_key, context))
+    return resource_import.preview_import(normalized)
 
 
 def _canonical_commit_core(
@@ -114,7 +120,7 @@ def commit_selection_import(
     if not (db.conn().in_transaction or getattr(db, "_tx_depth", 0) > 0):
         raise RuntimeError("commit_selection_import requires an active caller-owned transaction")
 
-    body = _preview_body(preview)
+    body = _browser_preview_body(preview)
     verify_browser_attestation(
         body=body,
         token=preview_token,
@@ -367,6 +373,21 @@ def _preview_body(preview: resource_import.PreviewReport) -> dict[str, Any]:
     }
 
 
+def _browser_file_to_dict(value: resource_import.FileReport) -> dict[str, Any]:
+    base = _file_to_dict(value)
+    base["effective_auxiliary_kind"] = value.effective_auxiliary_kind
+    base["is_browser_mode"] = value.is_browser_mode
+    return base
+
+
+def _browser_preview_body(preview: resource_import.PreviewReport) -> dict[str, Any]:
+    return {
+        "version": PREVIEW_VERSION,
+        "files": [_browser_file_to_dict(item) for item in preview.files],
+        "missing_source_entries": [_missing_to_dict(item) for item in preview.missing_source_entries],
+    }
+
+
 def _canonical_preview_body(body: dict[str, Any]) -> bytes:
     return json.dumps(
         body,
@@ -509,7 +530,7 @@ def create_browser_attestation(
     if not isinstance(manifest_digest, str) or len(manifest_digest) != 64:
         raise ValueError("manifest_digest is invalid")
 
-    body = _preview_body(preview)
+    body = _browser_preview_body(preview)
     payload_bytes = _canonical_browser_payload(
         body=body,
         selection_id=selection_id,

@@ -2397,3 +2397,373 @@ def test_create_selection_authoritative_reload_loss_raises_selection_state_inval
         rs.create_selection(req_id)
 
     assert "Selection unexpectedly missing after create or replay" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Task 1.4: Identity defaults, envelope adapter, auxiliary choice & overlap
+# ---------------------------------------------------------------------------
+
+def test_declared_library_identity_becomes_browser_default_without_heuristics(test_db):
+    """A valid declared library identity becomes effective_library_key without heuristic inference."""
+    sel = rs.create_selection("req-decl-default")
+    sid = sel["selection_id"]
+    f = rs.reserve_file_slot(sid, "up-decl", "completely_arbitrary_filename.json")
+    fid = f["file_id"]
+    payload = json.dumps({
+        "library": "declared_lib_alpha",
+        "items": [{"identifier": "room_a", "label": "Room A"}],
+    }).encode("utf-8")
+    rs.stage_file_chunk(sid, fid, payload)
+    finalized = rs.finalize_staged_file(sid, fid)
+
+    assert finalized["declared_library"] == "declared_lib_alpha"
+    assert finalized["effective_library_key"] == "declared_lib_alpha"
+
+
+def test_invalid_or_missing_declared_library_leaves_effective_target_unset(test_db):
+    """An invalid or missing declared library leaves effective_library_key as None."""
+    sel = rs.create_selection("req-no-decl")
+    sid = sel["selection_id"]
+
+    # File with invalid declared library key
+    f1 = rs.reserve_file_slot(sid, "up-inv-lib", "file1.json")
+    payload1 = json.dumps({
+        "library": "invalid/library/key",
+        "items": [{"identifier": "room_1"}],
+    }).encode("utf-8")
+    rs.stage_file_chunk(sid, f1["file_id"], payload1)
+    finalized1 = rs.finalize_staged_file(sid, f1["file_id"])
+    assert finalized1["declared_library"] is None
+    assert finalized1["effective_library_key"] is None
+
+    # File with missing library key
+    f2 = rs.reserve_file_slot(sid, "up-no-lib", "file2.json")
+    payload2 = json.dumps({
+        "items": [{"identifier": "room_2"}],
+    }).encode("utf-8")
+    rs.stage_file_chunk(sid, f2["file_id"], payload2)
+    finalized2 = rs.finalize_staged_file(sid, f2["file_id"])
+    assert finalized2["declared_library"] is None
+    assert finalized2["effective_library_key"] is None
+
+
+def test_adapted_items_only_collection_parses_with_accounting_and_bytes_preserved(test_db):
+    """Adapted collection-only envelope parses in browser mode with bytes and accounting intact."""
+    sel = rs.create_selection("req-adapt-items")
+    sid = sel["selection_id"]
+    f = rs.reserve_file_slot(sid, "up-adapt", "items_only.json")
+    fid = f["file_id"]
+    raw_dict = {
+        "items": [
+            {"identifier": "scene_alpha", "label": "Alpha"},
+            {"identifier": "scene_beta", "label": "Beta"},
+        ]
+    }
+    payload = json.dumps(raw_dict, indent=2).encode("utf-8")
+    rs.stage_file_chunk(sid, fid, payload)
+    finalized = rs.finalize_staged_file(sid, fid)
+    assert finalized["declared_library"] is None
+    assert finalized["effective_library_key"] is None
+
+    # Explicitly choose target library
+    rs.update_file_targets(sid, fid, expected_revision=1, effective_library_key="custom_lib")
+
+    # Preview selection
+    preview_view = rs.preview_selection(sid, expected_revision=2)
+    assert preview_view["preview"]["committable"] is True
+    summary = preview_view["preview"]["report"]["summary"]
+    assert summary["inputs"] == 2
+    assert summary["accepted"] == 2
+    assert summary["unresolved"] == 0
+
+    # Verify staged bytes on disk were not rewritten
+    staged_bytes = Path(finalized["staged_path"]).read_bytes()
+    assert staged_bytes == payload
+
+
+def test_unknown_top_level_keys_in_relaxed_envelope_leave_collection_unresolved(test_db):
+    """Unknown top-level keys like random_payload leave relaxed envelopes unresolved."""
+    sel = rs.create_selection("req-unknown-keys")
+    sid = sel["selection_id"]
+    f = rs.reserve_file_slot(sid, "up-unknown", "unknown.json")
+    fid = f["file_id"]
+    raw_dict = {
+        "items": [{"identifier": "scene_x", "label": "X"}],
+        "random_payload": {"unexpected": "data"},
+    }
+    payload = json.dumps(raw_dict).encode("utf-8")
+    rs.stage_file_chunk(sid, fid, payload)
+    rs.finalize_staged_file(sid, fid)
+    rs.update_file_targets(sid, fid, expected_revision=1, effective_library_key="test_lib")
+
+    preview_view = rs.preview_selection(sid, expected_revision=2)
+    assert preview_view["preview"]["committable"] is False
+    summary = preview_view["preview"]["report"]["summary"]
+    assert summary["unresolved"] == 1
+    assert summary["accepted"] == 0
+
+
+def test_marker_bearing_ambiguity_leaves_collection_unresolved(test_db):
+    """An object with items and entry-content markers at top level remains unresolved."""
+    sel = rs.create_selection("req-marker-bearing")
+    sid = sel["selection_id"]
+    f = rs.reserve_file_slot(sid, "up-markers", "marker_bearing.json")
+    fid = f["file_id"]
+    raw_dict = {
+        "items": [{"identifier": "scene_x", "label": "X"}],
+        "theme": "conflicting top level theme marker",
+    }
+    payload = json.dumps(raw_dict).encode("utf-8")
+    rs.stage_file_chunk(sid, fid, payload)
+    rs.finalize_staged_file(sid, fid)
+    rs.update_file_targets(sid, fid, expected_revision=1, effective_library_key="test_lib")
+
+    preview_view = rs.preview_selection(sid, expected_revision=2)
+    assert preview_view["preview"]["committable"] is False
+    summary = preview_view["preview"]["report"]["summary"]
+    assert summary["unresolved"] == 1
+    assert summary["accepted"] == 0
+
+
+def test_ambiguous_auxiliary_requires_explicit_choice_and_persists_verified_kind(test_db):
+    """Multiple auxiliary candidates require explicit choice, persisting chosen kind over first match."""
+    sel = rs.create_selection("req-aux-choice")
+    sid = sel["selection_id"]
+    f = rs.reserve_file_slot(sid, "up-aux", "labels.json")
+    fid = f["file_id"]
+    # Dict of str -> str matches both mined_families and mined_labels
+    payload = json.dumps({"ps_01": "label_one", "ps_02": "label_two"}).encode("utf-8")
+    rs.stage_file_chunk(sid, fid, payload)
+    finalized = rs.finalize_staged_file(sid, fid)
+
+    assert json.loads(finalized["matched_auxiliary_kinds"]) == ["mined_families", "mined_labels"]
+    assert finalized["effective_auxiliary_kind"] is None
+
+    # Target library chosen, but auxiliary kind NOT chosen yet
+    rs.update_file_targets(sid, fid, expected_revision=1, effective_library_key="aux_dest_lib")
+
+    # Preview without auxiliary choice leaves it unresolved and uncommittable
+    preview_unresolved = rs.preview_selection(sid, expected_revision=2)
+    assert preview_unresolved["preview"]["committable"] is False
+    assert preview_unresolved["preview"]["report"]["summary"]["unresolved"] == 1
+
+    # Now make explicit Advanced choice: choose mined_labels (which is 2nd match in legacy parser)
+    rs.update_file_targets(sid, fid, expected_revision=2, effective_auxiliary_kind="mined_labels")
+
+    preview_resolved = rs.preview_selection(sid, expected_revision=3)
+    assert preview_resolved["preview"]["committable"] is True
+    assert preview_resolved["preview"]["report"]["summary"]["auxiliary"] == 1
+
+    # Commit the selection
+    token = preview_resolved["preview"]["preview_token"]
+    disposition, commit_view = rs.commit_selection(sid, 3, preview_token=token)
+    assert disposition == "committed"
+    assert commit_view["state"] == "committed"
+
+    # Verify persisted kind in auxiliary_resource is mined_labels, NOT mined_families!
+    row = db.one(
+        "SELECT ar.kind, ar.content_digest FROM auxiliary_resource ar "
+        "JOIN resource_library rl ON rl.id = ar.library_id "
+        "WHERE rl.library_key = 'aux_dest_lib'"
+    )
+    assert row is not None
+    assert row["kind"] == "mined_labels"
+
+
+def test_cross_library_overlap_requires_explicit_target_choice(test_db):
+    """Content with exact (source_id, content_digest) in another library prevents auto-defaulting target."""
+    from backend import resource_store
+
+    # 1. Seed an existing library and asset revision
+    with db.transaction():
+        db.conn().execute(
+            "INSERT INTO resource_library (library_key, created_at) VALUES ('lib_one', '2026-09-01T00:00:00Z')"
+        )
+        lib1_id = db.one("SELECT id FROM resource_library WHERE library_key = 'lib_one'")["id"]
+        entry = {"identifier": "room_shared", "label": "Shared Room", "theme": "ambient"}
+        digest = resource_store.canonical_digest(entry)
+        db.conn().execute(
+            "INSERT INTO asset_revision (library_id, source_id, content_digest, payload, created_at) "
+            "VALUES (?, 'room_shared', ?, ?, '2026-09-01T00:00:00Z')",
+            (lib1_id, digest, json.dumps(entry)),
+        )
+
+    # 2. Stage a file declaring 'lib_two' with the identical entry
+    sel = rs.create_selection("req-cross-lib")
+    sid = sel["selection_id"]
+    f = rs.reserve_file_slot(sid, "up-cross", "shared.json")
+    fid = f["file_id"]
+    payload = json.dumps({
+        "library": "lib_two",
+        "items": [entry],
+    }).encode("utf-8")
+    rs.stage_file_chunk(sid, fid, payload)
+    finalized = rs.finalize_staged_file(sid, fid)
+
+    # Declared library is preserved, but effective_library_key is NOT defaulted due to cross-library overlap!
+    assert finalized["declared_library"] == "lib_two"
+    assert finalized["effective_library_key"] is None
+
+    # User must explicitly choose target
+    rs.update_file_targets(sid, fid, expected_revision=1, effective_library_key="lib_two")
+    f_row = db.one("SELECT * FROM resource_selection_file WHERE file_id = ?", fid)
+    assert f_row["effective_library_key"] == "lib_two"
+
+
+def test_preview_and_commit_reject_tampered_staged_bytes_and_invalidated_preview(test_db):
+    """Preview and commit revalidation reject changes to staged bytes and require fresh preview on change."""
+    sel = rs.create_selection("req-toctou")
+    sid = sel["selection_id"]
+    f = rs.reserve_file_slot(sid, "up-toctou", "toctou.json")
+    fid = f["file_id"]
+    payload = json.dumps({"library": "toctou_lib", "items": [{"identifier": "s1", "label": "S1"}]}).encode("utf-8")
+    rs.stage_file_chunk(sid, fid, payload)
+    finalized = rs.finalize_staged_file(sid, fid)
+
+    preview_view = rs.preview_selection(sid, expected_revision=1)
+    token = preview_view["preview"]["preview_token"]
+
+    # Tamper with file on disk
+    Path(finalized["staged_path"]).write_bytes(b'{"corrupted": true}')
+
+    with pytest.raises(rs.PreviewMismatchError):
+        rs.commit_selection(sid, 1, preview_token=token)
+
+
+def test_legacy_parser_and_cli_paths_remain_unchanged():
+    """Direct calls to resource_parser retain legacy classification and first-match behavior."""
+    # Ambiguous auxiliary resolves to mined_families by first-match in legacy parser
+    ambiguous = {"key1": "val1", "key2": "val2"}
+    parsed = resource_parser.parse_source_payload(ambiguous)
+    assert parsed.total() == 1
+    assert len(parsed.auxiliary) == 1
+    assert parsed.auxiliary[0].kind == "mined_families"
+    assert parsed.auxiliary[0].shadow_matches == ["mined_labels"]
+
+    # Relaxed envelope without library is NOT treated as an envelope by legacy parse_source_payload
+    relaxed = {"items": [{"identifier": "r1", "label": "R1"}]}
+    assert resource_parser.is_source_envelope(relaxed) is False
+
+
+def test_auxiliary_candidate_validation_matrix_and_zero_writes(test_db):
+    """Exhaustively verify auxiliary choice validation against recalculated structural candidates:
+    (a) scene payload + matched=[] + explicit mined_labels -> rejection
+    (b) scene payload + matched=[] + explicit mined_families -> rejection
+    (c) explicit auxiliary kind not in matched set -> rejection
+    (d) exactly 1 valid candidate + correct choice -> allowed
+    (e) multiple candidates + valid choice in set -> allowed
+    (f) multiple candidates + choice outside set -> rejection
+    (g) choice changed after preview -> preview mismatch / rejection
+    (h) all rejections -> zero resource writes.
+    """
+    # (a) scene payload + matched=[] + explicit mined_labels -> rejection
+    sel_a = rs.create_selection("req-matrix-a")
+    sid_a = sel_a["selection_id"]
+    f_a = rs.reserve_file_slot(sid_a, "up-a", "scene_a.json")
+    fid_a = f_a["file_id"]
+    scene_payload = json.dumps([{"id": "scene_a", "label": "Scene A", "scene_theme": "dark", "tags": ["t"]}]).encode("utf-8")
+    rs.stage_file_chunk(sid_a, fid_a, scene_payload)
+    fin_a = rs.finalize_staged_file(sid_a, fid_a)
+    assert json.loads(fin_a["matched_auxiliary_kinds"]) == []
+    rs.update_file_targets(sid_a, fid_a, expected_revision=1, effective_library_key="lib_a", effective_auxiliary_kind="mined_labels")
+    with pytest.raises(rs.InvalidTargetError) as exc_a:
+        rs.preview_selection(sid_a, expected_revision=2)
+    assert "mined_labels" in str(exc_a.value)
+    # Check zero writes
+    assert db.q("SELECT * FROM auxiliary_resource") == []
+    assert db.q("SELECT * FROM asset_revision") == []
+
+    # (b) scene payload + matched=[] + explicit mined_families -> rejection
+    sel_b = rs.create_selection("req-matrix-b")
+    sid_b = sel_b["selection_id"]
+    f_b = rs.reserve_file_slot(sid_b, "up-b", "scene_b.json")
+    fid_b = f_b["file_id"]
+    rs.stage_file_chunk(sid_b, fid_b, scene_payload)
+    fin_b = rs.finalize_staged_file(sid_b, fid_b)
+    assert json.loads(fin_b["matched_auxiliary_kinds"]) == []
+    rs.update_file_targets(sid_b, fid_b, expected_revision=1, effective_library_key="lib_b", effective_auxiliary_kind="mined_families")
+    with pytest.raises(rs.InvalidTargetError) as exc_b:
+        rs.preview_selection(sid_b, expected_revision=2)
+    assert "mined_families" in str(exc_b.value)
+    # Check zero writes
+    assert db.q("SELECT * FROM auxiliary_resource") == []
+    assert db.q("SELECT * FROM asset_revision") == []
+
+    # (c) explicit auxiliary kind not in matched set -> rejection
+    # Cut map matches only cut_map:
+    sel_c = rs.create_selection("req-matrix-c")
+    sid_c = sel_c["selection_id"]
+    f_c = rs.reserve_file_slot(sid_c, "up-c", "cut.json")
+    fid_c = f_c["file_id"]
+    cut_payload = json.dumps({"ps_cut": {"camera": "wide angle"}}).encode("utf-8")
+    rs.stage_file_chunk(sid_c, fid_c, cut_payload)
+    fin_c = rs.finalize_staged_file(sid_c, fid_c)
+    assert json.loads(fin_c["matched_auxiliary_kinds"]) == ["cut_map"]
+    rs.update_file_targets(sid_c, fid_c, expected_revision=1, effective_library_key="lib_c", effective_auxiliary_kind="translation_map")
+    with pytest.raises(rs.InvalidTargetError) as exc_c:
+        rs.preview_selection(sid_c, expected_revision=2)
+    assert "translation_map" in str(exc_c.value)
+    assert db.q("SELECT * FROM auxiliary_resource") == []
+    assert db.q("SELECT * FROM asset_revision") == []
+
+    # (d) exactly 1 valid candidate + correct choice -> allowed
+    rs.update_file_targets(sid_c, fid_c, expected_revision=2, effective_auxiliary_kind="cut_map")
+    prev_d = rs.preview_selection(sid_c, expected_revision=3)
+    assert prev_d["preview"]["committable"] is True
+    assert prev_d["preview"]["report"]["summary"]["auxiliary"] == 1
+    token_d = prev_d["preview"]["preview_token"]
+    disp_d, commit_d = rs.commit_selection(sid_c, expected_revision=3, preview_token=token_d)
+    assert disp_d == "committed"
+    persisted_d = db.one("SELECT * FROM auxiliary_resource WHERE kind = 'cut_map'")
+    assert persisted_d is not None
+
+    # (e) multiple candidates + valid choice in set -> allowed
+    sel_e = rs.create_selection("req-matrix-e")
+    sid_e = sel_e["selection_id"]
+    f_e = rs.reserve_file_slot(sid_e, "up-e", "multi.json")
+    fid_e = f_e["file_id"]
+    multi_payload = json.dumps({"ps_1": "label_1", "ps_2": "label_2"}).encode("utf-8")
+    rs.stage_file_chunk(sid_e, fid_e, multi_payload)
+    fin_e = rs.finalize_staged_file(sid_e, fid_e)
+    assert json.loads(fin_e["matched_auxiliary_kinds"]) == ["mined_families", "mined_labels"]
+    rs.update_file_targets(sid_e, fid_e, expected_revision=1, effective_library_key="lib_e", effective_auxiliary_kind="mined_labels")
+    prev_e = rs.preview_selection(sid_e, expected_revision=2)
+    assert prev_e["preview"]["committable"] is True
+    disp_e, commit_e = rs.commit_selection(sid_e, expected_revision=2, preview_token=prev_e["preview"]["preview_token"])
+    assert disp_e == "committed"
+    persisted_e = db.one("SELECT * FROM auxiliary_resource WHERE kind = 'mined_labels'")
+    assert persisted_e is not None
+
+    # (f) multiple candidates + choice outside set -> rejection
+    sel_f = rs.create_selection("req-matrix-f")
+    sid_f = sel_f["selection_id"]
+    f_f = rs.reserve_file_slot(sid_f, "up-f", "multi_f.json")
+    fid_f = f_f["file_id"]
+    rs.stage_file_chunk(sid_f, fid_f, multi_payload)
+    rs.finalize_staged_file(sid_f, fid_f)
+    rs.update_file_targets(sid_f, fid_f, expected_revision=1, effective_library_key="lib_f", effective_auxiliary_kind="translation_map")
+    with pytest.raises(rs.InvalidTargetError) as exc_f:
+        rs.preview_selection(sid_f, expected_revision=2)
+    assert "translation_map" in str(exc_f.value)
+
+    # (g) choice changed after preview -> preview mismatch / rejection
+    sel_g = rs.create_selection("req-matrix-g")
+    sid_g = sel_g["selection_id"]
+    f_g = rs.reserve_file_slot(sid_g, "up-g", "multi_g.json")
+    fid_g = f_g["file_id"]
+    rs.stage_file_chunk(sid_g, fid_g, multi_payload)
+    rs.finalize_staged_file(sid_g, fid_g)
+    rs.update_file_targets(sid_g, fid_g, expected_revision=1, effective_library_key="lib_g", effective_auxiliary_kind="mined_families")
+    prev_g = rs.preview_selection(sid_g, expected_revision=2)
+    token_g = prev_g["preview"]["preview_token"]
+    # Change choice in selection manifest after preview
+    rs.update_file_targets(sid_g, fid_g, expected_revision=2, effective_auxiliary_kind="mined_labels")
+    # Trying to commit with old preview token must be rejected
+    with pytest.raises((rs.PreviewMismatchError, rs.StaleRevisionError, rs.ResourceSelectionError)):
+        rs.commit_selection(sid_g, expected_revision=2, preview_token=token_g)
+    # Even if passing current revision 3 with old token:
+    with pytest.raises((rs.PreviewMismatchError, rs.ResourceSelectionError)):
+        rs.commit_selection(sid_g, expected_revision=3, preview_token=token_g)
+
+    # (h) zero resource writes for lib_f and lib_g
+    assert db.q("SELECT * FROM auxiliary_resource ar JOIN resource_library rl ON rl.id = ar.library_id WHERE rl.library_key IN ('lib_f', 'lib_g')") == []

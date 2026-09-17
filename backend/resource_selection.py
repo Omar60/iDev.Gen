@@ -30,6 +30,7 @@ import db
 import resource_import
 import resource_parser
 import resource_service
+import resource_store
 import sys
 
 if __name__ == "backend.resource_selection" and "resource_selection" not in sys.modules:
@@ -582,6 +583,16 @@ def compute_manifest_digest(
     """Compute deterministic SHA-256 digest of ordered manifest entries and optional revision."""
     entries = []
     for f in files:
+        raw_matched = f.get("matched_auxiliary_kinds")
+        if isinstance(raw_matched, str):
+            try:
+                matched_aux = json.loads(raw_matched)
+            except Exception:
+                matched_aux = []
+        elif isinstance(raw_matched, list):
+            matched_aux = raw_matched
+        else:
+            matched_aux = []
         entries.append({
             "file_id": f["file_id"],
             "file_name": f["file_name"],
@@ -594,6 +605,7 @@ def compute_manifest_digest(
             "declared_library": f.get("declared_library"),
             "effective_library_key": f.get("effective_library_key"),
             "effective_auxiliary_kind": f.get("effective_auxiliary_kind"),
+            "matched_auxiliary_kinds": matched_aux,
         })
     payload: dict[str, Any] = {"files": entries}
     if selection_revision is not None:
@@ -785,6 +797,49 @@ def stage_file_chunk(
         raise
 
 
+def _check_historical_overlap(raw_data: Any, declared_library: str) -> bool:
+    """Check if any accepted entry in raw_data matches (source_id, content_digest)
+    of a stored revision under a different library in asset_revision.
+    """
+    if not isinstance(raw_data, (dict, list)):
+        return False
+    try:
+        if isinstance(raw_data, dict) and "items" in raw_data and isinstance(raw_data["items"], list):
+            parse_res = resource_parser.parse_source_payload(raw_data["items"])
+        else:
+            parse_res = resource_parser.parse_source_payload(raw_data)
+    except Exception:
+        return False
+
+    if not parse_res.accepted:
+        return False
+
+    for entry in parse_res.accepted:
+        digest = resource_store.canonical_digest(entry.original)
+        row = db.one(
+            "SELECT ar.id FROM asset_revision ar "
+            "JOIN resource_library rl ON rl.id = ar.library_id "
+            "WHERE ar.source_id = ? AND ar.content_digest = ? "
+            "  AND rl.library_key != ? "
+            "LIMIT 1",
+            entry.source_id,
+            digest,
+            declared_library,
+        )
+        if row:
+            return True
+    return False
+
+
+def _detect_candidates_for_staged_file(staged_path: Path | str) -> list[str]:
+    try:
+        with open(staged_path, "r", encoding="utf-8") as fp:
+            raw_data = json.load(fp)
+        return resource_parser.detect_auxiliary_candidates(raw_data)
+    except Exception:
+        return []
+
+
 def finalize_staged_file(
     selection_id: str,
     file_id: str,
@@ -839,6 +894,53 @@ def finalize_staged_file(
         )["m"]
         next_order = max_order + 1
 
+        # Inspect staged file bytes for JSON content
+        raw_data: Any = None
+        extracted_declared: str | None = None
+        try:
+            with open(staged_path, "r", encoding="utf-8") as fp:
+                raw_data = json.load(fp)
+            if isinstance(raw_data, dict) and "library" in raw_data:
+                try:
+                    extracted_declared = validate_target_library_key(raw_data["library"])
+                except InvalidTargetError:
+                    extracted_declared = None
+        except Exception:
+            raw_data = None
+            extracted_declared = None
+
+        final_declared: str | None = None
+        if declared_library is not None:
+            try:
+                final_declared = validate_target_library_key(declared_library)
+            except InvalidTargetError:
+                final_declared = None
+        else:
+            final_declared = extracted_declared
+
+        # Detect auxiliary candidates
+        aux_candidates = resource_parser.detect_auxiliary_candidates(raw_data) if raw_data is not None else []
+        matched_auxiliary_kinds = json.dumps(aux_candidates)
+        if len(aux_candidates) == 1:
+            effective_auxiliary_kind = aux_candidates[0]
+        else:
+            effective_auxiliary_kind = None
+
+        # Resolve effective_library_key
+        effective_library_key: str | None = None
+        if final_declared is not None:
+            existing_lib = db.one("SELECT id FROM resource_library WHERE library_key = ?", final_declared)
+            if existing_lib:
+                effective_library_key = final_declared
+            else:
+                has_overlap = _check_historical_overlap(raw_data, final_declared)
+                if has_overlap:
+                    effective_library_key = None
+                else:
+                    effective_library_key = final_declared
+        else:
+            effective_library_key = None
+
         db.conn().execute(
             "UPDATE resource_selection_file "
             "SET status = 'staged', "
@@ -850,6 +952,9 @@ def finalize_staged_file(
             "    staged_sha256 = ?, "
             "    fingerprint = ?, "
             "    declared_library = ?, "
+            "    effective_library_key = ?, "
+            "    matched_auxiliary_kinds = ?, "
+            "    effective_auxiliary_kind = ?, "
             "    updated_at = ? "
             "WHERE id = ?",
             (
@@ -860,7 +965,10 @@ def finalize_staged_file(
                 mtime_ns,
                 content_sha256,
                 fingerprint,
-                declared_library,
+                final_declared,
+                effective_library_key,
+                matched_auxiliary_kinds,
+                effective_auxiliary_kind,
                 now,
                 file_row["id"],
             ),
@@ -1095,6 +1203,7 @@ def update_file_targets(
         )
         if not file_row or file_row["status"] != "staged":
             raise FileNotFoundInSelectionError(f"File {file_id} not found or not staged")
+
 
         set_clauses = ["updated_at = ?"]
         params: list[Any] = [now]
@@ -2543,7 +2652,7 @@ def preview_selection(
     if not manifest:
         raise InvalidTargetError("Selection contains no staged files to preview")
 
-    selections: list[tuple[str | Path, str]] = []
+    selections: list[tuple[str | Path, str, dict[str, Any]]] = []
     for f in manifest:
         lib_key = f.get("effective_library_key")
         if not lib_key:
@@ -2552,7 +2661,20 @@ def preview_selection(
         aux_kind = f.get("effective_auxiliary_kind")
         if aux_kind is not None:
             validate_target_auxiliary_kind(aux_kind)
-        selections.append((f["staged_path"], lib_key))
+        recalculated_candidates = _detect_candidates_for_staged_file(f["staged_path"])
+        if aux_kind is not None:
+            if not recalculated_candidates or aux_kind not in recalculated_candidates:
+                raise InvalidTargetError(
+                    f"effective_auxiliary_kind {aux_kind!r} is not among matched candidates {recalculated_candidates}"
+                )
+        selections.append((
+            f["staged_path"],
+            lib_key,
+            {
+                "effective_auxiliary_kind": aux_kind,
+                "is_browser_mode": True,
+            },
+        ))
 
     preview_rep = resource_service.preview_import(selections)
     manifest_digest = compute_manifest_digest(manifest, selection_revision=expected_revision)
@@ -2697,7 +2819,7 @@ def commit_selection(
 
     # Revalidate disk files and canonical report integrity while holding claim:
     manifest = get_selection_manifest(selection_id)
-    selections: list[tuple[str | Path, str]] = []
+    selections: list[tuple[str | Path, str, dict[str, Any]]] = []
     for f in manifest:
         staged_p = Path(f["staged_path"])
         if not staged_p.is_file():
@@ -2727,7 +2849,29 @@ def commit_selection(
         if not lib_key:
             release_commit_claim(selection_id, commit_token, now_iso=now_iso)
             raise InvalidTargetError("Selection file lacks effective library target")
-        selections.append((staged_p, lib_key))
+        aux_kind = f.get("effective_auxiliary_kind")
+        if aux_kind is not None:
+            validate_target_auxiliary_kind(aux_kind)
+        recalculated_candidates = _detect_candidates_for_staged_file(staged_p)
+        if aux_kind is not None:
+            if not recalculated_candidates or aux_kind not in recalculated_candidates:
+                release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+                raise InvalidTargetError(
+                    f"effective_auxiliary_kind {aux_kind!r} is not among matched candidates {recalculated_candidates}"
+                )
+        elif len(recalculated_candidates) > 1:
+            release_commit_claim(selection_id, commit_token, now_iso=now_iso)
+            raise InvalidTargetError(
+                f"Ambiguous auxiliary candidates {recalculated_candidates} require an explicit auxiliary kind choice before commit"
+            )
+        selections.append((
+            staged_p,
+            lib_key,
+            {
+                "effective_auxiliary_kind": aux_kind,
+                "is_browser_mode": True,
+            },
+        ))
 
     # Rebuild preview report deterministically and verify attestation
     try:
@@ -2745,7 +2889,7 @@ def commit_selection(
             raise PreviewMismatchError(
                 "Canonical report outcomes do not match preview; a fresh preview is required"
             )
-        preview_body = resource_service._preview_body(preview_rep)
+        preview_body = resource_service._browser_preview_body(preview_rep)
         resource_service.verify_browser_attestation(
             body=preview_body,
             token=preview_token,

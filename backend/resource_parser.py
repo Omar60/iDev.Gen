@@ -748,6 +748,13 @@ _ENTRY_CONTENT_MARKERS: tuple[str, ...] = (
 )
 
 
+def has_entry_content_markers(data: Any) -> bool:
+    """True when `data` is a mapping containing any entry-content marker key."""
+    if not isinstance(data, dict):
+        return False
+    return any(k in data for k in _ENTRY_CONTENT_MARKERS)
+
+
 def is_source_envelope(data: Any) -> bool:
     """True when `data` is a source collection envelope {library: ..., items: [...]}.
 
@@ -761,9 +768,51 @@ def is_source_envelope(data: Any) -> bool:
         return False
     if "library" not in data:
         return False
-    if any(k in data for k in _ENTRY_CONTENT_MARKERS):
+    if has_entry_content_markers(data):
         return False
     return True
+
+
+def is_browser_relaxed_envelope(data: Any) -> bool:
+    """True when `data` matches the browser-only relaxed collection envelope shape.
+
+    A relaxed envelope has an 'items' list and optional 'library', with no other
+    top-level keys and no entry-content markers.
+    """
+    if not isinstance(data, dict):
+        return False
+    if "items" not in data or not isinstance(data["items"], list):
+        return False
+    if not (set(data.keys()) <= {"items", "library"}):
+        return False
+    if has_entry_content_markers(data):
+        return False
+    return True
+
+
+def detect_auxiliary_candidates(data: Any) -> list[str]:
+    """Return all auxiliary kinds `data` structurally matches.
+
+    Returns an empty list if `data` is not an auxiliary mapping, is a scene record,
+    or contains collection markers ('items' or 'library').
+    Matches translation_map, cut_map, mined_families, and mined_labels.
+    """
+    if not isinstance(data, dict) or not data:
+        return []
+    if "items" in data or "library" in data:
+        return []
+    if _looks_like_scene_record(data):
+        return []
+    candidates: list[str] = []
+    if _is_translation_map_shape(data):
+        candidates.append(KIND_TRANSLATION_MAP)
+    if _is_cut_map_shape(data):
+        candidates.append(KIND_CUT_MAP)
+    if _is_mined_families_shape(data):
+        candidates.append(KIND_MINED_FAMILIES)
+    if _is_mined_labels_shape(data):
+        candidates.append(KIND_MINED_LABELS)
+    return candidates
 
 
 def normalize_source_payload(data: Any) -> Any:
@@ -928,4 +977,6 @@ __all__ = (
     "MissingIdentifier", "ParseResult",
     "is_source_envelope", "normalize_source_payload",
     "parse_source_payload", "input_size",
+    "has_entry_content_markers", "detect_auxiliary_candidates",
+    "is_browser_relaxed_envelope",
 )

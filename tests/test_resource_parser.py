@@ -62,7 +62,10 @@ from backend.resource_parser import (
     MissingIdentifier,
     ParseResult,
     UnsupportedShape,
+    detect_auxiliary_candidates,
+    has_entry_content_markers,
     input_size,
+    is_browser_relaxed_envelope,
     is_source_envelope,
     normalize_source_payload,
     parse_source_payload,
@@ -1322,3 +1325,70 @@ class TestEnvelopeParsing:
         assert accepted.original["custom_metadata"]["nested_level_1"]["nested_level_2"] == ["val1", "val2"]
         assert "custom_metadata" in accepted.unknown_fields
         assert "unusual_list" in accepted.unknown_fields
+
+
+class TestTask14ParserExtensions:
+    """Tests for Task 1.4 parser functions and predicates."""
+
+    def test_has_entry_content_markers_detection(self):
+        assert has_entry_content_markers({"id": "some_id"}) is True
+        assert has_entry_content_markers({"identifier": "id_1"}) is True
+        assert has_entry_content_markers({"label": "Room A"}) is True
+        assert has_entry_content_markers({"theme": "dark room"}) is True
+        assert has_entry_content_markers({"prompt": "cinematic scene"}) is True
+        assert has_entry_content_markers({"tags": ["tag1"]}) is True
+        assert has_entry_content_markers({"items": [{"id": "1"}]}) is False
+        assert has_entry_content_markers({"library": "scenes", "items": []}) is False
+        assert has_entry_content_markers({}) is False
+        assert has_entry_content_markers("non-dict") is False
+        assert has_entry_content_markers(None) is False
+
+    def test_is_browser_relaxed_envelope(self):
+        # Valid relaxed envelope without library
+        assert is_browser_relaxed_envelope({"items": [{"identifier": "r1"}]}) is True
+        assert is_browser_relaxed_envelope({"items": []}) is True
+        # Valid relaxed envelope with library
+        assert is_browser_relaxed_envelope({"library": "scenes", "items": []}) is True
+        # Invalid: unknown top-level key
+        assert is_browser_relaxed_envelope({"items": [], "random_payload": 123}) is False
+        assert is_browser_relaxed_envelope({"items": [], "extra": "data"}) is False
+        # Invalid: contains entry content markers at top level
+        assert is_browser_relaxed_envelope({"items": [], "theme": "fused"}) is False
+        assert is_browser_relaxed_envelope({"items": [], "id": "entry_1"}) is False
+        # Invalid: items is not a list
+        assert is_browser_relaxed_envelope({"items": "not a list"}) is False
+        assert is_browser_relaxed_envelope({"items": {"key": "val"}}) is False
+        # Non-dict
+        assert is_browser_relaxed_envelope([{"items": []}]) is False
+        assert is_browser_relaxed_envelope(None) is False
+
+    def test_detect_auxiliary_candidates_ambiguous(self):
+        # String-to-string dict matches both mined_families and mined_labels
+        data = {"key1": "val1", "key2": "val2"}
+        candidates = detect_auxiliary_candidates(data)
+        assert candidates == [KIND_MINED_FAMILIES, KIND_MINED_LABELS]
+
+    def test_detect_auxiliary_candidates_cut_map(self):
+        cut_data = {
+            "entry_1": {"camera": "wide", "act": "one", "room": "lounge"}
+        }
+        candidates = detect_auxiliary_candidates(cut_data)
+        assert candidates == [KIND_CUT_MAP]
+
+    def test_detect_auxiliary_candidates_translation_map(self):
+        tr_data = {
+            "entry_1": {
+                "source": "source text",
+                "translation": "translated text",
+                "fields": ["label"],
+            }
+        }
+        candidates = detect_auxiliary_candidates(tr_data)
+        assert candidates == [KIND_TRANSLATION_MAP]
+
+    def test_detect_auxiliary_candidates_scenes_and_envelopes_return_empty(self):
+        assert detect_auxiliary_candidates({"items": []}) == []
+        assert detect_auxiliary_candidates({"library": "lib", "items": []}) == []
+        assert detect_auxiliary_candidates({"identifier": "s1", "label": "room"}) == []
+        assert detect_auxiliary_candidates({}) == []
+        assert detect_auxiliary_candidates("not a dict") == []

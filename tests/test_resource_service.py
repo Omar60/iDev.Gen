@@ -1466,3 +1466,66 @@ def test_commit_selection_import_requires_active_transaction(tmp_path):
             selection_revision=0,
             manifest_digest="0" * 64,
         )
+
+
+def test_legacy_preview_serialization_matches_baseline_keys_without_browser_fields(tmp_path):
+    """Verify that legacy preview serialization matches baseline c2f3d2ea20f0b5e0915b1d22a24c50cde48a6445
+    character-for-character in keys, containing no browser-specific fields, while browser preview body isolates them.
+    """
+    path = tmp_path / "resources.json"
+    _write(path, [_scene("scene_legacy_check", "legacy test room")])
+
+    preview = resource_service.preview_import(_selection(path))
+    serialized = resource_service.preview_to_dict(preview)
+    file_dict = serialized["files"][0]
+
+    baseline_keys = {
+        "file_path",
+        "library_key",
+        "total_inputs",
+        "fingerprint",
+        "accepted_outcomes",
+        "auxiliary_outcomes",
+        "duplicate_identifiers",
+        "unresolved",
+    }
+    assert set(file_dict.keys()) == baseline_keys
+    assert "effective_auxiliary_kind" not in file_dict
+    assert "is_browser_mode" not in file_dict
+
+    # Round trip via legacy preview_from_dict
+    restored = resource_service.preview_from_dict(serialized)
+    assert restored.files[0].effective_auxiliary_kind is None
+    assert restored.files[0].is_browser_mode is False
+
+    # Browser preview body isolates browser fields
+    browser_body = resource_service._browser_preview_body(preview)
+    browser_file_dict = browser_body["files"][0]
+    assert set(browser_file_dict.keys()) == baseline_keys | {"effective_auxiliary_kind", "is_browser_mode"}
+
+    # Attestation created with browser body verifies with browser body and fails with legacy body
+    token = resource_service.create_browser_attestation(
+        preview=preview,
+        selection_id="sel_iso_123",
+        selection_revision=0,
+        manifest_digest="1" * 64,
+    )
+    verified = resource_service.verify_browser_attestation(
+        body=browser_body,
+        token=token,
+        selection_id="sel_iso_123",
+        selection_revision=0,
+        manifest_digest="1" * 64,
+    )
+    assert verified is not None
+    assert verified["selection_id"] == "sel_iso_123"
+
+    # Verifying with legacy body (which lacks browser fields) must fail
+    with pytest.raises(ValueError, match="serialized resource preview attestation is invalid"):
+        resource_service.verify_browser_attestation(
+            body=serialized,
+            token=token,
+            selection_id="sel_iso_123",
+            selection_revision=0,
+            manifest_digest="1" * 64,
+        )
