@@ -20,6 +20,7 @@ import base64
 import json
 import logging
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import HTTPException
@@ -146,12 +147,54 @@ class EnhanceIn(BaseModel):
     fields: list[str] = Field(default_factory=list)
 
 
+def _safe_endpoint(url: str) -> str:
+    """Safe endpoint label retaining scheme, host, port, and path, stripping credentials and query."""
+    try:
+        parts = urlsplit(url)
+        if not parts.scheme or not parts.netloc:
+            return "prompt assistant"
+        host = parts.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        port = f":{parts.port}" if parts.port is not None else ""
+        netloc = f"{host}{port}" if host else parts.netloc.split("@")[-1].split("?")[0]
+        return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    except Exception:
+        return "prompt assistant"
+
+
+def _sanitize_error_detail(detail: str, config: dict | None = None) -> str:
+    """Scrub secrets, tokens, or credential fragments from error details."""
+    if not config:
+        return detail
+    key = config.get("llm_key")
+    if key and str(key) in detail:
+        detail = detail.replace(f"Bearer {key}", "Bearer [REDACTED]").replace(str(key), "[REDACTED]")
+    return detail
+
+
+def _object_pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Parse JSON objects preserving key insertion order and rejecting duplicate keys."""
+    out: dict[str, object] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError("Duplicate object key in structured JSON")
+        out[key] = value
+    return out
+
+
 def configured(config: dict) -> bool:
     return bool(config.get("llm_url") and config.get("llm_model"))
 
 
-async def run(config: dict, p: EnhanceIn, image: str = "") -> list[dict]:
-    """Ask the model, and hand back at most `p.n` clean {label, prompt} lines."""
+async def _request_completion(
+    config: dict,
+    p: EnhanceIn,
+    image: str = "",
+    *,
+    structured: bool = False,
+) -> str:
+    """Shared configured URL/model/body/auth/timeout/retry/error boundary."""
     if not configured(config):
         raise HTTPException(400, "No prompt assistant is configured. Open Setup and "
                                  "fill in the LLM endpoint and model.")
@@ -162,11 +205,12 @@ async def run(config: dict, p: EnhanceIn, image: str = "") -> list[dict]:
     url = config["llm_url"].rstrip("/")
     if not url.endswith("/chat/completions"):
         url += "/chat/completions"
+    safe_url = _safe_endpoint(url)
     model = (config.get("llm_vision_model") or config["llm_model"]) if image else config["llm_model"]
 
-    body = {"model": model, "messages": _messages(p, image), "temperature": 0.8,
+    body = {"model": model, "messages": _messages(p, image, structured=structured), "temperature": 0.8,
             "stream": False,
-            **({"response_format": {"type": "json_object"}} if p.fields else {}),
+            **({"response_format": {"type": "json_object"}} if (p.fields or structured) else {}),
             # A reasoning model spends ten times the tokens thinking about four
             # short lines than it does writing them — minutes instead of seconds,
             # for a task with nothing to reason about. An endpoint that does not
@@ -194,25 +238,93 @@ async def run(config: dict, p: EnhanceIn, image: str = "") -> list[dict]:
             if r.status_code == 400 and "reasoning" in r.text.lower():
                 plain = {k: v for k, v in body.items() if k != "reasoning_effort"}
                 r = await c.post(url, json=plain, headers=headers)
-    except httpx.HTTPError as exc:  # noqa: BLE001 - the URL is the useful half
+    except httpx.HTTPError as exc:  # noqa: BLE001 - the safe URL and exception type are the useful half
         # A timeout stringifies to nothing at all, and "did not answer: " with
         # nothing after it is the least useful error this app could print.
-        raise HTTPException(502, f"The prompt assistant at {url} did not answer: "
-                                 f"{str(exc) or type(exc).__name__} "
-                                 f"(gave up after {TIMEOUT}s)")
+        raise HTTPException(
+            502,
+            _sanitize_error_detail(
+                f"The prompt assistant at {safe_url} did not answer: "
+                f"{type(exc).__name__} (gave up after {TIMEOUT}s)",
+                config,
+            ),
+        )
     if r.status_code >= 400:
         # Same rule as a failed shot: the sentence that says what broke, not the
         # provider's whole error document.
-        raise HTTPException(502, f"The prompt assistant at {url} answered "
-                                 f"{r.status_code}: {r.text[:300]}")
+        raise HTTPException(
+            502,
+            _sanitize_error_detail(
+                f"The prompt assistant at {safe_url} answered {r.status_code}.",
+                config,
+            ),
+        )
     try:
-        answer = r.json()["choices"][0]["message"]["content"] or ""
+        choice = r.json()["choices"][0]
+        content = choice["message"]["content"]
+        if content is None:
+            if structured:
+                raise ValueError("missing completion content")
+            content = ""
+        elif not isinstance(content, str):
+            raise TypeError("completion content is not a string")
     except (KeyError, IndexError, TypeError, ValueError):
-        raise HTTPException(502, f"The prompt assistant at {url} answered something "
-                                 f"that is not an OpenAI-compatible completion.")
+        raise HTTPException(
+            502,
+            _sanitize_error_detail(
+                f"The prompt assistant at {safe_url} answered something "
+                f"that is not an OpenAI-compatible completion.",
+                config,
+            ),
+        )
+    return content
+
+
+async def run(config: dict, p: EnhanceIn, image: str = "") -> list[dict]:
+    """Ask the model, and hand back at most `p.n` clean {label, prompt} lines."""
+    answer = await _request_completion(config, p, image, structured=False)
     if p.fields:
         return clean_fields(answer, p.fields, p.n)
     return clean(answer, p.n, p.allowed)
+
+
+async def run_structured(
+    config: dict, p: EnhanceIn, image: str = ""
+) -> dict[str, object]:
+    """New JSON-object transport; preserve parsed structure exactly."""
+    content = await _request_completion(config, p, image, structured=True)
+    raw_url = config.get("llm_url", "").rstrip("/")
+    if raw_url and not raw_url.endswith("/chat/completions"):
+        raw_url += "/chat/completions"
+    safe_url = _safe_endpoint(raw_url)
+
+    if not content or not content.strip():
+        raise HTTPException(
+            502,
+            _sanitize_error_detail(
+                f"The prompt assistant at {safe_url} answered with invalid structured JSON.",
+                config,
+            ),
+        )
+    try:
+        parsed = json.loads(content, object_pairs_hook=_object_pairs_hook)
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(
+            502,
+            _sanitize_error_detail(
+                f"The prompt assistant at {safe_url} answered with invalid structured JSON.",
+                config,
+            ),
+        )
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            502,
+            _sanitize_error_detail(
+                f"The prompt assistant at {safe_url} answered with a structured response that is not a JSON object.",
+                config,
+            ),
+        )
+    return parsed
 
 
 async def discover(url: str = "", key: str = "") -> dict:
@@ -349,7 +461,7 @@ def _check_image(image: str) -> None:
                                  f"pick a smaller one")
 
 
-def _messages(p: EnhanceIn, image: str) -> list[dict]:
+def _messages(p: EnhanceIn, image: str, *, structured: bool = False) -> list[dict]:
     parts = [p.instruction]
     if p.context:
         # Repeating it wastes the sampler's attention; contradicting it is worse,
@@ -370,7 +482,7 @@ def _messages(p: EnhanceIn, image: str) -> list[dict]:
     parts.append(f"Rewrite this:\n{p.text}" if p.text.strip() else "")
 
     text = "\n\n".join(x for x in parts if x)
-    system = (JSON_SYSTEM if p.fields else SYSTEM) + (
+    system = (JSON_SYSTEM if (p.fields or structured) else SYSTEM) + (
         EXPLICIT_SYSTEM if p.register == "explicit" else "")
     if not image:
         return [{"role": "system", "content": system}, {"role": "user", "content": text}]

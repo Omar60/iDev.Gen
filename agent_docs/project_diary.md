@@ -158,7 +158,7 @@
   real frontend contract acceptance. Its integration gate covers stale and
   terminal selection states, duplicate accounting, crash recovery, cancel/commit
   races, safe public response shapes, and an actual payload-free library-list
-  fixture. Task 2.1 is the next pending task.
+  fixture. At that checkpoint, Task 2.1 was the next pending task.
 - The final SafeCommitReport boundary is structural in the frontend: exact public
   keys, JSON types, nullability, arrays/objects, JavaScript-safe integers, and
   explicit allowlisted reconstruction. Buckets, kinds, classifications,
@@ -175,5 +175,14 @@
   or false Content-Length. Pre-read replay never performs a second network
   read; incomplete disconnects stop before downstream work, while legacy
   endpoints remain unaffected. The closure adds 27 tests and brings the
-  reproducible backend collection to 1,924 tests. Task 2.2 is the next pending
-  task.
+  reproducible backend collection to 1,924 tests.
+- Task 2.2 is formally closed after independent acceptance. The shared
+  `backend.enhance` transport adds field-preserving `run_structured(...)` while
+  keeping historical `run(...)`, `clean`, `clean_fields`, and callers intact.
+  Structured output preserves fields, values, types, nested arrays, and provider
+  order, requires a JSON object root, and rejects duplicate keys. URL, auth,
+  timeout, and reasoning fallback are shared; structured retry preserves
+  `response_format`. Error sanitization excludes `llm_key`, Authorization, URL
+  credentials/query secrets, provider bodies, and exception strings. The 25 new
+  tests bring the reproducible collection to 1,949. Future consumers remain
+  out of scope; Task 2.3 is next.

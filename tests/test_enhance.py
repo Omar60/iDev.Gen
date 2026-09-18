@@ -42,7 +42,8 @@ def llm(monkeypatch):
 
         class Client:
             def __init__(self, **kwargs):
-                pass
+                seen["timeout"] = kwargs.get("timeout")
+                seen["client_kwargs"] = kwargs
 
             async def __aenter__(self):
                 return self
@@ -58,7 +59,7 @@ def llm(monkeypatch):
                 if rejects_reasoning and "reasoning_effort" in json:
                     return _Resp(400, {}, text="Unrecognized request argument: reasoning_effort")
                 body = {"choices": [{"message": {"content": content}}]} if payload is ... else payload
-                return _Resp(status, body, text=content)
+                return _Resp(status, body, text=content if isinstance(content, str) else "")
 
         monkeypatch.setattr(enhance.httpx, "AsyncClient", Client)
         return seen
@@ -569,3 +570,315 @@ def test_the_json_skeleton_leaves_technique_out_on_purpose():
     keys = [k for k in re.findall(r'"(\w+)":', skeleton.group(1)) if k != "photographs"]
     assert keys == [f for f in enhance.BLOCK_HEADINGS if f != "technique"], keys
 
+
+# ---------------------------------------------------------------- structured transport (Task 2.2)
+
+@pytest.mark.anyio
+async def test_structured_returns_keys_in_provider_order(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    llm('{"zebra": 1, "apple": 2, "mango": 3}')
+    res = await enhance.run_structured(config, enhance.EnhanceIn(instruction="ordered"))
+    assert list(res.keys()) == ["zebra", "apple", "mango"]
+    assert res == {"zebra": 1, "apple": 2, "mango": 3}
+
+
+@pytest.mark.anyio
+async def test_structured_preserves_nested_objects_and_arrays(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    llm('{"details": {"z": 10, "a": 20}, "items": [{"id": 2, "name": "second"}, {"id": 1, "name": "first"}]}')
+    res = await enhance.run_structured(config, enhance.EnhanceIn(instruction="nested"))
+    assert list(res["details"].keys()) == ["z", "a"]
+    assert res["details"] == {"z": 10, "a": 20}
+    assert res["items"] == [{"id": 2, "name": "second"}, {"id": 1, "name": "first"}]
+
+
+@pytest.mark.anyio
+async def test_structured_preserves_exact_values_and_types(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    payload = (
+        '{"empty_str": "", "null_val": null, "bool_false": false, '
+        '"num_zero": 0, "spaced_str": "  hello \\n world  ", '
+        '"float_val": 12.34, "extra_field": "bonus"}'
+    )
+    llm(payload)
+    res = await enhance.run_structured(config, enhance.EnhanceIn(instruction="exact"))
+    assert res["empty_str"] == ""
+    assert res["null_val"] is None
+    assert res["bool_false"] is False
+    assert res["num_zero"] == 0
+    assert res["spaced_str"] == "  hello \n world  "
+    assert res["float_val"] == 12.34
+    assert res["extra_field"] == "bonus"
+
+
+@pytest.mark.anyio
+async def test_structured_does_not_flatten_or_truncate_or_clean(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    llm('{"takes": ["first take with other words", "second take with other words"]}')
+    p = enhance.EnhanceIn(instruction="write takes", n=1, allowed=["only", "these"])
+    res = await enhance.run_structured(config, p)
+    assert res == {"takes": ["first take with other words", "second take with other words"]}
+
+
+@pytest.mark.anyio
+async def test_structured_sends_json_object_response_format_and_json_system_even_without_fields(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    seen = llm('{"ok": true}')
+    p = enhance.EnhanceIn(instruction="generate plan")
+    await enhance.run_structured(config, p)
+    assert seen["body"]["response_format"] == {"type": "json_object"}
+    system_content = seen["body"]["messages"][0]["content"]
+    assert "Answer with one JSON object" in system_content
+
+
+@pytest.mark.anyio
+async def test_structured_preserves_caller_fields_order_in_body_instruction(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    fields = ["worn", "act", "camera"]
+    seen = llm('{"worn": "dress", "act": "standing", "camera": "front"}')
+    p = enhance.EnhanceIn(instruction="extract", fields=fields)
+    await enhance.run_structured(config, p)
+    assert p.fields == ["worn", "act", "camera"]
+    assert seen["body"]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.anyio
+async def test_structured_rejects_duplicate_top_level_keys(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    llm('{"item": 1, "item": 2}')
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, enhance.EnhanceIn(instruction="dup"))
+    assert exc.value.status_code == 502
+    assert "invalid structured JSON" in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_structured_rejects_duplicate_nested_keys(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    llm('{"outer": {"nested": 1, "nested": 2}}')
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, enhance.EnhanceIn(instruction="dup_nested"))
+    assert exc.value.status_code == 502
+    assert "invalid structured JSON" in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_structured_rejects_top_level_array(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    llm('[{"a": 1}, {"b": 2}]')
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, enhance.EnhanceIn(instruction="array"))
+    assert exc.value.status_code == 502
+    assert "not a JSON object" in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_structured_rejects_top_level_scalar_and_null(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    for scalar in ('"a string"', '123', 'true', 'null'):
+        llm(scalar)
+        with pytest.raises(HTTPException) as exc:
+            await enhance.run_structured(config, enhance.EnhanceIn(instruction="scalar"))
+        assert exc.value.status_code == 502
+        assert "not a JSON object" in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_structured_rejects_empty_or_whitespace_content(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    for empty in ("", "   \n\t  "):
+        llm(empty)
+        with pytest.raises(HTTPException) as exc:
+            await enhance.run_structured(config, enhance.EnhanceIn(instruction="empty"))
+        assert exc.value.status_code == 502
+        assert "invalid structured JSON" in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_structured_rejects_malformed_json(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    llm('{"incomplete": ')
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, enhance.EnhanceIn(instruction="broken"))
+    assert exc.value.status_code == 502
+    assert "invalid structured JSON" in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_structured_does_not_salvage_partial_objects(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    truncated = '{"photographs": [{"camera": "close-up", "act": "standing"}], "broken":'
+    llm(truncated)
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, enhance.EnhanceIn(instruction="partial"))
+    assert exc.value.status_code == 502
+    assert "invalid structured JSON" in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_structured_uses_normalized_url_model_timeout_and_auth(llm):
+    config = {
+        "llm_url": "http://assistant.local:1234/v1",
+        "llm_model": "test-model",
+        "llm_key": "custom-key",
+    }
+    seen = llm('{"ok": true}')
+    res = await enhance.run_structured(config, enhance.EnhanceIn(instruction="test"))
+    assert res == {"ok": True}
+    assert seen["url"] == "http://assistant.local:1234/v1/chat/completions"
+    assert seen["body"]["model"] == "test-model"
+    assert seen["headers"]["Authorization"] == "Bearer custom-key"
+    assert seen["timeout"] == enhance.TIMEOUT == 300
+
+
+@pytest.mark.anyio
+async def test_structured_image_uses_vision_model_and_validates_image(llm):
+    config = {
+        "llm_url": "http://assistant.local:1234/v1",
+        "llm_model": "test-model",
+        "llm_vision_model": "test-vision-model",
+    }
+    seen = llm('{"look": "casual"}')
+    res = await enhance.run_structured(config, enhance.EnhanceIn(instruction="read image", image=PNG))
+    assert res == {"look": "casual"}
+    assert seen["body"]["model"] == "test-vision-model"
+    parts = seen["body"]["messages"][-1]["content"]
+    assert parts[-1]["image_url"]["url"] == PNG
+
+
+@pytest.mark.anyio
+async def test_structured_reasoning_fallback_preserves_response_format_and_messages(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "test-model"}
+    seen = llm('{"zebra": 1, "apple": 2}', rejects_reasoning=True)
+    res = await enhance.run_structured(config, enhance.EnhanceIn(instruction="ordered"))
+    assert res == {"zebra": 1, "apple": 2}
+    assert len(seen["bodies"]) == 2
+    assert "reasoning_effort" in seen["bodies"][0]
+    assert "reasoning_effort" not in seen["bodies"][1]
+    assert seen["bodies"][0]["response_format"] == {"type": "json_object"}
+    assert seen["bodies"][1]["response_format"] == {"type": "json_object"}
+    assert seen["bodies"][0]["messages"] == seen["bodies"][1]["messages"]
+    assert seen["bodies"][0]["model"] == seen["bodies"][1]["model"]
+
+
+@pytest.mark.anyio
+async def test_structured_non_reasoning_400_does_not_retry(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "test-model"}
+    seen = llm('{"error": "bad request"}', status=400)
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, enhance.EnhanceIn(instruction="test"))
+    assert exc.value.status_code == 502
+    assert len(seen["bodies"]) == 1
+
+
+@pytest.mark.anyio
+async def test_structured_missing_or_non_string_content_fails_openai_completion(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "test-model"}
+    for bad_payload in (
+        {"unexpected": True},
+        {"choices": []},
+        {"choices": [{"message": {}}]},
+        {"choices": [{"message": {"content": None}}]},
+        {"choices": [{"message": {"content": 12345}}]},
+        {"choices": [{"message": {"content": ["not", "string"]}}]},
+    ):
+        llm(payload=bad_payload)
+        with pytest.raises(HTTPException) as exc:
+            await enhance.run_structured(config, enhance.EnhanceIn(instruction="test"))
+        assert exc.value.status_code == 502
+        assert "not an OpenAI-compatible completion" in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_structured_unconfigured_fails_with_http_400():
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured({}, enhance.EnhanceIn(instruction="test"))
+    assert exc.value.status_code == 400
+    assert "Setup" in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_security_error_detail_never_exposes_api_key_or_bearer_token(llm):
+    config = {
+        "llm_url": "http://assistant.local:1234/v1",
+        "llm_model": "m",
+        "llm_key": "sentinel-key-secret-999",
+    }
+    llm("unauthorized sentinel-key-secret-999", status=401)
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, enhance.EnhanceIn(instruction="test"))
+    assert exc.value.status_code == 502
+    assert "sentinel-key-secret-999" not in exc.value.detail
+    assert "Bearer" not in exc.value.detail
+
+    llm("internal error sentinel-key-secret-999", status=500)
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, enhance.EnhanceIn(instruction="test"))
+    assert "sentinel-key-secret-999" not in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_security_error_detail_sanitizes_url_userinfo_query_and_fragment(llm):
+    config = {
+        "llm_url": "http://sentinel_user:sentinel_pass@127.0.0.1:11434/v1?token=sentinel_query#sentinel_frag",
+        "llm_model": "m",
+    }
+    llm(error=httpx.ConnectError("connection refused"))
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, enhance.EnhanceIn(instruction="test"))
+    assert exc.value.status_code == 502
+    detail = exc.value.detail
+    assert "sentinel_user" not in detail
+    assert "sentinel_pass" not in detail
+    assert "sentinel_query" not in detail
+    assert "sentinel_frag" not in detail
+    assert "127.0.0.1:11434" in detail
+
+
+@pytest.mark.anyio
+async def test_security_provider_error_body_secrets_are_never_copied(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    llm('{"error": "sentinel-body-leak-sensitive-data", "echo": "private info"}', status=403)
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, enhance.EnhanceIn(instruction="test"))
+    assert "sentinel-body-leak-sensitive-data" not in exc.value.detail
+    assert "private info" not in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_security_exception_message_secrets_are_never_copied(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    llm(error=httpx.ConnectError("sentinel-exc-leak-connecting-to-private-backend"))
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, enhance.EnhanceIn(instruction="test"))
+    assert "sentinel-exc-leak-connecting-to-private-backend" not in exc.value.detail
+    assert "ConnectError" in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_security_instruction_payload_is_not_reflected_in_error(llm):
+    config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}
+    llm("gateway error", status=502)
+    p = enhance.EnhanceIn(instruction="sentinel-instruction-secret-keep-private")
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(config, p)
+    assert "sentinel-instruction-secret-keep-private" not in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_historical_run_also_enjoys_error_sanitization(llm):
+    config = {
+        "llm_url": "http://sentinel_user:sentinel_pass@127.0.0.1:11434/v1?token=sentinel_query#sentinel_frag",
+        "llm_model": "m",
+        "llm_key": "sentinel-key-secret-999",
+    }
+    llm("provider error sentinel-leak-123", status=500)
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run(config, enhance.EnhanceIn(instruction="test"))
+    detail = exc.value.detail
+    assert "sentinel_user" not in detail
+    assert "sentinel_pass" not in detail
+    assert "sentinel_query" not in detail
+    assert "sentinel_frag" not in detail
+    assert "sentinel-key-secret-999" not in detail
+    assert "sentinel-leak-123" not in detail
