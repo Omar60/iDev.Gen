@@ -862,3 +862,1086 @@ class TestPreparationAuthorityMatrix:
             with pytest.raises(backend_session_plan.PlanValidationError) as exc_info:
                 backend_session_plan.classify_plan_authoring(bad_plan)
             assert "schema_version must be 1" in str(exc_info.value)
+
+
+class TestTask24AuthoringEvidenceContract:
+    """Normative tests for OpenSpec Task 2.4: Authoring evidence derivation, validation, and guards."""
+
+    def test_01_manual_authoring_derives_final_prompt_server_side(self, client, seeded):
+        """1. Manual authoring derives final_prompt server-side; client cannot choose or alter it."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{"take_id": "take-001", "label": "t1"}]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        resp = client.post(
+            f"/api/sessions/{sid}/plan/takes/take-001/prepare",
+            json={
+                "plan_revision": 1,
+                "manual_completion": {
+                    "camera": "wide 35mm",
+                    "framing": "waist up",
+                    "pose": "standing still",
+                    "expression": "neutral smile",
+                },
+                "final_prompt": "client attempted custom prompt",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        assert row is not None
+        assert "client attempted custom prompt" not in row["final_prompt"]
+        assert "wide 35mm" in row["final_prompt"]
+        assert "standing still" in row["final_prompt"]
+
+        # Directly attempting complete_preparation with altered prompt fails validation
+        db.run("UPDATE prepared_take SET status = 'pending' WHERE id = ?", row["id"])
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid) as exc_info:
+            backend_session_plan.complete_preparation(
+                sid, 1, "take-001",
+                final_prompt="altered prompt without matching evidence",
+                effective_state=json.loads(row["effective_state"]),
+                mapping_version=row["mapping_version"],
+                compiler_version=row["compiler_version"],
+                provenance=json.loads(row["provenance"]),
+            )
+        assert "authoring_evidence_invalid" in str(exc_info.value)
+
+    def test_02_manual_authoring_persists_exact_server_derived_effective_state(self, client, seeded):
+        """2. Manual authoring persists exact server-derived effective_state."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{"take_id": "take-001", "label": "t1"}]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        resp = client.post(
+            f"/api/sessions/{sid}/plan/takes/take-001/prepare",
+            json={
+                "plan_revision": 1,
+                "manual_completion": {
+                    "camera": "close-up",
+                    "framing": "headshot",
+                    "pose": "looking forward",
+                    "expression": "thoughtful",
+                },
+            },
+        )
+        assert resp.status_code == 200
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        eff = json.loads(row["effective_state"])
+        assert eff["look"] == INV_LOOK
+        assert eff["wardrobe"] == INV_WARDROBE
+        assert eff["take_choices"] == {
+            "camera": "close-up",
+            "framing": "headshot",
+            "pose": "looking forward",
+            "expression": "thoughtful",
+        }
+
+    def test_03_manual_authoring_persists_exact_server_versions(self, client, seeded):
+        """3. Manual authoring persists exact server compiler_version and mapping_version."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{"take_id": "take-001", "label": "t1"}]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        resp = client.post(
+            f"/api/sessions/{sid}/plan/takes/take-001/prepare",
+            json={
+                "plan_revision": 1,
+                "manual_completion": {
+                    "camera": "eye level",
+                    "framing": "medium shot",
+                    "pose": "standing",
+                    "expression": "neutral",
+                },
+            },
+        )
+        assert resp.status_code == 200
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        assert row["compiler_version"] == backend_resource_preparation.COMPILER_VERSION
+        assert row["mapping_version"] == backend_resource_preparation.MAPPING_VERSION
+
+        prov = json.loads(row["provenance"])
+        assert prov["compiler_version"] == backend_resource_preparation.COMPILER_VERSION
+        assert prov["mapping_version"] == backend_resource_preparation.MAPPING_VERSION
+        assert prov["preparation_version"] == backend_resource_preparation.PREPARATION_VERSION
+
+    def test_04_accepted_manual_completion_present_as_manual_provenance(self, client, seeded):
+        """4. Accepted manual completion is present as manual provenance."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{"take_id": "take-001", "label": "t1"}]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        client.post(
+            f"/api/sessions/{sid}/plan/takes/take-001/prepare",
+            json={
+                "plan_revision": 1,
+                "manual_completion": {
+                    "camera": "35mm prime",
+                    "framing": "close up",
+                    "pose": "profile turn",
+                    "expression": "calm",
+                },
+            },
+        )
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        prov = json.loads(row["provenance"])
+        auth_ev = prov["authoring_evidence"]
+        assert auth_ev["manual_completion"]["descriptive_inputs"] == {
+            "camera": "35mm prime",
+            "framing": "close up",
+            "pose": "profile turn",
+            "expression": "calm",
+        }
+
+    def test_05_manual_provenance_has_no_fake_assistant_request_output_or_op_id(self, client, seeded):
+        """5. Manual provenance has no fake assistant request/output or operation ID."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{"take_id": "take-001", "label": "t1"}]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        client.post(
+            f"/api/sessions/{sid}/plan/takes/take-001/prepare",
+            json={
+                "plan_revision": 1,
+                "manual_completion": {
+                    "camera": "35mm",
+                    "framing": "wide",
+                    "pose": "standing",
+                    "expression": "neutral",
+                },
+            },
+        )
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        prov = json.loads(row["provenance"])
+        auth_ev = prov["authoring_evidence"]
+        assert auth_ev["source"] == "manual"
+        assert auth_ev["operation_id"] is None
+        assert auth_ev["predecessor_projection"] == {"status": "not_applicable"}
+        assert auth_ev["duplicate_flags"] == {"status": "not_applicable", "flags": []}
+        assert auth_ev["writer_synthesis"]["kind"] == "manual"
+        assert auth_ev["writer_synthesis"]["writer_input"] is None
+        assert auth_ev["writer_synthesis"]["writer_output"] is None
+        assert auth_ev["writer_synthesis"]["requested_fields"] == []
+
+    def test_06_direct_automatic_finalization_remains_rejected_before_assistant_work(self, client, seeded):
+        """6. Direct automatic finalization remains rejected before assistant work or ready mutation."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        _seed_plan(sid, seeded, rev, authoring_mode="automatic")
+
+        with pytest.raises(backend_session_plan.PreparationAuthorityConflict):
+            backend_resource_preparation.finalize_take_preparation(sid, 1, "take-001")
+
+        rows = db.q("SELECT * FROM prepared_take WHERE session_id = ?", sid)
+        assert len(rows) == 0
+
+    def test_07_ready_row_with_missing_evidence_rejected_by_review(self, client, seeded):
+        """7. A current authoring ready row with missing evidence is rejected by review with 409."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        # Directly insert a ready row without authoring_evidence in provenance
+        now = db.now()
+        fake_prov = json.dumps({
+            "compiler_version": backend_resource_preparation.COMPILER_VERSION,
+            "mapping_version": backend_resource_preparation.MAPPING_VERSION,
+            "preparation_version": backend_resource_preparation.PREPARATION_VERSION,
+        })
+        db.run(
+            "INSERT INTO prepared_take (session_id, plan_revision, take_id, final_prompt, "
+            "effective_state, mapping_version, compiler_version, provenance, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)",
+            sid, 1, "take-001", "A simple prompt", "{}",
+            backend_resource_preparation.MAPPING_VERSION,
+            backend_resource_preparation.COMPILER_VERSION,
+            fake_prov, now, now,
+        )
+
+        resp = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert resp.status_code == 409
+        assert "authoring_evidence_invalid" in resp.json()["detail"]
+
+        resp_plan = client.get(f"/api/sessions/{sid}/plan/review")
+        assert resp_plan.status_code == 409
+        assert "authoring_evidence_invalid" in resp_plan.json()["detail"]
+
+    def test_08_altered_evidence_fields_rejected_by_review(self, client, seeded):
+        """8. Altered final prompt/effective state/version/provenance/resource digest is rejected by review."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        assert row is not None
+
+        # a) Altered final_prompt
+        db.run("UPDATE prepared_take SET final_prompt = 'altered text' WHERE id = ?", row["id"])
+        resp = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert resp.status_code == 409
+        assert "authoring_evidence_invalid" in resp.json()["detail"]
+
+        # Restore prompt, alter digest
+        db.run("UPDATE prepared_take SET final_prompt = ? WHERE id = ?", row["final_prompt"], row["id"])
+        prov = json.loads(row["provenance"])
+        prov["authoring_evidence"]["effective_resource_input_digest"]["digest"] = "0" * 64
+        db.run("UPDATE prepared_take SET provenance = ? WHERE id = ?", json.dumps(prov), row["id"])
+        resp = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert resp.status_code == 409
+        assert "authoring_evidence_invalid" in resp.json()["detail"]
+
+    def test_09_wrong_mode_evidence_rejected_by_review(self, client, seeded):
+        """9. Wrong-mode evidence is rejected by review."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        prov = json.loads(row["provenance"])
+        prov["authoring_evidence"]["mode"] = "automatic"
+        db.run("UPDATE prepared_take SET provenance = ? WHERE id = ?", json.dumps(prov), row["id"])
+
+        resp = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert resp.status_code == 409
+        assert "authoring_evidence_invalid" in resp.json()["detail"]
+
+    def test_10_recovery_does_not_list_invalid_authoring_row_as_completed_and_does_not_mutate(self, client, seeded):
+        """10. Recovery does not list an invalid authoring row as completed and does not mutate it."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        prov = json.loads(row["provenance"])
+        prov["authoring_evidence"]["effective_resource_input_digest"]["digest"] = "f" * 64
+        corrupt_prov = json.dumps(prov)
+        db.run("UPDATE prepared_take SET provenance = ? WHERE id = ?", corrupt_prov, row["id"])
+
+        rec = backend_session_plan.recover_preparation(sid)
+        assert rec["completed"] == []
+        assert len(rec["incomplete"]) == 1
+        assert rec["incomplete"][0]["take_id"] == "take-001"
+        assert rec["incomplete"][0]["status"] == "invalid_evidence"
+        assert rec["incomplete"][0]["diagnostic"] == "authoring_evidence_invalid"
+
+        # Verify zero mutation in database
+        after = db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])
+        assert after["provenance"] == corrupt_prov
+
+    def test_11_approve_rejects_invalid_evidence_before_creating_updating_approval(self, client, seeded):
+        """11. Approve rejects invalid evidence before creating/updating approval."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        db.run("UPDATE prepared_take SET final_prompt = 'corrupt' WHERE id = ?", row["id"])
+
+        resp = client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1})
+        assert resp.status_code == 409
+        assert "authoring_evidence_invalid" in resp.json()["detail"]
+
+        approvals = db.q("SELECT * FROM session_plan_approval WHERE session_id = ?", sid)
+        assert len(approvals) == 0
+
+    def test_12_submit_rejects_invalid_evidence_with_zero_new_writes(self, client, seeded):
+        """12. Submit rejects invalid evidence before shot insertion or prepared-row linking, with zero new writes."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        # Approve before tampering
+        backend_session_plan.approve_plan_review(sid, 1)
+
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        db.run("UPDATE prepared_take SET final_prompt = 'tampered' WHERE id = ?", row["id"])
+
+        resp = client.post(f"/api/sessions/{sid}/plan/preparations/submit", json={"plan_revision": 1, "take_id": "take-001"})
+        assert resp.status_code == 409
+        assert "authoring_evidence_invalid" in resp.json()["detail"]
+
+        shots = db.q("SELECT * FROM shot WHERE session_id = ?", sid)
+        assert len(shots) == 0
+
+        after_row = db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])
+        assert after_row["status"] == "ready"
+        assert after_row["linked_shot_id"] is None
+
+    def test_13_valid_manual_snapshot_follows_flow_and_idempotent_retry(self, client, seeded):
+        """13. A valid manual snapshot follows the existing review -> approve -> submit flow and remains idempotent on generated retry."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        # 1. Prepare
+        prep_resp = client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        assert prep_resp.status_code == 200
+
+        # 2. Review
+        rev_resp = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert rev_resp.status_code == 200
+        assert rev_resp.json()["snapshot"] is not None
+
+        # 3. Approve
+        app_resp = client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1})
+        assert app_resp.status_code == 200
+        assert app_resp.json()["approved"] is True
+
+        # 4. Submit
+        sub_resp1 = client.post(f"/api/sessions/{sid}/plan/preparations/submit", json={"plan_revision": 1, "take_id": "take-001"})
+        assert sub_resp1.status_code == 200
+        shot_id1 = sub_resp1.json()["shot_id"]
+        assert shot_id1 is not None
+
+        # 5. Idempotent retry
+        sub_resp2 = client.post(f"/api/sessions/{sid}/plan/preparations/submit", json={"plan_revision": 1, "take_id": "take-001"})
+        assert sub_resp2.status_code == 200
+        assert sub_resp2.json()["shot_id"] == shot_id1
+
+        shots = db.q("SELECT * FROM shot WHERE session_id = ?", sid)
+        assert len(shots) == 1
+
+    def test_14_pre_authoring_historical_snapshots_use_existing_arbitrary_behavior(self, client, seeded):
+        """14. Pre-authoring historical snapshots still use their existing arbitrary completion/provenance behavior."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode=None, takes=takes)  # pre-authoring plan
+
+        # Raw begin and complete with arbitrary provenance
+        backend_session_plan.begin_preparation(sid, 1, "take-001")
+        arbitrary_prov = {"historical": True, "custom_field": 123}
+        backend_session_plan.complete_preparation(
+            sid, 1, "take-001",
+            final_prompt="historical custom prompt",
+            effective_state={"look": "historical"},
+            mapping_version="hist-v1",
+            compiler_version="hist-v1",
+            provenance=arbitrary_prov,
+        )
+
+        # Review succeeds without requiring authoring_evidence
+        rev_resp = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert rev_resp.status_code == 200
+
+        # Approve and submit succeed
+        app_resp = client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1})
+        assert app_resp.status_code == 200
+
+        sub_resp = client.post(f"/api/sessions/{sid}/plan/preparations/submit", json={"plan_revision": 1, "take_id": "take-001"})
+        assert sub_resp.status_code == 200
+        assert sub_resp.json()["shot_id"] is not None
+
+        # Recovery lists as completed
+        rec = backend_session_plan.recover_preparation(sid)
+        assert len(rec["completed"]) == 1
+
+    def test_15_legacy_sessions_remain_unchanged(self, client, seeded):
+        """15. Legacy sessions remain unchanged."""
+        sid = _create_legacy_session(client, seeded)
+        resp = client.get(f"/api/sessions/{sid}/plan/review")
+        assert resp.status_code == 400
+
+        resp = client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1})
+        assert resp.status_code == 400
+
+    def test_16_existing_current_authoring_ready_reuse_validated_before_return(self, client, seeded):
+        """16. Existing current authoring ready reuse is validated before return; a corrupt row is not silently reused."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        prov = json.loads(row["provenance"])
+        prov["authoring_evidence"]["operation_id"] = "fabricated_operation_id"
+        db.run("UPDATE prepared_take SET provenance = ? WHERE id = ?", json.dumps(prov), row["id"])
+
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_resource_preparation.finalize_take_preparation(sid, 1, "take-001")
+
+    def test_17_evidence_validator_is_read_only_and_never_repairs(self, client, seeded):
+        """17. The evidence validator is read-only and never backfills/repairs a row."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        db.run("UPDATE prepared_take SET final_prompt = 'altered' WHERE id = ?", row["id"])
+
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_resource_preparation.validate_authoring_prepared_evidence(sid, 1, "take-001")
+
+        after = db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])
+        assert after["final_prompt"] == "altered"
+
+    def test_18_no_authoring_http_route_accepts_client_supplied_authority(self, client, seeded):
+        """18. No authoring HTTP route accepts client-supplied final prompt, effective state, versions, provenance, or digest as authority."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        resp = client.post(
+            f"/api/sessions/{sid}/plan/takes/take-001/prepare",
+            json={
+                "plan_revision": 1,
+                "final_prompt": "client_forged_prompt",
+                "effective_state": {"forged": True},
+                "provenance": {"forged": True},
+                "compiler_version": "forged_v99",
+                "mapping_version": "forged_v99",
+            },
+        )
+        assert resp.status_code == 200
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        assert "client_forged_prompt" not in row["final_prompt"]
+        assert row["compiler_version"] == backend_resource_preparation.COMPILER_VERSION
+        assert row["mapping_version"] == backend_resource_preparation.MAPPING_VERSION
+        prov = json.loads(row["provenance"])
+        assert "forged" not in prov
+
+    def test_19_resource_projection_order_and_canonical_digest_deterministic(self, client, seeded):
+        """19. Resource projection order and canonical digest are deterministic, use authorized effective values, and exclude unused metadata."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        _seed_plan(sid, seeded, rev, authoring_mode="manual")
+
+        prep = backend_resource_preparation.prepare_take_inputs(sid, 1, "take-001")
+        proj1, digest1 = backend_resource_preparation.build_canonical_resource_projection(prep)
+        proj2, digest2 = backend_resource_preparation.build_canonical_resource_projection(prep)
+
+        assert proj1 == proj2
+        assert digest1 == digest2
+        assert len(digest1["digest"]) == 64
+        assert digest1["digest"] == digest1["digest"].lower()
+        assert digest1["version"] == 1
+
+        # Check projection structure
+        assert "selected_resource_triples" in proj1
+        assert "effective_descriptive_inputs" in proj1
+        assert "consumed_adaptations" in proj1
+
+    def test_20_generated_linked_history_not_reauthored_or_duplicated(self, client, seeded):
+        """20. Generated/linked history is not reauthored or duplicated by recovery or retry."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        backend_session_plan.approve_plan_review(sid, 1)
+        sub1 = backend_session_plan.submit_prepared_take(sid, 1, "take-001")
+        shot_id1 = sub1["shot_id"]
+
+        # Recovery includes generated take in completed
+        rec = backend_session_plan.recover_preparation(sid)
+        assert len(rec["completed"]) == 1
+        assert rec["completed"][0]["take_id"] == "take-001"
+        assert rec["completed"][0]["status"] == "generated"
+        assert rec["completed"][0]["linked_shot_id"] == shot_id1
+
+        # Retry submit returns existing shot without duplicate
+        sub2 = backend_session_plan.submit_prepared_take(sid, 1, "take-001")
+        assert sub2["shot_id"] == shot_id1
+        shots = db.q("SELECT * FROM shot WHERE session_id = ?", sid)
+        assert len(shots) == 1
+
+
+class TestTask24ClosedNestedShapesAndProbes:
+    """Rigorous tests for closed nested shapes, server recomputation, and probes A/B/C."""
+
+    @staticmethod
+    def _prepared_manual_row(client, seeded):
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        _seed_plan(sid, seeded, rev, authoring_mode="manual")
+        response = client.post(
+            f"/api/sessions/{sid}/plan/takes/take-001/prepare",
+            json={"plan_revision": 1},
+        )
+        assert response.status_code == 200
+        row = db.one(
+            "SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?",
+            sid,
+            "take-001",
+        )
+        assert row is not None
+        return sid, row
+
+    @staticmethod
+    def _set_evidence_path(provenance, path, value):
+        target = provenance
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+
+    @pytest.mark.parametrize(
+        ("path", "value"),
+        [
+            (path, value)
+            for path in (
+                ("session_id",),
+                ("plan_revision",),
+                ("authoring_evidence", "schema_version"),
+                ("authoring_evidence", "resource_projection", "version"),
+                ("authoring_evidence", "effective_resource_input_digest", "version"),
+            )
+            for value in (True, False, 1.0, "1", None)
+        ],
+        ids=lambda value: repr(value),
+    )
+    def test_all_persisted_integer_fields_require_strict_int(self, client, seeded, path, value):
+        """Every authoring-v1 integer rejects bool, float, string, and null values."""
+        sid, row = self._prepared_manual_row(client, seeded)
+        provenance = json.loads(row["provenance"])
+        self._set_evidence_path(provenance, path, value)
+        db.run(
+            "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+            json.dumps(provenance),
+            row["id"],
+        )
+
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_resource_preparation.validate_authoring_prepared_evidence(
+                sid, 1, "take-001"
+            )
+
+    @pytest.mark.parametrize("root", [[], None, "text", 1, True])
+    def test_valid_json_non_object_provenance_fails_closed(self, client, seeded, root):
+        """Valid JSON scalar and collection roots never escape as built-in exceptions."""
+        sid, row = self._prepared_manual_row(client, seeded)
+        db.run(
+            "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+            json.dumps(root),
+            row["id"],
+        )
+
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_resource_preparation.validate_authoring_prepared_evidence(
+                sid, 1, "take-001"
+            )
+
+    def test_malformed_provenance_json_fails_closed(self, client, seeded):
+        """Syntactically invalid authoring provenance maps to the closed evidence error."""
+        sid, row = self._prepared_manual_row(client, seeded)
+        db.run("UPDATE prepared_take SET provenance = ? WHERE id = ?", "{", row["id"])
+
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_resource_preparation.validate_authoring_prepared_evidence(
+                sid, 1, "take-001"
+            )
+
+    @pytest.mark.parametrize(
+        ("mutation", "value"),
+        [
+            ("schema_version", True),
+            ("resource_projection.version", 1.0),
+            ("plan_revision", True),
+            ("provenance_root", []),
+        ],
+    )
+    def test_numeric_and_root_shape_corruption_all_surfaces(
+        self, client, seeded, mutation, value
+    ):
+        """Representative integer and root-shape corruption is write-free on every surface."""
+        sid, row = self._prepared_manual_row(client, seeded)
+        provenance = json.loads(row["provenance"])
+        if mutation == "schema_version":
+            provenance["authoring_evidence"]["schema_version"] = value
+            persisted = json.dumps(provenance)
+        elif mutation == "resource_projection.version":
+            provenance["authoring_evidence"]["resource_projection"]["version"] = value
+            persisted = json.dumps(provenance)
+        elif mutation == "plan_revision":
+            provenance["plan_revision"] = value
+            persisted = json.dumps(provenance)
+        else:
+            persisted = json.dumps(value)
+        db.run("UPDATE prepared_take SET provenance = ? WHERE id = ?", persisted, row["id"])
+        expected_row = dict(db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"]))
+
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_resource_preparation.validate_authoring_prepared_evidence(
+                sid, 1, "take-001"
+            )
+
+        review = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert review.status_code == 409
+        assert "authoring_evidence_invalid" in review.json()["detail"]
+        assert dict(db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])) == expected_row
+
+        recovery = backend_session_plan.recover_preparation(sid)
+        assert recovery["completed"] == []
+        invalid = [item for item in recovery["incomplete"] if item["take_id"] == "take-001"]
+        assert invalid[0]["status"] == "invalid_evidence"
+        assert invalid[0]["diagnostic"] == "authoring_evidence_invalid"
+        assert dict(db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])) == expected_row
+
+        approve = client.post(
+            f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1}
+        )
+        assert approve.status_code == 409
+        assert "authoring_evidence_invalid" in approve.json()["detail"]
+        assert db.q("SELECT * FROM session_plan_approval WHERE session_id = ?", sid) == []
+
+        db.run(
+            "INSERT INTO session_plan_approval (session_id, plan_revision, approved_at) "
+            "VALUES (?, ?, ?)",
+            sid,
+            1,
+            db.now(),
+        )
+        submit = client.post(
+            f"/api/sessions/{sid}/plan/preparations/submit",
+            json={"plan_revision": 1, "take_id": "take-001"},
+        )
+        assert submit.status_code == 409
+        assert "authoring_evidence_invalid" in submit.json()["detail"]
+        assert db.q("SELECT * FROM shot WHERE session_id = ?", sid) == []
+        after_submit = db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])
+        assert after_submit["linked_shot_id"] is None
+        assert after_submit["status"] == "ready"
+
+    def test_raw_complete_rejects_coherent_authoring_snapshot_without_writes(
+        self, client, seeded
+    ):
+        """Raw completion cannot promote even a coherent hand-built authoring snapshot."""
+        sid, ready = self._prepared_manual_row(client, seeded)
+        snapshot = {
+            "final_prompt": ready["final_prompt"],
+            "effective_state": json.loads(ready["effective_state"]),
+            "mapping_version": ready["mapping_version"],
+            "compiler_version": ready["compiler_version"],
+            "provenance": json.loads(ready["provenance"]),
+        }
+        db.run(
+            "UPDATE prepared_take SET final_prompt = '', effective_state = '{}', "
+            "mapping_version = '', compiler_version = '', provenance = '{}', "
+            "status = 'pending' WHERE id = ?",
+            ready["id"],
+        )
+        before = dict(db.one("SELECT * FROM prepared_take WHERE id = ?", ready["id"]))
+        approvals_before = db.q(
+            "SELECT * FROM session_plan_approval WHERE session_id = ?", sid
+        )
+        shots_before = db.q("SELECT * FROM shot WHERE session_id = ?", sid)
+
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_session_plan.complete_preparation(
+                sid, 1, "take-001", **snapshot
+            )
+
+        assert dict(db.one("SELECT * FROM prepared_take WHERE id = ?", ready["id"])) == before
+        assert before["status"] == "pending"
+        assert before["linked_shot_id"] is None
+        assert db.q("SELECT * FROM session_plan_approval WHERE session_id = ?", sid) == approvals_before
+        assert db.q("SELECT * FROM shot WHERE session_id = ?", sid) == shots_before
+
+    def test_hand_built_authoring_result_with_wrong_seal_is_rejected(
+        self, client, seeded
+    ):
+        """The authoring persistence boundary refuses a freely constructed substitute."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        _seed_plan(sid, seeded, rev, authoring_mode="manual")
+        backend_session_plan.begin_preparation(sid, 1, "take-001")
+        before = dict(db.one(
+            "SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?",
+            sid,
+            "take-001",
+        ))
+        substitute = backend_resource_preparation._AuthoringPreparedResult(
+            object(),
+            sid,
+            1,
+            "take-001",
+            "forged prompt",
+            {},
+            backend_resource_preparation.MAPPING_VERSION,
+            backend_resource_preparation.COMPILER_VERSION,
+            {},
+        )
+
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_session_plan.complete_authoring_preparation(substitute)
+
+        after = db.one("SELECT * FROM prepared_take WHERE id = ?", before["id"])
+        assert dict(after) == before
+
+    @pytest.mark.parametrize(
+        "corruption",
+        ["compiler_version", "nested_manual_input", "final_prompt"],
+    )
+    def test_authoring_http_errors_never_leak_corrupt_markers(
+        self, client, seeded, corruption
+    ):
+        """Review, Approve, Submit, and Recovery expose only stable evidence errors."""
+        marker = "SECRET_INJECTED_VALUE_2_4"
+        sid, row = self._prepared_manual_row(client, seeded)
+        provenance = json.loads(row["provenance"])
+        if corruption == "compiler_version":
+            provenance["compiler_version"] = marker
+            db.run(
+                "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+                json.dumps(provenance),
+                row["id"],
+            )
+        elif corruption == "nested_manual_input":
+            provenance["authoring_evidence"]["manual_completion"][
+                "descriptive_inputs"
+            ]["camera"] = marker
+            db.run(
+                "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+                json.dumps(provenance),
+                row["id"],
+            )
+        else:
+            db.run(
+                "UPDATE prepared_take SET final_prompt = ? WHERE id = ?",
+                marker,
+                row["id"],
+            )
+
+        review = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert review.status_code == 409
+        assert review.json()["detail"] == backend_session_plan.AUTHORING_EVIDENCE_PUBLIC_MESSAGE
+        assert marker not in review.text
+
+        recovery = backend_session_plan.recover_preparation(sid)
+        assert recovery["completed"] == []
+        invalid = [item for item in recovery["incomplete"] if item["take_id"] == "take-001"]
+        assert invalid[0]["status"] == "invalid_evidence"
+        assert invalid[0]["diagnostic"] == "authoring_evidence_invalid"
+        assert marker not in json.dumps(invalid[0])
+
+        approve = client.post(
+            f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1}
+        )
+        assert approve.status_code == 409
+        assert approve.json()["detail"] == backend_session_plan.AUTHORING_EVIDENCE_PUBLIC_MESSAGE
+        assert marker not in approve.text
+        assert db.q("SELECT * FROM session_plan_approval WHERE session_id = ?", sid) == []
+
+        db.run(
+            "INSERT INTO session_plan_approval (session_id, plan_revision, approved_at) "
+            "VALUES (?, ?, ?)",
+            sid,
+            1,
+            db.now(),
+        )
+        submit = client.post(
+            f"/api/sessions/{sid}/plan/preparations/submit",
+            json={"plan_revision": 1, "take_id": "take-001"},
+        )
+        assert submit.status_code == 409
+        assert submit.json()["detail"] == backend_session_plan.AUTHORING_EVIDENCE_PUBLIC_MESSAGE
+        assert marker not in submit.text
+        assert db.q("SELECT * FROM shot WHERE session_id = ?", sid) == []
+        after = db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])
+        assert after["linked_shot_id"] is None
+        assert after["status"] == "ready"
+
+    @pytest.mark.parametrize(
+        "mutation_name",
+        [
+            "manual_completion.extra",
+            "writer_synthesis.extra",
+            "field_mappings.forged",
+        ],
+    )
+    def test_probes_a_b_c_all_surfaces(self, client, seeded, mutation_name):
+        """Probes A, B, C: corrupt nested evidence rejected across validator, Review, Recovery, Approve, Submit."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        # Finalize valid take
+        client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        assert row is not None
+        prov = json.loads(row["provenance"])
+
+        if mutation_name == "manual_completion.extra":
+            prov["authoring_evidence"]["manual_completion"]["extra"] = "forbidden_manual_key"
+        elif mutation_name == "writer_synthesis.extra":
+            prov["authoring_evidence"]["writer_synthesis"]["extra"] = "forbidden_writer_key"
+            prov["writer_synthesis"]["extra"] = "forbidden_writer_key"
+        elif mutation_name == "field_mappings.forged":
+            prov["field_mappings"]["forged"] = {"field": "forged", "role": "descriptive_input"}
+        else:
+            pytest.fail(f"unknown mutation {mutation_name}")
+
+        db.run("UPDATE prepared_take SET provenance = ? WHERE id = ?", json.dumps(prov), row["id"])
+
+        # 1. Direct validator
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_resource_preparation.validate_authoring_prepared_evidence(sid, 1, "take-001")
+
+        # 2. Review surface: HTTP 409 authoring_evidence_invalid
+        rev_resp = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert rev_resp.status_code == 409
+        assert "authoring_evidence_invalid" in rev_resp.json()["detail"]
+
+        # 3. Recovery surface: incomplete invalid_evidence, NOT completed, zero mutations
+        rec = backend_session_plan.recover_preparation(sid)
+        assert len(rec["completed"]) == 0
+        inc_match = [t for t in rec["incomplete"] if t.get("take_id") == "take-001"]
+        assert len(inc_match) == 1
+        assert inc_match[0]["status"] == "invalid_evidence"
+        assert inc_match[0]["diagnostic"] == "authoring_evidence_invalid"
+
+        db_row_after_rec = db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])
+        assert db_row_after_rec["status"] == "ready"
+        assert db_row_after_rec["provenance"] == json.dumps(prov)
+
+        # 4. Approve surface: HTTP 409 and zero approval writes
+        app_resp = client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1})
+        assert app_resp.status_code == 409
+        assert "authoring_evidence_invalid" in app_resp.json()["detail"]
+        approvals = db.q("SELECT * FROM session_plan_approval WHERE session_id = ?", sid)
+        assert len(approvals) == 0
+
+        # 5. Submit surface: HTTP 409 and zero shot/link writes
+        # Insert a valid approval bypass so submit reaches evidence validation
+        db.run(
+            "INSERT INTO session_plan_approval (session_id, plan_revision, approved_at) VALUES (?, ?, ?)",
+            sid, 1, db.now(),
+        )
+        sub_resp = client.post(
+            f"/api/sessions/{sid}/plan/preparations/submit",
+            json={"plan_revision": 1, "take_id": "take-001"},
+        )
+        assert sub_resp.status_code == 409
+        assert "authoring_evidence_invalid" in sub_resp.json()["detail"]
+        shots = db.q("SELECT * FROM shot WHERE session_id = ?", sid)
+        assert len(shots) == 0
+        db_row_after_sub = db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])
+        assert db_row_after_sub["status"] == "ready"
+        assert db_row_after_sub["linked_shot_id"] is None
+
+    @pytest.mark.parametrize(
+        "block_name",
+        [
+            "manual_completion",
+            "writer_synthesis",
+            "predecessor_projection",
+            "duplicate_flags",
+            "effective_resource_input_digest",
+            "resource_projection",
+            "manual_completion.descriptive_inputs",
+            "provenance.writer_synthesis",
+            "provenance.field_mappings",
+            "provenance.adaptations",
+        ],
+    )
+    def test_nested_unknown_keys_rejected(self, client, seeded, block_name):
+        """All nested closed blocks reject injected unknown keys with AuthoringEvidenceInvalid."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        row = db.one("SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?", sid, "take-001")
+        prov = json.loads(row["provenance"])
+        auth_ev = prov["authoring_evidence"]
+
+        if block_name == "manual_completion":
+            auth_ev["manual_completion"]["injected_unknown_key"] = "bad"
+        elif block_name == "writer_synthesis":
+            auth_ev["writer_synthesis"]["injected_unknown_key"] = "bad"
+            prov["writer_synthesis"]["injected_unknown_key"] = "bad"
+        elif block_name == "predecessor_projection":
+            auth_ev["predecessor_projection"]["injected_unknown_key"] = "bad"
+        elif block_name == "duplicate_flags":
+            auth_ev["duplicate_flags"]["injected_unknown_key"] = "bad"
+        elif block_name == "effective_resource_input_digest":
+            auth_ev["effective_resource_input_digest"]["injected_unknown_key"] = "bad"
+        elif block_name == "resource_projection":
+            auth_ev["resource_projection"]["injected_unknown_key"] = "bad"
+        elif block_name == "manual_completion.descriptive_inputs":
+            auth_ev["manual_completion"]["descriptive_inputs"]["injected_unknown_key"] = "bad"
+        elif block_name == "provenance.writer_synthesis":
+            prov["writer_synthesis"]["injected_unknown_key"] = "bad"
+        elif block_name == "provenance.field_mappings":
+            prov["field_mappings"]["injected_unknown_key"] = {}
+        elif block_name == "provenance.adaptations":
+            prov["adaptations"] = [{"injected_unknown_key": "bad"}]
+        else:
+            pytest.fail(f"unknown block {block_name}")
+
+        db.run("UPDATE prepared_take SET provenance = ? WHERE id = ?", json.dumps(prov), row["id"])
+
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_resource_preparation.validate_authoring_prepared_evidence(sid, 1, "take-001")
+
+    def test_positive_manual_snapshot_passes_all_surfaces(self, client, seeded):
+        """A valid manual snapshot passes validator, Review, Recovery, Approve, and Submit."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
+
+        # Prepare
+        prep_res = client.post(f"/api/sessions/{sid}/plan/takes/take-001/prepare", json={"plan_revision": 1})
+        assert prep_res.status_code == 200
+
+        # 1. Validator directly
+        val = backend_resource_preparation.validate_authoring_prepared_evidence(sid, 1, "take-001")
+        assert val is not None
+        assert val.is_authoring is True
+        assert val.authoring_evidence["mode"] == "manual"
+
+        # 2. Review
+        rev_resp = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert rev_resp.status_code == 200
+        assert rev_resp.json()["snapshot"] is not None
+
+        # 3. Recovery
+        rec = backend_session_plan.recover_preparation(sid)
+        assert len(rec["completed"]) == 1
+        assert rec["completed"][0]["take_id"] == "take-001"
+        assert len(rec["incomplete"]) == 0
+
+        # 4. Approve
+        app_resp = client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1})
+        assert app_resp.status_code == 200
+        assert app_resp.json()["approved"] is True
+
+        # 5. Submit
+        sub_resp = client.post(
+            f"/api/sessions/{sid}/plan/preparations/submit",
+            json={"plan_revision": 1, "take_id": "take-001"},
+        )
+        assert sub_resp.status_code == 200
+        assert sub_resp.json()["shot_id"] is not None
+
+    def test_pre_authoring_snapshot_ignores_nested_shape_constraints(self, client, seeded):
+        """Historical pre-authoring snapshot without authoring block ignores authoring shape requirements."""
+        rev = _setup_resource_revision()
+        sid = _create_resource_session(client, seeded)
+        takes = [{
+            "take_id": "take-001",
+            "camera": "eye level", "framing": "medium shot",
+            "pose": "standing", "expression": "neutral",
+        }]
+        _seed_plan(sid, seeded, rev, authoring_mode=None, takes=takes)
+
+        backend_session_plan.begin_preparation(sid, 1, "take-001")
+        arbitrary_prov = {
+            "custom_arbitrary_key": "any_value",
+            "nested_unclosed": {"anything": 123},
+        }
+        backend_session_plan.complete_preparation(
+            sid, 1, "take-001",
+            final_prompt="historical custom prompt",
+            effective_state={"look": "historical"},
+            mapping_version="hist-v1",
+            compiler_version="hist-v1",
+            provenance=arbitrary_prov,
+        )
+
+        val = backend_resource_preparation.validate_authoring_prepared_evidence(sid, 1, "take-001")
+        assert val is not None
+        assert val.is_authoring is False
+        assert val.authoring_evidence is None
+
+        # Review succeeds
+        rev_resp = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert rev_resp.status_code == 200
+
+        # Recovery succeeds
+        rec = backend_session_plan.recover_preparation(sid)
+        assert len(rec["completed"]) == 1
+
+        # Approve succeeds
+        app_resp = client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1})
+        assert app_resp.status_code == 200
+
+        # Submit succeeds
+        sub_resp = client.post(
+            f"/api/sessions/{sid}/plan/preparations/submit",
+            json={"plan_revision": 1, "take_id": "take-001"},
+        )
+        assert sub_resp.status_code == 200

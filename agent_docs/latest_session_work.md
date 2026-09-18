@@ -2,32 +2,36 @@
 
 ## Detailed Current State
 
-Task 2.3 of `simplify-resource-session-workflow` passed final independent
-acceptance over the complete working-tree delta from baseline
-`be5ecba8cbd2fc15ca64156611f70ac1d97c6094` and is formally closed.
+Task 2.4 of `simplify-resource-session-workflow` passed final independent
+acceptance against baseline `ec387d0dd838816721d8dad58150b4da591e243d` and is
+formally closed.
 
-The accepted implementation enforces the automatic/manual/pre-authoring
-authority matrix. Public raw begin/complete is rejected with 409 for every
-plan carrying authoring metadata. Automatic direct and bulk preparation are
-rejected, and the domain `finalize_take_preparation` path rejects automatic
-plans before persistence or assistant work. Automatic plans are reserved for
-the future fenced `prepare_takes` operation. Manual authoring keeps its
-validated manual preparation boundary and historical unset/unlocked-field
-validation. Pre-authoring expert plans retain historical begin/complete and
-preparation, while legacy composition remains unchanged. Malformed authoring
-fails closed and `schema_version` requires the strict integer `1`.
+The accepted implementation makes authoring evidence server-owned. Manual
+preparation validates the current inputs, derives the final prompt, effective
+state, versions, mappings, resource projection, digest, adaptations,
+provenance, and explicit non-applicable assistant/predecessor/duplicate
+sentinels, then persists them through a private frozen sealed result. Raw
+`complete_preparation` remains available only for pre-authoring expert plans.
+Automatic authoring remains blocked until the future fenced `prepare_takes`
+operation exists.
+
+The read-only validator remains active on persistence, reuse, Review, Recovery,
+Approve, and Submit. It fails closed on missing, altered, fabricated,
+malformed, non-object, wrong-type, or unknown nested evidence and preserves
+zero-write rejection behavior. `AuthoringEvidenceInvalid` maps to a fixed
+sanitized HTTP diagnostic.
 
 ## Verification
 
-- The authority suite has 22 tests and passes.
-- The focal suites pass with 269 tests; the reproducible full collection is
-  1,971 tests and the complete suite is green.
-- Privacy checks (10), shoot checks (36), `git diff --check`, and strict
-  OpenSpec validation pass.
-- Bulk preflight prevents partial mutation, and all authority rejections occur
-  before persistence and assistant work.
+- Authority suite: 97 tests, green.
+- Focal suites: 563 tests, green.
+- Reproducible full collection: 2,046 tests; complete suite green.
+- Privacy checks: 10 tests, green.
+- Shoot checks: 36 tests, green.
+- Strict OpenSpec validation: 1 passed, 0 failed.
+- `git diff --check`: clean apart from line-ending warnings.
 
 ## Next Entry Point
 
-Task 2.3 is checked and formally closed. Task 2.4 is the next pending task.
-Do not begin Task 2.4 automatically; select and verify its own scope first.
+Task 2.4 is checked and formally closed. Task 2.5 is the next pending task.
+Do not begin Task 2.5 automatically; select and verify its own scope first.

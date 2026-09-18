@@ -196,3 +196,11 @@
   fails closed, `schema_version` accepts only integer `1`, and bulk preflight
   prevents partial mutation. The closure adds 22 authority tests and the
   reproducible collection is 1,971 tests; Task 2.4 is next.
+- Task 2.4 is formally closed after independent acceptance. Authoring evidence
+  is derived server-side, manual preparation persists only an internally sealed
+  result, and raw `complete_preparation` remains restricted to pre-authoring
+  plans. Automatic preparation remains blocked until the future fenced
+  operation. The read-only validator rejects malformed, non-object, strict-type,
+  and closed-shape evidence; Review, Recovery, Approve, and Submit fail closed,
+  with sanitized HTTP diagnostics and zero-write rejection paths. The closure
+  was verified against 2,046 collected tests; Task 2.5 remains pending.

@@ -3404,6 +3404,11 @@ class PreparedTakeCompleteIn(BaseModel):
 
 
 def _prepared_take_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, session_plan.AuthoringEvidenceInvalid):
+        return HTTPException(
+            409,
+            session_plan.AUTHORING_EVIDENCE_PUBLIC_MESSAGE,
+        )
     if isinstance(
         exc,
         (
@@ -3558,6 +3563,7 @@ def get_take_review(sid: int, take_id: str, plan_revision: int | None = None):
             f"{session_plan.MODE_RESOURCE_V1!r}",
         )
     current_rev, plan = session_plan._load_current_resource_plan(sid)
+    plan_kind = session_plan.classify_plan_authoring(plan)
     if plan_revision is not None and plan_revision != current_rev:
         raise HTTPException(
             409,
@@ -3570,13 +3576,18 @@ def get_take_review(sid: int, take_id: str, plan_revision: int | None = None):
         prep = resource_preparation.prepare_take_inputs(sid, current_rev, take_id)
         review = resource_preparation.build_review_state(prep)
         snapshot = session_plan._prepared_take_row(sid, current_rev, take_id)
+        if snapshot is not None and snapshot["status"] == session_plan.PREPARED_TAKE_STATUS_READY:
+            if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
+                session_plan.validate_authoring_prepared_evidence(
+                    sid, current_rev, take_id, row=snapshot,
+                )
         decoded_snap = session_plan._decode_prepared_take(snapshot) if snapshot else None
         final_prompt = None
         if decoded_snap and decoded_snap.get("final_prompt"):
             final_prompt = decoded_snap.get("final_prompt")
         else:
             try:
-                final_prompt = resource_preparation.compile_final_prompt(prep)
+                final_prompt = resource_preparation.compose_final_prompt(sid, prep)
             except Exception:
                 final_prompt = None
         approved_rev = session_plan.get_approved_plan_revision(sid)
@@ -3607,6 +3618,7 @@ def get_plan_review(sid: int, plan_revision: int | None = None):
             f"{session_plan.MODE_RESOURCE_V1!r}",
         )
     current_rev, plan = session_plan._load_current_resource_plan(sid)
+    plan_kind = session_plan.classify_plan_authoring(plan)
     if plan_revision is not None and plan_revision != current_rev:
         raise HTTPException(
             409,
@@ -3619,13 +3631,18 @@ def get_plan_review(sid: int, plan_revision: int | None = None):
             prep = resource_preparation.prepare_take_inputs(sid, current_rev, take_id)
             review = resource_preparation.build_review_state(prep)
             snapshot = session_plan._prepared_take_row(sid, current_rev, take_id)
+            if snapshot is not None and snapshot["status"] == session_plan.PREPARED_TAKE_STATUS_READY:
+                if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
+                    session_plan.validate_authoring_prepared_evidence(
+                        sid, current_rev, take_id, row=snapshot,
+                    )
             decoded_snap = session_plan._decode_prepared_take(snapshot) if snapshot else None
             final_prompt = None
             if decoded_snap and decoded_snap.get("final_prompt"):
                 final_prompt = decoded_snap.get("final_prompt")
             else:
                 try:
-                    final_prompt = resource_preparation.compile_final_prompt(prep)
+                    final_prompt = resource_preparation.compose_final_prompt(sid, prep)
                 except Exception:
                     final_prompt = None
             reviews.append({

@@ -75,9 +75,15 @@ Task 3.3 adds three small pieces on top of the 3.1 surface:
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any
 
 import db
+
+if __name__ == "backend.session_plan" and "session_plan" not in sys.modules:
+    sys.modules["session_plan"] = sys.modules[__name__]
+elif __name__ == "session_plan" and "backend.session_plan" not in sys.modules:
+    sys.modules["backend.session_plan"] = sys.modules[__name__]
 
 
 # -- Constants --------------------------------------------------------------
@@ -181,6 +187,53 @@ class PreparedTakePersistenceError(Exception):
 
 class PlanReviewNotApproved(Exception):
     """The plan revision review has not been authoritatively approved for submission."""
+
+
+class AuthoringEvidenceInvalid(PreparedTakeConflict):
+    """Authoring prepared take evidence is missing, malformed, fabricated, or inconsistent."""
+
+    def __init__(self, message: str) -> None:
+        clean_msg = (
+            message
+            if message.startswith("authoring_evidence_invalid")
+            else f"authoring_evidence_invalid: {message}"
+        )
+        super().__init__(clean_msg)
+        self.code = "authoring_evidence_invalid"
+        self.message = clean_msg
+
+
+AUTHORING_EVIDENCE_PUBLIC_MESSAGE = (
+    "authoring_evidence_invalid: Prepared authoring evidence is invalid."
+)
+
+
+class ValidatedAuthoringEvidence(dict):
+    """Authoritative validated evidence for a prepared take."""
+
+    def __init__(
+        self,
+        snapshot: Mapping[str, Any],
+        *,
+        authoring_evidence: dict | None = None,
+        is_authoring: bool = True,
+    ) -> None:
+        super().__init__(snapshot)
+        self.authoring_evidence = authoring_evidence
+        self.is_authoring = is_authoring
+
+
+def validate_authoring_prepared_evidence(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    row: Mapping[str, Any] | None = None,
+) -> ValidatedAuthoringEvidence:
+    """Validate server-owned authoring evidence for an authoring-v1 prepared take snapshot."""
+    import resource_preparation
+    return resource_preparation.validate_authoring_prepared_evidence(
+        session_id, plan_revision, take_id, row=row,
+    )
 
 
 # -- Validation -------------------------------------------------------------
@@ -1321,7 +1374,12 @@ def complete_preparation(
     compiler_version: str,
     provenance: Any,
 ) -> dict:
-    """Atomically transition one durable pending row to ready."""
+    """Complete a raw historical snapshot; authoring-v1 requires sealed persistence."""
+    plan = _validate_preparation_target(session_id, plan_revision, take_id)
+    if classify_plan_authoring(plan) != PLAN_AUTHORING_KIND_PRE_AUTHORING_EXPERT:
+        raise AuthoringEvidenceInvalid(
+            "raw complete_preparation cannot create an authoring-v1 snapshot"
+        )
     if not isinstance(final_prompt, str):
         raise PlanValidationError("final_prompt must be a string")
     if not final_prompt.strip():
@@ -1345,7 +1403,11 @@ def complete_preparation(
     )
     try:
         with db.transaction():
-            _validate_preparation_target(session_id, plan_revision, take_id)
+            plan = _validate_preparation_target(session_id, plan_revision, take_id)
+            if classify_plan_authoring(plan) != PLAN_AUTHORING_KIND_PRE_AUTHORING_EXPERT:
+                raise AuthoringEvidenceInvalid(
+                    "raw complete_preparation cannot create an authoring-v1 snapshot"
+                )
             existing = _prepared_take_row(session_id, plan_revision, take_id)
             if existing is None:
                 raise PreparedTakeConflict(
@@ -1374,6 +1436,108 @@ def complete_preparation(
                 final_prompt, encoded_state, mapping_version, compiler_version,
                 encoded_provenance, PREPARED_TAKE_STATUS_READY, now,
                 existing["id"], PREPARED_TAKE_STATUS_PENDING,
+            )
+            row = _prepared_take_row(session_id, plan_revision, take_id)
+            if row is None or row["status"] != PREPARED_TAKE_STATUS_READY:
+                raise PreparedTakePersistenceError(
+                    f"prepared take {take_id!r} did not reach ready state"
+                )
+            return _decode_prepared_take(row)
+    except (
+        SessionNotFound,
+        SessionNotInResourceMode,
+        PlanRevisionStale,
+        PlanValidationError,
+        PreparedTakeConflict,
+        PreparedTakePersistenceError,
+    ):
+        raise
+    except Exception as exc:
+        raise PreparedTakePersistenceError(
+            f"could not persist ready prepared take {take_id!r}: {exc}"
+        ) from exc
+
+
+def complete_authoring_preparation(result: Any) -> dict:
+    """Persist only an opaque snapshot produced by the authoring server builder."""
+    import resource_preparation
+
+    if not resource_preparation._is_sealed_authoring_result(result):
+        raise AuthoringEvidenceInvalid(
+            "authoring persistence requires a sealed server-built result"
+        )
+
+    session_id = result.session_id
+    plan_revision = result.plan_revision
+    take_id = result.take_id
+    encoded_state = _encode_snapshot_json(result.effective_state, "effective_state")
+    encoded_provenance = _encode_snapshot_json(result.provenance, "provenance")
+    desired = (
+        result.final_prompt,
+        encoded_state,
+        result.mapping_version,
+        result.compiler_version,
+        encoded_provenance,
+    )
+    try:
+        with db.transaction():
+            plan = _validate_preparation_target(session_id, plan_revision, take_id)
+            if classify_plan_authoring(plan) != PLAN_AUTHORING_KIND_MANUAL:
+                raise AuthoringEvidenceInvalid(
+                    "sealed manual persistence requires manual authoring-v1"
+                )
+            existing = _prepared_take_row(session_id, plan_revision, take_id)
+            if existing is None:
+                raise PreparedTakeConflict(
+                    f"prepared take {take_id!r} has no pending row; begin it first"
+                )
+            current_snapshot = (
+                existing["final_prompt"],
+                existing["effective_state"],
+                existing["mapping_version"],
+                existing["compiler_version"],
+                existing["provenance"],
+            )
+            if existing["status"] != PREPARED_TAKE_STATUS_PENDING:
+                if _snapshots_equal(current_snapshot, desired):
+                    validate_authoring_prepared_evidence(
+                        session_id, plan_revision, take_id, row=existing,
+                    )
+                    return _decode_prepared_take(existing)
+                raise PreparedTakeConflict(
+                    f"prepared take {take_id!r} at plan revision {plan_revision} "
+                    f"is immutable {existing['status']} history and differs from "
+                    "the requested snapshot"
+                )
+            candidate_row = {
+                "id": existing["id"],
+                "session_id": session_id,
+                "plan_revision": plan_revision,
+                "take_id": take_id,
+                "final_prompt": result.final_prompt,
+                "effective_state": encoded_state,
+                "mapping_version": result.mapping_version,
+                "compiler_version": result.compiler_version,
+                "provenance": encoded_provenance,
+                "status": PREPARED_TAKE_STATUS_READY,
+            }
+            validate_authoring_prepared_evidence(
+                session_id, plan_revision, take_id, row=candidate_row,
+            )
+            now = db.now()
+            db.run(
+                "UPDATE prepared_take SET final_prompt = ?, effective_state = ?, "
+                "mapping_version = ?, compiler_version = ?, provenance = ?, "
+                "status = ?, updated_at = ? WHERE id = ? AND status = ?",
+                result.final_prompt,
+                encoded_state,
+                result.mapping_version,
+                result.compiler_version,
+                encoded_provenance,
+                PREPARED_TAKE_STATUS_READY,
+                now,
+                existing["id"],
+                PREPARED_TAKE_STATUS_PENDING,
             )
             row = _prepared_take_row(session_id, plan_revision, take_id)
             if row is None or row["status"] != PREPARED_TAKE_STATUS_READY:
@@ -1427,16 +1591,29 @@ def recover_preparation(session_id: int) -> dict:
 
     completed: list[dict] = []
     incomplete: list[dict] = []
+    plan_kind = classify_plan_authoring(plan)
     for take_id in ordered_take_ids:
         row = current_by_take.get(take_id)
         if row is None:
             incomplete.append({"take_id": take_id, "status": "missing"})
             continue
-        if row["status"] in (
-            PREPARED_TAKE_STATUS_READY,
-            PREPARED_TAKE_STATUS_GENERATED,
-        ):
+        if row["status"] == PREPARED_TAKE_STATUS_GENERATED:
             completed.append(_decode_prepared_take(row))
+        elif row["status"] == PREPARED_TAKE_STATUS_READY:
+            if plan_kind in (PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC):
+                try:
+                    val = validate_authoring_prepared_evidence(
+                        session_id, plan_revision, take_id, row=row,
+                    )
+                    completed.append(dict(val))
+                except AuthoringEvidenceInvalid:
+                    incomplete.append({
+                        "take_id": take_id,
+                        "status": "invalid_evidence",
+                        "diagnostic": "authoring_evidence_invalid",
+                    })
+            else:
+                completed.append(_decode_prepared_take(row))
         elif row["status"] == PREPARED_TAKE_STATUS_PENDING:
             incomplete.append({"take_id": take_id, "status": "pending"})
         else:
@@ -1923,6 +2100,12 @@ def submit_prepared_take(
                     f"is in {existing['status']!r} status and not ready for submission"
                 )
 
+            plan_kind = classify_plan_authoring(plan)
+            if plan_kind in (PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC):
+                validate_authoring_prepared_evidence(
+                    session_id, plan_revision, take_id, row=existing,
+                )
+
             final_prompt = existing["final_prompt"]
             if not isinstance(final_prompt, str) or not final_prompt.strip():
                 raise PlanValidationError(
@@ -2044,11 +2227,23 @@ def approve_plan_review(session_id: int, plan_revision: int) -> dict:
             raise SessionNotInResourceMode(
                 f"session {session_id} composition_mode is {mode!r}, expected {MODE_RESOURCE_V1!r}"
             )
-        current_rev, _ = _load_current_resource_plan(session_id)
+        current_rev, plan = _load_current_resource_plan(session_id)
         if current_rev != plan_revision:
             raise PlanRevisionStale(
                 f"session {session_id} plan revision is {current_rev}, requested {plan_revision}"
             )
+        plan_kind = classify_plan_authoring(plan)
+        if plan_kind in (PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC):
+            ready_rows = db.q(
+                "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND status = ? AND linked_shot_id IS NULL",
+                session_id,
+                plan_revision,
+                PREPARED_TAKE_STATUS_READY,
+            )
+            for r in ready_rows:
+                validate_authoring_prepared_evidence(
+                    session_id, plan_revision, str(r["take_id"]), row=r,
+                )
         now = db.now()
         db.run(
             "INSERT INTO session_plan_approval (session_id, plan_revision, approved_at) "

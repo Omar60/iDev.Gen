@@ -191,6 +191,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 import db
@@ -198,7 +199,18 @@ import importer
 import resource_prompts
 import resource_readiness
 import resource_store
-import session_plan
+import sys
+
+if __name__ == "backend.resource_preparation" and "resource_preparation" not in sys.modules:
+    sys.modules["resource_preparation"] = sys.modules[__name__]
+elif __name__ == "resource_preparation" and "backend.resource_preparation" not in sys.modules:
+    sys.modules["backend.resource_preparation"] = sys.modules[__name__]
+
+try:
+    from backend import session_plan
+except ImportError:
+    import session_plan
+
 import translation_map
 # Re-export the persistence-error class the existing
 # ``session_plan`` API publishes, so a caller that reads
@@ -234,6 +246,31 @@ MAPPING_VERSION: str = "resource-prompts-v1"
 # version is the module identity, the same convention the rest
 # of the project uses for non-compiled layers.
 COMPILER_VERSION: str = "resource-preparation-v1"
+
+
+_AUTHORING_RESULT_SEAL = object()
+
+
+@dataclass(frozen=True)
+class _AuthoringPreparedResult:
+    """Opaque server-built snapshot accepted by authoring persistence."""
+
+    _seal: object
+    session_id: int
+    plan_revision: int
+    take_id: str
+    final_prompt: str
+    effective_state: Any
+    mapping_version: str
+    compiler_version: str
+    provenance: Any
+
+
+def _is_sealed_authoring_result(value: Any) -> bool:
+    return (
+        type(value) is _AuthoringPreparedResult
+        and value._seal is _AUTHORING_RESULT_SEAL
+    )
 
 
 # -- Take-level descriptive choices ----------------------------------------
@@ -491,6 +528,72 @@ ADAPTATION_KEYS: frozenset[str] = frozenset({
     "content_digest",
     "resource_field",
     "adapted_value",
+})
+
+# Closed set of keys allowed in authoring_evidence provenance block
+CLOSED_AUTHORING_EVIDENCE_KEYS: frozenset[str] = frozenset({
+    "schema_version",
+    "mode",
+    "source",
+    "manual_completion",
+    "writer_synthesis",
+    "predecessor_projection",
+    "resource_projection",
+    "effective_resource_input_digest",
+    "duplicate_flags",
+    "operation_id",
+})
+
+CLOSED_MANUAL_COMPLETION_KEYS: frozenset[str] = frozenset({
+    "descriptive_inputs",
+})
+
+CLOSED_WRITER_SYNTHESIS_KEYS: frozenset[str] = frozenset({
+    "version",
+    "kind",
+    "requested_fields",
+    "writer_input",
+    "writer_output",
+})
+
+CLOSED_PREDECESSOR_PROJECTION_KEYS: frozenset[str] = frozenset({
+    "status",
+})
+
+CLOSED_DUPLICATE_FLAGS_KEYS: frozenset[str] = frozenset({
+    "status",
+    "flags",
+})
+
+CLOSED_EFFECTIVE_RESOURCE_DIGEST_KEYS: frozenset[str] = frozenset({
+    "version",
+    "digest",
+})
+
+CLOSED_RESOURCE_PROJECTION_KEYS: frozenset[str] = frozenset({
+    "version",
+    "selected_resource_triples",
+    "effective_descriptive_inputs",
+    "consumed_adaptations",
+})
+
+CLOSED_RESOURCE_TRIPLE_KEYS: frozenset[str] = frozenset({
+    "library_key",
+    "source_id",
+    "content_digest",
+})
+
+CLOSED_EFFECTIVE_DESCRIPTIVE_INPUT_KEYS: frozenset[str] = frozenset({
+    "field",
+    "role",
+    "value",
+})
+
+CLOSED_SELECTED_RESOURCE_REVISION_KEYS: frozenset[str] = frozenset({
+    "library_key",
+    "source_id",
+    "content_digest",
+    "kind",
 })
 
 # The fields a fused scene's ``prompt`` (or any other
@@ -1116,11 +1219,11 @@ def prepare_take_inputs(
         compiler version triple, the module identity, the
         plan revision and the session id.
     """
-    if not isinstance(session_id, int) or isinstance(session_id, bool):
+    if type(session_id) is not int:
         raise PreparationArgumentError(
             f"session_id must be an int, got {type(session_id).__name__}"
         )
-    if not isinstance(plan_revision, int) or isinstance(plan_revision, bool):
+    if type(plan_revision) is not int:
         raise PreparationArgumentError(
             f"plan_revision must be an int, got "
             f"{type(plan_revision).__name__}"
@@ -3915,6 +4018,612 @@ def compose_final_prompt(
     return final_prompt
 
 
+# The closed top-level keys authoring-v1 provenance must carry
+PROVENANCE_AUTHORING_KEYS: frozenset[str] = frozenset({
+    "preparation_version",
+    "mapping_version",
+    "compiler_version",
+    "module",
+    "session_id",
+    "plan_revision",
+    "take_id",
+    "selected_resource_revisions",
+    "field_mappings",
+    "adaptations",
+    "writer_synthesis",
+    "authoring_evidence",
+})
+
+
+def build_canonical_resource_projection(
+    preparation: dict,
+    validated_adaptations: list[dict] | None = None,
+) -> tuple[dict, dict]:
+    """Build the canonical resource projection and its lowercase 64-hex SHA-256 digest block.
+
+    Deterministic rules:
+      - selected_resource_triples sorted by (library_key, source_id, content_digest)
+      - effective_descriptive_inputs in resolver field and list order
+      - consumed_adaptations sorted by resource triple and resource_field
+      - only consumed adaptations with exact source_value and adapted_value
+      - computed via resource_store.canonical_digest
+    """
+    selected_resource_triples = [
+        {
+            "library_key": entry.get("library_key", ""),
+            "source_id": entry.get("source_id", ""),
+            "content_digest": entry.get("content_digest", ""),
+        }
+        for entry in preparation.get("resource_inputs", [])
+        if isinstance(entry, dict)
+    ]
+    selected_resource_triples.sort(
+        key=lambda item: (item["library_key"], item["source_id"], item["content_digest"])
+    )
+
+    effective_descriptive_inputs = []
+    resource_lookup: dict[tuple[str, str, str, str], Any] = {}
+    for entry in preparation.get("resource_inputs", []):
+        if not isinstance(entry, dict):
+            continue
+        lib_key = str(entry.get("library_key", ""))
+        src_id = str(entry.get("source_id", ""))
+        c_digest = str(entry.get("content_digest", ""))
+        descriptive = entry.get("descriptive_inputs", {})
+        if isinstance(descriptive, dict):
+            for field_name, value in descriptive.items():
+                effective_descriptive_inputs.append({
+                    "library_key": lib_key,
+                    "source_id": src_id,
+                    "content_digest": c_digest,
+                    "resource_field": str(field_name),
+                    "value": value,
+                })
+                resource_lookup[(lib_key, src_id, c_digest, str(field_name))] = value
+
+    consumed_adaptations = []
+    for ad in validated_adaptations or []:
+        if not isinstance(ad, dict):
+            continue
+        key = (
+            str(ad.get("library_key", "")),
+            str(ad.get("source_id", "")),
+            str(ad.get("content_digest", "")),
+            str(ad.get("resource_field", "")),
+        )
+        if key in resource_lookup:
+            source_val = resource_lookup[key]
+            consumed_adaptations.append({
+                "library_key": key[0],
+                "source_id": key[1],
+                "content_digest": key[2],
+                "resource_field": key[3],
+                "source_value": str(source_val) if isinstance(source_val, str) else source_val,
+                "adapted_value": str(ad.get("adapted_value", "")),
+            })
+
+    consumed_adaptations.sort(
+        key=lambda item: (
+            item["library_key"],
+            item["source_id"],
+            item["content_digest"],
+            item["resource_field"],
+        )
+    )
+
+    canonical_input = {
+        "selected_resource_triples": selected_resource_triples,
+        "effective_descriptive_inputs": effective_descriptive_inputs,
+        "consumed_adaptations": consumed_adaptations,
+    }
+    digest = resource_store.canonical_digest(canonical_input)
+
+    resource_projection = {
+        "version": 1,
+        "selected_resource_triples": selected_resource_triples,
+        "effective_descriptive_inputs": effective_descriptive_inputs,
+        "consumed_adaptations": consumed_adaptations,
+    }
+    effective_resource_input_digest = {
+        "version": 1,
+        "digest": digest,
+    }
+    return resource_projection, effective_resource_input_digest
+
+
+def build_authoring_evidence(
+    plan: dict,
+    preparation: dict,
+    *,
+    validated_adaptations: list[dict] | None = None,
+    manual_completion: Mapping[str, str] | None = None,
+    writer_block: dict | None = None,
+    operation_result: Any = None,
+) -> dict:
+    """Build the closed authoring_evidence block for an authoring-v1 prepared take."""
+    authoring = plan.get("authoring")
+    if not isinstance(authoring, dict):
+        raise PreparationError("plan has no authoring block")
+    mode = authoring.get("mode")
+    if mode not in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
+        raise PreparationError(f"unsupported authoring mode {mode!r}")
+
+    if mode == session_plan.PLAN_AUTHORING_KIND_AUTOMATIC:
+        if operation_result is None:
+            raise session_plan.DirectPreparationNotAllowed(
+                "automatic authoring requires fenced operation result"
+            )
+        raise session_plan.DirectPreparationNotAllowed(
+            "automatic authoring prepared takes not supported in task 2.4"
+        )
+
+    res_proj, digest_block = build_canonical_resource_projection(
+        preparation, validated_adaptations,
+    )
+
+    accepted_manual = {}
+    if manual_completion:
+        for k in sorted(manual_completion.keys()):
+            if k in TAKE_DESCRIPTIVE_CHOICES and manual_completion[k]:
+                accepted_manual[k] = str(manual_completion[k])
+
+    evidence = {
+        "schema_version": 1,
+        "mode": "manual",
+        "source": "manual",
+        "manual_completion": {
+            "descriptive_inputs": accepted_manual,
+        },
+        "writer_synthesis": _writer_synthesis_block(
+            kind=WRITER_KIND_MANUAL,
+            requested_fields=[],
+            writer_input=None,
+            writer_output=None,
+        ),
+        "predecessor_projection": {
+            "status": "not_applicable",
+        },
+        "resource_projection": res_proj,
+        "effective_resource_input_digest": digest_block,
+        "duplicate_flags": {
+            "status": "not_applicable",
+            "flags": [],
+        },
+        "operation_id": None,
+    }
+    return evidence
+
+
+def validate_authoring_prepared_evidence(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    row: Mapping[str, Any] | None = None,
+) -> session_plan.ValidatedAuthoringEvidence:
+    """Validate server-owned authoring evidence for an authoring-v1 prepared take snapshot.
+
+    Read-only primitive: never mutates database, never backfills or repairs data.
+    Fails closed on missing, altered, or fabricated evidence with AuthoringEvidenceInvalid.
+    Preserves pre-authoring and legacy rows without error.
+    """
+    if not isinstance(session_id, int) or isinstance(session_id, bool):
+        raise session_plan.AuthoringEvidenceInvalid(f"session_id must be an integer, got {type(session_id).__name__}")
+    if not isinstance(plan_revision, int) or isinstance(plan_revision, bool):
+        raise session_plan.AuthoringEvidenceInvalid(f"plan_revision must be an integer, got {type(plan_revision).__name__}")
+    if not isinstance(take_id, str) or not take_id.strip():
+        raise session_plan.AuthoringEvidenceInvalid("take_id must be a non-empty string")
+
+    session = db.one("SELECT id, settings, model_id FROM session WHERE id = ?", session_id)
+    if session is None:
+        raise session_plan.SessionNotFound(f"session {session_id} not found")
+    mode = session_plan.read_composition_mode(session["settings"])
+    if mode != session_plan.MODE_RESOURCE_V1:
+        raise session_plan.SessionNotInResourceMode(
+            f"session {session_id} composition_mode is {mode!r}, expected {session_plan.MODE_RESOURCE_V1!r}"
+        )
+
+    current_rev, plan = session_plan._load_current_resource_plan(session_id)
+    if current_rev != plan_revision:
+        raise session_plan.PlanRevisionStale(
+            f"session {session_id} plan revision is {current_rev}, requested {plan_revision}"
+        )
+
+    plan_kind = session_plan.classify_plan_authoring(plan)
+    if plan_kind not in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
+        # Pre-authoring or non-authoring: return without authoring-v1 validation
+        decoded = session_plan._decode_prepared_take(row) if row is not None else {}
+        return session_plan.ValidatedAuthoringEvidence(
+            decoded,
+            authoring_evidence=None,
+            is_authoring=False,
+        )
+
+    # Validate take exists in plan
+    take_def = None
+    for t in plan.get("takes", []):
+        if isinstance(t, dict) and t.get("take_id") == take_id:
+            take_def = t
+            break
+    if take_def is None:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"take_id {take_id!r} is not present in plan revision {plan_revision}"
+        )
+
+    # Load row if not provided
+    if row is None:
+        row = session_plan._prepared_take_row(session_id, plan_revision, take_id)
+    if row is None:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"prepared take {take_id!r} at plan revision {plan_revision} has no prepared row"
+        )
+    row_dict = dict(row)
+
+    # Status must be ready or generated
+    status = row_dict.get("status")
+    if status not in (
+        session_plan.PREPARED_TAKE_STATUS_READY,
+        session_plan.PREPARED_TAKE_STATUS_GENERATED,
+    ):
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"prepared take status {status!r} is not ready or generated"
+        )
+
+    # Row identity
+    if type(row_dict.get("session_id")) is not int or row_dict["session_id"] != session_id:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"row session_id {row_dict.get('session_id')} does not match requested {session_id}"
+        )
+    if type(row_dict.get("plan_revision")) is not int or row_dict["plan_revision"] != plan_revision:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"row plan_revision {row_dict.get('plan_revision')} does not match requested {plan_revision}"
+        )
+    if str(row_dict.get("take_id", "")) != take_id:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"row take_id {row_dict.get('take_id')!r} does not match requested {take_id!r}"
+        )
+
+    # Versions
+    if row_dict.get("compiler_version") != COMPILER_VERSION:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"compiler_version mismatch: {row_dict.get('compiler_version')!r} != {COMPILER_VERSION!r}"
+        )
+    if row_dict.get("mapping_version") != MAPPING_VERSION:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"mapping_version mismatch: {row_dict.get('mapping_version')!r} != {MAPPING_VERSION!r}"
+        )
+
+    # Provenance
+    prov_raw = row_dict.get("provenance")
+    if isinstance(prov_raw, str):
+        try:
+            provenance = json.loads(prov_raw)
+        except Exception as exc:
+            raise session_plan.AuthoringEvidenceInvalid(f"malformed provenance JSON: {exc}") from exc
+    elif isinstance(prov_raw, dict):
+        provenance = dict(prov_raw)
+    else:
+        raise session_plan.AuthoringEvidenceInvalid("provenance must be a JSON object")
+
+    if not isinstance(provenance, dict):
+        raise session_plan.AuthoringEvidenceInvalid("provenance must be a JSON object")
+
+    prov_keys = set(provenance.keys())
+    if prov_keys != PROVENANCE_AUTHORING_KEYS:
+        extra = sorted(prov_keys - PROVENANCE_AUTHORING_KEYS)
+        missing = sorted(PROVENANCE_AUTHORING_KEYS - prov_keys)
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"provenance keys mismatch: extra={extra}, missing={missing}"
+        )
+
+    if provenance.get("compiler_version") != COMPILER_VERSION:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"provenance compiler_version mismatch: {provenance.get('compiler_version')!r} != {COMPILER_VERSION!r}"
+        )
+    if provenance.get("mapping_version") != MAPPING_VERSION:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"provenance mapping_version mismatch: {provenance.get('mapping_version')!r} != {MAPPING_VERSION!r}"
+        )
+    if provenance.get("preparation_version") != PREPARATION_VERSION:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"provenance preparation_version mismatch: {provenance.get('preparation_version')!r} != {PREPARATION_VERSION!r}"
+        )
+    if provenance.get("module") != "backend.resource_preparation":
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"provenance module mismatch: {provenance.get('module')!r}"
+        )
+    if type(provenance.get("session_id")) is not int or provenance["session_id"] != session_id:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"provenance session_id mismatch: {provenance.get('session_id')} != {session_id}"
+        )
+    if type(provenance.get("plan_revision")) is not int or provenance["plan_revision"] != plan_revision:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"provenance plan_revision mismatch: {provenance.get('plan_revision')} != {plan_revision}"
+        )
+    if provenance.get("take_id") != take_id:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"provenance take_id mismatch: {provenance.get('take_id')!r} != {take_id!r}"
+        )
+    if not isinstance(provenance.get("field_mappings"), dict):
+        raise session_plan.AuthoringEvidenceInvalid("provenance field_mappings must be a dict")
+
+    # authoring_evidence block
+    auth_ev = provenance.get("authoring_evidence")
+    if not isinstance(auth_ev, dict):
+        raise session_plan.AuthoringEvidenceInvalid("missing or malformed authoring_evidence block in provenance")
+
+    ev_keys = set(auth_ev.keys())
+    if ev_keys != CLOSED_AUTHORING_EVIDENCE_KEYS:
+        extra = sorted(ev_keys - CLOSED_AUTHORING_EVIDENCE_KEYS)
+        missing = sorted(CLOSED_AUTHORING_EVIDENCE_KEYS - ev_keys)
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"authoring_evidence keys mismatch: extra={extra}, missing={missing}"
+        )
+
+    if type(auth_ev.get("schema_version")) is not int or auth_ev["schema_version"] != 1:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"unsupported authoring_evidence schema_version: {auth_ev.get('schema_version')}"
+        )
+
+    plan_authoring_mode = plan.get("authoring", {}).get("mode")
+    if auth_ev.get("mode") != plan_authoring_mode:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"mode mismatch: evidence mode {auth_ev.get('mode')!r} != plan authoring mode {plan_authoring_mode!r}"
+        )
+
+    if plan_authoring_mode == "automatic":
+        raise session_plan.AuthoringEvidenceInvalid(
+            "automatic authoring prepared takes cannot be validated without fenced operation bridge"
+        )
+    elif plan_authoring_mode == "manual":
+        if auth_ev.get("source") != "manual":
+            raise session_plan.AuthoringEvidenceInvalid("manual authoring must have source 'manual'")
+        if auth_ev.get("operation_id") is not None:
+            raise session_plan.AuthoringEvidenceInvalid("manual authoring must have null operation_id")
+
+        pred = auth_ev.get("predecessor_projection")
+        if not isinstance(pred, dict):
+            raise session_plan.AuthoringEvidenceInvalid("predecessor_projection in authoring_evidence must be a dict")
+        if set(pred.keys()) != CLOSED_PREDECESSOR_PROJECTION_KEYS:
+            extra = sorted(set(pred.keys()) - CLOSED_PREDECESSOR_PROJECTION_KEYS)
+            missing = sorted(CLOSED_PREDECESSOR_PROJECTION_KEYS - set(pred.keys()))
+            raise session_plan.AuthoringEvidenceInvalid(
+                f"predecessor_projection keys mismatch: extra={extra}, missing={missing}"
+            )
+        if pred != {"status": "not_applicable"}:
+            raise session_plan.AuthoringEvidenceInvalid("manual authoring predecessor_projection must be {'status': 'not_applicable'}")
+
+        dup = auth_ev.get("duplicate_flags")
+        if not isinstance(dup, dict):
+            raise session_plan.AuthoringEvidenceInvalid("duplicate_flags in authoring_evidence must be a dict")
+        if set(dup.keys()) != CLOSED_DUPLICATE_FLAGS_KEYS:
+            extra = sorted(set(dup.keys()) - CLOSED_DUPLICATE_FLAGS_KEYS)
+            missing = sorted(CLOSED_DUPLICATE_FLAGS_KEYS - set(dup.keys()))
+            raise session_plan.AuthoringEvidenceInvalid(
+                f"duplicate_flags keys mismatch: extra={extra}, missing={missing}"
+            )
+        if dup != {"status": "not_applicable", "flags": []}:
+            raise session_plan.AuthoringEvidenceInvalid("manual authoring duplicate_flags must be {'status': 'not_applicable', 'flags': []}")
+
+        # writer_synthesis check
+        ws = auth_ev.get("writer_synthesis")
+        if not isinstance(ws, dict):
+            raise session_plan.AuthoringEvidenceInvalid("writer_synthesis in authoring_evidence must be a dict")
+        if set(ws.keys()) != CLOSED_WRITER_SYNTHESIS_KEYS:
+            extra = sorted(set(ws.keys()) - CLOSED_WRITER_SYNTHESIS_KEYS)
+            missing = sorted(CLOSED_WRITER_SYNTHESIS_KEYS - set(ws.keys()))
+            raise session_plan.AuthoringEvidenceInvalid(
+                f"authoring_evidence writer_synthesis keys mismatch: extra={extra}, missing={missing}"
+            )
+        expected_manual_ws = {
+            "version": WRITER_SYNTHESIS_VERSION,
+            "kind": WRITER_KIND_MANUAL,
+            "requested_fields": [],
+            "writer_input": None,
+            "writer_output": None,
+        }
+        if ws != expected_manual_ws:
+            raise session_plan.AuthoringEvidenceInvalid(
+                "manual authoring writer_synthesis does not match expected manual shape"
+            )
+
+        prov_ws = provenance.get("writer_synthesis")
+        if not isinstance(prov_ws, dict):
+            raise session_plan.AuthoringEvidenceInvalid("provenance writer_synthesis must be a dict")
+        if set(prov_ws.keys()) != CLOSED_WRITER_SYNTHESIS_KEYS:
+            extra = sorted(set(prov_ws.keys()) - CLOSED_WRITER_SYNTHESIS_KEYS)
+            missing = sorted(CLOSED_WRITER_SYNTHESIS_KEYS - set(prov_ws.keys()))
+            raise session_plan.AuthoringEvidenceInvalid(
+                f"provenance writer_synthesis keys mismatch: extra={extra}, missing={missing}"
+            )
+        if prov_ws != ws:
+            raise session_plan.AuthoringEvidenceInvalid("provenance writer_synthesis does not match authoring_evidence writer_synthesis")
+
+        # manual_completion check
+        mc = auth_ev.get("manual_completion")
+        if not isinstance(mc, dict):
+            raise session_plan.AuthoringEvidenceInvalid("authoring_evidence manual_completion must be a dict")
+        if set(mc.keys()) != CLOSED_MANUAL_COMPLETION_KEYS:
+            extra = sorted(set(mc.keys()) - CLOSED_MANUAL_COMPLETION_KEYS)
+            missing = sorted(CLOSED_MANUAL_COMPLETION_KEYS - set(mc.keys()))
+            raise session_plan.AuthoringEvidenceInvalid(
+                f"authoring_evidence manual_completion keys mismatch: extra={extra}, missing={missing}"
+            )
+        manual_descriptive = mc["descriptive_inputs"]
+        if not isinstance(manual_descriptive, dict):
+            raise session_plan.AuthoringEvidenceInvalid("manual_completion descriptive_inputs must be a dict")
+        invalid_mc_keys = sorted(set(manual_descriptive.keys()) - TAKE_DESCRIPTIVE_CHOICES)
+        if invalid_mc_keys:
+            raise session_plan.AuthoringEvidenceInvalid(f"manual_completion contains forbidden keys: {invalid_mc_keys}")
+        for k, v in manual_descriptive.items():
+            if k in take_def and take_def[k]:
+                raise session_plan.AuthoringEvidenceInvalid(f"manual_completion attempts to override explicit take choice {k!r}")
+            if not isinstance(v, str) or not v.strip():
+                raise session_plan.AuthoringEvidenceInvalid(f"manual_completion value for {k!r} must be non-empty string")
+    else:
+        raise session_plan.AuthoringEvidenceInvalid(f"unsupported plan authoring mode: {plan_authoring_mode!r}")
+
+    # Derive fresh preparation with manual_descriptive
+    fresh_prep = prepare_take_inputs(
+        session_id, plan_revision, take_id,
+        manual_completion=manual_descriptive,
+    )
+
+    fresh_manual = fresh_prep.get("manual_completion", {}).get("descriptive_inputs") or {}
+    if manual_descriptive != fresh_manual:
+        raise session_plan.AuthoringEvidenceInvalid(
+            "manual_completion descriptive_inputs does not match server normalization"
+        )
+
+    is_reference = bool(fresh_prep.get("reference", False))
+    ref_kind = ""
+    if is_reference:
+        ref_kind = (db.one(
+            "SELECT w.kind AS kind FROM session s "
+            "LEFT JOIN workflow w ON w.id = s.reference_workflow_id "
+            "WHERE s.id = ?",
+            session_id,
+        ) or {})["kind"] or ""
+    unlocked = [] if (is_reference and ref_kind != "guide") else compute_unlocked_fields(fresh_prep)
+    if unlocked:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"take has unlocked descriptive choices {sorted(unlocked)!r}; manual_completion incomplete"
+        )
+
+    # Server-owned field_mappings recomputation and exact match
+    expected_field_mappings: dict[str, Any] = {}
+    for entry in fresh_prep.get("resource_inputs", []):
+        kind = entry.get("kind", "")
+        if kind and kind not in expected_field_mappings:
+            expected_field_mappings[kind] = resource_prompts.mapping_for_kind(kind)
+
+    persisted_field_mappings = provenance.get("field_mappings")
+    if not isinstance(persisted_field_mappings, dict):
+        raise session_plan.AuthoringEvidenceInvalid("provenance field_mappings must be a dict")
+    if persisted_field_mappings != expected_field_mappings:
+        raise session_plan.AuthoringEvidenceInvalid(
+            "provenance field_mappings does not match server derivation"
+        )
+
+    # Check effective_state
+    eff_raw = row_dict.get("effective_state")
+    if isinstance(eff_raw, str):
+        try:
+            effective_state = json.loads(eff_raw)
+        except Exception as exc:
+            raise session_plan.AuthoringEvidenceInvalid(f"malformed effective_state JSON: {exc}") from exc
+    elif isinstance(eff_raw, dict):
+        effective_state = dict(eff_raw)
+    else:
+        raise session_plan.AuthoringEvidenceInvalid("effective_state must be a JSON object")
+
+    expected_effective_state = dict(fresh_prep.get("effective_state") or {})
+    expected_effective_state["take_choices"] = dict(fresh_prep.get("effective_take_choices") or {})
+    if effective_state != expected_effective_state:
+        raise session_plan.AuthoringEvidenceInvalid("effective_state does not match server derivation")
+
+    # Check adaptations in provenance
+    raw_adaptations = provenance.get("adaptations")
+    if raw_adaptations is not None and not isinstance(raw_adaptations, list):
+        raise session_plan.AuthoringEvidenceInvalid("provenance adaptations must be a list or None")
+
+    authoritative_adaptations = load_take_adaptations(session_id, plan_revision, take_id)
+    expected_adaptations = [
+        {
+            "library_key": str(item["library_key"]),
+            "source_id": str(item["source_id"]),
+            "content_digest": str(item["content_digest"]),
+            "resource_field": str(item["resource_field"]),
+            "adapted_value": str(item["adapted_value"]),
+        }
+        for item in _applicable_adaptations(fresh_prep, authoritative_adaptations)
+    ]
+    if raw_adaptations != expected_adaptations:
+        raise session_plan.AuthoringEvidenceInvalid(
+            "provenance adaptations does not match server derivation"
+        )
+
+    # Canonical resource projection and digest
+    expected_res_proj, expected_digest_block = build_canonical_resource_projection(
+        fresh_prep, expected_adaptations,
+    )
+    rp = auth_ev.get("resource_projection")
+    if not isinstance(rp, dict):
+        raise session_plan.AuthoringEvidenceInvalid("resource_projection in authoring_evidence must be a dict")
+    if set(rp.keys()) != CLOSED_RESOURCE_PROJECTION_KEYS:
+        extra = sorted(set(rp.keys()) - CLOSED_RESOURCE_PROJECTION_KEYS)
+        missing = sorted(CLOSED_RESOURCE_PROJECTION_KEYS - set(rp.keys()))
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"resource_projection keys mismatch: extra={extra}, missing={missing}"
+        )
+    if type(rp.get("version")) is not int or rp["version"] != 1:
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"resource_projection version must be integer 1, got {rp.get('version')!r}"
+        )
+    if rp != expected_res_proj:
+        raise session_plan.AuthoringEvidenceInvalid("resource_projection does not match server derivation")
+
+    dig = auth_ev.get("effective_resource_input_digest")
+    if not isinstance(dig, dict):
+        raise session_plan.AuthoringEvidenceInvalid("effective_resource_input_digest in authoring_evidence must be a dict")
+    if set(dig.keys()) != CLOSED_EFFECTIVE_RESOURCE_DIGEST_KEYS:
+        extra = sorted(set(dig.keys()) - CLOSED_EFFECTIVE_RESOURCE_DIGEST_KEYS)
+        missing = sorted(CLOSED_EFFECTIVE_RESOURCE_DIGEST_KEYS - set(dig.keys()))
+        raise session_plan.AuthoringEvidenceInvalid(
+            f"effective_resource_input_digest keys mismatch: extra={extra}, missing={missing}"
+        )
+    if type(dig.get("version")) is not int or dig["version"] != 1:
+        raise session_plan.AuthoringEvidenceInvalid(
+            "effective_resource_input_digest version must be integer 1, "
+            f"got {dig.get('version')!r}"
+        )
+    if dig != expected_digest_block:
+        raise session_plan.AuthoringEvidenceInvalid("effective_resource_input_digest does not match server derivation")
+
+    # Final prompt
+    final_prompt = row_dict.get("final_prompt")
+    if not isinstance(final_prompt, str) or not final_prompt.strip():
+        raise session_plan.AuthoringEvidenceInvalid("final_prompt must be a non-empty string")
+    expected_final_prompt = compose_final_prompt(
+        session_id, fresh_prep, adaptations=expected_adaptations,
+    )
+    if final_prompt != expected_final_prompt:
+        raise session_plan.AuthoringEvidenceInvalid("final_prompt does not match server composition")
+
+    # Selected resource revisions in provenance
+    expected_revisions = [
+        {
+            "library_key": entry.get("library_key", ""),
+            "source_id": entry.get("source_id", ""),
+            "content_digest": entry.get("content_digest", ""),
+            "kind": entry.get("kind", ""),
+        }
+        for entry in fresh_prep.get("resource_inputs", [])
+        if isinstance(entry, dict)
+    ]
+    expected_revisions.sort(key=lambda item: (
+        item["library_key"], item["source_id"], item["content_digest"],
+    ))
+    if provenance.get("selected_resource_revisions") != expected_revisions:
+        raise session_plan.AuthoringEvidenceInvalid("selected_resource_revisions in provenance does not match server derivation")
+
+    decoded_snapshot = dict(row_dict)
+    if isinstance(decoded_snapshot.get("effective_state"), str):
+        try:
+            decoded_snapshot["effective_state"] = json.loads(decoded_snapshot["effective_state"])
+        except Exception:
+            pass
+    if isinstance(decoded_snapshot.get("provenance"), str):
+        try:
+            decoded_snapshot["provenance"] = json.loads(decoded_snapshot["provenance"])
+        except Exception:
+            pass
+    return session_plan.ValidatedAuthoringEvidence(
+        decoded_snapshot,
+        authoring_evidence=auth_ev,
+        is_authoring=True,
+    )
+
+
 def finalize_take_preparation(
     session_id: int,
     plan_revision: int,
@@ -3988,6 +4697,12 @@ def finalize_take_preparation(
 
     # 2. Authority enforcement
     session_plan.assert_direct_preparation_allowed(plan)
+    plan_kind = session_plan.classify_plan_authoring(plan)
+    if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
+        if writer is not None:
+            raise PreparationArgumentError(
+                "writer callable cannot be used for authoring preparation; use manual completion"
+            )
 
     # 3. Check existing row in prepared_take
     existing_row = session_plan._prepared_take_row(  # noqa: SLF001
@@ -4003,6 +4718,13 @@ def finalize_take_preparation(
             session_plan.PREPARED_TAKE_STATUS_READY,
             session_plan.PREPARED_TAKE_STATUS_GENERATED,
         ):
+            if (
+                plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC)
+                and existing_row["status"] == session_plan.PREPARED_TAKE_STATUS_READY
+            ):
+                validate_authoring_prepared_evidence(
+                    session_id, plan_revision, take_id, row=existing_row,
+                )
             decoded = session_plan._decode_prepared_take(existing_row)  # noqa: SLF001
             # Reuse existing snapshot without invoking writer again
             if manual_completion:
@@ -4074,6 +4796,11 @@ def finalize_take_preparation(
     unlocked = [] if (is_reference and ref_kind != "guide") else compute_unlocked_fields(preparation)
     writer_block = None
     if unlocked:
+        if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
+            raise PreparationArgumentError(
+                f"session {session_id} take {take_id!r} has unlocked descriptive choices "
+                f"{sorted(unlocked)!r}; supply manual_completion"
+            )
         if writer is not None:
             synth_res = synthesize_unlocked_fields(
                 session_id, plan_revision, take_id,
@@ -4089,7 +4816,14 @@ def finalize_take_preparation(
                 f"{sorted(unlocked)!r}; supply manual_completion or provide a writer callable"
             )
     else:
-        if prior_writer_block is not None:
+        if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
+            writer_block = _writer_synthesis_block(
+                kind=WRITER_KIND_MANUAL,
+                requested_fields=[],
+                writer_input=None,
+                writer_output=None,
+            )
+        elif prior_writer_block is not None:
             writer_block = prior_writer_block
         elif manual_completion:
             writer_block = _writer_synthesis_block(
@@ -4174,8 +4908,30 @@ def finalize_take_preparation(
         "writer_synthesis": writer_block,
     }
 
-    # 10. Persist atomically
+    if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
+        provenance["authoring_evidence"] = build_authoring_evidence(
+            plan=plan,
+            preparation=preparation,
+            validated_adaptations=validated_adaptations,
+            manual_completion=validated_manual,
+            writer_block=writer_block,
+        )
+
+    # 10. Persist through the authority boundary for this plan kind
     session_plan.begin_preparation(session_id, plan_revision, take_id)
+    if plan_kind == session_plan.PLAN_AUTHORING_KIND_MANUAL:
+        authoring_result = _AuthoringPreparedResult(
+            _AUTHORING_RESULT_SEAL,
+            session_id,
+            plan_revision,
+            take_id,
+            final_prompt,
+            effective_state,
+            MAPPING_VERSION,
+            COMPILER_VERSION,
+            provenance,
+        )
+        return session_plan.complete_authoring_preparation(authoring_result)
     return session_plan.complete_preparation(
         session_id,
         plan_revision,
