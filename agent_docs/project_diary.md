@@ -169,3 +169,11 @@
   authority. The durable selection row determines the usable preview, TTL is a
   logical expiry boundary, terminal cleanup removes the authoritative token,
   and Task 1.6 introduces no global filesystem sweep.
+- Task 2.1 is formally closed after independent acceptance. The reusable opt-in
+  `RequestLimitRoute` applies the authoritative 10 MiB actual-streamed-body
+  limit before JSON/Pydantic or multipart parsing and writes, including missing
+  or false Content-Length. Pre-read replay never performs a second network
+  read; incomplete disconnects stop before downstream work, while legacy
+  endpoints remain unaffected. The closure adds 27 tests and brings the
+  reproducible backend collection to 1,924 tests. Task 2.2 is the next pending
+  task.
