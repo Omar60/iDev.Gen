@@ -186,3 +186,13 @@
   credentials/query secrets, provider bodies, and exception strings. The 25 new
   tests bring the reproducible collection to 1,949. Future consumers remain
   out of scope; Task 2.3 is next.
+- Task 2.3 is formally closed after independent acceptance. The authority
+  matrix blocks public raw begin/complete for every plan with authoring
+  metadata, blocks automatic direct and bulk preparation, and closes the
+  direct Python finalizer bypass before persistence or assistant work.
+  Automatic readiness is reserved for the future fenced `prepare_takes`
+  operation. Validated manual preparation, historical pre-authoring expert
+  preparation, and legacy composition remain compatible. Malformed authoring
+  fails closed, `schema_version` accepts only integer `1`, and bulk preflight
+  prevents partial mutation. The closure adds 22 authority tests and the
+  reproducible collection is 1,971 tests; Task 2.4 is next.

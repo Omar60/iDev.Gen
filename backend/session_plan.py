@@ -99,6 +99,14 @@ VALID_WARDROBE_SCOPES: frozenset[str] = frozenset(
 )
 
 
+AUTHORING_MODE_AUTOMATIC = "automatic"
+AUTHORING_MODE_MANUAL = "manual"
+
+PLAN_AUTHORING_KIND_PRE_AUTHORING_EXPERT = "pre_authoring_expert"
+PLAN_AUTHORING_KIND_MANUAL = "manual"
+PLAN_AUTHORING_KIND_AUTOMATIC = "automatic"
+
+
 # -- Errors -----------------------------------------------------------------
 
 
@@ -161,6 +169,10 @@ class PlanConstantsFrozenAfterGenerated(Exception):
 
 class PreparedTakeConflict(Exception):
     """A prepared-take snapshot would overwrite immutable history."""
+
+
+class PreparationAuthorityConflict(PreparedTakeConflict):
+    """A preparation request violates the mode-specific authoring authority matrix."""
 
 
 class PreparedTakePersistenceError(Exception):
@@ -1143,6 +1155,56 @@ def _validate_preparation_target(
             f"take_id {take_id!r} is not present in plan revision {plan_revision}"
         )
     return plan
+
+
+def classify_plan_authoring(plan: dict) -> str:
+    """Classify plan authoring authority into pre-authoring expert, manual, or automatic.
+
+    Fails closed with PlanValidationError if an authoring block is present but malformed
+    (e.g. null, empty, non-dict, schema_version != 1, boolean version, or missing/unknown mode).
+    """
+    if not isinstance(plan, dict):
+        raise PlanValidationError("plan must be an object")
+    if "authoring" not in plan:
+        return PLAN_AUTHORING_KIND_PRE_AUTHORING_EXPERT
+    auth = plan["authoring"]
+    if not isinstance(auth, dict) or not auth:
+        raise PlanValidationError("plan authoring block must be a non-empty object")
+    schema_ver = auth.get("schema_version")
+    if type(schema_ver) is not int or schema_ver != 1:
+        raise PlanValidationError(
+            f"plan authoring schema_version must be 1, got {schema_ver!r}"
+        )
+    mode = auth.get("mode")
+    if mode == AUTHORING_MODE_MANUAL:
+        return PLAN_AUTHORING_KIND_MANUAL
+    if mode == AUTHORING_MODE_AUTOMATIC:
+        return PLAN_AUTHORING_KIND_AUTOMATIC
+    raise PlanValidationError(
+        f"plan authoring mode must be {AUTHORING_MODE_AUTOMATIC!r} or {AUTHORING_MODE_MANUAL!r}, got {mode!r}"
+    )
+
+
+def assert_raw_preparation_allowed(plan: dict) -> None:
+    """Enforce that public raw begin/complete is only available for pre-authoring plans."""
+    kind = classify_plan_authoring(plan)
+    if kind != PLAN_AUTHORING_KIND_PRE_AUTHORING_EXPERT:
+        raise PreparationAuthorityConflict(
+            f"server_owned_preparation_required: plan authoring mode {kind!r} "
+            f"does not allow public raw preparation; raw begin/complete is restricted "
+            f"to pre-authoring expert plans"
+        )
+
+
+def assert_direct_preparation_allowed(plan: dict) -> None:
+    """Enforce that direct preparation routes are not accessible for automatic authoring."""
+    kind = classify_plan_authoring(plan)
+    if kind == PLAN_AUTHORING_KIND_AUTOMATIC:
+        raise PreparationAuthorityConflict(
+            "automatic_requires_operation: plan authoring mode 'automatic' "
+            "does not allow direct preparation; automatic ready state requires "
+            "a fenced prepare_takes operation"
+        )
 
 
 def _decode_prepared_take(row: dict) -> dict:

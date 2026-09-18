@@ -9,13 +9,14 @@ agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 8 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 9 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
 have now passed independent acceptance and are formally closed. Task 2.1 has
 also passed independent acceptance and is formally closed. Task 2.2 has now
-passed independent acceptance and is formally closed. The completed
+passed independent acceptance and is formally closed. Task 2.3 has now passed
+independent acceptance and is formally closed. The completed
 1.1-1.6 integration gate covers the browser selection lifecycle, canonical
 import/replay, compatibility, safe public projections, real frontend contract
 coverage, concurrency, recovery, and payload-free library filtering. Task 2.1
@@ -23,16 +24,18 @@ adds the shared actual-streamed-body limit boundary described below.
 
 ## Current Position
 
-Task 2.2 is complete. Its shared `backend.enhance` transport preserves the
-existing provider URL, authentication, timeout, and reasoning fallback for
-historical and structured callers. `run_structured(...)` preserves fields,
-values, types, nested arrays, and provider order without flattening; its root is
-a JSON object and duplicate JSON keys are rejected. Structured retry keeps
-`response_format`, while shared error sanitization prevents exposure of
-`llm_key`, Authorization, URL credentials/query secrets, provider bodies, and
-exception strings. Historical `run(...)`, `clean`, and `clean_fields` behavior
-and callers remain compatible; future consumers remain out of scope. Its 25
-new tests bring the reproducible collection to 1,949.
+Task 2.3 is complete. The automatic/manual/pre-authoring authority matrix is
+enforced: public raw begin/complete returns 409 for every plan with authoring
+metadata; direct and bulk automatic preparation are blocked; and direct Python
+`finalize_take_preparation` rejects automatic plans at the domain boundary.
+Automatic plans can reach ready only through the future fenced `prepare_takes`
+operation. Manual authoring retains the validated manual preparation boundary
+and historical unset/unlocked-field checks; pre-authoring expert plans retain
+historical begin/complete and preparation; legacy composition is unchanged.
+Malformed authoring fails closed, `schema_version` requires the strict integer
+`1`, bulk preflight prevents partial mutation, and rejections precede
+persistence and assistant work. The task adds 22 authority tests and the
+reproducible collection is 1,971 tests.
 
 Task 2.1 remains complete. Its shared actual-streamed-body limit boundary enforces
 the authoritative 10 MiB body limit from actual bytes before JSON/Pydantic or
@@ -50,5 +53,5 @@ remain intact.
 
 ## Next Milestone
 
-Task 2.3 is the next pending task. Do not begin it automatically; prepare its
+Task 2.4 is the next pending task. Do not begin it automatically; prepare its
 bounded handoff only when explicitly requested.

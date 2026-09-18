@@ -2,31 +2,32 @@
 
 ## Detailed Current State
 
-Task 2.2 of `simplify-resource-session-workflow` passed final independent
+Task 2.3 of `simplify-resource-session-workflow` passed final independent
 acceptance over the complete working-tree delta from baseline
-`cb09ac5e71434957e1311bd06566c233ed8c3923` and is formally closed.
+`be5ecba8cbd2fc15ca64156611f70ac1d97c6094` and is formally closed.
 
-The accepted implementation adds a shared `backend.enhance` transport and a
-field-preserving `run_structured(...)` path. It preserves fields, values, types,
-nested arrays, and provider order without flattening; the structured root is a
-JSON object and duplicate JSON keys are rejected. Historical `run(...)`, `clean`,
-`clean_fields`, URL/model selection, authentication, timeout, and callers remain
-compatible. Reasoning fallback is shared and structured retry preserves
-`response_format`. Error sanitization prevents exposure of `llm_key`,
-Authorization, URL credentials/query secrets, provider bodies, and exception
-strings. No future consumer was migrated or implemented.
+The accepted implementation enforces the automatic/manual/pre-authoring
+authority matrix. Public raw begin/complete is rejected with 409 for every
+plan carrying authoring metadata. Automatic direct and bulk preparation are
+rejected, and the domain `finalize_take_preparation` path rejects automatic
+plans before persistence or assistant work. Automatic plans are reserved for
+the future fenced `prepare_takes` operation. Manual authoring keeps its
+validated manual preparation boundary and historical unset/unlocked-field
+validation. Pre-authoring expert plans retain historical begin/complete and
+preparation, while legacy composition remains unchanged. Malformed authoring
+fails closed and `schema_version` requires the strict integer `1`.
 
 ## Verification
 
-- The focused assistant suites passed; 25 new tests were added and the
-  reproducible collection contains 1,949 tests. The complete pytest suite,
-  privacy checks (10), shoot checks (36), `git diff --check`, and strict
-  OpenSpec validation all passed.
-- The accepted closure includes only `backend/enhance.py`,
-  `tests/test_enhance.py`, the Task 2.2 checkbox, and these three workflow
-  documents.
+- The authority suite has 22 tests and passes.
+- The focal suites pass with 269 tests; the reproducible full collection is
+  1,971 tests and the complete suite is green.
+- Privacy checks (10), shoot checks (36), `git diff --check`, and strict
+  OpenSpec validation pass.
+- Bulk preflight prevents partial mutation, and all authority rejections occur
+  before persistence and assistant work.
 
 ## Next Entry Point
 
-Task 2.2 is accepted and checked. Task 2.3 remains pending. Do not begin Task
-2.3 automatically; select and verify its own scope first.
+Task 2.3 is checked and formally closed. Task 2.4 is the next pending task.
+Do not begin Task 2.4 automatically; select and verify its own scope first.

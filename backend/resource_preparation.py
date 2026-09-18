@@ -3986,7 +3986,10 @@ def finalize_take_preparation(
             f"take_id {take_id!r} is not present in plan revision {plan_revision}"
         )
 
-    # 2. Check existing row in prepared_take
+    # 2. Authority enforcement
+    session_plan.assert_direct_preparation_allowed(plan)
+
+    # 3. Check existing row in prepared_take
     existing_row = session_plan._prepared_take_row(  # noqa: SLF001
         session_id, plan_revision, take_id,
     )

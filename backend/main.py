@@ -3416,6 +3416,7 @@ def _prepared_take_http_error(exc: Exception) -> HTTPException:
         exc, (
             session_plan.PlanRevisionStale,
             session_plan.PreparedTakeConflict,
+            session_plan.PreparationAuthorityConflict,
             session_plan.PlanReviewNotApproved,
         ),
     ):
@@ -3435,6 +3436,8 @@ def begin_plan_preparation(sid: int, p: PreparedTakeBeginIn):
     if not is_resource_planning_enabled():
         raise HTTPException(503, "Resource planning is disabled by configuration")
     try:
+        plan = session_plan._validate_preparation_target(sid, p.plan_revision, p.take_id)
+        session_plan.assert_raw_preparation_allowed(plan)
         return session_plan.begin_preparation(
             sid, p.plan_revision, p.take_id,
         )
@@ -3442,6 +3445,7 @@ def begin_plan_preparation(sid: int, p: PreparedTakeBeginIn):
         session_plan.PlanValidationError,
         session_plan.PlanRevisionStale,
         session_plan.PreparedTakeConflict,
+        session_plan.PreparationAuthorityConflict,
         session_plan.SessionNotInResourceMode,
         session_plan.SessionNotFound,
         session_plan.PreparedTakePersistenceError,
@@ -3455,6 +3459,8 @@ def complete_plan_preparation(sid: int, p: PreparedTakeCompleteIn):
     if not is_resource_planning_enabled():
         raise HTTPException(503, "Resource planning is disabled by configuration")
     try:
+        plan = session_plan._validate_preparation_target(sid, p.plan_revision, p.take_id)
+        session_plan.assert_raw_preparation_allowed(plan)
         return session_plan.complete_preparation(
             sid,
             p.plan_revision,
@@ -3469,6 +3475,7 @@ def complete_plan_preparation(sid: int, p: PreparedTakeCompleteIn):
         session_plan.PlanValidationError,
         session_plan.PlanRevisionStale,
         session_plan.PreparedTakeConflict,
+        session_plan.PreparationAuthorityConflict,
         session_plan.SessionNotInResourceMode,
         session_plan.SessionNotFound,
         session_plan.PreparedTakePersistenceError,
@@ -3697,6 +3704,13 @@ def prepare_take_endpoint(sid: int, take_id: str, p: TakePrepareIn):
     if take_id not in takes:
         raise HTTPException(422, f"take_id {take_id!r} not found in current plan revision {current_rev}")
     try:
+        session_plan.assert_direct_preparation_allowed(plan)
+    except (
+        session_plan.PlanValidationError,
+        session_plan.PreparationAuthorityConflict,
+    ) as exc:
+        raise _prepared_take_http_error(exc)
+    try:
         return resource_preparation.finalize_take_preparation(
             sid,
             p.plan_revision,
@@ -3731,10 +3745,40 @@ def prepare_plan_takes_endpoint(sid: int, p: PlanPreparationsPrepareIn):
         )
     takes = [t.get("take_id") for t in plan.get("takes", []) if isinstance(t, dict)]
     target_ids = p.take_ids if p.take_ids is not None else takes
-    snapshots = []
+    take_map = {
+        t["take_id"]: t
+        for t in plan.get("takes", [])
+        if isinstance(t, dict) and "take_id" in t
+    }
     for tid in target_ids:
         if tid not in takes:
             raise HTTPException(422, f"take_id {tid!r} not found in plan revision {p.plan_revision}")
+    if p.manual_completions:
+        for manual_tid in p.manual_completions:
+            if manual_tid not in target_ids:
+                raise HTTPException(
+                    422,
+                    f"manual_completions target {manual_tid!r} is not in target take_ids",
+                )
+    try:
+        session_plan.assert_direct_preparation_allowed(plan)
+    except (
+        session_plan.PlanValidationError,
+        session_plan.PreparationAuthorityConflict,
+    ) as exc:
+        raise _prepared_take_http_error(exc)
+
+    if p.manual_completions:
+        for manual_tid, manual_val in p.manual_completions.items():
+            take = take_map[manual_tid]
+            try:
+                take_choices = resource_preparation._take_choices_from_take(take)
+                resource_preparation._validate_manual_completion(manual_val, take_choices)
+            except resource_preparation.PreparationError as exc:
+                raise _prepared_take_http_error(exc)
+
+    snapshots = []
+    for tid in target_ids:
         manual = (p.manual_completions or {}).get(tid)
         try:
             snap = resource_preparation.finalize_take_preparation(
