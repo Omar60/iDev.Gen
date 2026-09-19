@@ -53,6 +53,7 @@ from backend import resource_preparation
 from backend.resource_import import CommitAborted, StaleFingerprintError
 from backend import resource_translation
 from backend import resource_selection
+from backend.request_limits import RequestLimitRoute
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -2783,30 +2784,155 @@ def commit_import_selection(selection_id: str, p: ResourceSelectionCommitIn):
     return JSONResponse(content=result_view, status_code=200)
 
 
+def _translation_limit_post(path: str):
+    def decorator(func):
+        app.router.add_api_route(
+            path,
+            func,
+            methods=["POST"],
+            route_class_override=RequestLimitRoute,
+        )
+        return func
+    return decorator
+
+
 class ResourceTranslationPreviewIn(BaseModel):
     translation_map: Any = None
     map_path: str | None = None
+    selection_id: str | None = None
+    file_id: str | None = None
+    expected_revision: int | None = None
+
+    @field_validator("expected_revision", mode="before")
+    @classmethod
+    def validate_revision_strict(cls, v: Any) -> int | None:
+        if v is None:
+            return None
+        return resource_selection.validate_json_revision(v)
+
+    @field_validator("selection_id", "file_id", mode="before")
+    @classmethod
+    def validate_safe_str(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        if not isinstance(v, str) or isinstance(v, bool) or not resource_selection._is_safe_public_string(v):
+            raise ValueError("Must be a non-empty safe string")
+        return v
 
 
 class ResourceTranslationApplyIn(BaseModel):
     translation_map: Any = None
     map_path: str | None = None
     attestation_token: str
+    selection_id: str | None = None
+    file_id: str | None = None
+    expected_revision: int | None = None
+
+    @field_validator("expected_revision", mode="before")
+    @classmethod
+    def validate_revision_strict(cls, v: Any) -> int | None:
+        if v is None:
+            return None
+        return resource_selection.validate_json_revision(v)
+
+    @field_validator("selection_id", "file_id", mode="before")
+    @classmethod
+    def validate_safe_str(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        if not isinstance(v, str) or isinstance(v, bool) or not resource_selection._is_safe_public_string(v):
+            raise ValueError("Must be a non-empty safe string")
+        return v
 
 
 class ResourceRevisionTranslationIn(BaseModel):
     translation: dict[str, Any]
 
 
-@app.post("/api/resources/libraries/{library_key}/translations/preview")
+def _resolve_translation_map_input(
+    library_key: str,
+    translation_map: Any,
+    map_path: str | None,
+    selection_id: str | None,
+    file_id: str | None,
+    expected_revision: int | None,
+) -> Any:
+    has_direct = translation_map is not None or map_path is not None
+    has_any_selection = (
+        selection_id is not None
+        or file_id is not None
+        or expected_revision is not None
+    )
+    has_full_selection = (
+        selection_id is not None
+        and file_id is not None
+        and expected_revision is not None
+    )
+
+    if has_direct and has_any_selection:
+        raise HTTPException(
+            422,
+            "Mixed source forms are not permitted: provide either direct translation map/path or a selection reference, not both",
+        )
+
+    if has_any_selection:
+        if not has_full_selection:
+            raise HTTPException(
+                422,
+                "Incomplete selection reference: selection_id, file_id, and expected_revision must all be provided",
+            )
+        try:
+            return resource_selection.resolve_selected_translation_map(
+                selection_id=selection_id,
+                file_id=file_id,
+                expected_revision=expected_revision,
+                expected_library_key=library_key,
+            )
+        except (
+            resource_selection.SelectionNotFoundError,
+            resource_selection.FileNotFoundInSelectionError,
+        ) as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (
+            resource_selection.StaleRevisionError,
+            resource_selection.PreviewMismatchError,
+            resource_selection.CommitActiveError,
+        ) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (
+            resource_selection.SelectionExpiredError,
+            resource_selection.SelectionCancelledError,
+            resource_selection.SelectionNotOpenError,
+            resource_selection.SelectionStateError,
+        ) as exc:
+            raise HTTPException(410, str(exc)) from exc
+        except resource_selection.InvalidTargetError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except resource_selection.ResourceSelectionError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    if not has_direct:
+        raise HTTPException(
+            422,
+            "Either translation_map/map_path or a complete selection reference (selection_id, file_id, expected_revision) must be provided",
+        )
+    return translation_map if translation_map is not None else map_path
+
+
+@_translation_limit_post("/api/resources/libraries/{library_key}/translations/preview")
 def preview_resource_library_translations(library_key: str, p: ResourceTranslationPreviewIn):
     """Preview translation map application without modifying database state."""
     if not is_resource_planning_enabled():
         raise HTTPException(503, "Resource planning is disabled by configuration")
-    map_input = p.translation_map if p.translation_map is not None else p.map_path
-    if map_input is None:
-        raise HTTPException(422, "Either translation_map or map_path must be provided")
     try:
+        map_input = _resolve_translation_map_input(
+            library_key=library_key,
+            translation_map=p.translation_map,
+            map_path=p.map_path,
+            selection_id=p.selection_id,
+            file_id=p.file_id,
+            expected_revision=p.expected_revision,
+        )
         return resource_translation.preview_translation_map(library_key, map_input)
     except ValueError as exc:
         msg = str(exc).lower()
@@ -2817,17 +2943,22 @@ def preview_resource_library_translations(library_key: str, p: ResourceTranslati
         raise HTTPException(422, str(exc)) from exc
 
 
-@app.post("/api/resources/libraries/{library_key}/translations/apply")
+@_translation_limit_post("/api/resources/libraries/{library_key}/translations/apply")
 def apply_resource_library_translations(library_key: str, p: ResourceTranslationApplyIn):
     """Atomically apply a translation map to a library with TOCTOU verification."""
     if not is_resource_planning_enabled():
         raise HTTPException(503, "Resource planning is disabled by configuration")
     if not p.attestation_token:
         raise HTTPException(422, "attestation_token is required")
-    map_input = p.translation_map if p.translation_map is not None else p.map_path
-    if map_input is None:
-        raise HTTPException(422, "Either translation_map or map_path must be provided")
     try:
+        map_input = _resolve_translation_map_input(
+            library_key=library_key,
+            translation_map=p.translation_map,
+            map_path=p.map_path,
+            selection_id=p.selection_id,
+            file_id=p.file_id,
+            expected_revision=p.expected_revision,
+        )
         return resource_translation.apply_translation_map(
             library_key, map_input, p.attestation_token,
         )

@@ -17,7 +17,7 @@
 
 ## 3. Actionable translation readiness
 
-- [ ] 3.1 Use selected translation-map content through existing bulk preview/apply with the shared 10 MiB actual-body boundary and unchanged authorization/digest/library-fingerprint checks; verify missing/false Content-Length returns 413 before parsing/writes.
+- [x] 3.1 Use selected translation-map content through existing bulk preview/apply with the shared 10 MiB actual-body boundary and unchanged authorization/digest/library-fingerprint checks; verify missing/false Content-Length returns 413 before parsing/writes.
 - [ ] 3.2 Build direct `translation_map` payloads from editable source-backed rows and route them through canonical bulk attestation, never the direct revision shortcut. Preserve scalar/list contracts, diagnose incompatible duplicate source strings and include explicit identity translations for already-English required strings.
 - [ ] 3.3 Use the field-preserving transport for optional proposals of at most twenty source entries per action. Refuse unsolicited/malformed fields, preserve canonical keys/list order and make proposals write-free until reviewed preview and explicit apply.
 - [ ] 3.4 Present imported, needs translation, ready and needs source correction with direct actions. Refresh readiness after apply and discard stale proposal/preview responses.

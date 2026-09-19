@@ -9,7 +9,7 @@ agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 11 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 12 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -27,7 +27,19 @@ import/replay, compatibility, safe public projections, real frontend contract
 coverage, concurrency, recovery, and payload-free library filtering. Task 2.1
 adds the shared actual-streamed-body limit boundary described below.
 
-## Current Position
+Task 3.1 has now passed independent acceptance and is formally closed. Selected
+translation-map content is resolved server-side from `selection_id`, `file_id`,
+and `expected_revision`; the staged file is the exclusive byte authority and is
+opened/read once into `raw_bytes` for integrity checks, candidate inspection,
+UTF-8 decoding, and JSON parsing. The selected preview/apply paths delegate to
+the historical bulk functions, preserving semantic authorization, canonical
+digest, attestation, and library-fingerprint checks. `RequestLimitRoute`
+protects both routes with the real 10 MiB boundary, including pre-Pydantic 413
+responses for missing or false `Content-Length` and exact-boundary coverage.
+Malformed selected maps fail with sanitized controlled errors. The closure was
+verified against 2,063 tests; Task 3.2 remains pending.
+
+## Prior Position
 
 Task 2.4 is complete. The automatic/manual/pre-authoring authority matrix is
 enforced: public raw begin/complete returns 409 for every plan with authoring
@@ -70,7 +82,16 @@ revision/epoch fencing, Task 1.4's browser compatibility adapter, and Task
 1.3's canonical preview, commit, replay, concurrency, and atomicity contracts
 remain intact.
 
+## Current Position
+
+Task 3.1 is complete and formally closed. The accepted implementation changes
+only `backend/main.py`, `backend/resource_selection.py`, and
+`tests/test_resource_translation.py`; `backend/resource_translation.py` and
+`backend/request_limits.py` remain unchanged. `apply_revision_translation()` is
+not used by the selected-content flow, and the historical bulk path remains the
+only semantic authority. The next task is 3.2.
+
 ## Next Milestone
 
-Task 3.1 is the next pending task. Do not begin it automatically; prepare its
+Task 3.2 is the next pending task. Do not begin it automatically; prepare its
 bounded handoff only when explicitly requested.

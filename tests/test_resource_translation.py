@@ -15,18 +15,23 @@ Covers:
 """
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 import sqlite3
 import time
 from typing import Any
+import uuid
 
 import pytest
 
+from backend import resource_translation as backend_resource_translation
 import db
 import resource_preparation
 import resource_prompts
+import resource_parser
 import resource_readiness
+import resource_selection
 import resource_store
 import resource_translation
 import session_plan
@@ -1315,3 +1320,574 @@ class TestCorrectiveHardening:
         cov_count_2 = db.one("SELECT COUNT(*) as cnt FROM test_audit_cov_log")["cnt"]
         assert trans_count_2 == 1  # unchanged
         assert cov_count_2 == 2    # incremented by coverage repair
+
+
+class TestSelectedTranslationMapWorkflow:
+    """Acceptance tests for OpenSpec Task 3.1.
+
+    Covers:
+      - Selected translation-map preview and apply integration;
+      - Server-side byte authority and rejection of client overrides/mixed forms;
+      - Cross-selection isolation and target/auxiliary validation;
+      - Revision and staged file fingerprint integrity;
+      - Descriptive-field authorization, canonical digest, and library fingerprint checks;
+      - 10 MiB actual-streamed body limit on bulk preview/apply (missing/false Content-Length);
+      - Pre-parse rejection verification (spy count == 0);
+      - Zero-write assertions on oversized requests and validation failures;
+      - Exact 10 MiB boundary and 10 MiB + 1 byte behavior.
+    """
+
+    @staticmethod
+    def _create_staged_translation_file(
+        client,
+        library_key: str,
+        map_payload: dict[str, Any],
+        auxiliary_kind: str = "translation_map",
+        file_name: str = "translations.json",
+    ) -> tuple[str, str, int]:
+        """Helper to create a selection, upload file, and patch its effective target."""
+        req_id = str(uuid.uuid4())
+        create_resp = client.post("/api/resources/import-selections", json={"request_id": req_id})
+        assert create_resp.status_code == 201
+        sid = create_resp.json()["selection_id"]
+
+        raw_bytes = json.dumps(map_payload).encode("utf-8")
+        upload_resp = client.post(
+            f"/api/resources/import-selections/{sid}/files",
+            files={"file": (file_name, io.BytesIO(raw_bytes), "application/octet-stream")},
+            data={"upload_id": f"up_{uuid.uuid4().hex}"},
+        )
+        assert upload_resp.status_code == 201
+        upload_data = upload_resp.json()
+        fid = upload_data["files"][0]["file_id"]
+        rev_after_upload = upload_data["selection_revision"]
+
+        patch_resp = client.patch(
+            f"/api/resources/import-selections/{sid}/files/{fid}",
+            json={
+                "expected_revision": rev_after_upload,
+                "effective_library_key": library_key,
+                "effective_auxiliary_kind": auxiliary_kind,
+            },
+        )
+        assert patch_resp.status_code == 200
+        current_rev = patch_resp.json()["selection_revision"]
+        return sid, fid, current_rev
+
+    def test_selected_map_preview_and_apply_round_trip(self, client):
+        """Selected translation map reaches bulk preview and apply with zero preview writes."""
+        lib_id = resource_store.ensure_library("sel_preview_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id,
+            "room_01",
+            {"id": "room_01", "name": "SRC_ROOM", "theme": "SRC_THEME"},
+        )
+        rev_before = resource_store.get_revision(revision_id=rev_id)
+        assert rev_before["translation"] == {}
+
+        map_data = {
+            "SRC_ROOM": {"source": "SRC_ROOM", "translation": "Sunlit Studio", "fields": ["name"]},
+            "SRC_THEME": {"source": "SRC_THEME", "translation": "Warm Palette", "fields": ["theme"]},
+        }
+        sid, fid, rev = self._create_staged_translation_file(client, "sel_preview_lib", map_data)
+
+        # 1. Preview using selection reference
+        prev_resp = client.post(
+            "/api/resources/libraries/sel_preview_lib/translations/preview",
+            json={"selection_id": sid, "file_id": fid, "expected_revision": rev},
+        )
+        assert prev_resp.status_code == 200
+        preview = prev_resp.json()
+        assert preview["matched_revisions"] == 1
+        assert preview["would_update"] == 1
+        assert "attestation_token" in preview
+        token = preview["attestation_token"]
+
+        # Preview must be strictly write-free
+        rev_after_preview = resource_store.get_revision(revision_id=rev_id)
+        assert rev_after_preview["translation"] == {}
+
+        # 2. Apply using selection reference and preview token
+        apply_resp = client.post(
+            "/api/resources/libraries/sel_preview_lib/translations/apply",
+            json={
+                "selection_id": sid,
+                "file_id": fid,
+                "expected_revision": rev,
+                "attestation_token": token,
+            },
+        )
+        assert apply_resp.status_code == 200
+        applied = apply_resp.json()
+        assert applied["updated"] == 1
+        assert applied["ready"] == 1
+
+        # Check that translation rows and readiness were updated
+        rev_after_apply = resource_store.get_revision(revision_id=rev_id)
+        assert rev_after_apply["translation"] == {
+            "label": "Sunlit Studio",
+            "scene_theme": "Warm Palette",
+        }
+
+    def test_server_side_byte_authority_and_client_override_rejection(self, client):
+        """Server-side staged file is the sole byte authority; client overrides are ignored or rejected."""
+        lib_id = resource_store.ensure_library("sel_authority_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id,
+            "r1",
+            {"id": "r1", "name": "AUTH_SRC", "theme": "AUTH_THEME"},
+        )
+
+        staged_map = {
+            "AUTH_SRC": {"source": "AUTH_SRC", "translation": "Staged Studio", "fields": ["name"]},
+            "AUTH_THEME": {"source": "AUTH_THEME", "translation": "Staged Theme", "fields": ["theme"]},
+        }
+        sid, fid, rev = self._create_staged_translation_file(client, "sel_authority_lib", staged_map)
+
+        # 1. Mixed form (selection_id + translation_map) must be rejected with 422
+        mixed_resp = client.post(
+            "/api/resources/libraries/sel_authority_lib/translations/preview",
+            json={
+                "selection_id": sid,
+                "file_id": fid,
+                "expected_revision": rev,
+                "translation_map": {"FAKE": {"source": "FAKE", "translation": "Fake", "fields": ["name"]}},
+            },
+        )
+        assert mixed_resp.status_code == 422
+        assert "mixed" in mixed_resp.json().get("detail", "").lower()
+
+        # 2. Mixed form with map_path must also be rejected with 422
+        mixed_path_resp = client.post(
+            "/api/resources/libraries/sel_authority_lib/translations/preview",
+            json={
+                "selection_id": sid,
+                "file_id": fid,
+                "expected_revision": rev,
+                "map_path": "/some/client/path.json",
+            },
+        )
+        assert mixed_path_resp.status_code == 422
+
+        # 3. Unrecognized client override field (e.g. 'content') does NOT replace staged file
+        prev_resp = client.post(
+            "/api/resources/libraries/sel_authority_lib/translations/preview",
+            json={
+                "selection_id": sid,
+                "file_id": fid,
+                "expected_revision": rev,
+                "content": {"AUTH_SRC": {"source": "AUTH_SRC", "translation": "Hacked", "fields": ["name"]}},
+            },
+        )
+        assert prev_resp.status_code == 200
+        token = prev_resp.json()["attestation_token"]
+
+        apply_resp = client.post(
+            "/api/resources/libraries/sel_authority_lib/translations/apply",
+            json={
+                "selection_id": sid,
+                "file_id": fid,
+                "expected_revision": rev,
+                "attestation_token": token,
+                "content": "arbitrary_client_bytes",
+            },
+        )
+        assert apply_resp.status_code == 200
+        rev_row = resource_store.get_revision(revision_id=rev_id)
+        assert rev_row["translation"]["label"] == "Staged Studio"
+
+    def test_selection_reference_validation_and_cross_selection_isolation(self, client):
+        """Incomplete reference, wrong selection, wrong file, or target mismatch fail closed."""
+        lib_a = resource_store.ensure_library("sel_lib_a", kind="rooms")
+        lib_b = resource_store.ensure_library("sel_lib_b", kind="rooms")
+
+        map_data = {
+            "S1": {"source": "S1", "translation": "Studio", "fields": ["name"]},
+        }
+        sid_1, fid_1, rev_1 = self._create_staged_translation_file(client, "sel_lib_a", map_data)
+        sid_2, fid_2, rev_2 = self._create_staged_translation_file(client, "sel_lib_a", map_data)
+
+        # 1. Incomplete selection reference (missing expected_revision) -> 422
+        resp = client.post(
+            "/api/resources/libraries/sel_lib_a/translations/preview",
+            json={"selection_id": sid_1, "file_id": fid_1},
+        )
+        assert resp.status_code == 422
+
+        # 2. Incomplete selection reference (missing file_id) -> 422
+        resp = client.post(
+            "/api/resources/libraries/sel_lib_a/translations/preview",
+            json={"selection_id": sid_1, "expected_revision": rev_1},
+        )
+        assert resp.status_code == 422
+
+        # 3. File from another selection -> 404
+        resp = client.post(
+            "/api/resources/libraries/sel_lib_a/translations/preview",
+            json={"selection_id": sid_1, "file_id": fid_2, "expected_revision": rev_1},
+        )
+        assert resp.status_code == 404
+
+        # 4. Unknown file ID in valid selection -> 404
+        resp = client.post(
+            "/api/resources/libraries/sel_lib_a/translations/preview",
+            json={"selection_id": sid_1, "file_id": "nonexistent_file", "expected_revision": rev_1},
+        )
+        assert resp.status_code == 404
+
+        # 5. Unknown selection ID -> 404
+        resp = client.post(
+            "/api/resources/libraries/sel_lib_a/translations/preview",
+            json={"selection_id": "nonexistent_sel", "file_id": fid_1, "expected_revision": rev_1},
+        )
+        assert resp.status_code == 404
+
+        # 6. Target mismatch: staged file targets sel_lib_a, requested on sel_lib_b -> 422
+        resp = client.post(
+            "/api/resources/libraries/sel_lib_b/translations/preview",
+            json={"selection_id": sid_1, "file_id": fid_1, "expected_revision": rev_1},
+        )
+        assert resp.status_code == 422
+
+    def test_stale_revision_and_tampered_staged_bytes_rejected(self, client):
+        """Stale revision and disk-tampered staged file return 409 before bulk translation."""
+        lib_id = resource_store.ensure_library("sel_stale_lib", kind="rooms")
+        map_data = {
+            "S_STALE": {"source": "S_STALE", "translation": "Stale Room", "fields": ["name"]},
+        }
+        sid, fid, current_rev = self._create_staged_translation_file(client, "sel_stale_lib", map_data)
+
+        # 1. Stale revision returns 409
+        resp = client.post(
+            "/api/resources/libraries/sel_stale_lib/translations/preview",
+            json={"selection_id": sid, "file_id": fid, "expected_revision": current_rev - 1},
+        )
+        assert resp.status_code == 409
+
+        # 2. Tampering with staged file bytes on disk triggers 409 PreviewMismatchError
+        file_row = db.one("SELECT staged_path FROM resource_selection_file WHERE file_id = ?", fid)
+        assert file_row is not None
+        staged_path = Path(file_row["staged_path"])
+        original_bytes = staged_path.read_bytes()
+        try:
+            staged_path.write_bytes(original_bytes + b" ")
+            resp_tampered = client.post(
+                "/api/resources/libraries/sel_stale_lib/translations/preview",
+                json={"selection_id": sid, "file_id": fid, "expected_revision": current_rev},
+            )
+            assert resp_tampered.status_code == 409
+        finally:
+            staged_path.write_bytes(original_bytes)
+
+    def test_selected_map_uses_one_materialized_read_during_path_replacement(
+        self, client, monkeypatch, tmp_path,
+    ):
+        """Replacing the path after inspection cannot change the parsed staged bytes."""
+        map_a = {
+            "SOURCE_A": {
+                "source": "SOURCE_A",
+                "translation": "Map Alpha",
+                "fields": ["name"],
+            },
+        }
+        map_b = {
+            "SOURCE_B": {
+                "source": "SOURCE_B",
+                "translation": "Map Bravo",
+                "fields": ["name"],
+            },
+        }
+        sid, fid, rev = self._create_staged_translation_file(client, "sel_toctou_lib", map_a)
+        file_row = db.one(
+            "SELECT staged_path FROM resource_selection_file WHERE file_id = ?",
+            fid,
+        )
+        staged_path = Path(file_row["staged_path"])
+        replacement_path = tmp_path / "replacement.json"
+        replacement_path.write_bytes(json.dumps(map_b).encode("utf-8"))
+
+        original_detect = resource_parser.detect_auxiliary_candidates
+        replaced = False
+
+        def replace_path_after_materialization(data):
+            nonlocal replaced
+            if not replaced:
+                replacement_path.replace(staged_path)
+                replaced = True
+            return original_detect(data)
+
+        monkeypatch.setattr(
+            resource_parser,
+            "detect_auxiliary_candidates",
+            replace_path_after_materialization,
+        )
+
+        resolved = resource_selection.resolve_selected_translation_map(
+            selection_id=sid,
+            file_id=fid,
+            expected_revision=rev,
+            expected_library_key="sel_toctou_lib",
+        )
+
+        assert replaced is True
+        assert resolved == map_a
+        assert json.loads(staged_path.read_text(encoding="utf-8")) == map_b
+
+    def test_semantically_invalid_selected_map_returns_422_without_writes(
+        self, client, monkeypatch,
+    ):
+        """Selected map semantics are validated once by bulk preview inside the 422 boundary."""
+        lib_id = resource_store.ensure_library("sel_bad_semantics_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id,
+            "r_bad",
+            {"id": "r_bad", "name": "BAD", "theme": "VALID_THEME"},
+        )
+        bad_map = {
+            "BAD": {
+                "source": 123,
+                "translation": "Valid",
+                "fields": ["name"],
+            },
+        }
+        sid, fid, rev = self._create_staged_translation_file(
+            client, "sel_bad_semantics_lib", bad_map,
+        )
+        file_row = db.one(
+            "SELECT staged_path FROM resource_selection_file WHERE file_id = ?",
+            fid,
+        )
+        staged_path = Path(file_row["staged_path"])
+        normalize_calls = 0
+        original_normalize = backend_resource_translation.normalize_translation_map_input
+
+        def spy_normalize(data):
+            nonlocal normalize_calls
+            normalize_calls += 1
+            return original_normalize(data)
+
+        monkeypatch.setattr(
+            backend_resource_translation,
+            "normalize_translation_map_input",
+            spy_normalize,
+        )
+
+        response = client.post(
+            "/api/resources/libraries/sel_bad_semantics_lib/translations/preview",
+            json={"selection_id": sid, "file_id": fid, "expected_revision": rev},
+        )
+
+        assert response.status_code == 422
+        assert normalize_calls == 1
+        assert resource_store.get_revision(revision_id=rev_id)["translation"] == {}
+        detail = response.json()["detail"]
+        assert str(staged_path).lower() not in detail.lower()
+        assert str(staged_path.parent).lower() not in detail.lower()
+        assert "traceback" not in detail.lower()
+
+    def test_authorization_unchanged_on_selected_map(self, client):
+        """Unauthorized descriptive fields in selected map are rejected with 422 and zero writes."""
+        lib_id = resource_store.ensure_library("sel_authz_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id,
+            "r_authz",
+            {"id": "r_authz", "name": "SRC_AUTHZ", "theme": "TH_AUTHZ"},
+        )
+
+        # 'weight' is not an authorized descriptive field for 'rooms' kind
+        unauthorized_map = {
+            "SRC_AUTHZ": {"source": "SRC_AUTHZ", "translation": "Heavy", "fields": ["weight"]},
+        }
+        sid, fid, rev = self._create_staged_translation_file(client, "sel_authz_lib", unauthorized_map)
+
+        # Preview returns 422
+        prev_resp = client.post(
+            "/api/resources/libraries/sel_authz_lib/translations/preview",
+            json={"selection_id": sid, "file_id": fid, "expected_revision": rev},
+        )
+        assert prev_resp.status_code == 422
+
+        # Apply with arbitrary token returns 422
+        apply_resp = client.post(
+            "/api/resources/libraries/sel_authz_lib/translations/apply",
+            json={
+                "selection_id": sid,
+                "file_id": fid,
+                "expected_revision": rev,
+                "attestation_token": "dummy.token",
+            },
+        )
+        assert apply_resp.status_code == 422
+
+        # Zero writes
+        rev_row = resource_store.get_revision(revision_id=rev_id)
+        assert rev_row["translation"] == {}
+
+    def test_library_fingerprint_drift_on_selected_apply(self, client):
+        """Library modification between preview and apply returns 409 with zero writes."""
+        lib_id = resource_store.ensure_library("sel_drift_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id,
+            "r_drift",
+            {"id": "r_drift", "name": "SRC_DRIFT", "theme": "TH_DRIFT"},
+        )
+
+        map_data = {
+            "SRC_DRIFT": {"source": "SRC_DRIFT", "translation": "Drifted Room", "fields": ["name"]},
+            "TH_DRIFT": {"source": "TH_DRIFT", "translation": "Drifted Theme", "fields": ["theme"]},
+        }
+        sid, fid, rev = self._create_staged_translation_file(client, "sel_drift_lib", map_data)
+
+        prev_resp = client.post(
+            "/api/resources/libraries/sel_drift_lib/translations/preview",
+            json={"selection_id": sid, "file_id": fid, "expected_revision": rev},
+        )
+        assert prev_resp.status_code == 200
+        token = prev_resp.json()["attestation_token"]
+
+        # Induce library fingerprint drift by adding another revision
+        resource_store.record_revision(
+            lib_id,
+            "r_drift_2",
+            {"id": "r_drift_2", "name": "SRC_2", "theme": "TH_2"},
+        )
+
+        # Apply must detect fingerprint mismatch and fail with 409
+        apply_resp = client.post(
+            "/api/resources/libraries/sel_drift_lib/translations/apply",
+            json={
+                "selection_id": sid,
+                "file_id": fid,
+                "expected_revision": rev,
+                "attestation_token": token,
+            },
+        )
+        assert apply_resp.status_code == 409
+
+        # Target revision remains unchanged
+        rev_row = resource_store.get_revision(revision_id=rev_id)
+        assert rev_row["translation"] == {}
+
+    @pytest.mark.parametrize("route_name", ["preview", "apply"])
+    def test_oversized_missing_content_length_returns_413_pre_parse(self, client, monkeypatch, route_name):
+        """Streamed chunked request body >10 MiB lacking Content-Length returns 413 before parsing."""
+        lib_id = resource_store.ensure_library(f"sel_oversized_miss_{route_name}", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id,
+            "r_ov",
+            {"id": "r_ov", "name": "SRC_OV", "theme": "TH_OV"},
+        )
+
+        parse_calls = 0
+        orig_normalize = resource_translation.normalize_translation_map_input
+
+        def spy_normalize(data):
+            nonlocal parse_calls
+            parse_calls += 1
+            return orig_normalize(data)
+
+        monkeypatch.setattr(resource_translation, "normalize_translation_map_input", spy_normalize)
+
+        # Snapshot DB before request
+        before_rev = resource_store.get_revision(revision_id=rev_id)
+        before_count = db.one("SELECT COUNT(*) as c FROM asset_revision WHERE library_id = ?", lib_id)["c"]
+
+        chunk_size = 2 * 1024 * 1024
+        chunks = [b"a" * chunk_size for _ in range(6)]  # 12 MiB total
+
+        resp = client.post(
+            f"/api/resources/libraries/sel_oversized_miss_{route_name}/translations/{route_name}",
+            content=(c for c in chunks),
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 413
+        assert resp.json() == {"detail": "Request entity too large"}
+        assert parse_calls == 0
+
+        # Zero DB writes
+        after_rev = resource_store.get_revision(revision_id=rev_id)
+        assert after_rev == before_rev
+        after_count = db.one("SELECT COUNT(*) as c FROM asset_revision WHERE library_id = ?", lib_id)["c"]
+        assert after_count == before_count
+
+    @pytest.mark.parametrize("route_name", ["preview", "apply"])
+    def test_oversized_false_small_content_length_returns_413_pre_parse(self, client, monkeypatch, route_name):
+        """Streamed request body >10 MiB with false-small Content-Length returns 413 before parsing."""
+        lib_id = resource_store.ensure_library(f"sel_oversized_false_{route_name}", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id,
+            "r_ov2",
+            {"id": "r_ov2", "name": "SRC_OV2", "theme": "TH_OV2"},
+        )
+
+        parse_calls = 0
+        orig_normalize = resource_translation.normalize_translation_map_input
+
+        def spy_normalize(data):
+            nonlocal parse_calls
+            parse_calls += 1
+            return orig_normalize(data)
+
+        monkeypatch.setattr(resource_translation, "normalize_translation_map_input", spy_normalize)
+
+        before_rev = resource_store.get_revision(revision_id=rev_id)
+        before_count = db.one("SELECT COUNT(*) as c FROM asset_revision WHERE library_id = ?", lib_id)["c"]
+
+        chunk_size = 2 * 1024 * 1024
+        chunks = [b"b" * chunk_size for _ in range(6)]  # 12 MiB total
+
+        resp = client.post(
+            f"/api/resources/libraries/sel_oversized_false_{route_name}/translations/{route_name}",
+            content=(c for c in chunks),
+            headers={
+                "content-length": "64",
+                "content-type": "application/json",
+            },
+        )
+        assert resp.status_code == 413
+        assert resp.json() == {"detail": "Request entity too large"}
+        assert parse_calls == 0
+
+        # Zero DB writes
+        after_rev = resource_store.get_revision(revision_id=rev_id)
+        assert after_rev == before_rev
+        after_count = db.one("SELECT COUNT(*) as c FROM asset_revision WHERE library_id = ?", lib_id)["c"]
+        assert after_count == before_count
+
+    @pytest.mark.parametrize("route_name", ["preview", "apply"])
+    def test_exact_10_mib_boundary_and_plus_one(self, client, monkeypatch, route_name):
+        """Exact 10 MiB request is not rejected by limiter; 10 MiB + 1 byte returns 413 pre-parse."""
+        lib_id = resource_store.ensure_library(f"sel_bound_{route_name}", kind="rooms")
+
+        parse_calls = 0
+        orig_normalize = resource_translation.normalize_translation_map_input
+
+        def spy_normalize(data):
+            nonlocal parse_calls
+            parse_calls += 1
+            return orig_normalize(data)
+
+        monkeypatch.setattr(resource_translation, "normalize_translation_map_input", spy_normalize)
+
+        limit_bytes = 10 * 1024 * 1024
+
+        # 1. Exactly 10 MiB payload reaches downstream (not 413)
+        exact_payload = b" " * limit_bytes
+        resp_exact = client.post(
+            f"/api/resources/libraries/sel_bound_{route_name}/translations/{route_name}",
+            content=exact_payload,
+            headers={"content-type": "application/json"},
+        )
+        assert resp_exact.status_code != 413
+
+        # 2. 10 MiB + 1 byte is rejected with 413 before domain parsing
+        parse_calls = 0
+        plus_one_payload = b" " * (limit_bytes + 1)
+        resp_plus_one = client.post(
+            f"/api/resources/libraries/sel_bound_{route_name}/translations/{route_name}",
+            content=plus_one_payload,
+            headers={"content-type": "application/json"},
+        )
+        assert resp_plus_one.status_code == 413
+        assert resp_plus_one.json() == {"detail": "Request entity too large"}
+        assert parse_calls == 0

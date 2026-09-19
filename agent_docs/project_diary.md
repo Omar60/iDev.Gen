@@ -212,3 +212,17 @@
   historical provenance remains compatible only for plans without authoring
   metadata. No product code changed; the group 2 closure was verified against
   2,049 tests. Task 3.1 is next.
+- Task 3.1 is formally closed after independent acceptance. Selected
+  translation-map content is resolved server-side by `selection_id`, `file_id`,
+  and `expected_revision`; the staged file is the exclusive byte authority and
+  one file handle materializes `raw_bytes` for size, mtime, SHA-256, fingerprint,
+  candidate inspection, UTF-8, and JSON checks. This removes the TOCTOU window.
+  Preview delegates to `preview_translation_map()`, apply delegates to
+  `apply_translation_map()`, and `apply_revision_translation()` is not used.
+  The historical bulk validator remains the semantic authority, preserving
+  authorization, canonical digest, attestation, and library-fingerprint
+  checks. Both routes use the real 10 MiB `RequestLimitRoute` boundary;
+  missing/false `Content-Length` is rejected with 413 before parsing/writes,
+  including exact-boundary and plus-one tests. Invalid selected maps fail
+  through sanitized controlled errors. The verified collection is 2,063 tests;
+  Task 3.2 remains pending.

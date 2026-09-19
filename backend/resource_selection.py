@@ -2996,3 +2996,115 @@ def commit_selection(
     if final_view is None:
         raise SelectionStateInvalidError("Selection disappeared after commit")
     return "committed", final_view
+
+
+def resolve_selected_translation_map(
+    selection_id: str,
+    file_id: str,
+    expected_revision: int,
+    expected_library_key: str,
+    now_iso: str | None = None,
+) -> dict[str, Any]:
+    """Resolve and validate server-staged translation map content from an open selection."""
+    if type(selection_id) is not str or not selection_id or not _is_safe_public_string(selection_id):
+        raise ValueError("selection_id is invalid")
+    validate_json_revision(expected_revision)
+    if type(file_id) is not str or not file_id or not _is_safe_public_string(file_id):
+        raise ValueError("file_id is invalid")
+
+    sel = recover_selection(selection_id, now_iso=now_iso)
+    if not sel:
+        raise SelectionNotFoundError(f"Selection {selection_id} not found")
+
+    now = _now_iso(now_iso)
+    now_dt = _parse_iso(now)
+    if now_dt >= _parse_iso(sel["expires_at"]):
+        raise SelectionExpiredError("Selection has expired")
+
+    if sel["state"] == "committing":
+        raise CommitActiveError("Cannot use selected content while commit is active")
+    if sel["state"] in ("committed", "cancelled", "expired"):
+        if sel["state"] == "expired":
+            raise SelectionExpiredError("Selection has expired")
+        if sel["state"] == "cancelled":
+            raise SelectionCancelledError("Selection is cancelled")
+        raise SelectionStateError(f"Selection is already {sel['state']}")
+    if sel["state"] != "open":
+        raise SelectionNotOpenError(f"Selection is {sel['state']}")
+
+    if sel["selection_revision"] != expected_revision:
+        raise StaleRevisionError(
+            f"Revision {expected_revision} is stale, current is {sel['selection_revision']}"
+        )
+
+    file_row = db.one(
+        "SELECT * FROM resource_selection_file WHERE selection_id = ? AND file_id = ?",
+        selection_id,
+        file_id,
+    )
+    if not file_row or file_row["status"] != "staged":
+        raise FileNotFoundInSelectionError(f"File {file_id} not found in selection or not staged")
+
+    eff_lib = file_row.get("effective_library_key")
+    if not eff_lib or eff_lib != expected_library_key:
+        raise InvalidTargetError(
+            f"Selected file target library {eff_lib!r} does not match expected library {expected_library_key!r}"
+        )
+
+    eff_aux = file_row.get("effective_auxiliary_kind")
+    if eff_aux != "translation_map":
+        raise InvalidTargetError(
+            f"Selected file effective auxiliary kind {eff_aux!r} is not 'translation_map'"
+        )
+
+    staged_p = Path(file_row["staged_path"])
+    try:
+        with open(staged_p, "rb") as fp:
+            stat_before = os.fstat(fp.fileno())
+            raw_bytes = fp.read()
+            stat_res = os.fstat(fp.fileno())
+    except (FileNotFoundError, IsADirectoryError, PermissionError, OSError) as exc:
+        raise PreviewMismatchError(
+            "Staged file unavailable on disk; fresh preview required"
+        ) from exc
+
+    if (
+        stat_before.st_size != stat_res.st_size
+        or stat_before.st_mtime_ns != stat_res.st_mtime_ns
+    ):
+        raise PreviewMismatchError("Staged file changed while reading; fresh preview required")
+
+    staged_size = file_row.get("staged_size", file_row["byte_count"])
+    if stat_res.st_size != staged_size or stat_res.st_size != file_row["byte_count"]:
+        raise PreviewMismatchError("Staged file size changed; fresh preview required")
+    if str(stat_res.st_mtime_ns) != str(file_row.get("staged_mtime_ns", "")):
+        raise PreviewMismatchError("Staged file mtime changed; fresh preview required")
+
+    disk_sha = hashlib.sha256(raw_bytes).hexdigest()
+    if disk_sha != file_row.get("staged_sha256", file_row.get("sha256", "")):
+        raise PreviewMismatchError("Staged file content changed; fresh preview required")
+
+    expected_fp = f"{disk_sha}:{stat_res.st_size}:{stat_res.st_mtime_ns}"
+    if file_row.get("fingerprint") and file_row["fingerprint"] != expected_fp:
+        raise PreviewMismatchError("Staged file fingerprint mismatch; fresh preview required")
+
+    try:
+        raw_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InvalidTargetError("Selected staged file is not valid UTF-8") from exc
+
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise InvalidTargetError("Selected staged file is not valid JSON") from exc
+
+    if not isinstance(data, dict):
+        raise InvalidTargetError("Selected translation map must be a JSON object")
+
+    recalculated_candidates = resource_parser.detect_auxiliary_candidates(data)
+    if not recalculated_candidates or "translation_map" not in recalculated_candidates:
+        raise InvalidTargetError(
+            "Selected file structure does not match the translation-map interface"
+        )
+
+    return data
