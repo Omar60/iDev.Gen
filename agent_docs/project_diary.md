@@ -204,3 +204,11 @@
   and closed-shape evidence; Review, Recovery, Approve, and Submit fail closed,
   with sanitized HTTP diagnostics and zero-write rejection paths. The closure
   was verified against 2,046 collected tests; Task 2.5 remains pending.
+- Task 2.5 is formally closed after independent acceptance. The offensive A-L
+  matrix covers forged final prompts, effective state and take choices,
+  assistant output/provenance/request evidence and digests, automatic
+  `manual_completion` rejection, locked/shared/resource-derived overrides, raw
+  begin/complete compatibility, and pre-authoring expert completion. Arbitrary
+  historical provenance remains compatible only for plans without authoring
+  metadata. No product code changed; the group 2 closure was verified against
+  2,049 tests. Task 3.1 is next.

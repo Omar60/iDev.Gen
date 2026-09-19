@@ -9,14 +9,19 @@ agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 10 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 11 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
 have now passed independent acceptance and are formally closed. Task 2.1 has
 also passed independent acceptance and is formally closed. Task 2.2 has now
 passed independent acceptance and is formally closed. Task 2.3 has now passed
-independent acceptance and is formally closed. The completed
+independent acceptance and is formally closed. Task 2.5 has now passed
+independent acceptance and is formally closed. Its offensive A-L matrix covers
+forged final prompts, effective state and take choices, assistant evidence and
+digests, automatic manual-completion rejection, locked/resource-derived
+overrides, raw compatibility, and pre-authoring provenance boundaries. The
+completed
 1.1-1.6 integration gate covers the browser selection lifecycle, canonical
 import/replay, compatibility, safe public projections, real frontend contract
 coverage, concurrency, recovery, and payload-free library filtering. Task 2.1
@@ -35,8 +40,9 @@ historical begin/complete and preparation; legacy composition is unchanged.
 Malformed authoring fails closed, `schema_version` requires the strict integer
 `1`, bulk preflight prevents partial mutation, and rejections precede
 persistence and assistant work. Task 2.4 adds the server-owned evidence
-boundary and sealed manual persistence; the reproducible collection is 2,046
-tests.
+boundary and sealed manual persistence; its accepted baseline was 2,046 tests.
+Task 2.5 brings the reproducible collection to 2,049 tests, and no product code
+changed.
 
 Task 2.4 has passed independent acceptance and is formally closed. Its
 server-owned authoring evidence boundary derives the final prompt, effective
@@ -66,5 +72,5 @@ remain intact.
 
 ## Next Milestone
 
-Task 2.5 is the next pending task. Do not begin it automatically; prepare its
+Task 3.1 is the next pending task. Do not begin it automatically; prepare its
 bounded handoff only when explicitly requested.

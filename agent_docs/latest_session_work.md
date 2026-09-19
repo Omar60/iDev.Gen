@@ -2,36 +2,35 @@
 
 ## Detailed Current State
 
-Task 2.4 of `simplify-resource-session-workflow` passed final independent
-acceptance against baseline `ec387d0dd838816721d8dad58150b4da591e243d` and is
-formally closed.
+Task 2.5 of `simplify-resource-session-workflow` passed independent acceptance
+and is formally closed. The change is test-only: no product code was modified.
 
-The accepted implementation makes authoring evidence server-owned. Manual
-preparation validates the current inputs, derives the final prompt, effective
-state, versions, mappings, resource projection, digest, adaptations,
-provenance, and explicit non-applicable assistant/predecessor/duplicate
-sentinels, then persists them through a private frozen sealed result. Raw
-`complete_preparation` remains available only for pre-authoring expert plans.
-Automatic authoring remains blocked until the future fenced `prepare_takes`
-operation exists.
+The accepted authority coverage proves the offensive A-L matrix: forged final
+prompts, server-owned effective state and take choices, forged assistant
+output/provenance/request evidence and digests, automatic `manual_completion`
+rejection, locked/shared/resource-derived manual overrides, raw begin/complete
+compatibility, pre-authoring expert completion, and arbitrary historical
+provenance only for plans without authoring metadata.
 
-The read-only validator remains active on persistence, reuse, Review, Recovery,
-Approve, and Submit. It fails closed on missing, altered, fabricated,
-malformed, non-object, wrong-type, or unknown nested evidence and preserves
-zero-write rejection behavior. `AuthoringEvidenceInvalid` maps to a fixed
-sanitized HTTP diagnostic.
+Group 2 is complete. Task 3.1 is the next pending task and must not be started
+automatically.
 
 ## Verification
 
-- Authority suite: 97 tests, green.
-- Focal suites: 563 tests, green.
-- Reproducible full collection: 2,046 tests; complete suite green.
+- Authority suite: 100 tests, green.
+- Focal suites: 566 tests, green.
+- Reproducible full collection: 2,049 tests; complete suite green.
 - Privacy checks: 10 tests, green.
 - Shoot checks: 36 tests, green.
 - Strict OpenSpec validation: 1 passed, 0 failed.
 - `git diff --check`: clean apart from line-ending warnings.
 
-## Next Entry Point
+## Closure Scope
 
-Task 2.4 is checked and formally closed. Task 2.5 is the next pending task.
-Do not begin Task 2.5 automatically; select and verify its own scope first.
+- `tests/test_preparation_authority.py`
+- `openspec/changes/simplify-resource-session-workflow/tasks.md`
+- `agent_docs/project_progress.md`
+- `agent_docs/project_diary.md`
+- `agent_docs/latest_session_work.md`
+
+No push is authorized. Do not begin Task 3.1 automatically.

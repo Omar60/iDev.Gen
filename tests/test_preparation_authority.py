@@ -442,7 +442,8 @@ class TestPreparationAuthorityMatrix:
         rows = db.q("SELECT * FROM prepared_take WHERE session_id = ?", sid)
         assert len(rows) == 0
 
-    def test_11_manual_reserved_or_unknown_override_rejected(self, client, seeded):
+    @pytest.mark.parametrize("field", ["look", "initial_wardrobe", "label"])
+    def test_11_manual_reserved_or_unknown_override_rejected(self, client, seeded, field):
         """11. Manual reserved/unknown override -> existing validator refusal remains."""
         rev = _setup_resource_revision()
         sid = _create_resource_session(client, seeded)
@@ -453,7 +454,7 @@ class TestPreparationAuthorityMatrix:
             f"/api/sessions/{sid}/plan/takes/take-001/prepare",
             json={
                 "plan_revision": 1,
-                "manual_completion": {"look": "attempt override look"},
+                "manual_completion": {field: f"attempt override {field}"},
             },
         )
         assert resp.status_code == 422, resp.text
@@ -1105,6 +1106,28 @@ class TestTask24AuthoringEvidenceContract:
         assert resp.status_code == 409
         assert "authoring_evidence_invalid" in resp.json()["detail"]
 
+        # Restore provenance, alter effective_state.take_choices semantically
+        db.run("UPDATE prepared_take SET provenance = ? WHERE id = ?", row["provenance"], row["id"])
+        eff = json.loads(row["effective_state"])
+        assert "take_choices" in eff
+        assert eff["take_choices"].get("pose") == "standing"
+        eff["take_choices"]["pose"] = "sitting"
+        corrupt_eff = json.dumps(eff)
+        db.run("UPDATE prepared_take SET effective_state = ? WHERE id = ?", corrupt_eff, row["id"])
+
+        # Direct validator rejects
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_resource_preparation.validate_authoring_prepared_evidence(sid, 1, "take-001")
+
+        # Review returns HTTP 409 with authoring_evidence_invalid
+        resp = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert resp.status_code == 409
+        assert "authoring_evidence_invalid" in resp.json()["detail"]
+
+        # The row remains exactly as mutated; no backfill/repair occurs
+        row_after = db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])
+        assert row_after["effective_state"] == corrupt_eff
+
     def test_09_wrong_mode_evidence_rejected_by_review(self, client, seeded):
         """9. Wrong-mode evidence is rejected by review."""
         rev = _setup_resource_revision()
@@ -1345,15 +1368,30 @@ class TestTask24AuthoringEvidenceContract:
         }]
         _seed_plan(sid, seeded, rev, authoring_mode="manual", takes=takes)
 
+        forged_effective_state = {
+            "forged": True,
+            "look": "caller forged look",
+            "wardrobe": "caller forged wardrobe",
+            "take_choices": {"pose": "caller forged pose"},
+        }
         resp = client.post(
             f"/api/sessions/{sid}/plan/takes/take-001/prepare",
             json={
                 "plan_revision": 1,
                 "final_prompt": "client_forged_prompt",
-                "effective_state": {"forged": True},
+                "effective_state": forged_effective_state,
                 "provenance": {"forged": True},
                 "compiler_version": "forged_v99",
                 "mapping_version": "forged_v99",
+                "writer_output": {"forged_output": True},
+                "writer_input": {"forged_input": True},
+                "operation_id": "forged_op_123",
+                "authoring_evidence": {
+                    "writer_synthesis": {
+                        "writer_output": {"forged_output": True},
+                    },
+                    "operation_id": "forged_op_123",
+                },
             },
         )
         assert resp.status_code == 200
@@ -1361,8 +1399,35 @@ class TestTask24AuthoringEvidenceContract:
         assert "client_forged_prompt" not in row["final_prompt"]
         assert row["compiler_version"] == backend_resource_preparation.COMPILER_VERSION
         assert row["mapping_version"] == backend_resource_preparation.MAPPING_VERSION
+
+        # Verify persisted effective_state is server-owned and not caller-supplied
+        persisted_effective_state = json.loads(row["effective_state"])
+        assert persisted_effective_state != forged_effective_state
+        assert "forged" not in persisted_effective_state
+
+        prep = backend_resource_preparation.prepare_take_inputs(sid, 1, "take-001")
+        expected_effective_state = dict(prep.get("effective_state") or {})
+        expected_effective_state["take_choices"] = dict(prep.get("effective_take_choices") or {})
+        assert persisted_effective_state == expected_effective_state
+        assert persisted_effective_state["look"] == INV_LOOK
+        assert persisted_effective_state["wardrobe"] == INV_WARDROBE
+        assert persisted_effective_state["take_choices"] == {
+            "camera": "eye level",
+            "framing": "medium shot",
+            "pose": "standing",
+            "expression": "neutral",
+        }
+
         prov = json.loads(row["provenance"])
         assert "forged" not in prov
+        auth_ev = prov["authoring_evidence"]
+        assert auth_ev["operation_id"] is None
+        assert auth_ev["source"] == "manual"
+        assert auth_ev["writer_synthesis"]["writer_input"] is None
+        assert auth_ev["writer_synthesis"]["writer_output"] is None
+        assert prov.get("operation_id") is None
+        assert prov["writer_synthesis"]["writer_input"] is None
+        assert prov["writer_synthesis"]["writer_output"] is None
 
     def test_19_resource_projection_order_and_canonical_digest_deterministic(self, client, seeded):
         """19. Resource projection order and canonical digest are deterministic, use authorized effective values, and exclude unused metadata."""
@@ -1945,3 +2010,65 @@ class TestTask24ClosedNestedShapesAndProbes:
             json={"plan_revision": 1, "take_id": "take-001"},
         )
         assert sub_resp.status_code == 200
+
+    def test_forged_assistant_output_in_manual_evidence_rejected(self, client, seeded):
+        """A manual authoring snapshot cannot inject structured assistant output/input into evidence."""
+        sid, row = self._prepared_manual_row(client, seeded)
+        prov = json.loads(row["provenance"])
+
+        # Coherent-looking manual snapshot with structured forged assistant output/input
+        forged_output = {"adapted_fields": {"pose": "standing"}, "summary": "forged assistant completion"}
+        forged_input = {"requested_fields": ["pose"]}
+
+        prov["authoring_evidence"]["writer_synthesis"]["writer_output"] = forged_output
+        prov["authoring_evidence"]["writer_synthesis"]["writer_input"] = forged_input
+        prov["writer_synthesis"]["writer_output"] = forged_output
+        prov["writer_synthesis"]["writer_input"] = forged_input
+
+        # Keep manual source and operation_id null
+        assert prov["authoring_evidence"]["source"] == "manual"
+        assert prov["authoring_evidence"]["operation_id"] is None
+
+        db.run("UPDATE prepared_take SET provenance = ? WHERE id = ?", json.dumps(prov), row["id"])
+
+        # 1. Direct validator rejects because manual authoring cannot have assistant output
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_resource_preparation.validate_authoring_prepared_evidence(sid, 1, "take-001")
+
+        # 2. Review surface rejects with 409
+        resp = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert resp.status_code == 409
+        assert "authoring_evidence_invalid" in resp.json()["detail"]
+
+        # 3. Recovery does not list row as completed, reports incomplete with invalid_evidence status and diagnostic
+        rec = backend_session_plan.recover_preparation(sid)
+        assert len(rec["completed"]) == 0
+        assert len(rec["incomplete"]) == 1
+        assert rec["incomplete"][0]["take_id"] == "take-001"
+        assert rec["incomplete"][0]["status"] == "invalid_evidence"
+        assert rec["incomplete"][0]["diagnostic"] == "authoring_evidence_invalid"
+
+        # 4. Approve surface rejects before updating approval
+        app_resp = client.post(f"/api/sessions/{sid}/plan/review/approve", json={"plan_revision": 1})
+        assert app_resp.status_code == 409
+        assert "authoring_evidence_invalid" in app_resp.json()["detail"]
+        assert len(db.q("SELECT * FROM session_plan_approval WHERE session_id = ?", sid)) == 0
+
+        # 5. Submit surface rejects before creating shot (with approval bypass so it reaches evidence validation)
+        db.run(
+            "INSERT INTO session_plan_approval (session_id, plan_revision, approved_at) VALUES (?, ?, ?)",
+            sid, 1, db.now(),
+        )
+        sub_resp = client.post(
+            f"/api/sessions/{sid}/plan/preparations/submit",
+            json={"plan_revision": 1, "take_id": "take-001"},
+        )
+        assert sub_resp.status_code == 409
+        assert "authoring_evidence_invalid" in sub_resp.json()["detail"]
+
+        # Verify zero-write state after rejected submit: row stays ready, linked_shot_id stays None, no shot created
+        after_sub = db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])
+        assert after_sub["status"] == "ready"
+        assert after_sub["linked_shot_id"] is None
+        shots = db.q("SELECT * FROM shot WHERE session_id = ?", sid)
+        assert len(shots) == 0
