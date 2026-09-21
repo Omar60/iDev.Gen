@@ -3185,4 +3185,522 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     expect(applyBtn.disabled).toBe(true)
     expect(container.textContent).toContain(`Apply failed with HTTP ${statusCode}`)
   })
+
+  it('3.3 selection bound: suggests action disabled when 0 selected or > 20 selected', async () => {
+    const library = actualPayloadFreeLibraries[0]
+    const rows = Array.from({ length: 21 }, (_, i) => ({
+      revision: { source_id: `room-${i}`, content_digest: `${i}`.padStart(64, '0') },
+      field: 'label',
+      source_field: 'name',
+      source_value: `SALLE_${i}`,
+      source_shape: 'scalar',
+      list_index: null,
+      current_translation: null,
+      translation: '',
+      required: true,
+      role: 'descriptive_input',
+      identity_required: false,
+      emit_by_default: false,
+    }))
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      if (url.endsWith('/translations/rows')) {
+        return { library_key: library.library_key, kind: 'rooms', diagnostics: [], rows }
+      }
+      return []
+    })
+
+    await renderComponent()
+    const load = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Load editable rows')
+    await act(async () => { load.click() })
+
+    const suggestBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.startsWith('Suggest translations'))
+    // 0 selected: disabled
+    expect(suggestBtn.disabled).toBe(true)
+
+    // Select 1 checkbox: enabled
+    const checkboxes = container.querySelectorAll('input[aria-label^="Suggest translation for"]')
+    expect(checkboxes.length).toBe(21)
+    await act(async () => { checkboxes[0].click() })
+    expect(suggestBtn.disabled).toBe(false)
+    expect(container.textContent).toContain('1 selected')
+
+    // Select remaining 20 checkboxes -> 21 selected: disabled
+    await act(async () => {
+      for (let i = 1; i < 21; i++) {
+        checkboxes[i].click()
+      }
+    })
+    expect(suggestBtn.disabled).toBe(true)
+    expect(container.textContent).toContain('21 selected (max 20)')
+  })
+
+  it('3.3 executes Suggest flow: sends exact identity-only entries, merges proposals, invalidates preview, allows discard', async () => {
+    const library = actualPayloadFreeLibraries[0]
+    const sourceRows = {
+      library_key: library.library_key,
+      kind: 'rooms',
+      diagnostics: [],
+      rows: [{
+        revision: {
+          source_id: 'room-1',
+          content_digest: 'a'.repeat(64),
+        },
+        field: 'label',
+        source_field: 'name',
+        source_value: 'SALLE_A',
+        source_shape: 'scalar',
+        list_index: null,
+        current_translation: null,
+        translation: '',
+        required: true,
+        role: 'descriptive_input',
+        identity_required: false,
+        emit_by_default: false,
+      }],
+    }
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      if (url.endsWith('/translations/rows')) return sourceRows
+      return []
+    })
+
+    const postSpy = vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/translations/proposals')) {
+        return {
+          library_key: library.library_key,
+          proposals: [{
+            revision: { source_id: 'room-1', content_digest: 'a'.repeat(64) },
+            field: 'label',
+            source_shape: 'scalar',
+            list_index: null,
+            source_value: 'SALLE_A',
+            translation: 'Room Alpha',
+          }],
+        }
+      }
+      return {}
+    })
+
+    await renderComponent()
+    const load = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Load editable rows')
+    await act(async () => { load.click() })
+
+    const input = container.querySelector('input[aria-label="Translation for SALLE_A"]')
+    expect(input.value).toBe('')
+
+    // Select row for suggest
+    const checkbox = container.querySelector('input[aria-label="Suggest translation for SALLE_A"]')
+    await act(async () => { checkbox.click() })
+
+    // Click Suggest translations
+    const suggestBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Suggest translations')
+    await act(async () => { suggestBtn.click() })
+
+    // 1. Verify exact request payload contains ONLY entries with identity keys (no source_value or client translation)
+    expect(postSpy).toHaveBeenCalledWith(
+      `/api/resources/libraries/${encodeURIComponent(library.library_key)}/translations/proposals`,
+      {
+        entries: [{
+          source_id: 'room-1',
+          content_digest: 'a'.repeat(64),
+          field: 'label',
+          source_shape: 'scalar',
+          list_index: null,
+        }],
+      }
+    )
+
+    // 2. Value was merged into editable row and emitted
+    expect(input.value).toBe('Room Alpha')
+    const useCheckbox = container.querySelector('input[aria-label="Use translation for SALLE_A"]')
+    expect(useCheckbox.checked).toBe(true)
+
+    // 3. Confirm & Apply remains disabled (no auto preview or apply)
+    const applyBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Confirm & Apply manual translations')
+    expect(applyBtn.disabled).toBe(true)
+    expect(postSpy.mock.calls.some(([url]) => url.endsWith('/translations/preview'))).toBe(false)
+    expect(postSpy.mock.calls.some(([url]) => url.endsWith('/translations/apply'))).toBe(false)
+    expect(postSpy.mock.calls.some(([url]) => /\/revisions\/.*\/translation$/.test(url))).toBe(false)
+
+    // 4. Discard suggestions restores pre-proposal row snapshot
+    const discardBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Discard suggestions')
+    expect(discardBtn).not.toBeNull()
+    await act(async () => { discardBtn.click() })
+    expect(input.value).toBe('')
+  })
+
+  it('3.3 stale response fencing: ignores late Suggest response after row edit or reload', async () => {
+    const library = actualPayloadFreeLibraries[0]
+    let resolveSuggest
+    const pendingSuggest = new Promise((resolve) => { resolveSuggest = resolve })
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      if (url.endsWith('/translations/rows')) {
+        return {
+          library_key: library.library_key,
+          kind: 'rooms',
+          diagnostics: [],
+          rows: [{
+            revision: { source_id: 'room-1', content_digest: 'a'.repeat(64) },
+            field: 'label', source_field: 'name', source_value: 'SALLE_A',
+            source_shape: 'scalar', list_index: null, current_translation: null,
+            translation: '', required: true, role: 'descriptive_input',
+            identity_required: false, emit_by_default: false,
+          }],
+        }
+      }
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation((url) => (
+      url.endsWith('/translations/proposals') ? pendingSuggest : Promise.resolve({})
+    ))
+
+    await renderComponent()
+    const load = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Load editable rows')
+    await act(async () => { load.click() })
+
+    const checkbox = container.querySelector('input[aria-label="Suggest translation for SALLE_A"]')
+    await act(async () => { checkbox.click() })
+
+    const suggestBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Suggest translations')
+    await act(async () => { suggestBtn.click() })
+
+    // User manually types during in-flight Suggest
+    const input = container.querySelector('input[aria-label="Translation for SALLE_A"]')
+    await act(async () => { setInputValue(input, 'User Custom Room') })
+
+    // Immediately confirmed: proposal generation invalidated, proposalBusy is false, Suggest button re-enabled
+    const recheckedSuggestBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Suggest translations'))
+    expect(recheckedSuggestBtn).toBeTruthy()
+    expect(recheckedSuggestBtn.textContent).not.toContain('Suggesting')
+    expect(recheckedSuggestBtn.disabled).toBe(false)
+
+    // Now late suggest response arrives
+    resolveSuggest({
+      library_key: library.library_key,
+      proposals: [{
+        revision: { source_id: 'room-1', content_digest: 'a'.repeat(64) },
+        field: 'label', source_shape: 'scalar', list_index: null,
+        source_value: 'SALLE_A', translation: 'Stale Room',
+      }],
+    })
+    await act(async () => { await pendingSuggest })
+
+    // User edit must be preserved; stale proposal ignored, busy remains false
+    expect(input.value).toBe('User Custom Room')
+    const finalSuggestBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Suggest translations'))
+    expect(finalSuggestBtn.textContent).not.toContain('Suggesting')
+    expect(finalSuggestBtn.disabled).toBe(false)
+  })
+
+  it('3.3 reload during suggest resets proposalBusy and late response is ignored', async () => {
+    const library = actualPayloadFreeLibraries[0]
+    let resolveSuggest
+    const pendingSuggest = new Promise((res) => { resolveSuggest = res })
+
+    let rowLoadCount = 0
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      if (url.endsWith('/translations/rows')) {
+        rowLoadCount += 1
+        return {
+          library_key: library.library_key,
+          kind: 'rooms',
+          diagnostics: [],
+          rows: [{
+            revision: { source_id: 'room-1', content_digest: 'a'.repeat(64) },
+            field: 'label', source_field: 'name', source_value: `SALLE_RELOAD_${rowLoadCount}`,
+            source_shape: 'scalar', list_index: null, current_translation: null,
+            translation: '', required: true, role: 'descriptive_input',
+            identity_required: false, emit_by_default: false,
+          }],
+        }
+      }
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation((url) => (
+      url.endsWith('/translations/proposals') ? pendingSuggest : Promise.resolve({})
+    ))
+
+    await renderComponent()
+    const loadBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Load editable rows')
+    await act(async () => { loadBtn.click() })
+
+    const checkbox = container.querySelector('input[aria-label="Suggest translation for SALLE_RELOAD_1"]')
+    await act(async () => { checkbox.click() })
+
+    const suggestBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Suggest translations'))
+    await act(async () => { suggestBtn.click() })
+
+    // Suggest A is in-flight; reload rows
+    await act(async () => { loadBtn.click() })
+
+    // Busy cleared immediately on reload, UI is unblocked
+    const suggestBtnAfterReload = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Suggest translations'))
+    expect(suggestBtnAfterReload.textContent).not.toContain('Suggesting')
+
+    // Suggest A resolves late
+    resolveSuggest({
+      library_key: library.library_key,
+      proposals: [{
+        revision: { source_id: 'room-1', content_digest: 'a'.repeat(64) },
+        field: 'label', source_shape: 'scalar', list_index: null,
+        source_value: 'SALLE_RELOAD_1', translation: 'Stale Overwrite Room',
+      }],
+    })
+    await act(async () => { await pendingSuggest })
+
+    // Stale response did NOT overwrite new rows
+    const input = container.querySelector('input[aria-label="Translation for SALLE_RELOAD_2"]')
+    expect(input).toBeTruthy()
+    expect(input.value).toBe('')
+    expect(container.textContent).not.toContain('Stale Overwrite Room')
+  })
+
+  it('3.3 global reload from another library clears proposalBusy and fences the stale response', async () => {
+    const [libraryA, libraryB] = actualPayloadFreeLibraries
+    let resolveSuggestA
+    const pendingSuggestA = new Promise((resolve) => { resolveSuggestA = resolve })
+
+    const rowsByLibrary = {
+      [libraryA.library_key]: {
+        library_key: libraryA.library_key,
+        kind: libraryA.kind,
+        diagnostics: [],
+        rows: [{
+          revision: { source_id: 'room-a', content_digest: 'a'.repeat(64) },
+          field: 'label', source_field: 'name', source_value: 'SALLE_A',
+          source_shape: 'scalar', list_index: null, current_translation: null,
+          translation: 'Current A', required: true, role: 'descriptive_input',
+          identity_required: false, emit_by_default: true,
+        }],
+      },
+      [libraryB.library_key]: {
+        library_key: libraryB.library_key,
+        kind: libraryB.kind,
+        diagnostics: [],
+        rows: [{
+          revision: { source_id: 'scene-b', content_digest: 'b'.repeat(64) },
+          field: 'prompt', source_field: 'prompt', source_value: 'SCENE_B',
+          source_shape: 'scalar', list_index: null, current_translation: null,
+          translation: 'Current B', required: true, role: 'descriptive_input',
+          identity_required: false, emit_by_default: true,
+        }],
+      },
+    }
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [libraryA, libraryB]
+      if (url === '/api/models') return []
+      const match = url.match(/\/api\/resources\/libraries\/([^/]+)\/translations\/rows$/)
+      if (match) return rowsByLibrary[decodeURIComponent(match[1])]
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation((url) => {
+      if (url.includes(encodeURIComponent(libraryA.library_key)) && url.endsWith('/translations/proposals')) {
+        return pendingSuggestA
+      }
+      if (url.endsWith('/translations/preview')) {
+        return Promise.resolve({
+          library_key: libraryB.library_key,
+          total_revisions: 1,
+          matched_revisions: 1,
+          unmatched_map_entries: 0,
+          would_update: 1,
+          unchanged: 0,
+          would_be_ready: 1,
+          would_remain_pending: 0,
+          attestation_token: 'library-b-token',
+          expires_at: 123,
+        })
+      }
+      if (url.endsWith('/translations/apply')) {
+        return Promise.resolve({ updated: 1, ready: 1, pending: 0 })
+      }
+      return Promise.resolve({})
+    })
+
+    await renderComponent()
+    const panelA = Array.from(container.querySelectorAll('h3'))
+      .find((heading) => heading.textContent === libraryA.display_name).closest('.panel')
+    const panelB = Array.from(container.querySelectorAll('h3'))
+      .find((heading) => heading.textContent === libraryB.display_name).closest('.panel')
+
+    const loadA = Array.from(panelA.querySelectorAll('button')).find((button) => button.textContent === 'Load editable rows')
+    const loadB = Array.from(panelB.querySelectorAll('button')).find((button) => button.textContent === 'Load editable rows')
+    await act(async () => { loadA.click(); loadB.click() })
+
+    const selectA = panelA.querySelector('input[aria-label="Suggest translation for SALLE_A"]')
+    await act(async () => { selectA.click() })
+    const suggestA = Array.from(panelA.querySelectorAll('button')).find((button) => button.textContent === 'Suggest translations')
+    await act(async () => { suggestA.click() })
+    expect(panelA.textContent).toContain('Suggesting…')
+
+    const previewB = Array.from(panelB.querySelectorAll('button')).find((button) => button.textContent === 'Preview manual translations')
+    await act(async () => { previewB.click() })
+    const applyB = Array.from(panelB.querySelectorAll('button')).find((button) => button.textContent === 'Confirm & Apply manual translations')
+    await act(async () => { applyB.click() })
+
+    const suggestAfterReload = Array.from(panelA.querySelectorAll('button')).find((button) => button.textContent.includes('Suggest'))
+    expect(suggestAfterReload.textContent).toBe('Suggest translations')
+    expect(suggestAfterReload.disabled).toBe(false)
+
+    resolveSuggestA({
+      library_key: libraryA.library_key,
+      proposals: [{
+        revision: { source_id: 'room-a', content_digest: 'a'.repeat(64) },
+        field: 'label', source_shape: 'scalar', list_index: null,
+        source_value: 'SALLE_A', translation: 'Stale A',
+      }],
+    })
+    await act(async () => { await pendingSuggestA })
+
+    expect(panelA.querySelector('input[aria-label="Translation for SALLE_A"]').value).toBe('Current A')
+    expect(panelA.textContent).not.toContain('Stale A')
+    expect(suggestAfterReload.textContent).toBe('Suggest translations')
+    expect(suggestAfterReload.disabled).toBe(false)
+  })
+
+  it('3.3 second suggest flow when first suggest invalidated by edit', async () => {
+    const library = actualPayloadFreeLibraries[0]
+    let resolveSuggestA
+    const pendingSuggestA = new Promise((res) => { resolveSuggestA = res })
+    let resolveSuggestB
+    const pendingSuggestB = new Promise((res) => { resolveSuggestB = res })
+
+    let callCount = 0
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      if (url.endsWith('/translations/rows')) {
+        return {
+          library_key: library.library_key,
+          kind: 'rooms',
+          diagnostics: [],
+          rows: [{
+            revision: { source_id: 'room-1', content_digest: 'a'.repeat(64) },
+            field: 'label', source_field: 'name', source_value: 'SALLE_A',
+            source_shape: 'scalar', list_index: null, current_translation: null,
+            translation: '', required: true, role: 'descriptive_input',
+            identity_required: false, emit_by_default: false,
+          }],
+        }
+      }
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation((url) => {
+      if (url.endsWith('/translations/proposals')) {
+        callCount += 1
+        if (callCount === 1) return pendingSuggestA
+        return pendingSuggestB
+      }
+      return Promise.resolve({})
+    })
+
+    await renderComponent()
+    const load = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Load editable rows')
+    await act(async () => { load.click() })
+
+    const checkbox = container.querySelector('input[aria-label="Suggest translation for SALLE_A"]')
+    await act(async () => { checkbox.click() })
+
+    // Start Suggest A
+    const suggestBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Suggest translations'))
+    await act(async () => { suggestBtn.click() })
+
+    // User edits while A is pending -> invalidates A, clears busy
+    const input = container.querySelector('input[aria-label="Translation for SALLE_A"]')
+    await act(async () => { setInputValue(input, 'Interim Edit') })
+
+    // Verify checkbox is still selected, then trigger Suggest B
+    expect(checkbox.checked).toBe(true)
+    const suggestBtnB = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Suggest translations'))
+    expect(suggestBtnB.disabled).toBe(false)
+    await act(async () => { suggestBtnB.click() })
+
+    // Suggest B resolves first
+    resolveSuggestB({
+      library_key: library.library_key,
+      proposals: [{
+        revision: { source_id: 'room-1', content_digest: 'a'.repeat(64) },
+        field: 'label', source_shape: 'scalar', list_index: null,
+        source_value: 'SALLE_A', translation: 'Translation B',
+      }],
+    })
+    await act(async () => { await pendingSuggestB })
+    expect(input.value).toBe('Translation B')
+
+    // Now Suggest A arrives late
+    resolveSuggestA({
+      library_key: library.library_key,
+      proposals: [{
+        revision: { source_id: 'room-1', content_digest: 'a'.repeat(64) },
+        field: 'label', source_shape: 'scalar', list_index: null,
+        source_value: 'SALLE_A', translation: 'Translation A (Stale)',
+      }],
+    })
+    await act(async () => { await pendingSuggestA })
+
+    // A did NOT overwrite B!
+    expect(input.value).toBe('Translation B')
+  })
+
+  it('3.3 provider failure preserves existing manual rows without modification', async () => {
+    const library = actualPayloadFreeLibraries[0]
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      if (url.endsWith('/translations/rows')) {
+        return {
+          library_key: library.library_key,
+          kind: 'rooms',
+          diagnostics: [],
+          rows: [{
+            revision: { source_id: 'room-1', content_digest: 'a'.repeat(64) },
+            field: 'label', source_field: 'name', source_value: 'SALLE_A',
+            source_shape: 'scalar', list_index: null, current_translation: null,
+            translation: 'Pre-existing Translation', required: true, role: 'descriptive_input',
+            identity_required: false, emit_by_default: true,
+          }],
+        }
+      }
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/translations/proposals')) {
+        const error = new Error('The prompt assistant returned an invalid proposal response.')
+        error.status = 502
+        throw error
+      }
+      return {}
+    })
+
+    await renderComponent()
+    const load = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Load editable rows')
+    await act(async () => { load.click() })
+
+    const checkbox = container.querySelector('input[aria-label="Suggest translation for SALLE_A"]')
+    await act(async () => { checkbox.click() })
+
+    const suggestBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Suggest translations')
+    await act(async () => { suggestBtn.click() })
+
+    // Error is displayed, but existing manual translation remains completely unchanged
+    expect(container.textContent).toContain('invalid proposal response')
+    const input = container.querySelector('input[aria-label="Translation for SALLE_A"]')
+    expect(input.value).toBe('Pre-existing Translation')
+  })
 })

@@ -9,7 +9,7 @@ agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 13 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 14 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -57,6 +57,34 @@ restore stale authorization. The Task 3.1 selected-map flow and
 `map_path`/direct-map compatibility remain intact. The verified totals are
 2,072 backend tests and 362 frontend tests.
 
+Task 3.3 has now passed independent acceptance and is formally closed. `POST
+/api/resources/libraries/{library_key}/translations/proposals` generates
+optional translation proposals for at most twenty source entries per action:
+one scalar is one entry and every list item is an independent entry. The
+request is identity-only (`source_id`, `content_digest`, canonical `field`,
+`source_shape`, and `list_index`); source text and eligibility are resolved
+server-side from the canonical projection. Only pending, authorized
+`ROLE_DESCRIPTIVE_INPUT` rows are eligible. Existing translations are not
+implicitly overwritten, and `identity_required` rows do not consume the
+assistant.
+
+The endpoint reuses `backend.enhance.run_structured(...)`. Provider keys
+(`entry-0` through `entry-N`), canonical ordering, list ordering, and repeated
+source identities are server-owned. The schema rejects unsolicited or
+malformed fields, including string/float/bool coercion for `list_index`; schema,
+stale, and ineligible diagnostics are sanitized. Provider output must be an
+exact key-to-English-string object; extra, missing, malformed, or non-English
+output rejects the complete proposal with no partial acceptance.
+
+Proposal generation is write-free: no sidecar, attestation, implicit Preview,
+implicit Apply, or direct revision shortcut. The reviewed flow is Suggest to
+editable/reviewable manual rows, explicit Preview through canonical attestation,
+then explicit Apply. Manual edits, row reloads, global or cross-library reloads,
+and a second Suggest fence stale responses; global reload clears `proposalBusy`.
+With `resource_planning_enabled=false`, generation returns HTTP 503 before body,
+schema, source, or provider processing and does not call `run_structured`.
+Tasks 3.1 and 3.2 remain compatible; Tasks 3.4 and 3.5 were not implemented.
+
 ## Prior Position
 
 Task 2.4 is complete. The automatic/manual/pre-authoring authority matrix is
@@ -102,13 +130,19 @@ remain intact.
 
 ## Current Position
 
+Task 3.3 is complete and formally closed. The accepted implementation changes
+only the optional proposal workflow and its focused tests; the proposal
+endpoint is write-free and preserves the canonical bulk Preview/Apply
+boundary. Task 3.1 and Task 3.2 compatibility remains intact; no Task 3.4 or
+later work was started.
+
 Task 3.2 is complete and formally closed. The accepted implementation changes
 only the manual source-backed translation workflow and its focused tests;
 `backend/resource_translation.py` and `backend/request_limits.py` remain
 unchanged. The canonical bulk path remains the semantic authority, and the
-next task is 3.3.
+next task is 3.4.
 
 ## Next Milestone
 
-Task 3.3 is the next pending task. Do not begin it automatically; prepare its
+Task 3.4 is the next pending task. Do not begin it automatically; prepare its
 bounded handoff only when explicitly requested.

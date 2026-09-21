@@ -25,15 +25,36 @@ errors invalidate preview/token authorization, and late responses cannot
 reactivate stale authorization.
 
 Task 3.1's selected-map flow and `map_path`/direct-map compatibility remain
-intact. Task 3.3 is the next pending task and must not be started automatically.
+intact. Task 3.3 is now formally closed. The next pending task is 3.4 and must
+not be started automatically.
+
+Task 3.3 adds optional proposals through
+`POST /api/resources/libraries/{library_key}/translations/proposals`, capped at
+twenty source entries per action. Scalar values and list items are independent
+entries. Requests carry only `source_id`, `content_digest`, canonical `field`,
+`source_shape`, and `list_index`; source text and eligibility are resolved
+server-side. Only pending authorized `ROLE_DESCRIPTIVE_INPUT` rows are used;
+existing translations are not implicitly overwritten and `identity_required`
+rows do not consume the assistant.
+
+The endpoint reuses `backend.enhance.run_structured(...)`; provider keys,
+canonical/list order, and repeated-source identities are server-owned. Strict
+schema validation rejects unsolicited fields and coercion of `list_index`, and
+schema/stale/ineligible diagnostics are sanitized. Provider output must be an
+exact `entry-0` through `entry-N` English-string object; extra, missing,
+malformed, or non-English output rejects the whole proposal. Generation is
+write-free: no sidecar, attestation, automatic Preview/Apply, or direct
+revision shortcut. Suggest responses are fenced across edits, row reloads,
+global/cross-library reloads, and a second Suggest; global reload clears
+`proposalBusy`. The existing feature flag returns 503 before body/schema/source
+or provider processing when disabled, without calling `run_structured`.
+Tasks 3.1 and 3.2 remain compatible; Tasks 3.4 and 3.5 were not implemented.
 
 ## Verification
 
-- Backend focal suite: 115 passed.
-- Frontend focal suite: 130 passed.
-- Reproducible backend collection: 2,072 tests.
-- Complete backend suite: 2,072 passed.
-- Complete frontend suite: 362 passed.
+- Reproducible backend collection: 2,114 tests.
+- Complete backend suite: 2,114 passed.
+- Complete frontend suite: 373 passed.
 - Frontend build: successful.
 - Privacy checks: 10 passed.
 - Shoot checks: 36 passed.
@@ -55,6 +76,6 @@ intact. Task 3.3 is the next pending task and must not be started automatically.
 - `agent_docs/project_diary.md`
 - `agent_docs/latest_session_work.md`
 
-`backend/resource_translation.py`, `backend/request_limits.py`, external
-handoffs, and Task 3.3+ files are outside this closure scope. No push is
-authorized.
+`backend/enhance.py`, `backend/resource_translation.py`,
+`backend/request_limits.py`, external handoffs, and Task 3.4+ files are
+outside this closure scope. No push is authorized.

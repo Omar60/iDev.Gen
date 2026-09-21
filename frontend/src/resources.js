@@ -361,6 +361,80 @@ export function buildTranslationMapFromRows(rows = []) {
   return { translationMap, errors }
 }
 
+/** Generate a canonical identity key for a translation row or proposal item. */
+export function getRowIdentityKey(item) {
+  if (!item || typeof item !== 'object') return ''
+  const sourceId = item.revision?.source_id ?? item.source_id ?? ''
+  const contentDigest = item.revision?.content_digest ?? item.content_digest ?? ''
+  const field = item.field ?? ''
+  const sourceShape = item.source_shape ?? ''
+  const listIndex = item.source_shape === 'list' ? (item.list_index ?? null) : null
+  return `${sourceId}|${contentDigest}|${field}|${sourceShape}|${listIndex}`
+}
+
+/** Build an identity-only entry for the translation proposals endpoint. */
+export function buildProposalRequestEntry(row) {
+  return {
+    source_id: row?.revision?.source_id || '',
+    content_digest: row?.revision?.content_digest || '',
+    field: row?.field || '',
+    source_shape: row?.source_shape || 'scalar',
+    list_index: row?.source_shape === 'list' ? (row?.list_index ?? null) : null,
+  }
+}
+
+/** Check if a source-backed row is eligible for an assistant translation proposal. */
+export function isRowEligibleForProposal(row) {
+  if (!row || typeof row !== 'object') return false
+  if (row.role && row.role !== 'descriptive_input') return false
+  if (row.identity_required) return false
+  if (row.current_translation != null && String(row.current_translation).trim() !== '') return false
+  if (typeof row.source_value !== 'string' || !row.source_value.trim()) return false
+  if (row.source_shape === 'scalar') {
+    if (row.list_index != null) return false
+  } else if (row.source_shape === 'list') {
+    if (!Number.isInteger(row.list_index) || row.list_index < 0) return false
+  } else {
+    return false
+  }
+  const sourceId = row.revision?.source_id
+  const digest = row.revision?.content_digest
+  if (!sourceId || !digest || !row.field) return false
+  return true
+}
+
+/** Apply translation proposals to manual rows matching by complete row identity. */
+export function applyProposalsToRows(rows = [], proposals = []) {
+  if (!Array.isArray(rows)) return { updatedRows: [], appliedCount: 0 }
+  if (!Array.isArray(proposals)) return { updatedRows: rows.map((r) => ({ ...r })), appliedCount: 0 }
+
+  const proposalMap = new Map()
+  for (const proposal of proposals) {
+    if (!proposal || typeof proposal !== 'object') continue
+    const key = getRowIdentityKey(proposal)
+    if (key && typeof proposal.translation === 'string') {
+      proposalMap.set(key, proposal.translation)
+    }
+  }
+
+  let appliedCount = 0
+  const updatedRows = rows.map((row) => {
+    const key = getRowIdentityKey(row)
+    if (proposalMap.has(key)) {
+      appliedCount += 1
+      return {
+        ...row,
+        translation: proposalMap.get(key),
+        emit: true,
+        suggest_selected: false,
+      }
+    }
+    return { ...row }
+  })
+
+  return { updatedRows, appliedCount }
+}
+
 /**
  * Normalizes and validates a raw SelectionView against the closed public specification.
  * Reconstructs a clean public object containing ONLY allowed fields.

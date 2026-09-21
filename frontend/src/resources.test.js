@@ -14,6 +14,10 @@ import {
   reduceSelectionView,
   isImportEligible,
   buildTranslationMapFromRows,
+  getRowIdentityKey,
+  buildProposalRequestEntry,
+  isRowEligibleForProposal,
+  applyProposalsToRows,
 } from './resources.js'
 
 describe('resources module', () => {
@@ -1942,5 +1946,129 @@ describe('buildTranslationMapFromRows', () => {
       translationMap: {}, errors: [],
     })
     expect(buildTranslationMapFromRows([row({ translation: '', emit: true })]).errors[0].code).toBe('blank_translation')
+  })
+})
+
+describe('Task 3.3 translation proposal helpers', () => {
+  const sampleRow = (overrides = {}) => ({
+    revision: { source_id: 'room-01', content_digest: 'a'.repeat(64) },
+    field: 'label',
+    source_field: 'name',
+    source_value: 'salle_principale',
+    source_shape: 'scalar',
+    list_index: null,
+    current_translation: null,
+    translation: '',
+    required: true,
+    role: 'descriptive_input',
+    identity_required: false,
+    emit_by_default: false,
+    suggest_selected: false,
+    ...overrides,
+  })
+
+  it('generates deterministic row identity keys for scalars and lists', () => {
+    const scalar = sampleRow()
+    expect(getRowIdentityKey(scalar)).toBe(`room-01|${'a'.repeat(64)}|label|scalar|null`)
+
+    const listRow = sampleRow({ field: 'tags', source_shape: 'list', list_index: 3 })
+    expect(getRowIdentityKey(listRow)).toBe(`room-01|${'a'.repeat(64)}|tags|list|3`)
+
+    // Works with proposal response item shape
+    const proposal = {
+      revision: { source_id: 'room-01', content_digest: 'a'.repeat(64) },
+      field: 'tags',
+      source_shape: 'list',
+      list_index: 3,
+      translation: 'Balcony',
+    }
+    expect(getRowIdentityKey(proposal)).toBe(`room-01|${'a'.repeat(64)}|tags|list|3`)
+  })
+
+  it('builds identity-only proposal request entries and excludes authority fields', () => {
+    const row = sampleRow({
+      source_value: 'sensitive_source',
+      translation: 'client_translation',
+      required: true,
+      role: 'descriptive_input',
+      extra_arbitrary: 'drop_me',
+    })
+    const entry = buildProposalRequestEntry(row)
+    expect(entry).toEqual({
+      source_id: 'room-01',
+      content_digest: 'a'.repeat(64),
+      field: 'label',
+      source_shape: 'scalar',
+      list_index: null,
+    })
+    expect(entry).not.toHaveProperty('source_value')
+    expect(entry).not.toHaveProperty('translation')
+    expect(entry).not.toHaveProperty('extra_arbitrary')
+  })
+
+  it('accurately filters row proposal eligibility', () => {
+    // Eligible: pending, descriptive, no translation, valid source
+    expect(isRowEligibleForProposal(sampleRow())).toBe(true)
+
+    // Ineligible: already translated
+    expect(isRowEligibleForProposal(sampleRow({ current_translation: 'Main Room' }))).toBe(false)
+
+    // Ineligible: identity_required (already English)
+    expect(isRowEligibleForProposal(sampleRow({ identity_required: true }))).toBe(false)
+
+    // Ineligible: non-descriptive role
+    expect(isRowEligibleForProposal(sampleRow({ role: 'identifier' }))).toBe(false)
+
+    // Ineligible: blank source
+    expect(isRowEligibleForProposal(sampleRow({ source_value: '   ' }))).toBe(false)
+
+    // Ineligible: invalid list shape
+    expect(isRowEligibleForProposal(sampleRow({ source_shape: 'list', list_index: null }))).toBe(false)
+    expect(isRowEligibleForProposal(sampleRow({ source_shape: 'list', list_index: -1 }))).toBe(false)
+  })
+
+  it('applies proposals matching exact row identities and preserves list order', () => {
+    const row1 = sampleRow({ field: 'tags', source_shape: 'list', list_index: 0, source_value: 'shared' })
+    const row2 = sampleRow({ field: 'tags', source_shape: 'list', list_index: 1, source_value: 'shared' })
+    const row3 = sampleRow({ field: 'label', source_shape: 'scalar', list_index: null, source_value: 'shared' })
+    const rows = [row1, row2, row3]
+
+    const proposals = [
+      {
+        revision: { source_id: 'room-01', content_digest: 'a'.repeat(64) },
+        field: 'tags',
+        source_shape: 'list',
+        list_index: 0,
+        translation: 'tag zero',
+      },
+      {
+        revision: { source_id: 'room-01', content_digest: 'a'.repeat(64) },
+        field: 'tags',
+        source_shape: 'list',
+        list_index: 1,
+        translation: 'tag one',
+      },
+      {
+        revision: { source_id: 'room-01', content_digest: 'a'.repeat(64) },
+        field: 'label',
+        source_shape: 'scalar',
+        list_index: null,
+        translation: 'label scalar',
+      },
+    ]
+
+    const { updatedRows, appliedCount } = applyProposalsToRows(rows, proposals)
+    expect(appliedCount).toBe(3)
+    expect(updatedRows[0].translation).toBe('tag zero')
+    expect(updatedRows[0].emit).toBe(true)
+    expect(updatedRows[1].translation).toBe('tag one')
+    expect(updatedRows[1].emit).toBe(true)
+    expect(updatedRows[2].translation).toBe('label scalar')
+    expect(updatedRows[2].emit).toBe(true)
+
+    // Input rows were not mutated
+    expect(row1.translation).toBe('')
+    expect(row2.translation).toBe('')
+    expect(row3.translation).toBe('')
   })
 })

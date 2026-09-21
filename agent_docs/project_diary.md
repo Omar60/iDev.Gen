@@ -246,3 +246,27 @@
   flow and `map_path`/direct-map compatibility remain intact. The accepted
   closure was verified against 2,072 backend tests and 362 frontend tests;
   Task 3.3 is next.
+- Task 3.3 is formally closed after independent acceptance. Optional proposals
+  use `POST /api/resources/libraries/{library_key}/translations/proposals` and
+  accept at most twenty identity-only source entries. Scalar values and list
+  items are separate entries. The identity is `source_id`,
+  `content_digest`, canonical `field`, `source_shape`, and `list_index`; source
+  text and eligibility are resolved server-side from the canonical projection.
+  Only pending, authorized `ROLE_DESCRIPTIVE_INPUT` rows are eligible, existing
+  translations are not implicitly overwritten, and `identity_required` rows do
+  not consume the assistant.
+- The proposal transport reuses `backend.enhance.run_structured(...)` and keeps
+  provider keys (`entry-0` through `entry-N`), canonical/list order, and
+  repeated-source identities server-owned. Strict input validation rejects
+  unsolicited fields and coercion of `list_index`; schema, stale, and
+  ineligible errors are sanitized. Provider output must be exactly the
+  expected entry keys mapped to English strings; extra, missing, malformed, or
+  non-English output rejects the entire proposal.
+- Proposals are write-free until the existing reviewed flow reaches explicit
+  Preview and explicit Apply: no sidecar, attestation, implicit Preview/Apply,
+  or direct revision shortcut occurs at generation. Manual edits, row reloads,
+  global/cross-library reloads, and a second Suggest fence stale responses;
+  global reload clears `proposalBusy`. The feature flag reuses
+  `is_resource_planning_enabled()` and returns HTTP 503 before body/schema,
+  source, or provider processing when disabled; `run_structured` is not called.
+  Tasks 3.1 and 3.2 remain compatible, and Tasks 3.4/3.5 were not started.

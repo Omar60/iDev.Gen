@@ -19,6 +19,7 @@ import logging
 import mimetypes
 import os
 import random
+import re
 import shutil
 import zipfile
 from contextlib import asynccontextmanager
@@ -31,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.datastructures import Headers, UploadFile as StarletteUploadFile
 from PIL import Image, ImageDraw, ImageFont
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from typing import Any, Literal
 
 import crop
@@ -2980,6 +2981,165 @@ def apply_resource_library_translations(library_key: str, p: ResourceTranslation
         raise HTTPException(422, str(exc)) from exc
     except TypeError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+class ResourceTranslationProposalEntryIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: str
+    content_digest: str
+    field: str
+    source_shape: Literal["scalar", "list"]
+    list_index: int | None = None
+
+    @field_validator("source_id", mode="before")
+    @classmethod
+    def validate_source_id(cls, v: Any) -> str:
+        if not isinstance(v, str) or isinstance(v, bool) or not resource_selection._is_safe_public_string(v):
+            raise ValueError("source_id must be a non-empty safe string")
+        return v
+
+    @field_validator("content_digest", mode="before")
+    @classmethod
+    def validate_content_digest(cls, v: Any) -> str:
+        if not isinstance(v, str) or isinstance(v, bool) or not re.fullmatch(r"^[0-9a-f]{64}$", v):
+            raise ValueError("content_digest must be a 64-character lowercase hexadecimal string")
+        return v
+
+    @field_validator("field", mode="before")
+    @classmethod
+    def validate_field(cls, v: Any) -> str:
+        if not isinstance(v, str) or isinstance(v, bool) or not v.strip():
+            raise ValueError("field must be a non-empty string")
+        return v.strip()
+
+    @field_validator("list_index", mode="before")
+    @classmethod
+    def validate_list_index(cls, v: Any) -> int | None:
+        if v is None:
+            return None
+        # Reject booleans explicitly (bool is a subclass of int in Python)
+        if isinstance(v, bool):
+            raise ValueError("list_index must be an integer, not boolean")
+        # Reject floats, numeric strings, or any non-int type
+        if type(v) is not int:
+            raise ValueError("list_index must be a strict integer")
+        if v < 0:
+            raise ValueError("list_index must be non-negative")
+        return v
+
+    @model_validator(mode="after")
+    def validate_shape_and_index(self) -> "ResourceTranslationProposalEntryIn":
+        if self.source_shape == "scalar":
+            if self.list_index is not None:
+                raise ValueError("Scalar entry requires list_index to be null")
+        elif self.source_shape == "list":
+            if self.list_index is None:
+                raise ValueError("List entry requires a non-negative integer list_index")
+        return self
+
+
+class ResourceTranslationProposalsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    entries: list[ResourceTranslationProposalEntryIn]
+
+    @field_validator("entries", mode="before")
+    @classmethod
+    def validate_entries_cardinality(cls, v: Any) -> Any:
+        if not isinstance(v, list) or len(v) == 0:
+            raise ValueError("entries must be a non-empty list")
+        if len(v) > 20:
+            raise ValueError("entries cannot exceed 20 items")
+        return v
+
+    @model_validator(mode="after")
+    def validate_unique_identities(self) -> "ResourceTranslationProposalsIn":
+        seen: set[tuple[str, str, str, str, int | None]] = set()
+        for e in self.entries:
+            ident = (e.source_id, e.content_digest, e.field, e.source_shape, e.list_index)
+            if ident in seen:
+                raise ValueError("Duplicate proposal entry identity")
+            seen.add(ident)
+        return self
+
+
+@_translation_limit_post("/api/resources/libraries/{library_key}/translations/proposals")
+async def propose_resource_library_translations(
+    library_key: str,
+    request: Request,
+):
+    """Generate server-authorized translation proposals using structured assistant transport."""
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
+    try:
+        body_bytes = await request.body()
+        if not body_bytes:
+            raise HTTPException(422, detail="Invalid proposal request schema")
+        try:
+            body_json = json.loads(body_bytes)
+        except Exception:
+            raise HTTPException(422, detail="Invalid proposal request schema")
+
+        if not isinstance(body_json, dict):
+            raise HTTPException(422, detail="Invalid proposal request schema")
+
+        try:
+            p = ResourceTranslationProposalsIn.model_validate(body_json)
+        except ValidationError:
+            raise HTTPException(422, detail="Invalid proposal request schema")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(422, detail="Invalid proposal request schema")
+
+    try:
+        resolved_entries = resource_service.resolve_translation_proposal_entries(
+            library_key,
+            [entry.model_dump() for entry in p.entries],
+        )
+    except resource_service.StaleProposalRowError:
+        raise HTTPException(409, detail="Resource row has been modified or digest mismatched")
+    except resource_service.IneligibleProposalRowError:
+        raise HTTPException(422, detail="Proposal row is ineligible")
+
+    if resolved_entries is None:
+        raise HTTPException(404, detail="resource library not found")
+
+    prompt_text = resource_service.build_translation_proposal_prompt(resolved_entries)
+    proposal_prompt = enhance.EnhanceIn(instruction=prompt_text)
+
+    raw_output = await enhance.run_structured(CONFIG, proposal_prompt)
+
+    expected_keys = [entry["key"] for entry in resolved_entries]
+    try:
+        validated_translations = resource_service.validate_proposal_provider_output(
+            raw_output,
+            expected_keys,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            502,
+            detail="The prompt assistant returned an invalid proposal response.",
+        ) from exc
+
+    proposals = [
+        {
+            "revision": {
+                "source_id": entry["source_id"],
+                "content_digest": entry["content_digest"],
+            },
+            "field": entry["field"],
+            "source_shape": entry["source_shape"],
+            "list_index": entry["list_index"],
+            "source_value": entry["source_value"],
+            "translation": validated_translations[entry["key"]],
+        }
+        for entry in resolved_entries
+    ]
+
+    return {
+        "library_key": library_key,
+        "proposals": proposals,
+    }
 
 
 @app.post("/api/resources/revisions/{library_key}/{source_id}/{content_digest}/translation")

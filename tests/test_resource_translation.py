@@ -1953,3 +1953,651 @@ class TestSelectedTranslationMapWorkflow:
         assert resp_plus_one.status_code == 413
         assert resp_plus_one.json() == {"detail": "Request entity too large"}
         assert parse_calls == 0
+
+
+# ===========================================================================
+# Task 3.3 Integration Tests: Resource Translation Proposals
+# ===========================================================================
+
+
+class TestResourceTranslationProposals:
+    """Task 3.3 tests: field-preserving assistant transport for translation proposals."""
+
+    @pytest.fixture(autouse=True)
+    def setup_config(self, monkeypatch):
+        import main
+        monkeypatch.setitem(main.CONFIG, "llm_url", "http://127.0.0.1:11434/v1")
+        monkeypatch.setitem(main.CONFIG, "llm_model", "test-assistant-model")
+
+    def test_proposals_feature_flag_blocks_provider_and_reenables_normal_flow(
+        self, client, monkeypatch,
+    ):
+        import main
+
+        lib_id = resource_store.ensure_library("prop_flag_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "room-flag", {"id": "room-flag", "name": "комната_flag"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        request_body = {
+            "entries": [{
+                "source_id": "room-flag",
+                "content_digest": rev["content_digest"],
+                "field": "label",
+                "source_shape": "scalar",
+                "list_index": None,
+            }],
+        }
+        provider_calls = []
+
+        async def spy_run_structured(config, p, image=""):
+            provider_calls.append(p)
+            return {"entry-0": "Flag Room"}
+
+        monkeypatch.setattr(main.enhance, "run_structured", spy_run_structured)
+        before_revision = resource_store.get_revision(revision_id=rev_id)
+        before_revision_count = db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"]
+
+        monkeypatch.setattr(main, "is_resource_planning_enabled", lambda: False)
+        disabled = client.post(
+            "/api/resources/libraries/prop_flag_lib/translations/proposals",
+            json=request_body,
+        )
+
+        assert disabled.status_code == 503
+        assert disabled.json()["detail"] == "Resource planning is disabled by configuration"
+        assert len(provider_calls) == 0
+        assert resource_store.get_revision(revision_id=rev_id) == before_revision
+        assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == before_revision_count
+
+        disabled_malformed = client.post(
+            "/api/resources/libraries/prop_flag_lib/translations/proposals",
+            content=b"not-json",
+            headers={"content-type": "application/json"},
+        )
+        assert disabled_malformed.status_code == 503
+        assert disabled_malformed.json()["detail"] == "Resource planning is disabled by configuration"
+        assert len(provider_calls) == 0
+
+        monkeypatch.setattr(main, "is_resource_planning_enabled", lambda: True)
+        enabled = client.post(
+            "/api/resources/libraries/prop_flag_lib/translations/proposals",
+            json=request_body,
+        )
+
+        assert enabled.status_code == 200
+        assert enabled.json()["proposals"][0]["translation"] == "Flag Room"
+        assert len(provider_calls) == 1
+
+    def test_proposals_max_20_accepted_and_21_rejected_before_provider(self, client, monkeypatch):
+        import main
+        lib_id = resource_store.ensure_library("prop_cardinality_lib", kind="rooms")
+        revisions = []
+        for i in range(21):
+            rev_id = resource_store.record_revision(
+                lib_id,
+                f"room-card-{i}",
+                {"id": f"room-card-{i}", "name": f"комната-{i}", "theme": f"THEME_{i}"},
+            )
+            revisions.append(resource_store.get_revision(revision_id=rev_id))
+
+        calls = []
+
+        async def spy_run_structured(config, p, image=""):
+            calls.append(p)
+            return {f"entry-{j}": f"Room {j}" for j in range(20)}
+
+        monkeypatch.setattr(main.enhance, "run_structured", spy_run_structured)
+
+        # 1. 21 entries: rejected before provider call (422)
+        entries_21 = [
+            {
+                "source_id": rev["source_id"],
+                "content_digest": rev["content_digest"],
+                "field": "label",
+                "source_shape": "scalar",
+                "list_index": None,
+            }
+            for rev in revisions[:21]
+        ]
+        resp_21 = client.post(
+            "/api/resources/libraries/prop_cardinality_lib/translations/proposals",
+            json={"entries": entries_21},
+        )
+        assert resp_21.status_code == 422
+        assert len(calls) == 0
+
+        # 2. Exactly 20 entries: accepted, exactly one provider call
+        entries_20 = entries_21[:20]
+        resp_20 = client.post(
+            "/api/resources/libraries/prop_cardinality_lib/translations/proposals",
+            json={"entries": entries_20},
+        )
+        assert resp_20.status_code == 200
+        assert len(calls) == 1
+        data_20 = resp_20.json()
+        assert data_20["library_key"] == "prop_cardinality_lib"
+        assert len(data_20["proposals"]) == 20
+        for idx, prop in enumerate(data_20["proposals"]):
+            assert prop["revision"]["source_id"] == f"room-card-{idx}"
+            assert prop["field"] == "label"
+            assert prop["source_shape"] == "scalar"
+            assert prop["list_index"] is None
+            assert prop["source_value"] == f"комната-{idx}"
+            assert prop["translation"] == f"Room {idx}"
+
+    def test_proposals_duplicate_request_identity_rejected(self, client, monkeypatch):
+        import main
+        lib_id = resource_store.ensure_library("prop_dup_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "room-dup", {"id": "room-dup", "name": "комната_dup"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+
+        calls = []
+
+        async def spy_run_structured(config, p, image=""):
+            calls.append(p)
+            return {"entry-0": "Room Dup"}
+
+        monkeypatch.setattr(main.enhance, "run_structured", spy_run_structured)
+
+        entry = {
+            "source_id": "room-dup",
+            "content_digest": rev["content_digest"],
+            "field": "label",
+            "source_shape": "scalar",
+            "list_index": None,
+        }
+        resp = client.post(
+            "/api/resources/libraries/prop_dup_lib/translations/proposals",
+            json={"entries": [entry, entry]},
+        )
+        assert resp.status_code == 422
+        assert len(calls) == 0
+
+    @pytest.mark.parametrize("bad_list_index", ["0", 0.0, True, False])
+    def test_proposals_strict_list_index_rejection(self, client, monkeypatch, bad_list_index):
+        import main
+        calls = []
+
+        async def spy_run_structured(config, p, image=""):
+            calls.append(p)
+            return {"entry-0": "Valid"}
+
+        monkeypatch.setattr(main.enhance, "run_structured", spy_run_structured)
+
+        lib_id = resource_store.ensure_library("prop_strict_idx_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "room-idx", {"id": "room-idx", "name": "комната", "tags": ["тег-0"]},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+
+        before_revisions_count = db.one("SELECT COUNT(*) as c FROM asset_revision")["c"]
+
+        # Call with coerced/invalid list_index
+        resp = client.post(
+            "/api/resources/libraries/prop_strict_idx_lib/translations/proposals",
+            json={
+                "entries": [
+                    {
+                        "source_id": "room-idx",
+                        "content_digest": rev["content_digest"],
+                        "field": "tags",
+                        "source_shape": "list",
+                        "list_index": bad_list_index,
+                    },
+                ],
+            },
+        )
+        assert resp.status_code == 422
+        assert len(calls) == 0
+        assert db.one("SELECT COUNT(*) as c FROM asset_revision")["c"] == before_revisions_count
+
+        # Confirm list_index = 0 is valid
+        resp_valid = client.post(
+            "/api/resources/libraries/prop_strict_idx_lib/translations/proposals",
+            json={
+                "entries": [
+                    {
+                        "source_id": "room-idx",
+                        "content_digest": rev["content_digest"],
+                        "field": "tags",
+                        "source_shape": "list",
+                        "list_index": 0,
+                    },
+                ],
+            },
+        )
+        assert resp_valid.status_code == 200
+        assert len(calls) == 1
+
+    def test_proposals_no_leak_of_request_markers_on_422(self, client, monkeypatch):
+        import main
+        calls = []
+
+        async def spy_run_structured(config, p, image=""):
+            calls.append(p)
+            return {}
+
+        monkeypatch.setattr(main.enhance, "run_structured", spy_run_structured)
+
+        marker_sid = "PRIVATE-SOURCE-MARKER"
+        marker_digest = "a" * 64
+        marker_extra = "PRIVATE-EXTRA-MARKER"
+
+        # Case A: duplicate identity
+        entry = {
+            "source_id": marker_sid,
+            "content_digest": marker_digest,
+            "field": "label",
+            "source_shape": "scalar",
+            "list_index": None,
+        }
+        resp_a = client.post(
+            "/api/resources/libraries/any_lib/translations/proposals",
+            json={"entries": [entry, entry]},
+        )
+        assert resp_a.status_code == 422
+        assert len(calls) == 0
+        assert marker_sid not in resp_a.text
+        assert resp_a.json()["detail"] == "Invalid proposal request schema"
+
+        # Case B: extra field
+        resp_b = client.post(
+            "/api/resources/libraries/any_lib/translations/proposals",
+            json={"entries": [entry], "secret_field": marker_extra},
+        )
+        assert resp_b.status_code == 422
+        assert len(calls) == 0
+        assert marker_extra not in resp_b.text
+        assert "secret_field" not in resp_b.text
+        assert resp_b.json()["detail"] == "Invalid proposal request schema"
+
+        # Case C: invalid/coerced list_index
+        bad_entry = {**entry, "source_shape": "list", "list_index": "0"}
+        resp_c = client.post(
+            "/api/resources/libraries/any_lib/translations/proposals",
+            json={"entries": [bad_entry]},
+        )
+        assert resp_c.status_code == 422
+        assert len(calls) == 0
+        assert marker_sid not in resp_c.text
+        assert resp_c.json()["detail"] == "Invalid proposal request schema"
+
+    def test_proposals_server_owned_canonical_ordering_from_reordered_client_request(self, client, monkeypatch):
+        import main
+        lib_id = resource_store.ensure_library("prop_order_reg_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id,
+            "room-order-reg",
+            {
+                "id": "room-order-reg",
+                "name": "комната_reg",
+                "tags": ["тег-0", "тег-1", "тег-2"],
+            },
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        digest = rev["content_digest"]
+
+        prompt_captured = []
+
+        async def spy_run_structured(config, p, image=""):
+            prompt_captured.append(p.instruction)
+            # Provider returns keys in arbitrary/scrambled order
+            return {
+                "entry-1": "tag 1",
+                "entry-2": "tag 2",
+                "entry-0": "tag 0",
+            }
+
+        monkeypatch.setattr(main.enhance, "run_structured", spy_run_structured)
+
+        # Client requests list items 2, 0, 1
+        reordered_entries = [
+            {"source_id": "room-order-reg", "content_digest": digest, "field": "tags", "source_shape": "list", "list_index": 2},
+            {"source_id": "room-order-reg", "content_digest": digest, "field": "tags", "source_shape": "list", "list_index": 0},
+            {"source_id": "room-order-reg", "content_digest": digest, "field": "tags", "source_shape": "list", "list_index": 1},
+        ]
+        resp = client.post(
+            "/api/resources/libraries/prop_order_reg_lib/translations/proposals",
+            json={"entries": reordered_entries},
+        )
+        assert resp.status_code == 200
+        proposals = resp.json()["proposals"]
+
+        # Server-owned canonical order in provider prompt: entry-0 -> index 0, entry-1 -> index 1, entry-2 -> index 2
+        assert len(prompt_captured) == 1
+        instr = prompt_captured[0]
+        pos_entry0 = instr.find('"key": "entry-0"')
+        pos_entry1 = instr.find('"key": "entry-1"')
+        pos_entry2 = instr.find('"key": "entry-2"')
+        assert pos_entry0 < pos_entry1 < pos_entry2
+        # Verify correspondence in prompt
+        assert '"list_index": 0' in instr
+        assert '"list_index": 1' in instr
+        assert '"list_index": 2' in instr
+
+        # Server-owned canonical order in public response: index 0, index 1, index 2
+        assert [p["list_index"] for p in proposals] == [0, 1, 2]
+        assert [p["translation"] for p in proposals] == ["tag 0", "tag 1", "tag 2"]
+        assert [p["source_value"] for p in proposals] == ["тег-0", "тег-1", "тег-2"]
+
+        # Repeated source text test: two items with distinct identities but identical source_value
+        rev_dup_id = resource_store.record_revision(
+            lib_id,
+            "room-order-dup",
+            {
+                "id": "room-order-dup",
+                "name": "комната_dup",
+                "tags": ["балкон", "балкон"],
+            },
+        )
+        rev_dup = resource_store.get_revision(revision_id=rev_dup_id)
+        dup_entries = [
+            {"source_id": "room-order-dup", "content_digest": rev_dup["content_digest"], "field": "tags", "source_shape": "list", "list_index": 1},
+            {"source_id": "room-order-dup", "content_digest": rev_dup["content_digest"], "field": "tags", "source_shape": "list", "list_index": 0},
+        ]
+        async def spy_dup(config, p, image=""):
+            return {"entry-0": "balcony A", "entry-1": "balcony B"}
+        monkeypatch.setattr(main.enhance, "run_structured", spy_dup)
+
+        resp_dup = client.post(
+            "/api/resources/libraries/prop_order_reg_lib/translations/proposals",
+            json={"entries": dup_entries},
+        )
+        assert resp_dup.status_code == 200
+        proposals_dup = resp_dup.json()["proposals"]
+        assert len(proposals_dup) == 2
+        assert [p["list_index"] for p in proposals_dup] == [0, 1]
+        assert proposals_dup[0]["translation"] == "balcony A"
+        assert proposals_dup[1]["translation"] == "balcony B"
+
+    def test_proposals_closed_schema_rejection(self, client, monkeypatch):
+        import main
+        calls = []
+
+        async def spy_run_structured(config, p, image=""):
+            calls.append(p)
+            return {}
+
+        monkeypatch.setattr(main.enhance, "run_structured", spy_run_structured)
+
+        valid_entry = {
+            "source_id": "room-1",
+            "content_digest": "a" * 64,
+            "field": "label",
+            "source_shape": "scalar",
+            "list_index": None,
+        }
+
+        # Extra key on body
+        resp = client.post(
+            "/api/resources/libraries/lib/translations/proposals",
+            json={"entries": [valid_entry], "extra": "forbidden"},
+        )
+        assert resp.status_code == 422
+
+        # Extra key on entry
+        bad_entry = {**valid_entry, "source_value": "attempt"}
+        resp = client.post(
+            "/api/resources/libraries/lib/translations/proposals",
+            json={"entries": [bad_entry]},
+        )
+        assert resp.status_code == 422
+
+        # Scalar with non-null list_index
+        bad_scalar = {**valid_entry, "list_index": 0}
+        resp = client.post(
+            "/api/resources/libraries/lib/translations/proposals",
+            json={"entries": [bad_scalar]},
+        )
+        assert resp.status_code == 422
+
+        # List with null list_index
+        bad_list = {**valid_entry, "source_shape": "list", "list_index": None}
+        resp = client.post(
+            "/api/resources/libraries/lib/translations/proposals",
+            json={"entries": [bad_list]},
+        )
+        assert resp.status_code == 422
+
+        # Empty entries
+        resp = client.post(
+            "/api/resources/libraries/lib/translations/proposals",
+            json={"entries": []},
+        )
+        assert resp.status_code == 422
+        assert len(calls) == 0
+
+    def test_proposals_provider_keys_and_order_preservation(self, client, monkeypatch):
+        import main
+        lib_id = resource_store.ensure_library("prop_order_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id,
+            "room-order",
+            {
+                "id": "room-order",
+                "name": "комната-1",
+                "theme": "SUITE_A",
+                "tags": ["балконы", "балконы"],
+            },
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+        digest = rev["content_digest"]
+
+        prompt_captured = []
+
+        async def spy_run_structured(config, p, image=""):
+            prompt_captured.append(p.instruction)
+            # Return keys out of order intentionally
+            return {
+                "entry-2": "balconies 2",
+                "entry-0": "Room Order",
+                "entry-1": "balconies 1",
+            }
+
+        monkeypatch.setattr(main.enhance, "run_structured", spy_run_structured)
+
+        entries = [
+            {"source_id": "room-order", "content_digest": digest, "field": "label", "source_shape": "scalar", "list_index": None},
+            {"source_id": "room-order", "content_digest": digest, "field": "tags", "source_shape": "list", "list_index": 0},
+            {"source_id": "room-order", "content_digest": digest, "field": "tags", "source_shape": "list", "list_index": 1},
+        ]
+        resp = client.post(
+            "/api/resources/libraries/prop_order_lib/translations/proposals",
+            json={"entries": entries},
+        )
+        assert resp.status_code == 200
+        proposals = resp.json()["proposals"]
+        # Public response order must match server-owned request order: entry-0, entry-1, entry-2
+        assert [p["translation"] for p in proposals] == ["Room Order", "balconies 1", "balconies 2"]
+        assert [p["list_index"] for p in proposals] == [None, 0, 1]
+        assert len(prompt_captured) == 1
+        assert "entry-0" in prompt_captured[0]
+        assert "entry-1" in prompt_captured[0]
+        assert "entry-2" in prompt_captured[0]
+
+    @pytest.mark.parametrize(
+        "provider_answer",
+        [
+            {"entry-0": "Valid", "entry-extra": "Extra"},  # extra key
+            {},  # missing key
+            {"entry-0": ""},  # empty string
+            {"entry-0": "   "},  # whitespace string
+            {"entry-0": 123},  # number
+            {"entry-0": None},  # null
+            {"entry-0": ["Room"]},  # list
+            {"entry-0": {"translation": "Room"}},  # nested object
+            {"entry-0": "комната"},  # Cyrillic/non-English
+        ],
+    )
+    def test_proposals_provider_malformed_output_rejected_safely(
+        self, client, monkeypatch, provider_answer,
+    ):
+        import main
+        lib_id = resource_store.ensure_library("prop_malformed_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "room-mal", {"id": "room-mal", "name": "комната_m"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+
+        async def spy_run_structured(config, p, image=""):
+            return provider_answer
+
+        monkeypatch.setattr(main.enhance, "run_structured", spy_run_structured)
+
+        resp = client.post(
+            "/api/resources/libraries/prop_malformed_lib/translations/proposals",
+            json={
+                "entries": [
+                    {
+                        "source_id": "room-mal",
+                        "content_digest": rev["content_digest"],
+                        "field": "label",
+                        "source_shape": "scalar",
+                        "list_index": None,
+                    },
+                ],
+            },
+        )
+        assert resp.status_code == 502
+        detail = resp.json()["detail"]
+        assert "invalid proposal response" in detail
+        # Invariant: raw provider output is NOT reflected in detail
+        assert "комната" not in detail
+
+    def test_proposals_assistant_not_configured(self, client, monkeypatch):
+        import main
+        monkeypatch.setitem(main.CONFIG, "llm_url", "")
+        monkeypatch.setitem(main.CONFIG, "llm_model", "")
+
+        lib_id = resource_store.ensure_library("prop_noconf_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "room-noconf", {"id": "room-noconf", "name": "комната_nc"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+
+        resp = client.post(
+            "/api/resources/libraries/prop_noconf_lib/translations/proposals",
+            json={
+                "entries": [
+                    {
+                        "source_id": "room-noconf",
+                        "content_digest": rev["content_digest"],
+                        "field": "label",
+                        "source_shape": "scalar",
+                        "list_index": None,
+                    },
+                ],
+            },
+        )
+        assert resp.status_code == 400
+        assert "No prompt assistant is configured" in resp.json()["detail"]
+
+    def test_proposals_write_free_proof(self, client, monkeypatch):
+        import main
+        lib_id = resource_store.ensure_library("prop_writefree_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "room-wf", {"id": "room-wf", "name": "комната_wf"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+
+        async def mock_run_structured(config, p, image=""):
+            return {"entry-0": "Clean Room"}
+
+        monkeypatch.setattr(main.enhance, "run_structured", mock_run_structured)
+
+        # Before snapshots
+        before_rev = resource_store.get_revision(revision_id=rev_id)
+        before_revisions_count = db.one("SELECT COUNT(*) as c FROM asset_revision")["c"]
+        before_auxiliary_count = db.one("SELECT COUNT(*) as c FROM auxiliary_resource")["c"]
+        before_library_count = db.one("SELECT COUNT(*) as c FROM resource_library")["c"]
+
+        # Call proposals endpoint (success)
+        resp = client.post(
+            "/api/resources/libraries/prop_writefree_lib/translations/proposals",
+            json={
+                "entries": [
+                    {
+                        "source_id": "room-wf",
+                        "content_digest": rev["content_digest"],
+                        "field": "label",
+                        "source_shape": "scalar",
+                        "list_index": None,
+                    },
+                ],
+            },
+        )
+        assert resp.status_code == 200
+
+        # After assertions: zero DB writes
+        after_rev = resource_store.get_revision(revision_id=rev_id)
+        assert after_rev == before_rev
+        assert after_rev["translation"] == before_rev["translation"]
+        assert db.one("SELECT COUNT(*) as c FROM asset_revision")["c"] == before_revisions_count
+        assert db.one("SELECT COUNT(*) as c FROM auxiliary_resource")["c"] == before_auxiliary_count
+        assert db.one("SELECT COUNT(*) as c FROM resource_library")["c"] == before_library_count
+
+        # Call proposals endpoint (failure)
+        from fastapi import HTTPException
+        async def mock_fail(config, p, image=""):
+            raise HTTPException(502, "Provider error")
+
+        monkeypatch.setattr(main.enhance, "run_structured", mock_fail)
+        resp_fail = client.post(
+            "/api/resources/libraries/prop_writefree_lib/translations/proposals",
+            json={
+                "entries": [
+                    {
+                        "source_id": "room-wf",
+                        "content_digest": rev["content_digest"],
+                        "field": "label",
+                        "source_shape": "scalar",
+                        "list_index": None,
+                    },
+                ],
+            },
+        )
+        assert resp_fail.status_code == 502
+
+        # After assertions: still zero DB writes
+        assert resource_store.get_revision(revision_id=rev_id) == before_rev
+        assert db.one("SELECT COUNT(*) as c FROM asset_revision")["c"] == before_revisions_count
+
+    def test_proposals_no_shortcuts_or_preview_apply_called(self, client, monkeypatch):
+        import main
+        lib_id = resource_store.ensure_library("prop_noshortcut_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "room-ns", {"id": "room-ns", "name": "комната_ns"},
+        )
+        rev = resource_store.get_revision(revision_id=rev_id)
+
+        def forbidden_call(*args, **kwargs):
+            raise AssertionError("Forbidden function called during proposals!")
+
+        monkeypatch.setattr(backend_resource_translation, "apply_revision_translation", forbidden_call)
+        monkeypatch.setattr(backend_resource_translation, "preview_translation_map", forbidden_call)
+        monkeypatch.setattr(backend_resource_translation, "apply_translation_map", forbidden_call)
+
+        async def mock_run_structured(config, p, image=""):
+            return {"entry-0": "No Shortcut Room"}
+
+        monkeypatch.setattr(main.enhance, "run_structured", mock_run_structured)
+
+        resp = client.post(
+            "/api/resources/libraries/prop_noshortcut_lib/translations/proposals",
+            json={
+                "entries": [
+                    {
+                        "source_id": "room-ns",
+                        "content_digest": rev["content_digest"],
+                        "field": "label",
+                        "source_shape": "scalar",
+                        "list_index": None,
+                    },
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["proposals"][0]["translation"] == "No Shortcut Room"

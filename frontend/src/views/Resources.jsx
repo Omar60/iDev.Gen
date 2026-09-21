@@ -14,6 +14,10 @@ import {
   normalizeSelectionView,
   reduceSelectionView,
   isImportEligible,
+  getRowIdentityKey,
+  buildProposalRequestEntry,
+  isRowEligibleForProposal,
+  applyProposalsToRows,
 } from '../resources.js'
 
 export default function Resources({ requestedModelId = '' }) {
@@ -68,9 +72,16 @@ export default function Resources({ requestedModelId = '' }) {
     return next
   }
 
-  const clearManualPreview = (libraryKey, patch = {}) => {
+  const invalidateProposalGeneration = (libraryKey, patch = {}) => {
     nextManualGeneration(libraryKey)
     updateTState(libraryKey, {
+      proposalBusy: false,
+      ...patch,
+    })
+  }
+
+  const clearManualPreview = (libraryKey, patch = {}) => {
+    invalidateProposalGeneration(libraryKey, {
       manualBusy: false,
       manualPreview: null,
       manualSnapshot: '',
@@ -83,6 +94,7 @@ export default function Resources({ requestedModelId = '' }) {
     const generation = nextManualGeneration(libraryKey)
     updateTState(libraryKey, {
       manualBusy: true,
+      proposalBusy: false,
       manualError: '',
       manualNotice: '',
       manualPreview: null,
@@ -97,9 +109,12 @@ export default function Resources({ requestedModelId = '' }) {
         manualRows: (result.rows || []).map((row) => ({
           ...row,
           emit: Boolean(row.emit_by_default),
+          suggest_selected: false,
         })),
         manualDiagnostics: result.diagnostics || [],
         manualNotice: `Loaded ${(result.rows || []).length} editable source-backed row(s).`,
+        preProposalRows: null,
+        proposalBusy: false,
       })
     } catch (e) {
       if (manualGenerationRef.current[libraryKey] === generation) {
@@ -124,11 +139,70 @@ export default function Resources({ requestedModelId = '' }) {
           ...state,
           manualRows: rows,
           manualBusy: false,
+          proposalBusy: false,
           manualPreview: null,
           manualSnapshot: '',
           manualError: '',
         },
       }
+    })
+  }
+
+  const handleSuggestTranslations = async (libraryKey) => {
+    const state = translationState[libraryKey] || {}
+    const rows = state.manualRows || []
+    const selectedRows = rows.filter((r) => r.suggest_selected && isRowEligibleForProposal(r))
+    if (selectedRows.length === 0 || selectedRows.length > 20) return
+
+    const generation = nextManualGeneration(libraryKey)
+    const preSnapshot = rows.map((r) => ({ ...r }))
+    updateTState(libraryKey, {
+      proposalBusy: true,
+      manualError: '',
+      manualNotice: '',
+      manualPreview: null,
+      manualSnapshot: '',
+    })
+
+    const entries = selectedRows.map(buildProposalRequestEntry)
+    try {
+      const result = await api.post(
+        `/api/resources/libraries/${encodeURIComponent(libraryKey)}/translations/proposals`,
+        { entries }
+      )
+      if (manualGenerationRef.current[libraryKey] !== generation) return
+
+      const currentRows = (translationState[libraryKey]?.manualRows || rows)
+      const { updatedRows, appliedCount } = applyProposalsToRows(currentRows, result.proposals)
+
+      updateTState(libraryKey, {
+        manualRows: updatedRows,
+        preProposalRows: preSnapshot,
+        manualNotice: `Suggested ${appliedCount} translation(s). Review and preview when ready.`,
+        manualPreview: null,
+        manualSnapshot: '',
+      })
+    } catch (e) {
+      if (manualGenerationRef.current[libraryKey] === generation) {
+        updateTState(libraryKey, { manualError: e.message })
+      }
+    } finally {
+      if (manualGenerationRef.current[libraryKey] === generation) {
+        updateTState(libraryKey, { proposalBusy: false })
+      }
+    }
+  }
+
+  const handleDiscardSuggestions = (libraryKey) => {
+    const state = translationState[libraryKey] || {}
+    if (!state.preProposalRows) return
+    invalidateProposalGeneration(libraryKey, {
+      manualRows: state.preProposalRows,
+      preProposalRows: null,
+      manualPreview: null,
+      manualSnapshot: '',
+      manualNotice: 'Discarded translation suggestions.',
+      manualError: '',
     })
   }
 
@@ -266,6 +340,7 @@ export default function Resources({ requestedModelId = '' }) {
       Object.entries(prev).map(([key, state]) => [key, {
         ...state,
         manualBusy: false,
+        proposalBusy: false,
         manualPreview: null,
         manualSnapshot: '',
       }])
@@ -1031,6 +1106,9 @@ export default function Resources({ requestedModelId = '' }) {
                   {(() => {
                     const tState = translationState[lib.library_key] || {}
                     const manualBuild = buildTranslationMapFromRows(tState.manualRows || [])
+                    const suggestSelectedCount = (tState.manualRows || []).filter(
+                      (r) => r.suggest_selected && isRowEligibleForProposal(r)
+                    ).length
                     const manualCanPreview = (
                       !tState.manualBusy
                       && manualBuild.errors.length === 0
@@ -1068,10 +1146,42 @@ export default function Resources({ requestedModelId = '' }) {
                           {tState.manualNotice && <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>{tState.manualNotice}</div>}
 
                           {(tState.manualRows || []).length > 0 && (
+                            <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                              <button
+                                onClick={() => handleSuggestTranslations(lib.library_key)}
+                                disabled={
+                                  tState.manualBusy
+                                  || tState.proposalBusy
+                                  || suggestSelectedCount === 0
+                                  || suggestSelectedCount > 20
+                                }
+                              >
+                                {tState.proposalBusy ? 'Suggesting…' : 'Suggest translations'}
+                              </button>
+                              {suggestSelectedCount > 0 && (
+                                <span className="muted" style={{ fontSize: 12 }}>
+                                  {suggestSelectedCount > 20
+                                    ? `${suggestSelectedCount} selected (max 20)`
+                                    : `${suggestSelectedCount} selected`}
+                                </span>
+                              )}
+                              {tState.preProposalRows && (
+                                <button
+                                  onClick={() => handleDiscardSuggestions(lib.library_key)}
+                                  disabled={tState.manualBusy || tState.proposalBusy}
+                                >
+                                  Discard suggestions
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {(tState.manualRows || []).length > 0 && (
                             <table style={{ marginBottom: 8 }}>
                               <thead>
                                 <tr>
                                   <th>Use</th>
+                                  <th>Suggest</th>
                                   <th>Source</th>
                                   <th>Field / Revision</th>
                                   <th>Translation</th>
@@ -1087,6 +1197,18 @@ export default function Resources({ requestedModelId = '' }) {
                                         checked={Boolean(row.emit)}
                                         onChange={(e) => updateManualRow(lib.library_key, index, { emit: e.target.checked })}
                                       />
+                                    </td>
+                                    <td>
+                                      {isRowEligibleForProposal(row) ? (
+                                        <input
+                                          type="checkbox"
+                                          aria-label={`Suggest translation for ${row.source_value}`}
+                                          checked={Boolean(row.suggest_selected)}
+                                          onChange={(e) => updateManualRow(lib.library_key, index, { suggest_selected: e.target.checked })}
+                                        />
+                                      ) : (
+                                        <span className="muted" style={{ fontSize: 11 }}>—</span>
+                                      )}
                                     </td>
                                     <td>
                                       <code>{row.source_value}</code>
