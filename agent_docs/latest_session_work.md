@@ -2,54 +2,59 @@
 
 ## Detailed Current State
 
-OpenSpec Task 3.1 of `simplify-resource-session-workflow` passed independent
-acceptance and is formally closed. The selected translation-map interface uses
-the server-owned tuple `selection_id`, `file_id`, and `expected_revision`.
-Selection/file/revision/state/target/type checks remain enforced before the
-selected content is consumed.
+OpenSpec Task 3.2 of `simplify-resource-session-workflow` passed independent
+acceptance and is formally closed. `GET
+/api/resources/libraries/{library_key}/translations/rows` exposes a safe
+source-backed projection without raw payloads, paths, or internal fingerprints.
+`buildTranslationMapFromRows(rows)` builds a direct `translation_map` while
+preserving scalar/list contracts and keeping list items as independent scalar
+entries.
 
-The staged file is the exclusive byte authority. The resolver opens the staged
-file once and materializes `raw_bytes`; handle metadata and those bytes provide
-the size, mtime, SHA-256, fingerprint, candidate inspection, UTF-8 decoding,
-and JSON parsing inputs. The TOCTOU regression test replaces the path after
-materialization and proves that the already-read map remains the processed map.
+Required already-English strings receive explicit identity translations;
+optional English strings do not. Compatible duplicate source strings merge
+deterministically. Incompatible translation or shape duplicates produce an
+explicit diagnostic, and the workflow never uses last-write-wins. Existing
+valid sidecars are preserved. Corrupt sidecars are diagnosed and do not create
+editable rows. Public diagnostics are sanitized.
 
-Selected preview delegates to `preview_translation_map()`. Selected apply
-delegates to `apply_translation_map()`. `apply_revision_translation()` is not
-used in this flow, and the historical bulk validator remains the only semantic
-authority for source/translation types, fields, duplicates, authorization,
-canonical digest, attestation, and library-fingerprint checks.
+Manual Preview uses canonical bulk `/translations/preview`, and manual Apply
+uses canonical bulk `/translations/apply`. Attestation, map digest, and library
+fingerprint remain authoritative. `apply_revision_translation` and the
+single-revision endpoint are not used in this flow. Editing, reload, or Apply
+errors invalidate preview/token authorization, and late responses cannot
+reactivate stale authorization.
 
-Both translation routes use `RequestLimitRoute` with the actual 10 MiB body
-boundary. Missing or false-small `Content-Length` bodies over the limit return
-413 before Pydantic/parser/domain work or writes. Exact 10 MiB and 10 MiB plus
-one byte are covered. Malformed and semantically invalid selected maps return
-controlled, sanitized errors; the invalid-map regression proves 422 and zero
-translation writes.
-
-Task 3.2 is the next pending task and must not be started automatically.
+Task 3.1's selected-map flow and `map_path`/direct-map compatibility remain
+intact. Task 3.3 is the next pending task and must not be started automatically.
 
 ## Verification
 
-- `tests/test_resource_translation.py`: 59 passed.
-- `tests/test_request_limits.py`: 27 passed.
-- `tests/test_resource_selection_api.py`: 414 passed.
-- `tests/test_resource_selection.py`: 95 passed.
-- Reproducible full collection: 2,063 tests.
-- Complete suite: 2,063 tests, green.
+- Backend focal suite: 115 passed.
+- Frontend focal suite: 130 passed.
+- Reproducible backend collection: 2,072 tests.
+- Complete backend suite: 2,072 passed.
+- Complete frontend suite: 362 passed.
+- Frontend build: successful.
 - Privacy checks: 10 passed.
 - Shoot checks: 36 passed.
 - Strict OpenSpec validation: 1 passed, 0 failed.
-- `git diff --check`: clean apart from line-ending warnings.
+- `git diff --check`: clean.
 
 ## Closure Scope
 
 - `backend/main.py`
-- `backend/resource_selection.py`
+- `backend/resource_service.py`
+- `frontend/src/resources.js`
+- `frontend/src/views/Resources.jsx`
+- `tests/test_resource_service.py`
 - `tests/test_resource_translation.py`
+- `frontend/src/resources.test.js`
+- `frontend/src/views/Resources.test.jsx`
 - `openspec/changes/simplify-resource-session-workflow/tasks.md`
 - `agent_docs/project_progress.md`
 - `agent_docs/project_diary.md`
 - `agent_docs/latest_session_work.md`
 
-No push is authorized. Do not begin Task 3.2 automatically.
+`backend/resource_translation.py`, `backend/request_limits.py`, external
+handoffs, and Task 3.3+ files are outside this closure scope. No push is
+authorized.

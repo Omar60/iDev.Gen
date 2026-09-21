@@ -10,6 +10,7 @@ import {
   parsePreviewSummary,
   selectAvailableModelId,
   parseTranslationPreview,
+  buildTranslationMapFromRows,
   normalizeSelectionView,
   reduceSelectionView,
   isImportEligible,
@@ -52,12 +53,160 @@ export default function Resources({ requestedModelId = '' }) {
 
   // Translation mapping state per library key
   const [translationState, setTranslationState] = useState({})
+  const manualGenerationRef = useRef({})
 
   const updateTState = (libraryKey, patch) => {
     setTranslationState((prev) => ({
       ...prev,
       [libraryKey]: { ...(prev[libraryKey] || {}), ...patch },
     }))
+  }
+
+  const nextManualGeneration = (libraryKey) => {
+    const next = (manualGenerationRef.current[libraryKey] || 0) + 1
+    manualGenerationRef.current[libraryKey] = next
+    return next
+  }
+
+  const clearManualPreview = (libraryKey, patch = {}) => {
+    nextManualGeneration(libraryKey)
+    updateTState(libraryKey, {
+      manualBusy: false,
+      manualPreview: null,
+      manualSnapshot: '',
+      manualError: '',
+      ...patch,
+    })
+  }
+
+  const handleLoadTranslationRows = async (libraryKey) => {
+    const generation = nextManualGeneration(libraryKey)
+    updateTState(libraryKey, {
+      manualBusy: true,
+      manualError: '',
+      manualNotice: '',
+      manualPreview: null,
+      manualSnapshot: '',
+    })
+    try {
+      const result = await api.get(
+        `/api/resources/libraries/${encodeURIComponent(libraryKey)}/translations/rows`
+      )
+      if (manualGenerationRef.current[libraryKey] !== generation) return
+      updateTState(libraryKey, {
+        manualRows: (result.rows || []).map((row) => ({
+          ...row,
+          emit: Boolean(row.emit_by_default),
+        })),
+        manualDiagnostics: result.diagnostics || [],
+        manualNotice: `Loaded ${(result.rows || []).length} editable source-backed row(s).`,
+      })
+    } catch (e) {
+      if (manualGenerationRef.current[libraryKey] === generation) {
+        updateTState(libraryKey, { manualError: e.message })
+      }
+    } finally {
+      if (manualGenerationRef.current[libraryKey] === generation) {
+        updateTState(libraryKey, { manualBusy: false })
+      }
+    }
+  }
+
+  const updateManualRow = (libraryKey, index, patch) => {
+    nextManualGeneration(libraryKey)
+    setTranslationState((prev) => {
+      const state = prev[libraryKey] || {}
+      const rows = [...(state.manualRows || [])]
+      rows[index] = { ...rows[index], ...patch }
+      return {
+        ...prev,
+        [libraryKey]: {
+          ...state,
+          manualRows: rows,
+          manualBusy: false,
+          manualPreview: null,
+          manualSnapshot: '',
+          manualError: '',
+        },
+      }
+    })
+  }
+
+  const handlePreviewManualTranslations = async (libraryKey) => {
+    const state = translationState[libraryKey] || {}
+    const built = buildTranslationMapFromRows(state.manualRows || [])
+    if (built.errors.length || Object.keys(built.translationMap).length === 0) return
+    const generation = manualGenerationRef.current[libraryKey] || 0
+    const snapshot = JSON.stringify(built.translationMap)
+    updateTState(libraryKey, {
+      manualBusy: true,
+      manualError: '',
+      manualNotice: '',
+      manualPreview: null,
+      manualSnapshot: '',
+    })
+    try {
+      const result = await api.post(
+        `/api/resources/libraries/${encodeURIComponent(libraryKey)}/translations/preview`,
+        { translation_map: built.translationMap }
+      )
+      if (manualGenerationRef.current[libraryKey] !== generation) return
+      const preview = parseTranslationPreview(result)
+      updateTState(libraryKey, {
+        manualPreview: preview,
+        manualSnapshot: snapshot,
+        manualNotice: `Manual preview ready: ${preview.matchedRevisions} of ${preview.totalRevisions} revisions matched.`,
+      })
+    } catch (e) {
+      if (manualGenerationRef.current[libraryKey] === generation) {
+        updateTState(libraryKey, { manualError: e.message })
+      }
+    } finally {
+      if (manualGenerationRef.current[libraryKey] === generation) {
+        updateTState(libraryKey, { manualBusy: false })
+      }
+    }
+  }
+
+  const handleApplyManualTranslations = async (libraryKey) => {
+    const state = translationState[libraryKey] || {}
+    const built = buildTranslationMapFromRows(state.manualRows || [])
+    const snapshot = JSON.stringify(built.translationMap)
+    if (
+      built.errors.length
+      || !state.manualPreview?.attestationToken
+      || snapshot !== state.manualSnapshot
+    ) {
+      clearManualPreview(libraryKey, {
+        manualError: 'Translation rows changed since preview. Preview again before applying.',
+      })
+      return
+    }
+    const generation = manualGenerationRef.current[libraryKey] || 0
+    updateTState(libraryKey, { manualBusy: true, manualError: '', manualNotice: '' })
+    try {
+      const result = await api.post(
+        `/api/resources/libraries/${encodeURIComponent(libraryKey)}/translations/apply`,
+        {
+          translation_map: built.translationMap,
+          attestation_token: state.manualPreview.attestationToken,
+        }
+      )
+      if (manualGenerationRef.current[libraryKey] !== generation) return
+      clearManualPreview(libraryKey, {
+        manualNotice: `Translations applied: ${result.updated} updated, ${result.ready} ready, ${result.pending} pending.`,
+      })
+      reloadLibraries()
+      handleLoadTranslationRows(libraryKey)
+    } catch (e) {
+      if (manualGenerationRef.current[libraryKey] === generation) {
+        clearManualPreview(libraryKey, { manualError: e.message })
+      }
+    } finally {
+      if (manualGenerationRef.current[libraryKey] === generation) {
+        updateTState(libraryKey, { manualBusy: false })
+      }
+    }
   }
 
   const handlePreviewTranslations = async (libraryKey) => {
@@ -103,13 +252,24 @@ export default function Resources({ requestedModelId = '' }) {
       if (msg && (msg.includes('409') || msg.includes('drift') || msg.includes('changed since preview'))) {
         msg = 'Library state or translation map changed since preview. Please preview again before applying.'
       }
-      updateTState(libraryKey, { error: msg })
+      updateTState(libraryKey, { preview: null, error: msg })
     } finally {
       updateTState(libraryKey, { busy: false })
     }
   }
 
   const reloadLibraries = () => {
+    for (const key of Object.keys(manualGenerationRef.current)) {
+      nextManualGeneration(key)
+    }
+    setTranslationState((prev) => Object.fromEntries(
+      Object.entries(prev).map(([key, state]) => [key, {
+        ...state,
+        manualBusy: false,
+        manualPreview: null,
+        manualSnapshot: '',
+      }])
+    ))
     api.get('/api/resources/libraries')
       .then((data) => setLibraries(data || []))
       .catch((e) => setError(e.message))
@@ -870,8 +1030,122 @@ export default function Resources({ requestedModelId = '' }) {
 
                   {(() => {
                     const tState = translationState[lib.library_key] || {}
+                    const manualBuild = buildTranslationMapFromRows(tState.manualRows || [])
+                    const manualCanPreview = (
+                      !tState.manualBusy
+                      && manualBuild.errors.length === 0
+                      && Object.keys(manualBuild.translationMap).length > 0
+                    )
                     return (
                       <>
+                        <div className="panel" style={{ marginBottom: 10, background: 'var(--card-bg)' }}>
+                          <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                            <div>
+                              <b>Manual source-backed translations</b>
+                              <div className="muted" style={{ fontSize: 12 }}>
+                                Edit safe source rows, then use canonical bulk preview and attested apply.
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => handleLoadTranslationRows(lib.library_key)}
+                              disabled={tState.manualBusy}
+                            >
+                              {tState.manualBusy ? 'Working…' : 'Load editable rows'}
+                            </button>
+                          </div>
+
+                          {(tState.manualDiagnostics || []).map((diagnostic, index) => (
+                            <div className="error" key={`${diagnostic.code}-${index}`} style={{ fontSize: 12, marginBottom: 6 }}>
+                              {diagnostic.code}: {diagnostic.field || 'payload'} — {diagnostic.message}
+                            </div>
+                          ))}
+                          {manualBuild.errors.map((item, index) => (
+                            <div className="error" key={`${item.code}-${item.source}-${index}`} style={{ fontSize: 12, marginBottom: 6 }}>
+                              {item.code}: source {JSON.stringify(item.source)}
+                            </div>
+                          ))}
+                          {tState.manualError && <div className="error" style={{ fontSize: 12, marginBottom: 8 }}>{tState.manualError}</div>}
+                          {tState.manualNotice && <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>{tState.manualNotice}</div>}
+
+                          {(tState.manualRows || []).length > 0 && (
+                            <table style={{ marginBottom: 8 }}>
+                              <thead>
+                                <tr>
+                                  <th>Use</th>
+                                  <th>Source</th>
+                                  <th>Field / Revision</th>
+                                  <th>Translation</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {tState.manualRows.map((row, index) => (
+                                  <tr key={`${row.revision.source_id}-${row.revision.content_digest}-${row.field}-${row.list_index ?? 'scalar'}`}>
+                                    <td>
+                                      <input
+                                        type="checkbox"
+                                        aria-label={`Use translation for ${row.source_value}`}
+                                        checked={Boolean(row.emit)}
+                                        onChange={(e) => updateManualRow(lib.library_key, index, { emit: e.target.checked })}
+                                      />
+                                    </td>
+                                    <td>
+                                      <code>{row.source_value}</code>
+                                      {row.required && <span className="muted"> · required</span>}
+                                      {row.source_shape === 'list' && <span className="muted"> · item {row.list_index + 1}</span>}
+                                    </td>
+                                    <td style={{ fontSize: 12 }}>
+                                      <code>{row.field}</code>
+                                      <div className="muted">{row.revision.source_id} · {row.revision.content_digest.slice(0, 12)}…</div>
+                                    </td>
+                                    <td>
+                                      <input
+                                        aria-label={`Translation for ${row.source_value}`}
+                                        value={row.translation}
+                                        onChange={(e) => updateManualRow(lib.library_key, index, {
+                                          translation: e.target.value,
+                                          emit: row.emit || Boolean(e.target.value.trim()),
+                                        })}
+                                      />
+                                      {row.current_translation != null && (
+                                        <div className="muted" style={{ fontSize: 11 }}>Existing translation</div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+
+                          {(tState.manualRows || []).length > 0 && (
+                            <div className="row" style={{ justifyContent: 'flex-end' }}>
+                              <button
+                                onClick={() => handlePreviewManualTranslations(lib.library_key)}
+                                disabled={!manualCanPreview}
+                              >
+                                Preview manual translations
+                              </button>
+                              <button
+                                className="primary"
+                                onClick={() => handleApplyManualTranslations(lib.library_key)}
+                                disabled={
+                                  tState.manualBusy
+                                  || !tState.manualPreview?.attestationToken
+                                  || JSON.stringify(manualBuild.translationMap) !== tState.manualSnapshot
+                                  || manualBuild.errors.length > 0
+                                }
+                              >
+                                Confirm & Apply manual translations
+                              </button>
+                            </div>
+                          )}
+
+                          {tState.manualPreview && (
+                            <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                              Preview: {tState.manualPreview.matchedRevisions} of {tState.manualPreview.totalRevisions} revisions matched; {tState.manualPreview.wouldUpdate} would update.
+                            </div>
+                          )}
+                        </div>
+
                         <div className="row" style={{ alignItems: 'flex-end', gap: 8, marginBottom: 8 }}>
                           <div style={{ flex: 1 }}>
                             <label style={{ fontSize: 12 }}>Translation Map Path (beside source material or absolute JSON path)</label>

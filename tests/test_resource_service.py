@@ -162,6 +162,189 @@ def test_api_preview_commit_list_and_exact_detail(client, tmp_path):
     assert detail.json()["coverage"]["missing_translations"] == ["label", "scene_theme"]
 
 
+def test_translation_rows_project_safe_scalar_list_identity_and_existing_values(client):
+    library_id = resource_store.ensure_library(
+        "row_projection", display_name="Row Projection", kind="rooms",
+    )
+    resource_store.record_revision(
+        library_id,
+        "room-01",
+        {
+            "id": "room-01",
+            "name": "wooden table",
+            "theme": "SALLE CLAIRE",
+            "description": "sunny room",
+            "tags": ["terraza", "sunny"],
+            "notes": "private writer guidance",
+            "weight": 1.5,
+        },
+        translation={"scene_theme": "Bright room", "tags": ["terrace", "sunny"]},
+    )
+
+    response = client.get("/api/resources/libraries/row_projection/translations/rows")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["library_key"] == "row_projection"
+    assert body["kind"] == "rooms"
+    assert body["diagnostics"] == []
+    assert [(row["field"], row["source_value"], row["list_index"]) for row in body["rows"]] == [
+        ("label", "wooden table", None),
+        ("scene_theme", "SALLE CLAIRE", None),
+        ("description", "sunny room", None),
+        ("tags", "terraza", 0),
+        ("tags", "sunny", 1),
+    ]
+    label, theme, description, first_tag, second_tag = body["rows"]
+    assert label == {
+        "revision": {
+            "source_id": "room-01",
+            "content_digest": label["revision"]["content_digest"],
+        },
+        "field": "label",
+        "source_field": "name",
+        "source_value": "wooden table",
+        "source_shape": "scalar",
+        "list_index": None,
+        "current_translation": None,
+        "translation": "wooden table",
+        "required": True,
+        "role": "descriptive_input",
+        "identity_required": True,
+        "emit_by_default": True,
+    }
+    assert theme["current_translation"] == theme["translation"] == "Bright room"
+    assert theme["emit_by_default"] is True
+    assert description["translation"] == ""
+    assert description["identity_required"] is False
+    assert description["emit_by_default"] is False
+    assert first_tag["current_translation"] == first_tag["translation"] == "terrace"
+    assert second_tag["current_translation"] == second_tag["translation"] == "sunny"
+    serialized = json.dumps(body)
+    for forbidden in ("payload", "path", "fingerprint", "notes", "weight"):
+        assert forbidden not in serialized
+
+
+@pytest.mark.parametrize(
+    ("payload", "translation", "field", "code"),
+    [
+        ({"id": "bad-1", "label": ["bad"], "scene_theme": "room"}, {}, "label", "invalid_source_shape"),
+        ({"id": "bad-2", "label": "one", "name": "two", "scene_theme": "room"}, {}, "label", "invalid_source_shape"),
+        ({"id": "bad-3", "label": "room", "scene_theme": "theme"}, {"label": ["bad"]}, "label", "invalid_translation_sidecar"),
+        ({"id": "bad-4", "label": "room", "scene_theme": "theme"}, {"weight": "Heavy"}, "weight", "invalid_translation_sidecar"),
+    ],
+)
+def test_translation_rows_diagnose_invalid_source_or_sidecar(
+    client, payload, translation, field, code,
+):
+    library_id = resource_store.ensure_library("row_diagnostics", kind="rooms")
+    resource_store.record_revision(library_id, payload["id"], payload, translation=translation)
+
+    body = client.get("/api/resources/libraries/row_diagnostics/translations/rows").json()
+
+    assert any(item["field"] == field and item["code"] == code for item in body["diagnostics"])
+    assert not any(row["field"] == field for row in body["rows"])
+
+
+def test_translation_rows_missing_library_is_404(client):
+    response = client.get("/api/resources/libraries/missing/translations/rows")
+    assert response.status_code == 404
+
+
+def test_translation_rows_alias_conflict_sanitizes_diagnostics_without_leak(client):
+    library_id = resource_store.ensure_library(
+        "leak_check_lib", display_name="Leak Check", kind="rooms",
+    )
+    sensitive_path = "\\".join(["C:", "Users", "marker", "secret.json"])
+    resource_store.record_revision(
+        library_id,
+        "room-leak-1",
+        {
+            "id": "room-leak-1",
+            "label": "normal_room",
+            "name": sensitive_path,
+            "scene_theme": "room",
+        },
+        translation={},
+    )
+
+    response = client.get("/api/resources/libraries/leak_check_lib/translations/rows")
+    assert response.status_code == 200
+    body = response.json()
+    serialized = json.dumps(body)
+
+    alias_diags = [
+        item for item in body["diagnostics"]
+        if item["field"] == "label" and item["code"] == "invalid_source_shape"
+    ]
+    assert len(alias_diags) == 1
+    assert alias_diags[0]["message"] == "Conflicting source aliases require source correction."
+    assert not any(row["field"] == "label" for row in body["rows"])
+
+    assert sensitive_path not in serialized
+    assert "marker" not in serialized
+    assert "secret.json" not in serialized
+
+
+def test_translation_rows_corrupt_root_list_sidecar_diagnosed_and_suppresses_rows(client):
+    library_id = resource_store.ensure_library(
+        "corrupt_sidecar_lib", display_name="Corrupt Sidecar", kind="rooms",
+    )
+    resource_store.record_revision(
+        library_id,
+        "corrupt-rev",
+        {
+            "id": "corrupt-rev",
+            "name": "Room With Corrupt Sidecar",
+            "theme": "Corrupt Theme",
+        },
+        translation={},
+    )
+    db.run(
+        "UPDATE asset_revision SET translation = ? WHERE source_id = ?",
+        json.dumps([{"corrupt": "data"}]),
+        "corrupt-rev",
+    )
+    resource_store.record_revision(
+        library_id,
+        "valid-rev",
+        {
+            "id": "valid-rev",
+            "name": "Room With Valid Missing Sidecar",
+            "theme": "Valid Theme",
+        },
+        translation={},
+    )
+
+    response = client.get("/api/resources/libraries/corrupt_sidecar_lib/translations/rows")
+    assert response.status_code == 200
+    body = response.json()
+
+    corrupt_diags = [
+        d for d in body["diagnostics"]
+        if d["revision"]["source_id"] == "corrupt-rev"
+    ]
+    assert len(corrupt_diags) == 1
+    assert corrupt_diags[0]["code"] == "invalid_translation_sidecar"
+    assert corrupt_diags[0]["message"] == "Translation sidecar must be an object"
+
+    corrupt_rows = [
+        r for r in body["rows"]
+        if r["revision"]["source_id"] == "corrupt-rev"
+    ]
+    assert len(corrupt_rows) == 0
+
+    valid_rows = [
+        r for r in body["rows"]
+        if r["revision"]["source_id"] == "valid-rev"
+    ]
+    assert len(valid_rows) > 0
+    assert any(
+        r["field"] == "label" and r["source_value"] == "Room With Valid Missing Sidecar"
+        for r in valid_rows
+    )
+
+
 def test_api_refuses_serialized_preview_with_omitted_outcome(client, tmp_path):
     path = tmp_path / "api-two-entry.json"
     _write(path, [

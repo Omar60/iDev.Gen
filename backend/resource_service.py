@@ -19,6 +19,7 @@ from typing import Any, Callable, Iterable
 import db
 import resource_import
 import resource_parser
+import resource_prompts
 import resource_readiness
 import resource_store
 import sys
@@ -1419,6 +1420,163 @@ def get_resource_revision(
     return _revision_view(library, revision, include_payload=True)
 
 
+def _translation_row_diagnostic(
+    revision: dict[str, Any], field: str, code: str, message: str,
+) -> dict[str, Any]:
+    return {
+        "revision": {
+            "source_id": revision["source_id"],
+            "content_digest": revision["content_digest"],
+        },
+        "field": field,
+        "code": code,
+        "message": message,
+    }
+
+
+def get_resource_translation_rows(library_key: str) -> dict[str, Any] | None:
+    """Project editable descriptive source values without exposing raw payloads."""
+    library = _library(library_key)
+    if library is None:
+        return None
+
+    kind = library["kind"]
+    canonical_fields: list[str] = []
+    for field_name, info in resource_prompts.mapping_for_kind(kind).items():
+        if info.get("role") != resource_prompts.ROLE_DESCRIPTIVE_INPUT:
+            continue
+        canonical = resource_prompts.canonical_field_name(field_name)
+        if canonical not in canonical_fields:
+            canonical_fields.append(canonical)
+
+    rows: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    for revision in resource_store.list_revisions(library["id"]):
+        payload = revision["payload"]
+        if not isinstance(payload, dict):
+            diagnostics.append(_translation_row_diagnostic(
+                revision, "", "invalid_source_shape", "Resource payload must be an object",
+            ))
+            continue
+
+        translation = revision.get("translation")
+        if translation is not None and not isinstance(translation, dict):
+            diagnostics.append(_translation_row_diagnostic(
+                revision, "", "invalid_translation_sidecar", "Translation sidecar must be an object",
+            ))
+            continue
+
+        sidecar = resource_readiness.inspect_translation_sidecar(
+            kind, payload, translation,
+        )
+        if sidecar.errors and not sidecar.invalid_families:
+            diagnostics.append(_translation_row_diagnostic(
+                revision, "", "invalid_translation_sidecar", "Translation sidecar must be an object",
+            ))
+            continue
+
+        for invalid_field in sorted(sidecar.invalid_families - set(canonical_fields)):
+            diagnostics.append(_translation_row_diagnostic(
+                revision,
+                invalid_field,
+                "invalid_translation_sidecar",
+                f"Existing translation for field {invalid_field!r} is invalid",
+            ))
+        for field_name in canonical_fields:
+            info = resource_prompts.classify_field(kind, field_name)
+            required = bool(info.get("required"))
+            try:
+                source_field, source_value = resource_readiness.resolve_source_field_and_value(
+                    field_name, payload,
+                )
+            except (TypeError, ValueError):
+                has_aliases = any(
+                    alias in payload for alias in resource_prompts.alias_family_for_field(field_name)
+                )
+                if required or has_aliases:
+                    if has_aliases:
+                        message = "Conflicting source aliases require source correction."
+                    else:
+                        message = f"Missing required source field for {field_name!r}"
+                    diagnostics.append(_translation_row_diagnostic(
+                        revision,
+                        field_name,
+                        "invalid_source_shape",
+                        message,
+                    ))
+                continue
+
+            if field_name in sidecar.invalid_families:
+                diagnostics.append(_translation_row_diagnostic(
+                    revision,
+                    field_name,
+                    "invalid_translation_sidecar",
+                    f"Existing translation for field {field_name!r} is invalid",
+                ))
+                continue
+
+            if required:
+                valid_source = isinstance(source_value, str) and bool(source_value.strip())
+            elif isinstance(source_value, str):
+                valid_source = bool(source_value.strip())
+            elif isinstance(source_value, list):
+                valid_source = bool(source_value) and all(
+                    isinstance(item, str) and bool(item.strip()) for item in source_value
+                )
+            else:
+                valid_source = False
+            if not valid_source:
+                expected = "a non-empty scalar string" if required else "a non-empty string or list of non-empty strings"
+                diagnostics.append(_translation_row_diagnostic(
+                    revision,
+                    field_name,
+                    "invalid_source_shape",
+                    f"Source field {source_field!r} must be {expected}",
+                ))
+                continue
+
+            current = sidecar.canonical_translation.get(field_name)
+            values = source_value if isinstance(source_value, list) else [source_value]
+            current_values = current if isinstance(current, list) else [current]
+            source_shape = "list" if isinstance(source_value, list) else "scalar"
+            for index, value in enumerate(values):
+                current_translation = current_values[index] if index < len(current_values) else None
+                identity_required = (
+                    required
+                    and current_translation is None
+                    and resource_readiness.is_valid_english_translation_scalar(value)
+                )
+                initial_translation = (
+                    current_translation
+                    if current_translation is not None
+                    else value if identity_required else ""
+                )
+                rows.append({
+                    "revision": {
+                        "source_id": revision["source_id"],
+                        "content_digest": revision["content_digest"],
+                    },
+                    "field": field_name,
+                    "source_field": source_field,
+                    "source_value": value,
+                    "source_shape": source_shape,
+                    "list_index": index if source_shape == "list" else None,
+                    "current_translation": current_translation,
+                    "translation": initial_translation,
+                    "required": required,
+                    "role": resource_prompts.ROLE_DESCRIPTIVE_INPUT,
+                    "identity_required": identity_required,
+                    "emit_by_default": current_translation is not None or identity_required,
+                })
+
+    return {
+        "library_key": library_key,
+        "kind": kind,
+        "rows": rows,
+        "diagnostics": diagnostics,
+    }
+
+
 __all__ = (
     "PREVIEW_VERSION",
     "PURPOSE_PATH_IMPORT",
@@ -1440,4 +1598,5 @@ __all__ = (
     "list_resource_libraries",
     "get_resource_library",
     "get_resource_revision",
+    "get_resource_translation_rows",
 )

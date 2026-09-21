@@ -2974,4 +2974,215 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     const revisionCalls = getSpy.mock.calls.filter(([url]) => url.startsWith('/api/resources/revisions/'))
     expect(revisionCalls.length).toBe(0)
   })
+
+  it('3.2 loads safe rows and uses only direct bulk preview/apply with the same map and token', async () => {
+    const library = actualPayloadFreeLibraries[0]
+    const sourceRows = {
+      library_key: library.library_key,
+      kind: 'rooms',
+      diagnostics: [],
+      rows: [{
+        revision: {
+          source_id: library.revisions[0].source_id,
+          content_digest: library.revisions[0].content_digest,
+        },
+        field: 'label',
+        source_field: 'name',
+        source_value: 'SALLE_A',
+        source_shape: 'scalar',
+        list_index: null,
+        current_translation: 'Existing room',
+        translation: 'Existing room',
+        required: true,
+        role: 'descriptive_input',
+        identity_required: false,
+        emit_by_default: true,
+      }],
+    }
+    const getSpy = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      if (url.endsWith('/translations/rows')) return sourceRows
+      return []
+    })
+    const postSpy = vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/translations/preview')) {
+        return {
+          library_key: library.library_key,
+          total_revisions: 1,
+          matched_revisions: 1,
+          unmatched_map_entries: 0,
+          would_update: 1,
+          unchanged: 0,
+          would_be_ready: 1,
+          would_remain_pending: 0,
+          attestation_token: 'attested-token',
+          expires_at: 123,
+        }
+      }
+      if (url.endsWith('/translations/apply')) return { updated: 1, ready: 1, pending: 0 }
+      return {}
+    })
+
+    await renderComponent()
+    const load = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Load editable rows')
+    await act(async () => { load.click() })
+
+    const input = container.querySelector('input[aria-label="Translation for SALLE_A"]')
+    expect(input.value).toBe('Existing room')
+    const preview = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Preview manual translations')
+    await act(async () => { preview.click() })
+
+    const directMap = {
+      SALLE_A: { source: 'SALLE_A', translation: 'Existing room', fields: ['label'] },
+    }
+    expect(postSpy).toHaveBeenCalledWith(
+      `/api/resources/libraries/${encodeURIComponent(library.library_key)}/translations/preview`,
+      { translation_map: directMap }
+    )
+    const apply = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Confirm & Apply manual translations')
+    expect(apply.disabled).toBe(false)
+    await act(async () => { apply.click() })
+
+    expect(postSpy).toHaveBeenCalledWith(
+      `/api/resources/libraries/${encodeURIComponent(library.library_key)}/translations/apply`,
+      { translation_map: directMap, attestation_token: 'attested-token' }
+    )
+    expect(postSpy.mock.calls.some(([url]) => /\/api\/resources\/revisions\/.*\/translation$/.test(url))).toBe(false)
+    expect(getSpy).toHaveBeenCalledWith(
+      `/api/resources/libraries/${encodeURIComponent(library.library_key)}/translations/rows`
+    )
+  })
+
+  it('3.2 invalidates preview on edit and ignores a late preview response', async () => {
+    const library = actualPayloadFreeLibraries[0]
+    let resolvePreview
+    const pendingPreview = new Promise((resolve) => { resolvePreview = resolve })
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      if (url.endsWith('/translations/rows')) {
+        return {
+          library_key: library.library_key,
+          kind: 'rooms',
+          diagnostics: [],
+          rows: [{
+            revision: { source_id: 'room-1', content_digest: 'a'.repeat(64) },
+            field: 'label', source_field: 'label', source_value: 'SALLE_A',
+            source_shape: 'scalar', list_index: null, current_translation: null,
+            translation: 'Room A', required: true, role: 'descriptive_input',
+            identity_required: false, emit_by_default: true,
+          }],
+        }
+      }
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation((url) => (
+      url.endsWith('/translations/preview') ? pendingPreview : Promise.resolve({})
+    ))
+
+    await renderComponent()
+    const load = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Load editable rows')
+    await act(async () => { load.click() })
+    const preview = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Preview manual translations')
+    await act(async () => { preview.click(); await Promise.resolve() })
+
+    const input = container.querySelector('input[aria-label="Translation for SALLE_A"]')
+    await act(async () => { setInputValue(input, 'Room B') })
+    resolvePreview({
+      library_key: library.library_key,
+      total_revisions: 1,
+      matched_revisions: 1,
+      would_update: 1,
+      would_be_ready: 1,
+      would_remain_pending: 0,
+      attestation_token: 'stale-token',
+    })
+    await act(async () => { await pendingPreview })
+
+    const apply = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Confirm & Apply manual translations')
+    expect(apply.disabled).toBe(true)
+    expect(container.textContent).not.toContain('Manual preview ready')
+  })
+
+  it.each([409, 422])('3.2 fails closed and invalidates preview authorization on apply error %i', async (statusCode) => {
+    const library = actualPayloadFreeLibraries[0]
+    const sourceRows = {
+      library_key: library.library_key,
+      kind: 'rooms',
+      diagnostics: [],
+      rows: [{
+        revision: {
+          source_id: library.revisions[0].source_id,
+          content_digest: library.revisions[0].content_digest,
+        },
+        field: 'label',
+        source_field: 'name',
+        source_value: 'SALLE_A',
+        source_shape: 'scalar',
+        list_index: null,
+        current_translation: 'Existing room',
+        translation: 'Existing room',
+        required: true,
+        role: 'descriptive_input',
+        identity_required: false,
+        emit_by_default: true,
+      }],
+    }
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      if (url.endsWith('/translations/rows')) return sourceRows
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/translations/preview')) {
+        return {
+          library_key: library.library_key,
+          total_revisions: 1,
+          matched_revisions: 1,
+          unmatched_map_entries: 0,
+          would_update: 1,
+          unchanged: 0,
+          would_be_ready: 1,
+          would_remain_pending: 0,
+          attestation_token: 'auth-token-xyz',
+          expires_at: 123,
+        }
+      }
+      if (url.endsWith('/translations/apply')) {
+        const error = new Error(`Apply failed with HTTP ${statusCode}`)
+        error.status = statusCode
+        throw error
+      }
+      return {}
+    })
+
+    await renderComponent()
+
+    // 1. Load rows
+    const loadBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Load editable rows')
+    await act(async () => { loadBtn.click() })
+
+    // 2. Preview valid
+    const previewBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview manual translations')
+    await act(async () => { previewBtn.click() })
+
+    // 3. manualPreview / token available
+    expect(container.textContent).toContain('Manual preview ready')
+
+    // 4. Apply enabled
+    const applyBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Confirm & Apply manual translations')
+    expect(applyBtn.disabled).toBe(false)
+
+    // 5. Apply responds with error (409 / 422)
+    await act(async () => { applyBtn.click() })
+
+    // 6. Post-state: fail-closed
+    expect(container.textContent).not.toContain('Manual preview ready')
+    expect(applyBtn.disabled).toBe(true)
+    expect(container.textContent).toContain(`Apply failed with HTTP ${statusCode}`)
+  })
 })

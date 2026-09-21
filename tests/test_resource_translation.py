@@ -674,6 +674,68 @@ class TestTranslationApiRoutes:
             "scene_theme": "Theme Alpha",
         }
 
+    def test_source_rows_use_bulk_attestation_and_preserve_bulk_authorization(
+        self, client, monkeypatch,
+    ):
+        lib_id = resource_store.ensure_library("manual_rows_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id, "manual-room",
+            {"id": "manual-room", "name": "SALLE_M", "theme": "THEME_M"},
+        )
+
+        def forbidden_shortcut(*args, **kwargs):
+            raise AssertionError("manual rows must not call apply_revision_translation")
+
+        monkeypatch.setattr(
+            backend_resource_translation, "apply_revision_translation", forbidden_shortcut,
+        )
+        rows_response = client.get(
+            "/api/resources/libraries/manual_rows_lib/translations/rows"
+        )
+        assert rows_response.status_code == 200
+        translations = {"label": "Manual Room", "scene_theme": "Manual Theme"}
+        map_data = {
+            row["source_value"]: {
+                "source": row["source_value"],
+                "translation": translations[row["field"]],
+                "fields": [row["field"]],
+            }
+            for row in rows_response.json()["rows"]
+            if row["required"]
+        }
+
+        preview = client.post(
+            "/api/resources/libraries/manual_rows_lib/translations/preview",
+            json={"translation_map": map_data},
+        )
+        assert preview.status_code == 200
+        applied = client.post(
+            "/api/resources/libraries/manual_rows_lib/translations/apply",
+            json={
+                "translation_map": map_data,
+                "attestation_token": preview.json()["attestation_token"],
+            },
+        )
+        assert applied.status_code == 200
+        assert resource_store.get_revision(revision_id=rev_id)["translation"] == translations
+
+        before = resource_store.get_revision(revision_id=rev_id)["translation"]
+        forged = client.post(
+            "/api/resources/libraries/manual_rows_lib/translations/preview",
+            json={
+                "translation_map": {
+                    "SALLE_M": {
+                        "source": "SALLE_M",
+                        "translation": "Forged",
+                        "fields": ["weight"],
+                    },
+                },
+            },
+        )
+        assert forged.status_code == 422
+        assert "only descriptive input fields" in forged.json()["detail"]
+        assert resource_store.get_revision(revision_id=rev_id)["translation"] == before
+
     def test_preview_missing_library_returns_404(self, client):
         resp = client.post(
             "/api/resources/libraries/non_existent_lib/translations/preview",

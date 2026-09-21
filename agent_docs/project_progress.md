@@ -9,7 +9,7 @@ agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 12 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 13 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -37,7 +37,25 @@ digest, attestation, and library-fingerprint checks. `RequestLimitRoute`
 protects both routes with the real 10 MiB boundary, including pre-Pydantic 413
 responses for missing or false `Content-Length` and exact-boundary coverage.
 Malformed selected maps fail with sanitized controlled errors. The closure was
-verified against 2,063 tests; Task 3.2 remains pending.
+verified against 2,063 tests.
+
+Task 3.2 has now passed independent acceptance and is formally closed. The
+resource-library translation rows are a safe source-backed projection: they do
+not expose raw payloads, paths, or internal fingerprints. The frontend builds a
+direct `translation_map` with `buildTranslationMapFromRows(rows)`, preserving
+scalar/list contracts and independent scalar list entries. Required
+already-English strings receive explicit identity translations, while optional
+English strings do not. Compatible duplicate sources merge deterministically;
+incompatible translation or shape duplicates produce explicit diagnostics and
+never use last-write-wins. Valid sidecars are preserved, corrupt sidecars are
+diagnosed without editable rows, and public diagnostics are sanitized.
+Manual Preview and Apply use the canonical bulk translation endpoints, keeping
+attestation, map digest, and library fingerprint authoritative. The direct
+revision shortcut and single-revision endpoint are not used. Edits, reloads,
+and Apply errors invalidate preview authorization, and late responses cannot
+restore stale authorization. The Task 3.1 selected-map flow and
+`map_path`/direct-map compatibility remain intact. The verified totals are
+2,072 backend tests and 362 frontend tests.
 
 ## Prior Position
 
@@ -84,14 +102,13 @@ remain intact.
 
 ## Current Position
 
-Task 3.1 is complete and formally closed. The accepted implementation changes
-only `backend/main.py`, `backend/resource_selection.py`, and
-`tests/test_resource_translation.py`; `backend/resource_translation.py` and
-`backend/request_limits.py` remain unchanged. `apply_revision_translation()` is
-not used by the selected-content flow, and the historical bulk path remains the
-only semantic authority. The next task is 3.2.
+Task 3.2 is complete and formally closed. The accepted implementation changes
+only the manual source-backed translation workflow and its focused tests;
+`backend/resource_translation.py` and `backend/request_limits.py` remain
+unchanged. The canonical bulk path remains the semantic authority, and the
+next task is 3.3.
 
 ## Next Milestone
 
-Task 3.2 is the next pending task. Do not begin it automatically; prepare its
+Task 3.3 is the next pending task. Do not begin it automatically; prepare its
 bounded handoff only when explicitly requested.

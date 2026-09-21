@@ -13,6 +13,7 @@ import {
   normalizeSelectionView,
   reduceSelectionView,
   isImportEligible,
+  buildTranslationMapFromRows,
 } from './resources.js'
 
 describe('resources module', () => {
@@ -1868,5 +1869,78 @@ describe('resources module', () => {
       expect(isImportEligible(baseView, { activeSelectionId: 'sel_different', pendingMutation: false })).toBe(false)
       expect(isImportEligible(null)).toBe(false)
     })
+  })
+})
+
+describe('buildTranslationMapFromRows', () => {
+  const row = (overrides = {}) => ({
+    revision: { source_id: 'room-01', content_digest: 'a'.repeat(64) },
+    field: 'label',
+    source_value: 'SALLE_A',
+    source_shape: 'scalar',
+    list_index: null,
+    translation: 'Room Alpha',
+    emit_by_default: true,
+    ...overrides,
+  })
+
+  it('builds canonical scalar and separate ordered list entries without mutating rows', () => {
+    const rows = [
+      row({ field: 'name' }),
+      row({ field: 'tags', source_value: 'terraza', source_shape: 'list', list_index: 0, translation: 'terrace' }),
+      row({ field: 'tags', source_value: 'soleado', source_shape: 'list', list_index: 1, translation: 'sunny' }),
+    ]
+    const before = structuredClone(rows)
+
+    expect(buildTranslationMapFromRows(rows)).toEqual({
+      translationMap: {
+        SALLE_A: { source: 'SALLE_A', translation: 'Room Alpha', fields: ['label'] },
+        terraza: { source: 'terraza', translation: 'terrace', fields: ['tags'] },
+        soleado: { source: 'soleado', translation: 'sunny', fields: ['tags'] },
+      },
+      errors: [],
+    })
+    expect(rows).toEqual(before)
+  })
+
+  it('emits required English identity and preserves existing translations', () => {
+    const rows = [
+      row({ source_value: 'wooden table', translation: 'wooden table', identity_required: true }),
+      row({ source_value: 'SALLE_B', translation: 'Existing room', current_translation: 'Existing room' }),
+    ]
+    expect(buildTranslationMapFromRows(rows).translationMap).toEqual({
+      'wooden table': { source: 'wooden table', translation: 'wooden table', fields: ['label'] },
+      SALLE_B: { source: 'SALLE_B', translation: 'Existing room', fields: ['label'] },
+    })
+  })
+
+  it('merges compatible duplicates deterministically across shapes and revisions', () => {
+    const rows = [
+      row({ field: 'theme', source_value: 'shared', translation: 'Shared text' }),
+      row({ field: 'label', source_value: 'shared', translation: ' Shared text ', source_shape: 'list', list_index: 2 }),
+    ]
+    expect(buildTranslationMapFromRows(rows)).toEqual({
+      translationMap: {
+        shared: { source: 'shared', translation: 'Shared text', fields: ['label', 'scene_theme'] },
+      },
+      errors: [],
+    })
+  })
+
+  it.each([
+    ['duplicate_source_conflict', [row(), row({ translation: 'Another room' })]],
+    ['source_shape_conflict', [row({ translation: ['Room Alpha'] })]],
+    ['source_shape_conflict', [row({ source_shape: 'list', list_index: null })]],
+  ])('returns %s and emits no conflicting entry', (code, rows) => {
+    const result = buildTranslationMapFromRows(rows)
+    expect(result.translationMap).toEqual({})
+    expect(result.errors[0].code).toBe(code)
+  })
+
+  it('omits unselected blank rows and diagnoses selected blanks', () => {
+    expect(buildTranslationMapFromRows([row({ translation: '', emit_by_default: false })])).toEqual({
+      translationMap: {}, errors: [],
+    })
+    expect(buildTranslationMapFromRows([row({ translation: '', emit: true })]).errors[0].code).toBe('blank_translation')
   })
 })

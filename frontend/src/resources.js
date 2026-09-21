@@ -283,6 +283,84 @@ export function parseTranslationPreview(preview) {
   }
 }
 
+const TRANSLATION_FIELD_ALIASES = {
+  name: 'label',
+  title: 'label',
+  display_name: 'label',
+  theme: 'scene_theme',
+  theme_text: 'scene_theme',
+  tag: 'tags',
+}
+
+/** Build the canonical direct translation_map used by bulk preview/apply. */
+export function buildTranslationMapFromRows(rows = []) {
+  const translationMap = {}
+  const errors = []
+  const occurrences = new Map()
+
+  for (const [index, row] of (rows || []).entries()) {
+    const source = row?.source_value
+    const translation = row?.translation
+    const shouldEmit = row?.emit ?? row?.emit_by_default ?? (
+      typeof translation === 'string' && Boolean(translation.trim())
+    )
+    if (!shouldEmit) continue
+
+    const reference = {
+      index,
+      revision: row?.revision || null,
+      field: row?.field || '',
+      source_shape: row?.source_shape || '',
+      list_index: row?.list_index ?? null,
+    }
+    if (typeof source !== 'string' || !source.trim()) {
+      errors.push({ code: 'source_shape_conflict', source, rows: [reference] })
+      continue
+    }
+    const validShape = row?.source_shape === 'scalar'
+      ? row?.list_index == null
+      : row?.source_shape === 'list' && Number.isInteger(row?.list_index) && row.list_index >= 0
+    if (!validShape || typeof translation !== 'string') {
+      errors.push({ code: 'source_shape_conflict', source, rows: [reference] })
+      continue
+    }
+    const normalizedTranslation = translation.trim()
+    if (!normalizedTranslation) {
+      errors.push({ code: 'blank_translation', source, rows: [reference] })
+      continue
+    }
+    const field = TRANSLATION_FIELD_ALIASES[row?.field] || row?.field
+    if (typeof field !== 'string' || !field.trim()) {
+      errors.push({ code: 'source_shape_conflict', source, rows: [reference] })
+      continue
+    }
+
+    if (!occurrences.has(source)) {
+      occurrences.set(source, { translation: normalizedTranslation, fields: new Set(), rows: [] })
+    }
+    const group = occurrences.get(source)
+    group.rows.push(reference)
+    group.fields.add(field.trim())
+    if (group.translation !== normalizedTranslation) {
+      group.conflict = true
+    }
+  }
+
+  for (const [source, group] of occurrences) {
+    if (group.conflict) {
+      errors.push({ code: 'duplicate_source_conflict', source, rows: group.rows })
+      continue
+    }
+    translationMap[source] = {
+      source,
+      translation: group.translation,
+      fields: Array.from(group.fields).sort(),
+    }
+  }
+
+  return { translationMap, errors }
+}
+
 /**
  * Normalizes and validates a raw SelectionView against the closed public specification.
  * Reconstructs a clean public object containing ONLY allowed fields.

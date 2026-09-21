@@ -225,4 +225,24 @@
   missing/false `Content-Length` is rejected with 413 before parsing/writes,
   including exact-boundary and plus-one tests. Invalid selected maps fail
   through sanitized controlled errors. The verified collection is 2,063 tests;
-  Task 3.2 remains pending.
+  Task 3.2 was next.
+- Task 3.2 is formally closed after independent acceptance. `GET
+  /api/resources/libraries/{library_key}/translations/rows` exposes a safe
+  source-backed projection without raw payloads, paths, or internal
+  fingerprints. `buildTranslationMapFromRows(rows)` creates a direct
+  `translation_map` while preserving scalar/list contracts and keeping list
+  items as independent scalar entries. Required already-English strings get
+  explicit identity translations; optional English strings do not. Compatible
+  duplicate sources merge deterministically, while incompatible translation or
+  shape duplicates produce explicit diagnostics; there is no last-write-wins.
+  Valid sidecars are preserved. Corrupt sidecars are diagnosed and do not
+  produce editable rows, and public diagnostics are sanitized.
+- Task 3.2 manual Preview uses canonical bulk `/translations/preview` and
+  manual Apply uses canonical bulk `/translations/apply`. Attestation, map
+  digest, and library fingerprint remain authoritative. The
+  `apply_revision_translation` path and single-revision endpoint are not used.
+  Editing, reload, or Apply errors invalidate preview/token authorization, and
+  late responses cannot reactivate stale authorization. Task 3.1's selected-map
+  flow and `map_path`/direct-map compatibility remain intact. The accepted
+  closure was verified against 2,072 backend tests and 362 frontend tests;
+  Task 3.3 is next.

@@ -1526,6 +1526,15 @@ def get_resource_library(library_key: str):
     return library
 
 
+@app.get("/api/resources/libraries/{library_key}/translations/rows")
+def get_resource_library_translation_rows(library_key: str):
+    """Return safe source-backed rows for manual bulk translation."""
+    result = resource_service.get_resource_translation_rows(library_key)
+    if result is None:
+        raise HTTPException(404, "resource library not found")
+    return result
+
+
 @app.get("/api/resources/revisions/{library_key}/{source_id}/{content_digest}")
 def get_resource_revision(library_key: str, source_id: str, content_digest: str):
     """Read one immutable revision by its complete natural identity."""
