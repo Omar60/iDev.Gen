@@ -1313,14 +1313,200 @@ def _library(library_key: str) -> dict[str, Any] | None:
     )
 
 
-def _readiness_view(library_id: int, revision: dict[str, Any]) -> dict[str, Any]:
-    report = resource_readiness.evaluate_revision_readiness(
-        library_id,
-        revision["source_id"],
-        content_digest=revision["content_digest"],
+def _sanitize_coverage(coverage: Any, kind: str | None = None) -> dict[str, Any]:
+    if not isinstance(coverage, dict):
+        return {}
+
+    safe: dict[str, Any] = {}
+    status = coverage.get("status")
+    if status in {resource_readiness.STATUS_READY, resource_readiness.STATUS_PENDING}:
+        safe["status"] = status
+    fields = coverage.get("fields")
+    if isinstance(fields, dict):
+        safe_fields: dict[str, dict[str, Any]] = {}
+        for field_name, field_coverage in fields.items():
+            if not isinstance(field_name, str) or not isinstance(field_coverage, dict):
+                continue
+            if kind:
+                try:
+                    if resource_prompts.classify_field(kind, field_name).get("role") == "unmapped":
+                        continue
+                except ValueError:
+                    continue
+            role = field_coverage.get("role")
+            translated = field_coverage.get("translated")
+            if role not in resource_prompts.ALL_PREPARATION_ROLES or not isinstance(translated, bool):
+                continue
+            item: dict[str, Any] = {"role": role, "translated": translated}
+            source_field = field_coverage.get("source_field")
+            if (
+                isinstance(source_field, str)
+                and source_field in resource_prompts.alias_family_for_field(field_name)
+            ):
+                item["source_field"] = source_field
+            safe_fields[field_name] = item
+        safe["fields"] = safe_fields
+
+    missing = coverage.get("missing_translations")
+    if isinstance(missing, list) and kind:
+        allowed_missing = {
+            resource_prompts.canonical_field_name(field_name)
+            for field_name, info in resource_prompts.mapping_for_kind(kind).items()
+            if info.get("role") == resource_prompts.ROLE_DESCRIPTIVE_INPUT
+            and info.get("required")
+        }
+        safe["missing_translations"] = sorted({
+            canonical
+            for value in missing
+            if isinstance(value, str)
+            for canonical in (resource_prompts.canonical_field_name(value),)
+            if canonical in allowed_missing
+        })
+
+    unmapped = coverage.get("unmapped_fields")
+    if isinstance(unmapped, list) and kind:
+        safe_unmapped: set[str] = set()
+        for value in unmapped:
+            if not isinstance(value, str):
+                continue
+            canonical = resource_prompts.canonical_field_name(value)
+            info = resource_prompts.classify_field(kind, canonical)
+            if (
+                info.get("role") != "unmapped"
+                and value in resource_prompts.alias_family_for_field(canonical)
+            ):
+                safe_unmapped.add(value)
+            else:
+                safe_unmapped.add("unmapped_source_field")
+        safe["unmapped_fields"] = sorted(safe_unmapped)
+
+    if coverage.get("sidecar_error"):
+        safe["sidecar_error"] = "Translation sidecar is invalid."
+    return safe
+
+
+def _revision_diagnostics(kind: str | None, revision: dict[str, Any]) -> list[dict[str, Any]]:
+    """Safe, schema-bound diagnostics for source shape and translation sidecar issues."""
+    if not kind:
+        return []
+    payload = revision.get("payload")
+    if not isinstance(payload, dict):
+        return [{
+            "code": "invalid_source_shape",
+            "field": None,
+            "message": "Source field has an invalid shape.",
+        }]
+
+    diagnostics: list[dict[str, Any]] = []
+    translation = revision.get("translation")
+    if translation is not None and not isinstance(translation, dict):
+        return [{
+            "code": "invalid_translation_sidecar",
+            "field": None,
+            "message": "Translation sidecar is invalid.",
+        }]
+
+    sidecar = resource_readiness.inspect_translation_sidecar(
+        kind, payload, translation,
     )
-    return {
-        "status": report.status,
+    if sidecar.errors and not sidecar.invalid_families:
+        return [{
+            "code": "invalid_translation_sidecar",
+            "field": None,
+            "message": "Translation sidecar is invalid.",
+        }]
+
+    canonical_fields: list[str] = []
+    for field_name, info in resource_prompts.mapping_for_kind(kind).items():
+        if info.get("role") != resource_prompts.ROLE_DESCRIPTIVE_INPUT:
+            continue
+        canonical = resource_prompts.canonical_field_name(field_name)
+        if canonical not in canonical_fields:
+            canonical_fields.append(canonical)
+
+    has_unknown_sidecar_error = False
+    for inv in sorted(sidecar.invalid_families):
+        canonical_inv = resource_prompts.canonical_field_name(inv)
+        if canonical_inv in canonical_fields:
+            diagnostics.append({
+                "code": "invalid_translation_sidecar",
+                "field": canonical_inv,
+                "message": "Translation sidecar is invalid.",
+            })
+        else:
+            has_unknown_sidecar_error = True
+
+    if has_unknown_sidecar_error:
+        diagnostics.append({
+            "code": "invalid_translation_sidecar",
+            "field": None,
+            "message": "Translation sidecar is invalid.",
+        })
+
+    for field_name in canonical_fields:
+        info = resource_prompts.classify_field(kind, field_name)
+        required = bool(info.get("required"))
+        try:
+            source_field, source_value = resource_readiness.resolve_source_field_and_value(
+                field_name, payload,
+            )
+        except (TypeError, ValueError):
+            has_aliases = any(
+                alias in payload for alias in resource_prompts.alias_family_for_field(field_name)
+            )
+            if required or has_aliases:
+                message = "Conflicting source aliases require source correction." if has_aliases else "Source field has an invalid shape."
+                diagnostics.append({
+                    "code": "invalid_source_shape",
+                    "field": field_name,
+                    "message": message,
+                })
+            continue
+
+        if required:
+            valid_source = isinstance(source_value, str) and bool(source_value.strip())
+        elif isinstance(source_value, str):
+            valid_source = bool(source_value.strip())
+        elif isinstance(source_value, list):
+            valid_source = bool(source_value) and all(
+                isinstance(item, str) and bool(item.strip()) for item in source_value
+            )
+        else:
+            valid_source = False
+        if not valid_source:
+            diagnostics.append({
+                "code": "invalid_source_shape",
+                "field": field_name,
+                "message": "Source field has an invalid shape.",
+            })
+
+    return diagnostics
+
+
+def _readiness_view(library_id: int, revision: dict[str, Any], kind: str | None = None) -> dict[str, Any]:
+    if kind:
+        inspection = resource_readiness.inspect_translation_sidecar(
+            kind, revision.get("payload"), revision.get("translation"),
+        )
+        report = resource_readiness.evaluate_readiness(
+            kind, revision.get("payload"), inspection.canonical_translation,
+        )
+        coverage = dict(report.coverage)
+        status = report.status
+        if inspection.errors:
+            status = resource_readiness.STATUS_PENDING
+            coverage["sidecar_error"] = "Translation sidecar is invalid."
+    else:
+        report = resource_readiness.evaluate_revision_readiness(
+            library_id,
+            revision["source_id"],
+            content_digest=revision["content_digest"],
+        )
+        coverage = report.coverage
+        status = report.status
+    diagnostics = _revision_diagnostics(kind, revision) if kind else []
+    view: dict[str, Any] = {
+        "status": status,
         "pending_fields": dict(report.pending_fields),
         "field_readiness": [
             {
@@ -1331,11 +1517,35 @@ def _readiness_view(library_id: int, revision: dict[str, Any]) -> dict[str, Any]
             }
             for item in report.field_readiness
         ],
-        "coverage": report.coverage,
+        "coverage": _sanitize_coverage(coverage, kind),
     }
+    if diagnostics:
+        view["diagnostics"] = diagnostics
+    return view
+
+
+def _sanitize_translation(
+    translation: Any, kind: str | None, payload: Any,
+) -> dict[str, Any]:
+    if not kind or not isinstance(payload, dict):
+        return {}
+    inspection = resource_readiness.inspect_translation_sidecar(
+        kind, payload, translation,
+    )
+    return dict(inspection.canonical_translation)
 
 
 def _revision_view(library: dict[str, Any], revision: dict[str, Any], *, include_payload: bool) -> dict[str, Any]:
+    readiness = _readiness_view(library["id"], revision, kind=library.get("kind"))
+    persisted_coverage = revision.get("coverage")
+    persisted_status = persisted_coverage.get("status") if isinstance(persisted_coverage, dict) else None
+    coverage = (
+        {"status": persisted_status}
+        if persisted_status in {resource_readiness.STATUS_READY, resource_readiness.STATUS_PENDING}
+        else {}
+    )
+    if include_payload:
+        coverage = dict(readiness["coverage"])
     result: dict[str, Any] = {
         "revision_id": revision["id"],
         "library_key": library["library_key"],
@@ -1343,9 +1553,11 @@ def _revision_view(library: dict[str, Any], revision: dict[str, Any], *, include
         "source_id": revision["source_id"],
         "content_digest": revision["content_digest"],
         "created_at": revision["created_at"],
-        "translation": revision["translation"],
-        "coverage": revision["coverage"],
-        "readiness": _readiness_view(library["id"], revision),
+        "translation": _sanitize_translation(
+            revision.get("translation"), library.get("kind"), revision.get("payload"),
+        ),
+        "coverage": coverage,
+        "readiness": readiness,
     }
     if include_payload:
         result["payload"] = revision["payload"]
@@ -1421,7 +1633,7 @@ def get_resource_revision(
 
 
 def _translation_row_diagnostic(
-    revision: dict[str, Any], field: str, code: str, message: str,
+    revision: dict[str, Any], field: str | None, code: str, message: str,
 ) -> dict[str, Any]:
     return {
         "revision": {
@@ -1462,7 +1674,7 @@ def get_resource_translation_rows(library_key: str) -> dict[str, Any] | None:
         translation = revision.get("translation")
         if translation is not None and not isinstance(translation, dict):
             diagnostics.append(_translation_row_diagnostic(
-                revision, "", "invalid_translation_sidecar", "Translation sidecar must be an object",
+                revision, None, "invalid_translation_sidecar", "Translation sidecar is invalid.",
             ))
             continue
 
@@ -1471,16 +1683,16 @@ def get_resource_translation_rows(library_key: str) -> dict[str, Any] | None:
         )
         if sidecar.errors and not sidecar.invalid_families:
             diagnostics.append(_translation_row_diagnostic(
-                revision, "", "invalid_translation_sidecar", "Translation sidecar must be an object",
+                revision, None, "invalid_translation_sidecar", "Translation sidecar is invalid.",
             ))
             continue
 
-        for invalid_field in sorted(sidecar.invalid_families - set(canonical_fields)):
+        if sidecar.invalid_families - set(canonical_fields):
             diagnostics.append(_translation_row_diagnostic(
                 revision,
-                invalid_field,
+                None,
                 "invalid_translation_sidecar",
-                f"Existing translation for field {invalid_field!r} is invalid",
+                "Translation sidecar is invalid.",
             ))
         for field_name in canonical_fields:
             info = resource_prompts.classify_field(kind, field_name)
@@ -1511,7 +1723,7 @@ def get_resource_translation_rows(library_key: str) -> dict[str, Any] | None:
                     revision,
                     field_name,
                     "invalid_translation_sidecar",
-                    f"Existing translation for field {field_name!r} is invalid",
+                    "Translation sidecar is invalid.",
                 ))
                 continue
 

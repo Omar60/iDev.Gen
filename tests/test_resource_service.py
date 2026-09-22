@@ -126,7 +126,7 @@ def test_detail_uses_exact_digest_and_refresh_preserves_old_revision(tmp_path):
     )
     assert old_detail["payload"] == snapshot["payload"]
     assert old_detail["translation"] == snapshot["translation"]
-    assert old_detail["coverage"] == snapshot["coverage"]
+    assert old_detail["coverage"] == old_detail["readiness"]["coverage"]
     assert new_detail["payload"]["scene_theme"] == "invented refreshed room"
 
 
@@ -231,7 +231,7 @@ def test_translation_rows_project_safe_scalar_list_identity_and_existing_values(
         ({"id": "bad-1", "label": ["bad"], "scene_theme": "room"}, {}, "label", "invalid_source_shape"),
         ({"id": "bad-2", "label": "one", "name": "two", "scene_theme": "room"}, {}, "label", "invalid_source_shape"),
         ({"id": "bad-3", "label": "room", "scene_theme": "theme"}, {"label": ["bad"]}, "label", "invalid_translation_sidecar"),
-        ({"id": "bad-4", "label": "room", "scene_theme": "theme"}, {"weight": "Heavy"}, "weight", "invalid_translation_sidecar"),
+        ({"id": "bad-4", "label": "room", "scene_theme": "theme"}, {"weight": "Heavy"}, None, "invalid_translation_sidecar"),
     ],
 )
 def test_translation_rows_diagnose_invalid_source_or_sidecar(
@@ -326,7 +326,8 @@ def test_translation_rows_corrupt_root_list_sidecar_diagnosed_and_suppresses_row
     ]
     assert len(corrupt_diags) == 1
     assert corrupt_diags[0]["code"] == "invalid_translation_sidecar"
-    assert corrupt_diags[0]["message"] == "Translation sidecar must be an object"
+    assert corrupt_diags[0]["field"] is None
+    assert corrupt_diags[0]["message"] == "Translation sidecar is invalid."
 
     corrupt_rows = [
         r for r in body["rows"]
@@ -2081,3 +2082,254 @@ def test_validate_proposal_provider_output(output, expected_keys, is_valid):
     else:
         with pytest.raises(ValueError):
             resource_service.validate_proposal_provider_output(output, expected_keys)
+
+
+# ===========================================================================
+# Task 3.4 Unit Tests: Safe Readiness Diagnostics Projection
+# ===========================================================================
+
+
+def test_readiness_projects_invalid_source_shape_diagnostics_without_payload_leak(client):
+    for table in ("auxiliary_resource", "asset_revision", "resource_library"):
+        db.run(f"DELETE FROM {table}")
+
+    lib_id = resource_store.ensure_library("malformed_source_lib", kind="rooms")
+    # Record a revision where required scalar 'name' is a list (invalid_source_shape)
+    resource_store.record_revision(
+        lib_id,
+        "room-scalar-list",
+        {"id": "room-scalar-list", "name": ["Room as list"], "theme": "Valid theme"},
+        coverage={"status": "pending"},
+    )
+    # Record a normal pending revision (missing translation only, valid source shape)
+    resource_store.record_revision(
+        lib_id,
+        "room-valid-pending",
+        {"id": "room-valid-pending", "name": "Valid Room Name", "theme": "Valid theme"},
+        coverage={"status": "pending"},
+    )
+
+    resp = client.get("/api/resources/libraries")
+    assert resp.status_code == 200
+    libraries = resp.json()
+    assert len(libraries) == 1
+    revs = libraries[0]["revisions"]
+    assert len(revs) == 2
+
+    malformed_rev = next(r for r in revs if r["source_id"] == "room-scalar-list")
+    assert "payload" not in malformed_rev
+    readiness = malformed_rev["readiness"]
+    assert readiness["status"] == "pending"
+    assert "diagnostics" in readiness
+    diags = readiness["diagnostics"]
+    assert len(diags) == 1
+    assert diags[0]["code"] == "invalid_source_shape"
+    assert diags[0]["field"] == "label"
+    assert diags[0]["message"] == "Source field has an invalid shape."
+    # Verify no source value or path leakage in message
+    assert "Room as list" not in diags[0]["message"]
+    assert "/" not in diags[0]["message"] and "\\" not in diags[0]["message"]
+
+    # Normal pending revision maintains previous projection without diagnostics
+    normal_rev = next(r for r in revs if r["source_id"] == "room-valid-pending")
+    assert "payload" not in normal_rev
+    assert "diagnostics" not in normal_rev["readiness"]
+
+    # Also check single revision detail endpoint
+    digest = malformed_rev["content_digest"]
+    detail_resp = client.get(f"/api/resources/revisions/malformed_source_lib/room-scalar-list/{digest}")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["readiness"]["diagnostics"][0]["code"] == "invalid_source_shape"
+    assert detail["readiness"]["diagnostics"][0]["field"] == "label"
+    assert detail["readiness"]["diagnostics"][0]["message"] == "Source field has an invalid shape."
+
+
+def test_leak_regression_arbitrary_sidecar_and_source_markers_never_exposed(client):
+    """The safe list drops private coverage/sidecar data while detail retains payload."""
+    key_marker = "C:/fixture/private-sidecar-key"
+    val_marker = "PRIVATE-SIDECAR-VALUE"
+    path_marker = "/opt/fixtures/private-source.json"
+    coverage_marker = "private_marker"
+
+    lib_id = resource_store.ensure_library(
+        "leak_check_lib", display_name="Leak Check Library", kind="rooms",
+    )
+    resource_store.record_revision(
+        lib_id,
+        "room-leak-check",
+        {"name": "Salon", "desc": path_marker},
+        translation={key_marker: val_marker},
+        coverage={
+            coverage_marker: val_marker,
+            "unmapped_fields": [],
+            "sidecar_error": f"Invalid key {key_marker!r}: {val_marker!r}",
+        },
+    )
+
+    # 1. Library list endpoint
+    list_resp = client.get("/api/resources/libraries")
+    assert list_resp.status_code == 200
+    list_text = list_resp.text
+
+    assert key_marker not in list_text
+    assert val_marker not in list_text
+    assert path_marker not in list_text
+    assert coverage_marker not in list_text
+
+    libs = list_resp.json()
+    lib = next(l for l in libs if l["library_key"] == "leak_check_lib")
+    rev = lib["revisions"][0]
+
+    # Verify sanitized diagnostics (only canonical fields or None; safe constant messages)
+    diags = rev["readiness"]["diagnostics"]
+    assert any(d["code"] == "invalid_translation_sidecar" for d in diags)
+    for d in diags:
+        assert d["field"] is None or d["field"] in ("label", "description", "scene_theme")
+        assert d["message"] in ("Translation sidecar is invalid.", "Source field has an invalid shape.")
+
+    # Verify coverage.sidecar_error is sanitized
+    assert rev["readiness"]["coverage"]["sidecar_error"] == "Translation sidecar is invalid."
+    assert rev["coverage"] == {}
+
+    # 2. Single revision detail endpoint
+    detail_resp = client.get(f"/api/resources/revisions/leak_check_lib/room-leak-check/{rev['content_digest']}")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["readiness"]["coverage"]["sidecar_error"] == "Translation sidecar is invalid."
+    assert detail["coverage"] == detail["readiness"]["coverage"]
+    assert coverage_marker not in detail["coverage"]
+    # Sidecar key marker must not appear in detail translation
+    assert key_marker not in detail.get("translation", {})
+    assert key_marker not in json.dumps(detail["readiness"])
+    assert detail["payload"]["desc"] == path_marker
+
+
+def test_non_dict_persisted_sidecar_is_pending_and_inspectable_without_writes(client):
+    library_id = resource_store.ensure_library("invalid_sidecar_shape", kind="rooms")
+    resource_store.record_revision(
+        library_id,
+        "room-invalid-sidecar",
+        {"id": "room-invalid-sidecar", "name": "Salon", "theme": "Bright room"},
+        translation={"label": "Living Room", "scene_theme": "Bright room"},
+    )
+    revision = resource_store.get_revision(
+        library_id=library_id, source_id="room-invalid-sidecar",
+    )
+    db.run("UPDATE asset_revision SET translation = ? WHERE id = ?", json.dumps(["invalid"]), revision["id"])
+
+    before = db.one("SELECT translation, coverage FROM asset_revision WHERE id = ?", revision["id"])
+    response = client.get("/api/resources/libraries")
+
+    assert response.status_code == 200
+    public_revision = response.json()[0]["revisions"][0]
+    assert public_revision["translation"] == {}
+    assert public_revision["readiness"]["status"] == "pending"
+    assert public_revision["readiness"]["coverage"]["sidecar_error"] == "Translation sidecar is invalid."
+    assert public_revision["readiness"]["diagnostics"] == [{
+        "code": "invalid_translation_sidecar",
+        "field": None,
+        "message": "Translation sidecar is invalid.",
+    }]
+    serialized = response.text
+    assert "TypeError" not in serialized
+    assert '["invalid"]' not in serialized
+
+    detail = client.get(
+        f"/api/resources/revisions/invalid_sidecar_shape/room-invalid-sidecar/{public_revision['content_digest']}"
+    )
+    assert detail.status_code == 200
+    assert detail.json()["payload"]["name"] == "Salon"
+    assert detail.json()["readiness"]["status"] == "pending"
+    after = db.one("SELECT translation, coverage FROM asset_revision WHERE id = ?", revision["id"])
+    assert after == before
+
+
+def test_safe_projection_uses_validated_translation_and_current_coverage(client):
+    markers = [
+        "PRIVATE-SIDECAR-VALUE",
+        "PRIVATE-MISSING",
+        "/opt/private/missing",
+        "PRIVATE-UNMAPPED",
+        "C:/private/unmapped",
+        "PRIVATE-COVERAGE",
+        "C:/fixture/private-sidecar-key",
+    ]
+    library_id = resource_store.ensure_library("safe_projection_values", kind="rooms")
+    resource_store.record_revision(
+        library_id,
+        "room-safe-values",
+        {
+            "id": "room-safe-values",
+            "name": "Salon",
+            "theme": "Pièce claire",
+            "C:/private/unmapped": "PRIVATE-UNMAPPED",
+        },
+        translation={
+            "label": ["PRIVATE-SIDECAR-VALUE"],
+            "scene_theme": "Bright room",
+            "C:/fixture/private-sidecar-key": "PRIVATE-SIDECAR-VALUE",
+        },
+        coverage={
+            "missing_translations": ["PRIVATE-MISSING", "/opt/private/missing"],
+            "unmapped_fields": ["PRIVATE-UNMAPPED", "C:/private/unmapped"],
+            "private_marker": "PRIVATE-COVERAGE",
+            "fields": {
+                "label": {
+                    "role": "descriptive_input",
+                    "translated": True,
+                    "source_field": "C:/private/unmapped",
+                },
+            },
+        },
+    )
+
+    response = client.get("/api/resources/libraries")
+    assert response.status_code == 200
+    serialized = response.text
+    for marker in markers:
+        assert marker not in serialized
+
+    revision = response.json()[0]["revisions"][0]
+    assert revision["translation"] == {"scene_theme": "Bright room"}
+    assert revision["readiness"]["status"] == "pending"
+    assert revision["readiness"]["coverage"]["missing_translations"] == ["label"]
+    assert revision["readiness"]["coverage"]["unmapped_fields"] == ["unmapped_source_field"]
+    assert revision["coverage"] == {}
+
+    rows = client.get("/api/resources/libraries/safe_projection_values/translations/rows")
+    assert rows.status_code == 200
+    sidecar_diagnostics = [
+        item for item in rows.json()["diagnostics"]
+        if item["code"] == "invalid_translation_sidecar"
+    ]
+    assert {item["field"] for item in sidecar_diagnostics} == {None, "label"}
+    assert {item["message"] for item in sidecar_diagnostics} == {"Translation sidecar is invalid."}
+    for marker in markers:
+        assert marker not in rows.text
+
+
+def test_safe_translation_preserves_valid_scalar_and_list_display_values(client):
+    library_id = resource_store.ensure_library("valid_display_values", kind="rooms")
+    resource_store.record_revision(
+        library_id,
+        "room-valid-display",
+        {
+            "id": "room-valid-display",
+            "name": "Salon",
+            "theme": "Pièce claire",
+            "tags": ["terrasse", "soleil"],
+        },
+        translation={
+            "label": "Living Room",
+            "scene_theme": "Bright room",
+            "tags": ["terrace", "sunlight"],
+        },
+    )
+
+    revision = client.get("/api/resources/libraries").json()[0]["revisions"][0]
+    assert revision["translation"] == {
+        "label": "Living Room",
+        "scene_theme": "Bright room",
+        "tags": ["terrace", "sunlight"],
+    }

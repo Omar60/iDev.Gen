@@ -4,6 +4,7 @@ import {
   extractCategories,
   filterLibraries,
   checkReadiness,
+  classifyResourceReadiness,
   sessionCreationActions,
   selectAvailableModelId,
   exactRevisionTriple,
@@ -18,6 +19,7 @@ import {
   buildProposalRequestEntry,
   isRowEligibleForProposal,
   applyProposalsToRows,
+  extractImportedIdentities,
 } from './resources.js'
 
 describe('resources module', () => {
@@ -229,6 +231,158 @@ describe('resources module', () => {
       const verdict = checkReadiness(rev)
       expect(verdict.isReady).toBe(false)
       expect(verdict.reasons).toContain('Conflicting alias entries in translation sidecar')
+    })
+  })
+
+  describe('classifyResourceReadiness (Task 3.4)', () => {
+    it('classifies ready revision with Create session direct action', () => {
+      const readyRev = {
+        readiness: {
+          status: 'ready',
+          pending_fields: {},
+          field_readiness: [
+            { name: 'label', role: 'descriptive_input', translated: true, reason: '' },
+          ],
+        },
+      }
+      const result = classifyResourceReadiness(readyRev)
+      expect(result.readiness).toBe('ready')
+      expect(result.label).toBe('Ready')
+      expect(result.isReady).toBe(true)
+      expect(result.canCreate).toBe(true)
+      expect(result.reasons).toEqual([])
+      expect(result.blockedFields).toEqual([])
+      expect(result.primaryAction).toEqual({ id: 'create_session', label: 'Create session' })
+      expect(result.secondaryAction).toEqual({ id: 'inspect', label: 'Inspect' })
+    })
+
+    it('classifies pending revision with valid source as Needs translation with Translate direct action', () => {
+      const pendingRev = {
+        readiness: {
+          status: 'pending',
+          pending_fields: {
+            scene_theme: "Required field 'scene_theme' lacks a valid English translation",
+          },
+          field_readiness: [
+            { name: 'scene_theme', role: 'descriptive_input', translated: false, reason: "Required field 'scene_theme' lacks a valid English translation" },
+          ],
+        },
+      }
+      const result = classifyResourceReadiness(pendingRev)
+      expect(result.readiness).toBe('needs_translation')
+      expect(result.label).toBe('Needs translation')
+      expect(result.isReady).toBe(false)
+      expect(result.canCreate).toBe(false)
+      expect(result.blockedFields).toContain('scene_theme')
+      expect(result.reasons[0]).toContain("Required field 'scene_theme'")
+      expect(result.primaryAction).toEqual({ id: 'translate', label: 'Translate' })
+      expect(result.secondaryAction).toEqual({ id: 'inspect', label: 'Inspect' })
+    })
+
+    it('keeps sidecar errors as Needs translation rather than source correction', () => {
+      const sidecarRev = {
+        readiness: {
+          status: 'pending',
+          diagnostics: [
+            { code: 'invalid_translation_sidecar', field: 'weight', message: 'Sidecar format error' },
+          ],
+          coverage: {
+            sidecar_error: 'Disallowed field in sidecar',
+          },
+        },
+      }
+      const result = classifyResourceReadiness(sidecarRev)
+      expect(result.readiness).toBe('needs_translation')
+      expect(result.label).toBe('Needs translation')
+      expect(result.primaryAction.id).toBe('translate')
+      expect(result.reasons).toContain('Disallowed field in sidecar')
+      expect(result.reasons).toContain('Sidecar format error')
+    })
+
+    it('classifies invalid_source_shape as Needs source correction with Inspect source action', () => {
+      const malformedRev = {
+        readiness: {
+          status: 'pending',
+          diagnostics: [
+            { code: 'invalid_source_shape', field: 'label', message: "Source field 'name' must be a non-empty scalar string" },
+          ],
+        },
+      }
+      const result = classifyResourceReadiness(malformedRev)
+      expect(result.readiness).toBe('needs_source_correction')
+      expect(result.label).toBe('Needs source correction')
+      expect(result.isReady).toBe(false)
+      expect(result.canCreate).toBe(false)
+      expect(result.blockedFields).toContain('label')
+      expect(result.reasons[0]).toContain("Source field 'name' must be a non-empty scalar string")
+      expect(result.primaryAction).toEqual({ id: 'inspect_source', label: 'Inspect source' })
+      expect(result.secondaryAction).toEqual({ id: 'reimport', label: 'Re-import' })
+      // Crucial: No translate action offered
+      expect(result.actions.some((a) => a.id === 'translate')).toBe(false)
+      expect(result.actions.some((a) => a.id === 'create_session')).toBe(false)
+    })
+
+    it('classifies unmapped_fields as Needs source correction', () => {
+      const unmappedRev = {
+        readiness: {
+          status: 'pending',
+          coverage: {
+            unmapped_fields: ['custom_extra_param'],
+          },
+        },
+      }
+      const result = classifyResourceReadiness(unmappedRev)
+      expect(result.readiness).toBe('needs_source_correction')
+      expect(result.label).toBe('Needs source correction')
+      expect(result.blockedFields).toContain('custom_extra_param')
+      expect(result.reasons[0]).toContain("Unmapped source field 'custom_extra_param'")
+      expect(result.primaryAction.id).toBe('inspect_source')
+    })
+
+    it('fails closed to Needs source correction if backend status is ready but source diagnostic exists', () => {
+      const inconsistentRev = {
+        readiness: {
+          status: 'ready',
+          diagnostics: [
+            { code: 'invalid_source_shape', field: 'label', message: 'Inconsistent scalar violation' },
+          ],
+        },
+      }
+      const result = classifyResourceReadiness(inconsistentRev)
+      expect(result.readiness).toBe('needs_source_correction')
+      expect(result.isReady).toBe(false)
+      expect(result.canCreate).toBe(false)
+    })
+
+    it('separates outcome imported from readiness state', () => {
+      const importedPending = {
+        readiness: {
+          status: 'pending',
+          pending_fields: { label: 'Missing translation' },
+        },
+      }
+      const result = classifyResourceReadiness(importedPending, { isImported: true })
+      expect(result.outcome).toBe('imported')
+      expect(result.readiness).toBe('needs_translation')
+      expect(result.isReady).toBe(false)
+      expect(result.canCreate).toBe(false)
+      // Imported does NOT mean Ready!
+      expect(result.primaryAction.id).toBe('translate')
+    })
+
+    it('does not require or inspect revision.payload in classification', () => {
+      const payloadFreeRev = {
+        source_id: 'no-payload-rev',
+        content_digest: 'abc123456789',
+        readiness: {
+          status: 'ready',
+          pending_fields: {},
+        },
+      }
+      expect('payload' in payloadFreeRev).toBe(false)
+      const result = classifyResourceReadiness(payloadFreeRev)
+      expect(result.readiness).toBe('ready')
+      expect(result.canCreate).toBe(true)
     })
   })
 
@@ -2070,5 +2224,175 @@ describe('Task 3.3 translation proposal helpers', () => {
     expect(row1.translation).toBe('')
     expect(row2.translation).toBe('')
     expect(row3.translation).toBe('')
+  })
+
+  describe('extractImportedIdentities', () => {
+    it('accepts only exact canonical files[].accepted identities', () => {
+      const report = {
+        files: [{
+          accepted: [
+            { library_key: 'lib_a', source_id: 'src_1', new_content_digest: 'dig_1' },
+            { library_key: 'lib_a', source_id: '', new_content_digest: 'dig_2' },
+            { library_key: 'lib_a', source_id: '   ', new_content_digest: 'dig_2' },
+            { library_key: 'lib_a', source_id: 'src_3' },
+            'lib_b:src_2:dig_3',
+          ],
+        }],
+        revisions: [
+          { library_key: 'lib_a', source_id: 'src_1', content_digest: 'dig_1' },
+          'lib_b:src_2:dig_3',
+        ],
+        imported_revisions: [
+          { library_key: 'lib_c', source_id: 'src_3', content_digest: 'dig_4' },
+        ],
+        accepted: [{ library_key: 'lib_d', source_id: 'src_4', new_content_digest: 'dig_5' }],
+      }
+      const set = extractImportedIdentities(report)
+      expect(set).toEqual(new Set([JSON.stringify(['lib_a', 'src_1', 'dig_1'])]))
+    })
+
+    it('keeps delimiter-bearing identities collision-free', () => {
+      const acceptedA = extractImportedIdentities({
+        files: [{ accepted: [{ library_key: 'lib:part', source_id: 'src', new_content_digest: 'dig' }] }],
+      })
+      const acceptedB = extractImportedIdentities({
+        files: [{ accepted: [{ library_key: 'lib', source_id: 'part:src', new_content_digest: 'dig' }] }],
+      })
+      expect([...acceptedA]).not.toEqual([...acceptedB])
+
+      const revisionB = {
+        library_key: 'lib', source_id: 'part:src', content_digest: 'dig',
+        readiness: { status: 'ready' },
+      }
+      expect(classifyResourceReadiness(revisionB, { importedIdentities: acceptedA }).isImported).toBe(false)
+    })
+
+    it('returns an empty set on null or malformed report', () => {
+      expect(extractImportedIdentities(null).size).toBe(0)
+      expect(extractImportedIdentities({}).size).toBe(0)
+      expect(extractImportedIdentities('invalid').size).toBe(0)
+    })
+  })
+
+  describe('classifyResourceReadiness', () => {
+    it('classifies ready revision', () => {
+      const rev = {
+        source_id: 'src_1',
+        content_digest: 'dig_1',
+        readiness: { status: 'ready' },
+      }
+      const res = classifyResourceReadiness(rev)
+      expect(res.readiness).toBe('ready')
+      expect(res.isReady).toBe(true)
+      expect(res.isImported).toBe(false)
+      expect(res.outcome).toBe(null)
+    })
+
+    it('classifies needs_translation when pending', () => {
+      const rev = {
+        source_id: 'src_1',
+        content_digest: 'dig_1',
+        readiness: {
+          status: 'pending',
+          pending_fields: { scene_theme: 'Required translation missing' },
+        },
+      }
+      const res = classifyResourceReadiness(rev)
+      expect(res.readiness).toBe('needs_translation')
+      expect(res.isReady).toBe(false)
+    })
+
+    it('classifies needs_source_correction when diagnostics are present', () => {
+      const rev = {
+        source_id: 'src_1',
+        content_digest: 'dig_1',
+        readiness: {
+          status: 'pending',
+          diagnostics: [{ code: 'invalid_source_shape', message: 'Source field has an invalid shape.' }],
+        },
+      }
+      const res = classifyResourceReadiness(rev)
+      expect(res.readiness).toBe('needs_source_correction')
+      expect(res.isReady).toBe(false)
+    })
+
+    it('classifies needs_source_correction when unmapped fields exist', () => {
+      const rev = {
+        source_id: 'src_1',
+        content_digest: 'dig_1',
+        readiness: {
+          status: 'pending',
+          coverage: { unmapped_fields: ['unknown_prop'] },
+        },
+      }
+      const res = classifyResourceReadiness(rev)
+      expect(res.readiness).toBe('needs_source_correction')
+      expect(res.isReady).toBe(false)
+    })
+
+    it('marks isImported and outcome=imported when identity matches importedIdentities Set', () => {
+      const importedSet = new Set([JSON.stringify(['lib_rooms', 'src_1', 'dig_1'])])
+      const importedRev = {
+        library_key: 'lib_rooms',
+        source_id: 'src_1',
+        content_digest: 'dig_1',
+        readiness: { status: 'ready' },
+      }
+      const res = classifyResourceReadiness(importedRev, {
+        libraryKey: 'lib_rooms',
+        importedIdentities: importedSet,
+      })
+      expect(res.isImported).toBe(true)
+      expect(res.outcome).toBe('imported')
+      expect(res.readiness).toBe('ready')
+
+      // A historical revision in same library is NOT imported
+      const historicalRev = {
+        library_key: 'lib_rooms',
+        source_id: 'src_historical',
+        content_digest: 'dig_old',
+        readiness: { status: 'ready' },
+      }
+      const histRes = classifyResourceReadiness(historicalRev, {
+        libraryKey: 'lib_rooms',
+        importedIdentities: importedSet,
+      })
+      expect(histRes.isImported).toBe(false)
+      expect(histRes.outcome).toBe(null)
+      expect(histRes.readiness).toBe('ready')
+    })
+
+    it('combines outcome=imported with needs_translation and needs_source_correction', () => {
+      const importedSet = new Set([
+        JSON.stringify(['lib', 's1', 'd1']),
+        JSON.stringify(['lib', 's2', 'd2']),
+      ])
+
+      const revPending = {
+        source_id: 's1',
+        content_digest: 'd1',
+        readiness: { status: 'pending', pending_fields: { a: 'err' } },
+      }
+      const res1 = classifyResourceReadiness(revPending, {
+        libraryKey: 'lib',
+        importedIdentities: importedSet,
+      })
+      expect(res1.isImported).toBe(true)
+      expect(res1.outcome).toBe('imported')
+      expect(res1.readiness).toBe('needs_translation')
+
+      const revBroken = {
+        source_id: 's2',
+        content_digest: 'd2',
+        readiness: { status: 'pending', diagnostics: [{ code: 'invalid_source_shape' }] },
+      }
+      const res2 = classifyResourceReadiness(revBroken, {
+        libraryKey: 'lib',
+        importedIdentities: importedSet,
+      })
+      expect(res2.isImported).toBe(true)
+      expect(res2.outcome).toBe('imported')
+      expect(res2.readiness).toBe('needs_source_correction')
+    })
   })
 })

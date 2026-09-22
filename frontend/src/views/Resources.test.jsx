@@ -39,6 +39,13 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     input.dispatchEvent(new Event('change', { bubbles: true }))
   }
 
+  const typeInputValue = (input, value) => {
+    expect(input.disabled).toBe(false)
+    input.focus()
+    expect(document.activeElement).toBe(input)
+    setInputValue(input, value)
+  }
+
   const setSelectValue = (select, value) => {
     select.value = value
     select.dispatchEvent(new Event('change', { bubbles: true }))
@@ -3702,5 +3709,1571 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     expect(container.textContent).toContain('invalid proposal response')
     const input = container.querySelector('input[aria-label="Translation for SALLE_A"]')
     expect(input.value).toBe('Pre-existing Translation')
+  })
+
+  // =========================================================================
+  // Task 3.4 Specification & Contract Tests
+  // =========================================================================
+
+  it('3.4 presents Needs translation with direct Translate action that loads rows', async () => {
+    const library = {
+      id: 1,
+      library_key: 'lib_pending',
+      display_name: 'Pending Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'lib_pending',
+        source_id: 'room-pending',
+        content_digest: 'd'.repeat(64),
+        readiness: {
+          status: 'pending',
+          pending_fields: { scene_theme: 'Missing translation' },
+        },
+      }],
+      auxiliary: [],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 1, name: 'Model A' }]
+      if (url.endsWith('/translations/rows')) {
+        return {
+          library_key: 'lib_pending',
+          kind: 'rooms',
+          diagnostics: [],
+          rows: [{
+            revision: { source_id: 'room-pending', content_digest: 'd'.repeat(64) },
+            field: 'scene_theme',
+            source_field: 'theme',
+            source_value: 'Grand theme',
+            source_shape: 'scalar',
+            list_index: null,
+            current_translation: null,
+            translation: '',
+            required: true,
+            role: 'descriptive_input',
+            identity_required: false,
+            emit_by_default: false,
+          }],
+        }
+      }
+      return []
+    })
+
+    await renderComponent()
+
+    expect(container.textContent).toContain('Needs translation')
+    expect(container.textContent).toContain('Missing translation')
+
+    const buttons = Array.from(container.querySelectorAll('button'))
+    const translateBtn = buttons.find((b) => b.textContent === 'Translate')
+    const createSessionBtn = buttons.find((b) => b.textContent === 'Create session')
+    expect(translateBtn).toBeTruthy()
+    expect(createSessionBtn).toBeFalsy()
+
+    await act(async () => { translateBtn.click() })
+    expect(api.get).toHaveBeenCalledWith('/api/resources/libraries/lib_pending/translations/rows')
+  })
+
+  it('3.4 presents Ready with enabled Create session when model selected, disabled without model', async () => {
+    const library = {
+      id: 1,
+      library_key: 'lib_ready',
+      display_name: 'Ready Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'lib_ready',
+        source_id: 'room-ready',
+        content_digest: 'r'.repeat(64),
+        readiness: {
+          status: 'ready',
+          pending_fields: {},
+        },
+      }],
+      auxiliary: [],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 1, name: 'Model A' }]
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url === '/api/sessions') return { id: 99, name: 'Model A - room-ready' }
+      return {}
+    })
+    vi.spyOn(api, 'patch').mockResolvedValue({})
+
+    await renderComponent()
+
+    expect(container.textContent).toContain('Ready')
+    const createSessionBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Create session'
+    )
+    expect(createSessionBtn).toBeTruthy()
+    expect(createSessionBtn.disabled).toBe(false)
+
+    await act(async () => { createSessionBtn.click() })
+    expect(api.post).toHaveBeenCalledWith('/api/sessions', expect.objectContaining({
+      model_id: 1,
+      composition_mode: 'resource-v1',
+    }))
+  })
+
+  it('3.4 presents Needs source correction with Inspect source action and no translation cure', async () => {
+    const library = {
+      id: 1,
+      library_key: 'lib_malformed',
+      display_name: 'Malformed Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'lib_malformed',
+        source_id: 'room-malformed',
+        content_digest: 'm'.repeat(64),
+        readiness: {
+          status: 'pending',
+          diagnostics: [{
+            code: 'invalid_source_shape',
+            field: 'label',
+            message: "Source field 'name' must be a non-empty scalar string",
+          }],
+        },
+      }],
+      auxiliary: [],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 1, name: 'Model A' }]
+      if (url.startsWith('/api/resources/revisions/')) {
+        return {
+          ...library.revisions[0],
+          payload: { name: ['Invalid list'] },
+          readiness: library.revisions[0].readiness,
+        }
+      }
+      return []
+    })
+
+    await renderComponent()
+
+    expect(container.textContent).toContain('Needs source correction')
+    expect(container.textContent).toContain("Source field 'name' must be a non-empty scalar string")
+
+    const buttons = Array.from(container.querySelectorAll('button'))
+    expect(buttons.some((b) => b.textContent === 'Translate')).toBe(false)
+    expect(buttons.some((b) => b.textContent === 'Create session')).toBe(false)
+
+    const inspectBtn = buttons.find((b) => b.textContent === 'Inspect source')
+    expect(inspectBtn).toBeTruthy()
+
+    await act(async () => { inspectBtn.click() })
+    expect(container.textContent).toContain('Source Diagnostics:')
+    expect(container.textContent).toContain('invalid_source_shape')
+  })
+
+  it('3.4 manual Apply awaits fresh library reload and displays Ready without browser refresh', async () => {
+    let isReady = false
+    const pendingLib = {
+      id: 1,
+      library_key: 'manual_apply_lib',
+      display_name: 'Manual Apply Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'manual_apply_lib',
+        source_id: 'room-1',
+        content_digest: '1'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Missing' } },
+      }],
+      auxiliary: [],
+    }
+    const readyLib = {
+      ...pendingLib,
+      revisions: [{
+        ...pendingLib.revisions[0],
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+    }
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [isReady ? readyLib : pendingLib]
+      if (url === '/api/models') return [{ id: 1, name: 'Model A' }]
+      if (url.endsWith('/translations/rows')) {
+        return {
+          library_key: 'manual_apply_lib',
+          kind: 'rooms',
+          diagnostics: [],
+          rows: [{
+            revision: { source_id: 'room-1', content_digest: '1'.repeat(64) },
+            field: 'label', source_field: 'name', source_value: 'Salon',
+            source_shape: 'scalar', list_index: null, current_translation: null,
+            translation: 'Living Room', required: true, role: 'descriptive_input',
+            identity_required: false, emit_by_default: true,
+          }],
+        }
+      }
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/translations/preview')) {
+        return {
+          library_key: 'manual_apply_lib', total_revisions: 1, matched_revisions: 1,
+          unmatched_map_entries: 0, would_update: 1, unchanged: 0, would_be_ready: 1,
+          would_remain_pending: 0, attestation_token: 'token_123', expires_at: 9999999999,
+        }
+      }
+      if (url.endsWith('/translations/apply')) {
+        isReady = true
+        return { updated: 1, ready: 1, pending: 0 }
+      }
+      return {}
+    })
+
+    await renderComponent()
+    expect(container.textContent).toContain('Needs translation')
+
+    const load = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Load editable rows')
+    await act(async () => { load.click() })
+
+    const previewBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview manual translations')
+    await act(async () => { previewBtn.click() })
+
+    const applyBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Confirm & Apply manual translations')
+    await act(async () => { applyBtn.click() })
+
+    expect(container.textContent).toContain('Ready')
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'Create session')).toBe(true)
+  })
+
+  it('3.4 map Apply clears preview, awaits fresh library reload, and updates visible state', async () => {
+    let isReady = false
+    const pendingLib = {
+      id: 1,
+      library_key: 'map_apply_lib',
+      display_name: 'Map Apply Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'map_apply_lib',
+        source_id: 'room-1',
+        content_digest: '2'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Missing' } },
+      }],
+      auxiliary: [],
+    }
+    const readyLib = {
+      ...pendingLib,
+      revisions: [{
+        ...pendingLib.revisions[0],
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+    }
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [isReady ? readyLib : pendingLib]
+      if (url === '/api/models') return [{ id: 1, name: 'Model A' }]
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/translations/preview')) {
+        return {
+          library_key: 'map_apply_lib', total_revisions: 1, matched_revisions: 1,
+          unmatched_map_entries: 0, would_update: 1, unchanged: 0, would_be_ready: 1,
+          would_remain_pending: 0, attestation_token: 'map_token_abc', expires_at: 9999999999,
+        }
+      }
+      if (url.endsWith('/translations/apply')) {
+        isReady = true
+        return { updated: 1, ready: 1, pending: 0 }
+      }
+      return {}
+    })
+
+    await renderComponent()
+    expect(container.textContent).toContain('Needs translation')
+
+    const input = container.querySelector('input[placeholder*="translations.json"]')
+    await act(async () => { setInputValue(input, '/path/to/map.json') })
+
+    const previewBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Translations')
+    await act(async () => { previewBtn.click() })
+
+    const applyBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Confirm & Apply Translations'))
+    expect(applyBtn).toBeTruthy()
+
+    await act(async () => { applyBtn.click() })
+
+    expect(container.textContent).toContain('Ready')
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent.includes('Confirm & Apply Translations'))).toBe(false)
+  })
+
+  it('3.4 failed Apply does not fake readiness and clears preview authorization', async () => {
+    const pendingLib = {
+      id: 1,
+      library_key: 'fail_lib',
+      display_name: 'Fail Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'fail_lib',
+        source_id: 'room-1',
+        content_digest: '3'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Missing' } },
+      }],
+      auxiliary: [],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [pendingLib]
+      if (url === '/api/models') return [{ id: 1, name: 'Model A' }]
+      if (url.endsWith('/translations/rows')) {
+        return {
+          library_key: 'fail_lib', kind: 'rooms', diagnostics: [],
+          rows: [{
+            revision: { source_id: 'room-1', content_digest: '3'.repeat(64) },
+            field: 'label', source_field: 'name', source_value: 'Salon',
+            source_shape: 'scalar', list_index: null, current_translation: null,
+            translation: 'Living Room', required: true, role: 'descriptive_input',
+            identity_required: false, emit_by_default: true,
+          }],
+        }
+      }
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/translations/preview')) {
+        return {
+          library_key: 'fail_lib', total_revisions: 1, matched_revisions: 1,
+          unmatched_map_entries: 0, would_update: 1, unchanged: 0, would_be_ready: 1,
+          would_remain_pending: 0, attestation_token: 'token_fail', expires_at: 9999999999,
+        }
+      }
+      if (url.endsWith('/translations/apply')) {
+        throw new Error('Conflict: translation state has drifted')
+      }
+      return {}
+    })
+
+    await renderComponent()
+    const load = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Load editable rows')
+    await act(async () => { load.click() })
+
+    const previewBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview manual translations')
+    await act(async () => { previewBtn.click() })
+
+    const applyBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Confirm & Apply manual translations')
+    await act(async () => { applyBtn.click() })
+
+    expect(container.textContent).toContain('Conflict')
+    expect(container.textContent).toContain('Needs translation')
+    expect(container.textContent).not.toContain('Manual preview ready')
+    const applyBtnAfter = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Confirm & Apply manual translations')
+    expect(applyBtnAfter.disabled).toBe(true)
+  })
+
+  it('3.4 older library refresh cannot overwrite newer refresh (epoch fencing)', async () => {
+    let resolveRefreshA
+    const refreshAPromise = new Promise((resolve) => { resolveRefreshA = resolve })
+
+    const libV1 = [{
+      id: 1, library_key: 'fence_lib', display_name: 'V1 Old Lib', kind: 'rooms',
+      revisions: [{
+        revision_id: 1, library_key: 'fence_lib', source_id: 'room-1', content_digest: '4'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Missing' } },
+      }],
+      auxiliary: [],
+    }]
+
+    const libV2 = [{
+      id: 1, library_key: 'fence_lib', display_name: 'V2 Fresh Lib', kind: 'rooms',
+      revisions: [{
+        revision_id: 1, library_key: 'fence_lib', source_id: 'room-1', content_digest: '4'.repeat(64),
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+      auxiliary: [],
+    }]
+
+    let callCount = 0
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') {
+        callCount++
+        if (callCount === 1) return libV1
+        if (callCount === 2) return refreshAPromise
+        if (callCount === 3) return libV2
+      }
+      if (url === '/api/models') return []
+      return []
+    })
+
+    await renderComponent()
+    expect(container.textContent).toContain('V1 Old Lib')
+
+    const refreshBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Refresh')
+
+    await act(async () => { refreshBtn.click() })
+    await act(async () => { refreshBtn.click() })
+
+    expect(container.textContent).toContain('V2 Fresh Lib')
+
+    await act(async () => { resolveRefreshA(libV1) })
+
+    expect(container.textContent).toContain('V2 Fresh Lib')
+    expect(container.textContent).not.toContain('V1 Old Lib')
+  })
+
+  it('3.4 mapPath change immediately invalidates old preview and token', async () => {
+    const library = {
+      id: 1, library_key: 'inval_lib', display_name: 'Inval Lib', kind: 'rooms',
+      revisions: [{
+        revision_id: 1, library_key: 'inval_lib', source_id: 'room-1', content_digest: '5'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Missing' } },
+      }],
+      auxiliary: [],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/translations/preview')) {
+        return {
+          library_key: 'inval_lib', total_revisions: 1, matched_revisions: 1,
+          unmatched_map_entries: 0, would_update: 1, unchanged: 0, would_be_ready: 1,
+          would_remain_pending: 0, attestation_token: 'token_path_a', expires_at: 9999999999,
+        }
+      }
+      return {}
+    })
+
+    await renderComponent()
+    const input = container.querySelector('input[placeholder*="translations.json"]')
+    await act(async () => { setInputValue(input, '/path/a.json') })
+
+    const previewBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Translations')
+    await act(async () => { previewBtn.click() })
+
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent.includes('Confirm & Apply Translations'))).toBe(true)
+
+    await act(async () => { setInputValue(input, '/path/b.json') })
+
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent.includes('Confirm & Apply Translations'))).toBe(false)
+  })
+
+  it('3.4 late map Preview cannot re-enable Apply after path change', async () => {
+    let resolvePreviewA
+    const previewAPromise = new Promise((resolve) => { resolvePreviewA = resolve })
+
+    const library = {
+      id: 1, library_key: 'late_map_lib', display_name: 'Late Map Lib', kind: 'rooms',
+      revisions: [{
+        revision_id: 1, library_key: 'late_map_lib', source_id: 'room-1', content_digest: '6'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Missing' } },
+      }],
+      auxiliary: [],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/translations/preview')) {
+        return previewAPromise
+      }
+      return {}
+    })
+
+    await renderComponent()
+    const input = container.querySelector('input[placeholder*="translations.json"]')
+    await act(async () => { setInputValue(input, '/path/a.json') })
+
+    const previewBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Translations')
+    await act(async () => { previewBtn.click() })
+
+    await act(async () => { setInputValue(input, '/path/b.json') })
+
+    await act(async () => {
+      resolvePreviewA({
+        library_key: 'late_map_lib', total_revisions: 1, matched_revisions: 1,
+        unmatched_map_entries: 0, would_update: 1, unchanged: 0, would_be_ready: 1,
+        would_remain_pending: 0, attestation_token: 'token_a', expires_at: 9999999999,
+      })
+    })
+
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent.includes('Confirm & Apply Translations'))).toBe(false)
+  })
+
+  it('3.4 import commit awaits readiness refresh and makes no auto-translate or session POST', async () => {
+    const postCalls = []
+    const freshLibrary = [{
+      id: 1, library_key: 'imported_lib', display_name: 'Imported Lib', kind: 'rooms',
+      revisions: [{
+        revision_id: 1, library_key: 'imported_lib', source_id: 'room-new', content_digest: '7'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Needs translation' } },
+      }],
+      auxiliary: [],
+    }]
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return freshLibrary
+      if (url === '/api/models') return []
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      postCalls.push({ url, body })
+      return {}
+    })
+
+    await renderComponent()
+    await switchToImportTab()
+
+    expect(container.textContent).toContain('Import Preview')
+    expect(postCalls.some((c) => c.url.includes('/translations/apply'))).toBe(false)
+    expect(postCalls.some((c) => c.url.includes('/translations/proposals'))).toBe(false)
+    expect(postCalls.some((c) => c.url === '/api/sessions')).toBe(false)
+  })
+
+  // ==========================================
+  // Task 3.4 Blocker Regressions & Verifications
+  // ==========================================
+
+  it('3.4 Blocker 1: Re-import switches to Import tab without ReferenceError', async () => {
+    const errorLib = {
+      id: 1,
+      library_key: 'broken_source_lib',
+      display_name: 'Broken Source Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'broken_source_lib',
+        source_id: 'room-corrupt',
+        content_digest: 'a'.repeat(64),
+        readiness: {
+          status: 'pending',
+          diagnostics: [{
+            code: 'invalid_source_shape',
+            field: 'name',
+            message: 'Source field has an invalid shape.',
+          }],
+        },
+      }],
+      auxiliary: [],
+    }
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [errorLib]
+      if (url === '/api/models') return []
+      return []
+    })
+
+    await renderComponent()
+    expect(container.textContent).toContain('Needs source correction')
+
+    const reimportBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Re-import')
+    expect(reimportBtn).toBeTruthy()
+
+    // Must not throw ReferenceError: setActiveTab is not defined
+    await act(async () => {
+      reimportBtn.click()
+    })
+
+    // Active tab is now Import
+    expect(container.textContent).toContain('Import Preview')
+  })
+
+  const makeOpenViewWithPreview = (selectionId, libKey, sourceId, digest) => ({
+    selection_id: selectionId,
+    selection_revision: 2,
+    state: 'open',
+    expires_at: '2026-09-17T20:00:00Z',
+    files: [{
+      file_id: 'f1',
+      file_name: 'f1.json',
+      byte_count: 10,
+      declared_library: libKey,
+      effective_library_key: libKey,
+      matched_auxiliary_kinds: [],
+      effective_auxiliary_kind: null,
+      status: 'staged',
+    }],
+    preview: {
+      preview_token: 'valid-ptok-123',
+      manifest_digest: digest,
+      committable: true,
+      report: {
+        version: 1,
+        phase: 'preview',
+        summary: {
+          accepted: 1,
+          auxiliary: 0,
+          duplicates: 0,
+          files: 1,
+          inputs: 1,
+          missing: 0,
+          new: 1,
+          unchanged: 0,
+          unresolved: 0,
+          updated: 0,
+        },
+        files: [{
+          accepted: [{
+            classification: 'new',
+            kind: 'rooms',
+            library_key: libKey,
+            new_content_digest: digest,
+            previous_content_digest: null,
+            source_id: sourceId,
+          }],
+          auxiliary: [],
+          duplicates: [],
+          library_key: libKey,
+          total_inputs: 1,
+          unresolved: [],
+        }],
+        missing_source_entries: [],
+      },
+    },
+    commit_result: null,
+    cleanup_warning: null,
+  })
+
+  const makeCommittedView = (openView, libKey, sourceId, digest) => ({
+    ...openView,
+    selection_revision: openView.selection_revision + 1,
+    state: 'committed',
+    commit_result: {
+      version: 1,
+      phase: 'commit',
+      summary: {
+        accepted: 1,
+        auxiliary: 0,
+        duplicates: 0,
+        files: 1,
+        inputs: 1,
+        missing: 0,
+        new: 1,
+        new_auxiliary_revisions: 0,
+        new_scene_revisions: 1,
+        recorded: 1,
+        unchanged: 0,
+        unchanged_auxiliary_revisions: 0,
+        unchanged_scene_revisions: 0,
+        unresolved: 0,
+        updated: 0,
+        updated_scene_revisions: 0,
+      },
+      files: [{
+        accepted: [{
+          classification: 'new',
+          kind: 'rooms',
+          library_key: libKey,
+          new_content_digest: digest,
+          previous_content_digest: null,
+          source_id: sourceId,
+        }],
+        auxiliary: [],
+        duplicates: [],
+        library_key: libKey,
+        total_inputs: 1,
+        unresolved: [],
+      }],
+      missing_source_entries: [],
+    },
+  })
+
+  it('3.4 Blocker 1: View readiness in Inventory switches to Inventory tab without ReferenceError and reloads libraries', async () => {
+    let getLibrariesCount = 0
+    const digest = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    const sampleLib = {
+      id: 1,
+      library_key: 'sample_lib',
+      display_name: 'Sample Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'sample_lib',
+        source_id: 'room-1',
+        content_digest: digest,
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+      auxiliary: [],
+    }
+
+    const openView = makeOpenViewWithPreview('sel-report-test', 'sample_lib', 'room-1', digest)
+    const committedView = makeCommittedView(openView, 'sample_lib', 'room-1', digest)
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') {
+        getLibrariesCount++
+        return [sampleLib]
+      }
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url === '/api/resources/import-selections') return openView
+      if (url.endsWith('/commit')) return committedView
+      return {}
+    })
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValue(openView)
+
+    await renderComponent()
+    await switchToImportTab()
+
+    await selectFiles([new File(['1'], 'f1.json', { type: 'application/json' })])
+    await clickUpload()
+
+    const commitBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Commit Import'))
+    expect(commitBtn).toBeTruthy()
+    await act(async () => {
+      commitBtn.click()
+    })
+
+    expect(container.textContent).toContain('Commit Report')
+    const viewReadinessBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('View readiness in Inventory'))
+    expect(viewReadinessBtn).toBeTruthy()
+
+    const countBefore = getLibrariesCount
+    // Must not throw ReferenceError: setActiveTab is not defined, must await reloadLibraries and switch to Inventory tab
+    await act(async () => {
+      viewReadinessBtn.click()
+    })
+
+    expect(getLibrariesCount).toBeGreaterThan(countBefore)
+    expect(container.textContent).toContain('Sample Lib')
+  })
+
+  it('3.4 Blocker 3: Commit Import awaits GET /api/resources/libraries before showing update notice', async () => {
+    let resolveGetLibraries
+    const getLibrariesPromise = new Promise((resolve) => { resolveGetLibraries = resolve })
+    const digest = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+
+    const sampleLib = {
+      id: 1,
+      library_key: 'sample_lib',
+      display_name: 'Sample Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'sample_lib',
+        source_id: 'room-1',
+        content_digest: digest,
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+      auxiliary: [],
+    }
+
+    const openView = makeOpenViewWithPreview('sel-await-test', 'sample_lib', 'room-1', digest)
+    const committedView = makeCommittedView(openView, 'sample_lib', 'room-1', digest)
+
+    let initialLoadDone = false
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') {
+        if (!initialLoadDone) {
+          initialLoadDone = true
+          return [sampleLib]
+        }
+        return getLibrariesPromise
+      }
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url === '/api/resources/import-selections') return openView
+      if (url.endsWith('/commit')) return committedView
+      return {}
+    })
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValue(openView)
+
+    await renderComponent()
+    await switchToImportTab()
+
+    await selectFiles([new File(['1'], 'f1.json', { type: 'application/json' })])
+    await clickUpload()
+
+    const commitBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Commit Import'))
+    expect(commitBtn).toBeTruthy()
+    await act(async () => {
+      commitBtn.click()
+    })
+
+    // Commit POST has succeeded, but GET /api/resources/libraries is still pending:
+    // Update notice MUST NOT be shown yet
+    expect(container.textContent).not.toContain('Local resource inventory updated')
+
+    // Now resolve GET /api/resources/libraries
+    await act(async () => {
+      resolveGetLibraries([sampleLib])
+    })
+
+    // Update notice MUST now be shown
+    expect(container.textContent).toContain('Local resource inventory updated')
+  })
+
+  it('3.4 Blocker 3: Commit Import with GET rejection displays refresh error and does not re-commit or post session', async () => {
+    const postCalls = []
+    const digest = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    const sampleLib = {
+      id: 1,
+      library_key: 'sample_lib',
+      display_name: 'Sample Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'sample_lib',
+        source_id: 'room-1',
+        content_digest: digest,
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+      auxiliary: [],
+    }
+
+    const openView = makeOpenViewWithPreview('sel-reject-test', 'sample_lib', 'room-1', digest)
+    const committedView = makeCommittedView(openView, 'sample_lib', 'room-1', digest)
+
+    let initialLoadDone = false
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') {
+        if (!initialLoadDone) {
+          initialLoadDone = true
+          return [sampleLib]
+        }
+        throw new Error('Database locked during reload')
+      }
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      postCalls.push({ url, body })
+      if (url === '/api/resources/import-selections') return openView
+      if (url.endsWith('/commit')) return committedView
+      return {}
+    })
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValue(openView)
+
+    await renderComponent()
+    await switchToImportTab()
+
+    await selectFiles([new File(['1'], 'f1.json', { type: 'application/json' })])
+    await clickUpload()
+
+    const commitBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Commit Import'))
+    expect(commitBtn).toBeTruthy()
+    await act(async () => {
+      commitBtn.click()
+    })
+
+    // Refresh error is displayed
+    expect(container.textContent).toContain('Import committed, but failed to refresh inventory: Database locked during reload')
+    // Notice is withheld
+    expect(container.textContent).not.toContain('Local resource inventory updated')
+    // No automatic session post or auto-translate
+    expect(postCalls.some((c) => c.url === '/api/sessions')).toBe(false)
+    expect(postCalls.some((c) => c.url.includes('/translations/apply'))).toBe(false)
+  })
+
+  it('3.4 Blocker 2: Newly committed revision displays Imported badge alongside readiness; historical revision does not', async () => {
+    const newDigest = '1111111111111111111111111111111111111111111111111111111111111111'
+    const histDigest = '2222222222222222222222222222222222222222222222222222222222222222'
+
+    const multiRevLib = {
+      id: 1,
+      library_key: 'sample_lib',
+      display_name: 'Sample Lib',
+      kind: 'rooms',
+      revisions: [
+        {
+          revision_id: 1,
+          library_key: 'sample_lib',
+          source_id: 'room-new',
+          content_digest: newDigest,
+          readiness: { status: 'pending', pending_fields: { label: 'Need translation' } },
+        },
+        {
+          revision_id: 2,
+          library_key: 'sample_lib',
+          source_id: 'room-historical',
+          content_digest: histDigest,
+          readiness: { status: 'ready', pending_fields: {} },
+        },
+      ],
+      auxiliary: [],
+    }
+
+    const openView = makeOpenViewWithPreview('sel-imported-test', 'sample_lib', 'room-new', newDigest)
+    const committedView = makeCommittedView(openView, 'sample_lib', 'room-new', newDigest)
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [multiRevLib]
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url === '/api/resources/import-selections') return openView
+      if (url.endsWith('/commit')) return committedView
+      return {}
+    })
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValue(openView)
+
+    await renderComponent()
+    await switchToImportTab()
+
+    await selectFiles([new File(['1'], 'f1.json', { type: 'application/json' })])
+    await clickUpload()
+
+    const commitBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Commit Import'))
+    expect(commitBtn).toBeTruthy()
+    await act(async () => {
+      commitBtn.click()
+    })
+
+    // Now switch to Inventory tab
+    const viewReadinessBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('View readiness in Inventory'))
+    expect(viewReadinessBtn).toBeTruthy()
+    await act(async () => {
+      viewReadinessBtn.click()
+    })
+
+    // Look at table rows in Inventory
+    const rows = Array.from(container.querySelectorAll('table tbody tr'))
+    const newRow = rows.find((r) => r.textContent.includes('room-new'))
+    const histRow = rows.find((r) => r.textContent.includes('room-historical'))
+
+    expect(newRow).toBeTruthy()
+    expect(histRow).toBeTruthy()
+
+    // newRow has Imported chip AND Needs translation badge
+    expect(newRow.textContent).toContain('Imported')
+    expect(newRow.textContent).toContain('Needs translation')
+
+    // histRow has Ready badge, but NOT Imported chip
+    expect(histRow.textContent).toContain('Ready')
+    expect(histRow.textContent).not.toContain('Imported')
+  })
+
+  it('3.4 Blocker 5: Manual edit after suggestions clears preProposalRows and hides Discard suggestions', async () => {
+    const pendingLib = {
+      id: 1,
+      library_key: 'suggest_lib',
+      display_name: 'Suggest Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'suggest_lib',
+        source_id: 'room-1',
+        content_digest: '8'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Missing' } },
+      }],
+      auxiliary: [],
+    }
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [pendingLib]
+      if (url.endsWith('/translations/rows')) {
+        return {
+          library_key: 'suggest_lib',
+          kind: 'rooms',
+          diagnostics: [],
+          rows: [{
+            revision: { source_id: 'room-1', content_digest: '8'.repeat(64) },
+            field: 'label', source_field: 'name', source_value: 'Bureau',
+            source_shape: 'scalar', list_index: null, current_translation: null,
+            translation: '', required: true, role: 'descriptive_input',
+            identity_required: false, emit_by_default: true,
+          }],
+        }
+      }
+      return []
+    })
+
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/translations/proposals')) {
+        return {
+          library_key: 'suggest_lib',
+          proposals: [{
+            revision: { source_id: 'room-1', content_digest: '8'.repeat(64) },
+            field: 'label', source_shape: 'scalar', list_index: null,
+            translation: 'Suggested Office',
+          }],
+        }
+      }
+      return {}
+    })
+
+    await renderComponent()
+    const loadBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Load editable rows')
+    await act(async () => { loadBtn.click() })
+
+    // Select the suggest checkbox for the row
+    const suggestCheckbox = container.querySelector('input[aria-label="Suggest translation for Bureau"]')
+    expect(suggestCheckbox).toBeTruthy()
+    await act(async () => { suggestCheckbox.click() })
+
+    // Suggest translations
+    const suggestBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Suggest translations')
+    expect(suggestBtn.disabled).toBe(false)
+    await act(async () => { suggestBtn.click() })
+
+    // "Discard suggestions" should appear
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'Discard suggestions')).toBe(true)
+
+    // User manually modifies a row
+    const rowInput = container.querySelector('input[aria-label="Translation for Bureau"]')
+    expect(rowInput).toBeTruthy()
+    expect(rowInput.value).toBe('Suggested Office')
+    await act(async () => {
+      setInputValue(rowInput, 'My Custom Office')
+    })
+
+    // Discard suggestions button MUST disappear
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'Discard suggestions')).toBe(false)
+    expect(rowInput.value).toBe('My Custom Office')
+  })
+
+  it('3.4 repair: legacy commit posts the preview once, then refreshes inventory', async () => {
+    const legacyPreview = { version: 1, files: [] }
+    const commitReport = { phase: 'commit', summary: { recorded: 1 }, files: [] }
+    const calls = []
+    let libraryGets = 0
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') {
+        libraryGets++
+        return []
+      }
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      calls.push({ url, body })
+      if (url === '/api/resources/import/preview') {
+        return { preview: legacyPreview, report: { phase: 'preview', summary: {}, files: [] } }
+      }
+      if (url === '/api/resources/import/commit') return { report: commitReport }
+      return {}
+    })
+
+    await renderComponent()
+    await switchToImportTab()
+    const toggle = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Legacy Path Import (Compatibility)'))
+    await act(async () => { toggle.click() })
+    await act(async () => {
+      setInputValue(container.querySelector('input[placeholder="e.g. /path/to/source_library.json"]'), '/fixture/source.json')
+      setInputValue(container.querySelector('input[placeholder="e.g. rooms_main"]'), 'rooms_main')
+    })
+    const preview = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Legacy Import')
+    await act(async () => { preview.click() })
+    const getsBeforeCommit = libraryGets
+    const commit = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Commit Legacy Import')
+    await act(async () => { commit.click() })
+
+    const commitCalls = calls.filter((call) => call.url === '/api/resources/import/commit')
+    expect(commitCalls).toEqual([{ url: '/api/resources/import/commit', body: { preview: legacyPreview } }])
+    expect(libraryGets).toBeGreaterThan(getsBeforeCommit)
+    expect(container.textContent).toContain('Legacy Commit Result: 1 recorded.')
+    expect(container.textContent).toContain('Legacy import committed successfully. Local resource inventory updated.')
+  })
+
+  it('3.4 repair: legacy commit success plus refresh failure is not retried or reported as a commit failure', async () => {
+    const legacyPreview = { version: 1, files: [] }
+    const postCalls = []
+    let libraryGets = 0
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') {
+        libraryGets++
+        if (libraryGets > 1) throw new Error('Inventory unavailable')
+        return []
+      }
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      postCalls.push({ url, body })
+      if (url === '/api/resources/import/preview') {
+        return { preview: legacyPreview, report: { phase: 'preview', summary: {}, files: [] } }
+      }
+      if (url === '/api/resources/import/commit') {
+        return { report: { phase: 'commit', summary: { recorded: 1 }, files: [] } }
+      }
+      return {}
+    })
+
+    await renderComponent()
+    await switchToImportTab()
+    const toggle = Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Legacy Path Import (Compatibility)'))
+    await act(async () => { toggle.click() })
+    await act(async () => {
+      setInputValue(container.querySelector('input[placeholder="e.g. /path/to/source_library.json"]'), '/fixture/source.json')
+      setInputValue(container.querySelector('input[placeholder="e.g. rooms_main"]'), 'rooms_main')
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Legacy Import').click()
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Commit Legacy Import').click()
+    })
+
+    expect(postCalls.filter((call) => call.url === '/api/resources/import/commit')).toHaveLength(1)
+    expect(container.textContent).toContain('Legacy import committed, but failed to refresh inventory: Inventory unavailable')
+    expect(container.textContent).not.toContain('ReferenceError')
+  })
+
+  it('3.4 repair: polling committed clears processing notice before refresh failure', async () => {
+    const digest = '7'.repeat(64)
+    const openView = makeOpenViewWithPreview('sel-poll-refresh-fail', 'poll_lib', 'room-1', digest)
+    const committingView = { ...openView, selection_revision: 3, state: 'committing' }
+    const committedView = makeCommittedView(openView, 'poll_lib', 'room-1', digest)
+    let libraryGets = 0
+    const postCalls = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') {
+        libraryGets++
+        if (libraryGets > 1) throw new Error('Refresh offline')
+        return []
+      }
+      if (url.includes('/import-selections/sel-poll-refresh-fail')) return committedView
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      postCalls.push({ url, body })
+      if (url === '/api/resources/import-selections') return openView
+      if (url.endsWith('/commit')) return committingView
+      return {}
+    })
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValue(openView)
+
+    vi.useFakeTimers()
+    try {
+      await renderComponent()
+      await switchToImportTab()
+      await selectFiles([new File(['1'], 'f1.json', { type: 'application/json' })])
+      await clickUpload()
+      await act(async () => {
+        Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Commit Import')).click()
+      })
+      expect(container.textContent).toContain('Commit is actively processing')
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
+
+      expect(container.textContent).not.toContain('Commit is actively processing')
+      expect(container.textContent).toContain('Import committed, but failed to refresh inventory: Refresh offline')
+      expect(postCalls.filter((call) => call.url.endsWith('/commit'))).toHaveLength(1)
+      expect(postCalls.some((call) => call.url === '/api/sessions')).toBe(false)
+      expect(postCalls.some((call) => call.url.includes('/translations/'))).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  const translationRaceFixture = () => {
+    const pending = {
+      id: 1,
+      library_key: 'race_lib',
+      display_name: 'Race Lib',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'race_lib',
+        source_id: 'room-1',
+        content_digest: '9'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Missing' } },
+      }],
+      auxiliary: [],
+    }
+    const ready = {
+      ...pending,
+      revisions: [{ ...pending.revisions[0], readiness: { status: 'ready', pending_fields: {} } }],
+    }
+    const rows = {
+      library_key: 'race_lib',
+      kind: 'rooms',
+      diagnostics: [],
+      rows: [{
+        revision: { source_id: 'room-1', content_digest: '9'.repeat(64) },
+        field: 'label', source_field: 'name', source_value: 'Salon',
+        source_shape: 'scalar', list_index: null, current_translation: null,
+        translation: '', required: true, role: 'descriptive_input',
+        identity_required: false, emit_by_default: true,
+      }],
+    }
+    return { pending, ready, rows }
+  }
+
+  it('3.4 repair: edit during pending Apply cannot revive stale authorization and still refreshes to Ready', async () => {
+    const { pending, ready, rows } = translationRaceFixture()
+    let resolveApply
+    const applyPromise = new Promise((resolve) => { resolveApply = resolve })
+    let libraryGets = 0
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') {
+        libraryGets++
+        return libraryGets === 1 ? [pending] : [ready]
+      }
+      if (url.endsWith('/translations/rows')) return rows
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation((url) => {
+      if (url.endsWith('/translations/preview')) {
+        return Promise.resolve({
+          library_key: 'race_lib', total_revisions: 1, matched_revisions: 1,
+          unmatched_map_entries: 0, would_update: 1, unchanged: 0,
+          would_be_ready: 1, would_remain_pending: 0,
+          attestation_token: 'race-token', expires_at: 9999999999,
+        })
+      }
+      if (url.endsWith('/translations/apply')) return applyPromise
+      return Promise.resolve({})
+    })
+
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Load editable rows').click()
+    })
+    const input = container.querySelector('input[aria-label="Translation for Salon"]')
+    await act(async () => { setInputValue(input, 'Living Room') })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview manual translations').click()
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Confirm & Apply manual translations').click()
+    })
+    expect(libraryGets).toBe(1)
+
+    await act(async () => { setInputValue(input, 'Edited While Applying') })
+    const staleApply = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Confirm & Apply manual translations')
+    expect(staleApply.disabled).toBe(true)
+
+    await act(async () => {
+      resolveApply({ updated: 1, ready: 1, pending: 0 })
+      await Promise.resolve()
+    })
+
+    expect(libraryGets).toBeGreaterThan(1)
+    expect(container.textContent).toContain('Ready')
+    expect(container.textContent).not.toContain('Manual preview ready')
+    expect(container.textContent).not.toContain('Working…')
+  })
+
+  it('3.4 repair: Apply success plus refresh failure stays stale and reports refresh, not Apply, failure', async () => {
+    const { pending, rows } = translationRaceFixture()
+    let resolveApply
+    const applyPromise = new Promise((resolve) => { resolveApply = resolve })
+    let libraryGets = 0
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') {
+        libraryGets++
+        if (libraryGets > 1) throw new Error('Readiness unavailable')
+        return [pending]
+      }
+      if (url.endsWith('/translations/rows')) return rows
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation((url) => {
+      if (url.endsWith('/translations/preview')) {
+        return Promise.resolve({
+          library_key: 'race_lib', total_revisions: 1, matched_revisions: 1,
+          unmatched_map_entries: 0, would_update: 1, unchanged: 0,
+          would_be_ready: 1, would_remain_pending: 0,
+          attestation_token: 'race-token', expires_at: 9999999999,
+        })
+      }
+      if (url.endsWith('/translations/apply')) return applyPromise
+      return Promise.resolve({})
+    })
+
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Load editable rows').click()
+    })
+    const input = container.querySelector('input[aria-label="Translation for Salon"]')
+    await act(async () => { setInputValue(input, 'Living Room') })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview manual translations').click()
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Confirm & Apply manual translations').click()
+    })
+    await act(async () => { setInputValue(input, 'Edited While Applying') })
+    await act(async () => {
+      resolveApply({ updated: 1, ready: 1, pending: 0 })
+      await Promise.resolve()
+    })
+
+    expect(libraryGets).toBeGreaterThan(1)
+    expect(container.textContent).toContain('Translations applied, but failed to refresh readiness: Readiness unavailable')
+    expect(container.textContent).toContain('Needs translation')
+    expect(container.textContent).not.toContain('Apply failed')
+    expect(container.textContent).not.toContain('ReadyCreate session')
+    expect(container.textContent).not.toContain('Working…')
+    const staleApply = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Confirm & Apply manual translations')
+    expect(staleApply.disabled).toBe(true)
+  })
+
+  it('3.4 final repair: user can start Preview B while Preview A is pending and late A stays stale', async () => {
+    const library = {
+      id: 1, library_key: 'map_busy_lib', display_name: 'Map Busy Lib', kind: 'rooms',
+      revisions: [{
+        revision_id: 1, library_key: 'map_busy_lib', source_id: 'room-1', content_digest: 'a'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Missing' } },
+      }],
+      auxiliary: [],
+    }
+    let resolveA
+    let resolveB
+    const previewA = new Promise((resolve) => { resolveA = resolve })
+    const previewB = new Promise((resolve) => { resolveB = resolve })
+    vi.spyOn(api, 'get').mockImplementation(async (url) => (
+      url === '/api/resources/libraries' ? [library] : []
+    ))
+    vi.spyOn(api, 'post').mockImplementation((url, body) => {
+      if (url.endsWith('/translations/preview') && body.map_path === 'A.json') return previewA
+      if (url.endsWith('/translations/preview') && body.map_path === 'B.json') return previewB
+      return Promise.resolve({})
+    })
+
+    await renderComponent()
+    const input = container.querySelector('input[placeholder*="translations.json"]')
+    await act(async () => { typeInputValue(input, 'A.json') })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Translations').click()
+    })
+    expect(input.disabled).toBe(false)
+
+    await act(async () => { typeInputValue(input, 'B.json') })
+    expect(input.value).toBe('B.json')
+    expect(input.disabled).toBe(false)
+    const previewButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Translations')
+    expect(previewButton.disabled).toBe(false)
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent.includes('Confirm & Apply Translations'))).toBe(false)
+
+    await act(async () => { previewButton.click() })
+    expect(input.disabled).toBe(false)
+
+    await act(async () => {
+      resolveA({
+        library_key: 'map_busy_lib', total_revisions: 1, matched_revisions: 1,
+        unmatched_map_entries: 0, would_update: 1, unchanged: 0,
+        would_be_ready: 1, would_remain_pending: 0,
+        attestation_token: 'token-a', expires_at: 9999999999,
+      })
+      await Promise.resolve()
+    })
+    expect(input.disabled).toBe(false)
+    expect(input.value).toBe('B.json')
+    expect(Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Working…').disabled).toBe(true)
+    expect(container.textContent).not.toContain('Preview ready:')
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent.includes('Confirm & Apply Translations'))).toBe(false)
+
+    await act(async () => {
+      resolveB({
+        library_key: 'map_busy_lib', total_revisions: 1, matched_revisions: 1,
+        unmatched_map_entries: 0, would_update: 1, unchanged: 0,
+        would_be_ready: 1, would_remain_pending: 0,
+        attestation_token: 'token-b', expires_at: 9999999999,
+      })
+      await Promise.resolve()
+    })
+    expect(input.disabled).toBe(false)
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent.includes('Confirm & Apply Translations'))).toBe(true)
+    expect(container.textContent).toContain('Preview ready: 1 of 1 revisions matched.')
+  })
+
+  it('3.4 final repair: map path stays editable during Apply while actions remain blocked through refresh', async () => {
+    const { pending, ready } = translationRaceFixture()
+    let resolveApply
+    const applyPromise = new Promise((resolve) => { resolveApply = resolve })
+    let libraryGets = 0
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') {
+        libraryGets++
+        return libraryGets === 1 ? [pending] : [ready]
+      }
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation((url) => {
+      if (url.endsWith('/translations/preview')) {
+        return Promise.resolve({
+          library_key: 'race_lib', total_revisions: 1, matched_revisions: 1,
+          unmatched_map_entries: 0, would_update: 1, unchanged: 0,
+          would_be_ready: 1, would_remain_pending: 0,
+          attestation_token: 'map-token-a', expires_at: 9999999999,
+        })
+      }
+      if (url.endsWith('/translations/apply')) return applyPromise
+      return Promise.resolve({})
+    })
+
+    await renderComponent()
+    const input = container.querySelector('input[placeholder*="translations.json"]')
+    await act(async () => { typeInputValue(input, 'A.json') })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Translations').click()
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Confirm & Apply Translations').click()
+    })
+
+    expect(input.disabled).toBe(false)
+    await act(async () => { typeInputValue(input, 'B.json') })
+    expect(input.value).toBe('B.json')
+    const previewButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Translations')
+    expect(previewButton.disabled).toBe(true)
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent.includes('Confirm & Apply Translations'))).toBe(false)
+
+    await act(async () => {
+      resolveApply({ updated: 1, ready: 1, pending: 0 })
+      await Promise.resolve()
+    })
+
+    expect(libraryGets).toBeGreaterThan(1)
+    expect(container.textContent).toContain('Ready')
+    expect(input.disabled).toBe(false)
+    expect(input.value).toBe('B.json')
+    expect(Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Preview Translations').disabled).toBe(false)
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent.includes('Confirm & Apply Translations'))).toBe(false)
+  })
+
+  it('3.4 repair 2: commit waits for authoritative refresh after its own refresh is superseded', async () => {
+    const digest = 'b'.repeat(64)
+    const openView = makeOpenViewWithPreview('sel-superseded', 'refresh_lib', 'room-1', digest)
+    const committedView = makeCommittedView(openView, 'refresh_lib', 'room-1', digest)
+    const initial = [{ id: 1, library_key: 'initial_lib', display_name: 'Initial Inventory', kind: 'rooms', revisions: [], auxiliary: [] }]
+    const oldData = [{ id: 2, library_key: 'old_lib', display_name: 'Stale Inventory A', kind: 'rooms', revisions: [], auxiliary: [] }]
+    const newData = [{ id: 3, library_key: 'new_lib', display_name: 'Current Inventory B', kind: 'rooms', revisions: [], auxiliary: [] }]
+    let resolveA
+    let resolveB
+    const refreshA = new Promise((resolve) => { resolveA = resolve })
+    const refreshB = new Promise((resolve) => { resolveB = resolve })
+    let libraryGets = 0
+    vi.spyOn(api, 'get').mockImplementation((url) => {
+      if (url === '/api/resources/libraries') {
+        libraryGets++
+        if (libraryGets === 1) return Promise.resolve(initial)
+        if (libraryGets === 2) return refreshA
+        return refreshB
+      }
+      return Promise.resolve([])
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url === '/api/resources/import-selections') return openView
+      if (url.endsWith('/commit')) return committedView
+      return {}
+    })
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValue(openView)
+
+    await renderComponent()
+    await switchToImportTab()
+    await selectFiles([new File(['1'], 'f1.json', { type: 'application/json' })])
+    await clickUpload()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Commit Import')).click()
+    })
+    const viewReadiness = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'View readiness in Inventory')
+    await act(async () => { viewReadiness.click() })
+
+    await act(async () => { resolveA(oldData); await Promise.resolve() })
+    expect(container.textContent).not.toContain('Local resource inventory updated')
+    expect(container.textContent).not.toContain('Stale Inventory A')
+
+    await act(async () => { resolveB(newData); await Promise.resolve() })
+    expect(container.textContent).toContain('Current Inventory B')
+    expect(container.textContent).toContain('Local resource inventory updated')
+  })
+
+  it('3.4 repair 2: superseding current refresh failure reports committed but refresh failed', async () => {
+    const digest = 'c'.repeat(64)
+    const openView = makeOpenViewWithPreview('sel-superseded-fail', 'refresh_lib', 'room-1', digest)
+    const committedView = makeCommittedView(openView, 'refresh_lib', 'room-1', digest)
+    let resolveA
+    let rejectB
+    const refreshA = new Promise((resolve) => { resolveA = resolve })
+    const refreshB = new Promise((resolve, reject) => { rejectB = reject })
+    let libraryGets = 0
+    vi.spyOn(api, 'get').mockImplementation((url) => {
+      if (url === '/api/resources/libraries') {
+        libraryGets++
+        if (libraryGets === 1) return Promise.resolve([])
+        if (libraryGets === 2) return refreshA
+        return refreshB
+      }
+      return Promise.resolve([])
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url === '/api/resources/import-selections') return openView
+      if (url.endsWith('/commit')) return committedView
+      return {}
+    })
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValue(openView)
+
+    await renderComponent()
+    await switchToImportTab()
+    await selectFiles([new File(['1'], 'f1.json', { type: 'application/json' })])
+    await clickUpload()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Commit Import')).click()
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'View readiness in Inventory').click()
+    })
+    await act(async () => { resolveA([]); await Promise.resolve() })
+    expect(container.textContent).not.toContain('Local resource inventory updated')
+
+    await act(async () => { rejectB(new Error('Current refresh failed')); await Promise.resolve() })
+    expect(container.textContent).toContain('Import committed, but failed to refresh inventory: Current refresh failed')
+    expect(container.textContent).not.toContain('Local resource inventory updated')
+  })
+
+  it('3.4 repair 2: polling committed also waits for a superseding authoritative refresh', async () => {
+    const digest = 'd'.repeat(64)
+    const openView = makeOpenViewWithPreview('sel-poll-superseded', 'poll_refresh_lib', 'room-1', digest)
+    const committingView = { ...openView, selection_revision: 3, state: 'committing' }
+    const committedView = makeCommittedView(openView, 'poll_refresh_lib', 'room-1', digest)
+    const currentData = [{ id: 4, library_key: 'poll_current', display_name: 'Polling Current Inventory', kind: 'rooms', revisions: [], auxiliary: [] }]
+    let resolveA
+    let resolveB
+    const refreshA = new Promise((resolve) => { resolveA = resolve })
+    const refreshB = new Promise((resolve) => { resolveB = resolve })
+    let libraryGets = 0
+    vi.spyOn(api, 'get').mockImplementation((url) => {
+      if (url === '/api/resources/libraries') {
+        libraryGets++
+        if (libraryGets === 1) return Promise.resolve([])
+        if (libraryGets === 2) return refreshA
+        return refreshB
+      }
+      if (url.includes('/import-selections/sel-poll-superseded')) return Promise.resolve(committedView)
+      return Promise.resolve([])
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url === '/api/resources/import-selections') return openView
+      if (url.endsWith('/commit')) return committingView
+      return {}
+    })
+    vi.spyOn(api, 'uploadMultipart').mockResolvedValue(openView)
+
+    vi.useFakeTimers()
+    try {
+      await renderComponent()
+      await switchToImportTab()
+      await selectFiles([new File(['1'], 'f1.json', { type: 'application/json' })])
+      await clickUpload()
+      await act(async () => {
+        Array.from(container.querySelectorAll('button')).find((b) => b.textContent.includes('Commit Import')).click()
+      })
+      expect(container.textContent).toContain('Commit is actively processing')
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
+      await act(async () => {
+        Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'View readiness in Inventory').click()
+      })
+      await act(async () => { resolveA([]); await Promise.resolve() })
+      expect(container.textContent).not.toContain('Local resource inventory updated')
+
+      await act(async () => { resolveB(currentData); await Promise.resolve() })
+      expect(container.textContent).toContain('Polling Current Inventory')
+      expect(container.textContent).toContain('Local resource inventory updated')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

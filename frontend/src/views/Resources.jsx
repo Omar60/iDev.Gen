@@ -6,6 +6,7 @@ import {
   extractCategories,
   filterLibraries,
   checkReadiness,
+  extractImportedIdentities,
   buildSessionDraftPayload,
   parsePreviewSummary,
   selectAvailableModelId,
@@ -27,6 +28,7 @@ export default function Resources({ requestedModelId = '' }) {
   const [selectedModelId, setSelectedModelId] = useState('')
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('all')
+  const [importedIdentities, setImportedIdentities] = useState(() => new Set())
 
   // Detailed revision inspection state: key = `${library_key}:${source_id}:${content_digest}`
   const [expandedDetails, setExpandedDetails] = useState({})
@@ -58,6 +60,10 @@ export default function Resources({ requestedModelId = '' }) {
   // Translation mapping state per library key
   const [translationState, setTranslationState] = useState({})
   const manualGenerationRef = useRef({})
+  const libraryEpochRef = useRef(0)
+  const libraryRefreshPromiseRef = useRef(null)
+  const translationStateRef = useRef(translationState)
+  translationStateRef.current = translationState
 
   const updateTState = (libraryKey, patch) => {
     setTranslationState((prev) => ({
@@ -143,6 +149,7 @@ export default function Resources({ requestedModelId = '' }) {
           manualPreview: null,
           manualSnapshot: '',
           manualError: '',
+          preProposalRows: null,
         },
       }
     })
@@ -256,7 +263,6 @@ export default function Resources({ requestedModelId = '' }) {
       })
       return
     }
-    const generation = manualGenerationRef.current[libraryKey] || 0
     updateTState(libraryKey, { manualBusy: true, manualError: '', manualNotice: '' })
     try {
       const result = await api.post(
@@ -266,51 +272,85 @@ export default function Resources({ requestedModelId = '' }) {
           attestation_token: state.manualPreview.attestationToken,
         }
       )
-      if (manualGenerationRef.current[libraryKey] !== generation) return
       clearManualPreview(libraryKey, {
+        preProposalRows: null,
         manualNotice: `Translations applied: ${result.updated} updated, ${result.ready} ready, ${result.pending} pending.`,
       })
-      reloadLibraries()
-      handleLoadTranslationRows(libraryKey)
+      try {
+        await awaitCurrentLibraryRefresh(reloadLibraries({ reportError: false }))
+      } catch (refreshErr) {
+        clearManualPreview(libraryKey, {
+          preProposalRows: null,
+          manualError: `Translations applied, but failed to refresh readiness: ${refreshErr.message}`,
+        })
+        return
+      }
+      await handleLoadTranslationRows(libraryKey)
     } catch (e) {
-      if (manualGenerationRef.current[libraryKey] === generation) {
-        clearManualPreview(libraryKey, { manualError: e.message })
-      }
+      clearManualPreview(libraryKey, { manualError: e.message })
     } finally {
-      if (manualGenerationRef.current[libraryKey] === generation) {
-        updateTState(libraryKey, { manualBusy: false })
-      }
+      updateTState(libraryKey, { manualBusy: false })
     }
+  }
+
+  const handleMapPathChange = (libraryKey, newPath) => {
+    nextManualGeneration(libraryKey)
+    const mapOperation = translationStateRef.current[libraryKey]?.mapOperation || null
+    updateTState(libraryKey, {
+      mapPath: newPath,
+      preview: null,
+      error: '',
+      notice: '',
+      mapOperation: mapOperation === 'preview' ? null : mapOperation,
+    })
   }
 
   const handlePreviewTranslations = async (libraryKey) => {
     const tState = translationState[libraryKey] || {}
     const mapPath = (tState.mapPath || '').trim()
-    if (!mapPath) return
+    if (!mapPath || tState.mapOperation) return
 
-    updateTState(libraryKey, { busy: true, error: '', notice: '', preview: null })
+    const generation = nextManualGeneration(libraryKey)
+    const pathSnapshot = mapPath
+    updateTState(libraryKey, {
+      mapOperation: 'preview',
+      error: '',
+      notice: '',
+      preview: null,
+    })
     try {
       const res = await api.post(`/api/resources/libraries/${encodeURIComponent(libraryKey)}/translations/preview`, {
         map_path: mapPath,
       })
+      const current = translationStateRef.current[libraryKey] || {}
+      if (
+        manualGenerationRef.current[libraryKey] !== generation
+        || (current.mapPath || '').trim() !== pathSnapshot
+      ) {
+        return
+      }
       const parsed = parseTranslationPreview(res)
       updateTState(libraryKey, {
         preview: parsed,
         notice: `Preview ready: ${parsed.matchedRevisions} of ${parsed.totalRevisions} revisions matched.`,
       })
     } catch (e) {
-      updateTState(libraryKey, { error: e.message })
+      if (manualGenerationRef.current[libraryKey] === generation) {
+        updateTState(libraryKey, { error: e.message, preview: null })
+      }
     } finally {
-      updateTState(libraryKey, { busy: false })
+      if (manualGenerationRef.current[libraryKey] === generation) {
+        updateTState(libraryKey, { mapOperation: null })
+      }
     }
   }
 
   const handleApplyTranslations = async (libraryKey) => {
     const tState = translationState[libraryKey] || {}
     const mapPath = (tState.mapPath || '').trim()
-    if (!mapPath || !tState.preview?.attestationToken) return
+    if (!mapPath || !tState.preview?.attestationToken || tState.mapOperation) return
 
-    updateTState(libraryKey, { busy: true, error: '', notice: '' })
+    updateTState(libraryKey, { mapOperation: 'apply', error: '', notice: '' })
     try {
       const res = await api.post(`/api/resources/libraries/${encodeURIComponent(libraryKey)}/translations/apply`, {
         map_path: mapPath,
@@ -320,7 +360,14 @@ export default function Resources({ requestedModelId = '' }) {
         preview: null,
         notice: `Translations applied: ${res.updated} updated, ${res.ready} ready, ${res.pending} pending.`,
       })
-      reloadLibraries()
+      try {
+        await awaitCurrentLibraryRefresh(reloadLibraries({ reportError: false }))
+      } catch (refreshErr) {
+        updateTState(libraryKey, {
+          preview: null,
+          error: `Translations applied, but failed to refresh readiness: ${refreshErr.message}`,
+        })
+      }
     } catch (e) {
       let msg = e.message
       if (msg && (msg.includes('409') || msg.includes('drift') || msg.includes('changed since preview'))) {
@@ -328,11 +375,24 @@ export default function Resources({ requestedModelId = '' }) {
       }
       updateTState(libraryKey, { preview: null, error: msg })
     } finally {
-      updateTState(libraryKey, { busy: false })
+      updateTState(libraryKey, { mapOperation: null })
     }
   }
 
-  const reloadLibraries = () => {
+  const awaitCurrentLibraryRefresh = async (initialPromise) => {
+    let refreshPromise = initialPromise
+    let result = await refreshPromise
+    while (result.status === 'superseded') {
+      const currentPromise = libraryRefreshPromiseRef.current
+      if (!currentPromise || currentPromise === refreshPromise) return result
+      refreshPromise = currentPromise
+      result = await refreshPromise
+    }
+    return result
+  }
+
+  const reloadLibraries = ({ reportError = true } = {}) => {
+    const currentEpoch = ++libraryEpochRef.current
     for (const key of Object.keys(manualGenerationRef.current)) {
       nextManualGeneration(key)
     }
@@ -343,11 +403,34 @@ export default function Resources({ requestedModelId = '' }) {
         proposalBusy: false,
         manualPreview: null,
         manualSnapshot: '',
+        preview: null,
+        mapOperation: state.mapOperation === 'apply' ? 'apply' : null,
+        preProposalRows: null,
       }])
     ))
-    api.get('/api/resources/libraries')
-      .then((data) => setLibraries(data || []))
-      .catch((e) => setError(e.message))
+    const refreshPromise = api.get('/api/resources/libraries')
+      .then((data) => {
+        if (libraryEpochRef.current !== currentEpoch) return { status: 'superseded' }
+        setLibraries(data || [])
+        return { status: 'applied', libraries: data || [] }
+      })
+      .catch((e) => {
+        if (libraryEpochRef.current !== currentEpoch) return { status: 'superseded' }
+        if (reportError && libraryEpochRef.current === currentEpoch) {
+          setError(e.message)
+        }
+        throw e
+      })
+    libraryRefreshPromiseRef.current = refreshPromise
+    return refreshPromise
+  }
+
+  const handleTranslateRevision = (libraryKey) => {
+    handleLoadTranslationRows(libraryKey)
+    const el = document.getElementById(`translation-mapping-${libraryKey}`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth' })
+    }
   }
 
   const reloadModels = () => {
@@ -469,8 +552,22 @@ export default function Resources({ requestedModelId = '' }) {
           if (pollEpoch !== epochRef.current) return
           const applied = applySelectionView(view, pollEpoch, pollGen)
           if (applied?.state === 'committed') {
-            setNotice('Import committed successfully. Local resource inventory updated.')
-            reloadLibraries()
+            setNotice('')
+            const report = applied.commit_result?.report || applied.commit_result
+            if (report) {
+              setImportedIdentities(extractImportedIdentities(report))
+            }
+            try {
+              await awaitCurrentLibraryRefresh(reloadLibraries())
+              if (pollEpoch === epochRef.current) {
+                setNotice('Import committed successfully. Local resource inventory updated.')
+              }
+            } catch (refreshErr) {
+              if (pollEpoch === epochRef.current) {
+                setNotice('')
+                setError(`Import committed, but failed to refresh inventory: ${refreshErr.message}`)
+              }
+            }
           }
         } catch {
           // ignore transient poll failures
@@ -659,8 +756,22 @@ export default function Resources({ requestedModelId = '' }) {
       if (applied?.state === 'committing') {
         setNotice('Commit is actively processing in the background.')
       } else if (applied?.state === 'committed') {
-        setNotice('Import committed successfully. Local resource inventory updated.')
-        reloadLibraries()
+        setNotice('')
+        const report = applied.commit_result?.report || applied.commit_result
+        if (report) {
+          setImportedIdentities(extractImportedIdentities(report))
+        }
+        try {
+          await awaitCurrentLibraryRefresh(reloadLibraries())
+          if (commitEpoch === epochRef.current) {
+            setNotice('Import committed successfully. Local resource inventory updated.')
+          }
+        } catch (refreshErr) {
+          if (commitEpoch === epochRef.current) {
+            setNotice('')
+            setError(`Import committed, but failed to refresh inventory: ${refreshErr.message}`)
+          }
+        }
       } else if (applied) {
         setError(`Unexpected selection state: ${applied.state}`)
       }
@@ -780,10 +891,17 @@ export default function Resources({ requestedModelId = '' }) {
     try {
       const res = await api.post('/api/resources/import/commit', { preview: legacyRawPreview })
       setLegacyCommitReport(res.report)
+      if (res.report) {
+        setImportedIdentities(extractImportedIdentities(res.report))
+      }
       setLegacyRawPreview(null)
       setLegacyPreviewReport(null)
-      setNotice('Legacy import committed successfully.')
-      reloadLibraries()
+      try {
+        await awaitCurrentLibraryRefresh(reloadLibraries())
+        setNotice('Legacy import committed successfully. Local resource inventory updated.')
+      } catch (refreshErr) {
+        setError(`Legacy import committed, but failed to refresh inventory: ${refreshErr.message}`)
+      }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -907,7 +1025,11 @@ export default function Resources({ requestedModelId = '' }) {
                     </thead>
                     <tbody>
                       {lib.revisions.map((rev) => {
-                        const readiness = checkReadiness(rev)
+                        const readiness = checkReadiness(rev, {
+                          hasModelSelected: Boolean(selectedModelId),
+                          libraryKey: lib.library_key,
+                          importedIdentities,
+                        })
                         const detailKey = `${lib.library_key}:${rev.source_id}:${rev.content_digest}`
                         const isExpanded = !!expandedDetails[detailKey]
                         const detail = expandedDetails[detailKey]
@@ -927,9 +1049,14 @@ export default function Resources({ requestedModelId = '' }) {
                                 {rev.content_digest.slice(0, 12)}…
                               </td>
                               <td>
-                                <span className={`badge ${readiness.status}`}>
-                                  {readiness.status}
-                                </span>
+                                <div className="row" style={{ alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                  {readiness.isImported && (
+                                    <span className="badge chip" style={{ fontWeight: 600 }}>Imported</span>
+                                  )}
+                                  <span className={`badge ${readiness.readiness === 'ready' ? 'ready' : readiness.readiness === 'needs_source_correction' ? 'bad' : 'pending'}`}>
+                                    {readiness.label}
+                                  </span>
+                                </div>
                                 {!readiness.isReady && (
                                   <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
                                     {readiness.reasons[0]}
@@ -940,28 +1067,68 @@ export default function Resources({ requestedModelId = '' }) {
                                 {rev.created_at ? rev.created_at.slice(0, 16).replace('T', ' ') : '—'}
                               </td>
                               <td style={{ textAlign: 'right' }}>
-                                <div className="row" style={{ justifyContent: 'flex-end' }}>
-                                  <button
-                                    className="icon"
-                                    onClick={() => toggleDetail(lib.library_key, rev)}
-                                    title="Inspect field roles and coverage"
-                                  >
-                                    {detailLoading[detailKey] ? '…' : isExpanded ? 'Hide' : 'Inspect'}
-                                  </button>
-                                  <button
-                                    className="primary"
-                                    disabled={busy || !readiness.isReady || !selectedModelId}
-                                    title={
-                                      !readiness.isReady
-                                        ? `Cannot start session: revision is not ready (${readiness.reasons.join('; ')})`
-                                        : !selectedModelId
-                                        ? 'Select a model to start a session'
-                                        : 'Start a resource-v1 session draft with this exact revision'
-                                    }
-                                    onClick={() => startSessionWithRevision(lib.library_key, rev)}
-                                  >
-                                    Start session
-                                  </button>
+                                <div className="row" style={{ justifyContent: 'flex-end', gap: 6 }}>
+                                  {readiness.readiness === 'ready' && (
+                                    <>
+                                      <button
+                                        className="icon"
+                                        onClick={() => toggleDetail(lib.library_key, rev)}
+                                        title="Inspect field roles and coverage"
+                                      >
+                                        {detailLoading[detailKey] ? '…' : isExpanded ? 'Hide' : 'Inspect'}
+                                      </button>
+                                      <button
+                                        className="primary"
+                                        disabled={busy || !selectedModelId}
+                                        title={
+                                          !selectedModelId
+                                            ? 'Select a model to create a session'
+                                            : 'Create a resource-v1 session draft with this exact revision'
+                                        }
+                                        onClick={() => startSessionWithRevision(lib.library_key, rev)}
+                                      >
+                                        Create session
+                                      </button>
+                                    </>
+                                  )}
+
+                                  {readiness.readiness === 'needs_translation' && (
+                                    <>
+                                      <button
+                                        className="icon"
+                                        onClick={() => toggleDetail(lib.library_key, rev)}
+                                        title="Inspect field roles and coverage"
+                                      >
+                                        {detailLoading[detailKey] ? '…' : isExpanded ? 'Hide' : 'Inspect'}
+                                      </button>
+                                      <button
+                                        className="primary"
+                                        onClick={() => handleTranslateRevision(lib.library_key)}
+                                        title="Load and edit translations for this library"
+                                      >
+                                        Translate
+                                      </button>
+                                    </>
+                                  )}
+
+                                  {readiness.readiness === 'needs_source_correction' && (
+                                    <>
+                                      <button
+                                        className="icon"
+                                        onClick={() => setTab('import')}
+                                        title="Switch to Import to provide corrected source files"
+                                      >
+                                        Re-import
+                                      </button>
+                                      <button
+                                        className="primary"
+                                        onClick={() => toggleDetail(lib.library_key, rev)}
+                                        title="Inspect source errors and diagnostic fields"
+                                      >
+                                        {detailLoading[detailKey] ? '…' : isExpanded ? 'Hide' : 'Inspect source'}
+                                      </button>
+                                    </>
+                                  )}
                                 </div>
                               </td>
                             </tr>
@@ -989,6 +1156,47 @@ export default function Resources({ requestedModelId = '' }) {
                                       }}
                                     >
                                       <b>Translation Sidecar Error:</b> {detail.readiness.coverage.sidecar_error}
+                                    </div>
+                                  )}
+
+                                  {detail.readiness?.diagnostics && detail.readiness.diagnostics.length > 0 && (
+                                    <div
+                                      className="alert error"
+                                      style={{
+                                        margin: '0 0 12px',
+                                        padding: '8px 12px',
+                                        background: 'rgba(239, 68, 68, 0.12)',
+                                        border: '1px solid var(--bad)',
+                                        borderRadius: 4,
+                                        color: 'var(--bad)',
+                                        fontSize: 12,
+                                      }}
+                                    >
+                                      <b>Source Diagnostics:</b>
+                                      <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+                                        {detail.readiness.diagnostics.map((d, i) => (
+                                          <li key={i}>
+                                            {d.field ? <code>{d.field}</code> : null} {d.code}: {d.message}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+
+                                  {detail.readiness?.coverage?.unmapped_fields && detail.readiness.coverage.unmapped_fields.length > 0 && (
+                                    <div
+                                      className="alert error"
+                                      style={{
+                                        margin: '0 0 12px',
+                                        padding: '8px 12px',
+                                        background: 'rgba(239, 68, 68, 0.12)',
+                                        border: '1px solid var(--bad)',
+                                        borderRadius: 4,
+                                        color: 'var(--bad)',
+                                        fontSize: 12,
+                                      }}
+                                    >
+                                      <b>Unmapped Source Fields:</b> {detail.readiness.coverage.unmapped_fields.join(', ')}
                                     </div>
                                   )}
 
@@ -1090,7 +1298,7 @@ export default function Resources({ requestedModelId = '' }) {
                 )}
 
                 {/* Translation Mapping section */}
-                <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                <div id={`translation-mapping-${lib.library_key}`} style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
                   <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                     <h4 style={{ margin: 0 }}>Translation Mapping</h4>
                     <div className="row">
@@ -1273,17 +1481,16 @@ export default function Resources({ requestedModelId = '' }) {
                             <label style={{ fontSize: 12 }}>Translation Map Path (beside source material or absolute JSON path)</label>
                             <input
                               value={tState.mapPath || ''}
-                              onChange={(e) => updateTState(lib.library_key, { mapPath: e.target.value })}
+                              onChange={(e) => handleMapPathChange(lib.library_key, e.target.value)}
                               placeholder="e.g. /path/to/translations.json or relative/path.json"
-                              disabled={tState.busy}
                             />
                           </div>
                           <button
                             onClick={() => handlePreviewTranslations(lib.library_key)}
-                            disabled={tState.busy || !(tState.mapPath || '').trim()}
+                            disabled={Boolean(tState.mapOperation) || !(tState.mapPath || '').trim()}
                             title="Preview matching without writing database state"
                           >
-                            {tState.busy ? 'Working…' : 'Preview Translations'}
+                            {tState.mapOperation === 'preview' ? 'Working…' : 'Preview Translations'}
                           </button>
                         </div>
 
@@ -1308,10 +1515,10 @@ export default function Resources({ requestedModelId = '' }) {
                               <button
                                 className="primary"
                                 onClick={() => handleApplyTranslations(lib.library_key)}
-                                disabled={tState.busy}
+                                disabled={Boolean(tState.mapOperation)}
                                 title="Atomically apply translations to library sidecars"
                               >
-                                {tState.busy ? 'Applying…' : 'Confirm & Apply Translations'}
+                                {tState.mapOperation === 'apply' ? 'Applying…' : 'Confirm & Apply Translations'}
                               </button>
                             </div>
                           </div>
@@ -1794,6 +2001,19 @@ export default function Resources({ requestedModelId = '' }) {
               <p className="muted" style={{ margin: 0 }}>
                 Resources have been persisted into local SQLite storage. You can now browse them under the Inventory tab.
               </p>
+              <div className="row" style={{ marginTop: 12 }}>
+                <button
+                  className="primary"
+                  onClick={async () => {
+                    try {
+                      await awaitCurrentLibraryRefresh(reloadLibraries())
+                    } catch {}
+                    setTab('inventory')
+                  }}
+                >
+                  View readiness in Inventory
+                </button>
+              </div>
             </div>
           )}
 

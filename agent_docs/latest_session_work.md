@@ -25,8 +25,8 @@ errors invalidate preview/token authorization, and late responses cannot
 reactivate stale authorization.
 
 Task 3.1's selected-map flow and `map_path`/direct-map compatibility remain
-intact. Task 3.3 is now formally closed. The next pending task is 3.4 and must
-not be started automatically.
+intact. Task 3.3 is now formally closed, and Task 3.4 is now formally closed
+as well. Task 3.5 remains pending and must not be started automatically.
 
 Task 3.3 adds optional proposals through
 `POST /api/resources/libraries/{library_key}/translations/proposals`, capped at
@@ -48,13 +48,31 @@ revision shortcut. Suggest responses are fenced across edits, row reloads,
 global/cross-library reloads, and a second Suggest; global reload clears
 `proposalBusy`. The existing feature flag returns 503 before body/schema/source
 or provider processing when disabled, without calling `run_structured`.
-Tasks 3.1 and 3.2 remain compatible; Tasks 3.4 and 3.5 were not implemented.
+Tasks 3.1 and 3.2 remain compatible.
+
+Task 3.4 is now formally closed. The Resource Browser distinguishes the
+authoritative Imported outcome from Needs translation, Ready, and Needs source
+correction. Direct actions are Create session, Translate, and Inspect
+source/Re-import. Readiness refreshes after manual/map Apply and after import;
+superseded proposal, manual-preview, and map-preview responses cannot restore
+stale state. Safe readiness projections omit raw payloads and arbitrary
+coverage/translation markers, while invalid persisted sidecars remain pending
+and inspectable. Imported identity comes only from
+`commit_result.files[].accepted` and uses the complete collision-free
+`(library_key, source_id, content_digest)` identity.
+
+The translation-map path remains editable during both Preview and Apply.
+`mapOperation` fences Preview versus Apply, allows a real A-to-B edit and a
+new Preview while A is pending, ignores late A, preserves B authorization, and
+keeps Apply in flight while edits block incompatible actions. Successful Apply
+still performs the authoritative readiness refresh. Task 3.5 remains pending.
 
 ## Verification
 
-- Reproducible backend collection: 2,114 tests.
-- Complete backend suite: 2,114 passed.
-- Complete frontend suite: 373 passed.
+- Focused frontend Resources suite: 76 passed.
+- Combined resource frontend suites: 184 passed.
+- Complete frontend suite: 416 passed.
+- Focused `tests/test_resource_service.py`: 79 passed.
 - Frontend build: successful.
 - Privacy checks: 10 passed.
 - Shoot checks: 36 passed.
@@ -63,12 +81,10 @@ Tasks 3.1 and 3.2 remain compatible; Tasks 3.4 and 3.5 were not implemented.
 
 ## Closure Scope
 
-- `backend/main.py`
 - `backend/resource_service.py`
 - `frontend/src/resources.js`
 - `frontend/src/views/Resources.jsx`
 - `tests/test_resource_service.py`
-- `tests/test_resource_translation.py`
 - `frontend/src/resources.test.js`
 - `frontend/src/views/Resources.test.jsx`
 - `openspec/changes/simplify-resource-session-workflow/tasks.md`
@@ -77,5 +93,5 @@ Tasks 3.1 and 3.2 remain compatible; Tasks 3.4 and 3.5 were not implemented.
 - `agent_docs/latest_session_work.md`
 
 `backend/enhance.py`, `backend/resource_translation.py`,
-`backend/request_limits.py`, external handoffs, and Task 3.4+ files are
+`backend/request_limits.py`, external handoffs, and Task 3.5+ files are
 outside this closure scope. No push is authorized.

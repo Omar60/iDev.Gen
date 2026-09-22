@@ -80,20 +80,124 @@ export function filterLibraries(libraries = [], { query = '', category = '' } = 
     .filter(Boolean)
 }
 
-/** Check whether a revision is ready for session draft initialization. */
-export function checkReadiness(revision) {
-  const status = revision?.readiness?.status || revision?.status || 'pending'
-  const isReady = status === 'ready'
-  const reasons = []
+const resourceIdentityKey = (libraryKey, sourceId, contentDigest) => (
+  JSON.stringify([libraryKey, sourceId, contentDigest])
+)
 
-  if (!isReady) {
-    const sidecarError = revision?.readiness?.coverage?.sidecar_error || revision?.coverage?.sidecar_error
+/** Extract exact revision identities from canonical commit files[].accepted outcomes. */
+export function extractImportedIdentities(commitResultOrReport) {
+  const result = new Set()
+  if (!commitResultOrReport || typeof commitResultOrReport !== 'object') return result
+
+  const report = commitResultOrReport.report || commitResultOrReport
+  if (!report || typeof report !== 'object') return result
+
+  if (Array.isArray(report.files)) {
+    for (const file of report.files) {
+      const acceptedList = Array.isArray(file?.accepted) ? file.accepted : []
+      for (const item of acceptedList) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+        const { library_key: libraryKey, source_id: sourceId, new_content_digest: contentDigest } = item
+        if (
+          typeof libraryKey === 'string' && libraryKey.trim().length > 0
+          && typeof sourceId === 'string' && sourceId.trim().length > 0
+          && typeof contentDigest === 'string' && contentDigest.trim().length > 0
+        ) {
+          result.add(resourceIdentityKey(libraryKey, sourceId, contentDigest))
+        }
+      }
+    }
+  }
+
+  return result
+}
+
+/** Classify the presentation state, diagnostic reasons, and direct actions for a revision. */
+export function classifyResourceReadiness(revision, options = {}) {
+  const readinessObj = revision?.readiness || {}
+  const rawStatus = readinessObj.status || revision?.status || 'pending'
+  const diagnostics = Array.isArray(readinessObj.diagnostics)
+    ? readinessObj.diagnostics
+    : []
+  const coverage = readinessObj.coverage || revision?.coverage || {}
+  const unmappedFields = Array.isArray(coverage.unmapped_fields)
+    ? coverage.unmapped_fields
+    : []
+
+  let isImported = false
+  if (options.isImported != null) {
+    isImported = Boolean(options.isImported)
+  } else if (options.importedIdentities) {
+    const libKey = revision?.library_key || options.libraryKey || ''
+    const sourceId = revision?.source_id || ''
+    const digest = revision?.content_digest || ''
+    const identityKey = resourceIdentityKey(libKey, sourceId, digest)
+    if (options.importedIdentities instanceof Set) {
+      isImported = options.importedIdentities.has(identityKey)
+    } else if (Array.isArray(options.importedIdentities)) {
+      isImported = options.importedIdentities.includes(identityKey)
+    }
+  } else if (options.outcome === 'imported') {
+    isImported = true
+  }
+  const outcome = isImported ? 'imported' : null
+
+  // 1. Identify source correction evidence
+  const invalidSourceShapeDiags = diagnostics.filter(
+    (d) => d?.code === 'invalid_source_shape'
+  )
+  const hasSourceCorrection = invalidSourceShapeDiags.length > 0 || unmappedFields.length > 0
+
+  let readiness = 'pending'
+  let label = 'Needs translation'
+  let isReady = false
+  let canCreate = false
+  const reasons = []
+  const blockedFieldsSet = new Set()
+
+  if (hasSourceCorrection) {
+    readiness = 'needs_source_correction'
+    label = 'Needs source correction'
+    isReady = false
+    canCreate = false
+
+    for (const diag of invalidSourceShapeDiags) {
+      if (diag.field) blockedFieldsSet.add(diag.field)
+      if (diag.message) reasons.push(String(diag.message))
+    }
+    for (const unmapped of unmappedFields) {
+      blockedFieldsSet.add(unmapped)
+      reasons.push(`Unmapped source field '${unmapped}' requires source correction`)
+    }
+    if (reasons.length === 0) {
+      reasons.push('Resource source has structural errors or unmapped fields that require source correction')
+    }
+  } else if (rawStatus === 'ready') {
+    readiness = 'ready'
+    label = 'Ready'
+    isReady = true
+    canCreate = true
+  } else {
+    readiness = 'needs_translation'
+    label = 'Needs translation'
+    isReady = false
+    canCreate = false
+
+    const sidecarError = coverage.sidecar_error
     if (sidecarError) {
       reasons.push(String(sidecarError))
     }
+    const sidecarDiags = diagnostics.filter(
+      (d) => d?.code === 'invalid_translation_sidecar'
+    )
+    for (const diag of sidecarDiags) {
+      if (diag.field) blockedFieldsSet.add(diag.field)
+      if (diag.message) reasons.push(String(diag.message))
+    }
 
-    const pendingFields = revision?.readiness?.pending_fields || revision?.pending_fields || {}
+    const pendingFields = readinessObj.pending_fields || revision?.pending_fields || {}
     for (const [field, reason] of Object.entries(pendingFields)) {
+      blockedFieldsSet.add(field)
       if (reason) {
         reasons.push(String(reason))
       } else {
@@ -101,9 +205,11 @@ export function checkReadiness(revision) {
       }
     }
 
-    // Check individual field readiness if pendingFields was empty and no reasons yet
     if (reasons.length === 0) {
-      for (const item of revision?.readiness?.field_readiness || []) {
+      for (const item of readinessObj.field_readiness || []) {
+        if (!item.translated && item.role === 'descriptive_input') {
+          blockedFieldsSet.add(item.name)
+        }
         if (item.reason) reasons.push(String(item.reason))
       }
     }
@@ -113,10 +219,45 @@ export function checkReadiness(revision) {
     }
   }
 
+  const blockedFields = Array.from(blockedFieldsSet)
+
+  let primaryAction = null
+  let secondaryAction = null
+
+  if (readiness === 'ready') {
+    primaryAction = { id: 'create_session', label: 'Create session' }
+    secondaryAction = { id: 'inspect', label: 'Inspect' }
+  } else if (readiness === 'needs_translation') {
+    primaryAction = { id: 'translate', label: 'Translate' }
+    secondaryAction = { id: 'inspect', label: 'Inspect' }
+  } else {
+    primaryAction = { id: 'inspect_source', label: 'Inspect source' }
+    secondaryAction = { id: 'reimport', label: 'Re-import' }
+  }
+
+  const actions = [primaryAction, secondaryAction]
+
   return {
+    outcome,
+    isImported,
+    readiness,
+    label,
     isReady,
-    status,
+    canCreate,
     reasons,
+    blockedFields,
+    primaryAction,
+    secondaryAction,
+    actions,
+  }
+}
+
+/** Check whether a revision is ready for session draft initialization. */
+export function checkReadiness(revision, options = {}) {
+  const classification = classifyResourceReadiness(revision, options)
+  return {
+    ...classification,
+    status: revision?.readiness?.status || revision?.status || 'pending',
   }
 }
 

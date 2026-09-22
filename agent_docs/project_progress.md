@@ -9,7 +9,7 @@ agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 14 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 15 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -83,7 +83,23 @@ then explicit Apply. Manual edits, row reloads, global or cross-library reloads,
 and a second Suggest fence stale responses; global reload clears `proposalBusy`.
 With `resource_planning_enabled=false`, generation returns HTTP 503 before body,
 schema, source, or provider processing and does not call `run_structured`.
-Tasks 3.1 and 3.2 remain compatible; Tasks 3.4 and 3.5 were not implemented.
+Tasks 3.1 and 3.2 remain compatible.
+
+Task 3.4 has now passed independent acceptance and is formally closed. The
+Resource Browser separates the authoritative Imported outcome from Needs
+translation, Ready, and Needs source correction, with direct Create session,
+Translate, and Inspect source/Re-import actions. Readiness refreshes after
+Apply and import. Safe readiness projection omits raw payloads and arbitrary
+coverage/translation markers; invalid persisted sidecars remain pending and
+inspectable. Imported identity is derived only from `commit_result.files[].accepted`
+using the complete `(library_key, source_id, content_digest)` identity.
+
+Proposal, manual-preview, and map-preview responses are fenced against stale
+edits and reloads. The map path stays editable during Preview and Apply;
+`mapOperation` allows an A-to-B edit, a new Preview while A is pending, ignores
+late A, preserves B authorization, and keeps Apply in flight while blocking
+incompatible actions. Successful Apply still requires the authoritative
+readiness refresh. Task 3.5 remains pending and Task 4 was not started.
 
 ## Prior Position
 
@@ -133,16 +149,20 @@ remain intact.
 Task 3.3 is complete and formally closed. The accepted implementation changes
 only the optional proposal workflow and its focused tests; the proposal
 endpoint is write-free and preserves the canonical bulk Preview/Apply
-boundary. Task 3.1 and Task 3.2 compatibility remains intact; no Task 3.4 or
-later work was started.
+boundary. Task 3.1 and Task 3.2 compatibility remains intact; no work beyond
+Task 3.4 was started.
 
 Task 3.2 is complete and formally closed. The accepted implementation changes
 only the manual source-backed translation workflow and its focused tests;
 `backend/resource_translation.py` and `backend/request_limits.py` remain
 unchanged. The canonical bulk path remains the semantic authority, and the
-next task is 3.4.
+Task 3.4 is now also complete; the next task is 3.5.
+
+Task 3.4 closure gates were 416/416 frontend tests, 79 focused resource-service
+tests, 10 privacy tests, 36 shoot tests, a successful frontend build, strict
+OpenSpec validation, and a clean `git diff --check`.
 
 ## Next Milestone
 
-Task 3.4 is the next pending task. Do not begin it automatically; prepare its
+Task 3.5 is the next pending task. Do not begin it automatically; prepare its
 bounded handoff only when explicitly requested.

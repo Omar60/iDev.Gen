@@ -269,4 +269,20 @@
   global reload clears `proposalBusy`. The feature flag reuses
   `is_resource_planning_enabled()` and returns HTTP 503 before body/schema,
   source, or provider processing when disabled; `run_structured` is not called.
-  Tasks 3.1 and 3.2 remain compatible, and Tasks 3.4/3.5 were not started.
+  Tasks 3.1 and 3.2 remain compatible, and Task 3.4 was next.
+- Task 3.4 is formally closed after independent acceptance. The Resource
+  Browser separates Imported from Needs translation, Ready, and Needs source
+  correction, with direct Create session, Translate, and Inspect source/
+  Re-import actions. Apply and import force readiness refresh. Safe readiness
+  projection omits raw payloads and arbitrary coverage/translation markers;
+  invalid persisted sidecars remain pending and inspectable. Imported identity
+  is authoritative only from `commit_result.files[].accepted` and the complete
+  `(library_key, source_id, content_digest)` tuple.
+- Proposal, manual-preview, and map-preview fencing rejects stale responses.
+  `mapPath` remains editable during Preview and Apply; `mapOperation` permits
+  a real A-to-B edit and a new Preview while A is pending, ignores late A,
+  preserves B authorization, keeps Apply in flight, and blocks incompatible
+  actions. Apply success still requires the readiness refresh. The closure was
+  verified with 416 frontend tests, 79 focused resource-service tests, 10
+  privacy tests, 36 shoot tests, a successful build, strict OpenSpec
+  validation, and clean diff checks. Task 3.5 remains pending.
