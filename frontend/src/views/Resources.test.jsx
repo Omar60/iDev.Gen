@@ -335,7 +335,7 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       files: [...viewWithPreview.files, { file_id: 'f2', file_name: 'f2.json', byte_count: 20, declared_library: 'lib2', effective_library_key: 'lib2', matched_auxiliary_kinds: [], effective_auxiliary_kind: null, status: 'staged' }],
     }
 
-    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+    const postSpy = vi.spyOn(api, 'post').mockImplementation(async (url) => {
       if (url === '/api/resources/import-selections') return viewRev1
       if (url.endsWith('/preview')) return viewWithPreview
       return {}
@@ -3686,11 +3686,25 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       return []
     })
 
-    vi.spyOn(api, 'post').mockImplementation(async (url) => {
+    const postSpy = vi.spyOn(api, 'post').mockImplementation(async (url) => {
       if (url.endsWith('/translations/proposals')) {
         const error = new Error('The prompt assistant returned an invalid proposal response.')
         error.status = 502
         throw error
+      }
+      if (url.endsWith('/translations/preview')) {
+        return {
+          library_key: library.library_key,
+          total_revisions: 1,
+          matched_revisions: 1,
+          unmatched_map_entries: 0,
+          would_update: 1,
+          unchanged: 0,
+          would_be_ready: 1,
+          would_remain_pending: 0,
+          attestation_token: 'manual-after-provider-failure-token',
+          expires_at: 9999999999,
+        }
       }
       return {}
     })
@@ -3709,6 +3723,202 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     expect(container.textContent).toContain('invalid proposal response')
     const input = container.querySelector('input[aria-label="Translation for SALLE_A"]')
     expect(input.value).toBe('Pre-existing Translation')
+
+    const suggestAfterFailure = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent.includes('Suggest translations')
+    )
+    expect(suggestAfterFailure.textContent).toBe('Suggest translations')
+    expect(suggestAfterFailure.disabled).toBe(false)
+
+    await act(async () => { setInputValue(input, 'Manual continuation') })
+    const previewAfterFailure = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Preview manual translations'
+    )
+    await act(async () => { previewAfterFailure.click() })
+    expect(postSpy.mock.calls.some(([url]) => url.endsWith('/translations/preview'))).toBe(true)
+    expect(container.textContent).toContain('Manual preview ready')
+
+    const applyAfterPreview = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Confirm & Apply manual translations'
+    )
+    expect(applyAfterPreview).not.toBeNull()
+    expect(applyAfterPreview.disabled).toBe(false)
+    expect(postSpy.mock.calls.some(([url]) => url.endsWith('/translations/apply'))).toBe(false)
+    expect(postSpy.mock.calls.some(([url]) => url.includes('/api/sessions'))).toBe(false)
+    expect(postSpy.mock.calls.some(([url]) => url.includes('/api/resources/import-selections'))).toBe(false)
+  })
+
+  it('3.5 completes manual translation without a map or assistant and keeps actions explicit', async () => {
+    let isReady = false
+    const pendingLib = {
+      id: 1,
+      library_key: 'manual_no_assistant_lib',
+      display_name: 'Manual Offline Library',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'manual_no_assistant_lib',
+        source_id: 'room-offline',
+        content_digest: '4'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Missing translation' } },
+      }],
+      auxiliary: [],
+    }
+    const readyLib = {
+      ...pendingLib,
+      revisions: [{
+        ...pendingLib.revisions[0],
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+    }
+    const rows = {
+      library_key: pendingLib.library_key,
+      kind: 'rooms',
+      diagnostics: [],
+      rows: [{
+        revision: { source_id: 'room-offline', content_digest: '4'.repeat(64) },
+        field: 'label',
+        source_field: 'name',
+        source_value: 'Salon offline',
+        source_shape: 'scalar',
+        list_index: null,
+        current_translation: null,
+        translation: '',
+        required: true,
+        role: 'descriptive_input',
+        identity_required: false,
+        emit_by_default: false,
+      }],
+    }
+    const postCalls = []
+
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [isReady ? readyLib : pendingLib]
+      if (url === '/api/models') return []
+      if (url.endsWith('/translations/rows')) return rows
+      return []
+    })
+    const postSpy = vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      postCalls.push([url, body])
+      if (url.endsWith('/translations/preview')) {
+        return {
+          library_key: pendingLib.library_key,
+          total_revisions: 1,
+          matched_revisions: 1,
+          unmatched_map_entries: 0,
+          would_update: 1,
+          unchanged: 0,
+          would_be_ready: 1,
+          would_remain_pending: 0,
+          attestation_token: 'offline-manual-token',
+          expires_at: 123,
+        }
+      }
+      if (url.endsWith('/translations/apply')) {
+        isReady = true
+        return { updated: 1, ready: 1, pending: 0 }
+      }
+      throw new Error(`Unexpected automatic action: ${url}`)
+    })
+
+    await renderComponent()
+    expect(container.textContent).toContain('Needs translation')
+    const load = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Load editable rows'
+    )
+    await act(async () => { load.click() })
+
+    const input = container.querySelector('input[aria-label="Translation for Salon offline"]')
+    await act(async () => { setInputValue(input, 'Offline Living Room') })
+    expect(postCalls.some(([url]) => url.endsWith('/translations/proposals'))).toBe(false)
+    expect(postCalls.some(([url]) => url.endsWith('/translations/apply'))).toBe(false)
+
+    const preview = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Preview manual translations'
+    )
+    await act(async () => { preview.click() })
+    expect(postSpy).toHaveBeenCalledWith(
+      `/api/resources/libraries/${encodeURIComponent(pendingLib.library_key)}/translations/preview`,
+      {
+        translation_map: {
+          'Salon offline': {
+            source: 'Salon offline',
+            translation: 'Offline Living Room',
+            fields: ['label'],
+          },
+        },
+      }
+    )
+    expect(postCalls.some(([url]) => url.endsWith('/translations/apply'))).toBe(false)
+
+    const apply = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Confirm & Apply manual translations'
+    )
+    await act(async () => { apply.click() })
+
+    expect(container.textContent).toContain('Ready')
+    expect(container.textContent).toContain('Create session')
+    expect(postCalls.some(([url]) => url.endsWith('/translations/proposals'))).toBe(false)
+    expect(postCalls.some(([url]) => /\/api\/resources\/revisions\/.*\/translation$/.test(url))).toBe(false)
+    expect(postCalls.some(([url]) => url.includes('/api/sessions'))).toBe(false)
+  })
+
+  it('3.5 blocks manual preview when duplicate source translations conflict', async () => {
+    const library = {
+      id: 1,
+      library_key: 'manual_duplicate_conflict_lib',
+      display_name: 'Duplicate Conflict Library',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 1,
+        library_key: 'manual_duplicate_conflict_lib',
+        source_id: 'room-duplicate',
+        content_digest: '5'.repeat(64),
+        readiness: { status: 'pending', pending_fields: { label: 'Missing translation' } },
+      }],
+      auxiliary: [],
+    }
+    const rows = {
+      library_key: library.library_key,
+      kind: 'rooms',
+      diagnostics: [],
+      rows: [
+        {
+          revision: { source_id: 'room-duplicate', content_digest: '5'.repeat(64) },
+          field: 'label', source_field: 'name', source_value: 'shared source',
+          source_shape: 'scalar', list_index: null, current_translation: 'Room A',
+          translation: 'Room A', required: true, role: 'descriptive_input',
+          identity_required: false, emit_by_default: true,
+        },
+        {
+          revision: { source_id: 'room-duplicate', content_digest: '5'.repeat(64) },
+          field: 'scene_theme', source_field: 'theme', source_value: 'shared source',
+          source_shape: 'scalar', list_index: null, current_translation: 'Theme A',
+          translation: 'Theme B', required: true, role: 'descriptive_input',
+          identity_required: false, emit_by_default: true,
+        },
+      ],
+    }
+    const postSpy = vi.spyOn(api, 'post')
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return []
+      if (url.endsWith('/translations/rows')) return rows
+      return []
+    })
+
+    await renderComponent()
+    const load = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Load editable rows'
+    )
+    await act(async () => { load.click() })
+
+    expect(container.textContent).toContain('duplicate_source_conflict')
+    const preview = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Preview manual translations'
+    )
+    expect(preview.disabled).toBe(true)
+    expect(postSpy.mock.calls.some(([url]) => url.endsWith('/translations/preview'))).toBe(false)
   })
 
   // =========================================================================

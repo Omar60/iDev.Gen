@@ -21,7 +21,7 @@
 - [x] 3.2 Build direct `translation_map` payloads from editable source-backed rows and route them through canonical bulk attestation, never the direct revision shortcut. Preserve scalar/list contracts, diagnose incompatible duplicate source strings and include explicit identity translations for already-English required strings.
 - [x] 3.3 Use the field-preserving transport for optional proposals of at most twenty source entries per action. Refuse unsolicited/malformed fields, preserve canonical keys/list order and make proposals write-free until reviewed preview and explicit apply.
 - [x] 3.4 Present imported, needs translation, ready and needs source correction with direct actions. Refresh readiness after apply and discard stale proposal/preview responses.
-- [ ] 3.5 Verify no-map/no-assistant manual translation, invalid-source versus missing-translation diagnostics, assistant/provider failures, unauthorized proposals, conflicting duplicates, stale map/library state and bounded real response bodies.
+- [x] 3.5 Verify no-map/no-assistant manual translation, invalid-source versus missing-translation diagnostics, assistant/provider failures, unauthorized proposals, conflicting duplicates, stale map/library state and bounded real response bodies.
 
 ## 4. Closed authoring contract, workflow binding and atomic guided creation
 

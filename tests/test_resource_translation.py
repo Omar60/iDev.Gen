@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import json
+from copy import deepcopy
 from pathlib import Path
 import sqlite3
 import time
@@ -1954,6 +1955,59 @@ class TestSelectedTranslationMapWorkflow:
         assert resp_plus_one.json() == {"detail": "Request entity too large"}
         assert parse_calls == 0
 
+    def test_direct_translation_map_oversized_body_uses_shared_boundary(
+        self, client, monkeypatch,
+    ):
+        """Manual/direct maps are bounded before JSON/Pydantic parsing and writes."""
+        lib_id = resource_store.ensure_library("sel_direct_body_lib", kind="rooms")
+        rev_id = resource_store.record_revision(
+            lib_id,
+            "room-direct-body",
+            {"id": "room-direct-body", "name": "DIRECT_SOURCE", "theme": "DIRECT_THEME"},
+        )
+
+        parse_calls = 0
+        original_normalize = resource_translation.normalize_translation_map_input
+
+        def spy_normalize(data):
+            nonlocal parse_calls
+            parse_calls += 1
+            return original_normalize(data)
+
+        monkeypatch.setattr(resource_translation, "normalize_translation_map_input", spy_normalize)
+
+        before = resource_store.get_revision(revision_id=rev_id)
+        before_count = db.one(
+            "SELECT COUNT(*) AS c FROM asset_revision WHERE library_id = ?", lib_id,
+        )["c"]
+        limit_bytes = 10 * 1024 * 1024
+        direct_map = {
+            "DIRECT_SOURCE": {
+                "source": "DIRECT_SOURCE",
+                "translation": "Direct Source",
+                "fields": ["name"],
+            },
+        }
+        body = json.dumps({
+            "translation_map": direct_map,
+            "padding": "x" * limit_bytes,
+        }).encode("utf-8")
+        assert len(body) > limit_bytes
+
+        response = client.post(
+            "/api/resources/libraries/sel_direct_body_lib/translations/preview",
+            content=body,
+            headers={"content-type": "application/json", "content-length": "64"},
+        )
+
+        assert response.status_code == 413
+        assert response.json() == {"detail": "Request entity too large"}
+        assert parse_calls == 0
+        assert resource_store.get_revision(revision_id=rev_id) == before
+        assert db.one(
+            "SELECT COUNT(*) AS c FROM asset_revision WHERE library_id = ?", lib_id,
+        )["c"] == before_count
+
 
 # ===========================================================================
 # Task 3.3 Integration Tests: Resource Translation Proposals
@@ -2033,12 +2087,14 @@ class TestResourceTranslationProposals:
         import main
         lib_id = resource_store.ensure_library("prop_cardinality_lib", kind="rooms")
         revisions = []
+        revision_ids = []
         for i in range(21):
             rev_id = resource_store.record_revision(
                 lib_id,
                 f"room-card-{i}",
                 {"id": f"room-card-{i}", "name": f"комната-{i}", "theme": f"THEME_{i}"},
             )
+            revision_ids.append(rev_id)
             revisions.append(resource_store.get_revision(revision_id=rev_id))
 
         calls = []
@@ -2060,12 +2116,21 @@ class TestResourceTranslationProposals:
             }
             for rev in revisions[:21]
         ]
+        before_revisions = {
+            revision_id: deepcopy(resource_store.get_revision(revision_id=revision_id))
+            for revision_id in revision_ids
+        }
         resp_21 = client.post(
             "/api/resources/libraries/prop_cardinality_lib/translations/proposals",
             json={"entries": entries_21},
         )
         assert resp_21.status_code == 422
         assert len(calls) == 0
+        after_revisions = {
+            revision_id: resource_store.get_revision(revision_id=revision_id)
+            for revision_id in revision_ids
+        }
+        assert after_revisions == before_revisions
 
         # 2. Exactly 20 entries: accepted, exactly one provider call
         entries_20 = entries_21[:20]
@@ -2109,12 +2174,14 @@ class TestResourceTranslationProposals:
             "source_shape": "scalar",
             "list_index": None,
         }
+        before_rev = deepcopy(resource_store.get_revision(revision_id=rev_id))
         resp = client.post(
             "/api/resources/libraries/prop_dup_lib/translations/proposals",
             json={"entries": [entry, entry]},
         )
         assert resp.status_code == 422
         assert len(calls) == 0
+        assert resource_store.get_revision(revision_id=rev_id) == before_rev
 
     @pytest.mark.parametrize("bad_list_index", ["0", 0.0, True, False])
     def test_proposals_strict_list_index_rejection(self, client, monkeypatch, bad_list_index):
@@ -2133,9 +2200,8 @@ class TestResourceTranslationProposals:
         )
         rev = resource_store.get_revision(revision_id=rev_id)
 
-        before_revisions_count = db.one("SELECT COUNT(*) as c FROM asset_revision")["c"]
-
         # Call with coerced/invalid list_index
+        before_rev = deepcopy(resource_store.get_revision(revision_id=rev_id))
         resp = client.post(
             "/api/resources/libraries/prop_strict_idx_lib/translations/proposals",
             json={
@@ -2152,7 +2218,7 @@ class TestResourceTranslationProposals:
         )
         assert resp.status_code == 422
         assert len(calls) == 0
-        assert db.one("SELECT COUNT(*) as c FROM asset_revision")["c"] == before_revisions_count
+        assert resource_store.get_revision(revision_id=rev_id) == before_rev
 
         # Confirm list_index = 0 is valid
         resp_valid = client.post(
@@ -2171,6 +2237,113 @@ class TestResourceTranslationProposals:
         )
         assert resp_valid.status_code == 200
         assert len(calls) == 1
+
+    def test_proposals_api_rejects_ineligible_and_stale_rows_before_provider(
+        self, client, monkeypatch,
+    ):
+        import main
+
+        lib_id = resource_store.ensure_library("prop_api_gate_lib", kind="rooms")
+        base_id = resource_store.record_revision(
+            lib_id,
+            "room-api-gate",
+            {
+                "id": "room-api-gate",
+                "name": "Invented room label",
+                "theme": "Invented theme value",
+                "tags": ["Invented tag value"],
+                "weight": 1.0,
+            },
+        )
+        translated_id = resource_store.record_revision(
+            lib_id,
+            "room-api-translated",
+            {"id": "room-api-translated", "name": "Pending label", "theme": "Pending theme"},
+            translation={"label": "Existing label"},
+        )
+        base = resource_store.get_revision(revision_id=base_id)
+        translated = resource_store.get_revision(revision_id=translated_id)
+        provider_calls = []
+
+        async def spy_run_structured(config, prompt, image=""):
+            provider_calls.append(prompt)
+            return {"entry-0": "Should not be called"}
+
+        monkeypatch.setattr(main.enhance, "run_structured", spy_run_structured)
+        before_count = db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"]
+        tracked_revision_ids = (base_id, translated_id)
+
+        def revision_snapshot():
+            return {
+                revision_id: deepcopy(resource_store.get_revision(revision_id=revision_id))
+                for revision_id in tracked_revision_ids
+            }
+
+        cases = [
+            (
+                422,
+                {
+                    "source_id": base["source_id"],
+                    "content_digest": base["content_digest"],
+                    "field": "weight",
+                    "source_shape": "scalar",
+                    "list_index": None,
+                },
+            ),
+            (
+                409,
+                {
+                    "source_id": base["source_id"],
+                    "content_digest": "0" * 64,
+                    "field": "label",
+                    "source_shape": "scalar",
+                    "list_index": None,
+                },
+            ),
+            (
+                409,
+                {
+                    "source_id": "missing-row",
+                    "content_digest": base["content_digest"],
+                    "field": "label",
+                    "source_shape": "scalar",
+                    "list_index": None,
+                },
+            ),
+            (
+                409,
+                {
+                    "source_id": base["source_id"],
+                    "content_digest": base["content_digest"],
+                    "field": "tags",
+                    "source_shape": "list",
+                    "list_index": 1,
+                },
+            ),
+            (
+                422,
+                {
+                    "source_id": translated["source_id"],
+                    "content_digest": translated["content_digest"],
+                    "field": "label",
+                    "source_shape": "scalar",
+                    "list_index": None,
+                },
+            ),
+        ]
+
+        for expected_status, entry in cases:
+            before_revisions = revision_snapshot()
+            response = client.post(
+                "/api/resources/libraries/prop_api_gate_lib/translations/proposals",
+                json={"entries": [entry]},
+            )
+            assert response.status_code == expected_status
+            assert "traceback" not in response.text.lower()
+            assert revision_snapshot() == before_revisions
+
+        assert provider_calls == []
+        assert db.one("SELECT COUNT(*) AS c FROM asset_revision")["c"] == before_count
 
     def test_proposals_no_leak_of_request_markers_on_422(self, client, monkeypatch):
         import main

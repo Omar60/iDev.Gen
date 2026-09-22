@@ -285,4 +285,18 @@
   actions. Apply success still requires the readiness refresh. The closure was
   verified with 416 frontend tests, 79 focused resource-service tests, 10
   privacy tests, 36 shoot tests, a successful build, strict OpenSpec
-  validation, and clean diff checks. Task 3.5 remains pending.
+  validation, and clean diff checks. Task 3.5 was pending at that checkpoint.
+- Task 3.5 is formally closed after independent acceptance. This test-only
+  closure verifies manual source-backed translation without a map or assistant,
+  distinguishes missing translation from invalid source, diagnoses invalid
+  sidecars, and proves provider failure recovery through valid manual Preview
+  and explicit Apply. Malformed provider output is rejected as a whole;
+  unauthorized, stale, and ineligible proposals are rejected before the
+  provider, with the 20/21 bound and complete independent revision snapshots.
+  Compatible duplicate sources merge deterministically while conflicting
+  duplicates block preview. Existing stale attestation/library and selected-map
+  coverage checks remain intact. Real HTTP bodies above 10 MiB, including
+  missing or false `Content-Length`, fail before parsing/writes. The workflow
+  remains write-free until Apply and performs no automatic Apply, session, or
+  generation. No product defect was found. Group 3, Actionable translation
+  readiness, is complete; Task 4.1 remains pending and was not started.
