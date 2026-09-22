@@ -2941,3 +2941,246 @@ describe('Task 5.3: Wardrobe scope controls, pure resolution, reordering, and re
     })
   })
 })
+
+describe('Task 4.1 authoring and take identity contract', () => {
+  const fullAuthoring = {
+    schema_version: 1,
+    mode: 'automatic',
+    brief: 'Studio portrait session brief',
+    scene_anchor: {
+      library_key: 'custom_room_library',
+      source_id: 'studio_room_01',
+      content_digest: 'a'.repeat(64),
+    },
+    workflow_binding: {
+      workflow_id: 10,
+      kind: 't2i',
+      graph_digest: 'b'.repeat(64),
+      node_map_digest: 'c'.repeat(64),
+    },
+    variation_policy: {
+      camera: { mode: 'vary' },
+      framing: { mode: 'vary' },
+      pose: { mode: 'vary' },
+      expression: { mode: 'vary' },
+    },
+    shared_state: {
+      look: { origin: 'assistant', evidence_id: 'ev-001' },
+      initial_wardrobe: { origin: 'assistant', evidence_id: 'ev-001' },
+    },
+    evidence: [
+      {
+        id: 'ev-001',
+        kind: 'shared_choices',
+        input: {
+          messages: [{ role: 'user', content: 'Generate choices' }],
+          model: 'invented-model',
+          parameters: {},
+          plan_revision: 1,
+        },
+        output: {
+          look: 'Natural beauty studio look',
+          initial_wardrobe: 'She wears a silk blouse.',
+        },
+        accepted: {
+          look: 'Natural beauty studio look',
+          initial_wardrobe: 'She wears a silk blouse.',
+        },
+      },
+    ],
+    look_snapshot: {
+      look_id: 'look-01',
+      version: 1,
+      content_digest: 'd'.repeat(64),
+      appearance: 'Natural beauty studio look',
+      outfit: {
+        outfit_key: 'outfit-01',
+        garments: [{ key: 'blouse', wording: 'silk blouse', aside: '' }],
+      },
+    },
+    wardrobe_progression: {
+      source_look_digest: 'e'.repeat(64),
+      start_take_id: 'take-001',
+      end_take_id: 'take-001',
+      stage_indices: [0],
+      applied_revision: 1,
+    },
+  }
+
+  it('normalizePlan preserves full authoring data', () => {
+    const plan = {
+      version: 'resource-v1',
+      look: 'Natural beauty studio look',
+      initial_wardrobe: 'She wears a silk blouse.',
+      authoring: fullAuthoring,
+      takes: [{ take_id: 'take-001', camera: '50mm', pose: 'seated' }],
+      wardrobe_changes: [],
+    }
+    const normalized = normalizePlan(plan)
+    expect(normalized.authoring).toEqual(fullAuthoring)
+  })
+
+  it('normalizePlan preserves empty take arrays without fabricating take-001', () => {
+    const normalizedWithEmpty = normalizePlan({
+      version: 'resource-v1',
+      takes: [],
+    })
+    expect(normalizedWithEmpty.takes).toEqual([])
+
+    const normalizedNull = normalizePlan(null)
+    expect(normalizedNull.takes).toEqual([])
+
+    const normalizedEmptyObj = normalizePlan({})
+    expect(normalizedEmptyObj.takes).toEqual([])
+  })
+
+  it('normalizePlan preserves missing or invalid take_id values without coercion, trimming, or replacement', () => {
+    const rawTakes = [
+      { take_id: null, camera: 'wide' },
+      { take_id: 123, camera: 'medium' },
+      { take_id: false, camera: 'close-up' },
+      { take_id: '  untrimmed-id  ', camera: 'low' },
+      { take_id: '', camera: 'eye-level' },
+      { camera: 'overhead' },
+    ]
+    const normalized = normalizePlan({
+      version: 'resource-v1',
+      takes: rawTakes,
+    })
+
+    expect(normalized.takes[0].take_id).toBe(null)
+    expect(normalized.takes[1].take_id).toBe(123)
+    expect(normalized.takes[2].take_id).toBe(false)
+    expect(normalized.takes[3].take_id).toBe('  untrimmed-id  ')
+    expect(normalized.takes[4].take_id).toBe('')
+    expect(normalized.takes[5].take_id).toBeUndefined()
+  })
+
+  it('normalizePlan preserves missing or invalid IDs in selected_resources without coercion, trimming, or replacement', () => {
+    const rawResources = [
+      { library_key: null, source_id: 123, content_digest: false },
+      { library_key: '  untrimmed-key  ', source_id: '  untrimmed-id  ', content_digest: '  untrimmed-digest  ' },
+      { library_key: '', source_id: '', content_digest: '' },
+      { library_key: 456 },
+    ]
+    const normalized = normalizePlan({
+      version: 'resource-v1',
+      selected_resources: rawResources,
+    })
+
+    expect(normalized.selected_resources[0].library_key).toBe(null)
+    expect(normalized.selected_resources[0].source_id).toBe(123)
+    expect(normalized.selected_resources[0].content_digest).toBe(false)
+
+    expect(normalized.selected_resources[1].library_key).toBe('  untrimmed-key  ')
+    expect(normalized.selected_resources[1].source_id).toBe('  untrimmed-id  ')
+    expect(normalized.selected_resources[1].content_digest).toBe('  untrimmed-digest  ')
+
+    expect(normalized.selected_resources[2].library_key).toBe('')
+    expect(normalized.selected_resources[2].source_id).toBe('')
+    expect(normalized.selected_resources[2].content_digest).toBe('')
+
+    expect(normalized.selected_resources[3].library_key).toBe(456)
+    expect(normalized.selected_resources[3].source_id).toBeUndefined()
+    expect(normalized.selected_resources[3].content_digest).toBeUndefined()
+  })
+
+  it('normalizePlan preserves missing or invalid take_id and scope in wardrobe_changes without coercion, trimming, or replacement', () => {
+    const rawChanges = [
+      { take_id: null, scope: 'from_here', wardrobe: 'dress' },
+      { take_id: 123, scope: 'invalid-scope', wardrobe: 'skirt' },
+      { take_id: '  untrimmed-id  ', scope: null, wardrobe: 'boots' },
+      { scope: 'this_take', wardrobe: 'jacket' },
+    ]
+    const normalized = normalizePlan({
+      version: 'resource-v1',
+      wardrobe_changes: rawChanges,
+    })
+
+    expect(normalized.wardrobe_changes[0].take_id).toBe(null)
+    expect(normalized.wardrobe_changes[0].scope).toBe('from_here')
+
+    expect(normalized.wardrobe_changes[1].take_id).toBe(123)
+    expect(normalized.wardrobe_changes[1].scope).toBe('invalid-scope')
+
+    expect(normalized.wardrobe_changes[2].take_id).toBe('  untrimmed-id  ')
+    expect(normalized.wardrobe_changes[2].scope).toBe(null)
+
+    expect(normalized.wardrobe_changes[3].take_id).toBeUndefined()
+    expect(normalized.wardrobe_changes[3].scope).toBe('this_take')
+  })
+
+  it('buildPlanSavePayload round-trips authoring and server-owned blocks', () => {
+    const plan = {
+      version: 'resource-v1',
+      look: 'Natural beauty studio look',
+      initial_wardrobe: 'She wears a silk blouse.',
+      authoring: fullAuthoring,
+      takes: [{ take_id: 'take-001', camera: '50mm', pose: 'seated' }],
+      wardrobe_changes: [],
+    }
+    const payload = buildPlanSavePayload(plan, 1)
+    expect(payload.plan.authoring).toEqual(fullAuthoring)
+    expect(payload.plan.authoring.workflow_binding).toEqual(fullAuthoring.workflow_binding)
+    expect(payload.plan.authoring.evidence).toEqual(fullAuthoring.evidence)
+    expect(payload.plan.authoring.look_snapshot).toEqual(fullAuthoring.look_snapshot)
+    expect(payload.plan.authoring.wardrobe_progression).toEqual(fullAuthoring.wardrobe_progression)
+  })
+
+  it('editConstants sends the changed effective look with historical metadata intact', async () => {
+    const authoring = { ...fullAuthoring, look_snapshot: null, wardrobe_progression: null }
+    const storedPlan = {
+      version: 'resource-v1',
+      look: 'Natural beauty studio look',
+      initial_wardrobe: 'She wears a silk blouse.',
+      authoring,
+      takes: [{ take_id: 'take-001', camera: '50mm', pose: 'seated' }],
+      selected_resources: [fullAuthoring.scene_anchor],
+      wardrobe_changes: [],
+    }
+    let posted
+    const api = {
+      get: async (path) => path.endsWith('/plan')
+        ? { plan: storedPlan, plan_revision: 1 }
+        : { id: 41, composition_mode: 'resource-v1', shots: [] },
+      post: async (_path, body) => {
+        posted = body
+        return { plan_revision: 2, conflicts: [] }
+      },
+    }
+    const controller = createSessionViewController(41, { api })
+    await controller.reload()
+    expect(controller.editConstants('User updated look', undefined)).toBe(true)
+    expect(controller.getState().plan.authoring.shared_state).toEqual(authoring.shared_state)
+    expect(await controller.savePlan()).toMatchObject({ ok: true, planRevision: 2 })
+    expect(posted).toEqual(buildPlanSavePayload(controller.getState().plan, 1))
+    expect(posted.plan.look).toBe('User updated look')
+    expect(posted.plan.initial_wardrobe).toBe(storedPlan.initial_wardrobe)
+    expect(posted.plan.authoring.shared_state).toEqual(authoring.shared_state)
+    expect(posted.plan.authoring.evidence).toEqual(authoring.evidence)
+    expect(posted.plan.authoring.look_snapshot).toBeNull()
+    expect(posted.plan.authoring.wardrobe_progression).toBeNull()
+  })
+
+  it('explicit createTake alone generates new IDs while other operations never allocate IDs', () => {
+    const takes = [
+      { take_id: 'take-001', camera: '', pose: '' },
+      { take_id: 'take-002', camera: '', pose: '' },
+    ]
+    const newTakes = createTake(takes)
+    expect(newTakes[newTakes.length - 1].take_id).toBe('take-003')
+
+    // Updating a take does not change its ID
+    const updated = updateTake(takes, 'take-001', { camera: '35mm' })
+    expect(updated[0].take_id).toBe('take-001')
+
+    // Reordering takes does not generate new IDs
+    const reordered = reorderTakes(takes, 0, 1)
+    expect(reordered[0].take_id).toBe('take-002')
+    expect(reordered[1].take_id).toBe('take-001')
+
+    // normalizePlan on takes array does not allocate new IDs
+    const normalized = normalizePlan({ version: 'resource-v1', takes })
+    expect(normalized.takes.map((t) => t.take_id)).toEqual(['take-001', 'take-002'])
+  })
+})

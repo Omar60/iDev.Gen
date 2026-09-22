@@ -112,6 +112,83 @@ PLAN_AUTHORING_KIND_PRE_AUTHORING_EXPERT = "pre_authoring_expert"
 PLAN_AUTHORING_KIND_MANUAL = "manual"
 PLAN_AUTHORING_KIND_AUTOMATIC = "automatic"
 
+REQUIRED_AUTHORING_KEYS: frozenset[str] = frozenset({
+    "schema_version",
+    "mode",
+    "brief",
+    "scene_anchor",
+    "workflow_binding",
+    "variation_policy",
+    "shared_state",
+    "evidence",
+    "look_snapshot",
+    "wardrobe_progression",
+})
+REQUIRED_SCENE_ANCHOR_KEYS: frozenset[str] = frozenset({
+    "library_key",
+    "source_id",
+    "content_digest",
+})
+REQUIRED_WORKFLOW_BINDING_KEYS: frozenset[str] = frozenset({
+    "workflow_id",
+    "kind",
+    "graph_digest",
+    "node_map_digest",
+})
+REQUIRED_VARIATION_POLICY_KEYS: frozenset[str] = frozenset({
+    "camera",
+    "framing",
+    "pose",
+    "expression",
+})
+REQUIRED_SHARED_STATE_KEYS: frozenset[str] = frozenset({
+    "look",
+    "initial_wardrobe",
+})
+VALID_AUTHORING_ORIGINS: frozenset[str] = frozenset({
+    "none",
+    "user",
+    "assistant",
+    "assistant_edited",
+    "saved_look",
+})
+REQUIRED_EVIDENCE_KEYS: frozenset[str] = frozenset({
+    "id",
+    "kind",
+    "input",
+    "output",
+    "accepted",
+})
+REQUIRED_EVIDENCE_INPUT_KEYS: frozenset[str] = frozenset({
+    "messages",
+    "model",
+    "parameters",
+    "plan_revision",
+})
+REQUIRED_LOOK_SNAPSHOT_KEYS: frozenset[str] = frozenset({
+    "look_id",
+    "version",
+    "content_digest",
+    "appearance",
+    "outfit",
+})
+REQUIRED_LOOK_SNAPSHOT_OUTFIT_KEYS: frozenset[str] = frozenset({
+    "outfit_key",
+    "garments",
+})
+REQUIRED_GARMENT_KEYS: frozenset[str] = frozenset({
+    "key",
+    "wording",
+    "aside",
+})
+REQUIRED_WARDROBE_PROGRESSION_KEYS: frozenset[str] = frozenset({
+    "source_look_digest",
+    "start_take_id",
+    "end_take_id",
+    "stage_indices",
+    "applied_revision",
+})
+
 
 # -- Errors -----------------------------------------------------------------
 
@@ -171,6 +248,10 @@ class PlanConstantsFrozenAfterGenerated(Exception):
     invalidate ungenerated prepared_take rows through the same
     pass the rest of the saves run.
     """
+
+
+class PlanOwnershipConflict(Exception):
+    """A generic plan save attempted to create, delete, or mutate server-owned authoring state."""
 
 
 class PreparedTakeConflict(Exception):
@@ -239,7 +320,449 @@ def validate_authoring_prepared_evidence(
 # -- Validation -------------------------------------------------------------
 
 
-def validate_draft(plan: Any) -> dict:
+def compose_saved_look_wardrobe(outfit: dict) -> str:
+    """Compose canonical fully-worn wardrobe string from look_snapshot outfit."""
+    if not isinstance(outfit, dict):
+        raise PlanValidationError(f"outfit must be a dict, got {type(outfit).__name__}")
+    garments = outfit.get("garments")
+    if not isinstance(garments, list) or len(garments) == 0:
+        raise PlanValidationError("outfit.garments must be a non-empty list")
+    wordings: list[str] = []
+    for idx, g in enumerate(garments):
+        if not isinstance(g, dict):
+            raise PlanValidationError(f"garment[{idx}] must be a dict")
+        w = g.get("wording")
+        if not isinstance(w, str) or not w or w != w.strip():
+            raise PlanValidationError(
+                f"garment[{idx}].wording must be a non-empty string with no leading or trailing whitespace, got {w!r}"
+            )
+        wordings.append(w)
+    if len(wordings) == 1:
+        return f"She wears {wordings[0]}."
+    all_but_last = ", ".join(wordings[:-1])
+    return f"She wears {all_but_last}, and {wordings[-1]}."
+
+
+def validate_authoring_block(auth: Any, plan: dict, *, check_effective: bool = True) -> dict:
+    """Validate closed authoring-v1 block and return a normalized copy."""
+    if not isinstance(auth, dict) or not auth:
+        raise PlanValidationError("plan authoring block must be a non-empty object")
+
+    missing = REQUIRED_AUTHORING_KEYS - set(auth.keys())
+    if missing:
+        raise PlanValidationError(f"authoring is missing required keys: {sorted(missing)}")
+    extra = set(auth.keys()) - REQUIRED_AUTHORING_KEYS
+    if extra:
+        raise PlanValidationError(f"authoring contains unknown keys: {sorted(extra)}")
+
+    # 1. schema_version
+    schema_ver = auth["schema_version"]
+    if type(schema_ver) is not int or isinstance(schema_ver, bool) or schema_ver != 1:
+        raise PlanValidationError(f"authoring.schema_version must be 1, got {schema_ver!r}")
+
+    # 2. mode
+    mode = auth["mode"]
+    if not isinstance(mode, str) or mode not in (AUTHORING_MODE_AUTOMATIC, AUTHORING_MODE_MANUAL):
+        raise PlanValidationError(
+            f"authoring.mode must be {AUTHORING_MODE_AUTOMATIC!r} or {AUTHORING_MODE_MANUAL!r}, got {mode!r}"
+        )
+
+    # 3. brief
+    brief = auth["brief"]
+    if not isinstance(brief, str):
+        raise PlanValidationError(f"authoring.brief must be a string, got {type(brief).__name__}")
+    if len(brief) > 2000:
+        raise PlanValidationError(f"authoring.brief must be at most 2000 characters, got {len(brief)}")
+
+    # 4. scene_anchor
+    anchor = auth["scene_anchor"]
+    if not isinstance(anchor, dict):
+        raise PlanValidationError(f"authoring.scene_anchor must be an object, got {type(anchor).__name__}")
+    if set(anchor.keys()) != REQUIRED_SCENE_ANCHOR_KEYS:
+        raise PlanValidationError(
+            f"authoring.scene_anchor must contain exactly {sorted(REQUIRED_SCENE_ANCHOR_KEYS)}, got {sorted(anchor.keys())}"
+        )
+    for k in ("library_key", "source_id", "content_digest"):
+        v = anchor[k]
+        if not isinstance(v, str) or not v:
+            raise PlanValidationError(f"authoring.scene_anchor.{k} must be a non-empty string, got {v!r}")
+    cd = anchor["content_digest"]
+    if len(cd) != 64 or not all(c in "0123456789abcdef" for c in cd):
+        raise PlanValidationError(
+            f"authoring.scene_anchor.content_digest must be 64 lowercase hex characters, got {cd!r}"
+        )
+    selected_triples = {
+        (r["library_key"], r["source_id"], r["content_digest"])
+        for r in plan.get("selected_resources", [])
+    }
+    if (anchor["library_key"], anchor["source_id"], anchor["content_digest"]) not in selected_triples:
+        raise PlanValidationError(
+            f"authoring.scene_anchor triple ({anchor['library_key']!r}, {anchor['source_id']!r}, "
+            f"{anchor['content_digest']!r}) must appear in plan.selected_resources"
+        )
+    norm_anchor = {
+        "library_key": anchor["library_key"],
+        "source_id": anchor["source_id"],
+        "content_digest": anchor["content_digest"],
+    }
+
+    # 5. workflow_binding
+    wf = auth["workflow_binding"]
+    if not isinstance(wf, dict):
+        raise PlanValidationError(f"authoring.workflow_binding must be an object, got {type(wf).__name__}")
+    if set(wf.keys()) != REQUIRED_WORKFLOW_BINDING_KEYS:
+        raise PlanValidationError(
+            f"authoring.workflow_binding must contain exactly {sorted(REQUIRED_WORKFLOW_BINDING_KEYS)}, got {sorted(wf.keys())}"
+        )
+    wf_id = wf["workflow_id"]
+    if type(wf_id) is not int or isinstance(wf_id, bool) or wf_id <= 0:
+        raise PlanValidationError(f"authoring.workflow_binding.workflow_id must be a positive integer, got {wf_id!r}")
+    wf_kind = wf["kind"]
+    if not isinstance(wf_kind, str) or not wf_kind:
+        raise PlanValidationError(f"authoring.workflow_binding.kind must be a non-empty string, got {wf_kind!r}")
+    gd = wf["graph_digest"]
+    if not isinstance(gd, str) or len(gd) != 64 or not all(c in "0123456789abcdef" for c in gd):
+        raise PlanValidationError(
+            f"authoring.workflow_binding.graph_digest must be 64 lowercase hex characters, got {gd!r}"
+        )
+    nmd = wf["node_map_digest"]
+    if not isinstance(nmd, str) or len(nmd) != 64 or not all(c in "0123456789abcdef" for c in nmd):
+        raise PlanValidationError(
+            f"authoring.workflow_binding.node_map_digest must be 64 lowercase hex characters, got {nmd!r}"
+        )
+    norm_wf = {
+        "workflow_id": wf_id,
+        "kind": wf_kind,
+        "graph_digest": gd,
+        "node_map_digest": nmd,
+    }
+
+    # 6. variation_policy
+    policy = auth["variation_policy"]
+    if not isinstance(policy, dict):
+        raise PlanValidationError(f"authoring.variation_policy must be an object, got {type(policy).__name__}")
+    if set(policy.keys()) != REQUIRED_VARIATION_POLICY_KEYS:
+        raise PlanValidationError(
+            f"authoring.variation_policy must contain exactly {sorted(REQUIRED_VARIATION_POLICY_KEYS)}, got {sorted(policy.keys())}"
+        )
+    norm_policy: dict[str, dict] = {}
+    for dim in ("camera", "framing", "pose", "expression"):
+        dim_val = policy[dim]
+        if not isinstance(dim_val, dict):
+            raise PlanValidationError(f"authoring.variation_policy.{dim} must be an object, got {type(dim_val).__name__}")
+        d_mode = dim_val.get("mode")
+        if not isinstance(d_mode, str):
+            raise PlanValidationError(f"authoring.variation_policy.{dim}.mode must be 'vary' or 'fixed', got {d_mode!r}")
+        if d_mode == "vary":
+            if set(dim_val.keys()) != {"mode"}:
+                raise PlanValidationError(
+                    f"authoring.variation_policy.{dim} with mode 'vary' must contain only 'mode', got {sorted(dim_val.keys())}"
+                )
+            norm_policy[dim] = {"mode": "vary"}
+        elif d_mode == "fixed":
+            if set(dim_val.keys()) != {"mode", "value", "value_origin"}:
+                raise PlanValidationError(
+                    f"authoring.variation_policy.{dim} with mode 'fixed' must contain exactly ['mode', 'value', 'value_origin'], got {sorted(dim_val.keys())}"
+                )
+            f_val = dim_val["value"]
+            if not isinstance(f_val, str) or not f_val:
+                raise PlanValidationError(f"authoring.variation_policy.{dim}.value must be a non-empty string, got {f_val!r}")
+            f_origin = dim_val["value_origin"]
+            if not isinstance(f_origin, str) or f_origin != "user":
+                raise PlanValidationError(f"authoring.variation_policy.{dim}.value_origin must be 'user', got {f_origin!r}")
+            norm_policy[dim] = {"mode": "fixed", "value": f_val, "value_origin": "user"}
+        else:
+            raise PlanValidationError(f"authoring.variation_policy.{dim}.mode must be 'vary' or 'fixed', got {d_mode!r}")
+
+    # 7. evidence
+    ev_list = auth["evidence"]
+    if not isinstance(ev_list, list):
+        raise PlanValidationError(f"authoring.evidence must be a list, got {type(ev_list).__name__}")
+    seen_ev_ids: set[str] = set()
+    norm_ev: list[dict] = []
+    for idx, rec in enumerate(ev_list):
+        if not isinstance(rec, dict):
+            raise PlanValidationError(f"authoring.evidence[{idx}] must be an object, got {type(rec).__name__}")
+        if set(rec.keys()) != REQUIRED_EVIDENCE_KEYS:
+            raise PlanValidationError(
+                f"authoring.evidence[{idx}] must contain exactly {sorted(REQUIRED_EVIDENCE_KEYS)}, got {sorted(rec.keys())}"
+            )
+        ev_id = rec["id"]
+        if not isinstance(ev_id, str) or not ev_id:
+            raise PlanValidationError(f"authoring.evidence[{idx}].id must be a non-empty string, got {ev_id!r}")
+        if ev_id in seen_ev_ids:
+            raise PlanValidationError(f"duplicate evidence id {ev_id!r}")
+        seen_ev_ids.add(ev_id)
+        if not isinstance(rec["kind"], str) or rec["kind"] != "shared_choices":
+            raise PlanValidationError(f"authoring.evidence[{idx}].kind must be 'shared_choices', got {rec['kind']!r}")
+        inp = rec["input"]
+        if not isinstance(inp, dict) or set(inp.keys()) != REQUIRED_EVIDENCE_INPUT_KEYS:
+            raise PlanValidationError(
+                f"authoring.evidence[{idx}].input must contain exactly {sorted(REQUIRED_EVIDENCE_INPUT_KEYS)}"
+            )
+        msgs = inp["messages"]
+        if not isinstance(msgs, list):
+            raise PlanValidationError(f"authoring.evidence[{idx}].input.messages must be a list")
+        norm_msgs: list[dict] = []
+        for m_idx, m in enumerate(msgs):
+            if not isinstance(m, dict) or set(m.keys()) != {"role", "content"}:
+                raise PlanValidationError(
+                    f"authoring.evidence[{idx}].input.messages[{m_idx}] must contain exactly ['content', 'role']"
+                )
+            if not isinstance(m["role"], str) or m["role"] not in ("system", "user", "assistant") or not isinstance(m["content"], str):
+                raise PlanValidationError(
+                    f"authoring.evidence[{idx}].input.messages[{m_idx}] role must be system|user|assistant and content must be string"
+                )
+            norm_msgs.append({"role": m["role"], "content": m["content"]})
+        model = inp["model"]
+        if not isinstance(model, str) or not model:
+            raise PlanValidationError(f"authoring.evidence[{idx}].input.model must be a non-empty string")
+        params = inp["parameters"]
+        if not isinstance(params, dict):
+            raise PlanValidationError(f"authoring.evidence[{idx}].input.parameters must be an object")
+        plan_rev = inp["plan_revision"]
+        if type(plan_rev) is not int or isinstance(plan_rev, bool) or plan_rev <= 0:
+            raise PlanValidationError(
+                f"authoring.evidence[{idx}].input.plan_revision must be a positive integer, got {plan_rev!r}"
+            )
+        outp = rec["output"]
+        if not isinstance(outp, dict):
+            raise PlanValidationError(f"authoring.evidence[{idx}].output must be an object")
+        out_keys = set(outp.keys())
+        if not out_keys or not out_keys.issubset({"look", "initial_wardrobe"}):
+            raise PlanValidationError(
+                f"authoring.evidence[{idx}].output keys must be a non-empty subset of ['look', 'initial_wardrobe'], got {sorted(out_keys)}"
+            )
+        norm_outp: dict[str, str] = {}
+        for k in sorted(out_keys):
+            v = outp[k]
+            if not isinstance(v, str):
+                raise PlanValidationError(f"authoring.evidence[{idx}].output.{k} must be a string")
+            norm_outp[k] = v
+        acc = rec["accepted"]
+        if not isinstance(acc, dict):
+            raise PlanValidationError(f"authoring.evidence[{idx}].accepted must be an object")
+        if set(acc.keys()) != out_keys:
+            raise PlanValidationError(
+                f"authoring.evidence[{idx}].accepted keys must match output keys exactly, got {sorted(acc.keys())} != {sorted(out_keys)}"
+            )
+        norm_acc: dict[str, str] = {}
+        for k in sorted(out_keys):
+            v = acc[k]
+            if not isinstance(v, str):
+                raise PlanValidationError(f"authoring.evidence[{idx}].accepted.{k} must be a string")
+            norm_acc[k] = v
+        norm_ev.append({
+            "id": ev_id,
+            "kind": "shared_choices",
+            "input": {
+                "messages": norm_msgs,
+                "model": model,
+                "parameters": dict(params),
+                "plan_revision": plan_rev,
+            },
+            "output": norm_outp,
+            "accepted": norm_acc,
+        })
+
+    # 8. look_snapshot
+    ls = auth["look_snapshot"]
+    norm_ls = None
+    if ls is not None:
+        if not isinstance(ls, dict):
+            raise PlanValidationError(f"authoring.look_snapshot must be null or an object, got {type(ls).__name__}")
+        if set(ls.keys()) != REQUIRED_LOOK_SNAPSHOT_KEYS:
+            raise PlanValidationError(
+                f"authoring.look_snapshot must contain exactly {sorted(REQUIRED_LOOK_SNAPSHOT_KEYS)}, got {sorted(ls.keys())}"
+            )
+        look_id = ls["look_id"]
+        if not isinstance(look_id, str) or not look_id:
+            raise PlanValidationError("authoring.look_snapshot.look_id must be a non-empty string")
+        ver = ls["version"]
+        if type(ver) is not int or isinstance(ver, bool) or ver <= 0:
+            raise PlanValidationError(f"authoring.look_snapshot.version must be a positive integer, got {ver!r}")
+        app = ls["appearance"]
+        if not isinstance(app, str):
+            raise PlanValidationError("authoring.look_snapshot.appearance must be a string")
+        outfit = ls["outfit"]
+        norm_outfit = None
+        if outfit is not None:
+            if not isinstance(outfit, dict):
+                raise PlanValidationError(f"authoring.look_snapshot.outfit must be null or an object, got {type(outfit).__name__}")
+            if set(outfit.keys()) != REQUIRED_LOOK_SNAPSHOT_OUTFIT_KEYS:
+                raise PlanValidationError(
+                    f"authoring.look_snapshot.outfit must contain exactly {sorted(REQUIRED_LOOK_SNAPSHOT_OUTFIT_KEYS)}, got {sorted(outfit.keys())}"
+                )
+            ok = outfit["outfit_key"]
+            if not isinstance(ok, str) or not ok:
+                raise PlanValidationError("authoring.look_snapshot.outfit.outfit_key must be a non-empty string")
+            garments = outfit["garments"]
+            if not isinstance(garments, list) or len(garments) == 0:
+                raise PlanValidationError("authoring.look_snapshot.outfit.garments must be a non-empty list")
+            seen_g_keys: set[str] = set()
+            norm_garments: list[dict] = []
+            for g_idx, g in enumerate(garments):
+                if not isinstance(g, dict) or set(g.keys()) != REQUIRED_GARMENT_KEYS:
+                    raise PlanValidationError(
+                        f"authoring.look_snapshot.outfit.garments[{g_idx}] must contain exactly {sorted(REQUIRED_GARMENT_KEYS)}"
+                    )
+                gk = g["key"]
+                if not isinstance(gk, str) or not gk:
+                    raise PlanValidationError(f"authoring.look_snapshot.outfit.garments[{g_idx}].key must be a non-empty string")
+                if gk in seen_g_keys:
+                    raise PlanValidationError(f"duplicate garment key {gk!r}")
+                seen_g_keys.add(gk)
+                gw = g["wording"]
+                if not isinstance(gw, str) or not gw or gw != gw.strip():
+                    raise PlanValidationError(
+                        f"authoring.look_snapshot.outfit.garments[{g_idx}].wording must be a non-empty string with no leading or trailing whitespace, got {gw!r}"
+                    )
+                ga = g["aside"]
+                if not isinstance(ga, str):
+                    raise PlanValidationError(f"authoring.look_snapshot.outfit.garments[{g_idx}].aside must be a string")
+                norm_garments.append({"key": gk, "wording": gw, "aside": ga})
+            norm_outfit = {"outfit_key": ok, "garments": norm_garments}
+        cd = ls["content_digest"]
+        if not isinstance(cd, str) or len(cd) != 64 or not all(c in "0123456789abcdef" for c in cd):
+            raise PlanValidationError("authoring.look_snapshot.content_digest must be 64 lowercase hex characters")
+        import resource_store
+        expected_digest = resource_store.canonical_digest({"appearance": app, "outfit": norm_outfit})
+        if cd != expected_digest:
+            raise PlanValidationError(
+                f"authoring.look_snapshot.content_digest {cd!r} does not match computed digest {expected_digest!r}"
+            )
+        norm_ls = {
+            "look_id": look_id,
+            "version": ver,
+            "content_digest": cd,
+            "appearance": app,
+            "outfit": norm_outfit,
+        }
+
+    # 9. wardrobe_progression
+    wp = auth["wardrobe_progression"]
+    norm_wp = None
+    if wp is not None:
+        if not isinstance(wp, dict):
+            raise PlanValidationError(f"authoring.wardrobe_progression must be null or an object, got {type(wp).__name__}")
+        if set(wp.keys()) != REQUIRED_WARDROBE_PROGRESSION_KEYS:
+            raise PlanValidationError(
+                f"authoring.wardrobe_progression must contain exactly {sorted(REQUIRED_WARDROBE_PROGRESSION_KEYS)}, got {sorted(wp.keys())}"
+            )
+        sld = wp["source_look_digest"]
+        if not isinstance(sld, str) or len(sld) != 64 or not all(c in "0123456789abcdef" for c in sld):
+            raise PlanValidationError("authoring.wardrobe_progression.source_look_digest must be 64 lowercase hex characters")
+        stid = wp["start_take_id"]
+        if not isinstance(stid, str) or not stid:
+            raise PlanValidationError("authoring.wardrobe_progression.start_take_id must be a non-empty string")
+        etid = wp["end_take_id"]
+        if not isinstance(etid, str) or not etid:
+            raise PlanValidationError("authoring.wardrobe_progression.end_take_id must be a non-empty string")
+        stages = wp["stage_indices"]
+        if not isinstance(stages, list) or len(stages) == 0:
+            raise PlanValidationError("authoring.wardrobe_progression.stage_indices must be a non-empty list")
+        for s_idx, s in enumerate(stages):
+            if type(s) is not int or isinstance(s, bool) or s < 0:
+                raise PlanValidationError(
+                    f"authoring.wardrobe_progression.stage_indices[{s_idx}] must be a non-negative integer, got {s!r}"
+                )
+            if s_idx > 0 and s <= stages[s_idx - 1]:
+                raise PlanValidationError(
+                    f"authoring.wardrobe_progression.stage_indices must be strictly increasing, got {stages}"
+                )
+        app_rev = wp["applied_revision"]
+        if type(app_rev) is not int or isinstance(app_rev, bool) or app_rev <= 0:
+            raise PlanValidationError(
+                f"authoring.wardrobe_progression.applied_revision must be a positive integer, got {app_rev!r}"
+            )
+        norm_wp = {
+            "source_look_digest": sld,
+            "start_take_id": stid,
+            "end_take_id": etid,
+            "stage_indices": list(stages),
+            "applied_revision": app_rev,
+        }
+
+    # 10. shared_state
+    ss = auth["shared_state"]
+    if not isinstance(ss, dict):
+        raise PlanValidationError(f"authoring.shared_state must be an object, got {type(ss).__name__}")
+    if set(ss.keys()) != REQUIRED_SHARED_STATE_KEYS:
+        raise PlanValidationError(
+            f"authoring.shared_state must contain exactly {sorted(REQUIRED_SHARED_STATE_KEYS)}, got {sorted(ss.keys())}"
+        )
+    evidence_by_id = {rec["id"]: rec for rec in norm_ev}
+    norm_ss: dict[str, dict] = {}
+    for field in ("look", "initial_wardrobe"):
+        meta = ss[field]
+        if not isinstance(meta, dict) or set(meta.keys()) != {"origin", "evidence_id"}:
+            raise PlanValidationError(f"authoring.shared_state.{field} must contain exactly ['evidence_id', 'origin']")
+        origin = meta["origin"]
+        if not isinstance(origin, str) or origin not in VALID_AUTHORING_ORIGINS:
+            raise PlanValidationError(
+                f"authoring.shared_state.{field}.origin must be one of {sorted(VALID_AUTHORING_ORIGINS)}, got {origin!r}"
+            )
+        ev_id = meta["evidence_id"]
+        eff_val = plan.get(field, "")
+        if origin == "none":
+            if ev_id is not None:
+                raise PlanValidationError(f"authoring.shared_state.{field}.evidence_id must be null for origin 'none'")
+            if check_effective and eff_val != "":
+                raise PlanValidationError(f"plan.{field} must be empty string for origin 'none', got {eff_val!r}")
+        elif origin == "user":
+            if ev_id is not None:
+                raise PlanValidationError(f"authoring.shared_state.{field}.evidence_id must be null for origin 'user'")
+        elif origin == "saved_look":
+            if ev_id is not None:
+                raise PlanValidationError(f"authoring.shared_state.{field}.evidence_id must be null for origin 'saved_look'")
+            if norm_ls is None:
+                raise PlanValidationError(f"authoring.shared_state.{field} with origin 'saved_look' requires a non-null look_snapshot")
+            if field == "look":
+                if check_effective and eff_val != norm_ls["appearance"]:
+                    raise PlanValidationError(
+                        f"plan.look must match look_snapshot.appearance for origin 'saved_look', got {eff_val!r} != {norm_ls['appearance']!r}"
+                    )
+            elif field == "initial_wardrobe":
+                if norm_ls.get("outfit") is None:
+                    raise PlanValidationError(
+                        "authoring.shared_state.initial_wardrobe with origin 'saved_look' requires look_snapshot.outfit to be non-null"
+                    )
+                canonical_wardrobe = compose_saved_look_wardrobe(norm_ls["outfit"])
+                if check_effective and eff_val != canonical_wardrobe:
+                    raise PlanValidationError(
+                        f"plan.initial_wardrobe must match canonical saved look wardrobe for origin 'saved_look', got {eff_val!r} != {canonical_wardrobe!r}"
+                    )
+        elif origin in ("assistant", "assistant_edited"):
+            if not isinstance(ev_id, str) or not ev_id:
+                raise PlanValidationError(
+                    f"authoring.shared_state.{field}.evidence_id must be a non-empty string for origin {origin!r}"
+                )
+            if ev_id not in evidence_by_id:
+                raise PlanValidationError(f"authoring.shared_state.{field} references non-existent evidence_id {ev_id!r}")
+            ev_rec = evidence_by_id[ev_id]
+            if field not in ev_rec["output"] or field not in ev_rec["accepted"]:
+                raise PlanValidationError(f"evidence {ev_id!r} does not contain {field!r} in output/accepted")
+            if check_effective and ev_rec["accepted"][field] != eff_val:
+                raise PlanValidationError(
+                    f"authoring.shared_state.{field} active evidence accepted value must match plan.{field}"
+                )
+        norm_ss[field] = {"origin": origin, "evidence_id": ev_id}
+
+    return {
+        "schema_version": 1,
+        "mode": mode,
+        "brief": brief,
+        "scene_anchor": norm_anchor,
+        "workflow_binding": norm_wf,
+        "variation_policy": norm_policy,
+        "shared_state": norm_ss,
+        "evidence": norm_ev,
+        "look_snapshot": norm_ls,
+        "wardrobe_progression": norm_wp,
+    }
+
+
+def validate_draft(plan: Any, *, check_authoring_effective: bool = True) -> dict:
     """Validate a resource-v1 plan and return a normalized copy.
 
     The input shape and what this function checks:
@@ -365,6 +888,10 @@ def validate_draft(plan: Any) -> dict:
                 f"{type(change).__name__}"
             )
         change_take_id = change.get("take_id")
+        if not isinstance(change_take_id, str) or not change_take_id:
+            raise PlanValidationError(
+                f"plan.wardrobe_changes[{index}].take_id must be a non-empty string, got {change_take_id!r}"
+            )
         if change_take_id not in seen_take_ids:
             raise PlanValidationError(
                 f"plan.wardrobe_changes[{index}].take_id "
@@ -380,7 +907,7 @@ def validate_draft(plan: Any) -> dict:
             )
         seen_change_take_ids.add(change_take_id)
         scope = change.get("scope")
-        if scope not in VALID_WARDROBE_SCOPES:
+        if not isinstance(scope, str) or scope not in VALID_WARDROBE_SCOPES:
             raise PlanValidationError(
                 f"plan.wardrobe_changes[{index}].scope must be one of "
                 f"{sorted(VALID_WARDROBE_SCOPES)}, got {scope!r}"
@@ -397,7 +924,7 @@ def validate_draft(plan: Any) -> dict:
             "wardrobe": wardrobe,
         })
 
-    return {
+    res = {
         "version": MODE_RESOURCE_V1,
         "look": look,
         "initial_wardrobe": initial_wardrobe,
@@ -405,6 +932,11 @@ def validate_draft(plan: Any) -> dict:
         "selected_resources": normalized_selected,
         "wardrobe_changes": normalized_changes,
     }
+    if "authoring" in plan:
+        res["authoring"] = validate_authoring_block(
+            plan["authoring"], res, check_effective=check_authoring_effective,
+        )
+    return res
 
 
 def validate_selected_resources(selected: list[dict]) -> None:
@@ -1804,7 +2336,9 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
             f"expected {MODE_RESOURCE_V1!r}"
         )
 
-    validated = validate_draft(plan)
+    # The candidate may echo provenance for an effective value edited in the UI.
+    # Compare effective values with the persisted winner before checking that relation.
+    validated = validate_draft(plan, check_authoring_effective=False)
     validate_selected_resources(validated["selected_resources"])
 
     # Step 3: structural conflicts. The detector reads each
@@ -1817,9 +2351,6 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
     plan_with_conflicts = dict(validated)
     plan_with_conflicts["conflicts"] = conflicts
 
-    encoded = json.dumps(
-        plan_with_conflicts, ensure_ascii=False, separators=(",", ":"),
-    )
     now = db.now()
 
     with db.transaction():
@@ -1835,10 +2366,8 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                 f"expected {expected_revision}; refusing to overwrite "
                 f"newer draft"
             )
-        # Step 4: constant-change guard. The comparison strips the
-        # ``conflicts`` key the prior save may have written so a
-        # re-save of the same draft (which is a legal CAS bump)
-        # does not read as a constant change.
+
+        old_plan: dict = {}
         if current is not None:
             try:
                 old_plan = json.loads(current["plan_json"])
@@ -1846,6 +2375,78 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                 old_plan = {}
             if not isinstance(old_plan, dict):
                 old_plan = {}
+
+        has_old_auth = "authoring" in old_plan
+        has_new_auth = "authoring" in validated
+
+        if not has_old_auth and has_new_auth:
+            raise PlanOwnershipConflict(
+                "generic save cannot create authoring on a plan without authoring"
+            )
+
+        if has_old_auth and not has_new_auth:
+            raise PlanOwnershipConflict(
+                "generic save cannot delete authoring from a plan with authoring"
+            )
+
+        if has_old_auth and has_new_auth:
+            old_auth = old_plan["authoring"]
+            new_auth = validated["authoring"]
+
+            # 1. workflow_binding
+            if new_auth["workflow_binding"] != old_auth["workflow_binding"]:
+                raise PlanOwnershipConflict(
+                    "workflow_binding is server-owned and cannot be modified through generic plan save"
+                )
+            # 2. evidence
+            if new_auth["evidence"] != old_auth["evidence"]:
+                raise PlanOwnershipConflict(
+                    "evidence is server-owned and cannot be modified through generic plan save"
+                )
+            # 3. look_snapshot
+            if new_auth["look_snapshot"] != old_auth["look_snapshot"]:
+                raise PlanOwnershipConflict(
+                    "look_snapshot is server-owned and cannot be modified through generic plan save"
+                )
+            # 4. wardrobe_progression
+            if new_auth["wardrobe_progression"] != old_auth["wardrobe_progression"]:
+                raise PlanOwnershipConflict(
+                    "wardrobe_progression is server-owned and cannot be modified through generic plan save"
+                )
+
+            # Reconcile shared_state per effective field independently
+            reconciled_shared_state = {}
+            for field in ("look", "initial_wardrobe"):
+                old_val = old_plan.get(field, "")
+                new_val = validated.get(field, "")
+                old_meta = old_auth["shared_state"][field]
+                new_meta = new_auth["shared_state"][field]
+
+                if new_val == old_val:
+                    if new_meta != old_meta:
+                        raise PlanOwnershipConflict(
+                            f"shared_state.{field} metadata cannot be modified when {field} is unchanged"
+                        )
+                    reconciled_shared_state[field] = dict(old_meta)
+                else:
+                    reconciled_shared_state[field] = {"origin": "user", "evidence_id": None}
+
+            reconciled_auth = dict(new_auth)
+            reconciled_auth["shared_state"] = reconciled_shared_state
+            reconciled_auth["evidence"] = list(old_auth["evidence"])
+            reconciled_auth = validate_authoring_block(reconciled_auth, validated)
+            validated["authoring"] = reconciled_auth
+            plan_with_conflicts["authoring"] = reconciled_auth
+
+        encoded = json.dumps(
+            plan_with_conflicts, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+        )
+
+        # Step 4: constant-change guard. The comparison strips the
+        # ``conflicts`` key the prior save may have written so a
+        # re-save of the same draft (which is a legal CAS bump)
+        # does not read as a constant change.
+        if current is not None:
             old_compare = {
                 key: value for key, value in old_plan.items()
                 if key != "conflicts"

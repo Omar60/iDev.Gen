@@ -9,7 +9,7 @@ agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 16 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 17 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -113,7 +113,17 @@ coverage checks remain intact. Real HTTP bodies above 10 MiB, including missing
 or false `Content-Length`, fail before parsing/writes. The workflow is write-free
 until explicit Apply and performs no automatic Apply, session, or generation.
 No product defect was found. Group 3, Actionable translation readiness, is
-complete. Task 4.1 remains pending and Task 4 has not been started.
+complete. At that checkpoint Task 4.1 was pending and Task 4 had not started.
+
+Task 4.1 has now passed independent acceptance and is formally closed. The
+backend validates the complete closed authoring-v1 schema and keeps
+`workflow_binding`, `evidence`, `look_snapshot`, and `wardrobe_progression`
+server-owned. Generic plan saves reconcile each changed shared-state value
+inside the revision CAS, reset only changed-field metadata to `user`, and
+preserve historical evidence. Frontend normalization and save payloads retain
+authoring data, empty take arrays, and missing or invalid IDs without
+fabricating IDs. Closed-schema, ownership, compatibility, and synchronized
+concurrent-CAS regressions pass. Task 4.2 remains pending and has not started.
 
 ## Prior Position
 
@@ -160,23 +170,12 @@ remain intact.
 
 ## Current Position
 
-Tasks 3.1 through 3.5 are complete and formally closed. Task 3.5 changes only
-its focused tests and closure records; no product code changed, and the
-canonical bulk Preview/Apply boundary remains authoritative. Group 3 is
-complete, while no work on Task 4.1 or later tasks has started.
-
-Task 3.2 is complete and formally closed. The accepted implementation changes
-only the manual source-backed translation workflow and its focused tests;
-`backend/resource_translation.py` and `backend/request_limits.py` remain
-unchanged. The canonical bulk path remains the semantic authority, and Task 3.4
-is now also complete; Group 3 is complete and Task 4.1 is next.
-
-Task 3.5 closure gates were 2,121/2,121 backend tests, 418/418 frontend tests,
-85 focused translation tests, 79 focused resource-service tests, 10 privacy
-tests, 36 shoot tests, a successful frontend build, strict OpenSpec validation,
-and a clean `git diff --check`.
+Tasks 3.1 through 3.5 and Task 4.1 are complete and formally closed. Task 4.1
+passed independent acceptance with its closed-schema, CAS ownership, frontend
+identity-preservation, and concurrent-save contracts verified. Task 4.2 is the
+next pending task and has not started.
 
 ## Next Milestone
 
-Task 4.1 is the next pending task. Do not begin it automatically; prepare its
+Task 4.2 is the next pending task. Do not begin it automatically; prepare its
 bounded handoff only when explicitly requested.

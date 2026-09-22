@@ -145,8 +145,8 @@ def _seed_plan(
                     "expression": {"mode": "vary"},
                 },
                 "shared_state": {
-                    "look": {"origin": "none", "evidence_id": None},
-                    "initial_wardrobe": {"origin": "none", "evidence_id": None},
+                    "look": {"origin": "user", "evidence_id": None},
+                    "initial_wardrobe": {"origin": "user", "evidence_id": None},
                 },
                 "evidence": [],
                 "look_snapshot": None,

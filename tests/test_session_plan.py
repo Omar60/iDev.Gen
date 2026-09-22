@@ -5361,3 +5361,1058 @@ class TestTwelvePortraitsOneCameraAndCatalogueScoping:
         })
         assert resp_compose.status_code == 422, resp_compose.text
         assert "camera catalogue is empty" in resp_compose.json()["detail"]
+
+
+# =====================================================================
+# Task 4.1: Closed authoring-v1 schema, server-owned block immutability,
+# and shared-state authority reconciliation.
+# =====================================================================
+
+
+def _task41_resource_revision() -> dict:
+    lib_id = resource_store.ensure_library("inv_task41_rooms", kind="rooms")
+    rev_id = resource_store.record_revision(
+        lib_id,
+        "inv_task41_room_01",
+        {"label": "invented studio room", "scene_theme": "minimalist studio lighting", "weight": 1.0},
+        translation={"label": "invented studio room", "scene_theme": "minimalist studio lighting"},
+    )
+    rev = resource_store.get_revision(revision_id=rev_id)
+    assert rev is not None
+    return {
+        "library_key": "inv_task41_rooms",
+        "source_id": "inv_task41_room_01",
+        "content_digest": rev["content_digest"],
+    }
+
+
+def _task41_valid_authoring(
+    *,
+    look_text: str = "Natural beauty studio look",
+    wardrobe_text: str = "She wears silk blouse.",
+    garments: list[dict] | None = None,
+    plan_revision: int = 1,
+    snapshot: bool = True,
+    progression: bool = True,
+    scene_anchor_triple: dict | None = None,
+    origin_look: str = "assistant",
+    origin_wardrobe: str = "assistant",
+) -> dict:
+    if scene_anchor_triple is None:
+        scene_anchor_triple = {
+            "library_key": "inv_task41_rooms",
+            "source_id": "inv_task41_room_01",
+            "content_digest": "a" * 64,
+        }
+    if garments is None:
+        garments = [{"key": "blouse", "wording": "silk blouse", "aside": ""}]
+    if snapshot:
+        outfit = {"outfit_key": "outfit-01", "garments": garments}
+        digest = resource_store.canonical_digest({"appearance": look_text, "outfit": outfit})
+        look_snapshot = {
+            "look_id": "look-01",
+            "version": 1,
+            "content_digest": digest,
+            "appearance": look_text,
+            "outfit": outfit,
+        }
+    else:
+        look_snapshot = None
+    if progression:
+        wardrobe_progression = {
+            "source_look_digest": "c" * 64,
+            "start_take_id": "take-001",
+            "end_take_id": "take-001",
+            "stage_indices": [0],
+            "applied_revision": plan_revision,
+        }
+    else:
+        wardrobe_progression = None
+
+    ev_id = "ev-01"
+    evidence = [
+        {
+            "id": ev_id,
+            "kind": "shared_choices",
+            "input": {
+                "messages": [{"role": "user", "content": "Generate choices"}],
+                "model": "invented-model",
+                "parameters": {},
+                "plan_revision": plan_revision,
+            },
+            "output": {
+                "look": look_text,
+                "initial_wardrobe": wardrobe_text,
+            },
+            "accepted": {
+                "look": look_text,
+                "initial_wardrobe": wardrobe_text,
+            },
+        }
+    ]
+
+    shared_state = {
+        "look": {
+            "origin": origin_look,
+            "evidence_id": ev_id if origin_look in ("assistant", "assistant_edited") else None,
+        },
+        "initial_wardrobe": {
+            "origin": origin_wardrobe,
+            "evidence_id": ev_id if origin_wardrobe in ("assistant", "assistant_edited") else None,
+        },
+    }
+
+    return {
+        "schema_version": 1,
+        "mode": "automatic",
+        "brief": "Studio portrait session brief",
+        "scene_anchor": dict(scene_anchor_triple),
+        "workflow_binding": {
+            "workflow_id": 1,
+            "kind": "t2i",
+            "graph_digest": "a" * 64,
+            "node_map_digest": "b" * 64,
+        },
+        "variation_policy": {
+            "camera": {"mode": "vary"},
+            "framing": {"mode": "vary"},
+            "pose": {"mode": "vary"},
+            "expression": {"mode": "vary"},
+        },
+        "shared_state": shared_state,
+        "evidence": evidence,
+        "look_snapshot": look_snapshot,
+        "wardrobe_progression": wardrobe_progression,
+    }
+
+
+def _task41_make_plan(
+    rev: dict,
+    auth: dict | None = None,
+    look: str = "Natural beauty studio look",
+    wardrobe: str = "She wears silk blouse.",
+    takes: list[dict] | None = None,
+) -> dict:
+    if takes is None:
+        takes = [{"take_id": "take-001", "camera": "50mm", "pose": "standing"}]
+    plan = {
+        "version": "resource-v1",
+        "look": look,
+        "initial_wardrobe": wardrobe,
+        "takes": takes,
+        "selected_resources": [dict(rev)],
+        "wardrobe_changes": [],
+    }
+    if auth is not None:
+        plan["authoring"] = auth
+    return plan
+
+
+def _task41_seed_authoring_plan(
+    session_id: int,
+    plan: dict,
+    revision: int = 1,
+) -> None:
+    encoded = json.dumps(plan, ensure_ascii=True, separators=(",", ":"))
+    now = db.now()
+    db.run(
+        "INSERT INTO session_plan (session_id, mode, plan_revision, plan_json, created_at, updated_at) "
+        "VALUES (?, 'resource-v1', ?, ?, ?, ?)",
+        session_id, revision, encoded, now, now,
+    )
+
+
+class TestTask41ClosedAuthoringSchema:
+    @pytest.mark.parametrize("field", ["look", "initial_wardrobe"])
+    @pytest.mark.parametrize("origin", ["none", "assistant", "assistant_edited", "saved_look"])
+    def test_effective_edit_reconciles_historical_metadata_in_cas(
+        self, client, seeded, field, origin,
+    ):
+        sid = _task34_resource_session(client, seeded, "historical shared state edit")
+        rev = _task41_resource_revision()
+        auth = _task41_valid_authoring(
+            scene_anchor_triple=rev,
+            origin_look=origin if field == "look" else "assistant",
+            origin_wardrobe=origin if field == "initial_wardrobe" else "assistant",
+        )
+        plan = _task41_make_plan(rev, auth=auth)
+        if origin == "none":
+            plan[field] = ""
+        session_plan.validate_draft(plan)
+        _task41_seed_authoring_plan(sid, plan)
+
+        edited = json.loads(json.dumps(plan))
+        edited[field] = f"User changed {field}"
+        response = client.post(
+            f"/api/sessions/{sid}/plan", json={"plan": edited, "expected_revision": 1},
+        )
+        assert response.status_code == 200, response.text
+        stored = client.get(f"/api/sessions/{sid}/plan").json()
+        other = "initial_wardrobe" if field == "look" else "look"
+        assert stored["plan_revision"] == 2
+        assert stored["plan"][field] == edited[field]
+        assert stored["plan"]["authoring"]["shared_state"][field] == {
+            "origin": "user", "evidence_id": None,
+        }
+        assert stored["plan"]["authoring"]["shared_state"][other] == auth["shared_state"][other]
+        assert stored["plan"]["authoring"]["evidence"] == auth["evidence"]
+
+        forged = json.loads(json.dumps(stored["plan"]))
+        forged["authoring"]["shared_state"][field] = auth["shared_state"][field]
+        refused = client.post(
+            f"/api/sessions/{sid}/plan", json={"plan": forged, "expected_revision": 2},
+        )
+        assert refused.status_code == 409, refused.text
+        assert client.get(f"/api/sessions/{sid}/plan").json() == stored
+
+    @pytest.mark.parametrize("field", ["look", "initial_wardrobe"])
+    def test_active_evidence_must_match_effective_value(self, client, seeded, field):
+        rev = _task41_resource_revision()
+        auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        plan = _task41_make_plan(rev, auth=auth)
+        session_plan.validate_draft(plan)
+
+        sid = _task34_resource_session(client, seeded, "matching active evidence")
+        _task41_seed_authoring_plan(sid, plan)
+        accepted = client.post(
+            f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 1},
+        )
+        assert accepted.status_code == 200, accepted.text
+
+        mismatched = json.loads(json.dumps(plan))
+        mismatched["authoring"]["evidence"][0]["accepted"][field] = "Unrelated accepted value"
+        with pytest.raises(session_plan.PlanValidationError, match="active evidence accepted value"):
+            session_plan.validate_draft(mismatched)
+
+        # Seed the invalid active state to exercise HTTP's CAS-side validation;
+        # a valid generic save cannot forge a server-owned evidence record.
+        bad_sid = _task34_resource_session(client, seeded, "mismatched active evidence")
+        _task41_seed_authoring_plan(bad_sid, mismatched)
+        before = db.one(
+            "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?", bad_sid,
+        )
+        rejected = client.post(
+            f"/api/sessions/{bad_sid}/plan", json={"plan": mismatched, "expected_revision": 1},
+        )
+        assert rejected.status_code == 422, rejected.text
+        assert "active evidence accepted value" in rejected.json()["detail"]
+        assert db.one(
+            "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?", bad_sid,
+        ) == before
+
+    @pytest.mark.parametrize("bad", [[], {}, 1, True, None])
+    def test_malformed_wardrobe_change_take_id_returns_422_without_write(
+        self, client, seeded, bad,
+    ):
+        sid = _task34_resource_session(client, seeded, "malformed wardrobe change take id")
+        rev = _task41_resource_revision()
+        plan = _task41_make_plan(rev)
+        plan["wardrobe_changes"] = [{
+            "take_id": bad, "scope": "this_take", "wardrobe": "silk blouse",
+        }]
+        res = client.post(
+            f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0},
+        )
+        assert res.status_code == 422, res.text
+        assert "wardrobe_changes[0].take_id" in res.json()["detail"]
+        assert db.one("SELECT plan_revision FROM session_plan WHERE session_id = ?", sid) is None
+
+    @pytest.mark.parametrize("bad", [[], {}, 1, True, None])
+    def test_malformed_closed_member_types_return_422_without_write(self, client, seeded, bad):
+        sid = _task34_resource_session(client, seeded, "malformed authoring member types")
+        rev = _task41_resource_revision()
+        auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        plan = _task41_make_plan(rev, auth=auth)
+        for field in ("look", "initial_wardrobe"):
+            candidate = json.loads(json.dumps(plan))
+            candidate["authoring"]["shared_state"][field]["origin"] = bad
+            res = client.post(
+                f"/api/sessions/{sid}/plan", json={"plan": candidate, "expected_revision": 0},
+            )
+            assert res.status_code == 422, res.text
+            assert f"shared_state.{field}.origin" in res.json()["detail"]
+
+        for member in ("mode", "value_origin"):
+            candidate = json.loads(json.dumps(plan))
+            candidate["authoring"]["variation_policy"]["camera"] = {
+                "mode": "fixed", "value": "50mm", "value_origin": "user",
+            }
+            candidate["authoring"]["variation_policy"]["camera"][member] = bad
+            res = client.post(
+                f"/api/sessions/{sid}/plan", json={"plan": candidate, "expected_revision": 0},
+            )
+            assert res.status_code == 422, res.text
+            assert f"variation_policy.camera.{member}" in res.json()["detail"]
+
+        assert db.one("SELECT plan_revision FROM session_plan WHERE session_id = ?", sid) is None
+
+    def test_valid_closed_authoring_round_trip_preserves_all_ten_members(
+        self, client, seeded,
+    ):
+        sid = _task34_resource_session(client, seeded, "valid authoring round trip")
+        rev = _task41_resource_revision()
+        auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        plan = _task41_make_plan(rev, auth=auth)
+        _task41_seed_authoring_plan(sid, plan, revision=1)
+
+        # GET round trip
+        resp_get = client.get(f"/api/sessions/{sid}/plan")
+        assert resp_get.status_code == 200, resp_get.text
+        data = resp_get.json()
+        assert data["plan_revision"] == 1
+        fetched_plan = data["plan"]
+        assert "authoring" in fetched_plan
+        fetched_auth = fetched_plan["authoring"]
+        assert set(fetched_auth.keys()) == session_plan.REQUIRED_AUTHORING_KEYS
+        assert fetched_auth["schema_version"] == 1
+        assert fetched_auth["mode"] == "automatic"
+        assert fetched_auth["brief"] == "Studio portrait session brief"
+        assert fetched_auth["scene_anchor"] == auth["scene_anchor"]
+        assert fetched_auth["workflow_binding"] == auth["workflow_binding"]
+        assert fetched_auth["variation_policy"] == auth["variation_policy"]
+        assert fetched_auth["shared_state"] == auth["shared_state"]
+        assert fetched_auth["evidence"] == auth["evidence"]
+        assert fetched_auth["look_snapshot"] == auth["look_snapshot"]
+        assert fetched_auth["wardrobe_progression"] == auth["wardrobe_progression"]
+
+        # POST update: user updates creative fields on takes
+        updated_plan = dict(fetched_plan)
+        updated_plan["takes"] = [
+            {"take_id": "take-001", "camera": "85mm", "pose": "sitting"},
+        ]
+        resp_post = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": updated_plan, "expected_revision": 1},
+        )
+        assert resp_post.status_code == 200, resp_post.text
+        assert resp_post.json()["plan_revision"] == 2
+
+        # Verify revision 2 preserves all authoring data
+        resp_get2 = client.get(f"/api/sessions/{sid}/plan")
+        assert resp_get2.status_code == 200
+        data2 = resp_get2.json()
+        assert data2["plan_revision"] == 2
+        assert data2["plan"]["authoring"] == auth
+
+    def test_authoring_validation_fail_closed_syntax_and_types(self):
+        rev = {
+            "library_key": "inv_rooms",
+            "source_id": "inv_01",
+            "content_digest": "a" * 64,
+        }
+        base_auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        base_plan = _task41_make_plan(rev, auth=base_auth)
+
+        # 1. Unknown authoring key
+        auth_unknown = dict(base_auth)
+        auth_unknown["forbidden_extra"] = True
+        plan_bad = dict(base_plan, authoring=auth_unknown)
+        with pytest.raises(session_plan.PlanValidationError, match="unknown keys"):
+            session_plan.validate_draft(plan_bad)
+
+        # 2. Missing required key
+        for key in session_plan.REQUIRED_AUTHORING_KEYS:
+            auth_missing = dict(base_auth)
+            del auth_missing[key]
+            plan_bad = dict(base_plan, authoring=auth_missing)
+            with pytest.raises(session_plan.PlanValidationError, match=f"missing required keys"):
+                session_plan.validate_draft(plan_bad)
+
+        # 3. Schema version invalid
+        for bad_ver in [2, 0, -1, "1", 1.0, True, False, None]:
+            auth_bad_ver = dict(base_auth, schema_version=bad_ver)
+            plan_bad = dict(base_plan, authoring=auth_bad_ver)
+            with pytest.raises(session_plan.PlanValidationError, match="schema_version"):
+                session_plan.validate_draft(plan_bad)
+
+        # 4. Mode invalid
+        for bad_mode in ["unknown", 123, True, None]:
+            auth_bad_mode = dict(base_auth, mode=bad_mode)
+            plan_bad = dict(base_plan, authoring=auth_bad_mode)
+            with pytest.raises(session_plan.PlanValidationError, match="mode"):
+                session_plan.validate_draft(plan_bad)
+
+        # 5. Brief invalid
+        for bad_brief in [123, "a" * 2001]:
+            auth_bad_brief = dict(base_auth, brief=bad_brief)
+            plan_bad = dict(base_plan, authoring=auth_bad_brief)
+            with pytest.raises(session_plan.PlanValidationError, match="brief"):
+                session_plan.validate_draft(plan_bad)
+
+        # 6. Malformed scene_anchor
+        for bad_scene in [
+            None,
+            "studio",
+            {"library_key": "k", "source_id": "s"},  # missing digest
+            {"library_key": "k", "source_id": "s", "content_digest": "not_hex"},  # non-hex
+            {"library_key": "k", "source_id": "s", "content_digest": "b" * 64},  # not in plan.selected_resources
+        ]:
+            auth_bad = dict(base_auth, scene_anchor=bad_scene)
+            plan_bad = dict(base_plan, authoring=auth_bad)
+            with pytest.raises(session_plan.PlanValidationError, match="scene_anchor"):
+                session_plan.validate_draft(plan_bad)
+
+        # 7. Malformed workflow_binding
+        for bad_wf in [
+            None,
+            {"workflow_id": 0, "kind": "t2i", "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # id <= 0
+            {"workflow_id": -1, "kind": "t2i", "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # id <= 0
+            {"workflow_id": True, "kind": "t2i", "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # bool
+            {"workflow_id": "1", "kind": "t2i", "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # str id
+            {"workflow_id": 1, "kind": "", "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # empty kind
+            {"workflow_id": 1, "kind": "t2i", "graph_digest": "bad", "node_map_digest": "b" * 64},  # bad digest
+        ]:
+            auth_bad = dict(base_auth, workflow_binding=bad_wf)
+            plan_bad = dict(base_plan, authoring=auth_bad)
+            with pytest.raises(session_plan.PlanValidationError, match="workflow_binding"):
+                session_plan.validate_draft(plan_bad)
+
+        # 8. Malformed variation_policy keys and modes
+        for bad_policy in [
+            None,
+            {},  # missing keys
+            dict(base_auth["variation_policy"], extra={"mode": "vary"}),  # unknown policy key
+            dict(base_auth["variation_policy"], expression={"mode": "unknown"}),  # invalid mode
+            dict(base_auth["variation_policy"], expression={"mode": "vary", "value": "smile"}),  # vary with extra key
+            dict(base_auth["variation_policy"], camera={"mode": "fixed"}),  # fixed missing value
+            dict(base_auth["variation_policy"], camera={"mode": "fixed", "value": "50mm", "value_origin": "unknown"}),  # fixed bad origin
+            dict(base_auth["variation_policy"], camera={"mode": "fixed", "value": "", "value_origin": "user"}),  # fixed empty value
+        ]:
+            auth_bad = dict(base_auth, variation_policy=bad_policy)
+            plan_bad = dict(base_plan, authoring=auth_bad)
+            with pytest.raises(session_plan.PlanValidationError, match="variation_policy"):
+                session_plan.validate_draft(plan_bad)
+
+        # 9. Shared state origin validation
+        # Forbidden origin
+        bad_origin = {"look": {"origin": "forbidden", "evidence_id": None}, "initial_wardrobe": base_auth["shared_state"]["initial_wardrobe"]}
+        with pytest.raises(session_plan.PlanValidationError, match="origin"):
+            session_plan.validate_draft(dict(base_plan, authoring=dict(base_auth, shared_state=bad_origin)))
+
+        # Origin none with non-empty look
+        bad_none = {"look": {"origin": "none", "evidence_id": None}, "initial_wardrobe": base_auth["shared_state"]["initial_wardrobe"]}
+        with pytest.raises(session_plan.PlanValidationError, match="origin 'none'"):
+            session_plan.validate_draft(dict(base_plan, authoring=dict(base_auth, shared_state=bad_none)))
+
+        # Origin user with evidence_id
+        bad_user = {"look": {"origin": "user", "evidence_id": "ev-01"}, "initial_wardrobe": base_auth["shared_state"]["initial_wardrobe"]}
+        with pytest.raises(session_plan.PlanValidationError, match="evidence_id must be null"):
+            session_plan.validate_draft(dict(base_plan, authoring=dict(base_auth, shared_state=bad_user)))
+
+        # Origin assistant with null evidence_id
+        bad_asst_null = {"look": {"origin": "assistant", "evidence_id": None}, "initial_wardrobe": base_auth["shared_state"]["initial_wardrobe"]}
+        with pytest.raises(session_plan.PlanValidationError, match="evidence_id must be a non-empty string"):
+            session_plan.validate_draft(dict(base_plan, authoring=dict(base_auth, shared_state=bad_asst_null)))
+
+        # Origin assistant with non-existent evidence_id
+        bad_asst_missing = {"look": {"origin": "assistant", "evidence_id": "ev-nonexistent"}, "initial_wardrobe": base_auth["shared_state"]["initial_wardrobe"]}
+        with pytest.raises(session_plan.PlanValidationError, match="non-existent evidence_id"):
+            session_plan.validate_draft(dict(base_plan, authoring=dict(base_auth, shared_state=bad_asst_missing)))
+
+        # Origin saved_look where plan.look != look_snapshot.appearance
+        bad_saved_look = {"look": {"origin": "saved_look", "evidence_id": None}, "initial_wardrobe": base_auth["shared_state"]["initial_wardrobe"]}
+        with pytest.raises(session_plan.PlanValidationError, match="must match look_snapshot.appearance"):
+            session_plan.validate_draft(dict(base_plan, look="mismatched appearance", authoring=dict(base_auth, shared_state=bad_saved_look)))
+
+        # 10. Evidence validation
+        for bad_ev in [
+            [dict(base_auth["evidence"][0], id="")],  # empty id
+            [base_auth["evidence"][0], base_auth["evidence"][0]],  # duplicate id
+            [dict(base_auth["evidence"][0], kind="other")],  # invalid kind
+            [dict(base_auth["evidence"][0], input={"messages": [], "model": "m", "parameters": {}, "plan_revision": 0})],  # rev <= 0
+            [dict(base_auth["evidence"][0], input={"messages": [], "model": "m", "parameters": {}, "plan_revision": True})],  # bool rev
+            [dict(base_auth["evidence"][0], input={"messages": [], "model": "m", "parameters": {}, "plan_revision": "1"})],  # str rev
+        ]:
+            auth_bad = dict(base_auth, evidence=bad_ev)
+            plan_bad = dict(base_plan, authoring=auth_bad)
+            with pytest.raises(session_plan.PlanValidationError, match="evidence"):
+                session_plan.validate_draft(plan_bad)
+
+        # 11. Look snapshot validation
+        for bad_snap in [
+            {"look_id": "l", "version": 1, "appearance": "a", "content_digest": "bad_hex", "outfit": {"outfit_key": "o", "garments": [{"key": "k", "wording": "silk blouse", "aside": ""}]}},
+            {"look_id": "l", "version": 1, "appearance": "a", "content_digest": "a" * 64, "outfit": {"outfit_key": "o", "garments": [{"key": "k", "wording": "silk blouse", "aside": ""}]}},  # digest mismatch
+            {"look_id": "l", "version": 1, "appearance": "a", "content_digest": "a" * 64, "outfit": {"outfit_key": "o", "garments": []}},  # empty garments
+            {"look_id": "l", "version": 1, "appearance": "a", "content_digest": "a" * 64, "outfit": {"outfit_key": "o", "garments": [{"key": "k", "wording": "", "aside": ""}]}},  # empty wording
+            {"look_id": "l", "version": 1, "appearance": "a", "content_digest": "a" * 64, "outfit": {"outfit_key": "o", "garments": [{"key": "k", "wording": " silk blouse ", "aside": ""}]}},  # whitespace
+        ]:
+            auth_bad = dict(base_auth, look_snapshot=bad_snap)
+            plan_bad = dict(base_plan, authoring=auth_bad)
+            with pytest.raises(session_plan.PlanValidationError, match="(look_snapshot|garment)"):
+                session_plan.validate_draft(plan_bad)
+
+        # 12. Wardrobe progression validation
+        for bad_prog in [
+            {"source_look_digest": "c" * 64, "start_take_id": "take-001", "end_take_id": "take-001", "stage_indices": [0], "applied_revision": 0},  # rev <= 0
+            {"source_look_digest": "c" * 64, "start_take_id": "take-001", "end_take_id": "take-001", "stage_indices": [0], "applied_revision": True},  # bool rev
+            {"source_look_digest": "c" * 64, "start_take_id": "take-001", "end_take_id": "take-001", "stage_indices": [0, 0], "applied_revision": 1},  # non-increasing
+            {"source_look_digest": "c" * 64, "start_take_id": "take-001", "end_take_id": "take-001", "stage_indices": [-1], "applied_revision": 1},  # negative
+            {"source_look_digest": "not_hex", "start_take_id": "take-001", "end_take_id": "take-001", "stage_indices": [0], "applied_revision": 1},  # bad digest
+        ]:
+            auth_bad = dict(base_auth, wardrobe_progression=bad_prog)
+            plan_bad = dict(base_plan, authoring=auth_bad)
+            with pytest.raises(session_plan.PlanValidationError, match="wardrobe_progression"):
+                session_plan.validate_draft(plan_bad)
+
+    def test_pre_authoring_compatibility_preserved(self, client, seeded):
+        sid = _task34_resource_session(client, seeded, "pre-authoring plan compatibility")
+        plan = {
+            "version": "resource-v1",
+            "look": "studio natural lighting",
+            "initial_wardrobe": "linen shirt",
+            "takes": [{"take_id": "take-001", "camera": "50mm", "pose": "standing"}],
+            "selected_resources": [],
+            "wardrobe_changes": [],
+        }
+        res = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan, "expected_revision": 0},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["plan_revision"] == 1
+
+        get_res = client.get(f"/api/sessions/{sid}/plan")
+        assert get_res.status_code == 200
+        assert "authoring" not in get_res.json()["plan"]
+
+        # Update without authoring succeeds and increments revision
+        plan2 = dict(plan, look="updated studio look")
+        res2 = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan2, "expected_revision": 1},
+        )
+        assert res2.status_code == 200
+        assert res2.json()["plan_revision"] == 2
+
+    def test_generic_post_cannot_create_or_delete_authoring_409(self, client, seeded):
+        rev = _task41_resource_revision()
+        # Case A: Plan without authoring cannot have authoring added via generic save
+        sid_a = _task34_resource_session(client, seeded, "cannot add authoring via generic save")
+        plan_no_auth = _task41_make_plan(rev, auth=None)
+        assert client.post(
+            f"/api/sessions/{sid_a}/plan",
+            json={"plan": plan_no_auth, "expected_revision": 0},
+        ).status_code == 200
+
+        # Attempt to add valid authoring via generic POST
+        plan_with_auth = dict(plan_no_auth, authoring=_task41_valid_authoring(scene_anchor_triple=rev))
+        res_add = client.post(
+            f"/api/sessions/{sid_a}/plan",
+            json={"plan": plan_with_auth, "expected_revision": 1},
+        )
+        assert res_add.status_code == 409, res_add.text
+        assert "cannot create authoring" in res_add.json()["detail"]
+        # Database unchanged
+        db_plan = client.get(f"/api/sessions/{sid_a}/plan").json()
+        assert db_plan["plan_revision"] == 1
+        assert "authoring" not in db_plan["plan"]
+
+        # Case B: Plan with authoring cannot have authoring deleted via generic save
+        sid_b = _task34_resource_session(client, seeded, "cannot delete authoring via generic save")
+        auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        plan_seeded = _task41_make_plan(rev, auth=auth)
+        _task41_seed_authoring_plan(sid_b, plan_seeded, revision=1)
+
+        # Attempt to save candidate without authoring
+        plan_delete_auth = dict(plan_seeded)
+        del plan_delete_auth["authoring"]
+        res_del = client.post(
+            f"/api/sessions/{sid_b}/plan",
+            json={"plan": plan_delete_auth, "expected_revision": 1},
+        )
+        assert res_del.status_code == 409, res_del.text
+        assert "cannot delete authoring" in res_del.json()["detail"]
+        # Database unchanged
+        db_plan_b = client.get(f"/api/sessions/{sid_b}/plan").json()
+        assert db_plan_b["plan_revision"] == 1
+        assert db_plan_b["plan"]["authoring"] == auth
+
+    def test_unchanged_effective_fields_require_exact_server_metadata_409(self, client, seeded):
+        sid = _task34_resource_session(client, seeded, "forged unchanged metadata refusal")
+        rev = _task41_resource_revision()
+        auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        plan = _task41_make_plan(rev, auth=auth)
+        _task41_seed_authoring_plan(sid, plan, revision=1)
+
+        # 1. Forge look origin on unchanged look
+        auth_forged_origin = json.loads(json.dumps(auth))
+        auth_forged_origin["shared_state"]["look"]["origin"] = "user"
+        auth_forged_origin["shared_state"]["look"]["evidence_id"] = None
+        plan_forged = dict(plan, authoring=auth_forged_origin)
+        res = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan_forged, "expected_revision": 1},
+        )
+        assert res.status_code == 409, res.text
+        assert "shared_state.look metadata cannot be modified" in res.json()["detail"]
+
+        # 2. Forge initial_wardrobe origin on unchanged initial_wardrobe
+        auth_forged_wardrobe = json.loads(json.dumps(auth))
+        auth_forged_wardrobe["shared_state"]["initial_wardrobe"]["origin"] = "user"
+        auth_forged_wardrobe["shared_state"]["initial_wardrobe"]["evidence_id"] = None
+        plan_forged_w = dict(plan, authoring=auth_forged_wardrobe)
+        res2 = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan_forged_w, "expected_revision": 1},
+        )
+        assert res2.status_code == 409, res2.text
+        assert "shared_state.initial_wardrobe metadata cannot be modified" in res2.json()["detail"]
+
+        # 3. Forge both together
+        auth_forged_both = json.loads(json.dumps(auth))
+        auth_forged_both["shared_state"]["look"]["origin"] = "user"
+        auth_forged_both["shared_state"]["look"]["evidence_id"] = None
+        auth_forged_both["shared_state"]["initial_wardrobe"]["origin"] = "user"
+        auth_forged_both["shared_state"]["initial_wardrobe"]["evidence_id"] = None
+        plan_forged_both = dict(plan, authoring=auth_forged_both)
+        res3 = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan_forged_both, "expected_revision": 1},
+        )
+        assert res3.status_code == 409, res3.text
+
+        # Verify DB is completely unchanged
+        current = client.get(f"/api/sessions/{sid}/plan").json()
+        assert current["plan_revision"] == 1
+        assert current["plan"]["authoring"] == auth
+
+    def test_changed_effective_field_resets_metadata_and_preserves_historical_evidence(
+        self, client, seeded,
+    ):
+        rev = _task41_resource_revision()
+        sid = _task34_resource_session(client, seeded, "reset look metadata on change")
+        auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        plan = _task41_make_plan(rev, auth=auth)
+        _task41_seed_authoring_plan(sid, plan, revision=1)
+
+        # Case 1: Changing look resets look metadata and preserves historical evidence
+        # Client payload echoes previous assistant metadata as frontend editConstants() does
+        plan_change_look = json.loads(json.dumps(plan))
+        plan_change_look["look"] = "Dramatic cinematic golden hour"
+        assert plan_change_look["authoring"]["shared_state"]["look"]["origin"] == "assistant"
+
+        res = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan_change_look, "expected_revision": 1},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["plan_revision"] == 2
+
+        updated = client.get(f"/api/sessions/{sid}/plan").json()["plan"]
+        assert updated["look"] == "Dramatic cinematic golden hour"
+        assert updated["authoring"]["shared_state"]["look"] == {
+            "origin": "user",
+            "evidence_id": None,
+        }
+        # initial_wardrobe remains untouched with original metadata
+        assert updated["authoring"]["shared_state"]["initial_wardrobe"] == {
+            "origin": "assistant",
+            "evidence_id": "ev-01",
+        }
+        # Historical unreferenced ev-01 evidence survived byte-for-byte
+        assert updated["authoring"]["evidence"] == auth["evidence"]
+
+        # Case 2: Changing initial_wardrobe (with snapshot=False) resets initial_wardrobe metadata
+        # Client payload echoes previous assistant metadata as frontend editConstants() does
+        sid2 = _task34_resource_session(client, seeded, "reset wardrobe metadata on change")
+        auth2 = _task41_valid_authoring(scene_anchor_triple=rev, snapshot=False)
+        plan2 = _task41_make_plan(rev, auth=auth2)
+        _task41_seed_authoring_plan(sid2, plan2, revision=1)
+
+        plan2_change_w = json.loads(json.dumps(plan2))
+        plan2_change_w["initial_wardrobe"] = "Tailored navy wool blazer."
+        assert plan2_change_w["authoring"]["shared_state"]["initial_wardrobe"]["origin"] == "assistant"
+
+        res2 = client.post(
+            f"/api/sessions/{sid2}/plan",
+            json={"plan": plan2_change_w, "expected_revision": 1},
+        )
+        assert res2.status_code == 200, res2.text
+
+        updated2 = client.get(f"/api/sessions/{sid2}/plan").json()["plan"]
+        assert updated2["initial_wardrobe"] == "Tailored navy wool blazer."
+        assert updated2["authoring"]["shared_state"]["initial_wardrobe"] == {
+            "origin": "user",
+            "evidence_id": None,
+        }
+        assert updated2["authoring"]["shared_state"]["look"] == {
+            "origin": "assistant",
+            "evidence_id": "ev-01",
+        }
+        assert updated2["authoring"]["evidence"] == auth2["evidence"]
+
+        # Case 3: Both changed simultaneously
+        plan2_change_both = json.loads(json.dumps(updated2))
+        plan2_change_both["look"] = "Neon cityscape night"
+        plan2_change_both["initial_wardrobe"] = "Leather moto jacket."
+        plan2_change_both["authoring"]["shared_state"]["look"] = {
+            "origin": "user",
+            "evidence_id": None,
+        }
+        plan2_change_both["authoring"]["shared_state"]["initial_wardrobe"] = {
+            "origin": "user",
+            "evidence_id": None,
+        }
+        res3 = client.post(
+            f"/api/sessions/{sid2}/plan",
+            json={"plan": plan2_change_both, "expected_revision": 2},
+        )
+        assert res3.status_code == 200, res3.text
+        updated3 = client.get(f"/api/sessions/{sid2}/plan").json()["plan"]
+        assert updated3["authoring"]["shared_state"]["look"] == {"origin": "user", "evidence_id": None}
+        assert updated3["authoring"]["shared_state"]["initial_wardrobe"] == {"origin": "user", "evidence_id": None}
+        assert updated3["authoring"]["evidence"] == auth2["evidence"]
+
+    def test_server_owned_blocks_mutation_rejected_as_409(self, client, seeded):
+        sid = _task34_resource_session(client, seeded, "server owned blocks immutability")
+        rev = _task41_resource_revision()
+        auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        plan = _task41_make_plan(rev, auth=auth)
+        _task41_seed_authoring_plan(sid, plan, revision=1)
+
+        # 1. Mutate workflow_binding
+        plan_wf = json.loads(json.dumps(plan))
+        plan_wf["authoring"]["workflow_binding"]["workflow_id"] = 2
+        res1 = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan_wf, "expected_revision": 1},
+        )
+        assert res1.status_code == 409, res1.text
+        assert "workflow_binding is server-owned" in res1.json()["detail"]
+
+        # 2. Mutate evidence
+        plan_ev = json.loads(json.dumps(plan))
+        plan_ev["authoring"]["evidence"].append({
+            "id": "ev-02",
+            "kind": "shared_choices",
+            "input": {
+                "messages": [{"role": "user", "content": "Another"}],
+                "model": "invented-model",
+                "parameters": {},
+                "plan_revision": 1,
+            },
+            "output": {"look": "l"},
+            "accepted": {"look": "l"},
+        })
+        res2 = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan_ev, "expected_revision": 1},
+        )
+        assert res2.status_code == 409, res2.text
+        assert "evidence is server-owned" in res2.json()["detail"]
+
+        # 3. Mutate look_snapshot
+        plan_snap = json.loads(json.dumps(plan))
+        outfit2 = {"outfit_key": "outfit-02", "garments": [{"key": "blouse", "wording": "silk blouse", "aside": ""}, {"key": "scarf", "wording": "scarf", "aside": ""}]}
+        plan_snap["authoring"]["look_snapshot"] = {
+            "look_id": "look-02",
+            "version": 1,
+            "content_digest": resource_store.canonical_digest({"appearance": plan["look"], "outfit": outfit2}),
+            "appearance": plan["look"],
+            "outfit": outfit2,
+        }
+        res3 = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan_snap, "expected_revision": 1},
+        )
+        assert res3.status_code == 409, res3.text
+        assert "look_snapshot is server-owned" in res3.json()["detail"]
+
+        # 4. Mutate wardrobe_progression
+        plan_prog = json.loads(json.dumps(plan))
+        plan_prog["authoring"]["wardrobe_progression"]["applied_revision"] = 2
+        res4 = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": plan_prog, "expected_revision": 1},
+        )
+        assert res4.status_code == 409, res4.text
+        assert "wardrobe_progression is server-owned" in res4.json()["detail"]
+
+        # Database remains completely unmodified
+        curr = client.get(f"/api/sessions/{sid}/plan").json()
+        assert curr["plan_revision"] == 1
+        assert curr["plan"]["authoring"] == auth
+
+    def test_saved_look_fully_worn_wardrobe_composition_rules(self):
+        # 1 garment
+        assert session_plan.compose_saved_look_wardrobe(
+            {"garments": [{"wording": "silk blouse"}]}
+        ) == "She wears silk blouse."
+
+        # 2 garments (Oxford comma)
+        assert session_plan.compose_saved_look_wardrobe(
+            {"garments": [{"wording": "silk blouse"}, {"wording": "pleated skirt"}]}
+        ) == "She wears silk blouse, and pleated skirt."
+
+        # 3 garments (Oxford comma)
+        assert session_plan.compose_saved_look_wardrobe(
+            {"garments": [
+                {"wording": "silk blouse"},
+                {"wording": "pleated skirt"},
+                {"wording": "leather boots"},
+            ]}
+        ) == "She wears silk blouse, pleated skirt, and leather boots."
+
+        # Order preservation
+        assert session_plan.compose_saved_look_wardrobe(
+            {"garments": [{"wording": "sandals"}, {"wording": "linen dress"}]}
+        ) == "She wears sandals, and linen dress."
+
+        # Malformed outfit inputs fail with PlanValidationError
+        for bad_outfit in [
+            None,
+            {},
+            {"garments": []},
+            {"garments": [{"wording": ""}]},
+            {"garments": [{"wording": "  silk blouse  "}]},
+            {"garments": [{"wording": 123}]},
+            {"garments": [{}]},
+        ]:
+            with pytest.raises(session_plan.PlanValidationError):
+                session_plan.compose_saved_look_wardrobe(bad_outfit)
+
+        # Plan level validation with saved_look origin: byte-for-byte exact equality required
+        rev = {
+            "library_key": "inv_rooms",
+            "source_id": "inv_01",
+            "content_digest": "a" * 64,
+        }
+        auth = _task41_valid_authoring(
+            scene_anchor_triple=rev,
+            look_text="studio look",
+            wardrobe_text="She wears silk blouse.",
+            garments=[{"key": "blouse", "wording": "silk blouse", "aside": ""}],
+            origin_wardrobe="saved_look",
+            origin_look="saved_look",
+        )
+        plan = _task41_make_plan(
+            rev,
+            auth=auth,
+            look="studio look",
+            wardrobe="She wears silk blouse.",
+        )
+        # Matches exactly: passes
+        session_plan.validate_draft(plan)
+
+        # Subtle difference in whitespace, casing, or punctuation fails closed
+        for bad_wardrobe in [
+            "She wears silk blouse. ",  # trailing space
+            " She wears silk blouse.",  # leading space
+            "she wears silk blouse.",   # lowercase 's'
+            "She wears silk blouse",    # missing period
+            "She wears a silk blouse.", # inserted article
+        ]:
+            plan_bad = dict(plan, initial_wardrobe=bad_wardrobe)
+            with pytest.raises(session_plan.PlanValidationError, match="canonical saved look wardrobe"):
+                session_plan.validate_draft(plan_bad)
+
+    def test_historical_revision_fields_acceptance_and_rejection(self):
+        rev = {
+            "library_key": "inv_rooms",
+            "source_id": "inv_01",
+            "content_digest": "a" * 64,
+        }
+        # A plan at revision 10 with historical evidence from revision 2 and progression from revision 3 is valid
+        auth = _task41_valid_authoring(scene_anchor_triple=rev, plan_revision=2)
+        auth["wardrobe_progression"]["applied_revision"] = 3
+        plan = _task41_make_plan(rev, auth=auth)
+        session_plan.validate_draft(plan)
+
+        # Reject invalid plan_revision in evidence
+        for bad_rev in [0, -1, True, False, 2.5, "2", None]:
+            auth_bad = json.loads(json.dumps(auth))
+            auth_bad["evidence"][0]["input"]["plan_revision"] = bad_rev
+            plan_bad = dict(plan, authoring=auth_bad)
+            with pytest.raises(session_plan.PlanValidationError, match="plan_revision"):
+                session_plan.validate_draft(plan_bad)
+
+        # Reject invalid applied_revision in wardrobe_progression
+        for bad_rev in [0, -1, True, False, 2.5, "2", None]:
+            auth_bad = json.loads(json.dumps(auth))
+            auth_bad["wardrobe_progression"]["applied_revision"] = bad_rev
+            plan_bad = dict(plan, authoring=auth_bad)
+            with pytest.raises(session_plan.PlanValidationError, match="applied_revision"):
+                session_plan.validate_draft(plan_bad)
+
+    def test_race_cas_concurrent_saves_atomicity(self, client, seeded, monkeypatch):
+        import concurrent.futures
+        import threading
+
+        sid = _task34_resource_session(client, seeded, "CAS race atomicity")
+        rev = _task41_resource_revision()
+        auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        plan = _task41_make_plan(rev, auth=auth)
+        _task41_seed_authoring_plan(sid, plan, revision=1)
+
+        candidates = []
+        for field, value in (
+            ("look", "Concurrent look"),
+            ("initial_wardrobe", "Concurrent wardrobe"),
+        ):
+            candidate = json.loads(json.dumps(plan))
+            candidate[field] = value
+            candidates.append(candidate)
+
+        # Both writers finish pre-CAS validation before either enters BEGIN IMMEDIATE.
+        ready = threading.Barrier(2)
+        original_validate = session_plan.validate_draft
+
+        def synchronized_validate(candidate, **kwargs):
+            result = original_validate(candidate, **kwargs)
+            if candidate in candidates:
+                ready.wait(timeout=10)
+            return result
+
+        monkeypatch.setattr(session_plan, "validate_draft", synchronized_validate)
+
+        def save(candidate):
+            try:
+                return ("saved", session_plan.save_draft(sid, candidate, 1))
+            except session_plan.PlanRevisionStale as exc:
+                return ("stale", str(exc))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(save, candidate) for candidate in candidates]
+            results = [future.result(timeout=20) for future in futures]
+
+        assert sorted(status for status, _ in results) == ["saved", "stale"]
+        assert "plan revision is 2, expected 1" in next(
+            detail for status, detail in results if status == "stale"
+        )
+        assert next(detail for status, detail in results if status == "saved")["plan_revision"] == 2
+
+        winner = results[0][0] == "saved"
+        winner_field = "look" if winner else "initial_wardrobe"
+        loser_field = "initial_wardrobe" if winner else "look"
+        final_data = client.get(f"/api/sessions/{sid}/plan").json()
+        final_plan = final_data["plan"]
+        assert final_data["plan_revision"] == 2
+        assert final_plan[winner_field] == candidates[0 if winner else 1][winner_field]
+        assert final_plan[loser_field] == plan[loser_field]
+        assert final_plan["authoring"]["shared_state"][winner_field] == {
+            "origin": "user", "evidence_id": None,
+        }
+        assert final_plan["authoring"]["shared_state"][loser_field] == auth["shared_state"][loser_field]
+        assert final_plan["authoring"]["evidence"] == auth["evidence"]
+        assert db.one(
+            "SELECT COUNT(*) AS n FROM session_plan WHERE session_id = ?", sid,
+        )["n"] == 1
+
+    def test_echoed_metadata_on_effective_edit_is_reset_by_server(self, client, seeded):
+        """Backend half of the editConstants/save payload contract tested in sessionPlan.test.js."""
+        sid = _task34_resource_session(client, seeded, "frontend editConstants assistant look")
+        rev = _task41_resource_revision()
+        auth = _task41_valid_authoring(
+            scene_anchor_triple=rev,
+            look_text="Original assistant look",
+            wardrobe_text="Original assistant wardrobe",
+            origin_look="assistant",
+            origin_wardrobe="assistant",
+            snapshot=False,
+            progression=False,
+        )
+        plan = _task41_make_plan(
+            rev,
+            auth=auth,
+            look="Original assistant look",
+            wardrobe="Original assistant wardrobe",
+        )
+        _task41_seed_authoring_plan(sid, plan, revision=1)
+
+        # The frontend contract test proves editConstants/buildPlanSavePayload emits this shape.
+        frontend_plan = json.loads(json.dumps(plan))
+        frontend_plan["look"] = "User updated look"
+        assert frontend_plan["authoring"]["shared_state"]["look"] == {"origin": "assistant", "evidence_id": "ev-01"}
+
+        res = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": frontend_plan, "expected_revision": 1},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["plan_revision"] == 2
+
+        updated = client.get(f"/api/sessions/{sid}/plan").json()["plan"]
+        assert updated["look"] == "User updated look"
+        # Edited field reset to user / null:
+        assert updated["authoring"]["shared_state"]["look"] == {
+            "origin": "user",
+            "evidence_id": None,
+        }
+        # Unchanged field retained its assistant origin and evidence:
+        assert updated["authoring"]["shared_state"]["initial_wardrobe"] == {
+            "origin": "assistant",
+            "evidence_id": "ev-01",
+        }
+        # Historical evidence preserved intact on server:
+        assert updated["authoring"]["evidence"] == auth["evidence"]
+
+        # 2. Attempting to forge metadata when effective field is UNCHANGED is rejected as 409
+        forged_payload = json.loads(json.dumps(updated))
+        # Keep look unchanged ('User updated look'), but forge metadata
+        forged_payload["authoring"]["shared_state"]["look"] = {
+            "origin": "assistant",
+            "evidence_id": "ev-01",
+        }
+        res_forged = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": forged_payload, "expected_revision": 2},
+        )
+        assert res_forged.status_code == 409, res_forged.text
+        assert "shared_state.look metadata cannot be modified when look is unchanged" in res_forged.json()["detail"]
+
+    def test_generated_history_authoring_edits_do_not_advance_continuity_freeze(self, client, seeded):
+        sid = _task34_resource_session(client, seeded, "authoring edits with generated history")
+        rev = _task41_resource_revision()
+        other = _build_revision(
+            "inv_task41_rooms", "inv_task41_room_02", INV_ROOM_PAYLOAD,
+        )
+        other_triple = {key: other[key] for key in ("library_key", "source_id", "content_digest")}
+        auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        plan = _task41_make_plan(rev, auth=auth, takes=[
+            {"take_id": "take-001", "camera": "50mm"},
+            {"take_id": "take-002", "camera": "35mm"},
+        ])
+        plan["selected_resources"].append(other_triple)
+        _task41_seed_authoring_plan(sid, plan)
+        shot_id = _plant_shot(sid)
+        _plant_prepared_take(sid, 1, "take-001", status="generated", linked_shot_id=shot_id)
+        _plant_prepared_take(sid, 1, "take-002", status="ready")
+
+        changed = json.loads(json.dumps(plan))
+        changed["authoring"]["scene_anchor"] = other_triple
+        changed["authoring"]["variation_policy"]["camera"] = {
+            "mode": "fixed", "value": "wide", "value_origin": "user",
+        }
+        saved = client.post(
+            f"/api/sessions/{sid}/plan", json={"plan": changed, "expected_revision": 1},
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["plan_revision"] == 2
+        assert client.get(f"/api/sessions/{sid}/plan").json()["plan"]["authoring"] == changed["authoring"]
+        rows = _prepared_take_rows(sid)
+        assert [(row["take_id"], row["status"]) for row in rows] == [
+            ("take-001", "generated"), ("take-002", "ready"),
+        ]
+
+        # These blocks are server-owned in 4.1; generic saves reject their edits
+        # for ownership, without introducing the future 4.7 freeze behavior.
+        for block, value in (
+            ("workflow_binding", {**auth["workflow_binding"], "kind": "i2i"}),
+            ("look_snapshot", None),
+        ):
+            forged = json.loads(json.dumps(changed))
+            forged["authoring"][block] = value
+            res = client.post(
+                f"/api/sessions/{sid}/plan", json={"plan": forged, "expected_revision": 2},
+            )
+            assert res.status_code == 409, res.text
+            assert f"{block} is server-owned" in res.json()["detail"]
+
+        changed_look = json.loads(json.dumps(changed))
+        changed_look["look"] = "different look"
+        frozen = client.post(
+            f"/api/sessions/{sid}/plan", json={"plan": changed_look, "expected_revision": 2},
+        )
+        assert frozen.status_code == 409, frozen.text
+        assert "generated" in frozen.json()["detail"]
+        assert client.get(f"/api/sessions/{sid}/plan").json()["plan_revision"] == 2

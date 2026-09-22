@@ -4240,6 +4240,8 @@ def save_plan_draft(sid: int, p: PlanDraftIn):
         raise HTTPException(409, str(exc))
     except session_plan.PlanConstantsFrozenAfterGenerated as exc:
         raise HTTPException(409, str(exc))
+    except session_plan.PlanOwnershipConflict as exc:
+        raise HTTPException(409, str(exc))
     except session_plan.SessionNotInResourceMode as exc:
         raise HTTPException(400, str(exc))
     except session_plan.SessionNotFound as exc:

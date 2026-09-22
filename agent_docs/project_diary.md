@@ -299,4 +299,16 @@
   missing or false `Content-Length`, fail before parsing/writes. The workflow
   remains write-free until Apply and performs no automatic Apply, session, or
   generation. No product defect was found. Group 3, Actionable translation
-  readiness, is complete; Task 4.1 remains pending and was not started.
+  readiness, is complete; at that checkpoint Task 4.1 remained pending and
+  had not started.
+- Task 4.1 is formally closed after independent acceptance. The closed
+  authoring-v1 validator enforces exact shapes and policy unions, while generic
+  saves echo server-owned blocks and reconcile changed shared-state metadata
+  against the current CAS winner without discarding historical evidence.
+  Frontend normalization and payload construction preserve authoring, empty
+  take arrays, and missing or invalid IDs without fabricating replacements. A
+  synchronized concurrent-save regression proves one CAS winner and atomic
+  persisted state. The verified gates include 2,153 backend tests, 426
+  frontend tests, focused session-plan/preparation-authority/resource-
+  preparation tests, privacy and shoot checks, frontend build, strict OpenSpec
+  validation, and clean diff checks. Task 4.2 is next and remains unstarted.

@@ -37,39 +37,41 @@ export function normalizePlan(rawPlan) {
     ? plan.initial_wardrobe
     : (typeof plan.initialWardrobe === 'string' ? plan.initialWardrobe : '')
 
-  // Normalize selected resources ensuring library_key, source_id, content_digest are retained
-  const selectedResources = (plan.selected_resources || plan.selectedResources || []).map((res) => ({
-    library_key: String(res.library_key || '').trim(),
-    source_id: String(res.source_id || '').trim(),
-    content_digest: String(res.content_digest || '').trim(),
-  }))
+  // Normalize selected resources ensuring raw IDs and values are preserved without coercion or trimming
+  const rawResources = Array.isArray(plan.selected_resources)
+    ? plan.selected_resources
+    : (Array.isArray(plan.selectedResources) ? plan.selectedResources : [])
+  const selectedResources = rawResources.map((res) => {
+    if (!res || typeof res !== 'object') return res
+    return {
+      library_key: res.library_key,
+      source_id: res.source_id,
+      content_digest: res.content_digest,
+    }
+  })
 
   // Normalize takes preserving take_id and creative choices
   const rawTakes = Array.isArray(plan.takes) ? plan.takes : []
-  const takes = rawTakes.length > 0
-    ? rawTakes.map((t, idx) => {
-        const { effective_wardrobe, effectiveWardrobe, ...rest } = t || {}
-        return {
-          ...rest,
-          take_id: String(rest.take_id || `take-${String(idx + 1).padStart(3, '0')}`).trim(),
-          camera: typeof rest.camera === 'string' ? rest.camera : '',
-          framing: typeof rest.framing === 'string' ? rest.framing : '',
-          pose: typeof rest.pose === 'string' ? rest.pose : '',
-          expression: typeof rest.expression === 'string' ? rest.expression : '',
-        }
-      })
-    : [{ take_id: 'take-001', camera: '', framing: '', pose: '', expression: '' }]
+  const takes = rawTakes.map((t) => {
+    const { effective_wardrobe, effectiveWardrobe, ...rest } = t || {}
+    const item = { ...rest }
+    item.camera = typeof rest.camera === 'string' ? rest.camera : ''
+    item.framing = typeof rest.framing === 'string' ? rest.framing : ''
+    item.pose = typeof rest.pose === 'string' ? rest.pose : ''
+    item.expression = typeof rest.expression === 'string' ? rest.expression : ''
+    return item
+  })
 
-  // Normalize wardrobe changes without silently coercing invalid scopes
-  const wardrobeChanges = (plan.wardrobe_changes || plan.wardrobeChanges || []).map((ch) => {
-    const rawScope = typeof ch.scope === 'string' ? ch.scope : (ch.scope ? String(ch.scope) : '')
-    const scope = (rawScope === WARDROBE_SCOPE_FROM_HERE || rawScope === WARDROBE_SCOPE_THIS_TAKE)
-      ? rawScope
-      : rawScope
+  // Normalize wardrobe changes without silently coercing invalid scopes or take IDs
+  const rawWardrobeChanges = Array.isArray(plan.wardrobe_changes)
+    ? plan.wardrobe_changes
+    : (Array.isArray(plan.wardrobeChanges) ? plan.wardrobeChanges : [])
+  const wardrobeChanges = rawWardrobeChanges.map((ch) => {
+    if (!ch || typeof ch !== 'object') return ch
     return {
-      take_id: String(ch.take_id || '').trim(),
-      scope,
-      wardrobe: typeof ch.wardrobe === 'string' ? ch.wardrobe : '',
+      take_id: ch.take_id,
+      scope: ch.scope,
+      wardrobe: typeof ch.wardrobe === 'string' ? ch.wardrobe : (ch.wardrobe ?? ''),
     }
   })
 
@@ -80,6 +82,10 @@ export function normalizePlan(rawPlan) {
     takes,
     selected_resources: selectedResources,
     wardrobe_changes: wardrobeChanges,
+  }
+
+  if (plan.authoring !== undefined) {
+    normalized.authoring = plan.authoring
   }
 
   if (Array.isArray(plan.conflicts)) {
@@ -333,15 +339,19 @@ export function buildPlanSavePayload(plan, expectedRevision) {
   }
 
   const normalized = normalizePlan(plan)
+  const payloadPlan = {
+    version: MODE_RESOURCE_V1,
+    look: normalized.look,
+    initial_wardrobe: normalized.initial_wardrobe,
+    takes: normalized.takes,
+    selected_resources: normalized.selected_resources,
+    wardrobe_changes: normalized.wardrobe_changes,
+  }
+  if (normalized.authoring !== undefined) {
+    payloadPlan.authoring = normalized.authoring
+  }
   return {
-    plan: {
-      version: MODE_RESOURCE_V1,
-      look: normalized.look,
-      initial_wardrobe: normalized.initial_wardrobe,
-      takes: normalized.takes,
-      selected_resources: normalized.selected_resources,
-      wardrobe_changes: normalized.wardrobe_changes,
-    },
+    plan: payloadPlan,
     expected_revision: expectedRevision,
   }
 }
