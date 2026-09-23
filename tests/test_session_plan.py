@@ -5522,6 +5522,149 @@ def _task41_seed_authoring_plan(
     )
 
 
+def _task42_takes(count: int) -> list[dict]:
+    return [{"take_id": f"take-{index:03d}", "camera": "50mm", "pose": "standing"}
+            for index in range(1, count + 1)]
+
+
+class TestTask42AuthoringLimits:
+    @pytest.mark.parametrize("count", [1, 500])
+    def test_count_boundary(self, count):
+        assert session_plan.validate_authoring_count(count) == count
+
+    @pytest.mark.parametrize("count", [0, 501, True, False, 1.5, 12.0, "12", None, []])
+    def test_count_rejects_out_of_range_and_non_integers(self, count):
+        with pytest.raises(session_plan.PlanValidationError, match="take count"):
+            session_plan.validate_authoring_count(count)
+
+    def test_enormous_integer_raises_domain_validation_error(self):
+        with pytest.raises(session_plan.PlanValidationError, match="take count"):
+            session_plan.validate_authoring_count(10 ** 5000)
+
+    def test_brief_boundary_uses_persisted_validator(self):
+        rev = {
+            "library_key": "inv_task41_rooms",
+            "source_id": "inv_task41_room_01",
+            "content_digest": "a" * 64,
+        }
+        auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        for brief in ["a" * 2000, "a" * 2001, None, 12]:
+            if isinstance(brief, str) and len(brief) == 2000:
+                assert session_plan.validate_authoring_brief(brief) == brief
+                plan = session_plan.validate_draft(
+                    _task41_make_plan(rev, auth=dict(auth, brief=brief))
+                )
+                assert plan["authoring"]["brief"] == brief
+            else:
+                with pytest.raises(session_plan.PlanValidationError, match="brief"):
+                    session_plan.validate_authoring_brief(brief)
+                with pytest.raises(session_plan.PlanValidationError, match="brief"):
+                    session_plan.validate_draft(
+                        _task41_make_plan(rev, auth=dict(auth, brief=brief))
+                    )
+
+    @pytest.mark.parametrize("before,after", [(20, 21), (499, 500)])
+    def test_authoring_growth_accepts_twenty_one_and_five_hundred(
+        self, client, seeded, before, after,
+    ):
+        sid = _task34_resource_session(client, seeded, "authoring count boundary")
+        rev = _task41_resource_revision()
+        plan = _task41_make_plan(
+            rev, auth=_task41_valid_authoring(scene_anchor_triple=rev),
+            takes=_task42_takes(before),
+        )
+        _task41_seed_authoring_plan(sid, plan)
+        candidate = dict(plan, takes=_task42_takes(after))
+        response = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": candidate, "expected_revision": 1},
+        )
+        assert response.status_code == 200, response.text
+        saved = client.get(f"/api/sessions/{sid}/plan").json()
+        assert saved["plan_revision"] == 2
+        assert len(saved["plan"]["takes"]) == after
+
+    def test_growth_above_500_rejects_without_writes(self, client, seeded):
+        sid = _task34_resource_session(client, seeded, "authoring growth refusal")
+        rev = _task41_resource_revision()
+        plan = _task41_make_plan(
+            rev, auth=_task41_valid_authoring(scene_anchor_triple=rev),
+            takes=_task42_takes(500),
+        )
+        _task41_seed_authoring_plan(sid, plan)
+        prepared_id = _plant_prepared_take(sid, 1, "take-001", status="ready")
+        before_plan = db.one("SELECT * FROM session_plan WHERE session_id = ?", sid)
+        before_prepared = db.one("SELECT * FROM prepared_take WHERE id = ?", prepared_id)
+        response = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": dict(plan, takes=_task42_takes(501)), "expected_revision": 1},
+        )
+        assert response.status_code == 422, response.text
+        assert db.one("SELECT * FROM session_plan WHERE session_id = ?", sid) == before_plan
+        assert db.one("SELECT * FROM prepared_take WHERE id = ?", prepared_id) == before_prepared
+
+    def test_historical_authoring_over_500_may_remain_or_shrink(self, client, seeded):
+        sid = _task34_resource_session(client, seeded, "historical authoring count")
+        rev = _task41_resource_revision()
+        plan = _task41_make_plan(
+            rev, auth=_task41_valid_authoring(scene_anchor_triple=rev),
+            takes=_task42_takes(520),
+        )
+        _task41_seed_authoring_plan(sid, plan)
+        for revision, count in [(1, 520), (2, 510)]:
+            response = client.post(
+                f"/api/sessions/{sid}/plan",
+                json={"plan": dict(plan, takes=_task42_takes(count)),
+                      "expected_revision": revision},
+            )
+            assert response.status_code == 200, response.text
+        stored = db.one("SELECT * FROM session_plan WHERE session_id = ?", sid)
+        assert stored["plan_revision"] == 3
+        assert len(json.loads(stored["plan_json"])["takes"]) == 510
+        response = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": dict(plan, takes=_task42_takes(521)), "expected_revision": 3},
+        )
+        assert response.status_code == 422, response.text
+        assert db.one("SELECT * FROM session_plan WHERE session_id = ?", sid) == stored
+
+    def test_expert_plan_above_500_remains_untruncated(self, client, seeded):
+        sid = _task34_resource_session(client, seeded, "expert count compatibility")
+        rev = _task41_resource_revision()
+        for revision, count in [(0, 501), (1, 502)]:
+            plan = _task41_make_plan(rev, takes=_task42_takes(count))
+            response = client.post(
+                f"/api/sessions/{sid}/plan",
+                json={"plan": plan, "expected_revision": revision},
+            )
+            assert response.status_code == 200, response.text
+        saved = client.get(f"/api/sessions/{sid}/plan").json()
+        assert saved["plan_revision"] == 2
+        assert len(saved["plan"]["takes"]) == 502
+        assert "authoring" not in saved["plan"]
+
+    def test_stale_revision_wins_before_growth_classification(self, client, seeded):
+        sid = _task34_resource_session(client, seeded, "stale authoring growth")
+        rev = _task41_resource_revision()
+        plan = _task41_make_plan(
+            rev, auth=_task41_valid_authoring(scene_anchor_triple=rev),
+            takes=_task42_takes(500),
+        )
+        _task41_seed_authoring_plan(sid, plan)
+        reduced = dict(plan, takes=_task42_takes(499))
+        assert client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": reduced, "expected_revision": 1},
+        ).status_code == 200
+        stored = db.one("SELECT * FROM session_plan WHERE session_id = ?", sid)
+        response = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": dict(plan, takes=_task42_takes(501)), "expected_revision": 1},
+        )
+        assert response.status_code == 409, response.text
+        assert db.one("SELECT * FROM session_plan WHERE session_id = ?", sid) == stored
+
+
 class TestTask41ClosedAuthoringSchema:
     @pytest.mark.parametrize("field", ["look", "initial_wardrobe"])
     @pytest.mark.parametrize("origin", ["none", "assistant", "assistant_edited", "saved_look"])

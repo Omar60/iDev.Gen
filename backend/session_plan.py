@@ -343,6 +343,22 @@ def compose_saved_look_wardrobe(outfit: dict) -> str:
     return f"She wears {all_but_last}, and {wordings[-1]}."
 
 
+def validate_authoring_count(value: Any) -> int:
+    """Validate the count for guided allocation or authoring plan growth."""
+    if type(value) is not int or not 1 <= value <= 500:
+        raise PlanValidationError("authoring take count must be an integer from 1 to 500")
+    return value
+
+
+def validate_authoring_brief(value: Any) -> str:
+    """Validate a present authoring brief before allocation or persistence."""
+    if not isinstance(value, str):
+        raise PlanValidationError(f"authoring.brief must be a string, got {type(value).__name__}")
+    if len(value) > 2000:
+        raise PlanValidationError(f"authoring.brief must be at most 2000 characters, got {len(value)}")
+    return value
+
+
 def validate_authoring_block(auth: Any, plan: dict, *, check_effective: bool = True) -> dict:
     """Validate closed authoring-v1 block and return a normalized copy."""
     if not isinstance(auth, dict) or not auth:
@@ -368,11 +384,7 @@ def validate_authoring_block(auth: Any, plan: dict, *, check_effective: bool = T
         )
 
     # 3. brief
-    brief = auth["brief"]
-    if not isinstance(brief, str):
-        raise PlanValidationError(f"authoring.brief must be a string, got {type(brief).__name__}")
-    if len(brief) > 2000:
-        raise PlanValidationError(f"authoring.brief must be at most 2000 characters, got {len(brief)}")
+    brief = validate_authoring_brief(auth["brief"])
 
     # 4. scene_anchor
     anchor = auth["scene_anchor"]
@@ -2437,6 +2449,9 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
             reconciled_auth = validate_authoring_block(reconciled_auth, validated)
             validated["authoring"] = reconciled_auth
             plan_with_conflicts["authoring"] = reconciled_auth
+
+            if len(validated["takes"]) > len(old_plan["takes"]):
+                validate_authoring_count(len(validated["takes"]))
 
         encoded = json.dumps(
             plan_with_conflicts, ensure_ascii=False, separators=(",", ":"), sort_keys=True,

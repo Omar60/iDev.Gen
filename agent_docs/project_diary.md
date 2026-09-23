@@ -312,3 +312,14 @@
   frontend tests, focused session-plan/preparation-authority/resource-
   preparation tests, privacy and shoot checks, frontend build, strict OpenSpec
   validation, and clean diff checks. Task 4.2 is next and remains unstarted.
+- Task 4.2 is formally closed after independent acceptance. Reusable strict
+  count validation accepts integer authoring counts 1–500 and rejects bool,
+  floats, numeric strings, and invalid values without coercion; brief validation
+  is shared and capped at 2,000 characters. Apply the 500 ceiling only when an
+  authoring plan grows, using the current persisted plan inside the winning CAS.
+  Existing authoring plans above 500 may remain or shrink but cannot grow;
+  expert/pre-authoring and legacy behavior stays uncapped, and twenty is not a
+  plan limit. The `10 ** 5000` regression protects against exception-message
+  formatting raising `ValueError`. The 2,172-test backend suite, focused plan
+  tests, privacy/shoot checks, strict OpenSpec validation, and diff checks
+  passed. Task 4.3 is next.

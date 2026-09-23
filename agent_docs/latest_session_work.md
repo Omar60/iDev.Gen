@@ -2,48 +2,41 @@
 
 ## Detailed Current State
 
-OpenSpec Task 4.1 of `simplify-resource-session-workflow` passed independent
-acceptance and is formally closed. The backend enforces the complete closed
-authoring-v1 schema, including exact policy unions, strict types, canonical
-saved-look wardrobe values, and historical revision fields. Generic plan saves
-may only echo the server-owned `workflow_binding`, `evidence`, `look_snapshot`,
-and `wardrobe_progression` blocks. Within the current revision CAS, each
-changed shared-state field is reset to `{origin: "user", evidence_id: null}`;
-unchanged field metadata remains authoritative and historical evidence is
-preserved.
+OpenSpec Task 4.2 of `simplify-resource-session-workflow` passed independent
+acceptance and is formally closed. The reusable `validate_authoring_count`
+helper accepts strict integers from 1 through 500 and rejects booleans, floats,
+numeric strings, and invalid values without coercion. The shared brief validator
+requires a string of at most 2,000 characters and is used by
+`validate_authoring_block`.
 
-Frontend normalization and `buildPlanSavePayload()` retain the authoring block,
-empty take arrays, and missing or invalid identifiers without coercion,
-substitution, or index-based ID creation. Explicit take creation remains the
-user-facing path for adding IDs. Tests cover malformed closed-schema values,
-ownership conflicts, legacy/pre-authoring compatibility, and two synchronized
-concurrent saves against one revision: one commits, the other receives the
-stale-revision conflict, and the winner's state persists atomically.
+`save_draft` classifies authoring growth against the current persisted plan
+inside the winning `BEGIN IMMEDIATE` CAS, after stale-revision and ownership
+checks and before writes or prepared-row invalidation. Historical authoring
+plans above 500 may remain unchanged or shrink but cannot grow. Expert and
+pre-authoring plans without authoring metadata and legacy sessions retain their
+established count behavior. Twenty remains a preparation batch size, not a plan
+limit.
 
-Task 4.2 remains `[ ]` and has not started. No later task was modified.
+The regression for `10 ** 5000` confirms `PlanValidationError`; the validator's
+error message no longer formats the rejected integer. Task 4.3 remains `[ ]`
+and is the next pending task. No later task was modified.
 
 ## Verification
 
 - `python -m pytest tests/test_session_plan.py -q`: passed.
-- `python -m pytest tests/test_preparation_authority.py -q`: passed.
-- `python -m pytest tests/test_resource_preparation.py -q`: passed.
-- `npm --prefix frontend test -- --run src/sessionPlan.test.js`: 113 passed.
-- `python -m pytest`: 2,153 passed.
-- `npm --prefix frontend test`: 426 passed.
-- `npm --prefix frontend run build`: passed; Vite reported a 555.74 kB
-  minified JavaScript chunk warning.
+- `python -m pytest`: 2,172 passed, 3 warnings.
 - `python -m pytest tests/test_no_personal_data.py tests/test_shoot_checks.py -q`:
   passed.
-- `openspec validate --changes --strict --no-interactive`: 1 passed, 0 failed.
-- `git diff --check`: clean after the closure documentation update.
+- `npx --yes @fission-ai/openspec validate simplify-resource-session-workflow --strict --no-interactive`:
+  passed after the Task 4.2 checkbox update.
+- `git diff --check`: passed after the closure documentation update.
+- The direct count probe accepted 1 and 500 and confirmed `PlanValidationError`
+  for 501, booleans, floats, numeric strings, other invalid values, and
+  `10 ** 5000`.
 
 ## Closure Scope
 
-- `backend/main.py`
 - `backend/session_plan.py`
-- `frontend/src/sessionPlan.js`
-- `frontend/src/sessionPlan.test.js`
-- `tests/test_preparation_authority.py`
 - `tests/test_session_plan.py`
 - `openspec/changes/simplify-resource-session-workflow/tasks.md`
 - `agent_docs/latest_session_work.md`

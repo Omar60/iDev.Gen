@@ -9,7 +9,7 @@ agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 17 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 18 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -123,7 +123,17 @@ inside the revision CAS, reset only changed-field metadata to `user`, and
 preserve historical evidence. Frontend normalization and save payloads retain
 authoring data, empty take arrays, and missing or invalid IDs without
 fabricating IDs. Closed-schema, ownership, compatibility, and synchronized
-concurrent-CAS regressions pass. Task 4.2 remains pending and has not started.
+concurrent-CAS regressions pass. Task 4.2 was pending at that checkpoint.
+
+Task 4.2 has now passed independent acceptance and is formally closed. A
+reusable strict integer validator enforces authoring counts from 1 through 500;
+the reusable brief validator accepts up to 2,000 characters. Growth is checked
+against the persisted plan inside the winning CAS. Historical authoring plans
+above 500 may remain or shrink but cannot grow, while expert/pre-authoring and
+legacy behavior remains compatible. Twenty is not a plan cap. A regression
+ensures `10 ** 5000` raises `PlanValidationError` without integer formatting.
+The focused and full Python suites, privacy/shoot checks, strict OpenSpec
+validation, and diff checks passed. Task 4.3 remains pending.
 
 ## Prior Position
 
@@ -170,12 +180,13 @@ remain intact.
 
 ## Current Position
 
-Tasks 3.1 through 3.5 and Task 4.1 are complete and formally closed. Task 4.1
-passed independent acceptance with its closed-schema, CAS ownership, frontend
-identity-preservation, and concurrent-save contracts verified. Task 4.2 is the
-next pending task and has not started.
+Tasks 3.1 through 3.5 and Tasks 4.1 and 4.2 are complete and formally closed.
+Task 4.2 passed independent acceptance with strict reusable count and brief
+validation, CAS-protected growth, historical-plan and expert/legacy
+compatibility, and the large-integer regression verified. Task 4.3 is the next
+pending task.
 
 ## Next Milestone
 
-Task 4.2 is the next pending task. Do not begin it automatically; prepare its
+Task 4.3 is the next pending task. Do not begin it automatically; prepare its
 bounded handoff only when explicitly requested.
