@@ -332,3 +332,19 @@
   changing the primary workflow requires a new authoring session, while
   `reference_workflow_id` stays separate. Preserve pre-authoring and legacy
   behavior. Task 4.4 is pending.
+- Task 4.4 guided creation passed independent acceptance and is formally
+  closed. Normalize all server defaults before hashing the
+  request body, exclude `request_id` from that digest, and store the exact
+  success response rather than reconstructing it from mutable session state.
+  Persist the idempotency record, session, initial plan, stable take IDs, and
+  response in one `BEGIN IMMEDIATE` transaction so response loss, concurrent
+  retries, and injected failures cannot create duplicates or orphans.
+- A new creation path must preserve established plan semantics, not only schema
+  validity. The guided initial plan therefore uses
+  `detect_resource_constant_conflicts` before persistence; an unconditional
+  empty conflict list hid real look/resource conflicts even though the plan was
+  otherwise valid.
+- Intermittent failures in two existing concurrent session-plan tests were not
+  causally attributable to Task 4.4. Targeted order/stress runs passed and the
+  final 2,256-test suite was green. Do not broaden a bounded feature task into a
+  shared SQLite concurrency repair without a reproducible mechanism.

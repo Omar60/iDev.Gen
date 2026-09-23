@@ -472,6 +472,18 @@ CREATE TABLE IF NOT EXISTS session_plan (
     CHECK (plan_revision > 0)
 );
 
+-- Idempotency record for atomic guided session creation (Task 4.4).
+-- The claim, its initial session plan and the exact success response are
+-- committed together. It is session-owned so deleting a session preserves
+-- the existing cascade semantics for its other resource-v1 state.
+CREATE TABLE IF NOT EXISTS guided_session_request (
+    request_id     TEXT PRIMARY KEY,
+    request_digest TEXT NOT NULL,
+    session_id     INTEGER NOT NULL UNIQUE REFERENCES session(id) ON DELETE CASCADE,
+    response_json  TEXT NOT NULL,
+    created_at     TEXT NOT NULL
+);
+
 -- Authoritative review approval for resource-v1 plan revisions (task 5.4).
 -- One row per session; creating or saving a new plan revision invalidates
 -- the approval, and submission routes reject unapproved revisions with

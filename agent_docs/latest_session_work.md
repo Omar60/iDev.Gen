@@ -2,47 +2,52 @@
 
 ## Detailed Current State
 
-OpenSpec Task 4.3 of `simplify-resource-session-workflow` passed independent
-acceptance and is formally closed. The server resolves the effective primary
-workflow from the explicit Advanced override, falling back to the character's
-`workflow_id`, and validates that the workflow exists. Session creation and
-resource preflight share effective settings and the primary/reference
-compatibility predicates.
+OpenSpec Task 4.4 of `simplify-resource-session-workflow` passed independent
+acceptance and is formally closed. Its OpenSpec checkbox is complete.
 
-Authoring-v1 plans persist a server-owned four-field binding:
-`workflow_id`, `kind`, `graph_digest`, and `node_map_digest`. The stored kind may
-be the empty string, while non-string kinds are rejected. Missing effective
-workflow selection returns actionable `workflow_required`; missing or changed
-live binding state returns `workflow_changed`. A later character-default edit
-does not alter the frozen binding. An authoring session cannot replace its
-primary workflow and must be recreated to use another; `reference_workflow_id`
-remains outside the primary binding.
+`POST /api/sessions/guided` now accepts the closed guided-creation request,
+normalizes defaults before computing a canonical request digest, resolves the
+effective workflow from the Advanced override or character default, and
+requires an exact ready `rooms` revision. It creates stable `take-001` through
+`take-N` IDs and a complete authoring-v1 plan without calling the assistant.
 
-Binding validation covers preparation, approval, and submission, including the
-transactional write boundaries that prevent drift races. Established
-pre-authoring and legacy behavior remains compatible. Task 4.4 remains pending
-and has not started.
+The guided request record, session, revision-one plan, canonical conflict
+projection, stable IDs, and exact stored success response commit in one
+`BEGIN IMMEDIATE` transaction. A new request returns `201`; the same normalized
+request ID and digest replays the stored bytes with `200`; changed content under
+the same ID returns `409 idempotency_conflict`. Concurrent same-token creation
+produces at most one session and rollback leaves no request, session, or plan
+orphan.
+
+Task 4.5 has not started. Pre-existing changes in `.gitignore` and `AGENTS.md`
+remain outside this task.
 
 ## Verification
 
-- `python -m pytest`: 2,242 passed, 3 warnings.
-- `npx --yes @fission-ai/openspec validate simplify-resource-session-workflow --strict --no-interactive`:
+- `python -m pytest`: 2,256 passed, 5 warnings.
+- `python -m pytest tests/test_guided_session_creation.py -q`: 14 passed.
+- `python -m pytest -o addopts= -q tests/test_session_plan.py tests/test_workflow_binding.py`:
+  218 passed, 3 warnings.
+- `python -m pytest tests/test_no_personal_data.py tests/test_shoot_checks.py -q`:
+  46 passed.
+- `npx --yes @fission-ai/openspec validate simplify-resource-session-workflow --strict`:
   passed; the change is valid.
-- `git diff --check`: passed.
+- `git diff --check`: passed with line-ending conversion warnings only.
 
-## Closure Scope
+Two existing concurrent session-plan tests were intermittently observed during
+earlier full-suite attempts. Three independent read-only investigations found
+no causal path from Task 4.4, and the final unchanged worktree passed the full
+suite. No unrelated concurrency repair was added.
 
+## Implementation Scope
+
+- `backend/db.py`
 - `backend/main.py`
-- `backend/resource_preparation.py`
-- `backend/session_plan.py`
-- `backend/workflow_binding.py`
-- `tests/test_preparation_authority.py`
-- `tests/test_session_plan.py`
-- `tests/test_workflow_binding.py`
-- `openspec/changes/simplify-resource-session-workflow/tasks.md`
+- `backend/guided_sessions.py`
+- `tests/test_guided_session_creation.py`
 - `agent_docs/latest_session_work.md`
 - `agent_docs/project_progress.md`
 - `agent_docs/project_diary.md`
 
-No external handoffs or build artifacts are part of the closure. No push was
-made.
+No external handoff, frontend file, build artifact, or push is part of this
+closure.

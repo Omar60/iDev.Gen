@@ -3,13 +3,12 @@
 ## Goal
 
 Implement the active OpenSpec change `simplify-resource-session-workflow` one
-independently reviewable task at a time, using an external executor for routine
-production and retaining architecture, integration, and acceptance in the main
-agent.
+independently reviewable task at a time while retaining architecture,
+integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 19 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 20 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -147,6 +146,16 @@ changes do not affect a session, its primary workflow cannot be replaced, and
 `reference_workflow_id` remains outside the primary binding. Pre-authoring and
 legacy behavior remains compatible. Task 4.4 is pending.
 
+Task 4.4 has passed independent acceptance and is formally closed.
+`POST /api/sessions/guided` uses a closed normalized request,
+a canonical digest excluding `request_id`, an exact ready rooms anchor, and the
+server-resolved frozen workflow binding. One serialized transaction persists
+the request record, session, revision-one authoring plan, canonical conflicts,
+stable take IDs, and exact replay response. New creation returns `201`, matching
+replay returns `200`, changed content returns `409`, and concurrency/rollback
+tests prove one creation with no orphans. The final backend suite passed with
+2,256 tests.
+
 ## Prior Position
 
 Task 2.4 is complete. The automatic/manual/pre-authoring authority matrix is
@@ -192,13 +201,9 @@ remain intact.
 
 ## Current Position
 
-Tasks 3.1 through 3.5 and Tasks 4.1 through 4.3 are complete and formally
-closed. Task 4.3 passed independent acceptance with server-resolved effective
-workflow selection, canonical frozen binding, compatibility validation,
-drift rejection at preparation/approval/submission, and pre-authoring/legacy
-compatibility verified. Task 4.4 is the next pending task.
+Tasks 3.1 through 3.5 and Tasks 4.1 through 4.4 are complete and formally
+closed. Task 4.5 has not started.
 
 ## Next Milestone
 
-Task 4.4 is the next pending task and has not started. Do not begin it
-automatically; prepare its bounded handoff only when explicitly requested.
+Task 4.5 is the next pending task. Do not begin it automatically.

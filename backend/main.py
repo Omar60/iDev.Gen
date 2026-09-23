@@ -27,7 +27,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.datastructures import Headers, UploadFile as StarletteUploadFile
@@ -55,6 +55,7 @@ from backend import workflow_binding
 from backend.resource_import import CommitAborted, StaleFingerprintError
 from backend import resource_translation
 from backend import resource_selection
+from backend import guided_sessions
 from backend.request_limits import RequestLimitRoute
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -163,16 +164,13 @@ _STABLE_ENVELOPE_PATH_PREFIX: str = "/api/resources/import-selections"
 
 
 def _is_stable_envelope_path(path: str) -> bool:
-    """Return ``True`` when the request path is on the import-selections boundary.
+    """Return whether a route opts into a stable ``detail`` error envelope.
 
-    The stable envelope is a Task 1.2 contract for the
-    import-selections routes only. Other routes (sessions, plan,
-    workflow, etc.) keep their existing error shapes — converting
-    those into the new envelope would silently break ~100 tests that
-    pin the legacy ``detail`` strings. The handler limits itself to
-    this prefix so the rest of the API keeps its own contract.
+    The import-selection routes and the guided-session creation boundary use
+    stable domain errors; legacy session, plan and workflow routes retain their
+    established error shapes.
     """
-    return path.startswith(_STABLE_ENVELOPE_PATH_PREFIX)
+    return path.startswith(_STABLE_ENVELOPE_PATH_PREFIX) or path == "/api/sessions/guided"
 
 
 def _safe_get_current_view(path: str) -> dict | None:
@@ -3527,6 +3525,32 @@ def create_session(s: SessionIn):
     if s.composition_mode != session_plan.MODE_RESOURCE_V1:
         _expand_shots(sid, model, _look_for(settings, s.look), s.wardrobe, s.shots, s.seed_mode, s.seed)
     return {"id": sid}
+
+
+@app.post("/api/sessions/guided")
+async def create_guided_session(request: Request):
+    """Atomically create a resource-v1 session and its initial authoring plan."""
+    if not is_resource_planning_enabled():
+        return _stable_error(
+            503,
+            "resource_planning_disabled",
+            "Guided session creation is disabled by configuration.",
+        )
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _stable_error(422, "invalid_json", "Request body must be valid JSON.")
+
+    try:
+        normalized = guided_sessions.normalize_request(payload)
+        response_json, was_new = guided_sessions.create_or_replay(normalized)
+    except guided_sessions.GuidedSessionError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message)
+    return Response(
+        content=response_json,
+        status_code=201 if was_new else 200,
+        media_type="application/json",
+    )
 
 
 def _detect_authoring_workflow_change(
