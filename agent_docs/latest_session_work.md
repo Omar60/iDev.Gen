@@ -2,42 +2,43 @@
 
 ## Detailed Current State
 
-OpenSpec Task 4.2 of `simplify-resource-session-workflow` passed independent
-acceptance and is formally closed. The reusable `validate_authoring_count`
-helper accepts strict integers from 1 through 500 and rejects booleans, floats,
-numeric strings, and invalid values without coercion. The shared brief validator
-requires a string of at most 2,000 characters and is used by
-`validate_authoring_block`.
+OpenSpec Task 4.3 of `simplify-resource-session-workflow` passed independent
+acceptance and is formally closed. The server resolves the effective primary
+workflow from the explicit Advanced override, falling back to the character's
+`workflow_id`, and validates that the workflow exists. Session creation and
+resource preflight share effective settings and the primary/reference
+compatibility predicates.
 
-`save_draft` classifies authoring growth against the current persisted plan
-inside the winning `BEGIN IMMEDIATE` CAS, after stale-revision and ownership
-checks and before writes or prepared-row invalidation. Historical authoring
-plans above 500 may remain unchanged or shrink but cannot grow. Expert and
-pre-authoring plans without authoring metadata and legacy sessions retain their
-established count behavior. Twenty remains a preparation batch size, not a plan
-limit.
+Authoring-v1 plans persist a server-owned four-field binding:
+`workflow_id`, `kind`, `graph_digest`, and `node_map_digest`. The stored kind may
+be the empty string, while non-string kinds are rejected. Missing effective
+workflow selection returns actionable `workflow_required`; missing or changed
+live binding state returns `workflow_changed`. A later character-default edit
+does not alter the frozen binding. An authoring session cannot replace its
+primary workflow and must be recreated to use another; `reference_workflow_id`
+remains outside the primary binding.
 
-The regression for `10 ** 5000` confirms `PlanValidationError`; the validator's
-error message no longer formats the rejected integer. Task 4.3 remains `[ ]`
-and is the next pending task. No later task was modified.
+Binding validation covers preparation, approval, and submission, including the
+transactional write boundaries that prevent drift races. Established
+pre-authoring and legacy behavior remains compatible. Task 4.4 remains pending
+and has not started.
 
 ## Verification
 
-- `python -m pytest tests/test_session_plan.py -q`: passed.
-- `python -m pytest`: 2,172 passed, 3 warnings.
-- `python -m pytest tests/test_no_personal_data.py tests/test_shoot_checks.py -q`:
-  passed.
+- `python -m pytest`: 2,242 passed, 3 warnings.
 - `npx --yes @fission-ai/openspec validate simplify-resource-session-workflow --strict --no-interactive`:
-  passed after the Task 4.2 checkbox update.
-- `git diff --check`: passed after the closure documentation update.
-- The direct count probe accepted 1 and 500 and confirmed `PlanValidationError`
-  for 501, booleans, floats, numeric strings, other invalid values, and
-  `10 ** 5000`.
+  passed; the change is valid.
+- `git diff --check`: passed.
 
 ## Closure Scope
 
+- `backend/main.py`
+- `backend/resource_preparation.py`
 - `backend/session_plan.py`
+- `backend/workflow_binding.py`
+- `tests/test_preparation_authority.py`
 - `tests/test_session_plan.py`
+- `tests/test_workflow_binding.py`
 - `openspec/changes/simplify-resource-session-workflow/tasks.md`
 - `agent_docs/latest_session_work.md`
 - `agent_docs/project_progress.md`

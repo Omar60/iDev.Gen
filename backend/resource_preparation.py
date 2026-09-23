@@ -211,6 +211,11 @@ try:
 except ImportError:
     import session_plan
 
+try:
+    from backend import workflow_binding
+except ImportError:
+    import workflow_binding
+
 import translation_map
 # Re-export the persistence-error class the existing
 # ``session_plan`` API publishes, so a caller that reads
@@ -1232,6 +1237,14 @@ def prepare_take_inputs(
         raise PreparationArgumentError(
             f"take_id must be a non-empty string, got {take_id!r}"
         )
+
+    # Task 4.3: the workflow binding the plan froze must still match the
+    # live workflow row. Runs BEFORE the plan read so a drifted binding is
+    # rejected without paying the cost of resolving selected resources or
+    # assembling the take choices. The pre-check is read-only; the plan
+    # row, every prepared_take row and the workflow row are unchanged on
+    # refusal.
+    workflow_binding.validate_workflow_binding_against_session(session_id)
 
     # The plan is read through the same path the routes use.
     # The function delegates the resource-mode / plan-revision
@@ -4680,6 +4693,13 @@ def finalize_take_preparation(
             f"writer must be callable or None, got {type(writer).__name__}"
         )
 
+    # Task 4.3: validate the workflow binding BEFORE any resource / plan
+    # work. The second call below (right before the persistence boundary)
+    # catches drift that happens between build and persist; this first
+    # call keeps the early validation work cheap when the binding has
+    # already moved.
+    workflow_binding.validate_workflow_binding_against_session(session_id)
+
     # 1. Authoritative plan validation
     actual_revision, plan = session_plan._load_current_resource_plan(session_id)  # noqa: SLF001
     if actual_revision != plan_revision:
@@ -4917,7 +4937,13 @@ def finalize_take_preparation(
             writer_block=writer_block,
         )
 
-    # 10. Persist through the authority boundary for this plan kind
+    # 10. Persist through the authority boundary for this plan kind.
+    # Task 4.3: re-run the workflow-binding drift validator inside the
+    # same transactional write boundary to catch drift that landed
+    # between the build above and the persistence below. The validator
+    # is read-only; a refusal raises ``WorkflowChanged`` and the
+    # ``begin_preparation`` call below never runs.
+    workflow_binding.validate_workflow_binding_against_session(session_id)
     session_plan.begin_preparation(session_id, plan_revision, take_id)
     if plan_kind == session_plan.PLAN_AUTHORING_KIND_MANUAL:
         authoring_result = _AuthoringPreparedResult(

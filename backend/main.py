@@ -51,6 +51,7 @@ from backend.mining import combination_breakage, load_mined_combinations
 from backend import resource_service
 from backend import session_plan
 from backend import resource_preparation
+from backend import workflow_binding
 from backend.resource_import import CommitAborted, StaleFingerprintError
 from backend import resource_translation
 from backend import resource_selection
@@ -3445,28 +3446,7 @@ def create_session(s: SessionIn):
             "the settings dict",
         )
 
-    settings = {"width": 1024, "height": 1024, "steps": 8, "cfg": 1.0,
-                "lora_strength": model["lora_strength"]}
-    # `composition_mode` is a session-only field. The model row's
-    # settings can carry anything an operator typed in, and a key
-    # named `composition_mode` has no meaning on a model — the top-
-    # level ``SessionIn.composition_mode`` is the only create-time
-    # source of the session's mode. Strip the reserved key from the
-    # inherited set so a pre-existing model whose settings JSON
-    # happens to carry it cannot bleed the mode into a newly created
-    # session. The model row is NOT rewritten: only the dict this
-    # create call merges is filtered, and the rule is structural
-    # rather than a one-off migration.
-    inherited_model_settings = json.loads(model["settings"] or "{}")
-    if not isinstance(inherited_model_settings, dict):
-        inherited_model_settings = {}
-    inherited_model_settings = {
-        key: value
-        for key, value in inherited_model_settings.items()
-        if key != "composition_mode"
-    }
-    settings.update(inherited_model_settings)
-    settings.update(s.settings)
+    settings = workflow_binding.effective_session_settings(model, s.settings)
     # The mode lives in the session's settings JSON, not on a
     # dedicated column: a legacy session has no key at all, and a
     # resource-v1 session carries the value alongside its other
@@ -3549,6 +3529,95 @@ def create_session(s: SessionIn):
     return {"id": sid}
 
 
+def _detect_authoring_workflow_change(
+    session_id: int,
+    *,
+    requested_workflow_id: int | None,
+) -> str | None:
+    """Detect a real authoring-v1 workflow change for a PATCH preflight.
+
+    Returns a short English description of the change when the session
+    carries a persisted authoring-v1 plan AND the request asks to swap
+    the primary workflow to a different row than the one the plan is
+    bound to. Returns ``None`` for every other case: no plan row, a
+    plan without an ``authoring`` block (the pre-authoring-expert path),
+    the absence of the field in the request, or an identical echo of
+    the bound workflow id.
+
+    A session whose ``session.workflow_id`` no longer agrees with
+    ``authoring.workflow_binding.workflow_id`` is in drift and is not
+    repairable through this PATCH. The contract is "an authoring-v1
+    session is bound to one workflow identity; to use a different
+    workflow, start a new session". A PATCH that requests the bound
+    id while ``session.workflow_id`` has drifted is refused the same
+    way as a PATCH that requests a different id — silently re-aligning
+    ``session.workflow_id`` to the binding would repair drift behind
+    the operator's back, and is exactly the failure mode the review
+    rejected.
+
+    Reference workflow is intentionally not part of this guard. The
+    OpenSpec binding freezes only the effective primary
+    ``workflow_id``; ``reference_workflow_id`` is a separate relation
+    on ``session`` and is not in the guided request, the closed
+    binding, or the drift validator. Existing preflight rules apply
+    when an actual reference take uses it.
+
+    The function is intentionally cheap and read-only. The PATCH
+    handler calls it before any other write so a refusal leaves the
+    session, prepared_take and approval rows untouched.
+    """
+    plan_row = db.one(
+        "SELECT plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    if plan_row is None:
+        return None
+    # Use the same plan/binding decoder as the drift validator. Unreadable
+    # stored state cannot establish whether this session is bound.
+    try:
+        binding = workflow_binding._load_plan_binding(plan_row)
+    except workflow_binding.StoredPlanUnreadable as exc:
+        raise session_plan.PreparedTakePersistenceError(exc.message) from exc
+    if binding is None:
+        return None
+    bound_id = binding["workflow_id"]
+
+    if requested_workflow_id is None:
+        return None
+    # The contract is "an authoring-v1 session is bound to one
+    # workflow identity; to use a different workflow, start a new
+    # session". Two failure modes require a new session:
+
+    #   (a) the requested id disagrees with the bound id;
+    #   (b) the requested id agrees with the bound id but
+    #       ``session.workflow_id`` already drifted (FK nulled, or
+    #       pointed at a different row) — silently re-aligning the
+    #       session to the binding here would repair drift behind
+    #       the operator's back, and the next prepare / approve /
+    #       submit would surface the failure as
+    #       ``workflow_changed`` anyway. The PATCH preflight rejects
+    #       the change and the operator starts a new session for a
+    #       different workflow.
+    session_row = db.one(
+        "SELECT workflow_id FROM session WHERE id = ?",
+        session_id,
+    )
+    if session_row is None:
+        return None
+    stored_wf = session_row["workflow_id"]
+    if int(requested_workflow_id) != int(bound_id):
+        return (
+            f"authoring plan is bound to workflow {int(bound_id)}"
+        )
+    if stored_wf is None or int(stored_wf) != int(bound_id):
+        return (
+            f"session {session_id} workflow_id drifted from the bound "
+            f"workflow {int(bound_id)}; a new session is required to "
+            f"use a different workflow"
+        )
+    return None
+
+
 @app.patch("/api/sessions/{sid}")
 def update_session(sid: int, p: SessionPatch):
     """Rename, or fix what the session shoots with: its workflows, its reference
@@ -3564,6 +3633,38 @@ def update_session(sid: int, p: SessionPatch):
     row = db.one("SELECT * FROM session WHERE id=?", sid)
     if not row:
         raise HTTPException(404, "session not found")
+    # Task 4.3: a PATCH that asks to change the session's primary
+    # workflow while a persisted authoring-v1 plan is bound to that
+    # workflow is refused with 409 ``workflow_changed``. The check runs
+    # BEFORE every other write in this handler so a refused PATCH
+    # leaves settings, plan, plan_revision, approval and prepared_take
+    # rows byte-for-byte unchanged. An identical echo (the new id is
+    # the stored id, including the ``None`` -> ``None`` case) is
+    # harmless. Pre-authoring resource plans (no authoring block) and
+    # legacy sessions (no ``session_plan`` row) are not bound, so the
+    # check is a no-op for them. The model default PATCH lives on
+    # ``/api/models`` and is intentionally NOT touched here: a
+    # character whose ``workflow_id`` is changed after a session bound
+    # itself must keep the bound session unchanged, exactly the
+    # contract the resolver and validator pin.
+    if p.workflow_id is not None:
+        try:
+            workflow_changed = _detect_authoring_workflow_change(
+                sid, requested_workflow_id=p.workflow_id,
+            )
+        except workflow_binding.WorkflowChanged as exc:
+            raise _prepared_take_http_error(exc) from exc
+        except session_plan.PreparedTakePersistenceError as exc:
+            raise _prepared_take_http_error(exc) from exc
+        if workflow_changed is not None:
+            raise HTTPException(409, {
+                "code": "workflow_changed",
+                "message": (
+                    f"session {sid} workflow cannot be changed while an "
+                    f"authoring-v1 plan is bound: {workflow_changed}. "
+                    f"Start a new session for a different workflow."
+                ),
+            })
     # Reserved-field guard, the PATCH mirror of the create_session
     # check. A PATCH that injects the mode through `settings` would
     # write the key into the merged settings without going through
@@ -3709,11 +3810,22 @@ def _prepared_take_http_error(exc: Exception) -> HTTPException:
             409,
             session_plan.AUTHORING_EVIDENCE_PUBLIC_MESSAGE,
         )
+    # Task 4.3: workflow-binding drift is a 409 with a machine-readable
+    # ``detail.code`` and a human-readable ``detail.message``. The dedicated
+    # exception is preserved through broad persistence catch blocks so the
+    # 4.4 stable error envelope can read the code rather than the message.
+    if isinstance(exc, workflow_binding.WorkflowChanged):
+        return HTTPException(
+            409,
+            {"code": exc.code, "message": exc.message},
+        )
     if isinstance(
         exc,
         (
             session_plan.PlanValidationError,
             resource_preparation.PreparationError,
+            workflow_binding.WorkflowRequired,
+            workflow_binding.WorkflowCompatibilityError,
         ),
     ):
         return HTTPException(422, str(exc))
@@ -3754,6 +3866,7 @@ def begin_plan_preparation(sid: int, p: PreparedTakeBeginIn):
         session_plan.SessionNotInResourceMode,
         session_plan.SessionNotFound,
         session_plan.PreparedTakePersistenceError,
+        workflow_binding.WorkflowChanged,
     ) as exc:
         raise _prepared_take_http_error(exc)
 
@@ -3784,6 +3897,7 @@ def complete_plan_preparation(sid: int, p: PreparedTakeCompleteIn):
         session_plan.SessionNotInResourceMode,
         session_plan.SessionNotFound,
         session_plan.PreparedTakePersistenceError,
+        workflow_binding.WorkflowChanged,
     ) as exc:
         raise _prepared_take_http_error(exc)
 
@@ -3823,6 +3937,7 @@ def submit_plan_preparation(sid: int, p: PreparedTakeSubmitIn):
         session_plan.SessionNotFound,
         session_plan.PreparedTakePersistenceError,
         session_plan.PlanReviewNotApproved,
+        workflow_binding.WorkflowChanged,
     ) as exc:
         raise _prepared_take_http_error(exc)
 
@@ -6686,19 +6801,15 @@ def _require_mapped_choices(sid: int) -> None:
         # and there is nothing to ignore. Set and unmapped is the silent-drop the
         # docstring above is about, so it refuses rather than shoots the session
         # with a sampler nobody picked.
-        chosen = (
-            ("checkpoint", session["settings"].get("checkpoint"), "base model"),
-            ("lora_name", model["lora_name"], "LoRA"),
-            ("sampler", session["settings"].get("sampler"), "sampler"),
-            ("scheduler", session["settings"].get("scheduler"), "scheduler"),
-        )
-        for slot, value, label in chosen:
-            if value and slot not in node_map:
-                raise HTTPException(400, (
-                    f"Workflow '{wf['name']}' does not map the {label} slot, so '{value}' "
-                    f"would be ignored and the run would use the workflow's own. Open the "
-                    f"workflow, map {label}, and save — or clear the {label} choice."
-                ))
+        chosen = workflow_binding.selected_workflow_choices(session["settings"], model)
+        missing = workflow_binding.first_unmapped_choice(node_map, chosen)
+        if missing:
+            slot, value, label = missing
+            raise HTTPException(400, (
+                f"Workflow '{wf['name']}' does not map the {label} slot, so '{value}' "
+                f"would be ignored and the run would use the workflow's own. Open the "
+                f"workflow, map {label}, and save — or clear the {label} choice."
+            ))
 
     _require_usable_reference(session)
 
@@ -6736,19 +6847,24 @@ def _require_usable_reference(session: dict) -> None:
     # So this only refuses the case that cannot work at all — nothing to edit, and
     # nothing queued that would produce something to edit.
     anchors = json.loads(session["anchor_shot_ids"] or "[]")
-    if not anchors and pending:
-        will_shoot = db.one(
-            "SELECT COUNT(*) AS n FROM shot WHERE session_id=? AND status='pending' AND use_reference=0",
-            sid)["n"]
-        if not will_shoot:
-            raise HTTPException(400, (
-                f"{pending} take(s) edit a reference photo, but none is set and no take "
-                f"would produce one. Mark a finished photo as the reference from the "
-                f"gallery, or add a take that is not a reference edit."))
+    will_shoot = bool(db.one(
+        "SELECT id FROM shot WHERE session_id=? AND status='pending' AND use_reference=0",
+        sid,
+    ))
     wf = db.jload(db.one("SELECT * FROM workflow WHERE id=?", session["reference_workflow_id"]), "node_map")
     if not wf:
         raise HTTPException(400, "the session's reference workflow no longer exists")
-    if REFERENCE_SLOTS[0] not in wf["node_map"]:
+    issue = workflow_binding.reference_compatibility_issue(
+        wf["node_map"], own, anchors, will_shoot,
+    )
+    if issue is None:
+        return
+    if issue[0] == "anchor":
+        raise HTTPException(400, (
+            f"{pending} take(s) edit a reference photo, but none is set and no take "
+            f"would produce one. Mark a finished photo as the reference from the "
+            f"gallery, or add a take that is not a reference edit."))
+    if issue[0] == "slot":
         raise HTTPException(400, (
             f"Workflow '{wf['name']}' does not map the reference image slot, so the "
             f"reference would be ignored and every take would be generated from noise. "
@@ -6759,26 +6875,23 @@ def _require_usable_reference(session: dict) -> None:
     # and a slot keeps whatever filename the graph shipped with — an unrelated
     # photo, silently mixed into every take. Too many and the extra uploads and is
     # ignored. Both look like the reference simply had no effect.
-    mapped = [slot for slot in REFERENCE_SLOTS if slot in wf["node_map"]]
-    # A take's own pick answers to the same count rule as the session's: a slot
-    # left unfilled keeps whatever filename the graph was saved with, and that
-    # photograph is then mixed into the take with nothing on screen saying so.
-    for row, picked in zip(waiting, own):
-        if picked and len(picked) != len(mapped):
-            raise HTTPException(400, (
-                f"Take {row['id']} names {len(picked)} reference photo(s) but workflow "
-                f"'{wf['name']}' reads {len(mapped)}. Name {len(mapped)}, or clear the "
-                f"take's own pick to follow the session."))
-    if anchors and pending and len(anchors) != len(mapped):
-        detail = (f"{len(anchors)} reference photo(s) are marked, but workflow "
-                  f"'{wf['name']}' reads {len(mapped)}.")
-        if len(anchors) > len(mapped):
+    if issue[0] == "take_count":
+        _, index, photo_count, slot_count = issue
+        raise HTTPException(400, (
+            f"Take {waiting[index]['id']} names {photo_count} reference photo(s) but workflow "
+            f"'{wf['name']}' reads {slot_count}. Name {slot_count}, or clear the "
+            f"take's own pick to follow the session."))
+    if issue[0] == "anchor_count":
+        _, photo_count, slot_count = issue
+        detail = (f"{photo_count} reference photo(s) are marked, but workflow "
+                  f"'{wf['name']}' reads {slot_count}.")
+        if photo_count > slot_count:
             detail += (f" The extra one would be uploaded and ignored. Unmark it, or map "
-                       f"{REFERENCE_SLOTS[len(mapped)]} to another LoadImage in the workflow.")
+                       f"{REFERENCE_SLOTS[slot_count]} to another LoadImage in the workflow.")
         else:
             detail += (f" The unfilled slot would keep the filename the workflow was saved "
-                       f"with and mix that photo into every take. Mark {len(mapped)} reference "
-                       f"photos, or unmap {REFERENCE_SLOTS[len(anchors)]}.")
+                       f"with and mix that photo into every take. Mark {slot_count} reference "
+                       f"photos, or unmap {REFERENCE_SLOTS[photo_count]}.")
         raise HTTPException(400, detail)
 
 

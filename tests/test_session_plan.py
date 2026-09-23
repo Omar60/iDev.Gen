@@ -5895,14 +5895,19 @@ class TestTask41ClosedAuthoringSchema:
             with pytest.raises(session_plan.PlanValidationError, match="scene_anchor"):
                 session_plan.validate_draft(plan_bad)
 
-        # 7. Malformed workflow_binding
+        # 7. Malformed workflow_binding. Empty ``kind`` is the stored
+        # default of the ``workflow.kind`` column and is accepted; the
+        # resolver and binder read it verbatim and the validator
+        # compares it back. A non-string kind (int, None, ...) is still
+        # rejected because the closed schema requires a string.
         for bad_wf in [
             None,
             {"workflow_id": 0, "kind": "t2i", "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # id <= 0
             {"workflow_id": -1, "kind": "t2i", "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # id <= 0
             {"workflow_id": True, "kind": "t2i", "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # bool
             {"workflow_id": "1", "kind": "t2i", "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # str id
-            {"workflow_id": 1, "kind": "", "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # empty kind
+            {"workflow_id": 1, "kind": 0, "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # non-string kind
+            {"workflow_id": 1, "kind": None, "graph_digest": "a" * 64, "node_map_digest": "b" * 64},  # null kind
             {"workflow_id": 1, "kind": "t2i", "graph_digest": "bad", "node_map_digest": "b" * 64},  # bad digest
         ]:
             auth_bad = dict(base_auth, workflow_binding=bad_wf)

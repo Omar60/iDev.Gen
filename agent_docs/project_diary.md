@@ -323,3 +323,12 @@
   formatting raising `ValueError`. The 2,172-test backend suite, focused plan
   tests, privacy/shoot checks, strict OpenSpec validation, and diff checks
   passed. Task 4.3 is next.
+- Task 4.3 is formally closed after independent acceptance. Resolve the primary
+  workflow server-side from Advanced override then model default; validate the
+  existing primary/reference compatibility rules and persist a server-owned
+  four-field binding (`workflow_id`, `kind`, `graph_digest`, `node_map_digest`).
+  Validate drift at preparation, approval, and submission, including inside
+  write transactions. The binding survives later model-default changes;
+  changing the primary workflow requires a new authoring session, while
+  `reference_workflow_id` stays separate. Preserve pre-authoring and legacy
+  behavior. Task 4.4 is pending.

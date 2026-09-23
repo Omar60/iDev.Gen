@@ -23,6 +23,7 @@ import db
 import main
 import backend.resource_preparation as backend_resource_preparation
 import backend.session_plan as backend_session_plan
+import backend.workflow_binding as backend_workflow_binding
 import resource_store
 
 
@@ -65,6 +66,7 @@ def _create_resource_session(client, seeded, *, mode: str = "resource-v1", name:
             "composition_mode": mode,
             "look": INV_LOOK,
             "wardrobe": INV_WARDROBE,
+            "workflow_id": seeded["workflow_id"],
         },
     )
     assert resp.status_code == 200, resp.text
@@ -123,6 +125,14 @@ def _seed_plan(
         if custom_authoring is not None:
             authoring_block = custom_authoring
         else:
+            # Task 4.3: the authoring-v1 binding must agree with the
+            # workflow row the session points to, so the runtime drift
+            # validator does not refuse the test. The fixture builds
+            # the binding through the production binder so the digests
+            # match the seeded workflow's stored graph and node_map.
+            binding = backend_workflow_binding.build_workflow_binding(
+                seeded["workflow_id"],
+            )
             authoring_block = {
                 "schema_version": 1,
                 "mode": authoring_mode,
@@ -132,12 +142,7 @@ def _seed_plan(
                     "source_id": rev["source_id"],
                     "content_digest": rev["content_digest"],
                 },
-                "workflow_binding": {
-                    "workflow_id": seeded["workflow_id"],
-                    "kind": "t2i",
-                    "graph_digest": "a" * 64,
-                    "node_map_digest": "b" * 64,
-                },
+                "workflow_binding": binding,
                 "variation_policy": {
                     "camera": {"mode": "vary"},
                     "framing": {"mode": "vary"},

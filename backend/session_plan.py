@@ -80,6 +80,11 @@ from typing import Any
 
 import db
 
+try:
+    from backend import workflow_binding
+except ImportError:
+    import workflow_binding
+
 if __name__ == "backend.session_plan" and "session_plan" not in sys.modules:
     sys.modules["session_plan"] = sys.modules[__name__]
 elif __name__ == "session_plan" and "backend.session_plan" not in sys.modules:
@@ -430,8 +435,13 @@ def validate_authoring_block(auth: Any, plan: dict, *, check_effective: bool = T
     if type(wf_id) is not int or isinstance(wf_id, bool) or wf_id <= 0:
         raise PlanValidationError(f"authoring.workflow_binding.workflow_id must be a positive integer, got {wf_id!r}")
     wf_kind = wf["kind"]
-    if not isinstance(wf_kind, str) or not wf_kind:
-        raise PlanValidationError(f"authoring.workflow_binding.kind must be a non-empty string, got {wf_kind!r}")
+    # A stored kind is whatever ``workflow.kind`` says, including the empty
+    # string that pre-dates the tagging era. The resolver (4.3) reads the
+    # row's stored ``kind`` verbatim and the validator compares it back;
+    # forbidding ``""`` here would reject every legacy untagged workflow a
+    # session froze its plan against. ``kind`` is a label, not an enum.
+    if not isinstance(wf_kind, str):
+        raise PlanValidationError(f"authoring.workflow_binding.kind must be a string, got {wf_kind!r}")
     gd = wf["graph_digest"]
     if not isinstance(gd, str) or len(gd) != 64 or not all(c in "0123456789abcdef" for c in gd):
         raise PlanValidationError(
@@ -1693,6 +1703,25 @@ def get_draft(session_id: int) -> dict | None:
     }
 
 
+def _safe_validate_workflow_binding(session_id: int) -> dict | None:
+    """Run the validator, mapping ``StoredPlanUnreadable`` to the persistence category.
+
+    The validator raises ``StoredPlanUnreadable`` when the stored
+    ``plan_json`` cannot be decoded at all — the same condition
+    ``_load_current_resource_plan`` already classifies as
+    ``PreparedTakePersistenceError``. The persistence-error category
+    is the existing, app-wide one for unreadable stored plans; turning
+    unreadable data into ``WorkflowChanged`` would have introduced a
+    second, misleading classification. This helper centralises the
+    conversion so every domain path that gates on the validator
+    surfaces the same error kind for the same root cause.
+    """
+    try:
+        return workflow_binding.validate_workflow_binding_against_session(session_id)
+    except workflow_binding.StoredPlanUnreadable as exc:
+        raise PreparedTakePersistenceError(exc.message) from exc
+
+
 def _load_current_resource_plan(session_id: int) -> tuple[int, dict]:
     """Return the current resource-v1 plan after validating the session mode."""
     session = db.one(
@@ -1848,9 +1877,18 @@ def begin_preparation(
     plan_revision: int,
     take_id: str,
 ) -> dict:
-    """Persist pending before lengthy work and return the durable row."""
+    """Persist pending before lengthy work and return the durable row.
+
+    Task 4.3: the read-only workflow-binding validator runs BEFORE the
+    transaction so a drifted binding cannot leave a pending row behind.
+    The pre-check rejects the begin with ``WorkflowChanged``; the
+    transaction is never entered, the existing pending / ready rows are
+    not touched.
+    """
+    _safe_validate_workflow_binding(session_id)
     try:
         with db.transaction():
+            _safe_validate_workflow_binding(session_id)
             _validate_preparation_target(session_id, plan_revision, take_id)
             existing = _prepared_take_row(session_id, plan_revision, take_id)
             if existing is not None:
@@ -1881,6 +1919,7 @@ def begin_preparation(
         PlanValidationError,
         PreparedTakeConflict,
         PreparedTakePersistenceError,
+        workflow_binding.WorkflowChanged,
     ):
         raise
     except Exception as exc:
@@ -1947,6 +1986,11 @@ def complete_preparation(
     )
     try:
         with db.transaction():
+            # Task 4.3 re-check: the binding validator runs inside the
+            # same transactional write boundary that persists the
+            # ready snapshot. A drift that lands between an external
+            # preflight and this completion is refused and rolled back.
+            _safe_validate_workflow_binding(session_id)
             plan = _validate_preparation_target(session_id, plan_revision, take_id)
             if classify_plan_authoring(plan) != PLAN_AUTHORING_KIND_PRE_AUTHORING_EXPERT:
                 raise AuthoringEvidenceInvalid(
@@ -1994,6 +2038,7 @@ def complete_preparation(
         PlanValidationError,
         PreparedTakeConflict,
         PreparedTakePersistenceError,
+        workflow_binding.WorkflowChanged,
     ):
         raise
     except Exception as exc:
@@ -2025,6 +2070,13 @@ def complete_authoring_preparation(result: Any) -> dict:
     )
     try:
         with db.transaction():
+            # Task 4.3 re-check: the binding validator runs inside the
+            # same transactional write boundary that seals the authoring
+            # snapshot. A drift that lands between the early preflight
+            # and this sealed completion is refused and rolled back; no
+            # ``prepared_take`` status update, no ``linked_shot_id``
+            # change, and no ``shot`` row survives.
+            _safe_validate_workflow_binding(session_id)
             plan = _validate_preparation_target(session_id, plan_revision, take_id)
             if classify_plan_authoring(plan) != PLAN_AUTHORING_KIND_MANUAL:
                 raise AuthoringEvidenceInvalid(
@@ -2096,6 +2148,7 @@ def complete_authoring_preparation(result: Any) -> dict:
         PlanValidationError,
         PreparedTakeConflict,
         PreparedTakePersistenceError,
+        workflow_binding.WorkflowChanged,
     ):
         raise
     except Exception as exc:
@@ -2264,6 +2317,7 @@ def record_writer_synthesis(
         PlanValidationError,
         PreparedTakeConflict,
         PreparedTakePersistenceError,
+        workflow_binding.WorkflowChanged,
     ):
         raise
     except Exception as exc:
@@ -2643,8 +2697,26 @@ def submit_prepared_take(
     if not isinstance(take_id, str) or not take_id.strip():
         raise PlanValidationError("take_id must be a non-empty string")
 
+    # Task 4.3: the workflow binding the plan froze must still match the
+    # live workflow row. Runs BEFORE the submission transaction so a drifted
+    # binding cannot leave a freshly inserted ``shot`` row behind. The
+    # idempotent generated-retry branch is covered by the same pre-check:
+    # re-submitting an already-generated take is a no-op, but the plan's
+    # identity still has to be intact for the answer to be authoritative.
+    _safe_validate_workflow_binding(session_id)
+
     try:
         with db.transaction():
+            # Task 4.3 re-check: validate again inside the same
+            # transactional write boundary to catch drift between the
+            # preflight and the submission write. The validator is
+            # read-only; a refusal rolls the transaction back without
+            # touching the shot or prepared_take row. The idempotent
+            # ``status == GENERATED`` short-circuit above is also
+            # gated by the in-transaction re-check, so a drift that
+            # lands between the preflight and the read of the existing
+            # row cannot make the helper return a stale shot id.
+            _safe_validate_workflow_binding(session_id)
             session = db.one("SELECT id, settings, model_id FROM session WHERE id = ?", session_id)
             if session is None:
                 raise SessionNotFound(f"session {session_id} not found")
@@ -2794,6 +2866,7 @@ def submit_prepared_take(
         PreparedTakeConflict,
         PreparedTakePersistenceError,
         PlanReviewNotApproved,
+        workflow_binding.WorkflowChanged,
     ):
         raise
     except Exception as exc:
@@ -2830,11 +2903,22 @@ def approve_plan_review(session_id: int, plan_revision: int) -> dict:
     Validates that:
     1. Session exists and is in resource-v1 mode.
     2. Current plan revision matches plan_revision (CAS check).
+    3. Task 4.3: the workflow binding the plan froze still matches the live
+       workflow row the session points to. The validator runs BEFORE the
+       approval transaction so a drift cannot leave an approval row behind.
     """
     if not isinstance(plan_revision, int) or plan_revision <= 0:
         raise PlanValidationError("plan_revision must be a positive integer")
 
+    _safe_validate_workflow_binding(session_id)
+
     with db.transaction():
+        # Task 4.3 re-check: validate again inside the same
+        # transactional write boundary to catch drift between the
+        # preflight and the approval write. The validator is
+        # read-only; a refusal rolls the transaction back without
+        # touching the approval row.
+        _safe_validate_workflow_binding(session_id)
         session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
         if session is None:
             raise SessionNotFound(f"session {session_id} not found")
