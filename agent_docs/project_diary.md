@@ -390,3 +390,10 @@
   A disabled start returns 503 even for an identical replay; GET status remains
   available. OperationView does not expose request digests or fencing state.
   Execution, lease renewal, and recovery remain separate later tasks.
+- Task 5.3 binds each renewed lease to a signed snapshot of effective operation
+  inputs. Rechecking only the start-request digest and current validity missed
+  a valid translation edit under the same resource content digest and plan
+  revision. Both operation kinds now compare the renewed input fingerprint
+  inside the fenced response transaction; a copied ticket with edited fields
+  fails signature validation. Result and ordered progress commit together.
+  Actual assistant workers and prepared-take snapshots remain later tasks.

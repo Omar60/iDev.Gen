@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 26 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 27 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -234,15 +234,20 @@ remain intact.
 
 ## Current Position
 
-Tasks 3.1 through 3.5, Tasks 4.1 through 4.8, and Tasks 5.1-5.2 are complete.
+Tasks 3.1 through 3.5, Tasks 4.1 through 4.8, and Tasks 5.1-5.3 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.
 The closed public view excludes fencing and request internals; exact request
 replay, cross-kind exclusion, ordered targets, configuration gates, and
 origin-aware shared suggestions were independently verified. Start performs no
-assistant call. The full Python suite passed with 2,292 tests; strict OpenSpec,
-privacy/control, and diff checks passed. Remote execution and recovery remain
-for later tasks.
+assistant call. Task 5.3 adds a ten-minute backend lease renewal and a signed
+input ticket. Its short response transaction verifies the current owner, lease,
+plan revision, request, effective inputs, resource revisions, and workflow
+binding before saving operation result and ordered progress together. Independent
+review reproduced translation changes during a call and confirmed stale output
+is discarded for both operation kinds. The full Python suite passed with 2,308
+tests; strict OpenSpec, privacy/control, and diff checks passed. Concrete remote
+execution and prepared-take snapshot integration remain in later tasks.
 
 ## Next Milestone
 
-Task 5.3 is the next pending task. Do not begin it automatically.
+Task 5.4 is the next pending task. Do not begin it automatically.

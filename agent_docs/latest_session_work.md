@@ -2,24 +2,25 @@
 
 ## Current State
 
-OpenSpec Task 5.2 of `simplify-resource-session-workflow` passed independent
-acceptance. `POST /api/sessions/{sid}/plan/authoring/operations` atomically
-creates or replays a claim; `GET .../{operation_id}` projects the closed
-read-only OperationView. Start validates the request, plan revision, ordered
-targets, assistant configuration, feature flag, and cross-kind ownership
-without calling the assistant. Explicit empty user choices are not suggested.
-The feature flag blocks even identical POST replay while GET remains available.
+OpenSpec Task 5.3 of `simplify-resource-session-workflow` passed independent
+acceptance. Backend workers can renew a ten-minute lease before remote work and
+receive a signed ticket for the effective inputs. The fenced response
+transaction compares the ticket with current plan, request, authorized
+resource descriptions, workflow binding, owner token, state, and lease before
+saving result and ordered progress together. Status reads do not renew leases.
 
 ## Independent Verification
 
-The independent Tester rejected two initial behaviors: suggestions for explicit
-empty user choices and POST replay while planning was disabled. Both were
-repaired and rechecked. The full Python suite passed with 2,292 tests;
-privacy/control checks passed with 46 tests. Strict OpenSpec validation and
+The independent Tester rejected the first implementation because a translation
+could change during a remote call without changing the plan revision or
+resource content digest. A second review found that a copied ticket could
+replace its input fingerprint. Both defects were repaired and independently
+rechecked with zero-write adversarial probes. The full Python suite passed with
+2,308 tests; privacy/control checks, strict OpenSpec validation, and
 `git diff --check` passed. No frontend files were changed.
 
 ## Continuation
 
-Task 5.3 is the next pending OpenSpec task. It owns backend lease renewal and
-fenced response persistence; Task 5.4 owns cancel, resume, and recovery.
-Neither starts automatically. No push is part of this closure.
+Task 5.4 is next and owns cancel, resume, and recovery. The concrete assistant
+workers and prepared-take snapshot bridge remain in Tasks 6.3 and 6.4. No
+subsequent task starts automatically, and no push is part of this closure.
