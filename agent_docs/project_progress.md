@@ -234,9 +234,14 @@ remain intact.
 
 ## Current Position
 
-Tasks 3.1 through 3.5 and Tasks 4.1 through 4.8 are complete. Task 5.1 has
+Tasks 3.1 through 3.5, Tasks 4.1 through 4.8, and Task 5.1 are complete.
+Task 5.1 adds the durable authoring-operation record, a single non-terminal
+claim per session across both operation kinds, a ten-minute lease deadline,
+monotonic fencing, and immutable request identity. Terminal progress remains
+available after reopening the database. Independent verification passed 2,281
+Python tests and the strict OpenSpec, privacy, and diff checks. Task 5.2 has
 not started.
 
 ## Next Milestone
 
-Task 5.1 is the next pending task. Do not begin it automatically.
+Task 5.2 is the next pending task. Do not begin it automatically.

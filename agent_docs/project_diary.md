@@ -377,3 +377,10 @@
   drafts fail without a revision while existing continuity refusals retain
   precedence. API tests should assert the real response shape and persisted
   state, not only the validator result.
+- Task 5.1 stores authoring-operation identity and ordered progress in an
+  additive table. A partial unique index excludes concurrent active and
+  cancel-requested operations across kinds; terminal rows release the claim
+  but retain their request IDs and evidence. A SQL trigger must also prevent
+  identity and original-request rewrites: insertion uniqueness alone let a
+  terminal row change its request ID and allowed the old ID to be reused.
+  Resume may still advance state, fencing, lease, and progress on that row.

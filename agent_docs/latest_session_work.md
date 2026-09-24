@@ -2,26 +2,23 @@
 
 ## Current State
 
-OpenSpec Task 4.8 of `simplify-resource-session-workflow` passed independent
-acceptance and its checkbox is complete. Task 5.1 remains pending.
-
-Task 4.8 added real API coverage for switching authoring modes without a
-configured assistant, conflicting fixed variation values, and exact stale-CAS
-and workflow-drift error shapes. A narrow plan-CAS validation now rejects an
-explicit take choice that disagrees with a fixed camera, framing, pose, or
-expression value before writing a new revision. Existing tests cover closed
-authoring round trips, default/override workflow resolution, plan-owned session
-projections, and plans above twenty takes. No Task 5 operation work began.
+OpenSpec Task 5.1 of `simplify-resource-session-workflow` passed independent
+acceptance. The additive `authoring_operation` table records request and
+operation identity, kind, plan revision, digest, state, ordered progress,
+result/error, timestamps, a ten-minute lease, and a monotonic fencing token.
+The partial unique index permits only one non-terminal operation per session
+across kinds. A trigger protects original request identity while allowing the
+state and progress updates needed for future Resume. Task 5.2 remains pending.
 
 ## Independent Verification
 
-The independent Tester accepted the diff. The full Python suite passed with
-2,276 tests; focused Python tests passed with 245 tests; frontend tests passed
-with 430 tests. Privacy/control checks, strict OpenSpec validation, and
-`git diff --check` passed. Frontend build was not required because frontend
-files were unchanged.
+The independent Tester reproduced and rejected an initial terminal-identity
+rewrite, then accepted the repair after a direct SQL probe. The full Python
+suite passed with 2,281 tests; focused operation tests passed with 5 tests;
+privacy/control checks passed with 46 tests. Strict OpenSpec validation and
+`git diff --check` passed. No frontend files were changed.
 
 ## Continuation
 
-Task 5.1 is the next pending OpenSpec task. Do not start it automatically.
+Task 5.2 is the next pending OpenSpec task. Do not start it automatically.
 No push is part of this closure.

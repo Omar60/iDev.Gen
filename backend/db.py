@@ -8,7 +8,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import threading
 from typing import Callable
@@ -472,6 +472,59 @@ CREATE TABLE IF NOT EXISTS session_plan (
     CHECK (plan_revision > 0)
 );
 
+-- One replayable authoring claim per client request. Progress is JSON so the
+-- requested, completed and remaining references retain their plan order.
+CREATE TABLE IF NOT EXISTS authoring_operation (
+    operation_id    TEXT PRIMARY KEY NOT NULL CHECK (length(operation_id) > 0),
+    request_id      TEXT NOT NULL,
+    session_id      INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    plan_revision   INTEGER NOT NULL,
+    kind            TEXT NOT NULL,
+    request_digest  TEXT NOT NULL,
+    state           TEXT NOT NULL,
+    fencing_token   INTEGER NOT NULL,
+    lease_expires_at TEXT,
+    requested_json  TEXT NOT NULL DEFAULT '[]',
+    completed_json  TEXT NOT NULL DEFAULT '[]',
+    failed_item     TEXT,
+    error           TEXT,
+    remaining_json  TEXT NOT NULL DEFAULT '[]',
+    result_json     TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE (session_id, request_id),
+    CHECK (length(request_id) > 0),
+    CHECK (plan_revision > 0),
+    CHECK (kind IN ('shared_suggestions', 'prepare_takes')),
+    CHECK (state IN ('active', 'cancel_requested', 'succeeded', 'failed', 'cancelled', 'expired')),
+    CHECK (fencing_token > 0),
+    CHECK (state NOT IN ('active', 'cancel_requested') OR lease_expires_at IS NOT NULL)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_authoring_operation_nonterminal_session
+    ON authoring_operation(session_id)
+    WHERE state IN ('active', 'cancel_requested');
+CREATE TRIGGER IF NOT EXISTS authoring_operation_fencing_monotonic
+BEFORE UPDATE OF fencing_token ON authoring_operation
+WHEN NEW.fencing_token < OLD.fencing_token
+BEGIN
+    SELECT RAISE(ABORT, 'authoring operation fencing token cannot decrease');
+END;
+CREATE TRIGGER IF NOT EXISTS authoring_operation_identity_immutable
+BEFORE UPDATE OF operation_id, request_id, session_id, plan_revision, kind,
+                 request_digest, requested_json, created_at
+ON authoring_operation
+WHEN NEW.operation_id IS NOT OLD.operation_id
+  OR NEW.request_id IS NOT OLD.request_id
+  OR NEW.session_id IS NOT OLD.session_id
+  OR NEW.plan_revision IS NOT OLD.plan_revision
+  OR NEW.kind IS NOT OLD.kind
+  OR NEW.request_digest IS NOT OLD.request_digest
+  OR NEW.requested_json IS NOT OLD.requested_json
+  OR NEW.created_at IS NOT OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'authoring operation identity and request inputs are immutable');
+END;
+
 -- Idempotency record for atomic guided session creation (Task 4.4).
 -- The claim, its initial session plan and the exact success response are
 -- committed together. It is session-owned so deleting a session preserves
@@ -811,6 +864,15 @@ def transaction():
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+AUTHORING_OPERATION_LEASE = timedelta(minutes=10)
+
+
+def authoring_operation_lease_deadline(started_at: datetime | None = None) -> str:
+    """Return the persisted deadline for a ten-minute authoring lease."""
+    start = started_at or datetime.now(timezone.utc)
+    return (start + AUTHORING_OPERATION_LEASE).isoformat(timespec="seconds")
 
 
 def cell_state(judged: int, arrived: int) -> str:
