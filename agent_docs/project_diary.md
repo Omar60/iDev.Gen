@@ -358,3 +358,8 @@
 - The generic session PATCH accepts `look` only to detect and reject resource-v1
   attempts with `plan_field_required`; it does not add legacy look mutation.
   Resource-v1 look and wardrobe remain plan-CAS owned.
+- Task 4.6 shared summaries reuse the exact selected-revision loader and
+  authorized descriptive-input resolver used by preparation. Keep source
+  descriptions independent of empty additional constraints, project effective
+  values separately from origin metadata, and return fixed diagnostic codes
+  instead of raw resource errors when a scene cannot be authorized.

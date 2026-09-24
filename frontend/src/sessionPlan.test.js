@@ -584,6 +584,38 @@ describe('API persistence and CAS operations (loadSessionPlan & executeSavePlan)
     expect(res.error).toBeNull()
   })
 
+  it('loadSessionPlan returns the server shared summary separately from the editable plan', async () => {
+    const sharedSummary = {
+      available: true,
+      look: { value: '', origin: 'none' },
+      initial_wardrobe: { value: '', origin: 'none' },
+      scene_descriptions: [{
+        library_key: 'rooms',
+        source_id: 'room-01',
+        content_digest: 'a'.repeat(64),
+        kind: 'rooms',
+        descriptive_inputs: { scene_theme: 'Authorized scene text' },
+      }],
+    }
+    const mockApi = {
+      get: async () => ({
+        plan_revision: 3,
+        plan: {
+          version: 'resource-v1',
+          look: '',
+          initial_wardrobe: '',
+          takes: [{ take_id: 'take-001' }],
+          selected_resources: [],
+        },
+        shared_summary: sharedSummary,
+      }),
+    }
+
+    const res = await loadSessionPlan(10, mockApi)
+    expect(res.sharedSummary).toEqual(sharedSummary)
+    expect(res.plan).not.toHaveProperty('shared_summary')
+  })
+
   it('loadSessionPlan fails visibly and never creates fallback plan when backend gives 404', async () => {
     const mockApi = {
       get: async () => {
@@ -1297,6 +1329,64 @@ describe('SessionView React component rendering integration (renderToStaticMarku
     expect(html).not.toContain('Compose</button>')
     expect(html).not.toContain('Fill ')
     expect(html).not.toContain('+ Shots')
+  })
+
+  for (const mode of ['automatic', 'manual']) {
+    it(`shows the shared summary before preparation in ${mode} mode`, () => {
+      const sharedSummary = {
+        available: true,
+        look: { value: '', origin: 'none' },
+        initial_wardrobe: { value: '', origin: 'none' },
+        scene_descriptions: [{
+          library_key: 'fused_scenes',
+          source_id: 'fused-01',
+          content_digest: 'b'.repeat(64),
+          kind: 'fused_scenes',
+          descriptive_inputs: {
+            prompt: 'Authorized fused scene stays whole: an open room with a low camera.',
+          },
+        }],
+      }
+      const html = renderToStaticMarkup(
+        React.createElement(SessionView, {
+          id: 501,
+          initialSession: baseSession,
+          initialPlan: { ...basePlan, authoring: { mode } },
+          initialRevision: 2,
+          initialActiveStep: 'review',
+          initialSharedSummary: sharedSummary,
+        })
+      )
+
+      expect(html).toContain('Shared Session Summary')
+      expect(html).toContain('Origin: none')
+      expect(html).toContain('No additional constraint')
+      expect(html).toContain('Authorized fused scene stays whole: an open room with a low camera.')
+      expect(html.indexOf('Shared Session Summary')).toBeLessThan(html.indexOf('Prepare Incomplete Takes'))
+    })
+  }
+
+  it('renders shared values and origins as separate information', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(SessionView, {
+        id: 501,
+        initialSession: baseSession,
+        initialPlan: basePlan,
+        initialRevision: 2,
+        initialActiveStep: 'review',
+        initialSharedSummary: {
+          available: true,
+          look: { value: 'A quiet morning studio', origin: 'user' },
+          initial_wardrobe: { value: 'A navy coat', origin: 'assistant_edited' },
+          scene_descriptions: [],
+        },
+      })
+    )
+
+    expect(html).toContain('A quiet morning studio')
+    expect(html).toContain('Origin: user')
+    expect(html).toContain('A navy coat')
+    expect(html).toContain('Origin: assistant_edited')
   })
 
   it('renders incomplete draft panel and suppresses steps/generation when draft failed to load', () => {

@@ -83,6 +83,7 @@ export default function SessionView({
   initialReviewedRevision = null,
   initialConflicts = [],
   initialPreparation = null,
+  initialSharedSummary = null,
   initialExpandedTakeId = null,
   initialTakeReviewData = {},
 }) {
@@ -203,6 +204,7 @@ export default function SessionView({
   const [planRevision, setPlanRevision] = useState(initialRevision)
   const [planConflicts, setPlanConflicts] = useState(initialConflicts)
   const [planPreparation, setPlanPreparation] = useState(initialPreparation)
+  const [sharedSummary, setSharedSummary] = useState(initialSharedSummary)
   const [planDirty, setPlanDirty] = useState(false)
   const planDirtyRef = useRef(false)
   planDirtyRef.current = planDirty
@@ -237,6 +239,7 @@ export default function SessionView({
             setPlanRevision(null)
             setPlanConflicts([])
             setPlanPreparation(null)
+            setSharedSummary(null)
             setReviewedRevision(null)
             setSelectedTakeIds(new Set())
             setTakeReviewData({})
@@ -247,6 +250,7 @@ export default function SessionView({
           setPlanRevision((prev) => (planDirtyRef.current && prev !== null ? prev : res.planRevision))
           setPlanConflicts(res.conflicts)
           setPlanPreparation(res.preparation || null)
+          if (!planDirtyRef.current) setSharedSummary(res.sharedSummary || null)
           setSelectedTakeIds(new Set())
           setTakeReviewData({})
           if (!planDirtyRef.current) {
@@ -257,6 +261,7 @@ export default function SessionView({
           setPlanRevision(null)
           setPlanConflicts([])
           setPlanPreparation(null)
+          setSharedSummary(null)
           setReviewedRevision(null)
           setSelectedTakeIds(new Set())
           setTakeReviewData({})
@@ -267,6 +272,7 @@ export default function SessionView({
         setPlanRevision(null)
         setPlanConflicts([])
         setPlanPreparation(null)
+        setSharedSummary(null)
         setReviewedRevision(null)
         setSelectedTakeIds(new Set())
         setTakeReviewData({})
@@ -1785,14 +1791,72 @@ export default function SessionView({
                     </div>
                   </div>
                   <div style={{ background: 'var(--panel-2)', padding: 10, borderRadius: 8 }}>
-                    <div style={{ fontWeight: 600, marginBottom: 6 }}>Constants</div>
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>Resources</div>
                     <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
-                      <div><b>Look:</b> {plan?.look || '(none)'}</div>
-                      <div><b>Initial Wardrobe:</b> {plan?.initial_wardrobe || '(none)'}</div>
                       <div><b>Pinned Resources:</b> {plan?.selected_resources?.length || 0}</div>
                     </div>
                   </div>
                 </div>
+
+                {sharedSummary && (
+                  <section
+                    aria-label="Shared session summary"
+                    style={{
+                      border: '1px solid var(--line)',
+                      borderRadius: 8,
+                      padding: 12,
+                      marginBottom: 14,
+                      background: 'var(--panel-2)',
+                    }}
+                  >
+                    <h4 style={{ margin: '0 0 4px' }}>Shared Session Summary</h4>
+                    <p className="muted" style={{ margin: '0 0 10px', fontSize: 12 }}>
+                      Saved look and wardrobe values are additional constraints. Empty values leave the selected scene descriptions intact.
+                    </p>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginBottom: 12 }}>
+                      {[
+                        ['Look', sharedSummary.look],
+                        ['Initial Wardrobe', sharedSummary.initial_wardrobe],
+                      ].map(([label, value]) => (
+                        <div key={label}>
+                          <b>{label}:</b> {value?.value === '' ? 'No additional constraint' : value?.value || 'Unavailable'}
+                          <div className="muted" style={{ fontSize: 11 }}>Origin: {value?.origin || 'Unavailable'}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {!sharedSummary.available && (
+                      <p className="muted" style={{ margin: '0 0 10px' }}>
+                        {sharedSummary.message || 'Authorized scene descriptions are unavailable.'}
+                      </p>
+                    )}
+                    {sharedSummary.available && (
+                      <>
+                        <div style={{ fontWeight: 600, marginBottom: 6 }}>Authorized Scene Descriptions</div>
+                        {sharedSummary.scene_descriptions?.length ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {sharedSummary.scene_descriptions.map((scene) => (
+                              <div
+                                key={`${scene.library_key}:${scene.source_id}:${scene.content_digest}`}
+                                style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }}
+                              >
+                                <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
+                                  {scene.kind}: {scene.library_key} / {scene.source_id} / {scene.content_digest}
+                                </div>
+                                {Object.entries(scene.descriptive_inputs || {}).map(([field, value]) => (
+                                  <div key={field} style={{ whiteSpace: 'pre-wrap', marginBottom: 4 }}>
+                                    <b>{field}:</b> {Array.isArray(value) ? value.join(', ') : value}
+                                  </div>
+                                ))}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="muted" style={{ margin: 0 }}>No selected scene descriptions are available.</p>
+                        )}
+                      </>
+                    )}
+                  </section>
+                )}
 
                 {/* Step 4 Toolbar: Batch Preparation & Selected Test Generation */}
                 <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, padding: '8px 12px', background: 'var(--panel-2)', borderRadius: 8 }}>

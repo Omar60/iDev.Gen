@@ -186,6 +186,16 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
   session draft bound to an explicitly chosen character model, with no CLI or
   external scripts needed.
 
+For authoring-v1 plans, `GET /api/sessions/{sid}/plan` also returns a
+`shared_summary`, shown in Review before preparation. It shows saved look and
+initial wardrobe values beside their origins, plus authorized descriptive
+inputs from selected room and fused-scene revisions. Empty values add no
+constraint and do not hide those scene descriptions. If resolution fails, the
+summary returns an allowlisted diagnostic and remediation without exposing
+full resource payloads or raw translation sidecars. The projection needs no
+assistant call and does not accept suggestions or refresh resources. See
+[sessions](docs/sessions.md#shared-session-summary).
+
 From a model, **+ New session** is the normal entry to this resource-planning
 flow and keeps that model selected while the user chooses an exact `ready`
 resource revision. **Legacy session** opens the previous measured-catalogue

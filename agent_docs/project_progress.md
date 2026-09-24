@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 21 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 22 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -165,6 +165,15 @@ wardrobe changes with `409 plan_field_required`, while legacy search and
 wardrobe PATCH behavior remains unchanged. The full backend suite passed with
 2,263 tests.
 
+Task 4.6 has passed independent acceptance. `GET /api/sessions/{sid}/plan`
+projects an assistant-free shared summary for authoring-v1 from the validated
+plan's effective look and wardrobe values and their separate origins. Selected
+room and fused-scene descriptions use exact resource revisions and the same
+authorized translation resolver as preparation; empty additional constraints
+leave those descriptions visible. Missing or invalid scene authority produces
+a fixed, actionable diagnostic without falling back to raw payloads. SessionView
+shows this saved summary before preparation in manual and automatic modes.
+
 ## Prior Position
 
 Task 2.4 is complete. The automatic/manual/pre-authoring authority matrix is
@@ -210,9 +219,9 @@ remain intact.
 
 ## Current Position
 
-Tasks 3.1 through 3.5 and Tasks 4.1 through 4.5 are complete and formally
-closed. Task 4.6 has not started.
+Tasks 3.1 through 3.5 and Tasks 4.1 through 4.6 are complete and formally
+closed. Task 4.7 has not started.
 
 ## Next Milestone
 
-Task 4.6 is the next pending task. Do not begin it automatically.
+Task 4.7 is the next pending task. Do not begin it automatically.

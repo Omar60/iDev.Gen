@@ -4476,6 +4476,9 @@ def get_plan_draft(sid: int):
     draft = session_plan.get_draft(sid)
     if draft is None:
         raise HTTPException(404, "no plan draft for this session")
+    draft["shared_summary"] = resource_preparation.build_shared_state_summary(
+        draft.get("plan")
+    )
     draft["preparation"] = session_plan.recover_preparation(sid)
     approved_rev = session_plan.get_approved_plan_revision(sid)
     draft["reviewed_revision"] = approved_rev if approved_rev == draft.get("plan_revision") else None

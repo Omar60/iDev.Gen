@@ -1549,6 +1549,29 @@ on the measured component catalogue, a `resource-v1` session draft:
 - Preserves legacy sessions untouched: existing sessions continue using their
   catalogue-dependent immediate-expansion and prompt composition behavior.
 
+### Shared session summary
+
+For authoring-v1 plans, `GET /api/sessions/{sid}/plan` includes a
+`shared_summary` that SessionView displays in Review before preparation. It
+shows saved `look` and `initial_wardrobe` values separately from their origins.
+An empty value means no additional constraint; it does not erase descriptions
+from selected scenes.
+
+The summary resolves the plan's exact selected revision triples and lists only
+authorized descriptive inputs for selected `rooms` and `fused_scenes`
+resources. Fused-scene descriptions remain intact. The response does not expose
+full resource payloads or raw translation sidecars, and generating the
+projection does not call an assistant.
+
+If the plan is malformed or a selected scene cannot be resolved or authorized,
+the summary returns `available: false`, an allowlisted diagnostic code and a
+remediation message, with no partial scene descriptions. Validated shared
+values remain available when scene resolution fails. Remediation may ask the
+user to correct the plan or translation and reload, or review imported
+resources and start a new session with an available ready scene revision
+before preparing takes. The summary is informational: it does not accept
+assistant suggestions or refresh resources.
+
 ### Operational rollback and disabling resource mode
 
 To disable resource-based session planning without running a destructive database downgrade:

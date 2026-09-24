@@ -381,6 +381,7 @@ export async function loadSessionPlan(sessionId, api) {
         planRevision: null,
         conflicts: [],
         preparation: null,
+        sharedSummary: null,
         error: 'Loaded draft missing valid plan_revision from backend',
       }
     }
@@ -396,6 +397,7 @@ export async function loadSessionPlan(sessionId, api) {
       reviewedRevision,
       conflicts: data.conflicts || rawPlan.conflicts || [],
       preparation: data.preparation || rawPlan.preparation || null,
+      sharedSummary: data.shared_summary || null,
       error: null,
     }
   } catch (err) {
@@ -405,6 +407,7 @@ export async function loadSessionPlan(sessionId, api) {
       planRevision: null,
       conflicts: [],
       preparation: null,
+      sharedSummary: null,
       error: err?.message || 'Failed to load session plan',
     }
   }

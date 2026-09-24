@@ -6564,3 +6564,233 @@ class TestTask41ClosedAuthoringSchema:
         assert frozen.status_code == 409, frozen.text
         assert "generated" in frozen.json()["detail"]
         assert client.get(f"/api/sessions/{sid}/plan").json()["plan_revision"] == 2
+
+
+def _task46_store_revision(library_key, source_id, kind, payload, translation=None):
+    library_id = resource_store.ensure_library(library_key, kind=kind)
+    revision_id = resource_store.record_revision(
+        library_id, source_id, payload, translation=translation,
+    )
+    revision = resource_store.get_revision(revision_id=revision_id)
+    assert revision is not None
+    return {
+        "library_key": library_key,
+        "source_id": source_id,
+        "content_digest": revision["content_digest"],
+    }
+
+
+class TestTask46SharedStateSummary:
+    def test_manual_summary_keeps_empty_constraints_and_authorized_scenes_in_plan_order(
+        self, client, seeded,
+    ):
+        room = _task46_store_revision(
+            "inv_task46_rooms", "inv_task46_room_01", "rooms",
+            {"label": "Raw room label", "scene_theme": "Raw room source prose"},
+            {"label": "Authorized room label", "scene_theme": "Authorized room description"},
+        )
+        auxiliary = _task46_store_revision(
+            "inv_task46_cut_map", "inv_task46_map_01", "cut_map",
+            {"camera": "Auxiliary pipeline prose must not be scene context"},
+        )
+        fused = _task46_store_revision(
+            "inv_task46_fused", "inv_task46_fused_01", "fused_scenes",
+            {"prompt": "Raw fused prompt sentinel"},
+            {"prompt": "Authorized fused prompt remains whole: portrait by the north window, camera low."},
+        )
+        auth = _task41_valid_authoring(
+            look_text="", wardrobe_text="", scene_anchor_triple=room,
+            origin_look="none", origin_wardrobe="none",
+            snapshot=False, progression=False,
+        )
+        auth["mode"] = "manual"
+        auth["evidence"] = []
+        plan = _task41_make_plan(room, auth=auth, look="", wardrobe="")
+        plan["selected_resources"] = [room, auxiliary, fused]
+        sid = _task34_resource_session(client, seeded, "manual shared summary")
+        _task41_seed_authoring_plan(sid, plan)
+
+        response = client.get(f"/api/sessions/{sid}/plan")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        summary = body["shared_summary"]
+
+        assert body["plan"]["authoring"]["mode"] == "manual"
+        assert summary["available"] is True
+        assert summary["look"] == {"value": "", "origin": "none"}
+        assert summary["initial_wardrobe"] == {"value": "", "origin": "none"}
+        assert summary["scene_descriptions"] == [
+            {
+                **room,
+                "kind": "rooms",
+                "descriptive_inputs": {
+                    "label": "Authorized room label",
+                    "scene_theme": "Authorized room description",
+                },
+            },
+            {
+                **fused,
+                "kind": "fused_scenes",
+                "descriptive_inputs": {
+                    "prompt": "Authorized fused prompt remains whole: portrait by the north window, camera low.",
+                },
+            },
+        ]
+        encoded = json.dumps(body)
+        assert "Raw room source prose" not in encoded
+        assert "Raw fused prompt sentinel" not in encoded
+        assert "Auxiliary pipeline prose" not in encoded
+        assert "translation" not in summary
+        assert "payload" not in summary
+
+    def test_summary_keeps_plan_values_separate_from_their_origins(self, client, seeded):
+        room = _task41_resource_revision()
+        auth = _task41_valid_authoring(
+            look_text="A plain white studio with soft morning light",
+            wardrobe_text="A dark wool coat over a cream shirt",
+            scene_anchor_triple=room,
+            origin_look="user",
+            origin_wardrobe="assistant",
+        )
+        plan = _task41_make_plan(
+            room, auth=auth,
+            look="A plain white studio with soft morning light",
+            wardrobe="A dark wool coat over a cream shirt",
+        )
+        sid = _task34_resource_session(client, seeded, "shared origins")
+        _task41_seed_authoring_plan(sid, plan)
+
+        response = client.get(f"/api/sessions/{sid}/plan")
+        assert response.status_code == 200, response.text
+        summary = response.json()["shared_summary"]
+        assert summary["look"] == {
+            "value": "A plain white studio with soft morning light",
+            "origin": "user",
+        }
+        assert summary["initial_wardrobe"] == {
+            "value": "A dark wool coat over a cream shirt",
+            "origin": "assistant",
+        }
+        assert summary["look"]["value"] != summary["look"]["origin"]
+
+    def test_missing_required_scene_translation_fails_summary_closed(self, client, seeded):
+        raw_payload = {
+            "label": "Raw payload fallback sentinel",
+            "scene_theme": "Untranslated raw scene description sentinel",
+        }
+        room = _task46_store_revision(
+            "inv_task46_untranslated", "inv_task46_untranslated_room", "rooms",
+            raw_payload,
+        )
+        auth = _task41_valid_authoring(
+            scene_anchor_triple=room,
+            origin_look="user",
+            origin_wardrobe="user",
+            snapshot=False,
+            progression=False,
+        )
+        plan = _task41_make_plan(room, auth=auth)
+        sid = _task34_resource_session(client, seeded, "untranslated shared summary")
+        _task41_seed_authoring_plan(sid, plan)
+
+        response = client.get(f"/api/sessions/{sid}/plan")
+        assert response.status_code == 200, response.text
+        summary = response.json()["shared_summary"]
+        assert summary["available"] is False
+        assert summary["code"] == "missing_required_translation"
+        assert "Add authorized English translations" in summary["message"]
+        assert summary["scene_descriptions"] == []
+        assert summary["look"] == {
+            "value": "Natural beauty studio look",
+            "origin": "user",
+        }
+        assert "Raw payload fallback sentinel" not in response.text
+        assert "Untranslated raw scene description sentinel" not in response.text
+
+    def test_invalid_scene_sidecar_returns_safe_actionable_diagnostic(self, client, seeded):
+        raw_payload = {
+            "label": "Raw room payload sentinel",
+            "scene_theme": "Raw scene theme sentinel",
+        }
+        raw_sidecar_value = "Raw sidecar error sentinel"
+        room = _task46_store_revision(
+            "inv_task46_invalid_sidecar", "inv_task46_invalid_sidecar_room", "rooms",
+            raw_payload,
+            {
+                "label": {"private_value": raw_sidecar_value},
+                "scene_theme": "Authorized scene theme",
+            },
+        )
+        auth = _task41_valid_authoring(
+            scene_anchor_triple=room,
+            origin_look="user",
+            origin_wardrobe="user",
+            snapshot=False,
+            progression=False,
+        )
+        plan = _task41_make_plan(room, auth=auth)
+        sid = _task34_resource_session(client, seeded, "invalid sidecar summary")
+        _task41_seed_authoring_plan(sid, plan)
+
+        response = client.get(f"/api/sessions/{sid}/plan")
+        assert response.status_code == 200, response.text
+        summary = response.json()["shared_summary"]
+        assert summary["available"] is False
+        assert summary["code"] == "invalid_translation_sidecar"
+        assert "Repair and reapply" in summary["message"]
+        assert summary["scene_descriptions"] == []
+        assert raw_sidecar_value not in response.text
+        assert "Raw room payload sentinel" not in response.text
+        assert "Raw scene theme sentinel" not in response.text
+
+    def test_unavailable_exact_scene_revision_returns_safe_diagnostic(self, client, seeded):
+        stored = _task46_store_revision(
+            "inv_task46_missing_revision", "inv_task46_missing_revision_room", "rooms",
+            {"label": "Raw room payload sentinel", "scene_theme": "Raw room theme sentinel"},
+            {"label": "Authorized room label", "scene_theme": "Authorized room theme"},
+        )
+        missing_revision = {**stored, "content_digest": "f" * 64}
+        auth = _task41_valid_authoring(
+            scene_anchor_triple=missing_revision,
+            origin_look="user",
+            origin_wardrobe="user",
+            snapshot=False,
+            progression=False,
+        )
+        plan = _task41_make_plan(missing_revision, auth=auth)
+        sid = _task34_resource_session(client, seeded, "missing revision summary")
+        _task41_seed_authoring_plan(sid, plan)
+
+        response = client.get(f"/api/sessions/{sid}/plan")
+        assert response.status_code == 200, response.text
+        summary = response.json()["shared_summary"]
+        assert summary["available"] is False
+        assert summary["code"] == "revision_unavailable"
+        assert "start a new session with an available ready scene revision" in summary["message"]
+        assert summary["scene_descriptions"] == []
+        assert summary["look"] == {"value": "Natural beauty studio look", "origin": "user"}
+        assert "Raw room payload sentinel" not in response.text
+        assert "Raw room theme sentinel" not in response.text
+
+    def test_malformed_plan_has_distinct_safe_api_diagnostic(self, client, seeded):
+        room = _task41_resource_revision()
+        auth = _task41_valid_authoring(
+            scene_anchor_triple=room,
+            origin_look="user",
+            origin_wardrobe="user",
+            snapshot=False,
+            progression=False,
+        )
+        auth["shared_state"] = "malformed shared-state sentinel"
+        plan = _task41_make_plan(room, auth=auth)
+        sid = _task34_resource_session(client, seeded, "malformed summary plan")
+        _task41_seed_authoring_plan(sid, plan)
+
+        response = client.get(f"/api/sessions/{sid}/plan")
+        assert response.status_code == 200, response.text
+        summary = response.json()["shared_summary"]
+        assert summary["available"] is False
+        assert summary["code"] == "malformed_plan"
+        assert "Review and save a valid plan" in summary["message"]
+        assert summary["scene_descriptions"] == []
+        assert "malformed shared-state sentinel" not in json.dumps(summary)

@@ -1,44 +1,30 @@
 # Latest Session Work
 
-## Detailed Current State
+## Current State
 
-OpenSpec Task 4.5 of `simplify-resource-session-workflow` passed independent
-acceptance and is formally closed. Its OpenSpec checkbox is complete.
+OpenSpec Task 4.6 of `simplify-resource-session-workflow` passed independent
+acceptance. Its checkbox is complete. Task 4.7 remains pending and has not
+started.
 
-Resource-v1 session detail, list, and free-text search now use validated
-`plan.look` and `plan.initial_wardrobe` as their effective values. Plan CAS
-edits are visible immediately without mirroring writes into the historical
-session columns. Legacy sessions continue using those columns unchanged.
+`GET /api/sessions/{sid}/plan` includes a read-only `shared_summary` for
+authoring-v1 plans. It projects saved look and initial wardrobe values with
+their distinct origins and selected authorized room/fused-scene descriptions.
+Empty additional constraints preserve scene descriptions. Failed scene
+authorization returns a fixed diagnostic and no raw payload fallback.
+SessionView displays the summary before preparation in manual and automatic
+modes. No assistant operation, new route, or resource refresh was added.
 
-Resource-v1 rows with a missing or invalid plan expose a stable diagnostic,
-return null effective constants, and cannot match stale legacy look/wardrobe
-text. The generic session PATCH rejects explicit resource-v1 look or wardrobe
-fields with `409 plan_field_required` before any write; legacy wardrobe PATCH
-remains compatible.
+## Independent Verification
 
-Task 4.6 has not started. The final commit is authorized to include the
-pre-existing `.gitignore` and `AGENTS.md` changes alongside Task 4.5.
+The independent Tester accepted Task 4.6 after two narrow diagnostic repairs.
+The final pre-commit gates passed: 2,269 Python tests, 430 frontend tests,
+frontend build, 46 privacy/control-character tests, strict OpenSpec validation,
+and `git diff --check`. The six focused Task 4.6 tests passed after the final
+repair. Vite reported an existing large-chunk warning and Python reported
+five warnings; neither failed a gate.
 
-## Verification
+## Continuation
 
-- `.\.venv\Scripts\python.exe -m pytest`: 2,263 passed, 5 warnings.
-- `.\.venv\Scripts\python.exe -m pytest tests\test_no_personal_data.py tests\test_shoot_checks.py -q`:
-  passed.
-- Focused API projection, search, PATCH, malformed-plan, legacy compatibility,
-  and guided empty-column checks: passed.
-- `npx --yes @fission-ai/openspec validate simplify-resource-session-workflow --strict`:
-  passed; the change is valid.
-- `git diff --check`: passed with line-ending conversion warnings only.
-
-## Implementation Scope
-
-- `backend/main.py`
-- `tests/test_api.py`
-- `openspec/changes/simplify-resource-session-workflow/tasks.md`
-- `agent_docs/latest_session_work.md`
-- `agent_docs/project_progress.md`
-- `agent_docs/project_diary.md`
-
-The authorized commit also includes pre-existing `.gitignore` and `AGENTS.md`
-changes. No external handoff, frontend file, build artifact, or push is part of
-this closure.
+README and matching session documentation describe the verified summary and
+its limits. Task 4.7 is the next pending OpenSpec task; do not begin it
+automatically. No push is part of this closure.

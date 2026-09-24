@@ -223,7 +223,7 @@ import translation_map
 # sees the same type the save path raises. The class is
 # the single source of truth for "a write to a take
 # persistence table failed and was rolled back".
-from session_plan import PreparedTakePersistenceError  # noqa: E402, F401
+from session_plan import PreparedTakePersistenceError, validate_draft  # noqa: E402
 
 
 # -- Versioning -------------------------------------------------------------
@@ -332,6 +332,10 @@ class PreparationFieldError(PreparationError):
     uses to refuse, so a refused resource is never silently
     promoted to prompt content.
     """
+
+    def __init__(self, message: str, *, shared_summary_code: str | None = None):
+        super().__init__(message)
+        self.shared_summary_code = shared_summary_code
 
 
 class PreparationRevisionMissing(PreparationError):
@@ -1031,7 +1035,8 @@ def _prepare_resource(revision: dict) -> dict:
         )
     except ValueError as exc:
         raise PreparationFieldError(
-            f"Resource {source_id!r} has invalid translation sidecar: {exc}"
+            f"Resource {source_id!r} has invalid translation sidecar: {exc}",
+            shared_summary_code="invalid_translation_sidecar",
         ) from exc
 
     effective_descriptive_inputs: dict[str, Any] = {}
@@ -1041,13 +1046,15 @@ def _prepare_resource(revision: dict) -> dict:
         if not resource_readiness.is_valid_english_translation_scalar(label_val):
             raise PreparationFieldError(
                 f"Resource {source_id!r} required field 'label' lacks an authorized "
-                f"English translation in the translation sidecar; cannot prepare."
+                f"English translation in the translation sidecar; cannot prepare.",
+                shared_summary_code="missing_required_translation",
             )
         theme_val = canonical_translation.get("scene_theme")
         if not resource_readiness.is_valid_english_translation_scalar(theme_val):
             raise PreparationFieldError(
                 f"Resource {source_id!r} required field 'scene_theme' lacks an authorized "
-                f"English translation in the translation sidecar; cannot prepare."
+                f"English translation in the translation sidecar; cannot prepare.",
+                shared_summary_code="missing_required_translation",
             )
         effective_descriptive_inputs["label"] = label_val
         effective_descriptive_inputs["scene_theme"] = theme_val
@@ -1056,7 +1063,8 @@ def _prepare_resource(revision: dict) -> dict:
         if not resource_readiness.is_valid_english_translation_scalar(prompt_val):
             raise PreparationFieldError(
                 f"Resource {source_id!r} required field 'prompt' lacks an authorized "
-                f"English translation in the translation sidecar; cannot prepare."
+                f"English translation in the translation sidecar; cannot prepare.",
+                shared_summary_code="missing_required_translation",
             )
         effective_descriptive_inputs["prompt"] = prompt_val
 
@@ -1101,6 +1109,115 @@ def _prepare_resource(revision: dict) -> dict:
         "intentionally_unused": classified["intentionally_unused"],
         "auxiliary": classified["auxiliary"],
     }
+
+
+_SHARED_SUMMARY_FAILURE_MESSAGES = {
+    "malformed_plan": (
+        "The saved plan is malformed. Review and save a valid plan before preparing takes."
+    ),
+    "missing_required_translation": (
+        "Add authorized English translations for the required scene fields, then reload the session before preparing takes."
+    ),
+    "invalid_translation_sidecar": (
+        "Repair and reapply the scene translation sidecar, then reload the session before preparing takes."
+    ),
+    "revision_unavailable": (
+        "Review imported resources and start a new session with an available ready scene revision before preparing takes."
+    ),
+    "scene_authorization_failed": (
+        "Review the selected scene resource and its translations, then reload the session before preparing takes."
+    ),
+}
+
+
+def _unavailable_shared_state_summary(
+    code: str,
+    shared_values: dict | None = None,
+) -> dict:
+    """Return an allowlisted diagnostic without exposing stored resource data."""
+    if code not in _SHARED_SUMMARY_FAILURE_MESSAGES:
+        code = "scene_authorization_failed"
+    result = {
+        "available": False,
+        "code": code,
+        "message": _SHARED_SUMMARY_FAILURE_MESSAGES[code],
+        "scene_descriptions": [],
+    }
+    if shared_values:
+        result.update(shared_values)
+    return result
+
+
+def build_shared_state_summary(plan: Any) -> dict | None:
+    """Project authoritative shared values and authorized scene descriptions.
+
+    This is a read-only view for authoring-v1 plans. It deliberately reuses
+    ``_load_resource_revision`` and ``_prepare_resource`` so the summary only
+    includes descriptions preparation is authorized to consume. If validation
+    or any selected scene resolution fails, return no partial scene projection
+    and no source payload or sidecar details.
+    """
+    if not isinstance(plan, dict) or "authoring" not in plan:
+        return None
+
+    try:
+        validated = validate_draft(plan)
+        shared_state = validated["authoring"]["shared_state"]
+        shared_values = {
+            "look": {
+                "value": validated["look"],
+                "origin": shared_state["look"]["origin"],
+            },
+            "initial_wardrobe": {
+                "value": validated["initial_wardrobe"],
+                "origin": shared_state["initial_wardrobe"]["origin"],
+            },
+        }
+    except (ValueError, KeyError, TypeError):
+        return _unavailable_shared_state_summary("malformed_plan")
+
+    scene_descriptions = []
+    for selected in validated["selected_resources"]:
+        try:
+            revision = _load_resource_revision(
+                library_key=selected["library_key"],
+                source_id=selected["source_id"],
+                content_digest=selected["content_digest"],
+            )
+        except PreparationRevisionMissing:
+            return _unavailable_shared_state_summary(
+                "revision_unavailable", shared_values,
+            )
+        except (ValueError, KeyError, TypeError):
+            return _unavailable_shared_state_summary(
+                "scene_authorization_failed", shared_values,
+            )
+
+        if revision["kind"] not in (
+            resource_prompts.KIND_ROOMS,
+            resource_prompts.KIND_FUSED_SCENES,
+        ):
+            continue
+        try:
+            prepared = _prepare_resource(revision)
+        except PreparationFieldError as exc:
+            return _unavailable_shared_state_summary(
+                exc.shared_summary_code or "scene_authorization_failed",
+                shared_values,
+            )
+        except (ValueError, KeyError, TypeError):
+            return _unavailable_shared_state_summary(
+                "scene_authorization_failed", shared_values,
+            )
+        scene_descriptions.append({
+            "library_key": selected["library_key"],
+            "source_id": selected["source_id"],
+            "content_digest": selected["content_digest"],
+            "kind": prepared["kind"],
+            "descriptive_inputs": prepared["descriptive_inputs"],
+        })
+
+    return {"available": True, **shared_values, "scene_descriptions": scene_descriptions}
 
 
 # -- Effective state -------------------------------------------------------
