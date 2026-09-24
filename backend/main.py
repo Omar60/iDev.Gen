@@ -56,6 +56,7 @@ from backend.resource_import import CommitAborted, StaleFingerprintError
 from backend import resource_translation
 from backend import resource_selection
 from backend import guided_sessions
+from backend import authoring_operations
 from backend.request_limits import RequestLimitRoute
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -166,11 +167,15 @@ _STABLE_ENVELOPE_PATH_PREFIX: str = "/api/resources/import-selections"
 def _is_stable_envelope_path(path: str) -> bool:
     """Return whether a route opts into a stable ``detail`` error envelope.
 
-    The import-selection routes and the guided-session creation boundary use
-    stable domain errors; legacy session, plan and workflow routes retain their
-    established error shapes.
+    The import-selection routes, guided-session creation and authoring-operation
+    boundary use stable domain errors; legacy routes retain their established
+    error shapes.
     """
-    return path.startswith(_STABLE_ENVELOPE_PATH_PREFIX) or path == "/api/sessions/guided"
+    return (
+        path.startswith(_STABLE_ENVELOPE_PATH_PREFIX)
+        or path == "/api/sessions/guided"
+        or "/plan/authoring/operations" in path
+    )
 
 
 def _safe_get_current_view(path: str) -> dict | None:
@@ -3603,6 +3608,53 @@ async def create_guided_session(request: Request):
         status_code=201 if was_new else 200,
         media_type="application/json",
     )
+
+
+def _authoring_operation_error_response(exc: authoring_operations.AuthoringOperationError) -> JSONResponse:
+    detail: dict[str, Any] = {"code": exc.code, "message": exc.message}
+    if exc.operation is not None:
+        detail["operation"] = exc.operation
+    return JSONResponse(status_code=exc.status_code, content={"detail": detail})
+
+
+@app.post("/api/sessions/{sid}/plan/authoring/operations")
+async def start_authoring_operation(sid: int, request: Request):
+    """Persist or replay an authoring claim without starting remote work."""
+    if not is_resource_planning_enabled():
+        return _stable_error(
+            503,
+            "resource_planning_disabled",
+            "Resource planning is disabled by configuration.",
+        )
+    try:
+        payload = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": {"code": "invalid_json", "message": "Request body must be valid JSON."}},
+        )
+
+    try:
+        normalized = authoring_operations.normalize_start_request(payload)
+        view, was_new = authoring_operations.start_operation(
+            sid,
+            normalized,
+            planning_enabled=is_resource_planning_enabled(),
+            assistant_available=enhance.configured(CONFIG),
+        )
+    except authoring_operations.AuthoringOperationError as exc:
+        return _authoring_operation_error_response(exc)
+    return JSONResponse(status_code=202 if was_new else 200, content=view)
+
+
+@app.get("/api/sessions/{sid}/plan/authoring/operations/{operation_id}")
+def get_authoring_operation(sid: int, operation_id: str):
+    """Return persisted operation status without renewing its lease."""
+    try:
+        view = authoring_operations.get_operation(sid, operation_id)
+    except authoring_operations.AuthoringOperationError as exc:
+        return _authoring_operation_error_response(exc)
+    return view
 
 
 def _detect_authoring_workflow_change(

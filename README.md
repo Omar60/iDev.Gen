@@ -196,6 +196,14 @@ full resource payloads or raw translation sidecars. The projection needs no
 assistant call and does not accept suggestions or refresh resources. See
 [sessions](docs/sessions.md#shared-session-summary).
 
+Automatic authoring-v1 plans expose operation-claim endpoints. `POST
+/api/sessions/{sid}/plan/authoring/operations` records or replays a claim;
+`GET /api/sessions/{sid}/plan/authoring/operations/{operation_id}` reads its
+status. These endpoints currently persist claims and report status without
+launching assistant work. See
+[authoring operation claims](docs/sessions.md#authoring-operation-claims-and-status)
+for the request and response contract.
+
 From a model, **+ New session** is the normal entry to this resource-planning
 flow and keeps that model selected while the user chooses an exact `ready`
 resource revision. **Legacy session** opens the previous measured-catalogue

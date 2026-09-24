@@ -384,3 +384,9 @@
   identity and original-request rewrites: insertion uniqueness alone let a
   terminal row change its request ID and allowed the old ID to be reused.
   Resume may still advance state, fencing, lease, and progress on that row.
+- Task 5.2 starts and replays claims inside one transaction and keeps status
+  read-only. Shared suggestions select unresolved origins, not false-like
+  effective strings: an empty value with `origin=user` is a completed choice.
+  A disabled start returns 503 even for an identical replay; GET status remains
+  available. OperationView does not expose request digests or fencing state.
+  Execution, lease renewal, and recovery remain separate later tasks.

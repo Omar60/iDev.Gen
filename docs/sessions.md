@@ -1572,6 +1572,36 @@ resources and start a new session with an available ready scene revision
 before preparing takes. The summary is informational: it does not accept
 assistant suggestions or refresh resources.
 
+### Authoring operation claims and status
+
+Automatic authoring-v1 plans expose these operation endpoints:
+
+- `POST /api/sessions/{sid}/plan/authoring/operations` accepts a closed JSON
+  object with a UUID `request_id`, positive `expected_revision`, and `kind`
+  (`shared_suggestions` or `prepare_takes`). For `prepare_takes`, include
+  `take_ids`: 1–20 unique take IDs in the plan's stable order. Omit `take_ids`
+  for `shared_suggestions`.
+- `GET /api/sessions/{sid}/plan/authoring/operations/{operation_id}` returns
+  the operation's closed `OperationView` without changing its state.
+
+A new claim returns `202`; an identical replay returns `200`. Reusing a request
+ID with different content returns `409 idempotency_conflict`. A different
+request while another operation is active for the session returns
+`409 authoring_active` with that operation's public view. Missing assistant
+configuration returns `409 assistant_unavailable`, and a stale plan revision
+returns `409 plan_revision_stale`. The POST returns `503` while resource
+planning is disabled, including for an identical replay. GET remains available
+while disabled.
+
+The view contains operation and plan identifiers, kind, state, timestamps,
+lease expiry, requested/completed/failed/remaining progress, result, error, and
+`can_cancel`/`can_resume` (both false in this API surface). It does not expose
+internal ownership or fencing data. For `shared_suggestions`, only fields with
+origin `none` are claimed; explicit user-origin values count as resolved even
+when their value is empty.
+At this stage the routes persist or replay claims and report status; they do not
+launch assistant work.
+
 ### Operational rollback and disabling resource mode
 
 To disable resource-based session planning without running a destructive database downgrade:
