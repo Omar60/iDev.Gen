@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 23 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 24 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -181,6 +181,14 @@ Rejected edits leave the plan, prepared rows, and linked shots unchanged.
 Brief edits and explicit scoped wardrobe changes remain available. The final
 full Python gate passed with 2,271 tests.
 
+Task 4.8 has passed independent acceptance. Real API tests cover automatic/manual
+mode changes without an assistant and reject explicit take choices that conflict
+with fixed variation policy before a plan revision is written. Existing API
+coverage confirms closed authoring round trips, workflow resolution and drift,
+plan-owned session projections, stale CAS, and plans above twenty takes. The
+independent full Python suite passed with 2,276 tests; frontend tests passed
+with 430 tests. Task 5.1 remains pending.
+
 ## Prior Position
 
 Task 2.4 is complete. The automatic/manual/pre-authoring authority matrix is
@@ -226,9 +234,9 @@ remain intact.
 
 ## Current Position
 
-Tasks 3.1 through 3.5 and Tasks 4.1 through 4.7 are complete. Task 4.8 has
+Tasks 3.1 through 3.5 and Tasks 4.1 through 4.8 are complete. Task 5.1 has
 not started.
 
 ## Next Milestone
 
-Task 4.8 is the next pending task. Do not begin it automatically.
+Task 5.1 is the next pending task. Do not begin it automatically.

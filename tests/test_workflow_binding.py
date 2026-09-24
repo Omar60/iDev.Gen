@@ -1206,7 +1206,10 @@ class TestTask43RepairRegressions:
             json={"plan_revision": 1, "take_id": "take-001"},
         )
         assert response.status_code == 409, response.text
-        assert response.json()["detail"]["code"] == "workflow_changed"
+        detail = response.json()["detail"]
+        assert set(detail) == {"code", "message"}
+        assert detail["code"] == "workflow_changed"
+        assert isinstance(detail["message"], str) and detail["message"]
         assert dict(db.one("SELECT * FROM prepared_take WHERE session_id=?", sid)) == before_prepared
         assert [dict(row) for row in db.q(
             "SELECT * FROM shot WHERE session_id=?", sid,

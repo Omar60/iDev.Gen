@@ -248,6 +248,114 @@ def test_guided_manual_mode_fixed_policy_and_user_overrides_persist_without_assi
     }
 
 
+def test_authoring_mode_switches_both_ways_without_configured_assistant(
+    client, seeded, monkeypatch,
+):
+    no_assistant = {**main.CONFIG, "llm_url": "", "llm_model": ""}
+    monkeypatch.setattr(main, "CONFIG", no_assistant)
+    assert not main.enhance.configured(main.CONFIG)
+    assistant_calls = []
+
+    async def unexpected_assistant_call(*args, **kwargs):
+        assistant_calls.append((args, kwargs))
+        raise AssertionError("mode changes must not invoke the assistant")
+
+    monkeypatch.setattr(main.enhance, "_request_completion", unexpected_assistant_call)
+
+    created = client.post(
+        "/api/sessions/guided", json=_body(seeded, _room_anchor()),
+    )
+    assert created.status_code == 201, created.text
+    sid = created.json()["session_id"]
+    plan = created.json()["plan"]
+    assert plan["authoring"]["mode"] == "automatic"
+
+    for expected_revision, mode in ((1, "manual"), (2, "automatic")):
+        candidate = json.loads(json.dumps(plan))
+        candidate["authoring"]["mode"] = mode
+        saved = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": candidate, "expected_revision": expected_revision},
+        )
+        assert saved.status_code == 200, saved.text
+        assert set(saved.json()) == {"plan_revision", "conflicts"}
+        assert saved.json() == {
+            "plan_revision": expected_revision + 1,
+            "conflicts": [],
+        }
+
+        fetched = client.get(f"/api/sessions/{sid}/plan")
+        assert fetched.status_code == 200, fetched.text
+        body = fetched.json()
+        assert body["plan_revision"] == expected_revision + 1
+        assert body["plan"]["authoring"]["mode"] == mode
+        assert set(body["plan"]["authoring"]) == session_plan.REQUIRED_AUTHORING_KEYS
+        plan = body["plan"]
+
+    assert assistant_calls == []
+
+
+@pytest.mark.parametrize(("dimension", "fixed_value", "conflicting_value"), [
+    ("camera", "35mm portrait lens", "85mm telephoto lens"),
+    ("framing", "waist-up framing", "full-body framing"),
+    ("pose", "seated pose", "standing pose"),
+    ("expression", "calm expression", "wide smile"),
+])
+def test_plan_api_rejects_take_choice_conflicting_with_fixed_policy(
+    client, seeded, dimension, fixed_value, conflicting_value,
+):
+    anchor = _room_anchor()
+    policy = {
+        key: (
+            {"mode": "fixed", "value": fixed_value, "value_origin": "user"}
+            if key == dimension else {"mode": "vary"}
+        )
+        for key in ("camera", "framing", "pose", "expression")
+    }
+    created = client.post(
+        "/api/sessions/guided",
+        json=_body(seeded, anchor, variation_policy=policy),
+    )
+    assert created.status_code == 201, created.text
+    result = created.json()
+    sid = result["session_id"]
+    plan = result["plan"]
+
+    matching = json.loads(json.dumps(plan))
+    matching["takes"][0][dimension] = fixed_value
+    accepted = client.post(
+        f"/api/sessions/{sid}/plan",
+        json={"plan": matching, "expected_revision": 1},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json() == {"plan_revision": 2, "conflicts": []}
+
+    before_plan = dict(db.one(
+        "SELECT * FROM session_plan WHERE session_id = ?", sid,
+    ))
+    conflicting = client.get(f"/api/sessions/{sid}/plan").json()["plan"]
+    conflicting["takes"][0][dimension] = conflicting_value
+    rejected = client.post(
+        f"/api/sessions/{sid}/plan",
+        json={"plan": conflicting, "expected_revision": 2},
+    )
+
+    assert rejected.status_code == 422, rejected.text
+    body = rejected.json()
+    assert set(body) == {"detail"}
+    detail = body["detail"]
+    assert isinstance(detail, str)
+    assert f"authoring.variation_policy.{dimension}" in detail
+    assert "take-001" in detail
+    assert dict(db.one(
+        "SELECT * FROM session_plan WHERE session_id = ?", sid,
+    )) == before_plan
+    current = client.get(f"/api/sessions/{sid}/plan").json()
+    assert current["plan_revision"] == 2
+    assert current["plan"]["takes"][0][dimension] == fixed_value
+    assert db.q("SELECT * FROM prepared_take WHERE session_id = ?", sid) == []
+
+
 def test_guided_reused_request_id_with_changed_body_writes_nothing(client, seeded):
     payload = _body(seeded, _room_anchor())
     created = client.post("/api/sessions/guided", json=payload)

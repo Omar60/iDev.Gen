@@ -371,3 +371,9 @@
   pending while its linked prepared take is already generated, so the freeze
   begins at queueing; scoped wardrobe events remain editable without rewriting
   generated evidence.
+- Task 4.8 found that closed policy-shape validation did not compare fixed
+  values with explicit take choices. Check that conflict inside the winning plan
+  CAS after the generated-continuity guard and before writes, so conflicting
+  drafts fail without a revision while existing continuity refusals retain
+  precedence. API tests should assert the real response shape and persisted
+  state, not only the validator result.

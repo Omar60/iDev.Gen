@@ -780,7 +780,36 @@ def validate_authoring_block(auth: Any, plan: dict, *, check_effective: bool = T
     }
 
 
-def validate_draft(plan: Any, *, check_authoring_effective: bool = True) -> dict:
+def validate_fixed_variation_choices(plan: dict) -> None:
+    """Reject explicit take choices that disagree with a fixed authoring value."""
+    auth = plan.get("authoring")
+    if not isinstance(auth, dict):
+        return
+    policy = auth.get("variation_policy")
+    if not isinstance(policy, dict):
+        return
+    for take in plan.get("takes", []):
+        for dimension in ("camera", "framing", "pose", "expression"):
+            fixed = policy.get(dimension)
+            if (
+                isinstance(take, dict)
+                and isinstance(fixed, dict)
+                and fixed.get("mode") == "fixed"
+                and dimension in take
+                and take[dimension] != fixed.get("value")
+            ):
+                raise PlanValidationError(
+                    f"plan take {take['take_id']!r} conflicts with fixed "
+                    f"authoring.variation_policy.{dimension}; explicit "
+                    f"choices must match the fixed value"
+                )
+
+
+def validate_draft(
+    plan: Any,
+    *,
+    check_authoring_effective: bool = True,
+) -> dict:
     """Validate a resource-v1 plan and return a normalized copy.
 
     The input shape and what this function checks:
@@ -2548,6 +2577,11 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                     "authoring.workflow_binding, authoring.look_snapshot) "
                     "cannot be changed. Start a new session to change them."
                 )
+
+        # Keep the generated-state continuity refusal authoritative when a
+        # candidate also has a fixed-value conflict; otherwise check choices
+        # before any revision or prepared-take write.
+        validate_fixed_variation_choices(validated)
         new_revision = actual + 1
         if actual == 0:
             db.run(

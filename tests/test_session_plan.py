@@ -5673,6 +5673,9 @@ class TestTask42AuthoringLimits:
             json={"plan": dict(plan, takes=_task42_takes(501)), "expected_revision": 1},
         )
         assert response.status_code == 409, response.text
+        assert set(response.json()) == {"detail"}
+        assert "plan revision is 2" in response.json()["detail"]
+        assert "expected 1" in response.json()["detail"]
         assert db.one("SELECT * FROM session_plan WHERE session_id = ?", sid) == stored
 
 
