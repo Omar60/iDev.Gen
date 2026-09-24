@@ -5611,6 +5611,143 @@ def test_text_query_reads_the_wardrobe_too(client, seeded):
     assert listed == [sid]
 
 
+def test_resource_session_projects_plan_constants_and_searches_current_values(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "resource projection",
+        "look": "stale-legacy-look", "wardrobe": "stale-legacy-wardrobe",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+    plan = {
+        "version": "resource-v1", "look": "first-plan-look",
+        "initial_wardrobe": "first-plan-wardrobe",
+        "takes": [{"take_id": "take-01"}],
+        "selected_resources": [], "wardrobe_changes": [],
+    }
+    assert client.post(
+        f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}
+    ).status_code == 200
+
+    detail = client.get(f"/api/sessions/{sid}").json()
+    listed = next(s for s in client.get("/api/sessions").json() if s["id"] == sid)
+    assert "_resource_plan_json" not in listed
+    for session in (detail, listed):
+        assert session["look"] == "first-plan-look"
+        assert session["wardrobe"] == "first-plan-wardrobe"
+
+    updated_plan = {
+        **plan, "look": "current-plan-look", "initial_wardrobe": "current-plan-wardrobe",
+    }
+    assert client.post(
+        f"/api/sessions/{sid}/plan", json={"plan": updated_plan, "expected_revision": 1}
+    ).status_code == 200
+
+    detail = client.get(f"/api/sessions/{sid}").json()
+    listed = next(s for s in client.get("/api/sessions").json() if s["id"] == sid)
+    assert "_resource_plan_json" not in listed
+    for session in (detail, listed):
+        assert session["look"] == "current-plan-look"
+        assert session["wardrobe"] == "current-plan-wardrobe"
+
+    for term in ("current-plan-look", "current-plan-wardrobe"):
+        assert [s["id"] for s in client.get("/api/sessions", params={"q": term}).json()] == [sid]
+    for term in ("stale-legacy-look", "stale-legacy-wardrobe"):
+        assert client.get("/api/sessions", params={"q": term}).json() == []
+    legacy_columns = db.one("SELECT look, wardrobe FROM session WHERE id=?", sid)
+    assert (legacy_columns["look"], legacy_columns["wardrobe"]) == (
+        "stale-legacy-look", "stale-legacy-wardrobe",
+    )
+
+
+@pytest.mark.parametrize("field,value", [
+    ("look", "attempted-look"), ("look", None), ("wardrobe", "attempted-wardrobe"),
+])
+def test_resource_session_patch_constants_requires_plan_cas_without_writes(client, seeded, field, value):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "resource patch",
+        "look": "legacy-look", "wardrobe": "legacy-wardrobe",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+    plan = {
+        "version": "resource-v1", "look": "plan-look",
+        "initial_wardrobe": "plan-wardrobe",
+        "takes": [{"take_id": "take-01"}],
+        "selected_resources": [], "wardrobe_changes": [],
+    }
+    assert client.post(
+        f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}
+    ).status_code == 200
+    session_before = dict(db.one("SELECT * FROM session WHERE id=?", sid))
+    plan_before = dict(db.one("SELECT * FROM session_plan WHERE session_id=?", sid))
+
+    response = client.patch(f"/api/sessions/{sid}", json={
+        "name": "must-not-be-written", field: value,
+    })
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "plan_field_required"
+    assert "plan CAS" in response.json()["detail"]["message"]
+    assert f"/api/sessions/{sid}/plan" in response.json()["detail"]["message"]
+    assert dict(db.one("SELECT * FROM session WHERE id=?", sid)) == session_before
+    assert dict(db.one("SELECT * FROM session_plan WHERE session_id=?", sid)) == plan_before
+
+
+@pytest.mark.parametrize("plan_state,expected_code", [
+    ("missing", "resource_plan_missing"), ("invalid", "resource_plan_invalid"),
+])
+def test_resource_session_without_readable_plan_never_falls_back_to_legacy(client, seeded, plan_state, expected_code):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "resource inconsistent",
+        "look": "stale-legacy-look", "wardrobe": "stale-legacy-wardrobe",
+        "composition_mode": "resource-v1",
+    }).json()["id"]
+    if plan_state == "invalid":
+        plan = {
+            "version": "resource-v1", "look": "valid-before-corruption",
+            "initial_wardrobe": "valid-before-corruption",
+            "takes": [{"take_id": "take-01"}],
+            "selected_resources": [], "wardrobe_changes": [],
+        }
+        assert client.post(
+            f"/api/sessions/{sid}/plan", json={"plan": plan, "expected_revision": 0}
+        ).status_code == 200
+        db.run("UPDATE session_plan SET plan_json=? WHERE session_id=?", "{", sid)
+
+    detail = client.get(f"/api/sessions/{sid}").json()
+    listed = next(s for s in client.get("/api/sessions").json() if s["id"] == sid)
+    for session in (detail, listed):
+        assert session["look"] is None
+        assert session["wardrobe"] is None
+        assert session["diagnostic"]["code"] == expected_code
+        assert session["diagnostic"]["message"]
+    for term in ("stale-legacy-look", "stale-legacy-wardrobe"):
+        assert client.get("/api/sessions", params={"q": term}).json() == []
+
+
+def test_legacy_session_list_search_and_wardrobe_patch_remain_compatible(client, seeded):
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "legacy constants",
+        "look": "legacy-searchable-look", "wardrobe": "old-legacy-wardrobe",
+        "shots": [{"prompt": "standing", "count": 1}],
+    }).json()["id"]
+    response = client.patch(f"/api/sessions/{sid}", json={
+        "look": "ignored-legacy-look", "wardrobe": "updated-legacy-wardrobe",
+    })
+    assert response.status_code == 200
+
+    detail = client.get(f"/api/sessions/{sid}").json()
+    listed = next(s for s in client.get("/api/sessions").json() if s["id"] == sid)
+    for session in (detail, listed):
+        assert session["look"] == "legacy-searchable-look"
+        assert session["wardrobe"] == "updated-legacy-wardrobe"
+    assert "_resource_plan_json" not in listed
+    assert [s["id"] for s in client.get(
+        "/api/sessions", params={"q": "legacy-searchable-look"}
+    ).json()] == [sid]
+    assert [s["id"] for s in client.get(
+        "/api/sessions", params={"q": "updated-legacy-wardrobe"}
+    ).json()] == [sid]
+
+
 def test_a_tag_filter_matches_a_whole_tag_not_a_substring(client, seeded):
     """`tag=night` is the session tagged `night`, not the one tagged
     `nightclub`. A prefix match would broaden the filter past the word the

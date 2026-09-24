@@ -348,3 +348,13 @@
   causally attributable to Task 4.4. Targeted order/stress runs passed and the
   final 2,256-test suite was green. Do not broaden a bounded feature task into a
   shared SQLite concurrency repair without a reproducible mechanism.
+- Task 4.5 keeps one effective projection boundary for session detail, list,
+  and search: resource-v1 reads validated plan constants, while legacy sessions
+  continue reading their row columns. Search must filter the projected values,
+  not stale storage columns.
+- A resource-v1 session without a readable plan is inconsistent state, not a
+  compatibility fallback. Public rows expose a stable diagnostic and null
+  effective constants so stale legacy text cannot leak into display or search.
+- The generic session PATCH accepts `look` only to detect and reject resource-v1
+  attempts with `plan_field_required`; it does not add legacy look mutation.
+  Resource-v1 look and wardrobe remain plan-CAS owned.

@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 20 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 21 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -156,6 +156,15 @@ replay returns `200`, changed content returns `409`, and concurrency/rollback
 tests prove one creation with no orphans. The final backend suite passed with
 2,256 tests.
 
+Task 4.5 has passed independent acceptance and is formally closed. Resource-v1
+session detail, list, and free-text search project `plan.look` and
+`plan.initial_wardrobe` without mirroring them into legacy session columns.
+Missing or invalid resource plans expose a stable diagnostic and never fall
+back to stale legacy constants. Generic session PATCH rejects explicit look or
+wardrobe changes with `409 plan_field_required`, while legacy search and
+wardrobe PATCH behavior remains unchanged. The full backend suite passed with
+2,263 tests.
+
 ## Prior Position
 
 Task 2.4 is complete. The automatic/manual/pre-authoring authority matrix is
@@ -201,9 +210,9 @@ remain intact.
 
 ## Current Position
 
-Tasks 3.1 through 3.5 and Tasks 4.1 through 4.4 are complete and formally
-closed. Task 4.5 has not started.
+Tasks 3.1 through 3.5 and Tasks 4.1 through 4.5 are complete and formally
+closed. Task 4.6 has not started.
 
 ## Next Milestone
 
-Task 4.5 is the next pending task. Do not begin it automatically.
+Task 4.6 is the next pending task. Do not begin it automatically.

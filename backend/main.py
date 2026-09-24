@@ -473,10 +473,12 @@ class ComposeIn(BaseModel):
 
 class SessionPatch(BaseModel):
     name: str | None = None
-    # The wardrobe the *next* takes start from. The look is not here on purpose:
-    # it is the one thing a session holds constant, and a shoot whose hair and
-    # place changed halfway is two sessions. The wardrobe is the half that was
-    # always meant to move.
+    # Accepted at the boundary so resource-v1 can return its plan-CAS error.
+    # Legacy look remains non-patchable.
+    look: str | None = None
+    # The wardrobe the *next* takes start from. Legacy look remains read-only;
+    # `look` is captured only so resource-v1 requests can be rejected in favor
+    # of plan CAS. The wardrobe is the half that was always meant to move.
     wardrobe: str | None = None
     # 0 clears it back to the model's default, the same way the reference one
     # clears to "text to image only".
@@ -3305,14 +3307,55 @@ def delete_reading(reading_id: int):
 
 # ------------------------------------------------------------------ sessions
 
+def _project_session_plan_constants(row: dict) -> dict:
+    """Project resource-v1 look and wardrobe from the validated saved plan."""
+    if not is_session_resource_mode(row):
+        row.pop("_resource_plan_json", None)
+        return row
+
+    if "_resource_plan_json" in row:
+        plan_json = row.pop("_resource_plan_json")
+    else:
+        plan_row = db.one(
+            "SELECT plan_json FROM session_plan WHERE session_id=?", row["id"]
+        )
+        plan_json = plan_row["plan_json"] if plan_row else None
+
+    if plan_json is None:
+        row["look"] = None
+        row["wardrobe"] = None
+        row["diagnostic"] = {
+            "code": "resource_plan_missing",
+            "message": "Resource-v1 plan is missing; look and wardrobe are unavailable.",
+        }
+        return row
+
+    try:
+        plan = session_plan.validate_draft(
+            json.loads(plan_json), check_authoring_effective=False,
+        )
+    except (ValueError, TypeError):
+        row["look"] = None
+        row["wardrobe"] = None
+        row["diagnostic"] = {
+            "code": "resource_plan_invalid",
+            "message": "Resource-v1 plan cannot be read; look and wardrobe are unavailable.",
+        }
+        return row
+
+    row["look"] = plan["look"]
+    row["wardrobe"] = plan["initial_wardrobe"]
+    return row
+
+
 @app.get("/api/sessions")
 def list_sessions(q: str = "", tag: str = ""):
     """Every session, newest first, with a free-text and a tag filter.
 
-    `q` is a case-insensitive substring of the session's name, look or wardrobe
-    - the three things a user can read and search by. `tag` is a whole tag, not a
-    substring: a query of `night` lists the session tagged `night` and not the
-    one tagged `nightclub`. Both given, both must hold.
+    `q` is a case-insensitive substring of the session's name, effective look or
+    effective wardrobe. `tag` is a whole tag, not a substring: a query of
+    `night` lists the session tagged `night` and not the one tagged `nightclub`.
+    Both given, both must hold.
 
     The cover photograph is the highest-rated, non-rejected, done shot - the
     same frame the model detail page picks, so the library's row shows one
@@ -3320,12 +3363,6 @@ def list_sessions(q: str = "", tag: str = ""):
     """
     where: list[str] = []
     params: list = []
-    if q:
-        # LOWER on the column and the query, LIKE wrapping: case-insensitive
-        # substring. look and wardrobe default to '' so LOWER on them is safe.
-        like = f"%{q.lower()}%"
-        where.append("(LOWER(s.name) LIKE ? OR LOWER(s.look) LIKE ? OR LOWER(s.wardrobe) LIKE ?)")
-        params.extend([like, like, like])
     if tag:
         # Whole-tag match: `json_each` turns the array into rows, LOWER on both
         # sides makes it case-insensitive, EXISTS keeps the predicate cheap.
@@ -3333,18 +3370,32 @@ def list_sessions(q: str = "", tag: str = ""):
         params.append(tag)
     sql = """
         SELECT s.*, m.name AS model_name,
+               sp.plan_json AS _resource_plan_json,
                (SELECT COUNT(*) FROM shot WHERE session_id=s.id) AS shot_count,
                (SELECT COUNT(*) FROM shot WHERE session_id=s.id AND status='done') AS done_count,
                (SELECT id FROM shot WHERE session_id=s.id AND status='done' AND rejected=0
                  ORDER BY rating DESC, id LIMIT 1) AS cover_shot_id
         FROM session s JOIN model m ON m.id=s.model_id
+        LEFT JOIN session_plan sp ON sp.session_id=s.id
     """
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY s.id DESC"
-    # settings AND tags come decoded: the gallery needs the user's raw tag list
-    # and the clone-picker reads cloned_from off the same payload.
-    return [db.jload(r, "settings", "tags") for r in db.q(sql, *params)]
+    # Settings and tags come decoded: the gallery needs the user's raw tag list
+    # and the clone-picker reads cloned_from off the same payload. Project before
+    # filtering so q sees exactly the values returned to cards and detail.
+    rows = [
+        _project_session_plan_constants(db.jload(r, "settings", "tags"))
+        for r in db.q(sql, *params)
+    ]
+    if q:
+        needle = q.casefold()
+        rows = [
+            r for r in rows
+            if any(needle in str(r.get(field) or "").casefold()
+                   for field in ("name", "look", "wardrobe"))
+        ]
+    return rows
 
 
 @app.get("/api/sessions/{sid}")
@@ -3353,6 +3404,7 @@ def get_session(sid: int):
     if not row:
         raise HTTPException(404, "session not found")
     row = db.jload(row, "settings", "anchor_shot_ids", "tags")
+    row = _project_session_plan_constants(row)
     row["model"] = db.jload(db.one("SELECT * FROM model WHERE id=?", row["model_id"]), "settings")
     row["shots"] = [db.jload(x, "reference_shot_ids")
                     for x in db.q("SELECT * FROM shot WHERE session_id=? ORDER BY id", sid)]
@@ -3657,6 +3709,14 @@ def update_session(sid: int, p: SessionPatch):
     row = db.one("SELECT * FROM session WHERE id=?", sid)
     if not row:
         raise HTTPException(404, "session not found")
+    if is_session_resource_mode({"settings": row["settings"]}) and p.model_fields_set.intersection({"look", "wardrobe"}):
+        raise HTTPException(409, {
+            "code": "plan_field_required",
+            "message": (
+                "Resource-v1 look and wardrobe must be edited through plan CAS "
+                f"at /api/sessions/{sid}/plan."
+            ),
+        })
     # Task 4.3: a PATCH that asks to change the session's primary
     # workflow while a persisted authoring-v1 plan is bound to that
     # workflow is refused with 409 ``workflow_changed``. The check runs
