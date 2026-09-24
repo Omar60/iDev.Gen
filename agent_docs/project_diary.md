@@ -363,3 +363,11 @@
   descriptions independent of empty additional constraints, project effective
   values separately from origin metadata, and return fixed diagnostic codes
   instead of raw resource errors when a scene cannot be authorized.
+- Task 4.7 checks generated continuity inside the winning plan CAS. Compare
+  the full saved-look snapshot as canonical JSON: its content digest alone
+  omits logical identity and version, while array order and aside wording are
+  significant. Keep the existing constant-change test separate so this freeze
+  does not introduce Task 7.3 automatic invalidation. A submitted shot is
+  pending while its linked prepared take is already generated, so the freeze
+  begins at queueing; scoped wardrobe events remain editable without rewriting
+  generated evidence.

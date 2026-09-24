@@ -2582,13 +2582,15 @@ def _plant_prepared_take(
     )
 
 
-def _plant_shot(session_id: int, prompt: str = "a shot prompt") -> int:
+def _plant_shot(
+    session_id: int, prompt: str = "a shot prompt", status: str = "done",
+) -> int:
     """Plant a minimal shot row for a test. Returns the new shot id."""
     now = db.now()
     return db.run(
         "INSERT INTO shot (session_id, prompt, status, created_at) "
-        "VALUES (?, ?, 'done', ?)",
-        session_id, prompt, now,
+        "VALUES (?, ?, ?, ?)",
+        session_id, prompt, status, now,
     )
 
 
@@ -4793,6 +4795,15 @@ class TestSubmitPreparedTake:
         assert shot["prompt"] == snapshot["final_prompt"]
         assert shot["shot_label"] == "invented take 01"
 
+        frozen = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": {**plan, "look": plan["look"] + " changed"}, "expected_revision": 1},
+        )
+        assert frozen.status_code == 409, frozen.text
+        assert client.get(f"/api/sessions/{sid}/plan").json()["plan_revision"] == 1
+        assert _task34_raw_prepared(sid, 1, "resume-01") == raw
+        assert db.q("SELECT * FROM shot WHERE session_id = ?", sid) == shots
+
     def test_submit_retry_returns_existing_shot_and_creates_no_second_shot(
         self, client, seeded,
     ):
@@ -6508,62 +6519,244 @@ class TestTask41ClosedAuthoringSchema:
         assert res_forged.status_code == 409, res_forged.text
         assert "shared_state.look metadata cannot be modified when look is unchanged" in res_forged.json()["detail"]
 
-    def test_generated_history_authoring_edits_do_not_advance_continuity_freeze(self, client, seeded):
+    def test_generated_history_freezes_authoring_continuity_but_keeps_brief_and_scoped_wardrobe_edits_allowed(
+        self, client, seeded,
+    ):
         sid = _task34_resource_session(client, seeded, "authoring edits with generated history")
         rev = _task41_resource_revision()
         other = _build_revision(
             "inv_task41_rooms", "inv_task41_room_02", INV_ROOM_PAYLOAD,
         )
         other_triple = {key: other[key] for key in ("library_key", "source_id", "content_digest")}
-        auth = _task41_valid_authoring(scene_anchor_triple=rev)
+        auth = _task41_valid_authoring(scene_anchor_triple=rev, snapshot=True)
         plan = _task41_make_plan(rev, auth=auth, takes=[
             {"take_id": "take-001", "camera": "50mm"},
             {"take_id": "take-002", "camera": "35mm"},
         ])
         plan["selected_resources"].append(other_triple)
         _task41_seed_authoring_plan(sid, plan)
-        shot_id = _plant_shot(sid)
+        shot_id = _plant_shot(sid, status="pending")
         _plant_prepared_take(sid, 1, "take-001", status="generated", linked_shot_id=shot_id)
         _plant_prepared_take(sid, 1, "take-002", status="ready")
 
-        changed = json.loads(json.dumps(plan))
-        changed["authoring"]["scene_anchor"] = other_triple
-        changed["authoring"]["variation_policy"]["camera"] = {
+        plan_before = db.one(
+            "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+            sid,
+        )
+        prepared_before = list(db.q(
+            "SELECT * FROM prepared_take WHERE session_id = ? ORDER BY id", sid,
+        ))
+        shots_before = list(db.q("SELECT * FROM shot WHERE session_id = ?", sid))
+
+        edits = []
+        scene_changed = json.loads(json.dumps(plan))
+        scene_changed["authoring"]["scene_anchor"] = other_triple
+        edits.append(("scene_anchor", scene_changed, "authoring.scene_anchor"))
+
+        policy_changed = json.loads(json.dumps(plan))
+        policy_changed["authoring"]["variation_policy"]["camera"] = {
             "mode": "fixed", "value": "wide", "value_origin": "user",
         }
+        edits.append(("variation_policy", policy_changed, "authoring.variation_policy"))
+
+        workflow_changed = json.loads(json.dumps(plan))
+        workflow_changed["authoring"]["workflow_binding"]["kind"] = "i2i"
+        edits.append(("workflow_binding", workflow_changed, "workflow_binding is server-owned"))
+
+        snapshot_changed = json.loads(json.dumps(plan))
+        snapshot_changed["authoring"]["look_snapshot"] = None
+        edits.append(("look_snapshot", snapshot_changed, "look_snapshot is server-owned"))
+
+        for field, candidate, expected_detail in edits:
+            refused = client.post(
+                f"/api/sessions/{sid}/plan",
+                json={"plan": candidate, "expected_revision": 1},
+            )
+            assert refused.status_code == 409, refused.text
+            assert expected_detail in refused.json()["detail"]
+            assert db.one(
+                "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+                sid,
+            ) == plan_before, field
+            assert list(db.q(
+                "SELECT * FROM prepared_take WHERE session_id = ? ORDER BY id", sid,
+            )) == prepared_before, field
+            assert list(db.q(
+                "SELECT * FROM shot WHERE session_id = ?", sid,
+            )) == shots_before, field
+
+        # Brief edits and explicit per-take wardrobe changes remain valid.
+        # The generated/queued snapshot is untouched; only the affected ready
+        # preparation is invalidated by the scoped wardrobe change.
+        edited = json.loads(json.dumps(plan))
+        edited["authoring"]["brief"] = "A later continuation of the same studio brief."
+        edited["wardrobe_changes"] = [{
+            "take_id": "take-002",
+            "scope": "this_take",
+            "wardrobe": "a dark wool jacket over a cream shirt",
+        }]
         saved = client.post(
-            f"/api/sessions/{sid}/plan", json={"plan": changed, "expected_revision": 1},
+            f"/api/sessions/{sid}/plan",
+            json={"plan": edited, "expected_revision": 1},
         )
         assert saved.status_code == 200, saved.text
         assert saved.json()["plan_revision"] == 2
-        assert client.get(f"/api/sessions/{sid}/plan").json()["plan"]["authoring"] == changed["authoring"]
-        rows = _prepared_take_rows(sid)
-        assert [(row["take_id"], row["status"]) for row in rows] == [
-            ("take-001", "generated"), ("take-002", "ready"),
-        ]
+        stored = client.get(f"/api/sessions/{sid}/plan").json()["plan"]
+        assert stored["authoring"]["brief"] == edited["authoring"]["brief"]
+        assert stored["wardrobe_changes"] == edited["wardrobe_changes"]
+        assert stored["authoring"]["scene_anchor"] == auth["scene_anchor"]
+        assert stored["authoring"]["variation_policy"] == auth["variation_policy"]
+        assert stored["authoring"]["workflow_binding"] == auth["workflow_binding"]
+        assert stored["authoring"]["look_snapshot"] == auth["look_snapshot"]
 
-        # These blocks are server-owned in 4.1; generic saves reject their edits
-        # for ownership, without introducing the future 4.7 freeze behavior.
-        for block, value in (
-            ("workflow_binding", {**auth["workflow_binding"], "kind": "i2i"}),
-            ("look_snapshot", None),
-        ):
-            forged = json.loads(json.dumps(changed))
-            forged["authoring"][block] = value
-            res = client.post(
-                f"/api/sessions/{sid}/plan", json={"plan": forged, "expected_revision": 2},
-            )
-            assert res.status_code == 409, res.text
-            assert f"{block} is server-owned" in res.json()["detail"]
+        prepared_after = list(db.q(
+            "SELECT * FROM prepared_take WHERE session_id = ? ORDER BY id", sid,
+        ))
+        assert prepared_after[0] == prepared_before[0]
+        assert prepared_after[1]["status"] == "invalidated"
+        assert list(db.q("SELECT * FROM shot WHERE session_id = ?", sid)) == shots_before
 
-        changed_look = json.loads(json.dumps(changed))
-        changed_look["look"] = "different look"
-        frozen = client.post(
-            f"/api/sessions/{sid}/plan", json={"plan": changed_look, "expected_revision": 2},
+
+class TestTask47ContinuityComparison:
+    def test_authoring_continuity_fields_are_shared_and_brief_wardrobe_are_excluded(self):
+        revision = _task41_resource_revision()
+        other = _build_revision(
+            "inv_task47_rooms", "inv_task47_room_02", INV_ROOM_PAYLOAD,
         )
-        assert frozen.status_code == 409, frozen.text
-        assert "generated" in frozen.json()["detail"]
-        assert client.get(f"/api/sessions/{sid}/plan").json()["plan_revision"] == 2
+        other_triple = {
+            key: other[key]
+            for key in ("library_key", "source_id", "content_digest")
+        }
+        auth = _task41_valid_authoring(
+            scene_anchor_triple=revision,
+            snapshot=True,
+            garments=[
+                {"key": "shirt", "wording": "linen shirt", "aside": ""},
+                {"key": "jacket", "wording": "dark jacket", "aside": ""},
+            ],
+        )
+        plan = _task41_make_plan(revision, auth=auth)
+
+        changed_values = []
+        scene_changed = json.loads(json.dumps(plan))
+        scene_changed["authoring"]["scene_anchor"] = other_triple
+        changed_values.append(("scene_anchor", scene_changed))
+
+        policy_changed = json.loads(json.dumps(plan))
+        policy_changed["authoring"]["variation_policy"]["camera"] = {
+            "mode": "fixed", "value": "wide", "value_origin": "user",
+        }
+        changed_values.append(("variation_policy", policy_changed))
+
+        workflow_changed = json.loads(json.dumps(plan))
+        workflow_changed["authoring"]["workflow_binding"]["graph_digest"] = "c" * 64
+        changed_values.append(("workflow_binding", workflow_changed))
+
+        snapshot_changed = json.loads(json.dumps(plan))
+        snapshot_changed["authoring"]["look_snapshot"] = None
+        changed_values.append(("look_snapshot", snapshot_changed))
+
+        for field, candidate in changed_values:
+            assert session_plan._plan_continuity_changed(plan, candidate), field
+
+        brief_changed = json.loads(json.dumps(plan))
+        brief_changed["authoring"]["brief"] += " Continue the same setup."
+        assert not session_plan._plan_continuity_changed(plan, brief_changed)
+
+        wardrobe_changed = json.loads(json.dumps(plan))
+        wardrobe_changed["wardrobe_changes"] = [{
+            "take_id": "take-001",
+            "scope": "this_take",
+            "wardrobe": "a dark jacket",
+        }]
+        assert not session_plan._plan_continuity_changed(plan, wardrobe_changed)
+
+        pre_authoring = {key: value for key, value in plan.items() if key != "authoring"}
+        assert not session_plan._plan_continuity_changed(pre_authoring, pre_authoring)
+
+    def test_complete_look_snapshot_uses_canonical_json_comparison(self):
+        revision = _task41_resource_revision()
+        auth = _task41_valid_authoring(
+            scene_anchor_triple=revision,
+            snapshot=True,
+            garments=[
+                {"key": "shirt", "wording": "linen shirt", "aside": "soft collar"},
+                {"key": "jacket", "wording": "dark wool jacket", "aside": "open front"},
+            ],
+        )
+        plan = _task41_make_plan(revision, auth=auth)
+
+        def rehash(snapshot):
+            snapshot["content_digest"] = resource_store.canonical_digest({
+                "appearance": snapshot["appearance"],
+                "outfit": snapshot["outfit"],
+            })
+
+        def with_snapshot_edit(name, edit):
+            candidate = json.loads(json.dumps(plan))
+            snapshot = candidate["authoring"]["look_snapshot"]
+            edit(snapshot)
+            assert session_plan._plan_continuity_changed(plan, candidate), name
+
+        null_snapshot = json.loads(json.dumps(plan))
+        null_snapshot["authoring"]["look_snapshot"] = None
+        assert session_plan._plan_continuity_changed(null_snapshot, plan)
+        assert session_plan._plan_continuity_changed(plan, null_snapshot)
+
+        with_snapshot_edit("look identity", lambda snapshot: snapshot.update(look_id="look-02"))
+        with_snapshot_edit("version", lambda snapshot: snapshot.update(version=2))
+        with_snapshot_edit(
+            "digest", lambda snapshot: snapshot.update(content_digest="0" * 64),
+        )
+
+        def edit_appearance(snapshot):
+            snapshot["appearance"] += " with cool side light"
+            rehash(snapshot)
+
+        with_snapshot_edit("appearance", edit_appearance)
+
+        def edit_outfit_identity(snapshot):
+            snapshot["outfit"]["outfit_key"] = "outfit-02"
+            rehash(snapshot)
+
+        with_snapshot_edit("outfit identity", edit_outfit_identity)
+
+        def reverse_garment_order(snapshot):
+            snapshot["outfit"]["garments"].reverse()
+            rehash(snapshot)
+
+        with_snapshot_edit("garment order", reverse_garment_order)
+
+        def edit_wording(snapshot):
+            snapshot["outfit"]["garments"][0]["wording"] = "a fine linen shirt"
+            rehash(snapshot)
+
+        with_snapshot_edit("garment wording", edit_wording)
+
+        def edit_aside(snapshot):
+            snapshot["outfit"]["garments"][0]["aside"] = "left untucked"
+            rehash(snapshot)
+
+        with_snapshot_edit("garment aside", edit_aside)
+
+        reordered_keys = json.loads(json.dumps(plan))
+        reordered_snapshot = reordered_keys["authoring"]["look_snapshot"]
+        outfit = reordered_snapshot["outfit"]
+        reordered_snapshot["outfit"] = {
+            "garments": [
+                dict(reversed(list(garment.items())))
+                for garment in outfit["garments"]
+            ],
+            "outfit_key": outfit["outfit_key"],
+        }
+        reordered_keys["authoring"]["look_snapshot"] = {
+            "outfit": reordered_snapshot["outfit"],
+            "version": reordered_snapshot["version"],
+            "appearance": reordered_snapshot["appearance"],
+            "content_digest": reordered_snapshot["content_digest"],
+            "look_id": reordered_snapshot["look_id"],
+        }
+        assert not session_plan._plan_continuity_changed(plan, reordered_keys)
 
 
 def _task46_store_revision(library_key, source_id, kind, payload, translation=None):

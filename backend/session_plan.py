@@ -62,15 +62,13 @@ Task 3.3 adds three small pieces on top of the 3.1 surface:
     immutable history: the pass leaves them alone and never
     rewrites their prompt, provenance or linked shot.
 
-  * A "constants are frozen after a generated take" guard. Once
-    a session has at least one prepared_take in ``generated``
-    status, a save that changes the look, the initial wardrobe,
-    or the selected resources is refused with
+  * A generated-continuity freeze. Once any take reaches generated
+    status, a save that changes the look, initial wardrobe, selected
+    resources, authoring scene anchor, variation policy, workflow
+    binding, or complete saved-look snapshot is refused with
     ``PlanConstantsFrozenAfterGenerated``. The refusal leaves the
-    existing plan row, the existing prepared_take rows, and every
-    linked shot byte-for-byte unchanged. Wardrobe changes and take
-    reorders are not constant changes; they are still allowed and
-    they still invalidate ungenerated rows.
+    plan, prepared_take rows, and linked shots unchanged. Brief edits
+    and explicit scoped wardrobe changes remain allowed.
 """
 from __future__ import annotations
 
@@ -238,20 +236,18 @@ class SessionNotFound(Exception):
 class PlanConstantsFrozenAfterGenerated(Exception):
     """The save would change constants after a take is generated.
 
-    Resource-v1 binds the session's identity to its model and its
-    look to the plan's ``look`` field. Once a prepared_take has
-    been generated, those constants are history: a later save
-    that rewrites ``look``, ``initial_wardrobe`` or
-    ``selected_resources`` would silently pretend a finished
-    photograph used a state it did not. The guard refuses the
-    save before any write, leaves the existing plan row and every
-    prepared_take row byte-for-byte unchanged, and asks the
-    operator to start a new session for a new look.
+    Once a prepared_take has been generated, its continuity inputs
+    are history: a later save that rewrites ``look``,
+    ``initial_wardrobe``, ``selected_resources``, or an authoring
+    plan's ``scene_anchor``, ``variation_policy``,
+    ``workflow_binding`` or complete ``look_snapshot`` would
+    describe a state the photograph did not use. The guard refuses
+    the save before any write and preserves the plan, prepared_take
+    rows, and linked shots.
 
-    Wardrobe changes and take reorders are NOT constant changes:
-    they remain legal after a generated take, and they still
-    invalidate ungenerated prepared_take rows through the same
-    pass the rest of the saves run.
+    Brief edits, wardrobe changes and take reorders remain legal
+    after a generated take. Explicit wardrobe changes still
+    invalidate affected ungenerated prepared_take rows.
     """
 
 
@@ -1318,37 +1314,49 @@ def detect_resource_constant_conflicts(plan: dict) -> list[dict]:
 
 
 def _plan_constants_changed(old_plan: dict, new_plan: dict) -> bool:
-    """Return True if the new plan changes the session's constants.
+    """Return whether look, initial wardrobe or selected resources changed."""
+    return any(
+        old_plan.get(field, default) != new_plan.get(field, default)
+        for field, default in (
+            ("look", ""),
+            ("initial_wardrobe", ""),
+            ("selected_resources", []),
+        )
+    )
 
-    The three fields the spec binds to the session's identity are
-    ``look``, ``initial_wardrobe`` and ``selected_resources``. A
-    change to any of them is a constant change. Other fields —
-    ``wardrobe_changes`` and ``takes`` order or content — are
-    explicit per-take decisions and are not constant changes; they
-    remain editable after a generated take and they still
-    invalidate ungenerated prepared_take rows.
 
-    The function compares structurally. Two ``selected_resources``
-    lists are equal when they carry the same triples in the same
-    order, which is what the validator's normalization guarantees
-    (the validator builds the list in the order the caller wrote
-    it, so the order is the operator's). Reordering the
-    ``selected_resources`` list is a constant change because the
-    list is the operator's statement of "these resources bound
-    the session's identity, in this order"; a save that reorders
-    it is a different statement.
+def _plan_continuity_changed(old_plan: dict, new_plan: dict) -> bool:
+    """Return whether a plan revision changes any frozen continuity input.
+
+    Authoring plans also bind continuity to ``scene_anchor``,
+    ``variation_policy``, ``workflow_binding`` and the complete
+    ``look_snapshot``. Canonical JSON comparison ignores object key
+    order and preserves array order and every nested value. Brief edits
+    and explicit per-take decisions remain outside this freeze.
     """
-    if old_plan.get("look", "") != new_plan.get("look", ""):
+    if _plan_constants_changed(old_plan, new_plan):
         return True
-    if old_plan.get("initial_wardrobe", "") != new_plan.get(
-        "initial_wardrobe", "",
-    ):
-        return True
-    if old_plan.get("selected_resources", []) != new_plan.get(
-        "selected_resources", [],
-    ):
-        return True
-    return False
+    old_authoring = old_plan.get("authoring")
+    new_authoring = new_plan.get("authoring")
+    if not isinstance(old_authoring, dict):
+        old_authoring = {}
+    if not isinstance(new_authoring, dict):
+        new_authoring = {}
+    return any(
+        json.dumps(
+            old_authoring.get(field), ensure_ascii=False,
+            separators=(",", ":"), sort_keys=True,
+        ) != json.dumps(
+            new_authoring.get(field), ensure_ascii=False,
+            separators=(",", ":"), sort_keys=True,
+        )
+        for field in (
+            "scene_anchor",
+            "variation_policy",
+            "workflow_binding",
+            "look_snapshot",
+        )
+    )
 
 
 def has_generated_take(session_id: int) -> bool:
@@ -1557,7 +1565,7 @@ def invalidate_ungenerated_prepared_takes(
     conservative-narrowing switches the ``session-plan`` spec
     asks for. When both are ``None`` (the default), the pass
     invalidates every ungenerated row at a non-current revision
-    — the strict policy for a save that changes the session's
+    — the strict policy for a save that changes the established
     constants (``look``, ``initial_wardrobe`` or
     ``selected_resources``). When at least one is provided, the
     pass invalidates only the rows whose ``take_id`` is in
@@ -2353,9 +2361,8 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
          current revision and compare it to ``expected_revision``. A
          mismatch raises ``PlanRevisionStale`` and the transaction
          rolls back without writing anything. With the read in hand,
-         compare the new plan's constants (``look``,
-         ``initial_wardrobe``, ``selected_resources``) against the
-         stored plan; a constant change while the session has a
+         compare the new plan's continuity inputs against the stored
+         plan; a continuity change while the session has a
          prepared_take in ``generated`` status raises
          ``PlanConstantsFrozenAfterGenerated`` and the transaction
          rolls back without writing anything.
@@ -2511,10 +2518,12 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
             plan_with_conflicts, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
         )
 
-        # Step 4: constant-change guard. The comparison strips the
+        # Step 4: continuity guard. The comparison strips the
         # ``conflicts`` key the prior save may have written so a
         # re-save of the same draft (which is a legal CAS bump)
-        # does not read as a constant change.
+        # does not read as a continuity change.
+        continuity_changed = False
+        constants_changed = False
         if current is not None:
             old_compare = {
                 key: value for key, value in old_plan.items()
@@ -2524,14 +2533,21 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                 key: value for key, value in validated.items()
                 if key != "conflicts"
             }
-            if _plan_constants_changed(old_compare, new_compare):
-                if has_generated_take(session_id):
-                    raise PlanConstantsFrozenAfterGenerated(
-                        f"session {session_id} has at least one generated "
-                        f"prepared_take; constants (look, initial_wardrobe, "
-                        f"selected_resources) cannot be changed. Start a "
-                        f"new session for a new look."
-                    )
+            continuity_changed = _plan_continuity_changed(
+                old_compare, new_compare,
+            )
+            constants_changed = _plan_constants_changed(
+                old_compare, new_compare,
+            )
+            if continuity_changed and has_generated_take(session_id):
+                raise PlanConstantsFrozenAfterGenerated(
+                    f"session {session_id} has at least one generated "
+                    "prepared_take; continuity fields (look, "
+                    "initial_wardrobe, selected_resources, "
+                    "authoring.scene_anchor, authoring.variation_policy, "
+                    "authoring.workflow_binding, authoring.look_snapshot) "
+                    "cannot be changed. Start a new session to change them."
+                )
         new_revision = actual + 1
         if actual == 0:
             db.run(
@@ -2560,10 +2576,10 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
         # reaches this call.
         #
         # The boundary the ``session-plan`` spec asks for lives
-        # here. A save that changes the session's constants
-        # (``look`` / ``initial_wardrobe`` / ``selected_resources``)
-        # keeps the strict policy: every ungenerated row at an
-        # older revision is invalidated. A save that only edits
+        # here. A save that changes the established constants
+        # (look, initial_wardrobe or selected_resources) keeps the
+        # strict policy: every ungenerated row at an older revision
+        # is invalidated. A save that only edits
         # ``wardrobe_changes`` or the take order narrows the
         # pass to the take IDs whose effective wardrobe actually
         # changed between revisions, plus any take removed from
@@ -2572,14 +2588,13 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
         # its prior ``ready`` row untouched, which is the
         # "reuse the prior preparation" rule the 6.2 acceptance
         # demands. The two policies live side by side so a
-        # constant change after a generated take still raises
+        # continuity change after a generated take still raises
         # ``PlanConstantsFrozenAfterGenerated`` above without
         # reaching this pass.
         if current is None:
             affected_for_invalidation: set[str] | None = None
             new_take_ids_for_invalidation: set[str] | None = None
         else:
-            constants_changed = _plan_constants_changed(old_compare, new_compare)
             if constants_changed:
                 affected_for_invalidation = None
                 new_take_ids_for_invalidation = None

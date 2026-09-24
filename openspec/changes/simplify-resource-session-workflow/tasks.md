@@ -31,7 +31,7 @@
 - [x] 4.4 Implement `POST /api/sessions/guided` and the durable guided request record. Canonically bind request ID to normalized-body digest and persist claim/session/plan/stable IDs/stored response atomically; verify new `201`, replay `200`, changed-body `409`, response-loss retry, concurrent same-token creation of at most one session and rollback with no request/session/plan orphan.
 - [x] 4.5 Make plan look/initial wardrobe authoritative for all resource-v1 detail/list/search projections, leave guided legacy columns empty, reject legacy session PATCH for those fields and preserve legacy row/search behavior. Verify plan edits immediately change listing/search without mirror writes and missing resource plans are diagnosed.
 - [x] 4.6 Implement the assistant-free shared-state summary from authoritative plan values and authorized scene descriptions. Empty additional constraints do not erase scene descriptions; saved values and origins remain distinct.
-- [ ] 4.7 Extend generated continuity freeze to scene anchor, variation policy, workflow binding and the entire look snapshot, including null/version/order/aside, without rewriting generated/queued evidence. Keep explicit scoped wardrobe changes authoritative.
+- [x] 4.7 Extend generated continuity freeze to scene anchor, variation policy, workflow binding and the entire look snapshot, including null/version/order/aside, without rewriting generated/queued evidence. Keep explicit scoped wardrobe changes authoritative.
 - [ ] 4.8 Test schema round trips, workflow resolution/drift, source-of-truth projection, mode changes without assistant configuration, conflicting fixed values, stale CAS and plans above twenty takes against actual API response shapes.
 
 ## 5. Recoverable authoring operation foundation
