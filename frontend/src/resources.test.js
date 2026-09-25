@@ -245,7 +245,7 @@ describe('resources module', () => {
           ],
         },
       }
-      const result = classifyResourceReadiness(readyRev)
+      const result = classifyResourceReadiness(readyRev, { kind: 'rooms' })
       expect(result.readiness).toBe('ready')
       expect(result.label).toBe('Ready')
       expect(result.isReady).toBe(true)
@@ -254,6 +254,20 @@ describe('resources module', () => {
       expect(result.blockedFields).toEqual([])
       expect(result.primaryAction).toEqual({ id: 'create_session', label: 'Create session' })
       expect(result.secondaryAction).toEqual({ id: 'inspect', label: 'Inspect' })
+    })
+
+    it('offers advanced and structured-scene actions for ready fused revisions', () => {
+      const readyRev = {
+        readiness: { status: 'ready', pending_fields: {} },
+      }
+
+      const result = classifyResourceReadiness(readyRev, { kind: 'fused_scenes' })
+
+      expect(result.readiness).toBe('ready')
+      expect(result.isReady).toBe(true)
+      expect(result.canCreate).toBe(true)
+      expect(result.primaryAction).toEqual({ id: 'use_advanced_editor', label: 'Use advanced editor' })
+      expect(result.secondaryAction).toEqual({ id: 'choose_structured_scene', label: 'Choose a structured scene' })
     })
 
     it('classifies pending revision with valid source as Needs translation with Translate direct action', () => {

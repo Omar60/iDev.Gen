@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 30 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 31 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -234,7 +234,7 @@ remain intact.
 
 ## Current Position
 
-Tasks 3.1 through 3.5, Tasks 4.1 through 4.8, and Tasks 5.1-5.5 are complete.
+Tasks 1.1 through 5.6 and Task 6.1 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.
 The closed public view excludes fencing and request internals; exact request
 replay, cross-kind exclusion, ordered targets, configuration gates, and
@@ -270,6 +270,14 @@ Independent verification passed 2,335 Python tests, 48 privacy/control tests,
 strict OpenSpec validation, and `git diff --check`. Actual assistant execution
 and take snapshot integration remain in later tasks.
 
+Task 6.1 makes the fused-scene choice explicit in Resources. The existing
+guided API restricts simple anchors to exact ready `rooms` revisions. Ready
+`fused_scenes` offer the expert editor with their exact revision preserved or
+a switch to the room filter; no prose decomposition or assistant work occurs.
+Independent review found no required correction. The full Python/frontend
+suites, frontend build, privacy/control checks, strict OpenSpec validation,
+and diff check passed before task closure.
+
 ## Next Milestone
 
-Task 6.1 is next. Do not begin it automatically.
+Task 6.2 is next. Do not begin it automatically.

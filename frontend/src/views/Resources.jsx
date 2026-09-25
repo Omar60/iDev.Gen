@@ -512,6 +512,13 @@ export default function Resources({ requestedModelId = '' }) {
     }
   }
 
+  const chooseStructuredScene = () => {
+    setTab('inventory')
+    setCategory('rooms')
+    setQuery('')
+    setNotice('Showing structured room resources. Choose a revision marked Ready.')
+  }
+
   // Centralized SelectionView state updater (Highest revision wins / epoch & generation fenced)
   const applySelectionView = (rawCandidate, candidateEpoch, candidateGen) => {
     if (candidateEpoch < epochRef.current) return null
@@ -1026,6 +1033,7 @@ export default function Resources({ requestedModelId = '' }) {
                     <tbody>
                       {lib.revisions.map((rev) => {
                         const readiness = checkReadiness(rev, {
+                          kind: lib.kind,
                           hasModelSelected: Boolean(selectedModelId),
                           libraryKey: lib.library_key,
                           importedIdentities,
@@ -1062,6 +1070,11 @@ export default function Resources({ requestedModelId = '' }) {
                                     {readiness.reasons[0]}
                                   </div>
                                 )}
+                                {readiness.primaryAction?.id === 'use_advanced_editor' && (
+                                  <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                                    Fused descriptions can combine location, camera, pose, and wardrobe, so simple automatic scene choices use ready structured rooms. The advanced editor keeps this full description intact.
+                                  </div>
+                                )}
                               </td>
                               <td className="muted" style={{ fontSize: 12 }}>
                                 {rev.created_at ? rev.created_at.slice(0, 16).replace('T', ' ') : '—'}
@@ -1077,18 +1090,42 @@ export default function Resources({ requestedModelId = '' }) {
                                       >
                                         {detailLoading[detailKey] ? '…' : isExpanded ? 'Hide' : 'Inspect'}
                                       </button>
-                                      <button
-                                        className="primary"
-                                        disabled={busy || !selectedModelId}
-                                        title={
-                                          !selectedModelId
-                                            ? 'Select a model to create a session'
-                                            : 'Create a resource-v1 session draft with this exact revision'
-                                        }
-                                        onClick={() => startSessionWithRevision(lib.library_key, rev)}
-                                      >
-                                        Create session
-                                      </button>
+                                      {readiness.primaryAction?.id === 'use_advanced_editor' ? (
+                                        <>
+                                          <button
+                                            className="primary"
+                                            disabled={busy || !selectedModelId}
+                                            title={
+                                              !selectedModelId
+                                                ? 'Select a model to open the advanced editor'
+                                                : 'Open an expert resource-v1 draft with this exact fused revision'
+                                            }
+                                            onClick={() => startSessionWithRevision(lib.library_key, rev)}
+                                          >
+                                            {readiness.primaryAction.label}
+                                          </button>
+                                          <button
+                                            className="icon"
+                                            onClick={chooseStructuredScene}
+                                            title="Show structured room resources and clear the current search"
+                                          >
+                                            {readiness.secondaryAction.label}
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <button
+                                          className="primary"
+                                          disabled={busy || !selectedModelId}
+                                          title={
+                                            !selectedModelId
+                                              ? 'Select a model to create a session'
+                                              : 'Create a resource-v1 session draft with this exact revision'
+                                          }
+                                          onClick={() => startSessionWithRevision(lib.library_key, rev)}
+                                        >
+                                          {readiness.primaryAction?.label || 'Create session'}
+                                        </button>
+                                      )}
                                     </>
                                   )}
 

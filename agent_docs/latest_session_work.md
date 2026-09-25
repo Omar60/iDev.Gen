@@ -2,22 +2,22 @@
 
 ## Current State
 
-OpenSpec Task 5.6 of `simplify-resource-session-workflow` passed independent
-acceptance. New API tests cover request-ID scope across sessions, a simultaneous
-mixed-kind start race, rejection of a late owner after Resume issues a new
-fence, and partial-progress recovery after SQLite is reopened. Prior focused
-tests cover start/accept response replay, cancellation, plan edits, unavailable
-assistants, partial failure/resume, and terminal status.
+OpenSpec Task 6.1 of `simplify-resource-session-workflow` passed independent
+acceptance. Ready fused revisions now explain their limitation and offer the
+existing expert draft editor or a switch to ready structured rooms. The expert
+path preserves the exact revision without an authoring block or automatic
+decomposition. The guided API already rejects non-room, pending, and missing
+anchor revisions before writes.
 
 ## Independent Verification
 
-Independent review found no required correction. The final checks passed 2,335
-Python tests, 48 privacy/control tests, strict OpenSpec validation, and
-`git diff --check`. No frontend or production files changed. These tests use
-synthetic operation responses; remote assistant execution is later scope.
+Independent review found no required correction. `python -m pytest` passed
+2,335 tests; `npm --prefix frontend test` passed 433 tests; the frontend build,
+46 focused privacy/control tests, strict OpenSpec validation, and
+`git diff --check` passed before task closure.
 
 ## Continuation
 
-Task 6.1 is next. Task 6.3 still owns the real assistant suggestion worker and
-must record effective safe request parameters. No later task starts
-automatically; no push is part of this closure.
+Task 6.2 is next. It owns full authorized fused descriptions and adaptation
+source-value revalidation. Do not start it automatically. No push is part of
+this closure.

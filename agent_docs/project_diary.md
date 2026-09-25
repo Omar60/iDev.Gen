@@ -419,3 +419,9 @@
   late output from its previous owner; and startup recovery preserves committed
   progress after reopening SQLite. The real assistant workers belong to later
   tasks, so these tests do not claim remote-call or take-snapshot coverage.
+- Task 6.1 keeps simple guided scene authority at the existing exact ready-room
+  boundary. A ready fused revision remains usable through the pre-authoring
+  expert draft path; its selected revision triple and complete authorized prose
+  are not decomposed into automatic fields. The Resources UI makes that route
+  explicit and offers a room filter as the structured-scene alternative. Do not
+  narrow the generic expert plan validator to enforce guided-only rules.

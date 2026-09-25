@@ -4030,6 +4030,129 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     }))
   })
 
+  it('6.1 keeps ready fused prose in the expert draft path without guided creation or decomposition', async () => {
+    const library = {
+      id: 2,
+      library_key: 'fused_ready_lib',
+      display_name: 'Fused Ready Library',
+      kind: 'fused_scenes',
+      revisions: [{
+        revision_id: 8,
+        library_key: 'fused_ready_lib',
+        source_id: 'fused-scene-8',
+        content_digest: 'f'.repeat(64),
+        translation: { prompt: 'A complete scene with its own location, camera, pose, and wardrobe.' },
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+      auxiliary: [],
+    }
+    const postCalls = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 1, name: 'Model A', workflow_id: 7 }]
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      postCalls.push([url, body])
+      if (url === '/api/sessions') return { id: 108, name: 'Model A - fused-scene-8' }
+      if (url === '/api/sessions/108/plan') return { revision: 1 }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    await renderComponent()
+
+    expect(container.textContent).toContain('simple automatic scene choices use ready structured rooms')
+    const advancedButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Use advanced editor'
+    )
+    expect(advancedButton).toBeTruthy()
+    expect(Array.from(container.querySelectorAll('button')).some(
+      (button) => button.textContent === 'Create session'
+    )).toBe(false)
+
+    await act(async () => { advancedButton.click() })
+
+    expect(postCalls.map(([url]) => url)).toEqual([
+      '/api/sessions',
+      '/api/sessions/108/plan',
+    ])
+    expect(postCalls[0][1]).toMatchObject({
+      model_id: 1,
+      composition_mode: 'resource-v1',
+    })
+    expect(postCalls[1][1].plan.selected_resources).toEqual([{
+      library_key: 'fused_ready_lib',
+      source_id: 'fused-scene-8',
+      content_digest: 'f'.repeat(64),
+    }])
+    expect(postCalls[1][1].plan).not.toHaveProperty('authoring')
+  })
+
+  it('6.1 sends Choose a structured scene to room choices and clears conflicting filters', async () => {
+    const libraries = [
+      {
+        id: 2,
+        library_key: 'fused_ready_lib',
+        display_name: 'Fused Ready Library',
+        kind: 'fused_scenes',
+        revisions: [{
+          revision_id: 8,
+          library_key: 'fused_ready_lib',
+          source_id: 'fused-scene-8',
+          content_digest: 'f'.repeat(64),
+          readiness: { status: 'ready', pending_fields: {} },
+        }],
+        auxiliary: [],
+      },
+      {
+        id: 3,
+        library_key: 'rooms_ready_lib',
+        display_name: 'Ready Rooms Library',
+        kind: 'rooms',
+        revisions: [{
+          revision_id: 9,
+          library_key: 'rooms_ready_lib',
+          source_id: 'room-ready-9',
+          content_digest: 'r'.repeat(64),
+          readiness: { status: 'ready', pending_fields: {} },
+        }],
+        auxiliary: [],
+      },
+    ]
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return libraries
+      if (url === '/api/models') return [{ id: 1, name: 'Model A' }]
+      return []
+    })
+
+    await renderComponent()
+    const search = container.querySelector('input[placeholder="Search resources..."]')
+    const category = container.querySelector('select')
+    await act(async () => {
+      setInputValue(search, 'fused-scene')
+      setSelectValue(category, 'fused_scenes')
+    })
+    const structuredButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Choose a structured scene'
+    )
+    expect(structuredButton).toBeTruthy()
+
+    await act(async () => { structuredButton.click() })
+
+    expect(search.value).toBe('')
+    expect(category.value).toBe('rooms')
+    expect(container.textContent).toContain('Showing structured room resources. Choose a revision marked Ready.')
+    expect(container.textContent).toContain('Ready Rooms Library')
+    expect(container.textContent).not.toContain('Fused Ready Library')
+    expect(Array.from(container.querySelectorAll('button')).some(
+      (button) => button.textContent === 'Create session'
+    )).toBe(true)
+    expect(Array.from(container.querySelectorAll('button')).some(
+      (button) => button.textContent === 'Use advanced editor'
+    )).toBe(false)
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
   it('3.4 presents Needs source correction with Inspect source action and no translation cure', async () => {
     const library = {
       id: 1,

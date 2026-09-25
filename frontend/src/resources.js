@@ -225,8 +225,13 @@ export function classifyResourceReadiness(revision, options = {}) {
   let secondaryAction = null
 
   if (readiness === 'ready') {
-    primaryAction = { id: 'create_session', label: 'Create session' }
-    secondaryAction = { id: 'inspect', label: 'Inspect' }
+    if (options.kind === 'fused_scenes' || revision?.kind === 'fused_scenes') {
+      primaryAction = { id: 'use_advanced_editor', label: 'Use advanced editor' }
+      secondaryAction = { id: 'choose_structured_scene', label: 'Choose a structured scene' }
+    } else {
+      primaryAction = { id: 'create_session', label: 'Create session' }
+      secondaryAction = { id: 'inspect', label: 'Inspect' }
+    }
   } else if (readiness === 'needs_translation') {
     primaryAction = { id: 'translate', label: 'Translate' }
     secondaryAction = { id: 'inspect', label: 'Inspect' }

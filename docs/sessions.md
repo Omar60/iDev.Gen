@@ -1533,10 +1533,12 @@ on the measured component catalogue, a `resource-v1` session draft:
 - Retires catalogue cell uniqueness rules: takes can deliberately repeat camera
   angles or poses (for example, twelve portraits sharing a single camera with
   varied poses and expressions).
-- Allows intact fused scene resources to be selected and prepared without
-  requiring prior decomposition into camera, act, and room catalogue rows.
-  Unresolved template placeholders in selected resources remain preserved in the
-  payload but block final prompt preparation until explicitly resolved.
+- Allows complete fused scene resources to remain selected in an explicit expert
+  draft and be prepared without prior decomposition into camera, act, and room
+  catalogue rows. Simple automatic scene choices use ready structured rooms;
+  fused prose stays intact and is never decomposed automatically. Unresolved
+  template placeholders in selected resources remain preserved in the payload
+  but block final prompt preparation until explicitly resolved.
 - Requires the resource revision to be marked `ready` by the backend. A pending
   revision (e.g. missing required English translations) cannot start a draft or
   prepare prompts, and its specific blocking reasons are shown in the interface.

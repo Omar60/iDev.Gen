@@ -88,13 +88,15 @@ an accepted resource; instead, its preparation readiness remains pending until
 translated. Source payloads and private translations remain local and untracked;
 tracked code, UI, documentation, and tests remain strictly English-only.
 
-Fused scene resources can be stored complete in the resource database. Decomposing
-a fused scene into separate camera, act, and room components is required only
-when targeting legacy room seeds or measured component catalogue rows;
-decomposition is not a prerequisite for resource storage or resource-session
-preparation. Unresolved template placeholders in a stored fused scene remain
-retained in the source payload, but block final prompt preparation until
-explicitly resolved.
+Fused scene resources can be stored complete in the resource database and used
+through the explicit advanced resource-draft path. Simple automatic scene choice
+uses ready structured rooms because one fused description can combine location,
+camera, pose, and wardrobe. The Resources view offers **Use advanced editor** to
+keep fused prose intact or **Choose a structured scene** to show room resources;
+fused prose is never decomposed automatically. Decomposition is required only
+when targeting legacy room seeds or measured component catalogue rows.
+Unresolved template placeholders in a stored fused scene remain retained in the
+source payload, but block final prompt preparation until explicitly resolved.
 
 Resource-based session drafts (`resource-v1`) do not depend on the measured
 component catalogue or catalogue cell uniqueness. Deliberate repetition of
@@ -182,9 +184,10 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
 - **Translations & Readiness**: Preview and apply translation maps directly from
   the UI, and inspect real-time readiness status and diagnostic sidecar error banners.
   (Single-revision translation updates are available via the HTTP API, not in the Resources UI).
-- **Start Session**: Ready and mapped revisions can start a `resource-v1`
-  session draft bound to an explicitly chosen character model, with no CLI or
-  external scripts needed.
+- **Start Session**: Ready room revisions offer **Create session** for a
+  `resource-v1` draft bound to the explicitly chosen character model. Ready fused
+  scene revisions offer **Use advanced editor** for the existing expert draft
+  path or **Choose a structured scene** to filter the inventory to rooms.
 
 For authoring-v1 plans, `GET /api/sessions/{sid}/plan` also returns a
 `shared_summary`, shown in Review before preparation. It shows saved look and
