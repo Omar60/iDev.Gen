@@ -413,3 +413,9 @@
   controls before saving or accepting evidence, so credentials cannot enter
   the plan or acceptance response. Replays use the stored result and create no
   second revision. The real suggestion worker remains Task 6.3.
+- Task 5.6 tests the existing operation protocol at its persistence boundary:
+  simultaneous starts of different kinds share one session claim; a request ID
+  is unique within a session but reusable in another; a resumed claim fences
+  late output from its previous owner; and startup recovery preserves committed
+  progress after reopening SQLite. The real assistant workers belong to later
+  tasks, so these tests do not claim remote-call or take-snapshot coverage.

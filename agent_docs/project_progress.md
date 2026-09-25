@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 29 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 30 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -262,6 +262,14 @@ the acceptance receipt for identical replay. Different content and stale plans
 fail without partial writes. The independent full Python suite passed with
 2,333 tests; privacy/control, strict OpenSpec, and diff checks passed.
 
+Task 5.6 adds operation-contract regressions for cross-session request IDs,
+simultaneous mixed-kind starts, stale owners after a new fence, and recovery of
+partial progress after reopening SQLite. Existing tests cover response-loss
+replay, cancellation, plan edits, unavailable assistants, and failure/resume.
+Independent verification passed 2,335 Python tests, 48 privacy/control tests,
+strict OpenSpec validation, and `git diff --check`. Actual assistant execution
+and take snapshot integration remain in later tasks.
+
 ## Next Milestone
 
-Task 5.6 is next. Do not begin it automatically.
+Task 6.1 is next. Do not begin it automatically.

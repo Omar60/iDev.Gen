@@ -204,6 +204,39 @@ def test_request_id_replay_and_changed_body_conflict(client, seeded, monkeypatch
     assert status.json() == terminal.json()
 
 
+def test_request_id_is_scoped_to_session_but_immutable_within_a_session(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    first_session, first_revision = _create_guided_session(client, seeded)
+    second_session, second_revision = _create_guided_session(client, seeded)
+    request_id = str(uuid.uuid4())
+
+    first_url = f"/api/sessions/{first_session}/plan/authoring/operations"
+    first_body = _start_body(
+        "shared_suggestions", request_id=request_id, revision=first_revision,
+    )
+    first = client.post(first_url, json=first_body)
+    assert first.status_code == 202, first.text
+
+    changed_body = _start_body(
+        request_id=request_id, revision=first_revision, take_ids=["take-002"],
+    )
+    _error(client.post(first_url, json=changed_body), 409, "idempotency_conflict")
+
+    second_url = f"/api/sessions/{second_session}/plan/authoring/operations"
+    second = client.post(
+        second_url,
+        json=_start_body(
+            "shared_suggestions", request_id=request_id, revision=second_revision,
+        ),
+    )
+    assert second.status_code == 202, second.text
+    assert second.json()["operation_id"] != first.json()["operation_id"]
+    assert _operation_count(first_session) == 1
+    assert _operation_count(second_session) == 1
+
+
 def test_active_conflict_is_shared_across_operation_kinds(client, seeded, monkeypatch):
     _configure_assistant(monkeypatch)
     session_id, revision = _create_guided_session(client, seeded)
@@ -428,6 +461,37 @@ def test_concurrent_distinct_starts_create_one_claim(client, seeded, monkeypatch
     assert rejected.json()["detail"]["code"] == "authoring_active"
     assert rejected.json()["detail"]["operation"] == accepted.json()
     assert _operation_count(session_id) == 1
+
+
+def test_concurrent_mixed_kind_starts_create_one_session_claim(client, seeded, monkeypatch):
+    _configure_assistant(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+    url = f"/api/sessions/{session_id}/plan/authoring/operations"
+    requests = (
+        _start_body("shared_suggestions", revision=revision),
+        _start_body("prepare_takes", revision=revision, take_ids=["take-001"]),
+    )
+    barrier = threading.Barrier(2)
+
+    def post(body):
+        barrier.wait(timeout=5)
+        return client.post(url, json=body)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(post, requests))
+
+    assert sorted(response.status_code for response in responses) == [202, 409]
+    accepted = next(response for response in responses if response.status_code == 202)
+    rejected = next(response for response in responses if response.status_code == 409)
+    assert accepted.json()["kind"] in {"shared_suggestions", "prepare_takes"}
+    assert rejected.json()["detail"]["code"] == "authoring_active"
+    assert rejected.json()["detail"]["operation"] == accepted.json()
+    assert _operation_count(session_id) == 1
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM authoring_operation WHERE session_id = ? "
+        "AND state IN ('active', 'cancel_requested')",
+        session_id,
+    )["n"] == 1
 
 
 def test_suggestion_operation_requires_a_missing_shared_choice(client, seeded, monkeypatch):
@@ -1215,6 +1279,32 @@ def test_expired_operation_resumes_with_new_fence_and_preserved_results(
     assert active_replay.json() == resumed.json()
     assert _operation_snapshot(operation_id)["lease_expires_at"] == resumed_lease
 
+    before_late_response = _operation_snapshot(operation_id)
+    with pytest.raises(authoring_operations.AuthoringOperationError) as exc_info:
+        authoring_operations.persist_operation_response(
+            claim,
+            ticket,
+            [{"target": "take-002", "result": {"choices": {"pose": "stale result"}}}],
+        )
+    assert exc_info.value.code == "authoring_owner_stale"
+    assert _operation_snapshot(operation_id) == before_late_response
+
+    resumed_claim = authoring_operations.load_worker_claim(session_id, operation_id)
+    resumed_ticket = authoring_operations.renew_operation_lease(resumed_claim)
+    second_result = {"choices": {"pose": "standing beside a table"}}
+    completed = authoring_operations.persist_operation_response(
+        resumed_claim,
+        resumed_ticket,
+        [{"target": "take-002", "result": second_result}],
+    )
+    assert completed["state"] == "succeeded"
+    assert completed["progress"]["completed"] == ["take-001", "take-002"]
+    assert completed["result"]["items"] == [
+        {"target": "take-001", "result": first_result},
+        {"target": "take-002", "result": second_result},
+    ]
+    assert client.get(operation_url).json() == completed
+
 
 def test_resume_retries_failed_item_before_remaining_without_repeating_completed_work(
     client, seeded, monkeypatch,
@@ -1264,21 +1354,43 @@ def test_resume_retries_failed_item_before_remaining_without_repeating_completed
 def test_startup_expires_prior_active_owners_and_finalizes_cancel_requests(
     client, seeded, monkeypatch,
 ):
-    first_session, first_id, _ = _start_worker(
+    first_session, first_id, first_claim = _start_worker(
         client, seeded, monkeypatch, take_ids=["take-001", "take-002"],
     )
+    first_ticket = authoring_operations.renew_operation_lease(first_claim)
+    first_result = {"choices": {"pose": "standing at an easel"}}
+    authoring_operations.persist_operation_response(
+        first_claim,
+        first_ticket,
+        [{"target": "take-001", "result": first_result}],
+    )
+
     second_session, second_id, second_claim = _start_worker(
-        client, seeded, monkeypatch, take_ids=["take-001"],
+        client, seeded, monkeypatch, take_ids=["take-001", "take-002"],
+    )
+    second_ticket = authoring_operations.renew_operation_lease(second_claim)
+    second_result = {"choices": {"pose": "sitting on a bench"}}
+    authoring_operations.persist_operation_response(
+        second_claim,
+        second_ticket,
+        [{"target": "take-001", "result": second_result}],
     )
     pending = client.post(
         f"/api/sessions/{second_session}/plan/authoring/operations/{second_id}/cancel",
         json={"expected_revision": second_claim.plan_revision},
     )
     assert pending.status_code == 202, pending.text
+    assert pending.json()["progress"]["completed"] == ["take-001"]
+    assert pending.json()["progress"]["remaining"] == ["take-002"]
+
+    old_connection = db.conn()
+    old_connection.close()
+    db.connect(main.DATA_DIR / "idevgen.db")
+    restart_time = datetime.fromisoformat(db.now()) + timedelta(minutes=1)
 
     recovered_count = authoring_operations.startup_recovery(
         planning_enabled=True,
-        now=db.now(),
+        now=restart_time.isoformat(timespec="seconds"),
     )
     assert recovered_count == 2
     first = client.get(
@@ -1288,10 +1400,18 @@ def test_startup_expires_prior_active_owners_and_finalizes_cancel_requests(
         f"/api/sessions/{second_session}/plan/authoring/operations/{second_id}"
     ).json()
     assert first["state"] == "expired"
-    assert first["progress"]["remaining"] == ["take-001", "take-002"]
+    assert first["progress"]["completed"] == ["take-001"]
+    assert first["progress"]["remaining"] == ["take-002"]
+    assert first["result"]["items"] == [
+        {"target": "take-001", "result": first_result},
+    ]
     assert "application restarted" in first["error"]
     assert second["state"] == "cancelled"
-    assert second["progress"]["remaining"] == ["take-001"]
+    assert second["progress"]["completed"] == ["take-001"]
+    assert second["progress"]["remaining"] == ["take-002"]
+    assert second["result"]["items"] == [
+        {"target": "take-001", "result": second_result},
+    ]
     assert "preserved for resuming" in second["error"]
 
 
