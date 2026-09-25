@@ -1572,7 +1572,7 @@ resources and start a new session with an available ready scene revision
 before preparing takes. The summary is informational: it does not accept
 assistant suggestions or refresh resources.
 
-### Authoring operation claims and status
+### Authoring operation claims, cancellation, and resume
 
 Automatic authoring-v1 plans expose these operation endpoints:
 
@@ -1582,7 +1582,11 @@ Automatic authoring-v1 plans expose these operation endpoints:
   `take_ids`: 1–20 unique take IDs in the plan's stable order. Omit `take_ids`
   for `shared_suggestions`.
 - `GET /api/sessions/{sid}/plan/authoring/operations/{operation_id}` returns
-  the operation's closed `OperationView` without changing its state.
+  the operation's closed `OperationView`. It does not renew the lease; the
+  read performs lazy recovery before returning the view.
+- `POST /api/sessions/{sid}/plan/authoring/operations/{operation_id}/cancel`
+  and `/resume` accept `{"expected_revision": N}` for the operation's plan
+  revision.
 
 A new claim returns `202`; an identical replay returns `200`. Reusing a request
 ID with different content returns `409 idempotency_conflict`. A different
@@ -1590,17 +1594,40 @@ request while another operation is active for the session returns
 `409 authoring_active` with that operation's public view. Missing assistant
 configuration returns `409 assistant_unavailable`, and a stale plan revision
 returns `409 plan_revision_stale`. The POST returns `503` while resource
-planning is disabled, including for an identical replay. GET remains available
-while disabled.
+planning is disabled, including for an identical replay. GET and cancellation
+remain available while disabled; resume returns `503`.
 
 The view contains operation and plan identifiers, kind, state, timestamps,
-lease expiry, requested/completed/failed/remaining progress, result, error, and
-`can_cancel`/`can_resume` (both false in this API surface). It does not expose
-internal ownership or fencing data. For `shared_suggestions`, only fields with
-origin `none` are claimed; explicit user-origin values count as resolved even
-when their value is empty.
-At this stage the routes persist or replay claims and report status; they do not
-launch assistant work.
+lease expiry, ordered requested/completed/remaining items, an optional failed
+item and readable error, result, and `can_cancel`/`can_resume`. It never exposes
+internal ownership or fencing data. `can_cancel` is true only while the state
+is `active`. `can_resume` is true for eligible `failed`, `cancelled`, or
+`expired` work when resource planning and the assistant are available and the
+original inputs still match. For `shared_suggestions`, only fields with origin
+`none` are claimed; explicit user-origin values count as resolved even when
+their value is empty.
+
+Cancel stops further scheduling and discards any late in-flight response. It
+returns `202` while cancellation is pending (`cancel_requested`) and `200`
+once the operation is terminal. Resume returns `202` when it claims a retry
+with a new fencing token; it preserves completed work and retries the failed
+item followed by remaining items. It returns `200` when the operation is
+already active or succeeded. Resume is refused if the plan or effective inputs
+changed. An active operation has a ten-minute lease, renewed by the backend
+before a remote call and before scheduling another item.
+
+On startup, prior-process `active` operations become `expired` and
+`cancel_requested` operations become `cancelled`; if resource planning is
+disabled, both become `cancelled`. Status reads also recover expired leases and
+operations whose plan or effective inputs changed. Completed operation results
+remain available for an eligible resume. If a migrated operation has no saved
+input digest, its original inputs cannot be verified, so the view reports
+that it cannot resume; reload the plan and start a new operation. A crash
+after an assistant response but before its result is saved may require another
+assistant call on retry, so exactly-once remote billing is not guaranteed.
+
+These endpoints currently persist, inspect, cancel, and reclaim operation
+state; they do not launch real assistant work yet.
 
 ### Operational rollback and disabling resource mode
 

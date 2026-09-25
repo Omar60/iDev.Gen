@@ -196,13 +196,16 @@ full resource payloads or raw translation sidecars. The projection needs no
 assistant call and does not accept suggestions or refresh resources. See
 [sessions](docs/sessions.md#shared-session-summary).
 
-Automatic authoring-v1 plans expose operation-claim endpoints. `POST
+Automatic authoring-v1 plans expose persisted operation controls. `POST
 /api/sessions/{sid}/plan/authoring/operations` records or replays a claim;
-`GET /api/sessions/{sid}/plan/authoring/operations/{operation_id}` reads its
-status. These endpoints currently persist claims and report status without
-launching assistant work. See
-[authoring operation claims](docs/sessions.md#authoring-operation-claims-and-status)
-for the request and response contract.
+the status route reports ordered progress, while the `cancel` and `resume`
+routes request cancellation or claim eligible remaining work under a new
+fence. `can_cancel` and `can_resume` report current action eligibility.
+Startup and status reads recover stale ownership. A `202` confirms pending
+operation state, not assistant execution: these routes do not yet launch a
+real assistant worker. See
+[authoring operation claims and controls](docs/sessions.md#authoring-operation-claims-cancellation-and-resume)
+for the request, recovery, and response contract.
 
 From a model, **+ New session** is the normal entry to this resource-planning
 flow and keeps that model selected while the user chooses an exact `ready`

@@ -2645,6 +2645,9 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
             new_take_ids=new_take_ids_for_invalidation,
         )
         invalidate_plan_approval(session_id)
+        from backend import authoring_operations
+
+        authoring_operations.cancel_for_plan_change(session_id, new_revision)
     return {"plan_revision": new_revision, "conflicts": conflicts}
 
 

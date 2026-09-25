@@ -97,6 +97,37 @@ def test_operation_schema_is_additive_and_lease_deadline_is_ten_minutes(tmp_path
         "SELECT 1 FROM sqlite_master WHERE type='trigger' "
         "AND name='authoring_operation_fencing_monotonic'"
     ).fetchone()
+    assert "input_digest" in {
+        row["name"] for row in upgraded.execute("PRAGMA table_info(authoring_operation)")
+    }
+    upgraded.close()
+
+
+def test_operation_input_digest_migrates_additively_and_is_immutable(tmp_path):
+    path = tmp_path / "operation_input_digest_migration.db"
+    legacy = db.connect(path)
+    session_id = _create_session(legacy)
+    legacy.execute("DROP TRIGGER IF EXISTS authoring_operation_input_digest_immutable")
+    legacy.execute("ALTER TABLE authoring_operation DROP COLUMN input_digest")
+    legacy.commit()
+    legacy.close()
+
+    upgraded = db.connect(path)
+    columns = {
+        row["name"] for row in upgraded.execute("PRAGMA table_info(authoring_operation)")
+    }
+    assert "input_digest" in columns
+    trigger = upgraded.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+        "AND name='authoring_operation_input_digest_immutable'"
+    ).fetchone()
+    assert trigger
+    _insert_operation(upgraded, session_id)
+    with pytest.raises(sqlite3.IntegrityError, match="input digest is immutable"):
+        upgraded.execute(
+            "UPDATE authoring_operation SET input_digest='b' WHERE operation_id=?",
+            ("00000000-0000-0000-0000-000000000001",),
+        )
     upgraded.close()
 
 

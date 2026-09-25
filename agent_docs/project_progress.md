@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 27 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 28 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -234,7 +234,7 @@ remain intact.
 
 ## Current Position
 
-Tasks 3.1 through 3.5, Tasks 4.1 through 4.8, and Tasks 5.1-5.3 are complete.
+Tasks 3.1 through 3.5, Tasks 4.1 through 4.8, and Tasks 5.1-5.4 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.
 The closed public view excludes fencing and request internals; exact request
 replay, cross-kind exclusion, ordered targets, configuration gates, and
@@ -246,8 +246,15 @@ binding before saving operation result and ordered progress together. Independen
 review reproduced translation changes during a call and confirmed stale output
 is discarded for both operation kinds. The full Python suite passed with 2,308
 tests; strict OpenSpec, privacy/control, and diff checks passed. Concrete remote
-execution and prepared-take snapshot integration remain in later tasks.
+execution and prepared-take snapshot integration remain in later tasks. Task 5.4
+adds cancel/resume routes and startup/lazy recovery. Cancellation fences late
+results; resume retains ordered completed results only while the durable input
+digest still matches the current plan, resources, and workflow. Plan CAS and
+feature disablement cancel active ownership. Migrated operations lacking an
+original input digest cannot be resumed safely. Independent adversarial tests,
+the full Python suite, privacy/control checks, strict OpenSpec validation, and
+diff checks passed; README and the session guide describe the new controls.
 
 ## Next Milestone
 
-Task 5.4 is the next pending task. Do not begin it automatically.
+Task 5.5 is the next pending task. Do not begin it automatically.

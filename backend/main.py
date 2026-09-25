@@ -101,6 +101,7 @@ async def lifespan(app: FastAPI):
     db.run("UPDATE session SET status='failed' WHERE status='running'")
     db.run("UPDATE shot SET status='failed', error='interrupted when the app closed' WHERE status='running'")
     resource_selection.startup_recovery()
+    authoring_operations.startup_recovery(planning_enabled=is_resource_planning_enabled())
     yield
 
 
@@ -3621,6 +3622,7 @@ def _authoring_operation_error_response(exc: authoring_operations.AuthoringOpera
 async def start_authoring_operation(sid: int, request: Request):
     """Persist or replay an authoring claim without starting remote work."""
     if not is_resource_planning_enabled():
+        authoring_operations.recover_session_operations(sid, planning_enabled=False)
         return _stable_error(
             503,
             "resource_planning_disabled",
@@ -3651,10 +3653,74 @@ async def start_authoring_operation(sid: int, request: Request):
 def get_authoring_operation(sid: int, operation_id: str):
     """Return persisted operation status without renewing its lease."""
     try:
-        view = authoring_operations.get_operation(sid, operation_id)
+        view = authoring_operations.get_operation(
+            sid,
+            operation_id,
+            planning_enabled=is_resource_planning_enabled(),
+            assistant_available=enhance.configured(CONFIG),
+        )
     except authoring_operations.AuthoringOperationError as exc:
         return _authoring_operation_error_response(exc)
     return view
+
+
+async def _authoring_operation_revision_body(request: Request) -> tuple[int | None, JSONResponse | None]:
+    try:
+        payload = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return None, JSONResponse(
+            status_code=422,
+            content={"detail": {"code": "invalid_json", "message": "Request body must be valid JSON."}},
+        )
+    try:
+        return authoring_operations.normalize_operation_revision_request(payload), None
+    except authoring_operations.AuthoringOperationError as exc:
+        return None, _authoring_operation_error_response(exc)
+
+
+@app.post("/api/sessions/{sid}/plan/authoring/operations/{operation_id}/cancel")
+async def cancel_authoring_operation(sid: int, operation_id: str, request: Request):
+    """Stop scheduling and fence any response already in flight."""
+    expected_revision, error_response = await _authoring_operation_revision_body(request)
+    if error_response is not None:
+        return error_response
+    try:
+        view, status = authoring_operations.cancel_operation(
+            sid,
+            operation_id,
+            expected_revision,
+            planning_enabled=is_resource_planning_enabled(),
+            assistant_available=enhance.configured(CONFIG),
+        )
+    except authoring_operations.AuthoringOperationError as exc:
+        return _authoring_operation_error_response(exc)
+    return JSONResponse(status_code=status, content=view)
+
+
+@app.post("/api/sessions/{sid}/plan/authoring/operations/{operation_id}/resume")
+async def resume_authoring_operation(sid: int, operation_id: str, request: Request):
+    """Retry incomplete work under a new backend fencing token."""
+    if not is_resource_planning_enabled():
+        authoring_operations.recover_session_operations(sid, planning_enabled=False)
+        return _stable_error(
+            503,
+            "resource_planning_disabled",
+            "Resource planning is disabled by configuration.",
+        )
+    expected_revision, error_response = await _authoring_operation_revision_body(request)
+    if error_response is not None:
+        return error_response
+    try:
+        view, status = authoring_operations.resume_operation(
+            sid,
+            operation_id,
+            expected_revision,
+            planning_enabled=True,
+            assistant_available=enhance.configured(CONFIG),
+        )
+    except authoring_operations.AuthoringOperationError as exc:
+        return _authoring_operation_error_response(exc)
+    return JSONResponse(status_code=status, content=view)
 
 
 def _detect_authoring_workflow_change(

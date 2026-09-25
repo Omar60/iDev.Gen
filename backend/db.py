@@ -481,6 +481,7 @@ CREATE TABLE IF NOT EXISTS authoring_operation (
     plan_revision   INTEGER NOT NULL,
     kind            TEXT NOT NULL,
     request_digest  TEXT NOT NULL,
+    input_digest    TEXT NOT NULL DEFAULT '',
     state           TEXT NOT NULL,
     fencing_token   INTEGER NOT NULL,
     lease_expires_at TEXT,
@@ -925,6 +926,19 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
     """
     def columns(table: str) -> set[str]:
         return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+    if "input_digest" not in columns("authoring_operation"):
+        conn.execute(
+            "ALTER TABLE authoring_operation ADD COLUMN input_digest TEXT NOT NULL DEFAULT ''"
+        )
+    conn.execute(
+        """CREATE TRIGGER IF NOT EXISTS authoring_operation_input_digest_immutable
+           BEFORE UPDATE OF input_digest ON authoring_operation
+           WHEN NEW.input_digest IS NOT OLD.input_digest
+           BEGIN
+               SELECT RAISE(ABORT, 'authoring operation input digest is immutable');
+           END"""
+    )
 
     # look_index/look_label -> shot_index/shot_label: a "look" is the wardrobe,
     # which is now a property of the session; the rows are its shots.

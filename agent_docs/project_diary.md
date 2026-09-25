@@ -397,3 +397,12 @@
   inside the fenced response transaction; a copied ticket with edited fields
   fails signature validation. Result and ordered progress commit together.
   Actual assistant workers and prepared-take snapshots remain later tasks.
+- Task 5.4 recovery preserves completed operation results while expiring prior
+  owners, finalizing cancellation, and incrementing fencing on resume. A
+  durable input digest is needed in addition to plan revision: authorized
+  translations can change without changing that revision or resource content
+  digest. Older rows without that digest must reject resume instead of
+  reconstructing unprovable authority from current inputs. Recheck the live
+  feature flag inside renewal and response write transactions and commit
+  cancellation before returning a refusal. Real assistant workers and the
+  prepared-take snapshot bridge remain in later tasks.

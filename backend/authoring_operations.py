@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import sys
 import uuid
 from typing import Any, Literal
 
@@ -153,6 +154,85 @@ class _PrepareTakesStart(_StartBase):
         return value
 
 
+class _OperationRevisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_revision: StrictInt
+
+    @field_validator("expected_revision", mode="before")
+    @classmethod
+    def validate_expected_revision(cls, value: Any) -> int:
+        if type(value) is not int or value <= 0:
+            raise ValueError("expected_revision must be a positive integer")
+        return value
+
+
+_OPERATION_DIAGNOSTICS = {
+    "application_restarted": (
+        "The application restarted before this operation finished. "
+        "Completed work was preserved for resuming."
+    ),
+    "lease_expired": (
+        "The authoring lease expired. Completed work was preserved for resuming."
+    ),
+    "cancel_requested": (
+        "The operation was cancelled. Completed work was preserved for resuming."
+    ),
+    "cancel_pending": (
+        "Cancellation was requested; any in-flight response will be discarded."
+    ),
+    "plan_changed": "The plan changed; this operation was cancelled.",
+    "inputs_changed": (
+        "The effective plan, resource, or workflow inputs changed; "
+        "this operation was cancelled."
+    ),
+    "feature_disabled": (
+        "Resource planning was disabled; this operation was cancelled (feature_disabled)."
+    ),
+    "item_failed": (
+        "The authoring assistant could not complete this item. "
+        "Completed work was preserved for retry."
+    ),
+    "input_authority_unavailable": (
+        "The operation's original inputs could not be verified after migration. "
+        "Reload the plan and start again."
+    ),
+}
+_SAFE_OPERATION_DIAGNOSTICS = frozenset(_OPERATION_DIAGNOSTICS.values())
+
+
+def _resource_planning_enabled() -> bool:
+    """Read the live app gate when a backend worker calls this module directly."""
+    for module_name in ("main", "backend.main"):
+        app_module = sys.modules.get(module_name)
+        gate = getattr(app_module, "is_resource_planning_enabled", None)
+        if callable(gate):
+            return bool(gate())
+    return True
+
+
+def _resolve_planning_enabled(requested: bool | None) -> bool:
+    live = _resource_planning_enabled()
+    return live if requested is None else live and requested
+
+
+def normalize_operation_revision_request(payload: Any) -> int:
+    """Validate the closed body shared by operation cancel and resume."""
+    if not isinstance(payload, dict):
+        raise AuthoringOperationError(422, "invalid_request", "Request body must be an object.")
+    try:
+        return _OperationRevisionRequest.model_validate(payload).expected_revision
+    except ValidationError as exc:
+        errors = exc.errors()
+        if any(error.get("type") == "extra_forbidden" for error in errors):
+            code, message = "extra_field_forbidden", "Unknown operation fields are not permitted."
+        elif any(error.get("type") == "missing" for error in errors):
+            code, message = "missing_field", "A required operation field is missing."
+        else:
+            code, message = "invalid_request", "The operation request does not match its contract."
+        raise AuthoringOperationError(422, code, message) from exc
+
+
 def normalize_start_request(payload: Any) -> dict:
     """Validate and normalize the exact POST body before entering a transaction."""
     if not isinstance(payload, dict):
@@ -208,7 +288,12 @@ def _decode_json(value: str | None, *, default: Any) -> Any:
         ) from exc
 
 
-def build_operation_view(row: dict) -> dict:
+def build_operation_view(
+    row: dict,
+    *,
+    can_cancel: bool | None = None,
+    can_resume: bool = False,
+) -> dict:
     """Project exactly the public OperationView fields from a persisted row."""
     requested = _decode_json(row.get("requested_json"), default=[])
     completed = _decode_json(row.get("completed_json"), default=[])
@@ -221,12 +306,27 @@ def build_operation_view(row: dict) -> dict:
             "The saved operation progress could not be read.",
         )
 
+    safe_error = row.get("error")
+    if "input_digest" in row and not row.get("input_digest"):
+        safe_error = _OPERATION_DIAGNOSTICS["input_authority_unavailable"]
+    elif safe_error not in _SAFE_OPERATION_DIAGNOSTICS:
+        safe_error = (
+            _OPERATION_DIAGNOSTICS["item_failed"]
+            if row.get("failed_item") is not None
+            else (
+                "The operation could not be completed. Reload the plan and try again."
+                if row.get("error") is not None
+                else None
+            )
+        )
+
     failed = None
     if row.get("failed_item") is not None:
-        failed = {"take_id": row["failed_item"], "error": row.get("error") or "Operation failed."}
+        failed = {
+            "take_id": row["failed_item"],
+            "error": safe_error or _OPERATION_DIAGNOSTICS["item_failed"],
+        }
 
-    # Task 5.2 exposes only start and status. Until their dedicated routes are
-    # implemented, neither action is available through this API surface.
     return {
         "operation_id": row["operation_id"],
         "session_id": int(row["session_id"]),
@@ -243,9 +343,9 @@ def build_operation_view(row: dict) -> dict:
             "remaining": remaining,
         },
         "result": result,
-        "error": row.get("error"),
-        "can_cancel": False,
-        "can_resume": False,
+        "error": safe_error,
+        "can_cancel": row["state"] == "active" if can_cancel is None else can_cancel,
+        "can_resume": can_resume,
     }
 
 
@@ -253,13 +353,24 @@ def _get_operation(operation_id: str) -> dict | None:
     return db.one("SELECT * FROM authoring_operation WHERE operation_id = ?", operation_id)
 
 
-def load_worker_claim(session_id: int, operation_id: str) -> OperationClaim:
+def load_worker_claim(
+    session_id: int,
+    operation_id: str,
+    *,
+    planning_enabled: bool | None = None,
+) -> OperationClaim:
     """Load the private fence and request identity for an internal worker.
 
     The returned token is never included in ``OperationView`` or an HTTP
     response. A worker must renew this claim before each remote call or item
     scheduling boundary; every use rechecks it against the persisted row.
     """
+    enabled = _resolve_planning_enabled(planning_enabled)
+    _recover_pending_operations(
+        planning_enabled=enabled,
+        now_text=db.now(),
+        session_id=session_id,
+    )
     row = db.one(
         "SELECT * FROM authoring_operation WHERE session_id = ? AND operation_id = ?",
         session_id,
@@ -267,6 +378,13 @@ def load_worker_claim(session_id: int, operation_id: str) -> OperationClaim:
     )
     if row is None:
         raise AuthoringOperationError(404, "operation_not_found", "Authoring operation not found.")
+    with db.transaction():
+        row = _recover_row_in_transaction(
+            row,
+            now_text=db.now(),
+            planning_enabled=enabled,
+            check_inputs=True,
+        )
     if row["state"] != "active":
         raise AuthoringOperationError(409, "operation_not_active", "The authoring operation is not active.")
     return OperationClaim(
@@ -307,6 +425,12 @@ def _require_live_claim(
         or int(row["session_id"]) != claim.session_id
     ):
         raise AuthoringOperationError(404, "operation_not_found", "Authoring operation not found.")
+    if (
+        row["state"] == "expired"
+        and row["request_digest"] == claim.request_digest
+        and int(row["plan_revision"]) == claim.plan_revision
+    ):
+        raise AuthoringOperationError(409, "authoring_lease_expired", "The authoring operation lease has expired.")
     if int(row["fencing_token"]) != claim.fencing_token:
         raise AuthoringOperationError(409, "authoring_owner_stale", "This worker no longer owns the operation.")
     if row["request_digest"] != claim.request_digest:
@@ -320,8 +444,10 @@ def _require_live_claim(
         raise AuthoringOperationError(409, "authoring_lease_expired", "The authoring operation lease has expired.")
 
 
-def _current_operation_inputs(row: dict) -> tuple[dict, list[str], list[str], list[str], str]:
-    """Revalidate and fingerprint the exact effective inputs in-tx."""
+def _current_operation_context(
+    row: dict,
+) -> tuple[dict, list[str], list[str], list[str], str, str]:
+    """Revalidate effective inputs and return ticket and durable fingerprints."""
     from backend import resource_preparation, workflow_binding
 
     session_id = int(row["session_id"])
@@ -369,7 +495,15 @@ def _current_operation_inputs(row: dict) -> tuple[dict, list[str], list[str], li
                 "operation_state_invalid",
                 "The saved operation progress could not be read.",
             )
-        if requested != completed + remaining:
+        failed_item = row.get("failed_item")
+        if failed_item is not None and not isinstance(failed_item, str):
+            raise AuthoringOperationError(
+                500,
+                "operation_state_invalid",
+                "The saved operation progress could not be read.",
+            )
+        incomplete = ([failed_item] if failed_item is not None else []) + remaining
+        if requested != completed + incomplete:
             raise AuthoringOperationError(
                 500,
                 "operation_state_invalid",
@@ -446,7 +580,7 @@ def _current_operation_inputs(row: dict) -> tuple[dict, list[str], list[str], li
                             take_id,
                         ),
                     }
-                    for take_id in remaining
+                    for take_id in requested
                 ],
             }
         else:
@@ -473,6 +607,15 @@ def _current_operation_inputs(row: dict) -> tuple[dict, list[str], list[str], li
             "The current plan, resource or workflow inputs are no longer valid.",
         ) from exc
 
+    input_digest = resource_store.canonical_digest({
+        "kind": row["kind"],
+        "plan_revision": int(row["plan_revision"]),
+        "request_digest": row["request_digest"],
+        "requested": requested,
+        "plan": plan,
+        "workflow_id": binding,
+        "effective_inputs": effective_inputs,
+    })
     fingerprint = resource_store.canonical_digest({
         "operation_id": row["operation_id"],
         "fencing_token": int(row["fencing_token"]),
@@ -482,6 +625,7 @@ def _current_operation_inputs(row: dict) -> tuple[dict, list[str], list[str], li
         "progress": {
             "requested": requested,
             "completed": completed,
+            "failed_item": failed_item,
             "remaining": remaining,
             "result": _decode_json(row.get("result_json"), default=None),
         },
@@ -489,7 +633,235 @@ def _current_operation_inputs(row: dict) -> tuple[dict, list[str], list[str], li
         "workflow_id": binding,
         "effective_inputs": effective_inputs,
     })
-    return plan, requested, completed, remaining, fingerprint
+    return plan, requested, completed, remaining, fingerprint, input_digest
+
+
+def _current_operation_inputs(row: dict) -> tuple[dict, list[str], list[str], list[str], str]:
+    """Keep the worker-ticket projection stable while sharing authoritative validation."""
+    return _current_operation_context(row)[:5]
+
+
+def _require_original_input_digest(row: dict, current_digest: str) -> None:
+    original = row.get("input_digest")
+    if not isinstance(original, str) or not original or original != current_digest:
+        raise AuthoringOperationError(
+            409,
+            "authoring_inputs_stale",
+            "The effective operation inputs changed; discard this response and reload the plan.",
+        )
+
+
+def _diagnostic(code: str) -> str:
+    return _OPERATION_DIAGNOSTICS[code]
+
+
+def _transition_terminal(
+    row: dict,
+    *,
+    state: str,
+    diagnostic_code: str,
+    now_text: str,
+    bump_fence: bool = True,
+) -> None:
+    """Commit a terminal transition while preserving result and progress."""
+    db.conn().execute(
+        """UPDATE authoring_operation
+           SET state = ?, fencing_token = fencing_token + ?, lease_expires_at = NULL,
+               error = ?, updated_at = ?
+           WHERE operation_id = ? AND state = ? AND fencing_token = ?""",
+        (
+            state,
+            1 if bump_fence else 0,
+            _diagnostic(diagnostic_code),
+            now_text,
+            row["operation_id"],
+            row["state"],
+            row["fencing_token"],
+        ),
+    )
+
+
+def _recover_row_in_transaction(
+    row: dict,
+    *,
+    now_text: str,
+    planning_enabled: bool,
+    check_inputs: bool,
+) -> dict:
+    """Recover one operation after the lease, process, gate, or plan changes."""
+    if row["state"] not in ("active", "cancel_requested"):
+        return row
+
+    if not planning_enabled:
+        _transition_terminal(
+            row,
+            state="cancelled",
+            diagnostic_code="feature_disabled",
+            now_text=now_text,
+        )
+    elif _utc_datetime(row["lease_expires_at"], field="lease") <= _utc_datetime(
+        now_text, field="current time",
+    ):
+        _transition_terminal(
+            row,
+            state="cancelled" if row["state"] == "cancel_requested" else "expired",
+            diagnostic_code=(
+                "cancel_requested" if row["state"] == "cancel_requested" else "lease_expired"
+            ),
+            now_text=now_text,
+        )
+    elif check_inputs and row["state"] == "active":
+        try:
+            *_, current_digest = _current_operation_context(row)
+            _require_original_input_digest(row, current_digest)
+        except AuthoringOperationError as exc:
+            if exc.code in ("plan_revision_stale", "authoring_inputs_stale"):
+                _transition_terminal(
+                    row,
+                    state="cancelled",
+                    diagnostic_code=(
+                        "plan_changed" if exc.code == "plan_revision_stale" else "inputs_changed"
+                    ),
+                    now_text=now_text,
+                )
+            else:
+                raise
+
+    recovered = _get_operation(row["operation_id"])
+    if recovered is None:
+        raise AuthoringOperationError(
+            500,
+            "operation_state_invalid",
+            "The operation could not be read after recovery.",
+        )
+    return recovered
+
+
+def _recover_pending_operations(
+    *,
+    planning_enabled: bool,
+    now_text: str,
+    session_id: int | None = None,
+    limit: int = 64,
+) -> None:
+    """Run a bounded expiry/disablement sweep; the target record is recovered separately."""
+    query = (
+        "SELECT * FROM authoring_operation WHERE state IN ('active', 'cancel_requested') "
+        "AND (" + ("? = 0 OR " if not planning_enabled else "") + "lease_expires_at <= ?) "
+    )
+    params: list[Any] = []
+    if not planning_enabled:
+        params.append(0)
+    params.append(now_text)
+    if session_id is not None:
+        query += "AND session_id = ? "
+        params.append(session_id)
+    query += "ORDER BY created_at, operation_id LIMIT ?"
+    params.append(limit)
+
+    with db.transaction():
+        rows = db.conn().execute(query, tuple(params)).fetchall()
+        for raw in rows:
+            _recover_row_in_transaction(
+                dict(raw),
+                now_text=now_text,
+                planning_enabled=planning_enabled,
+                check_inputs=False,
+            )
+
+
+def recover_session_operations(
+    session_id: int,
+    *,
+    planning_enabled: bool | None = None,
+    now: str | None = None,
+    check_inputs: bool = True,
+) -> int:
+    """Recover one session's current owner and a bounded global expiry batch."""
+    enabled = _resolve_planning_enabled(planning_enabled)
+    now_text = now or db.now()
+    _recover_pending_operations(
+        planning_enabled=enabled,
+        now_text=now_text,
+    )
+    with db.transaction():
+        rows = db.conn().execute(
+            "SELECT * FROM authoring_operation WHERE session_id = ? "
+            "AND state IN ('active', 'cancel_requested')",
+            (session_id,),
+        ).fetchall()
+        for raw in rows:
+            _recover_row_in_transaction(
+                dict(raw),
+                now_text=now_text,
+                planning_enabled=enabled,
+                check_inputs=check_inputs,
+            )
+    return len(rows)
+
+
+def startup_recovery(*, planning_enabled: bool | None = None, now: str | None = None) -> int:
+    """Recover every owner left by the prior process before serving requests."""
+    enabled = _resolve_planning_enabled(planning_enabled)
+    now_text = now or db.now()
+    if enabled:
+        active_state, active_error = "expired", _diagnostic("application_restarted")
+        cancel_state, cancel_error = "cancelled", _diagnostic("cancel_requested")
+    else:
+        active_state = cancel_state = "cancelled"
+        active_error = cancel_error = _diagnostic("feature_disabled")
+    with db.transaction():
+        updated = db.conn().execute(
+            """UPDATE authoring_operation
+               SET state = CASE state WHEN 'active' THEN ? ELSE ? END,
+                   fencing_token = fencing_token + 1,
+                   lease_expires_at = NULL,
+                   error = CASE state WHEN 'active' THEN ? ELSE ? END,
+                   updated_at = ?
+               WHERE state IN ('active', 'cancel_requested')""",
+            (active_state, cancel_state, active_error, cancel_error, now_text),
+        )
+        return int(updated.rowcount)
+
+
+def cancel_for_plan_change(session_id: int, new_revision: int) -> int:
+    """Fence every old-revision owner in the caller's plan-CAS transaction."""
+    with db.transaction():
+        now_text = db.now()
+        updated = db.conn().execute(
+            """UPDATE authoring_operation
+               SET state = 'cancelled', fencing_token = fencing_token + 1,
+                   lease_expires_at = NULL, error = ?, updated_at = ?
+               WHERE session_id = ? AND plan_revision < ?
+                 AND state IN ('active', 'cancel_requested')""",
+            (_diagnostic("plan_changed"), now_text, session_id, new_revision),
+        )
+        return int(updated.rowcount)
+
+
+def _operation_view(
+    row: dict,
+    *,
+    planning_enabled: bool,
+    assistant_available: bool,
+) -> dict:
+    can_resume = False
+    if (
+        planning_enabled
+        and assistant_available
+        and row["state"] in ("failed", "cancelled", "expired")
+    ):
+        try:
+            *_, current_digest = _current_operation_context(row)
+            _require_original_input_digest(row, current_digest)
+            can_resume = True
+        except AuthoringOperationError:
+            pass
+    return build_operation_view(
+        row,
+        can_cancel=row["state"] == "active",
+        can_resume=can_resume,
+    )
 
 
 def _read_claim_row(claim: OperationClaim) -> dict:
@@ -499,7 +871,11 @@ def _read_claim_row(claim: OperationClaim) -> dict:
     return row
 
 
-def renew_operation_lease(claim: OperationClaim) -> OperationLeaseTicket:
+def renew_operation_lease(
+    claim: OperationClaim,
+    *,
+    planning_enabled: bool | None = None,
+) -> OperationLeaseTicket:
     """Renew one live owner before a remote call or scheduling another item.
 
     The transaction commits before this function returns, so callers perform
@@ -507,29 +883,62 @@ def renew_operation_lease(claim: OperationClaim) -> OperationLeaseTicket:
     """
     if not isinstance(claim, OperationClaim):
         raise AuthoringOperationError(422, "invalid_request", "A backend operation claim is required.")
+    enabled = _resolve_planning_enabled(planning_enabled)
+    now_text = db.now()
+    recover_session_operations(
+        claim.session_id,
+        planning_enabled=enabled,
+        now=now_text,
+        check_inputs=False,
+    )
+    enabled = _resolve_planning_enabled(planning_enabled)
+    if not enabled:
+        raise AuthoringOperationError(
+            503,
+            "resource_planning_disabled",
+            "Resource planning is disabled by configuration.",
+        )
+    disabled_during_renewal = False
     with db.transaction():
-        now_text = db.now()
         now = _utc_datetime(now_text, field="current time")
         row = _read_claim_row(claim)
         _require_live_claim(row, claim, now=now)
-        _, _, _, _, input_fingerprint = _current_operation_inputs(row)
-        deadline = db.authoring_operation_lease_deadline(now)
-        updated = db.conn().execute(
-            """UPDATE authoring_operation
-               SET lease_expires_at = ?, updated_at = ?
-               WHERE operation_id = ? AND state = 'active'
-                 AND fencing_token = ? AND request_digest = ? AND plan_revision = ?""",
-            (
-                deadline,
-                now_text,
-                claim.operation_id,
-                claim.fencing_token,
-                claim.request_digest,
-                claim.plan_revision,
-            ),
+        *_, input_fingerprint, current_digest = _current_operation_context(row)
+        _require_original_input_digest(row, current_digest)
+        if not _resolve_planning_enabled(None):
+            _transition_terminal(
+                row,
+                state="cancelled",
+                diagnostic_code="feature_disabled",
+                now_text=now_text,
+            )
+            disabled_during_renewal = True
+        else:
+            deadline = db.authoring_operation_lease_deadline(now)
+            updated = db.conn().execute(
+                """UPDATE authoring_operation
+                   SET lease_expires_at = ?, updated_at = ?
+                   WHERE operation_id = ? AND state = 'active'
+                     AND fencing_token = ? AND request_digest = ? AND plan_revision = ?""",
+                (
+                    deadline,
+                    now_text,
+                    claim.operation_id,
+                    claim.fencing_token,
+                    claim.request_digest,
+                    claim.plan_revision,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise AuthoringOperationError(
+                    409, "authoring_owner_stale", "This worker no longer owns the operation."
+                )
+    if disabled_during_renewal:
+        raise AuthoringOperationError(
+            503,
+            "resource_planning_disabled",
+            "Resource planning is disabled by configuration.",
         )
-        if updated.rowcount != 1:
-            raise AuthoringOperationError(409, "authoring_owner_stale", "This worker no longer owns the operation.")
     return OperationLeaseTicket(
         claim=claim,
         lease_expires_at=deadline,
@@ -582,6 +991,8 @@ def persist_operation_response(
     claim: OperationClaim,
     ticket: OperationLeaseTicket,
     items: Any,
+    *,
+    planning_enabled: bool | None = None,
 ) -> dict:
     """Atomically persist validated target results and ordered progress.
 
@@ -594,78 +1005,167 @@ def persist_operation_response(
         raise AuthoringOperationError(422, "invalid_request", "A backend operation lease ticket is required.")
     if not _is_authentic_operation_lease_ticket(ticket):
         raise AuthoringOperationError(422, "invalid_request", "A backend operation lease ticket is required.")
-    normalized_items = _normalize_response_items(items)
-    encoded_items = json.dumps(normalized_items, ensure_ascii=False, separators=(",", ":"))
+    enabled = _resolve_planning_enabled(planning_enabled)
+    now_text = db.now()
+    recover_session_operations(
+        claim.session_id,
+        planning_enabled=enabled,
+        now=now_text,
+        check_inputs=False,
+    )
+    enabled = _resolve_planning_enabled(planning_enabled)
+    if not enabled:
+        raise AuthoringOperationError(
+            503,
+            "resource_planning_disabled",
+            "Resource planning is disabled by configuration.",
+        )
+    cancelled_after_response = False
+    response_view = None
     with db.transaction():
-        now_text = db.now()
         now = _utc_datetime(now_text, field="current time")
         row = _read_claim_row(claim)
-        _require_live_claim(row, claim, now=now)
-        if ticket.claim != claim:
-            raise AuthoringOperationError(409, "authoring_owner_stale", "This worker no longer owns the operation.")
-        if row["lease_expires_at"] != ticket.lease_expires_at:
-            raise AuthoringOperationError(409, "authoring_owner_stale", "This worker no longer owns the operation.")
-        _, requested, completed, remaining, current_fingerprint = _current_operation_inputs(row)
-        if current_fingerprint != ticket.input_fingerprint:
-            raise AuthoringOperationError(
-                409,
-                "authoring_inputs_stale",
-                "The effective operation inputs changed; discard this response and reload the plan.",
+        if row["state"] == "cancel_requested":
+            if (
+                ticket.claim != claim
+                or row["operation_id"] != claim.operation_id
+                or int(row["session_id"]) != claim.session_id
+                or int(row["plan_revision"]) != claim.plan_revision
+                or int(row["fencing_token"]) != claim.fencing_token
+                or row["request_digest"] != claim.request_digest
+                or row["lease_expires_at"] != ticket.lease_expires_at
+            ):
+                raise AuthoringOperationError(
+                    409, "authoring_owner_stale", "This worker no longer owns the operation."
+                )
+            _transition_terminal(
+                row,
+                state="cancelled",
+                diagnostic_code="cancel_requested",
+                now_text=now_text,
             )
-        targets = [item["target"] for item in normalized_items]
-        if targets != remaining[:len(targets)]:
-            raise AuthoringOperationError(
-                409,
-                "authoring_inputs_stale",
-                "The response does not match the next ordered operation targets.",
-            )
+            cancelled_after_response = True
+        else:
+            _require_live_claim(row, claim, now=now)
+            if ticket.claim != claim:
+                raise AuthoringOperationError(
+                    409, "authoring_owner_stale", "This worker no longer owns the operation."
+                )
+            if row["lease_expires_at"] != ticket.lease_expires_at:
+                raise AuthoringOperationError(
+                    409, "authoring_owner_stale", "This worker no longer owns the operation."
+                )
 
-        previous_result = _decode_json(row.get("result_json"), default=None)
-        if previous_result is None:
-            previous_result = {"items": []}
-        if (
-            type(previous_result) is not dict
-            or set(previous_result) != {"items"}
-            or not isinstance(previous_result["items"], list)
-        ):
-            raise AuthoringOperationError(
-                500,
-                "operation_state_invalid",
-                "The saved operation result could not be read.",
-            )
-        persisted_items = previous_result["items"] + json.loads(encoded_items)
-        completed = completed + targets
-        remaining = remaining[len(targets):]
-        state = "succeeded" if not remaining else "active"
-        updated = db.conn().execute(
-            """UPDATE authoring_operation
-               SET state = ?, lease_expires_at = ?, completed_json = ?,
-                   remaining_json = ?, result_json = ?, updated_at = ?
-               WHERE operation_id = ? AND state = 'active'
-                 AND fencing_token = ? AND request_digest = ? AND plan_revision = ?""",
-            (
-                state,
-                None if state == "succeeded" else row["lease_expires_at"],
-                json.dumps(completed, ensure_ascii=False, separators=(",", ":")),
-                json.dumps(remaining, ensure_ascii=False, separators=(",", ":")),
-                json.dumps({"items": persisted_items}, ensure_ascii=False, separators=(",", ":")),
-                now_text,
-                claim.operation_id,
-                claim.fencing_token,
-                claim.request_digest,
-                claim.plan_revision,
-            ),
+            # This check is inside the write transaction. If the gate changed
+            # after the API precheck, commit cancellation without inspecting or
+            # storing any returned assistant content.
+            if not _resolve_planning_enabled(None):
+                _transition_terminal(
+                    row,
+                    state="cancelled",
+                    diagnostic_code="feature_disabled",
+                    now_text=now_text,
+                )
+                saved = _get_operation(claim.operation_id)
+                if saved is None:
+                    raise AuthoringOperationError(
+                        500,
+                        "operation_state_invalid",
+                        "The operation could not be read after cancellation.",
+                    )
+                response_view = build_operation_view(saved, can_cancel=False, can_resume=False)
+            else:
+                _, requested, completed, remaining, current_fingerprint = _current_operation_inputs(row)
+                if current_fingerprint != ticket.input_fingerprint:
+                    raise AuthoringOperationError(
+                        409,
+                        "authoring_inputs_stale",
+                        "The effective operation inputs changed; discard this response and reload the plan.",
+                    )
+                normalized_items = _normalize_response_items(items)
+                encoded_items = json.dumps(normalized_items, ensure_ascii=False, separators=(",", ":"))
+                targets = [item["target"] for item in normalized_items]
+                if targets != remaining[:len(targets)]:
+                    raise AuthoringOperationError(
+                        409,
+                        "authoring_inputs_stale",
+                        "The response does not match the next ordered operation targets.",
+                    )
+
+                previous_result = _decode_json(row.get("result_json"), default=None)
+                if previous_result is None:
+                    previous_result = {"items": []}
+                if (
+                    type(previous_result) is not dict
+                    or set(previous_result) != {"items"}
+                    or not isinstance(previous_result["items"], list)
+                ):
+                    raise AuthoringOperationError(
+                        500,
+                        "operation_state_invalid",
+                        "The saved operation result could not be read.",
+                    )
+                persisted_items = previous_result["items"] + json.loads(encoded_items)
+                completed = completed + targets
+                remaining = remaining[len(targets):]
+                state = "succeeded" if not remaining else "active"
+
+                # Recheck at the authoritative write boundary in case the
+                # process gate changed while effective inputs were validated.
+                if not _resolve_planning_enabled(None):
+                    _transition_terminal(
+                        row,
+                        state="cancelled",
+                        diagnostic_code="feature_disabled",
+                        now_text=now_text,
+                    )
+                    saved = _get_operation(claim.operation_id)
+                    if saved is None:
+                        raise AuthoringOperationError(
+                            500,
+                            "operation_state_invalid",
+                            "The operation could not be read after cancellation.",
+                        )
+                    response_view = build_operation_view(saved, can_cancel=False, can_resume=False)
+                else:
+                    updated = db.conn().execute(
+                        """UPDATE authoring_operation
+                           SET state = ?, lease_expires_at = ?, completed_json = ?,
+                               remaining_json = ?, result_json = ?, updated_at = ?
+                           WHERE operation_id = ? AND state = 'active'
+                             AND fencing_token = ? AND request_digest = ? AND plan_revision = ?""",
+                        (
+                            state,
+                            None if state == "succeeded" else row["lease_expires_at"],
+                            json.dumps(completed, ensure_ascii=False, separators=(",", ":")),
+                            json.dumps(remaining, ensure_ascii=False, separators=(",", ":")),
+                            json.dumps({"items": persisted_items}, ensure_ascii=False, separators=(",", ":")),
+                            now_text,
+                            claim.operation_id,
+                            claim.fencing_token,
+                            claim.request_digest,
+                            claim.plan_revision,
+                        ),
+                    )
+                    if updated.rowcount != 1:
+                        raise AuthoringOperationError(
+                            409, "authoring_owner_stale", "This worker no longer owns the operation."
+                        )
+                    saved = _get_operation(claim.operation_id)
+                    if saved is None:
+                        raise AuthoringOperationError(
+                            500,
+                            "operation_state_invalid",
+                            "The operation result could not be read after saving.",
+                        )
+                    response_view = build_operation_view(saved)
+    if cancelled_after_response:
+        raise AuthoringOperationError(
+            409,
+            "operation_not_active",
+            "The operation was cancelled; this response was discarded.",
         )
-        if updated.rowcount != 1:
-            raise AuthoringOperationError(409, "authoring_owner_stale", "This worker no longer owns the operation.")
-        saved = _get_operation(claim.operation_id)
-        if saved is None:
-            raise AuthoringOperationError(
-                500,
-                "operation_state_invalid",
-                "The operation result could not be read after saving.",
-            )
-        return build_operation_view(saved)
+    return response_view
 
 
 def start_operation(
@@ -676,6 +1176,8 @@ def start_operation(
     assistant_available: bool,
 ) -> tuple[dict, bool]:
     """Atomically replay or claim one operation for this session."""
+    planning_enabled = _resolve_planning_enabled(planning_enabled)
+    recover_session_operations(session_id, planning_enabled=planning_enabled)
     if not planning_enabled:
         raise AuthoringOperationError(
             503,
@@ -700,7 +1202,11 @@ def start_operation(
                     "idempotency_conflict",
                     "request_id is already bound to different operation content.",
                 )
-            return build_operation_view(existing), False
+            return _operation_view(
+                existing,
+                planning_enabled=planning_enabled,
+                assistant_available=assistant_available,
+            ), False
 
         if session_plan.read_composition_mode(session.get("settings")) != session_plan.MODE_RESOURCE_V1:
             raise AuthoringOperationError(
@@ -804,7 +1310,11 @@ def start_operation(
                 409,
                 "authoring_active",
                 "Another authoring operation is already active for this session.",
-                operation=build_operation_view(active),
+                operation=_operation_view(
+                    active,
+                    planning_enabled=planning_enabled,
+                    assistant_available=assistant_available,
+                ),
             )
 
         if not assistant_available:
@@ -814,24 +1324,40 @@ def start_operation(
                 "Configure the prompt assistant before starting this operation.",
             )
 
-        now = db.now()
         operation_id = str(uuid.uuid4())
+        requested_json = json.dumps(requested, ensure_ascii=False, separators=(",", ":"))
+        candidate = {
+            "operation_id": operation_id,
+            "session_id": session_id,
+            "plan_revision": actual_revision,
+            "kind": kind,
+            "request_digest": request["request_digest"],
+            "fencing_token": 1,
+            "requested_json": requested_json,
+            "completed_json": "[]",
+            "failed_item": None,
+            "remaining_json": requested_json,
+            "result_json": None,
+        }
+        *_, input_digest = _current_operation_context(candidate)
+        now = db.now()
         db.run(
             """INSERT INTO authoring_operation (
                    operation_id, request_id, session_id, plan_revision, kind,
-                   request_digest, state, fencing_token, lease_expires_at,
+                   request_digest, input_digest, state, fencing_token, lease_expires_at,
                    requested_json, completed_json, failed_item, error,
                    remaining_json, result_json, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, '[]', NULL, NULL, ?, NULL, ?, ?)""",
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, '[]', NULL, NULL, ?, NULL, ?, ?)""",
             operation_id,
             request["request_id"],
             session_id,
             actual_revision,
             kind,
             request["request_digest"],
+            input_digest,
             db.authoring_operation_lease_deadline(),
-            json.dumps(requested, ensure_ascii=False, separators=(",", ":")),
-            json.dumps(requested, ensure_ascii=False, separators=(",", ":")),
+            requested_json,
+            requested_json,
             now,
             now,
         )
@@ -842,18 +1368,350 @@ def start_operation(
                 "operation_state_invalid",
                 "The operation claim could not be read after saving.",
             )
-        return build_operation_view(row), True
+        return _operation_view(
+            row,
+            planning_enabled=planning_enabled,
+            assistant_available=assistant_available,
+        ), True
 
 
-def get_operation(session_id: int, operation_id: str) -> dict:
-    """Return one operation only when it belongs to the requested session."""
-    row = db.one(
-        "SELECT operation.* FROM authoring_operation AS operation "
-        "JOIN session ON session.id = operation.session_id "
-        "WHERE operation.session_id = ? AND operation.operation_id = ?",
+def fail_operation_item(
+    claim: OperationClaim,
+    ticket: OperationLeaseTicket,
+    failed_target: str,
+    *,
+    planning_enabled: bool | None = None,
+) -> dict:
+    """Persist a safe per-item failure while retaining completed results for Resume."""
+    if not isinstance(claim, OperationClaim) or not isinstance(ticket, OperationLeaseTicket):
+        raise AuthoringOperationError(422, "invalid_request", "A backend operation lease ticket is required.")
+    if not _is_authentic_operation_lease_ticket(ticket):
+        raise AuthoringOperationError(422, "invalid_request", "A backend operation lease ticket is required.")
+    if not isinstance(failed_target, str) or not failed_target:
+        raise AuthoringOperationError(422, "invalid_request", "A failed operation target is required.")
+    enabled = _resolve_planning_enabled(planning_enabled)
+    now_text = db.now()
+    recover_session_operations(
+        claim.session_id,
+        planning_enabled=enabled,
+        now=now_text,
+        check_inputs=False,
+    )
+    enabled = _resolve_planning_enabled(planning_enabled)
+    if not enabled:
+        raise AuthoringOperationError(
+            503,
+            "resource_planning_disabled",
+            "Resource planning is disabled by configuration.",
+        )
+
+    with db.transaction():
+        now = _utc_datetime(now_text, field="current time")
+        row = _read_claim_row(claim)
+        _require_live_claim(row, claim, now=now)
+        if ticket.claim != claim or row["lease_expires_at"] != ticket.lease_expires_at:
+            raise AuthoringOperationError(409, "authoring_owner_stale", "This worker no longer owns the operation.")
+        _, _, _, remaining, current_fingerprint = _current_operation_inputs(row)
+        if current_fingerprint != ticket.input_fingerprint:
+            raise AuthoringOperationError(
+                409,
+                "authoring_inputs_stale",
+                "The effective operation inputs changed; discard this response and reload the plan.",
+            )
+        if not remaining or remaining[0] != failed_target:
+            raise AuthoringOperationError(
+                409,
+                "authoring_inputs_stale",
+                "The failure does not match the next ordered operation target.",
+            )
+        updated = db.conn().execute(
+            """UPDATE authoring_operation
+               SET state = 'failed', lease_expires_at = NULL, failed_item = ?, error = ?,
+                   remaining_json = ?, updated_at = ?
+               WHERE operation_id = ? AND state = 'active' AND fencing_token = ?
+                 AND request_digest = ? AND plan_revision = ?""",
+            (
+                failed_target,
+                _diagnostic("item_failed"),
+                json.dumps(remaining[1:], ensure_ascii=False, separators=(",", ":")),
+                now_text,
+                claim.operation_id,
+                claim.fencing_token,
+                claim.request_digest,
+                claim.plan_revision,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise AuthoringOperationError(409, "authoring_owner_stale", "This worker no longer owns the operation.")
+        saved = _get_operation(claim.operation_id)
+        if saved is None:
+            raise AuthoringOperationError(
+                500,
+                "operation_state_invalid",
+                "The operation result could not be read after saving.",
+            )
+        return _operation_view(
+            saved,
+            planning_enabled=enabled,
+            assistant_available=True,
+        )
+
+
+def cancel_operation(
+    session_id: int,
+    operation_id: str,
+    expected_revision: int,
+    *,
+    planning_enabled: bool | None = None,
+    assistant_available: bool = True,
+) -> tuple[dict, int]:
+    """Stop future scheduling and fence late responses through persisted state."""
+    enabled = _resolve_planning_enabled(planning_enabled)
+    recover_session_operations(session_id, planning_enabled=enabled)
+    get_operation(
         session_id,
         operation_id,
+        planning_enabled=enabled,
+        assistant_available=assistant_available,
     )
-    if row is None:
+    now_text = db.now()
+    missing = False
+    with db.transaction():
+        row = db.one(
+            "SELECT * FROM authoring_operation WHERE session_id = ? AND operation_id = ?",
+            session_id,
+            operation_id,
+        )
+        if row is None:
+            missing = True
+            view = None
+            status = 200
+        else:
+            if int(row["plan_revision"]) != expected_revision:
+                raise AuthoringOperationError(
+                    409,
+                    "plan_revision_stale",
+                    "The operation belongs to a different plan revision.",
+                    operation=_operation_view(
+                        row,
+                        planning_enabled=enabled,
+                        assistant_available=assistant_available,
+                    ),
+                )
+            if row["state"] == "active":
+                db.conn().execute(
+                    """UPDATE authoring_operation
+                       SET state = 'cancel_requested', error = ?, updated_at = ?
+                       WHERE operation_id = ? AND state = 'active' AND fencing_token = ?""",
+                    (
+                        _diagnostic("cancel_pending"),
+                        now_text,
+                        operation_id,
+                        row["fencing_token"],
+                    ),
+                )
+                row = _get_operation(operation_id)
+            view = _operation_view(
+                row,
+                planning_enabled=enabled,
+                assistant_available=assistant_available,
+            )
+            status = 202 if row["state"] == "cancel_requested" else 200
+    if missing:
         raise AuthoringOperationError(404, "operation_not_found", "Authoring operation not found.")
-    return build_operation_view(row)
+    return view, status
+
+
+def resume_operation(
+    session_id: int,
+    operation_id: str,
+    expected_revision: int,
+    *,
+    planning_enabled: bool | None = None,
+    assistant_available: bool = True,
+) -> tuple[dict, int]:
+    """Claim a retry with a fresh fence after validating original inputs."""
+    enabled = _resolve_planning_enabled(planning_enabled)
+    recover_session_operations(session_id, planning_enabled=enabled)
+    if not enabled:
+        raise AuthoringOperationError(
+            503,
+            "resource_planning_disabled",
+            "Resource planning is disabled by configuration.",
+        )
+    get_operation(
+        session_id,
+        operation_id,
+        planning_enabled=True,
+        assistant_available=assistant_available,
+    )
+
+    now_text = db.now()
+    now = _utc_datetime(now_text, field="current time")
+    missing = False
+    with db.transaction():
+        row = db.one(
+            "SELECT * FROM authoring_operation WHERE session_id = ? AND operation_id = ?",
+            session_id,
+            operation_id,
+        )
+        if row is None:
+            missing = True
+            view = None
+            status = 200
+        else:
+            if int(row["plan_revision"]) != expected_revision:
+                raise AuthoringOperationError(
+                    409,
+                    "plan_revision_stale",
+                    "The operation belongs to a different plan revision.",
+                    operation=_operation_view(
+                        row,
+                        planning_enabled=True,
+                        assistant_available=assistant_available,
+                    ),
+                )
+            if row["state"] in ("active", "succeeded"):
+                view = _operation_view(
+                    row,
+                    planning_enabled=True,
+                    assistant_available=assistant_available,
+                )
+                status = 200
+            elif row["state"] == "cancel_requested":
+                raise AuthoringOperationError(
+                    409,
+                    "operation_cancel_pending",
+                    "Cancellation is waiting for its in-flight lease to expire.",
+                    operation=_operation_view(
+                        row,
+                        planning_enabled=True,
+                        assistant_available=assistant_available,
+                    ),
+                )
+            elif row["state"] in ("failed", "cancelled", "expired"):
+                if not assistant_available:
+                    raise AuthoringOperationError(
+                        409,
+                        "assistant_unavailable",
+                        "Configure the prompt assistant before resuming this operation.",
+                        operation=_operation_view(
+                            row,
+                            planning_enabled=True,
+                            assistant_available=False,
+                        ),
+                    )
+                try:
+                    _, requested, completed, remaining, _, current_digest = (
+                        _current_operation_context(row)
+                    )
+                    _require_original_input_digest(row, current_digest)
+                except AuthoringOperationError as exc:
+                    raise AuthoringOperationError(
+                        exc.status_code,
+                        exc.code,
+                        exc.message,
+                        operation=_operation_view(
+                            row,
+                            planning_enabled=True,
+                            assistant_available=assistant_available,
+                        ),
+                    ) from exc
+                failed_item = row.get("failed_item")
+                retry_remaining = ([failed_item] if failed_item is not None else []) + remaining
+                if requested != completed + retry_remaining or not retry_remaining:
+                    raise AuthoringOperationError(
+                        409,
+                        "operation_not_resumable",
+                        "The saved operation has no valid remaining work to resume.",
+                        operation=_operation_view(
+                            row,
+                            planning_enabled=True,
+                            assistant_available=assistant_available,
+                        ),
+                    )
+                deadline = db.authoring_operation_lease_deadline(now)
+                updated = db.conn().execute(
+                    """UPDATE authoring_operation
+                       SET state = 'active', fencing_token = fencing_token + 1,
+                           lease_expires_at = ?, failed_item = NULL, error = NULL,
+                           remaining_json = ?, updated_at = ?
+                       WHERE operation_id = ? AND state IN ('failed', 'cancelled', 'expired')
+                         AND fencing_token = ? AND plan_revision = ?""",
+                    (
+                        deadline,
+                        json.dumps(retry_remaining, ensure_ascii=False, separators=(",", ":")),
+                        now_text,
+                        operation_id,
+                        row["fencing_token"],
+                        expected_revision,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise AuthoringOperationError(
+                        409, "authoring_owner_stale", "The operation changed while it was being resumed."
+                    )
+                row = _get_operation(operation_id)
+                if row is None:
+                    raise AuthoringOperationError(
+                        500,
+                        "operation_state_invalid",
+                        "The operation could not be read after resuming.",
+                    )
+                view = _operation_view(
+                    row,
+                    planning_enabled=True,
+                    assistant_available=assistant_available,
+                )
+                status = 202
+            else:
+                raise AuthoringOperationError(
+                    409,
+                    "operation_not_resumable",
+                    "The authoring operation cannot be resumed from its current state.",
+                    operation=_operation_view(
+                        row,
+                        planning_enabled=True,
+                        assistant_available=assistant_available,
+                    ),
+                )
+    if missing:
+        raise AuthoringOperationError(404, "operation_not_found", "Authoring operation not found.")
+    return view, status
+
+
+def get_operation(
+    session_id: int,
+    operation_id: str,
+    *,
+    planning_enabled: bool | None = None,
+    assistant_available: bool = True,
+) -> dict:
+    """Recover and return one operation only when it belongs to the requested session."""
+    enabled = _resolve_planning_enabled(planning_enabled)
+    recover_session_operations(session_id, planning_enabled=enabled)
+    with db.transaction():
+        row = db.one(
+            "SELECT * FROM authoring_operation WHERE session_id = ? AND operation_id = ?",
+            session_id,
+            operation_id,
+        )
+        if row is None:
+            missing = True
+            view = None
+        else:
+            row = _recover_row_in_transaction(
+                row,
+                now_text=db.now(),
+                planning_enabled=enabled,
+                check_inputs=True,
+            )
+            view = _operation_view(
+                row,
+                planning_enabled=enabled,
+                assistant_available=assistant_available,
+            )
+            missing = False
+    if missing:
+        raise AuthoringOperationError(404, "operation_not_found", "Authoring operation not found.")
+    return view
