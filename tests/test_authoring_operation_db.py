@@ -100,6 +100,9 @@ def test_operation_schema_is_additive_and_lease_deadline_is_ten_minutes(tmp_path
     assert "input_digest" in {
         row["name"] for row in upgraded.execute("PRAGMA table_info(authoring_operation)")
     }
+    assert {"acceptance_digest", "acceptance_result_json"}.issubset({
+        row["name"] for row in upgraded.execute("PRAGMA table_info(authoring_operation)")
+    })
     upgraded.close()
 
 
@@ -127,6 +130,44 @@ def test_operation_input_digest_migrates_additively_and_is_immutable(tmp_path):
         upgraded.execute(
             "UPDATE authoring_operation SET input_digest='b' WHERE operation_id=?",
             ("00000000-0000-0000-0000-000000000001",),
+        )
+    upgraded.close()
+
+
+def test_operation_acceptance_fields_migrate_additively_and_are_immutable(tmp_path):
+    path = tmp_path / "operation_acceptance_migration.db"
+    legacy = db.connect(path)
+    session_id = _create_session(legacy)
+    legacy.execute("DROP TRIGGER IF EXISTS authoring_operation_acceptance_immutable")
+    legacy.execute("ALTER TABLE authoring_operation DROP COLUMN acceptance_result_json")
+    legacy.execute("ALTER TABLE authoring_operation DROP COLUMN acceptance_digest")
+    legacy.commit()
+    legacy.close()
+
+    upgraded = db.connect(path)
+    columns = {
+        row["name"] for row in upgraded.execute("PRAGMA table_info(authoring_operation)")
+    }
+    assert {"acceptance_digest", "acceptance_result_json"}.issubset(columns)
+    assert upgraded.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+        "AND name='authoring_operation_acceptance_immutable'"
+    ).fetchone()
+    _insert_operation(upgraded, session_id)
+    operation_id = "00000000-0000-0000-0000-000000000001"
+    upgraded.execute(
+        "UPDATE authoring_operation SET acceptance_digest=?, acceptance_result_json=? WHERE operation_id=?",
+        ("a" * 64, '{"plan_revision":2}', operation_id),
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="acceptance is immutable"):
+        upgraded.execute(
+            "UPDATE authoring_operation SET acceptance_result_json=? WHERE operation_id=?",
+            ('{"plan_revision":3}', operation_id),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="acceptance is immutable"):
+        upgraded.execute(
+            "UPDATE authoring_operation SET acceptance_digest=NULL WHERE operation_id=?",
+            (operation_id,),
         )
     upgraded.close()
 

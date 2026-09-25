@@ -167,6 +167,36 @@ class _OperationRevisionRequest(BaseModel):
         return value
 
 
+class _SharedSuggestionAcceptanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_revision: StrictInt
+    accepted: dict[StrictStr, StrictStr]
+
+    @field_validator("expected_revision", mode="before")
+    @classmethod
+    def validate_expected_revision(cls, value: Any) -> int:
+        if type(value) is not int or value <= 0:
+            raise ValueError("expected_revision must be a positive integer")
+        return value
+
+    @field_validator("accepted", mode="before")
+    @classmethod
+    def validate_accepted(cls, value: Any) -> dict[str, str]:
+        if (
+            not isinstance(value, dict)
+            or not value
+            or len(value) > 2
+            or any(
+                field not in ("look", "initial_wardrobe")
+                or not isinstance(text, str)
+                for field, text in value.items()
+            )
+        ):
+            raise ValueError("accepted must contain look and/or initial_wardrobe string values")
+        return value
+
+
 _OPERATION_DIAGNOSTICS = {
     "application_restarted": (
         "The application restarted before this operation finished. "
@@ -233,6 +263,32 @@ def normalize_operation_revision_request(payload: Any) -> int:
         raise AuthoringOperationError(422, code, message) from exc
 
 
+def normalize_shared_suggestion_acceptance(payload: Any) -> dict:
+    """Validate the closed reviewed-values body for a suggestion acceptance."""
+    if not isinstance(payload, dict):
+        raise AuthoringOperationError(422, "invalid_request", "Request body must be an object.")
+    try:
+        values = _SharedSuggestionAcceptanceRequest.model_validate(payload).model_dump()
+    except ValidationError as exc:
+        errors = exc.errors()
+        if any(error.get("type") == "extra_forbidden" for error in errors):
+            code, message = "extra_field_forbidden", "Unknown operation fields are not permitted."
+        elif any(error.get("type") == "missing" for error in errors):
+            code, message = "missing_field", "A required operation field is missing."
+        else:
+            code, message = "invalid_request", "The acceptance request does not match its contract."
+        raise AuthoringOperationError(422, code, message) from exc
+
+    accepted = values["accepted"]
+    return {
+        "expected_revision": values["expected_revision"],
+        "accepted": accepted,
+        # Acceptance belongs to one succeeded operation. Its revision is
+        # checked on the first write; replay identity is the reviewed content.
+        "acceptance_digest": resource_store.canonical_digest({"accepted": accepted}),
+    }
+
+
 def normalize_start_request(payload: Any) -> dict:
     """Validate and normalize the exact POST body before entering a transaction."""
     if not isinstance(payload, dict):
@@ -286,6 +342,124 @@ def _decode_json(value: str | None, *, default: Any) -> Any:
             "operation_state_invalid",
             "The saved operation state could not be read.",
         ) from exc
+
+
+def _normalize_shared_suggestion_input(value: Any, *, plan_revision: int) -> dict:
+    """Validate the exact assistant request stored for suggestion evidence."""
+    required = {"messages", "model", "parameters", "plan_revision"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise AuthoringOperationError(
+            409,
+            "operation_result_invalid",
+            "The saved suggestion request evidence is invalid.",
+        )
+    messages = value["messages"]
+    if not isinstance(messages, list):
+        raise AuthoringOperationError(
+            409,
+            "operation_result_invalid",
+            "The saved suggestion request evidence is invalid.",
+        )
+    normalized_messages = []
+    for message in messages:
+        if (
+            not isinstance(message, dict)
+            or set(message) != {"role", "content"}
+            or message["role"] not in ("system", "user", "assistant")
+            or not isinstance(message["content"], str)
+        ):
+            raise AuthoringOperationError(
+                409,
+                "operation_result_invalid",
+                "The saved suggestion request evidence is invalid.",
+            )
+        normalized_messages.append({"role": message["role"], "content": message["content"]})
+    model = value["model"]
+    parameters = value["parameters"]
+    input_revision = value["plan_revision"]
+    if (
+        not isinstance(model, str)
+        or not model
+        or type(parameters) is not dict
+        or type(input_revision) is not int
+        or input_revision != plan_revision
+    ):
+        raise AuthoringOperationError(
+            409,
+            "operation_result_invalid",
+            "The saved suggestion request evidence is invalid.",
+        )
+    # Match the transport's non-secret JSON controls; credentials stay in headers.
+    if set(parameters) - {"temperature", "stream", "response_format", "reasoning_effort"}:
+        raise AuthoringOperationError(
+            409,
+            "operation_result_invalid",
+            "The saved suggestion request evidence is invalid.",
+        )
+    normalized_parameters = {}
+    if "temperature" in parameters:
+        temperature = parameters["temperature"]
+        if type(temperature) not in (int, float) or not 0 <= temperature <= 2:
+            raise AuthoringOperationError(
+                409,
+                "operation_result_invalid",
+                "The saved suggestion request evidence is invalid.",
+            )
+        normalized_parameters["temperature"] = temperature
+    if "stream" in parameters:
+        if type(parameters["stream"]) is not bool or parameters["stream"] is not False:
+            raise AuthoringOperationError(
+                409,
+                "operation_result_invalid",
+                "The saved suggestion request evidence is invalid.",
+            )
+        normalized_parameters["stream"] = False
+    if "response_format" in parameters:
+        response_format = parameters["response_format"]
+        if (
+            type(response_format) is not dict
+            or set(response_format) != {"type"}
+            or type(response_format["type"]) is not str
+            or response_format["type"] != "json_object"
+        ):
+            raise AuthoringOperationError(
+                409,
+                "operation_result_invalid",
+                "The saved suggestion request evidence is invalid.",
+            )
+        normalized_parameters["response_format"] = {"type": "json_object"}
+    if "reasoning_effort" in parameters:
+        if type(parameters["reasoning_effort"]) is not str or parameters["reasoning_effort"] != "none":
+            raise AuthoringOperationError(
+                409,
+                "operation_result_invalid",
+                "The saved suggestion request evidence is invalid.",
+            )
+        normalized_parameters["reasoning_effort"] = "none"
+    normalized = {
+        "messages": normalized_messages,
+        "model": model,
+        "parameters": normalized_parameters,
+        "plan_revision": input_revision,
+    }
+    try:
+        json.dumps(normalized, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise AuthoringOperationError(
+            409,
+            "operation_result_invalid",
+            "The saved suggestion request evidence is invalid.",
+        ) from exc
+    return json.loads(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")))
+
+
+def _public_operation_result(row: dict, result: Any) -> Any:
+    """Hide the exact private assistant input while exposing pending choices."""
+    if row.get("kind") != "shared_suggestions" or result is None:
+        return result
+    if isinstance(result, dict) and set(result).issubset({"items", "input"}) and "items" in result:
+        return {"items": result["items"]}
+    return None
 
 
 def build_operation_view(
@@ -342,7 +516,7 @@ def build_operation_view(
             "failed": failed,
             "remaining": remaining,
         },
-        "result": result,
+        "result": _public_operation_result(row, result),
         "error": safe_error,
         "can_cancel": row["state"] == "active" if can_cancel is None else can_cancel,
         "can_resume": can_resume,
@@ -992,6 +1166,7 @@ def persist_operation_response(
     ticket: OperationLeaseTicket,
     items: Any,
     *,
+    suggestion_input: Any = None,
     planning_enabled: bool | None = None,
 ) -> dict:
     """Atomically persist validated target results and ordered progress.
@@ -1095,9 +1270,13 @@ def persist_operation_response(
                 previous_result = _decode_json(row.get("result_json"), default=None)
                 if previous_result is None:
                     previous_result = {"items": []}
+                allowed_result_keys = {"items"}
+                if row["kind"] == "shared_suggestions":
+                    allowed_result_keys.add("input")
                 if (
                     type(previous_result) is not dict
-                    or set(previous_result) != {"items"}
+                    or set(previous_result) - allowed_result_keys
+                    or "items" not in previous_result
                     or not isinstance(previous_result["items"], list)
                 ):
                     raise AuthoringOperationError(
@@ -1105,6 +1284,35 @@ def persist_operation_response(
                         "operation_state_invalid",
                         "The saved operation result could not be read.",
                     )
+                if row["kind"] == "prepare_takes" and suggestion_input is not None:
+                    raise AuthoringOperationError(
+                        422,
+                        "invalid_operation_result",
+                        "Suggestion request evidence is only valid for shared_suggestions operations.",
+                    )
+                saved_suggestion_input = previous_result.get("input")
+                if row["kind"] == "shared_suggestions" and suggestion_input is not None:
+                    if saved_suggestion_input is None and previous_result["items"]:
+                        raise AuthoringOperationError(
+                            409,
+                            "authoring_inputs_stale",
+                            "Suggestion request evidence must be saved with its first proposal response.",
+                        )
+                    normalized_input = _normalize_shared_suggestion_input(
+                        suggestion_input,
+                        plan_revision=int(row["plan_revision"]),
+                    )
+                    if (
+                        saved_suggestion_input is not None
+                        and resource_store.canonical_digest(saved_suggestion_input)
+                        != resource_store.canonical_digest(normalized_input)
+                    ):
+                        raise AuthoringOperationError(
+                            409,
+                            "authoring_inputs_stale",
+                            "Suggestion request evidence changed while the operation was active.",
+                        )
+                    saved_suggestion_input = normalized_input
                 persisted_items = previous_result["items"] + json.loads(encoded_items)
                 completed = completed + targets
                 remaining = remaining[len(targets):]
@@ -1139,7 +1347,13 @@ def persist_operation_response(
                             None if state == "succeeded" else row["lease_expires_at"],
                             json.dumps(completed, ensure_ascii=False, separators=(",", ":")),
                             json.dumps(remaining, ensure_ascii=False, separators=(",", ":")),
-                            json.dumps({"items": persisted_items}, ensure_ascii=False, separators=(",", ":")),
+                            json.dumps(
+                                ({"items": persisted_items, "input": saved_suggestion_input}
+                                 if row["kind"] == "shared_suggestions" and saved_suggestion_input is not None
+                                 else {"items": persisted_items}),
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
                             now_text,
                             claim.operation_id,
                             claim.fencing_token,
@@ -1715,3 +1929,184 @@ def get_operation(
     if missing:
         raise AuthoringOperationError(404, "operation_not_found", "Authoring operation not found.")
     return view
+
+
+def accept_shared_suggestion(
+    session_id: int,
+    operation_id: str,
+    request: dict,
+    *,
+    planning_enabled: bool | None = None,
+) -> dict:
+    """Accept a succeeded shared-suggestion result through one operation/plan CAS."""
+    enabled = _resolve_planning_enabled(planning_enabled)
+    if not enabled:
+        raise AuthoringOperationError(
+            503,
+            "resource_planning_disabled",
+            "Resource planning is disabled by configuration.",
+        )
+    acceptance_digest = request["acceptance_digest"]
+    now_text = db.now()
+
+    with db.transaction():
+        if not _resolve_planning_enabled(None):
+            raise AuthoringOperationError(
+                503,
+                "resource_planning_disabled",
+                "Resource planning is disabled by configuration.",
+            )
+        row = db.one(
+            "SELECT * FROM authoring_operation WHERE session_id = ? AND operation_id = ?",
+            session_id,
+            operation_id,
+        )
+        if row is None:
+            raise AuthoringOperationError(404, "operation_not_found", "Authoring operation not found.")
+
+        saved_digest = row.get("acceptance_digest")
+        if saved_digest is not None:
+            if saved_digest != acceptance_digest:
+                raise AuthoringOperationError(
+                    409,
+                    "acceptance_conflict",
+                    "This suggestion operation was already accepted with different values.",
+                )
+            saved_result = _decode_json(row.get("acceptance_result_json"), default=None)
+            if not isinstance(saved_result, dict):
+                raise AuthoringOperationError(
+                    500,
+                    "operation_state_invalid",
+                    "The saved suggestion acceptance result could not be read.",
+                )
+            return saved_result
+
+        if row["kind"] != "shared_suggestions":
+            raise AuthoringOperationError(
+                409,
+                "operation_kind_invalid",
+                "Only a shared-suggestion operation can be accepted.",
+            )
+        if row["state"] != "succeeded":
+            raise AuthoringOperationError(
+                409,
+                "operation_not_succeeded",
+                "Only a succeeded shared-suggestion operation can be accepted.",
+            )
+        expected_revision = request["expected_revision"]
+        if expected_revision != int(row["plan_revision"]):
+            raise AuthoringOperationError(
+                409,
+                "plan_revision_stale",
+                "The suggestion operation belongs to a different plan revision.",
+            )
+
+        _, requested, completed, remaining, _, current_input_digest = _current_operation_context(row)
+        _require_original_input_digest(row, current_input_digest)
+        if completed != requested or remaining or row.get("failed_item") is not None:
+            raise AuthoringOperationError(
+                409,
+                "operation_state_invalid",
+                "The succeeded suggestion operation has incomplete progress.",
+            )
+
+        result = _decode_json(row.get("result_json"), default=None)
+        if (
+            type(result) is not dict
+            or set(result) != {"items", "input"}
+            or not isinstance(result["items"], list)
+        ):
+            raise AuthoringOperationError(
+                409,
+                "operation_result_invalid",
+                "The succeeded suggestion operation has no valid proposal evidence.",
+            )
+        try:
+            normalized_items = _normalize_response_items(result["items"])
+        except AuthoringOperationError as exc:
+            raise AuthoringOperationError(
+                409,
+                "operation_result_invalid",
+                "The succeeded suggestion proposals are malformed.",
+            ) from exc
+        targets = [item["target"] for item in normalized_items]
+        if targets != requested or any(not isinstance(item["result"], str) for item in normalized_items):
+            raise AuthoringOperationError(
+                409,
+                "operation_result_invalid",
+                "The succeeded suggestion proposals do not match the requested shared choices.",
+            )
+        output = {item["target"]: item["result"] for item in normalized_items}
+        accepted = request["accepted"]
+        if set(accepted) != set(requested):
+            raise AuthoringOperationError(
+                422,
+                "invalid_request",
+                "accepted must contain every field requested by this suggestion operation.",
+            )
+        evidence_input = _normalize_shared_suggestion_input(
+            result["input"],
+            plan_revision=int(row["plan_revision"]),
+        )
+        evidence = {
+            "id": row["operation_id"],
+            "kind": "shared_choices",
+            "input": evidence_input,
+            "output": output,
+            "accepted": accepted,
+        }
+
+        try:
+            saved_plan = session_plan.apply_shared_suggestion_acceptance(
+                session_id,
+                expected_revision,
+                expected_fields=requested,
+                evidence=evidence,
+                accepted=accepted,
+            )
+        except session_plan.PlanRevisionStale as exc:
+            raise AuthoringOperationError(
+                409,
+                "plan_revision_stale",
+                "The authoring plan changed; reload it before accepting these suggestions.",
+            ) from exc
+        except session_plan.PlanConstantsFrozenAfterGenerated as exc:
+            raise AuthoringOperationError(
+                409,
+                "plan_constants_frozen",
+                "Generated work freezes the shared look and wardrobe values.",
+            ) from exc
+        except (session_plan.PlanValidationError, session_plan.SessionNotInResourceMode) as exc:
+            raise AuthoringOperationError(
+                409,
+                "operation_result_invalid",
+                "The current plan or suggestion evidence cannot be accepted.",
+            ) from exc
+        except session_plan.SessionNotFound as exc:
+            raise AuthoringOperationError(404, "session_not_found", "Session not found.") from exc
+
+        response = {
+            "plan_revision": saved_plan["plan_revision"],
+            "accepted": accepted,
+            "evidence": saved_plan["evidence"],
+            "conflicts": saved_plan["conflicts"],
+        }
+        updated = db.conn().execute(
+            """UPDATE authoring_operation
+               SET acceptance_digest = ?, acceptance_result_json = ?, updated_at = ?
+               WHERE operation_id = ? AND state = 'succeeded'
+                 AND acceptance_digest IS NULL AND acceptance_result_json IS NULL""",
+            (
+                acceptance_digest,
+                json.dumps(response, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                now_text,
+                operation_id,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise AuthoringOperationError(
+                409,
+                "acceptance_conflict",
+                "The suggestion operation changed while acceptance was being saved.",
+            )
+        return response

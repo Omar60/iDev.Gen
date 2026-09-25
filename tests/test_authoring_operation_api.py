@@ -472,6 +472,41 @@ def _start_shared_worker(client, seeded, monkeypatch):
     return session_id, operation_id, claim
 
 
+def _complete_shared_suggestions(client, seeded, monkeypatch, *, output=None):
+    session_id, operation_id, claim = _start_shared_worker(client, seeded, monkeypatch)
+    revision = claim.plan_revision
+    suggestions = output or {
+        "look": "A soft natural makeup look.",
+        "initial_wardrobe": "A navy blouse.",
+    }
+    ticket = authoring_operations.renew_operation_lease(claim)
+    view = authoring_operations.persist_operation_response(
+        claim,
+        ticket,
+        [
+            {"target": field, "result": suggestions[field]}
+            for field in ("look", "initial_wardrobe")
+        ],
+        suggestion_input={
+            "messages": [
+                {"role": "system", "content": "Suggest missing shared choices."},
+                {"role": "user", "content": "Use the authorized scene summary."},
+            ],
+            "model": "invented-assistant-model",
+            "parameters": {
+                "temperature": 0.2,
+                "stream": False,
+                "response_format": {"type": "json_object"},
+                "reasoning_effort": "none",
+            },
+            "plan_revision": revision,
+        },
+    )
+    assert view["state"] == "succeeded"
+    assert "input" not in view["result"]
+    return session_id, operation_id, revision, suggestions
+
+
 def _operation_snapshot(operation_id):
     row = db.one(
         "SELECT state, fencing_token, lease_expires_at, input_digest, completed_json, "
@@ -481,6 +516,378 @@ def _operation_snapshot(operation_id):
     )
     assert row is not None
     return row
+
+
+def _acceptance_snapshot(operation_id):
+    row = db.one(
+        "SELECT acceptance_digest, acceptance_result_json FROM authoring_operation WHERE operation_id = ?",
+        operation_id,
+    )
+    assert row is not None
+    return row
+
+
+def test_succeeded_shared_suggestions_are_accepted_with_exact_provenance_and_replay(
+    client, seeded, monkeypatch,
+):
+    output = {
+        "look": "A natural studio makeup look.",
+        "initial_wardrobe": "A navy blouse.",
+    }
+    session_id, operation_id, revision, _ = _complete_shared_suggestions(
+        client, seeded, monkeypatch, output=output,
+    )
+    accepted = {"look": output["look"], "initial_wardrobe": ""}
+    url = f"/api/sessions/{session_id}/plan/authoring/operations/{operation_id}/accept"
+
+    response = client.post(
+        url,
+        json={"expected_revision": revision, "accepted": accepted},
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["plan_revision"] == revision + 1
+    assert result["accepted"] == accepted
+    assert result["evidence"] == {
+        "id": operation_id,
+        "kind": "shared_choices",
+        "input": {
+            "messages": [
+                {"role": "system", "content": "Suggest missing shared choices."},
+                {"role": "user", "content": "Use the authorized scene summary."},
+            ],
+            "model": "invented-assistant-model",
+            "parameters": {
+                "temperature": 0.2,
+                "stream": False,
+                "response_format": {"type": "json_object"},
+                "reasoning_effort": "none",
+            },
+            "plan_revision": revision,
+        },
+        "output": output,
+        "accepted": accepted,
+    }
+    persisted = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert persisted["plan_revision"] == revision + 1
+    assert persisted["plan"]["look"] == output["look"]
+    assert persisted["plan"]["initial_wardrobe"] == ""
+    assert persisted["plan"]["authoring"]["shared_state"] == {
+        "look": {"origin": "assistant", "evidence_id": operation_id},
+        "initial_wardrobe": {"origin": "assistant_edited", "evidence_id": operation_id},
+    }
+    saved_operation = _acceptance_snapshot(operation_id)
+    assert saved_operation["acceptance_digest"]
+    assert json.loads(saved_operation["acceptance_result_json"]) == result
+
+    replay = client.post(
+        url,
+        json={"expected_revision": revision, "accepted": accepted},
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == result
+    assert client.get(f"/api/sessions/{session_id}/plan").json()["plan_revision"] == revision + 1
+
+    changed = client.post(
+        url,
+        json={"expected_revision": revision, "accepted": {**accepted, "look": "Another look."}},
+    )
+    _error(changed, 409, "acceptance_conflict")
+    assert client.get(f"/api/sessions/{session_id}/plan").json()["plan_revision"] == revision + 1
+
+    status = client.get(
+        f"/api/sessions/{session_id}/plan/authoring/operations/{operation_id}"
+    )
+    assert status.status_code == 200, status.text
+    assert status.json()["result"] == {
+        "items": [
+            {"target": "look", "result": output["look"]},
+            {"target": "initial_wardrobe", "result": output["initial_wardrobe"]},
+        ]
+    }
+
+
+def test_concurrent_identical_suggestion_acceptance_has_one_plan_cas(client, seeded, monkeypatch):
+    session_id, operation_id, revision, output = _complete_shared_suggestions(client, seeded, monkeypatch)
+    url = f"/api/sessions/{session_id}/plan/authoring/operations/{operation_id}/accept"
+    body = {
+        "expected_revision": revision,
+        "accepted": output,
+    }
+    barrier = threading.Barrier(2)
+
+    def accept():
+        barrier.wait(timeout=5)
+        return client.post(url, json=body)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _: accept(), range(2)))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert responses[0].json() == responses[1].json()
+    assert responses[0].json()["plan_revision"] == revision + 1
+    assert client.get(f"/api/sessions/{session_id}/plan").json()["plan_revision"] == revision + 1
+
+
+def test_single_missing_shared_field_can_be_accepted_without_touching_explicit_value(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    session_id, revision = _create_guided_session(
+        client,
+        seeded,
+        look="An explicit existing look.",
+        initial_wardrobe="",
+    )
+    started = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body("shared_suggestions", revision=revision),
+    )
+    assert started.status_code == 202, started.text
+    operation_id = started.json()["operation_id"]
+    claim = authoring_operations.load_worker_claim(session_id, operation_id)
+    ticket = authoring_operations.renew_operation_lease(claim)
+    authoring_operations.persist_operation_response(
+        claim,
+        ticket,
+        [{"target": "initial_wardrobe", "result": "A suggested linen shirt."}],
+        suggestion_input={
+            "messages": [{"role": "user", "content": "Suggest the missing wardrobe."}],
+            "model": "invented-assistant-model",
+            "parameters": {},
+            "plan_revision": revision,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations/{operation_id}/accept",
+        json={"expected_revision": revision, "accepted": {"initial_wardrobe": ""}},
+    )
+
+    assert response.status_code == 200, response.text
+    current = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert current["plan"]["look"] == "An explicit existing look."
+    assert current["plan"]["initial_wardrobe"] == ""
+    assert current["plan"]["authoring"]["shared_state"] == {
+        "look": {"origin": "user", "evidence_id": None},
+        "initial_wardrobe": {"origin": "assistant_edited", "evidence_id": operation_id},
+    }
+
+
+def test_suggestion_acceptance_stale_revision_is_write_free(client, seeded, monkeypatch):
+    session_id, operation_id, revision, _ = _complete_shared_suggestions(client, seeded, monkeypatch)
+    before_plan = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    db.run(
+        "UPDATE session_plan SET plan_revision = ? WHERE session_id = ?",
+        revision + 1,
+        session_id,
+    )
+    after_setup = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    assert after_setup["plan_json"] == before_plan["plan_json"]
+    url = f"/api/sessions/{session_id}/plan/authoring/operations/{operation_id}/accept"
+
+    response = client.post(
+        url,
+        json={
+            "expected_revision": revision,
+            "accepted": {"look": "A changed look.", "initial_wardrobe": "A changed outfit."},
+        },
+    )
+
+    _error(response, 409, "plan_revision_stale")
+    current_plan = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    assert current_plan == after_setup
+    assert _acceptance_snapshot(operation_id) == {
+        "acceptance_digest": None,
+        "acceptance_result_json": None,
+    }
+    assert _operation_snapshot(operation_id)["state"] == "succeeded"
+
+
+def test_invalid_suggestion_result_is_rejected_without_plan_or_operation_write(
+    client, seeded, monkeypatch,
+):
+    session_id, operation_id, revision, _ = _complete_shared_suggestions(client, seeded, monkeypatch)
+    db.run(
+        "UPDATE authoring_operation SET result_json = ? WHERE operation_id = ?",
+        json.dumps({
+            "items": [
+                {"target": "look", "result": "A suggestion."},
+                {"target": "initial_wardrobe", "result": 17},
+            ],
+            "input": {
+                "messages": [],
+                "model": "invented-assistant-model",
+                "parameters": {},
+                "plan_revision": revision,
+            },
+        }),
+        operation_id,
+    )
+    before_plan = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    before_acceptance = _acceptance_snapshot(operation_id)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations/{operation_id}/accept",
+        json={
+            "expected_revision": revision,
+            "accepted": {"look": "A suggestion.", "initial_wardrobe": ""},
+        },
+    )
+
+    _error(response, 409, "operation_result_invalid")
+    assert db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    ) == before_plan
+    assert _acceptance_snapshot(operation_id) == before_acceptance
+
+
+def test_suggestion_request_rejects_secret_parameters_before_operation_write(
+    client, seeded, monkeypatch,
+):
+    session_id, operation_id, claim = _start_shared_worker(client, seeded, monkeypatch)
+    revision = claim.plan_revision
+    ticket = authoring_operations.renew_operation_lease(claim)
+    before_operation = _operation_snapshot(operation_id)
+    before_plan = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+
+    with pytest.raises(authoring_operations.AuthoringOperationError) as caught:
+        authoring_operations.persist_operation_response(
+            claim,
+            ticket,
+            [
+                {"target": "look", "result": "A suggestion."},
+                {"target": "initial_wardrobe", "result": "A suggested outfit."},
+            ],
+            suggestion_input={
+                "messages": [{"role": "user", "content": "Suggest missing choices."}],
+                "model": "invented-assistant-model",
+                "parameters": {"api_key": "synthetic-secret"},
+                "plan_revision": revision,
+            },
+        )
+
+    assert caught.value.code == "operation_result_invalid"
+    assert _operation_snapshot(operation_id) == before_operation
+    assert db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    ) == before_plan
+
+
+def test_secret_suggestion_evidence_is_rejected_without_acceptance_write(client, seeded, monkeypatch):
+    session_id, operation_id, revision, output = _complete_shared_suggestions(client, seeded, monkeypatch)
+    row = db.one("SELECT result_json FROM authoring_operation WHERE operation_id = ?", operation_id)
+    saved_result = json.loads(row["result_json"])
+    saved_result["input"]["parameters"] = {"api_key": "synthetic-secret"}
+    db.run(
+        "UPDATE authoring_operation SET result_json = ? WHERE operation_id = ?",
+        json.dumps(saved_result),
+        operation_id,
+    )
+    before_operation = _operation_snapshot(operation_id)
+    before_plan = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    before_acceptance = _acceptance_snapshot(operation_id)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations/{operation_id}/accept",
+        json={"expected_revision": revision, "accepted": output},
+    )
+
+    _error(response, 409, "operation_result_invalid")
+    assert _operation_snapshot(operation_id) == before_operation
+    assert db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    ) == before_plan
+    assert _acceptance_snapshot(operation_id) == before_acceptance
+
+
+def test_suggestion_acceptance_is_blocked_by_disabled_gate_before_body_parsing(
+    client, seeded, monkeypatch,
+):
+    session_id, operation_id, revision, _ = _complete_shared_suggestions(client, seeded, monkeypatch)
+    before_plan = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    monkeypatch.setitem(main.CONFIG, "resource_planning_enabled", False)
+    monkeypatch.delenv("IDEVGEN_RESOURCE_PLANNING_ENABLED", raising=False)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations/{operation_id}/accept",
+        content="{",
+        headers={"content-type": "application/json"},
+    )
+
+    _error(response, 503, "resource_planning_disabled")
+    assert db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    ) == before_plan
+    assert _acceptance_snapshot(operation_id) == {
+        "acceptance_digest": None,
+        "acceptance_result_json": None,
+    }
+
+
+def test_suggestion_acceptance_respects_generated_continuity_freeze(client, seeded, monkeypatch):
+    session_id, operation_id, revision, _ = _complete_shared_suggestions(client, seeded, monkeypatch)
+    now = db.now()
+    db.run(
+        "INSERT INTO prepared_take (session_id, plan_revision, take_id, status, created_at, updated_at) "
+        "VALUES (?, ?, 'take-001', 'generated', ?, ?)",
+        session_id,
+        revision,
+        now,
+        now,
+    )
+    before_plan = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations/{operation_id}/accept",
+        json={
+            "expected_revision": revision,
+            "accepted": {"look": "A new look.", "initial_wardrobe": "A new outfit."},
+        },
+    )
+
+    _error(response, 409, "plan_constants_frozen")
+    assert db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    ) == before_plan
+    assert db.one(
+        "SELECT status FROM prepared_take WHERE session_id = ? AND take_id = 'take-001'",
+        session_id,
+    )["status"] == "generated"
+    assert _acceptance_snapshot(operation_id) == {
+        "acceptance_digest": None,
+        "acceptance_result_json": None,
+    }
 
 
 def _apply_scene_translation_change(client, session_id):

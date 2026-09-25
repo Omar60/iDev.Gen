@@ -2362,6 +2362,144 @@ def record_writer_synthesis(
             f"could not persist writer synthesis for prepared take "
             f"{take_id!r}: {exc}"
         ) from exc
+def apply_shared_suggestion_acceptance(
+    session_id: int,
+    expected_revision: int,
+    *,
+    expected_fields: list[str],
+    evidence: dict,
+    accepted: dict[str, str],
+) -> dict:
+    """Apply reviewed shared suggestions through a dedicated plan CAS.
+
+    This write preserves assistant provenance, unlike a generic draft save,
+    which treats changed look and wardrobe values as user edits. The caller
+    wraps this helper with the operation's acceptance record so both writes
+    commit atomically.
+    """
+    if type(expected_revision) is not int or expected_revision <= 0:
+        raise PlanValidationError("expected_revision must be a positive integer")
+    if (
+        not isinstance(expected_fields, list)
+        or not expected_fields
+        or any(not isinstance(field, str) or field not in ("look", "initial_wardrobe") for field in expected_fields)
+        or len(set(expected_fields)) != len(expected_fields)
+        or not isinstance(accepted, dict)
+        or set(accepted) != set(expected_fields)
+        or any(not isinstance(value, str) for value in accepted.values())
+        or not isinstance(evidence, dict)
+        or not isinstance(evidence.get("output"), dict)
+    ):
+        raise PlanValidationError("shared suggestion acceptance does not match its operation targets")
+
+    with db.transaction():
+        session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
+        if session is None:
+            raise SessionNotFound(f"session {session_id} not found")
+        mode = read_composition_mode(session["settings"])
+        if mode != MODE_RESOURCE_V1:
+            raise SessionNotInResourceMode(
+                f"session {session_id} composition_mode is {mode!r}, expected {MODE_RESOURCE_V1!r}"
+            )
+        current = db.one(
+            "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+            session_id,
+        )
+        actual_revision = 0 if current is None else int(current["plan_revision"])
+        if current is None or actual_revision != expected_revision:
+            raise PlanRevisionStale(
+                f"session {session_id} plan revision is {actual_revision}, expected {expected_revision}; refusing stale acceptance"
+            )
+        try:
+            old_plan_raw = json.loads(current["plan_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise PlanValidationError("the saved plan could not be read for suggestion acceptance") from exc
+        old_plan = validate_draft(old_plan_raw)
+        old_authoring = old_plan.get("authoring")
+        if not isinstance(old_authoring, dict) or classify_plan_authoring(old_plan) != PLAN_AUTHORING_KIND_AUTOMATIC:
+            raise PlanValidationError("shared suggestions require an automatic authoring plan")
+        current_fields = [
+            field
+            for field in ("look", "initial_wardrobe")
+            if old_authoring["shared_state"][field]["origin"] == "none"
+        ]
+        if (
+            current_fields != expected_fields
+            or set(evidence["output"]) != set(expected_fields)
+            or evidence.get("kind") != "shared_choices"
+            or evidence.get("accepted") != accepted
+        ):
+            raise PlanValidationError("shared suggestion targets changed before acceptance")
+        if evidence.get("id") in {item["id"] for item in old_authoring["evidence"]}:
+            raise PlanValidationError("shared suggestion evidence id already exists")
+
+        candidate = dict(old_plan)
+        candidate_authoring = dict(old_authoring)
+        shared_state = {
+            field: dict(old_authoring["shared_state"][field])
+            for field in ("look", "initial_wardrobe")
+        }
+        evidence_records = list(old_authoring["evidence"])
+        evidence_records.append(evidence)
+        for field in expected_fields:
+            candidate[field] = accepted[field]
+            shared_state[field] = {
+                "origin": "assistant" if accepted[field] == evidence["output"][field] else "assistant_edited",
+                "evidence_id": evidence["id"],
+            }
+        candidate_authoring["shared_state"] = shared_state
+        candidate_authoring["evidence"] = evidence_records
+        candidate["authoring"] = candidate_authoring
+
+        validated = validate_draft(candidate)
+        validate_selected_resources(validated["selected_resources"])
+        conflicts = detect_resource_constant_conflicts(validated)
+        plan_with_conflicts = dict(validated)
+        plan_with_conflicts["conflicts"] = conflicts
+        continuity_changed = _plan_continuity_changed(old_plan, validated)
+        if continuity_changed and has_generated_take(session_id):
+            raise PlanConstantsFrozenAfterGenerated(
+                f"session {session_id} has generated work; shared look or wardrobe values cannot be changed"
+            )
+        validate_fixed_variation_choices(validated)
+
+        new_revision = actual_revision + 1
+        encoded = json.dumps(
+            plan_with_conflicts,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        db.run(
+            "UPDATE session_plan SET plan_revision = ?, plan_json = ?, updated_at = ? WHERE session_id = ?",
+            new_revision,
+            encoded,
+            db.now(),
+            session_id,
+        )
+        if _plan_constants_changed(old_plan, validated):
+            affected_take_ids = None
+            new_take_ids = None
+        else:
+            affected_take_ids = _compute_affected_take_ids_for_plan_change(old_plan, validated)
+            new_take_ids = _take_id_set(validated)
+        invalidate_ungenerated_prepared_takes(
+            session_id,
+            new_revision,
+            affected_take_ids=affected_take_ids,
+            new_take_ids=new_take_ids,
+        )
+        invalidate_plan_approval(session_id)
+        from backend import authoring_operations
+
+        authoring_operations.cancel_for_plan_change(session_id, new_revision)
+        return {
+            "plan_revision": new_revision,
+            "conflicts": conflicts,
+            "evidence": validated["authoring"]["evidence"][-1],
+        }
+
+
 def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
     """Save a draft plan with a compare-and-swap on the revision.
 

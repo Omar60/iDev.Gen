@@ -200,12 +200,14 @@ Automatic authoring-v1 plans expose persisted operation controls. `POST
 /api/sessions/{sid}/plan/authoring/operations` records or replays a claim;
 the status route reports ordered progress, while the `cancel` and `resume`
 routes request cancellation or claim eligible remaining work under a new
-fence. `can_cancel` and `can_resume` report current action eligibility.
-Startup and status reads recover stale ownership. A `202` confirms pending
-operation state, not assistant execution: these routes do not yet launch a
-real assistant worker. See
+fence. A succeeded shared-suggestion result can be reviewed through the
+`accept` route, which applies the accepted values through plan CAS and replays
+the saved result after a lost response. `can_cancel` and `can_resume` report
+current action eligibility. Startup and status reads recover stale ownership.
+A `202` confirms pending operation state, not assistant execution: these
+routes do not yet launch a real assistant worker. See
 [authoring operation claims and controls](docs/sessions.md#authoring-operation-claims-cancellation-and-resume)
-for the request, recovery, and response contract.
+for the request, acceptance, recovery, and response contract.
 
 From a model, **+ New session** is the normal entry to this resource-planning
 flow and keeps that model selected while the user chooses an exact `ready`

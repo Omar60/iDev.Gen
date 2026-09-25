@@ -1587,6 +1587,11 @@ Automatic authoring-v1 plans expose these operation endpoints:
 - `POST /api/sessions/{sid}/plan/authoring/operations/{operation_id}/cancel`
   and `/resume` accept `{"expected_revision": N}` for the operation's plan
   revision.
+- `POST /api/sessions/{sid}/plan/authoring/operations/{operation_id}/accept`
+  accepts `{"expected_revision": N, "accepted": {"look": "...", "initial_wardrobe": "..."}}`
+  for a succeeded `shared_suggestions` operation. Include exactly the fields
+  that operation requested; an empty string explicitly keeps that additional
+  constraint empty.
 
 A new claim returns `202`; an identical replay returns `200`. Reusing a request
 ID with different content returns `409 idempotency_conflict`. A different
@@ -1596,6 +1601,15 @@ configuration returns `409 assistant_unavailable`, and a stale plan revision
 returns `409 plan_revision_stale`. The POST returns `503` while resource
 planning is disabled, including for an identical replay. GET and cancellation
 remain available while disabled; resume returns `503`.
+
+Suggestion acceptance writes the reviewed values, exact assistant input and
+output, accepted values, and per-field `assistant` or `assistant_edited`
+origins through one operation-specific plan CAS. Repeating the same accepted
+content returns the stored `200` result after a lost response. Different
+content for an already accepted operation returns `409 acceptance_conflict`;
+a stale plan returns `409 plan_revision_stale` without changing the plan or
+operation. Generated continuity rules still apply. The acceptance endpoint
+returns `503` while resource planning is disabled.
 
 The view contains operation and plan identifiers, kind, state, timestamps,
 lease expiry, ordered requested/completed/remaining items, an optional failed
@@ -1626,8 +1640,8 @@ that it cannot resume; reload the plan and start a new operation. A crash
 after an assistant response but before its result is saved may require another
 assistant call on retry, so exactly-once remote billing is not guaranteed.
 
-These endpoints currently persist, inspect, cancel, and reclaim operation
-state; they do not launch real assistant work yet.
+These endpoints persist, inspect, accept, cancel, and reclaim operation state;
+they do not launch real assistant work yet.
 
 ### Operational rollback and disabling resource mode
 

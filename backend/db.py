@@ -491,6 +491,8 @@ CREATE TABLE IF NOT EXISTS authoring_operation (
     error           TEXT,
     remaining_json  TEXT NOT NULL DEFAULT '[]',
     result_json     TEXT,
+    acceptance_digest TEXT,
+    acceptance_result_json TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     UNIQUE (session_id, request_id),
@@ -931,12 +933,29 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
         conn.execute(
             "ALTER TABLE authoring_operation ADD COLUMN input_digest TEXT NOT NULL DEFAULT ''"
         )
+    operation_columns = columns("authoring_operation")
+    if "acceptance_digest" not in operation_columns:
+        conn.execute("ALTER TABLE authoring_operation ADD COLUMN acceptance_digest TEXT")
+    if "acceptance_result_json" not in operation_columns:
+        conn.execute("ALTER TABLE authoring_operation ADD COLUMN acceptance_result_json TEXT")
     conn.execute(
         """CREATE TRIGGER IF NOT EXISTS authoring_operation_input_digest_immutable
            BEFORE UPDATE OF input_digest ON authoring_operation
            WHEN NEW.input_digest IS NOT OLD.input_digest
            BEGIN
                SELECT RAISE(ABORT, 'authoring operation input digest is immutable');
+           END"""
+    )
+    conn.execute(
+        """CREATE TRIGGER IF NOT EXISTS authoring_operation_acceptance_immutable
+           BEFORE UPDATE OF acceptance_digest, acceptance_result_json ON authoring_operation
+           WHEN (NEW.acceptance_digest IS NULL) != (NEW.acceptance_result_json IS NULL)
+             OR (OLD.acceptance_digest IS NOT NULL AND (
+                    NEW.acceptance_digest IS NOT OLD.acceptance_digest
+                    OR NEW.acceptance_result_json IS NOT OLD.acceptance_result_json
+                ))
+           BEGIN
+               SELECT RAISE(ABORT, 'authoring operation acceptance is immutable once saved');
            END"""
     )
 

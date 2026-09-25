@@ -3723,6 +3723,35 @@ async def resume_authoring_operation(sid: int, operation_id: str, request: Reque
     return JSONResponse(status_code=status, content=view)
 
 
+@app.post("/api/sessions/{sid}/plan/authoring/operations/{operation_id}/accept")
+async def accept_authoring_suggestions(sid: int, operation_id: str, request: Request):
+    """Apply reviewed values from a succeeded shared-suggestion operation."""
+    if not is_resource_planning_enabled():
+        return _stable_error(
+            503,
+            "resource_planning_disabled",
+            "Resource planning is disabled by configuration.",
+        )
+    try:
+        payload = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": {"code": "invalid_json", "message": "Request body must be valid JSON."}},
+        )
+    try:
+        normalized = authoring_operations.normalize_shared_suggestion_acceptance(payload)
+        result = authoring_operations.accept_shared_suggestion(
+            sid,
+            operation_id,
+            normalized,
+            planning_enabled=is_resource_planning_enabled(),
+        )
+    except authoring_operations.AuthoringOperationError as exc:
+        return _authoring_operation_error_response(exc)
+    return JSONResponse(status_code=200, content=result)
+
+
 def _detect_authoring_workflow_change(
     session_id: int,
     *,

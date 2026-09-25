@@ -406,3 +406,10 @@
   feature flag inside renewal and response write transactions and commit
   cancellation before returning a refusal. Real assistant workers and the
   prepared-take snapshot bridge remain in later tasks.
+- Task 5.5 stores reviewed shared-suggestion acceptance and its replay receipt
+  in the same transaction as plan CAS. Persist exact proposal input/output and
+  edited values with per-field origin; pending proposals do not change the plan.
+  Keep assistant request parameters on an allowlist of non-secret transport
+  controls before saving or accepting evidence, so credentials cannot enter
+  the plan or acceptance response. Replays use the stored result and create no
+  second revision. The real suggestion worker remains Task 6.3.
