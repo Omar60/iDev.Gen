@@ -4050,6 +4050,11 @@ def _prepared_take_http_error(exc: Exception) -> HTTPException:
             409,
             {"code": exc.code, "message": exc.message},
         )
+    if isinstance(exc, resource_preparation.PreparationFieldError):
+        return HTTPException(
+            422,
+            resource_preparation.safe_preparation_field_error_message(exc),
+        )
     if isinstance(
         exc,
         (
@@ -4108,18 +4113,33 @@ def complete_plan_preparation(sid: int, p: PreparedTakeCompleteIn):
     if not is_resource_planning_enabled():
         raise HTTPException(503, "Resource planning is disabled by configuration")
     try:
-        plan = session_plan._validate_preparation_target(sid, p.plan_revision, p.take_id)
-        session_plan.assert_raw_preparation_allowed(plan)
-        return session_plan.complete_preparation(
-            sid,
-            p.plan_revision,
-            p.take_id,
-            final_prompt=p.final_prompt,
-            effective_state=p.effective_state,
-            mapping_version=p.mapping_version,
-            compiler_version=p.compiler_version,
-            provenance=p.provenance,
-        )
+        with db.transaction():
+            plan = session_plan._validate_preparation_target(
+                sid, p.plan_revision, p.take_id,
+            )
+            session_plan.assert_raw_preparation_allowed(plan)
+            pending = session_plan._prepared_take_row(
+                sid, p.plan_revision, p.take_id,
+            )
+            # Guard only the transition that can create a new ready
+            # snapshot; immutable ready-history retries remain idempotent.
+            if (
+                pending is not None
+                and pending["status"] == session_plan.PREPARED_TAKE_STATUS_PENDING
+            ):
+                resource_preparation.assert_no_stale_take_adaptations(
+                    sid, p.plan_revision, p.take_id, plan,
+                )
+            return session_plan.complete_preparation(
+                sid,
+                p.plan_revision,
+                p.take_id,
+                final_prompt=p.final_prompt,
+                effective_state=p.effective_state,
+                mapping_version=p.mapping_version,
+                compiler_version=p.compiler_version,
+                provenance=p.provenance,
+            )
     except (
         session_plan.PlanValidationError,
         session_plan.PlanRevisionStale,
@@ -4128,6 +4148,7 @@ def complete_plan_preparation(sid: int, p: PreparedTakeCompleteIn):
         session_plan.SessionNotInResourceMode,
         session_plan.SessionNotFound,
         session_plan.PreparedTakePersistenceError,
+        resource_preparation.PreparationError,
         workflow_binding.WorkflowChanged,
     ) as exc:
         raise _prepared_take_http_error(exc)

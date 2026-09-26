@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 31 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 32 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -234,7 +234,7 @@ remain intact.
 
 ## Current Position
 
-Tasks 1.1 through 5.6 and Task 6.1 are complete.
+Tasks 1.1 through 5.6 and Tasks 6.1-6.2 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.
 The closed public view excludes fencing and request internals; exact request
 replay, cross-kind exclusion, ordered targets, configuration gates, and
@@ -278,6 +278,15 @@ Independent review found no required correction. The full Python/frontend
 suites, frontend build, privacy/control checks, strict OpenSpec validation,
 and diff check passed before task closure.
 
+Task 6.2 makes Review show complete authorized fused descriptions beside
+approved adaptations. Adaptation recording uses the same translation-aware
+resolver as preparation and persists the exact effective `source_value`.
+Review and finalization reject approvals whose source value changed without
+rewriting historical rows; the expert raw completion path also refuses a stale
+approval before creating a ready snapshot. Independent verification passed
+2,337 Python tests, 434 frontend tests, the frontend build, 46 privacy/control
+tests, strict OpenSpec validation, and diff checks.
+
 ## Next Milestone
 
-Task 6.2 is next. Do not begin it automatically.
+Task 6.3 is next. Do not begin it automatically.

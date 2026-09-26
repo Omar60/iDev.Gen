@@ -1130,6 +1130,17 @@ _SHARED_SUMMARY_FAILURE_MESSAGES = {
 }
 
 
+def safe_preparation_field_error_message(error: PreparationFieldError) -> str:
+    """Return an allowlisted public diagnostic without stored field values."""
+    code = getattr(error, "shared_summary_code", None)
+    if code in _SHARED_SUMMARY_FAILURE_MESSAGES:
+        return _SHARED_SUMMARY_FAILURE_MESSAGES[code]
+    return (
+        "The selected resource contains a descriptive field that cannot be "
+        "prepared. Review the resource and its authorized translations."
+    )
+
+
 def _unavailable_shared_state_summary(
     code: str,
     shared_values: dict | None = None,
@@ -1838,8 +1849,8 @@ def validate_adaptation(
         revision the plan selected;
 
       * ``resource_field`` is a non-empty string that names a
-        field the resource's payload actually carries and
-        that the contract classifies as ``descriptive_input``
+        field the prepared resource carries and that the
+        contract classifies as ``descriptive_input``
         for the resource's kind. An adaptation that tries to
         rewrite a forbidden field (``look``,
         ``initial_wardrobe``, ``wardrobe``, ``identity``,
@@ -1949,8 +1960,8 @@ def validate_adaptation(
             f"valid anchor for an adaptation"
         )
 
-    payload = matched.get("descriptive_inputs", {})
-    if not isinstance(payload, dict) or resource_field not in payload:
+    descriptive_inputs = matched.get("descriptive_inputs", {})
+    if not isinstance(descriptive_inputs, dict) or resource_field not in descriptive_inputs:
         raise AdaptationError(
             f"adaptation targets field {resource_field!r} which is "
             f"not a descriptive_input of "
@@ -1959,7 +1970,7 @@ def validate_adaptation(
             f"classifies as descriptive_input for the resource's "
             f"kind"
         )
-    source_value = payload[resource_field]
+    source_value = descriptive_inputs[resource_field]
     if not isinstance(source_value, str):
         raise AdaptationError(
             f"adaptation targets field {resource_field!r} whose "
@@ -2101,13 +2112,9 @@ def _resolve_applicable_adaptations(
 
     When ``adaptations`` is a list, the function returns
     the validated list verbatim, in the caller's order.
-    When ``adaptations`` is ``None``, the function reads
-    the durable adaptations through
-    ``load_take_adaptations`` and applies the same
-    applicable filter ``build_review_state`` and the
-    rest of the layer use, so a stored adaptation whose
-    triple the current plan no longer selects is never
-    surfaced as an applicable adaptation.
+    When ``adaptations`` is ``None``, it returns only
+    persisted rows whose exact source_value still matches
+    the current authorized descriptive input.
 
     The function is the single source of truth for the
     applicable adaptation list. ``build_review_state``,
@@ -2124,12 +2131,7 @@ def _resolve_applicable_adaptations(
             for key in ("session_id", "plan_revision", "take_id")
         ):
             return []
-        persisted = load_take_adaptations(
-            int(preparation["session_id"]),
-            int(preparation["plan_revision"]),
-            str(preparation["take_id"]),
-        )
-        return _applicable_adaptations(preparation, persisted)
+        return _load_persisted_adaptation_state(preparation)[0]
     if not isinstance(adaptations, list):
         raise PreparationArgumentError(
             f"adaptations must be a list or None, got "
@@ -2154,6 +2156,7 @@ def _collect_unresolved_placeholders(
     preparation: dict,
     *,
     adaptations: list[dict] | None = None,
+    _resolved_applicable: list[dict] | None = None,
 ) -> list[dict]:
     """Return every standing placeholder the take's review state must surface.
 
@@ -2190,8 +2193,10 @@ def _collect_unresolved_placeholders(
             f"preparation must be a dict, got "
             f"{type(preparation).__name__}"
         )
-    applicable = _resolve_applicable_adaptations(
-        preparation, adaptations,
+    applicable = (
+        _resolved_applicable
+        if _resolved_applicable is not None
+        else _resolve_applicable_adaptations(preparation, adaptations)
     )
     findings = _find_unresolved_placeholders_in_source(preparation)
     findings.extend(
@@ -2289,6 +2294,10 @@ def assert_no_open_conflicts(
             f"preparation must be a dict, got {type(preparation).__name__}"
         )
     review = build_review_state(preparation, adaptations=adaptations)
+    stale_adaptations = review.get("stale_adaptations", [])
+    _raise_if_stale_adaptations(
+        str(preparation.get("take_id", "")), stale_adaptations,
+    )
     open_conflicts = review.get("conflicts", [])
     if not open_conflicts:
         return
@@ -2386,17 +2395,14 @@ def record_take_adaptation(
     ``session_id``/``plan_revision``/``take_id`` triple
     is what the future finalisation step joins to.
 
-    A second review of the exact same conflict (same
-    seven columns) replaces the previously-persisted
-    ``updated_at`` and leaves every other column
-    byte-for-byte unchanged, the same way
-    ``asset_revision`` does for refreshed source content.
-    The trigger the schema installs is the SQL-level
-    guard that says "the seven identity columns and
-    source_value/adapted_value/created_at are immutable,
-    only updated_at may change"; a direct UPDATE that
-    tries to rewrite one of the protected columns is
-    refused at the schema level.
+    A second review with the same authorized source value
+    may replace ``adapted_value`` and ``updated_at`` while
+    preserving the original source value and identity. If
+    the authorized source value changed, the old row is
+    immutable history for this unique key and the caller
+    must save a new plan revision before recording a new
+    adaptation. The schema trigger protects the seven
+    identity columns and ``created_at``.
     """
     if not isinstance(session_id, int) or isinstance(session_id, bool):
         raise PreparationArgumentError(
@@ -2442,60 +2448,11 @@ def record_take_adaptation(
             f"{plan_revision}"
         )
 
-    # Build a synthetic preparation that carries the
-    # minimum the validator needs (effective_state and
-    # resource_inputs) without re-running the full
-    # deterministic preparation. The validator only
-    # looks at the resource_inputs, the effective_state
-    # and the take_id; the rest is unused.
-    resource_entries: list[dict] = []
-    for sel in plan.get("selected_resources", []):
-        try:
-            revision = _load_resource_revision(
-                library_key=str(sel["library_key"]),
-                source_id=str(sel["source_id"]),
-                content_digest=str(sel["content_digest"]),
-            )
-        except PreparationRevisionMissing:
-            # A plan that names a missing revision is
-            # refused at save time; the boundary case
-            # here is reported as a persistence error so
-            # the caller does not get a different
-            # exception for the same problem.
-            raise PreparationRevisionMissing(
-                f"plan.selected_resources references missing "
-                f"revision for take {take_id!r}"
-            )
-        resource_entries.append({
-            "library_key": revision["library_key"],
-            "source_id": revision["source_id"],
-            "content_digest": revision["content_digest"],
-            "kind": revision["kind"],
-            "descriptive_inputs": (
-                _classify_resource_fields(
-                    revision["kind"], revision["payload"],
-                )["descriptive_inputs"]
-            ),
-        })
-    effective_take: dict | None = None
-    for take in plan.get("takes", []):
-        if isinstance(take, dict) and take.get("take_id") == take_id:
-            effective_take = take
-            break
-    if effective_take is None:
-        raise PreparationError(
-            f"take_id {take_id!r} is not present in plan revision "
-            f"{plan_revision}"
-        )
-    effective_state = _resolve_take_effective_state(plan, effective_take)
-    synthetic_preparation = {
-        "take_id": take_id,
-        "session_id": session_id,
-        "plan_revision": plan_revision,
-        "effective_state": effective_state,
-        "resource_inputs": resource_entries,
-    }
-    validated = validate_adaptation(adaptation, synthetic_preparation)
+    # Use the same authorized resolver as preparation so the recorded
+    # source_value is the exact effective translation (or allowed optional
+    # payload value), never a raw payload fallback for required fields.
+    preparation = prepare_take_inputs(session_id, plan_revision, take_id)
+    validated = validate_adaptation(adaptation, preparation)
     record = _normalize_recorded_adaptation(
         session_id, plan_revision, take_id, validated,
     )
@@ -2504,7 +2461,7 @@ def record_take_adaptation(
     try:
         with db.transaction():
             existing = db.one(
-                "SELECT id, updated_at FROM take_resource_adaptation "
+                "SELECT id, source_value, updated_at FROM take_resource_adaptation "
                 "WHERE session_id = ? AND plan_revision = ? AND take_id = ? "
                 "AND library_key = ? AND source_id = ? "
                 "AND content_digest = ? AND resource_field = ?",
@@ -2513,6 +2470,16 @@ def record_take_adaptation(
                 record["source_id"], record["content_digest"],
                 record["resource_field"],
             )
+            if (
+                existing is not None
+                and str(existing["source_value"]) != record["source_value"]
+            ):
+                raise session_plan.PreparedTakeConflict(
+                    f"existing adaptation for {record['library_key']!r}/"
+                    f"{record['source_id']!r} field {record['resource_field']!r} "
+                    f"was reviewed against a different authorized source value; "
+                    f"a new plan revision is required"
+                )
             if existing is None:
                 db.run(
                     "INSERT INTO take_resource_adaptation "
@@ -2583,6 +2550,7 @@ def record_take_adaptation(
         PreparationArgumentError,
         PreparationRevisionMissing,
         PreparationError,
+        session_plan.PreparedTakeConflict,
     ):
         raise
     except Exception as exc:
@@ -2671,39 +2639,61 @@ def _applicable_adaptations(
     preparation: dict,
     persisted: list[dict],
 ) -> list[dict]:
-    """Return the persisted adaptations that match the take's preparation.
+    """Return only current persisted approvals that match exact source text."""
+    return _partition_persisted_adaptations(preparation, persisted)[0]
 
-    The match is the exact seven-column triple (the
-    ``session_id``, ``plan_revision`` and ``take_id`` plus
-    the resource triple and the field). A persisted row
-    whose triple the current plan no longer selects is
-    not returned. The function is the boundary between
-    durable storage and the deterministic preparation
-    output: a future finalisation step reads the
-    applicable list, the assembler uses the same list.
+
+_STALE_ADAPTATION_MESSAGES = {
+    "source_value_changed": (
+        "The authorized description changed after this adaptation was reviewed. "
+        "Save a new plan revision before recording a fresh adaptation."
+    ),
+    "source_value_unavailable": (
+        "The authorized description for this field is unavailable. "
+        "Review the resource and save a new plan revision before adapting it."
+    ),
+}
+
+
+def _partition_persisted_adaptations(
+    preparation: dict,
+    persisted: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Split persisted approvals by exact effective authorized source value.
+
+    Both review and finalization use this boundary. A row with the same
+    resource identity but an obsolete, missing, or unauthorized field value
+    is reported as stale and never reaches prompt assembly.
     """
     if not isinstance(preparation, dict):
-        return []
+        return [], []
     prep_session = preparation.get("session_id", 0)
     prep_revision = preparation.get("plan_revision", 0)
     prep_take = preparation.get("take_id", "")
-    resource_triples: set[tuple[str, str, str]] = set()
+    resource_inputs: dict[tuple[str, str, str], dict] = {}
     for entry in preparation.get("resource_inputs", []):
         if not isinstance(entry, dict):
             continue
-        resource_triples.add((
+        triple = (
             str(entry.get("library_key", "")),
             str(entry.get("source_id", "")),
             str(entry.get("content_digest", "")),
-        ))
+        )
+        descriptive = entry.get("descriptive_inputs")
+        resource_inputs[triple] = descriptive if isinstance(descriptive, dict) else {}
+
     applicable: list[dict] = []
+    stale: list[dict] = []
     for item in persisted:
+        if not isinstance(item, dict):
+            continue
         triple = (
             str(item.get("library_key", "")),
             str(item.get("source_id", "")),
             str(item.get("content_digest", "")),
         )
-        if triple not in resource_triples:
+        descriptive = resource_inputs.get(triple)
+        if descriptive is None:
             continue
         if (
             int(item.get("session_id", 0)) != int(prep_session)
@@ -2711,8 +2701,131 @@ def _applicable_adaptations(
             or str(item.get("take_id", "")) != str(prep_take)
         ):
             continue
+        resource_field = item.get("resource_field")
+        source_value = (
+            descriptive.get(resource_field)
+            if isinstance(resource_field, str)
+            else None
+        )
+        if not isinstance(source_value, str) or item.get("source_value") != source_value:
+            code = (
+                "source_value_changed"
+                if isinstance(source_value, str)
+                else "source_value_unavailable"
+            )
+            stale.append({
+                "library_key": triple[0],
+                "source_id": triple[1],
+                "content_digest": triple[2],
+                "resource_field": (
+                    resource_field
+                    if isinstance(resource_field, str)
+                    and resource_field in descriptive
+                    else ""
+                ),
+                "code": code,
+                "message": _STALE_ADAPTATION_MESSAGES[code],
+            })
+            continue
         applicable.append(item)
-    return applicable
+    return applicable, stale
+
+
+def _load_persisted_adaptation_state(
+    preparation: dict,
+) -> tuple[list[dict], list[dict]]:
+    """Load and classify persisted adaptations for one preparation."""
+    if not isinstance(preparation, dict) or not all(
+        key in preparation for key in ("session_id", "plan_revision", "take_id")
+    ):
+        return [], []
+    persisted = load_take_adaptations(
+        int(preparation["session_id"]),
+        int(preparation["plan_revision"]),
+        str(preparation["take_id"]),
+    )
+    return _partition_persisted_adaptations(preparation, persisted)
+
+
+def _raise_if_stale_adaptations(take_id: str, stale: list[dict]) -> None:
+    if stale:
+        raise ConflictUnresolvedError(
+            f"take {take_id!r} carries a stale reviewed adaptation; the "
+            f"authorized description changed or is unavailable, so a new "
+            f"plan revision and review are required before finalization"
+        )
+
+
+def assert_no_stale_take_adaptations(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    plan: dict,
+) -> None:
+    """Refuse raw completion only when a selected resource approval is stale.
+
+    This is the narrow guard for the pre-authoring expert raw completion
+    route. It resolves only resources that have persisted adaptation rows, so
+    expert snapshots without applicable approvals retain their existing path.
+    Staleness is classified by the same exact-source partition as review and
+    normal finalization.
+    """
+    persisted = load_take_adaptations(session_id, plan_revision, take_id)
+    if not persisted:
+        return
+    if not isinstance(plan, dict):
+        raise PreparationArgumentError("plan must be an object")
+
+    selected = plan.get("selected_resources", [])
+    selected_by_triple: dict[tuple[str, str, str], dict] = {}
+    for item in selected:
+        if not isinstance(item, dict):
+            continue
+        triple = (
+            str(item.get("library_key", "")),
+            str(item.get("source_id", "")),
+            str(item.get("content_digest", "")),
+        )
+        selected_by_triple[triple] = item
+
+    relevant = [
+        item for item in persisted
+        if (
+            str(item.get("library_key", "")),
+            str(item.get("source_id", "")),
+            str(item.get("content_digest", "")),
+        ) in selected_by_triple
+    ]
+    if not relevant:
+        return
+
+    relevant_triples = {
+        (
+            str(item["library_key"]),
+            str(item["source_id"]),
+            str(item["content_digest"]),
+        )
+        for item in relevant
+    }
+    resource_inputs = []
+    for triple in selected_by_triple:
+        if triple not in relevant_triples:
+            continue
+        revision = _load_resource_revision(
+            library_key=triple[0],
+            source_id=triple[1],
+            content_digest=triple[2],
+        )
+        resource_inputs.append(_prepare_resource(revision))
+
+    preparation = {
+        "session_id": session_id,
+        "plan_revision": plan_revision,
+        "take_id": take_id,
+        "resource_inputs": resource_inputs,
+    }
+    _, stale = _partition_persisted_adaptations(preparation, relevant)
+    _raise_if_stale_adaptations(take_id, stale)
 
 
 # -- Task 4.2: review state assembly -------------------------------------
@@ -2744,17 +2857,19 @@ def build_review_state(
         ``detect_take_conflicts`` returned, in deterministic
         order. An empty list means "no conflict the
         structural detector can see";
+      * ``fused_descriptions`` — the complete allowlisted
+        authorized descriptive inputs for selected fused
+        scene resources, without payload or sidecar data;
       * ``adaptations`` — the validated adaptation list
-        the function applies. When ``adaptations`` is
-        ``None``, the function reads the durable
-        adaptations the take has already persisted
-        through ``record_take_adaptation`` and applies
-        only the ones whose seven-column triple still
-        matches the current preparation. When
-        ``adaptations`` is a list, the function uses that
-        list verbatim and never consults the database,
-        so a caller that wants to preview a not-yet-
-        persisted review can still build the state;
+        the function applies. Persisted rows are returned
+        only when both their resource identity and exact
+        ``source_value`` still match the current prepared
+        input. Explicit ``adaptations`` can still preview
+        a not-yet-persisted review, but do not conceal a
+        stale persisted approval;
+      * ``stale_adaptations`` — safe diagnostics for
+        persisted approvals whose authorized source value
+        changed or is no longer available;
       * ``unresolved_placeholders`` — the standing
         placeholder list
         ``_collect_unresolved_placeholders`` returned,
@@ -2772,8 +2887,8 @@ def build_review_state(
         An empty list means "no standing placeholder
         the detector can see";
       * ``ready_for_finalization`` — a single boolean
-        that is True only when there are no conflicts AND
-        no standing placeholders. The boolean is what a UI
+        that is True only when there are no conflicts,
+        stale adaptations, or standing placeholders. The boolean is what a UI
         or a future task 4.4 reads as the gate; the
         function does NOT mark the take ``ready`` in the
         database, that is task 4.4's responsibility and
@@ -2790,12 +2905,21 @@ def build_review_state(
             f"preparation must be a dict, got "
             f"{type(preparation).__name__}"
         )
-    validated_adaptations = _resolve_applicable_adaptations(
-        preparation, adaptations,
+    persisted_adaptations, stale_adaptations = _load_persisted_adaptation_state(
+        preparation,
     )
+    if adaptations is None:
+        validated_adaptations = persisted_adaptations
+        effective_adaptations = None
+    else:
+        validated_adaptations = _resolve_applicable_adaptations(
+            preparation, adaptations,
+        )
+        effective_adaptations = adaptations
     conflicts = detect_take_conflicts(preparation)
     unresolved = _collect_unresolved_placeholders(
-        preparation, adaptations=adaptations,
+        preparation, adaptations=effective_adaptations,
+        _resolved_applicable=validated_adaptations,
     )
 
     # A conflict is considered resolved when an adaptation
@@ -2828,6 +2952,7 @@ def build_review_state(
             open_conflicts.append(dict(marker))
 
     selected_resource_revisions: list[dict] = []
+    fused_descriptions: list[dict] = []
     for entry in preparation.get("resource_inputs", []):
         if not isinstance(entry, dict):
             continue
@@ -2837,6 +2962,32 @@ def build_review_state(
             "content_digest": entry.get("content_digest", ""),
             "kind": entry.get("kind", ""),
         })
+        if entry.get("kind") == resource_prompts.KIND_FUSED_SCENES:
+            inputs = entry.get("descriptive_inputs")
+            if isinstance(inputs, dict):
+                authorized_inputs = {
+                    field: value
+                    for field, value in sorted(inputs.items())
+                    if isinstance(field, str)
+                    and resource_prompts.classify_field(
+                        resource_prompts.KIND_FUSED_SCENES,
+                        resource_prompts.canonical_field_name(field),
+                    ).get("role") == resource_prompts.ROLE_DESCRIPTIVE_INPUT
+                    and (
+                        isinstance(value, str)
+                        or (
+                            isinstance(value, list)
+                            and all(isinstance(item, str) for item in value)
+                        )
+                    )
+                }
+                fused_descriptions.append({
+                    "library_key": str(entry.get("library_key", "")),
+                    "source_id": str(entry.get("source_id", "")),
+                    "content_digest": str(entry.get("content_digest", "")),
+                    "kind": resource_prompts.KIND_FUSED_SCENES,
+                    "descriptive_inputs": authorized_inputs,
+                })
     selected_resource_revisions.sort(key=lambda item: (
         item["library_key"], item["source_id"], item["content_digest"],
     ))
@@ -2848,12 +2999,14 @@ def build_review_state(
         "composition_mode": preparation.get("composition_mode", ""),
         "effective_state": dict(preparation.get("effective_state") or {}),
         "selected_resource_revisions": selected_resource_revisions,
+        "fused_descriptions": fused_descriptions,
         "conflicts": open_conflicts,
         "resolved_conflicts": resolved_conflicts,
         "adaptations": validated_adaptations,
+        "stale_adaptations": stale_adaptations,
         "unresolved_placeholders": unresolved,
         "ready_for_finalization": (
-            not open_conflicts and not unresolved
+            not open_conflicts and not stale_adaptations and not unresolved
         ),
     }
 

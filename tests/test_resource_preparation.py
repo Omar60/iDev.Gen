@@ -2723,6 +2723,12 @@ class TestTask42PersistsAdaptations:
             "inv_fused_persist_lib", "inv_fused_persist",
             INV_FUSED_INCOMPATIBLE_PAYLOAD,
         )
+        authorized_prompt = (
+            "Authorized translated description of a quiet studio by a tall window."
+        )
+        resource_store.update_translation(
+            revision["revision_id"], {"prompt": authorized_prompt},
+        )
         _save_fused_take_plan(
             isolated_db, fused_revision=revision,
             wardrobe=INV_WARDROBE,
@@ -2771,9 +2777,7 @@ class TestTask42PersistsAdaptations:
         assert row["source_id"] == revision["source_id"]
         assert row["content_digest"] == revision["content_digest"]
         assert row["resource_field"] == "prompt"
-        assert row["source_value"] == (
-            INV_FUSED_INCOMPATIBLE_PAYLOAD["prompt"]
-        )
+        assert row["source_value"] == authorized_prompt
         assert row["adapted_value"] == (
             "She stands in the same studio, the side window "
             "at her left. She wears the thin grey linen shirt "
@@ -2790,6 +2794,138 @@ class TestTask42PersistsAdaptations:
             _CURRENT_SESSION[0],
         )["n"]
         assert n == 0
+        review = resource_preparation.build_review_state(
+            resource_preparation.prepare_take_inputs(
+                _CURRENT_SESSION[0], 1, "take-001",
+            ),
+        )
+        assert review["fused_descriptions"][0]["descriptive_inputs"] == {
+            "label": INV_FUSED_INCOMPATIBLE_PAYLOAD["label"],
+            "prompt": authorized_prompt,
+            "scene_theme": INV_FUSED_INCOMPATIBLE_PAYLOAD["scene_theme"],
+        }
+        assert review["adaptations"][0]["source_value"] == authorized_prompt
+
+    def test_missing_required_translation_refuses_adaptation_without_writes(
+        self, isolated_db,
+    ):
+        revision = _store_fused_revision(
+            isolated_db,
+            "inv_fused_missing_auth_lib", "inv_fused_missing_auth",
+            INV_FUSED_INCOMPATIBLE_PAYLOAD,
+        )
+        _save_fused_take_plan(
+            isolated_db, fused_revision=revision,
+            wardrobe=INV_WARDROBE,
+        )
+        resource_store.update_translation(revision["revision_id"], {})
+
+        with pytest.raises(resource_preparation.PreparationFieldError):
+            resource_preparation.record_take_adaptation(
+                _CURRENT_SESSION[0], 1, "take-001", {
+                    "library_key": revision["library_key"],
+                    "source_id": revision["source_id"],
+                    "content_digest": revision["content_digest"],
+                    "resource_field": "prompt",
+                    "adapted_value": "A reviewed replacement description.",
+                },
+            )
+
+        assert db.one(
+            "SELECT COUNT(*) AS n FROM take_resource_adaptation "
+            "WHERE session_id = ? AND take_id = ?",
+            _CURRENT_SESSION[0], "take-001",
+        )["n"] == 0
+        assert db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take "
+            "WHERE session_id = ? AND take_id = ?",
+            _CURRENT_SESSION[0], "take-001",
+        )["n"] == 0
+
+    def test_changed_authorized_source_marks_old_adaptation_stale_and_blocks_finalization(
+        self, isolated_db,
+    ):
+        revision = _store_fused_revision(
+            isolated_db,
+            "inv_fused_stale_source_lib", "inv_fused_stale_source",
+            INV_FUSED_INCOMPATIBLE_PAYLOAD,
+        )
+        _save_fused_take_plan(
+            isolated_db, fused_revision=revision,
+            wardrobe=INV_WARDROBE,
+        )
+        original = resource_preparation.record_take_adaptation(
+            _CURRENT_SESSION[0], 1, "take-001", {
+                "library_key": revision["library_key"],
+                "source_id": revision["source_id"],
+                "content_digest": revision["content_digest"],
+                "resource_field": "prompt",
+                "adapted_value": "A reviewed replacement description.",
+            },
+        )
+        persisted_before = dict(db.one(
+            "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+            "AND plan_revision = ? AND take_id = ?",
+            _CURRENT_SESSION[0], 1, "take-001",
+        ))
+        authorized_prompt = "Authorized translation describes a quiet empty studio."
+        resource_store.update_translation(
+            revision["revision_id"], {
+                "prompt": authorized_prompt,
+                "scene_theme": "A quiet empty studio without wardrobe details.",
+            },
+        )
+
+        preparation = resource_preparation.prepare_take_inputs(
+            _CURRENT_SESSION[0], 1, "take-001",
+        )
+        review = resource_preparation.build_review_state(preparation)
+        assert review["conflicts"] == []
+        assert review["adaptations"] == []
+        current_description = review["fused_descriptions"][0]["descriptive_inputs"]
+        assert current_description["prompt"] == authorized_prompt
+        assert current_description["scene_theme"] == (
+            "A quiet empty studio without wardrobe details."
+        )
+        assert review["stale_adaptations"] == [{
+            "library_key": revision["library_key"],
+            "source_id": revision["source_id"],
+            "content_digest": revision["content_digest"],
+            "resource_field": "prompt",
+            "code": "source_value_changed",
+            "message": resource_preparation._STALE_ADAPTATION_MESSAGES[
+                "source_value_changed"
+            ],
+        }]
+        assert review["ready_for_finalization"] is False
+
+        with pytest.raises(session_plan.PreparedTakeConflict):
+            resource_preparation.record_take_adaptation(
+                _CURRENT_SESSION[0], 1, "take-001", {
+                    "library_key": revision["library_key"],
+                    "source_id": revision["source_id"],
+                    "content_digest": revision["content_digest"],
+                    "resource_field": "prompt",
+                    "adapted_value": "A new value cannot rewrite old history.",
+                },
+            )
+        with pytest.raises(resource_preparation.ConflictUnresolvedError):
+            resource_preparation.finalize_take_preparation(
+                _CURRENT_SESSION[0], 1, "take-001",
+            )
+
+        persisted_after = dict(db.one(
+            "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+            "AND plan_revision = ? AND take_id = ?",
+            _CURRENT_SESSION[0], 1, "take-001",
+        ))
+        assert persisted_after == persisted_before
+        assert original["source_value"] == persisted_before["source_value"]
+        assert db.one(
+            "SELECT COUNT(*) AS n FROM prepared_take WHERE session_id = ? "
+            "AND plan_revision = ? AND take_id = ?",
+            _CURRENT_SESSION[0], 1, "take-001",
+        )["n"] == 0
 
     def test_a_persisted_adaptation_is_recovered_by_build_review_state(
         self, isolated_db,

@@ -25,6 +25,7 @@ import {
   WARDROBE_SCOPE_FROM_HERE,
   buildPlanSavePayload,
   loadSessionPlan,
+  loadPlanReviews,
   executeSavePlan,
   canPreparePlan,
   canProceedToGeneration,
@@ -215,6 +216,15 @@ export default function SessionView({
   const [submittingTakes, setSubmittingTakes] = useState(false)
   const [expandedTakeId, setExpandedTakeId] = useState(initialExpandedTakeId)
   const [takeReviewData, setTakeReviewData] = useState(initialTakeReviewData)
+  const hasKnownStaleAdaptations = Object.values(takeReviewData || {}).some(
+    (review) => (review?.stale_adaptations || []).length > 0,
+  )
+  const staleAdaptationCount = Object.values(takeReviewData || {}).reduce(
+    (count, review) => count + (review?.stale_adaptations || []).length,
+    0,
+  )
+  const [planReviewStatus, setPlanReviewStatus] = useState('idle')
+  const [reviewRefreshCounter, setReviewRefreshCounter] = useState(0)
   const [takeReviewLoading, setTakeReviewLoading] = useState({})
   const [takeReviewError, setTakeReviewError] = useState({})
   const [adaptationDrafts, setAdaptationDrafts] = useState({})
@@ -228,6 +238,9 @@ export default function SessionView({
   }
 
   const isResource = isResourceSession(s)
+  const reviewBlocksFinalization = hasKnownStaleAdaptations
+    || planReviewStatus === 'error'
+    || (isResource && activeStep === 'review' && planReviewStatus !== 'ready')
 
   const reload = () => api.get(`/api/sessions/${id}`).then((data) => {
     setS(data)
@@ -253,6 +266,8 @@ export default function SessionView({
           if (!planDirtyRef.current) setSharedSummary(res.sharedSummary || null)
           setSelectedTakeIds(new Set())
           setTakeReviewData({})
+          setPlanReviewStatus('idle')
+          setReviewRefreshCounter((count) => count + 1)
           if (!planDirtyRef.current) {
             setReviewedRevision((prev) => (typeof res.reviewedRevision === 'number' ? res.reviewedRevision : (prev && prev === res.planRevision ? prev : null)))
           }
@@ -265,6 +280,7 @@ export default function SessionView({
           setReviewedRevision(null)
           setSelectedTakeIds(new Set())
           setTakeReviewData({})
+          setPlanReviewStatus('idle')
           setError(res.error)
         }
       }).catch((e) => {
@@ -276,6 +292,7 @@ export default function SessionView({
         setReviewedRevision(null)
         setSelectedTakeIds(new Set())
         setTakeReviewData({})
+        setPlanReviewStatus('idle')
         setError(e?.message || 'Failed to load plan')
       })
     }
@@ -294,6 +311,7 @@ export default function SessionView({
       setReviewedRevision(null)
       setSelectedTakeIds(new Set())
       setTakeReviewData({})
+      setPlanReviewStatus('idle')
       setPlanNotice(`Plan saved (revision ${res.planRevision})`)
       setTimeout(() => setPlanNotice(''), 4000)
       reload()
@@ -353,7 +371,7 @@ export default function SessionView({
   }
 
   const handlePrepareTake = async (takeId) => {
-    if (planRevision === null || planDirty) return
+    if (planRevision === null || planDirty || reviewBlocksFinalization) return
     setPreparingTakeId(takeId)
     setError('')
     try {
@@ -374,7 +392,7 @@ export default function SessionView({
   }
 
   const handlePrepareAllIncomplete = async () => {
-    if (planRevision === null || planDirty) return
+    if (planRevision === null || planDirty || reviewBlocksFinalization) return
     setPreparingAll(true)
     setError('')
     try {
@@ -394,7 +412,7 @@ export default function SessionView({
   }
 
   const handleRecordAdaptation = async (takeId, conflict) => {
-    if (planRevision === null || planDirty) return
+    if (planRevision === null || planDirty || reviewBlocksFinalization) return
     const conflictKey = conflict.conflict_key || `${conflict.library_key || ''}:${conflict.source_id || ''}:${conflict.resource_field || ''}`
     const adaptedVal = (adaptationDrafts[takeId]?.[conflictKey] ?? '').trim()
     if (!adaptedVal) {
@@ -427,7 +445,7 @@ export default function SessionView({
   }
 
   const handleApproveReview = async () => {
-    if (planDirty || (planConflicts && planConflicts.length > 0) || planRevision === null) return
+    if (planDirty || (planConflicts && planConflicts.length > 0) || planRevision === null || reviewBlocksFinalization) return
     setError('')
     try {
       const res = await approvePlanReview(id, planRevision, api)
@@ -498,6 +516,14 @@ export default function SessionView({
           setError('Cannot proceed to generation: unresolved resource conflicts require review.')
           return false
         }
+        if (hasKnownStaleAdaptations) {
+          setError('Cannot proceed to generation: a reviewed adaptation no longer matches the authorized resource description. Save a new plan revision and review it.')
+          return false
+        }
+        if (activeStep === 'review' && planReviewStatus !== 'ready') {
+          setError('Cannot proceed to generation: take reviews must load successfully before proceeding.')
+          return false
+        }
         if (!plan?.takes || plan.takes.length === 0) {
           setError('Cannot proceed to generation: plan must contain at least one take.')
           return false
@@ -522,6 +548,32 @@ export default function SessionView({
     // Optional: with no endpoint configured the ✨ buttons simply do not appear.
     api.get('/api/config').then(setConfig).catch(() => {})
   }, [id])
+
+  useEffect(() => {
+    if (!isResource || activeStep !== 'review' || planDirty || planRevision === null) {
+      setPlanReviewStatus('idle')
+      return undefined
+    }
+    let current = true
+    setPlanReviewStatus('loading')
+    loadPlanReviews(id, planRevision, api).then((result) => {
+      if (!current) return
+      if (!result.ok || result.planRevision !== planRevision) {
+        setPlanReviewStatus('error')
+        return
+      }
+      const reviewsByTake = Object.fromEntries(
+        (result.takes || [])
+          .filter((review) => review && typeof review.take_id === 'string')
+          .map((review) => [review.take_id, review]),
+      )
+      setTakeReviewData(reviewsByTake)
+      setPlanReviewStatus('ready')
+    }).catch(() => {
+      if (current) setPlanReviewStatus('error')
+    })
+    return () => { current = false }
+  }, [id, isResource, activeStep, planDirty, planRevision, reviewRefreshCounter])
 
   // The session being compared against. Loaded whole and separately: the list
   // route carries counts, not shots, and the pairing needs the shots.
@@ -1708,12 +1760,16 @@ export default function SessionView({
                       <button
                         className="secondary"
                         onClick={handleApproveReview}
-                        disabled={planDirty || (planConflicts && planConflicts.length > 0) || planRevision === null}
+                        disabled={planDirty || (planConflicts && planConflicts.length > 0) || planRevision === null || reviewBlocksFinalization}
                         title={
                           planDirty
                             ? 'Save plan changes before approving review'
                             : (planConflicts && planConflicts.length > 0)
                               ? 'Unresolved conflicts require attention before approving review'
+                              : hasKnownStaleAdaptations
+                                ? 'Save a new plan revision and review the authorized resource description before approving'
+                                : planReviewStatus !== 'ready'
+                                  ? 'All take reviews must load successfully before approval'
                               : 'Approve review for the current plan revision'
                         }
                       >
@@ -1858,14 +1914,53 @@ export default function SessionView({
                   </section>
                 )}
 
+                {isResource && !planDirty && planReviewStatus === 'idle' && (
+                  <p className="muted" style={{ margin: '0 0 10px', fontSize: 12 }}>
+                    Take reviews must load before this plan can be approved or prepared.
+                  </p>
+                )}
+                {isResource && !planDirty && planReviewStatus === 'loading' && (
+                  <p className="muted" style={{ margin: '0 0 10px', fontSize: 12 }}>
+                    Loading complete take reviews before approval and preparation…
+                  </p>
+                )}
+                {planReviewStatus === 'error' && (
+                  <div role="alert" style={{ background: '#2a2214', border: '1px solid #785a28', borderRadius: 8, padding: 10, marginBottom: 14 }}>
+                    <div style={{ fontWeight: 600, color: 'var(--warn)', marginBottom: 4 }}>Take Review Unavailable</div>
+                    <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                      Take reviews could not be verified. Check the selected resources and their authorized translations, then reload before approving or preparing.
+                    </p>
+                  </div>
+                )}
+                {hasKnownStaleAdaptations && (
+                  <div role="alert" style={{ background: '#2a2214', border: '1px solid #785a28', borderRadius: 8, padding: 10, marginBottom: 14 }}>
+                    <div style={{ fontWeight: 600, color: 'var(--warn)', marginBottom: 4 }}>
+                      Stale Reviewed Adaptations ({staleAdaptationCount})
+                    </div>
+                    <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                      An authorized resource description changed after approval. Save a new plan revision and review its current description before approving or preparing takes.
+                    </p>
+                  </div>
+                )}
+
                 {/* Step 4 Toolbar: Batch Preparation & Selected Test Generation */}
                 <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, padding: '8px 12px', background: 'var(--panel-2)', borderRadius: 8 }}>
                   <div className="row" style={{ gap: 10, alignItems: 'center' }}>
                     <span style={{ fontSize: 12, fontWeight: 600 }}>Actions:</span>
                     <button
                       onClick={handlePrepareAllIncomplete}
-                      disabled={planDirty || preparingAll || incompleteCount === 0}
-                      title={planDirty ? 'Save draft before preparing' : incompleteCount === 0 ? 'All takes already prepared' : `Prepare ${incompleteCount} take(s)`}
+                      disabled={planDirty || preparingAll || incompleteCount === 0 || reviewBlocksFinalization}
+                      title={
+                        planDirty
+                          ? 'Save draft before preparing'
+                          : hasKnownStaleAdaptations
+                            ? 'Save a new plan revision and review the authorized resource description before preparing'
+                            : reviewBlocksFinalization
+                              ? 'Load all take reviews before preparing'
+                            : incompleteCount === 0
+                              ? 'All takes already prepared'
+                              : `Prepare ${incompleteCount} take(s)`
+                      }
                     >
                       {preparingAll ? 'Preparing…' : `Prepare Incomplete Takes (${incompleteCount})`}
                     </button>
@@ -1936,6 +2031,9 @@ export default function SessionView({
                           const conflicts = rev?.conflicts || []
                           const resolvedConflicts = rev?.adaptations || rev?.resolved_conflicts || []
                           const unresolvedPlaceholders = rev?.unresolved_placeholders || []
+                          const fusedDescriptions = rev?.fused_descriptions || []
+                          const staleAdaptations = rev?.stale_adaptations || []
+                          const hasStaleAdaptations = staleAdaptations.length > 0
                           const hasPlaceholders = unresolvedPlaceholders.length > 0 || rev?.has_standing_placeholders || false
                           const pinnedResources = rev?.selected_resource_revisions || snap?.provenance?.selected_resource_revisions || plan?.selected_resources || []
 
@@ -1999,8 +2097,16 @@ export default function SessionView({
                                     <button
                                       style={{ fontSize: 11, padding: '2px 8px' }}
                                       onClick={() => handlePrepareTake(t.take_id)}
-                                      disabled={planDirty || prepState === 'ready' || preparingTakeId === t.take_id || preparingAll}
-                                      title={planDirty ? 'Save draft before preparing' : 'Compile authoritative preparation snapshot'}
+                                      disabled={planDirty || prepState === 'ready' || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
+                                      title={
+                                        planDirty
+                                          ? 'Save draft before preparing'
+                                          : hasStaleAdaptations
+                                            ? 'Save a new plan revision and review the authorized resource description before preparing'
+                                            : reviewBlocksFinalization
+                                              ? 'Load all take reviews before preparing'
+                                            : 'Compile authoritative preparation snapshot'
+                                      }
                                     >
                                       {preparingTakeId === t.take_id ? 'Preparing…' : 'Prepare'}
                                     </button>
@@ -2026,8 +2132,16 @@ export default function SessionView({
                                           </button>
                                           <button
                                             onClick={() => handlePrepareTake(t.take_id)}
-                                            disabled={planDirty || preparingTakeId === t.take_id || preparingAll}
-                                            title={planDirty ? 'Save draft before preparing' : 'Compile authoritative preparation snapshot'}
+                                            disabled={planDirty || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
+                                            title={
+                                              planDirty
+                                                ? 'Save draft before preparing'
+                                                : hasStaleAdaptations
+                                                  ? 'Save a new plan revision and review the authorized resource description before preparing'
+                                                  : reviewBlocksFinalization
+                                                    ? 'Load all take reviews before preparing'
+                                                  : 'Compile authoritative preparation snapshot'
+                                            }
                                           >
                                             {preparingTakeId === t.take_id ? 'Preparing…' : prepState === 'ready' ? 'Re-prepare Take' : 'Prepare Take'}
                                           </button>
@@ -2077,6 +2191,24 @@ export default function SessionView({
                                           </p>
                                         )}
                                       </div>
+
+                                      {fusedDescriptions.length > 0 && (
+                                        <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>
+                                          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>Authorized Fused Scene Descriptions</div>
+                                          {fusedDescriptions.map((resource, resourceIndex) => (
+                                            <div key={`${resource.library_key}:${resource.source_id}:${resource.content_digest}:${resourceIndex}`} style={{ marginTop: 6 }}>
+                                              <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
+                                                {resource.library_key}: {resource.source_id}
+                                              </div>
+                                              {Object.entries(resource.descriptive_inputs || {}).map(([field, value]) => (
+                                                <div key={field} style={{ whiteSpace: 'pre-wrap', marginBottom: 4, fontSize: 12 }}>
+                                                  <b>{field}:</b> {Array.isArray(value) ? value.join('\n') : value}
+                                                </div>
+                                              ))}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
 
                                       {/* Provenance & Versions */}
                                       <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>
@@ -2140,7 +2272,19 @@ export default function SessionView({
                                             )}
                                           </div>
                                         )}
-                                        {conflicts.length === 0 && resolvedConflicts.length === 0 && !hasPlaceholders ? (
+                                        {hasStaleAdaptations && (
+                                          <div role="alert" style={{ padding: '6px 8px', background: '#3a2010', border: '1px solid var(--warn)', borderRadius: 4, marginBottom: 8, fontSize: 11, color: 'var(--warn)' }}>
+                                            ⚠️ This reviewed adaptation no longer matches the authorized resource description. Save a new plan revision and review the resource before preparing this take.
+                                            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                                              {staleAdaptations.map((item, idx) => (
+                                                <li key={`${item.library_key}:${item.source_id}:${item.resource_field}:${idx}`}>
+                                                  {item.resource_field || 'Resource field'}: {item.message}
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
+                                        {conflicts.length === 0 && resolvedConflicts.length === 0 && !hasPlaceholders && !hasStaleAdaptations ? (
                                           <p className="muted" style={{ margin: 0, fontSize: 12 }}>No resource conflicts detected for this take.</p>
                                         ) : null}
 
@@ -2175,8 +2319,16 @@ export default function SessionView({
                                                     <button
                                                       style={{ fontSize: 11, padding: '3px 8px' }}
                                                       onClick={() => handleRecordAdaptation(t.take_id, { ...c, conflict_key: conflictKey })}
-                                                      disabled={planDirty || !draftVal.trim()}
-                                                      title={planDirty ? 'Save draft before adapting' : 'Record adaptation bound to plan revision'}
+                                                      disabled={planDirty || !draftVal.trim() || reviewBlocksFinalization}
+                                                      title={
+                                                        planDirty
+                                                          ? 'Save draft before adapting'
+                                                          : hasStaleAdaptations
+                                                            ? 'Save a new plan revision before recording another adaptation'
+                                                            : reviewBlocksFinalization
+                                                              ? 'Load all take reviews before adapting'
+                                                              : 'Record adaptation bound to plan revision'
+                                                      }
                                                     >
                                                       Adapt
                                                     </button>
@@ -2193,7 +2345,12 @@ export default function SessionView({
                                             {resolvedConflicts.map((rc, idx) => (
                                               <div key={idx} className="row" style={{ fontSize: 11, padding: '4px 6px', background: 'var(--bg)', borderRadius: 4 }}>
                                                 <span className="badge ready" style={{ fontSize: 9 }}>✓ Adapted</span>
-                                                <span><b>{rc.resource_field}:</b> {rc.adapted_value}</span>
+                                                <span>
+                                                  {typeof rc.source_value === 'string' && (
+                                                    <span><b>{rc.resource_field} authorized description:</b> {rc.source_value}. </span>
+                                                  )}
+                                                  <b>{rc.resource_field} approved adaptation:</b> {rc.adapted_value}
+                                                </span>
                                                 <span className="muted" style={{ fontSize: 10 }}>({rc.library_key}:{rc.source_id})</span>
                                               </div>
                                             ))}
@@ -2221,12 +2378,16 @@ export default function SessionView({
                   <button
                     className="primary"
                     onClick={() => navigateStep('generation')}
-                    disabled={!canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflicts })}
+                    disabled={reviewBlocksFinalization || !canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflicts })}
                     title={
                       planDirty
                         ? 'Save plan before proceeding to generation'
                         : (planConflicts && planConflicts.length > 0)
                           ? 'Unresolved conflicts block proceeding to generation'
+                          : hasKnownStaleAdaptations
+                            ? 'A reviewed adaptation is stale; save a new plan revision before proceeding'
+                            : reviewBlocksFinalization
+                              ? 'All take reviews must load successfully before proceeding'
                           : !plan?.takes?.length
                             ? 'Plan must contain at least one take'
                             : !Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)

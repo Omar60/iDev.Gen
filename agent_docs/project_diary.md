@@ -425,3 +425,10 @@
   are not decomposed into automatic fields. The Resources UI makes that route
   explicit and offers a room filter as the structured-scene alternative. Do not
   narrow the generic expert plan validator to enforce guided-only rules.
+- Task 6.2 binds adaptations to the exact translation-aware descriptive value
+  consumed by preparation. Recheck `source_value` at the shared applicability
+  boundary and preserve obsolete approvals as history; the same resource triple
+  can have a changed sidecar. The expert raw `begin`/`complete` path needs the
+  same stale-approval guard before `ready`, even when structural conflict checks
+  find no contradiction. Review shows complete authorized fused prose and the
+  separate approved adaptation without claiming semantic conflict detection.

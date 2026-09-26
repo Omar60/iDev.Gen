@@ -2756,7 +2756,19 @@ describe('Task 5.3: Wardrobe scope controls, pure resolution, reordering, and re
               { library_key: 'room', source_id: 'studio_spotlight', content_digest: 'abc123def45678901234' },
             ],
             adaptations: [
-              { library_key: 'room', source_id: 'studio_spotlight', resource_field: 'wall_color', adapted_value: 'matte black' },
+              { library_key: 'room', source_id: 'studio_spotlight', resource_field: 'wall_color', source_value: 'The authorized full-length translated wall description.', adapted_value: 'matte black' },
+            ],
+            fused_descriptions: [
+              {
+                library_key: 'scene',
+                source_id: 'studio_spotlight',
+                content_digest: 'abc123def45678901234',
+                kind: 'fused_scenes',
+                descriptive_inputs: {
+                  prompt: 'Complete authorized fused scene description including its final review sentence.',
+                  scene_theme: 'Authorized theme translation.',
+                },
+              },
             ],
             conflicts: [
               { library_key: 'room', source_id: 'studio_spotlight', resource_field: 'wall_color', message: 'Color mismatch' },
@@ -2800,6 +2812,71 @@ describe('Task 5.3: Wardrobe scope controls, pure resolution, reordering, and re
         // Adaptations are visible
         expect(html).toContain('Resolved Adaptations:')
         expect(html).toContain('matte black')
+        expect(html).toContain('Authorized Fused Scene Descriptions')
+        expect(html).toContain('Complete authorized fused scene description including its final review sentence.')
+        expect(html).toContain('wall_color authorized description:')
+        expect(html).toContain('wall_color approved adaptation:')
+      })
+
+      it('shows stale adaptation diagnostics and disables preparation until a new revision is saved', () => {
+        const resourceSession = {
+          id: 805,
+          name: 'Stale Adaptation Shoot',
+          composition_mode: 'resource-v1',
+          workflow_id: 10,
+          model: { id: 1, name: 'Ada' },
+          shots: [],
+          settings: { composition_mode: 'resource-v1' },
+        }
+        const plan = {
+          version: 'resource-v1',
+          look: 'Soft studio light',
+          initial_wardrobe: 'Blue blazer',
+          takes: [{ take_id: 'take-001', camera: '35mm', framing: 'medium', pose: 'standing', expression: 'calm' }],
+          selected_resources: [],
+          wardrobe_changes: [],
+        }
+        const reviewData = {
+          'take-001': {
+            conflicts: [],
+            adaptations: [],
+            fused_descriptions: [{
+              library_key: 'scene',
+              source_id: 'studio_sunlight',
+              content_digest: 'abc123',
+              kind: 'fused_scenes',
+              descriptive_inputs: { prompt: 'Current authorized translated scene.' },
+            }],
+            stale_adaptations: [{
+              library_key: 'scene',
+              source_id: 'studio_sunlight',
+              content_digest: 'abc123',
+              resource_field: 'prompt',
+              code: 'source_value_changed',
+              message: 'The authorized description changed after this adaptation was reviewed. Save a new plan revision before recording a fresh adaptation.',
+            }],
+          },
+        }
+        const html = renderToStaticMarkup(
+          React.createElement(SessionView, {
+            id: 805,
+            initialSession: resourceSession,
+            initialPlan: plan,
+            initialRevision: 1,
+            initialActiveStep: 'review',
+            initialExpandedTakeId: 'take-001',
+            initialTakeReviewData: reviewData,
+            initialPreparation: { plan_revision: 1, completed: [], incomplete: [{ take_id: 'take-001' }] },
+          })
+        )
+
+        expect(html).toContain('This reviewed adaptation no longer matches the authorized resource description.')
+        expect(html).toContain('Current authorized translated scene.')
+        expect(html).toContain('Save a new plan revision and review the authorized resource description before preparing')
+        expect(html).toContain('Stale Reviewed Adaptations (1)')
+        expect(html).toContain('Save a new plan revision and review the authorized resource description before approving')
+        expect(html).toContain('disabled=""')
+        expect(html).not.toContain('No resource conflicts detected for this take.')
       })
 
       it('recordTakeAdaptation sends exact singular adaptation contract to API without adaptations list', async () => {

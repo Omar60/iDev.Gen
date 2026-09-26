@@ -8017,6 +8017,12 @@ def test_api_take_adaptation_and_conflict_resolution(client, seeded):
     assert len(rev2["resolved_conflicts"]) == 1
     assert rev2["resolved_conflicts"][0]["resource_field"] == "prompt"
     assert rev2["adaptations"][0]["adapted_value"] == "she is standing in the sunlit loft"
+    assert rev2["adaptations"][0]["source_value"] == (
+        "she is wearing a silk dress in the sunlit loft"
+    )
+    assert rev2["fused_descriptions"][0]["descriptive_inputs"]["prompt"] == (
+        "she is wearing a silk dress in the sunlit loft"
+    )
 
     # Stale revision adaptation -> 409
     r_stale = client.post(
@@ -8033,6 +8039,127 @@ def test_api_take_adaptation_and_conflict_resolution(client, seeded):
         },
     )
     assert r_stale.status_code == 409
+
+    # A translation change with the same resource identity makes the
+    # persisted approval stale, even when the new prose no longer triggers
+    # the structural conflict detector.
+    adaptation_before = dict(db.one(
+        "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+        "AND plan_revision = ? AND take_id = ?",
+        sid, 1, "take-01",
+    ))
+    authorized_prompt = "Authorized translation describes an empty sunlit studio."
+    resource_store.update_translation(rev_id, {"prompt": authorized_prompt})
+    r_changed = client.get(f"/api/sessions/{sid}/plan/takes/take-01/review")
+    assert r_changed.status_code == 200, r_changed.text
+    changed = r_changed.json()
+    assert changed["conflicts"] == []
+    assert changed["adaptations"] == []
+    assert changed["stale_adaptations"][0]["code"] == "source_value_changed"
+    assert changed["ready_for_finalization"] is False
+    assert changed["fused_descriptions"][0]["descriptive_inputs"]["prompt"] == authorized_prompt
+    r_plan_review = client.get(
+        f"/api/sessions/{sid}/plan/review?plan_revision=1",
+    )
+    assert r_plan_review.status_code == 200, r_plan_review.text
+    assert r_plan_review.json()["takes"][0]["stale_adaptations"][0]["code"] == (
+        "source_value_changed"
+    )
+
+    r_prepare_stale = client.post(
+        f"/api/sessions/{sid}/plan/takes/take-01/prepare",
+        json={"plan_revision": 1},
+    )
+    assert r_prepare_stale.status_code == 422, r_prepare_stale.text
+    assert "new plan revision" in r_prepare_stale.text
+    assert dict(db.one(
+        "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+        "AND plan_revision = ? AND take_id = ?",
+        sid, 1, "take-01",
+    )) == adaptation_before
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = ? AND take_id = ?",
+        sid, 1, "take-01",
+    )["n"] == 0
+
+    # Pre-authoring expert raw completion stays available for ordinary
+    # snapshots, but cannot bypass a stale authorized adaptation.
+    r_raw_begin = client.post(
+        f"/api/sessions/{sid}/plan/preparations/begin",
+        json={"plan_revision": 1, "take_id": "take-01"},
+    )
+    assert r_raw_begin.status_code == 200, r_raw_begin.text
+    pending_before = dict(db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = ? AND take_id = ?",
+        sid, 1, "take-01",
+    ))
+    assert pending_before["status"] == "pending"
+    r_raw_complete = client.post(
+        f"/api/sessions/{sid}/plan/preparations/complete",
+        json={
+            "plan_revision": 1,
+            "take_id": "take-01",
+            "final_prompt": "Expert supplied snapshot.",
+            "effective_state": {},
+            "mapping_version": "m1",
+            "compiler_version": "c1",
+            "provenance": {},
+        },
+    )
+    assert r_raw_complete.status_code == 422, r_raw_complete.text
+    assert "stale reviewed adaptation" in r_raw_complete.text
+    assert dict(db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = ? AND take_id = ?",
+        sid, 1, "take-01",
+    )) == pending_before
+    assert dict(db.one(
+        "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+        "AND plan_revision = ? AND take_id = ?",
+        sid, 1, "take-01",
+    )) == adaptation_before
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = ? AND take_id = ? AND status = 'ready'",
+        sid, 1, "take-01",
+    )["n"] == 0
+
+    # An invalid/missing required translation fails closed with a safe API
+    # diagnostic and cannot rewrite the historical adaptation.
+    raw_sidecar = "RAW_SIDECAR_SENTINEL_" + "".join(
+        chr(codepoint) for codepoint in (0x65E5, 0x672C, 0x8A9E)
+    )
+    resource_store.update_translation(rev_id, {"prompt": raw_sidecar})
+    r_invalid_review = client.get(f"/api/sessions/{sid}/plan/takes/take-01/review")
+    assert r_invalid_review.status_code == 422
+    assert raw_sidecar not in r_invalid_review.text
+    r_invalid_plan_review = client.get(
+        f"/api/sessions/{sid}/plan/review?plan_revision=1",
+    )
+    assert r_invalid_plan_review.status_code == 422
+    assert raw_sidecar not in r_invalid_plan_review.text
+    r_invalid_adaptation = client.post(
+        f"/api/sessions/{sid}/plan/takes/take-01/adaptations",
+        json={
+            "plan_revision": 1,
+            "adaptation": {
+                "library_key": "fused_scene_lib",
+                "source_id": "scene-01",
+                "content_digest": rev_row["content_digest"],
+                "resource_field": "prompt",
+                "adapted_value": "A replacement description.",
+            },
+        },
+    )
+    assert r_invalid_adaptation.status_code == 422
+    assert raw_sidecar not in r_invalid_adaptation.text
+    assert dict(db.one(
+        "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+        "AND plan_revision = ? AND take_id = ?",
+        sid, 1, "take-01",
+    )) == adaptation_before
 
 
 def test_api_take_prepare_and_batch_prepare_endpoints(client, seeded):
