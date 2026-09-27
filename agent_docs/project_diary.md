@@ -432,3 +432,10 @@
   same stale-approval guard before `ready`, even when structural conflict checks
   find no contradiction. Review shows complete authorized fused prose and the
   separate approved adaptation without claiming semantic conflict detection.
+- Task 6.3 runs missing shared-choice suggestions through the existing fenced
+  operation and records the actual non-secret assistant request. Proposals remain
+  outside the plan until reviewed CAS acceptance; explicit empty/manual choices
+  are authoritative. Bind every prompt input to the operation fingerprint:
+  model `trigger` and `base_positive` drifted during an in-flight call until
+  they were included, with lease renewal before prompt construction. Keep the
+  take worker and browser controls in their separately assigned tasks.

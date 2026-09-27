@@ -207,8 +207,13 @@ fence. A succeeded shared-suggestion result can be reviewed through the
 `accept` route, which applies the accepted values through plan CAS and replays
 the saved result after a lost response. `can_cancel` and `can_resume` report
 current action eligibility. Startup and status reads recover stale ownership.
-A `202` confirms pending operation state, not assistant execution: these
-routes do not yet launch a real assistant worker. See
+New `shared_suggestions` claims and eligible resumes launch a configured
+assistant worker in the background. It proposes only missing `look` or
+`initial_wardrobe` values from model context, the brief, and authorized scene
+descriptions; proposals appear in operation status without changing the plan.
+Reviewed values, including edited or empty ones, apply only through `/accept`.
+Cancellation and stale inputs fence worker output. Remote `prepare_takes`
+execution and `SessionView` suggestion controls remain future work. See
 [authoring operation claims and controls](docs/sessions.md#authoring-operation-claims-cancellation-and-resume)
 for the request, acceptance, recovery, and response contract.
 

@@ -1,12 +1,14 @@
 """API coverage for authoring operation start and read-only status."""
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta
 import json
 import sqlite3
 import threading
+import time
 import uuid
 
 import db
@@ -14,6 +16,22 @@ import main
 import resource_store
 import pytest
 from backend import authoring_operations
+
+
+_REAL_SCHEDULE_SHARED_SUGGESTION_OPERATION = main._schedule_shared_suggestion_operation
+
+
+@pytest.fixture(autouse=True)
+def _disable_background_suggestion_dispatch(monkeypatch):
+    monkeypatch.setattr(main, "_schedule_shared_suggestion_operation", lambda view: None)
+
+
+def _enable_background_suggestion_dispatch(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "_schedule_shared_suggestion_operation",
+        _REAL_SCHEDULE_SHARED_SUGGESTION_OPERATION,
+    )
 
 
 def _room_anchor() -> dict[str, str]:
@@ -37,7 +55,16 @@ def _room_anchor() -> dict[str, str]:
     }
 
 
-def _create_guided_session(client, seeded, *, mode="automatic", photo_count=4, look="", initial_wardrobe=""):
+def _create_guided_session(
+    client,
+    seeded,
+    *,
+    mode="automatic",
+    photo_count=4,
+    look="",
+    initial_wardrobe="",
+    brief="",
+):
     response = client.post(
         "/api/sessions/guided",
         json={
@@ -46,6 +73,7 @@ def _create_guided_session(client, seeded, *, mode="automatic", photo_count=4, l
             "scene_anchor": _room_anchor(),
             "photo_count": photo_count,
             "mode": mode,
+            "brief": brief,
             "look": look,
             "initial_wardrobe": initial_wardrobe,
         },
@@ -86,6 +114,65 @@ def _configure_assistant(monkeypatch):
     monkeypatch.setitem(main.CONFIG, "llm_model", "test-model")
     monkeypatch.setitem(main.CONFIG, "resource_planning_enabled", True)
     monkeypatch.delenv("IDEVGEN_RESOURCE_PLANNING_ENABLED", raising=False)
+
+
+def _install_fake_structured_assistant(monkeypatch, outputs, *, entered=None, release=None):
+    captured = []
+    pending = list(outputs)
+    json_module = json
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, output):
+            self.output = output
+
+        def json(self):
+            return {
+                "choices": [{
+                    "message": {"content": json_module.dumps(self.output, ensure_ascii=False)},
+                }],
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, json, headers):
+            captured.append({"url": url, "body": json, "headers": headers})
+            if entered is not None:
+                entered.set()
+            if release is not None and not await asyncio.to_thread(release.wait, 5):
+                raise TimeoutError("fake assistant was not released")
+            if not pending:
+                raise AssertionError("the fake assistant received an unexpected call")
+            return FakeResponse(pending.pop(0))
+
+    monkeypatch.setattr(main.enhance.httpx, "AsyncClient", FakeAsyncClient)
+    return captured
+
+
+def _wait_for_operation_state(client, session_id, operation_id, expected_state, timeout=4):
+    url = f"/api/sessions/{session_id}/plan/authoring/operations/{operation_id}"
+    deadline = time.monotonic() + timeout
+    latest = None
+    while time.monotonic() < deadline:
+        response = client.get(url)
+        assert response.status_code == 200, response.text
+        latest = response.json()
+        if latest["state"] == expected_state:
+            return latest
+        time.sleep(0.01)
+    assert latest is not None
+    assert latest["state"] == expected_state, latest
+    return latest
 
 
 def test_start_returns_closed_view_replays_and_reads_without_assistant_call(
@@ -569,6 +656,406 @@ def _complete_shared_suggestions(client, seeded, monkeypatch, *, output=None):
     assert view["state"] == "succeeded"
     assert "input" not in view["result"]
     return session_id, operation_id, revision, suggestions
+
+
+def test_shared_suggestions_run_once_in_background_with_authorized_context_and_exact_evidence(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    secret = "synthetic-assistant-secret"
+    monkeypatch.setitem(main.CONFIG, "llm_key", secret)
+    session_id, revision = _create_guided_session(
+        client,
+        seeded,
+        brief="A quiet editorial portrait.",
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    output = {
+        "look": "Soft natural makeup and loose dark hair.",
+        "initial_wardrobe": "A cream linen blouse with dark trousers.",
+    }
+    calls = _install_fake_structured_assistant(
+        monkeypatch,
+        [output],
+        entered=entered,
+        release=release,
+    )
+    url = f"/api/sessions/{session_id}/plan/authoring/operations"
+    body = _start_body("shared_suggestions", revision=revision)
+
+    started = client.post(url, json=body)
+
+    assert started.status_code == 202, started.text
+    operation_id = started.json()["operation_id"]
+    assert entered.wait(timeout=2), "the suggestion worker did not reach the fake assistant"
+    active = client.get(f"{url}/{operation_id}")
+    assert active.status_code == 200, active.text
+    assert active.json()["state"] == "active"
+
+    replay = client.post(url, json=body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["operation_id"] == operation_id
+    assert len(calls) == 1
+
+    request = calls[0]
+    user_message = request["body"]["messages"][1]["content"]
+    assert "A quiet editorial portrait." in user_message
+    assert "4da woman" in user_message
+    assert "photo, 35mm" in user_message
+    assert "Soft light enters an empty studio from a high window." in user_message
+    assert json.dumps(["look", "initial_wardrobe"]) in user_message
+    assert request["body"]["model"] == "test-model"
+    assert request["headers"]["Authorization"] == f"Bearer {secret}"
+
+    release.set()
+    succeeded = _wait_for_operation_state(client, session_id, operation_id, "succeeded")
+    assert succeeded["result"] == {
+        "items": [
+            {"target": "look", "result": output["look"]},
+            {"target": "initial_wardrobe", "result": output["initial_wardrobe"]},
+        ],
+    }
+    current = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert current["plan_revision"] == revision
+    assert current["plan"]["look"] == ""
+    assert current["plan"]["initial_wardrobe"] == ""
+    assert current["plan"]["authoring"]["evidence"] == []
+    assert current["plan"]["authoring"]["shared_state"] == {
+        "look": {"origin": "none", "evidence_id": None},
+        "initial_wardrobe": {"origin": "none", "evidence_id": None},
+    }
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM prepared_take WHERE session_id = ?",
+        session_id,
+    )["n"] == 0
+
+    stored = json.loads(db.one(
+        "SELECT result_json FROM authoring_operation WHERE operation_id = ?",
+        operation_id,
+    )["result_json"])
+    assert stored["input"] == {
+        "messages": request["body"]["messages"],
+        "model": request["body"]["model"],
+        "parameters": {
+            "temperature": request["body"]["temperature"],
+            "stream": request["body"]["stream"],
+            "response_format": request["body"]["response_format"],
+            "reasoning_effort": request["body"]["reasoning_effort"],
+        },
+        "plan_revision": revision,
+    }
+    saved_text = json.dumps(stored, ensure_ascii=False)
+    assert secret not in saved_text
+    assert "assistant.local" not in saved_text
+
+
+def test_shared_suggestion_discards_response_after_model_context_changes(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+    entered = threading.Event()
+    release = threading.Event()
+    response_checked = threading.Event()
+    output = {
+        "look": "A stale suggested look.",
+        "initial_wardrobe": "A stale suggested outfit.",
+    }
+    calls = _install_fake_structured_assistant(
+        monkeypatch,
+        [output],
+        entered=entered,
+        release=release,
+    )
+
+    lease_renewed = []
+    original_renew = authoring_operations.renew_operation_lease
+    original_request = main._shared_suggestion_request
+    original_persist = authoring_operations.persist_operation_response
+
+    def record_renew(*args, **kwargs):
+        ticket = original_renew(*args, **kwargs)
+        lease_renewed.append(ticket)
+        return ticket
+
+    def require_renew_before_request(*args, **kwargs):
+        assert lease_renewed, "the worker must renew its lease before constructing the prompt"
+        return original_request(*args, **kwargs)
+
+    def observe_response_check(*args, **kwargs):
+        try:
+            return original_persist(*args, **kwargs)
+        finally:
+            response_checked.set()
+
+    monkeypatch.setattr(authoring_operations, "renew_operation_lease", record_renew)
+    monkeypatch.setattr(main, "_shared_suggestion_request", require_renew_before_request)
+    monkeypatch.setattr(authoring_operations, "persist_operation_response", observe_response_check)
+
+    plan_before = client.get(f"/api/sessions/{session_id}/plan").json()
+    operations_url = f"/api/sessions/{session_id}/plan/authoring/operations"
+    started = client.post(
+        operations_url,
+        json=_start_body("shared_suggestions", revision=revision),
+    )
+    assert started.status_code == 202, started.text
+    operation_id = started.json()["operation_id"]
+    try:
+        assert entered.wait(timeout=2), "the suggestion worker did not reach the fake assistant"
+        request = calls[0]["body"]["messages"][1]["content"]
+        assert "4da woman" in request
+        assert "photo, 35mm" in request
+
+        model = client.get(f"/api/models/{seeded['model_id']}").json()
+        patch_fields = (
+            "name", "lora_name", "trigger", "lora_strength", "base_positive",
+            "base_negative", "workflow_id", "settings", "notes",
+        )
+        changed_model = {field: model[field] for field in patch_fields}
+        changed_model.update(
+            trigger="4da changed woman",
+            base_positive="new verified portrait prompt",
+        )
+        patched = client.patch(f"/api/models/{seeded['model_id']}", json=changed_model)
+        assert patched.status_code == 200, patched.text
+    finally:
+        release.set()
+
+    assert response_checked.wait(timeout=2), "the suggestion response was not checked"
+    status = client.get(f"{operations_url}/{operation_id}")
+    assert status.status_code == 200, status.text
+    assert status.json()["state"] == "cancelled"
+    assert status.json()["result"] is None
+    operation_row = db.one(
+        "SELECT state, result_json FROM authoring_operation WHERE operation_id = ?",
+        operation_id,
+    )
+    assert operation_row["state"] != "succeeded"
+    assert operation_row["result_json"] is None
+
+    acceptance = client.post(
+        f"{operations_url}/{operation_id}/accept",
+        json={"expected_revision": revision, "accepted": output},
+    )
+    _error(acceptance, 409, "operation_not_succeeded")
+    plan_after = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert plan_after["plan_revision"] == plan_before["plan_revision"] == revision
+    assert plan_after["plan"] == plan_before["plan"]
+    assert plan_after["plan"]["authoring"]["evidence"] == []
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM prepared_take WHERE session_id = ?",
+        session_id,
+    )["n"] == 0
+
+
+def test_invalid_shared_suggestion_is_not_partially_saved_and_resume_can_accept_an_empty_edit(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+    output = {
+        "look": "A soft studio makeup look.",
+        "initial_wardrobe": "A navy blouse.",
+    }
+    calls = _install_fake_structured_assistant(
+        monkeypatch,
+        [
+            {"look": "A partial suggestion.", "initial_wardrobe": 17},
+            output,
+        ],
+    )
+    operations_url = f"/api/sessions/{session_id}/plan/authoring/operations"
+    started = client.post(
+        operations_url,
+        json=_start_body("shared_suggestions", revision=revision),
+    )
+    assert started.status_code == 202, started.text
+    operation_id = started.json()["operation_id"]
+
+    failed = _wait_for_operation_state(client, session_id, operation_id, "failed")
+    assert failed["result"] is None
+    row = db.one(
+        "SELECT result_json FROM authoring_operation WHERE operation_id = ?",
+        operation_id,
+    )
+    assert row["result_json"] is None
+    plan = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert plan["plan_revision"] == revision
+    assert plan["plan"]["authoring"]["evidence"] == []
+    assert len(calls) == 1
+
+    resumed = client.post(
+        f"{operations_url}/{operation_id}/resume",
+        json={"expected_revision": revision},
+    )
+    assert resumed.status_code == 202, resumed.text
+    succeeded = _wait_for_operation_state(client, session_id, operation_id, "succeeded")
+    assert len(calls) == 2
+    assert succeeded["result"]["items"] == [
+        {"target": "look", "result": output["look"]},
+        {"target": "initial_wardrobe", "result": output["initial_wardrobe"]},
+    ]
+    still_pending = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert still_pending["plan_revision"] == revision
+    assert still_pending["plan"]["authoring"]["evidence"] == []
+
+    accepted = {"look": "", "initial_wardrobe": output["initial_wardrobe"]}
+    accept_url = f"{operations_url}/{operation_id}/accept"
+    body = {"expected_revision": revision, "accepted": accepted}
+    response = client.post(accept_url, json=body)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["accepted"] == accepted
+    assert result["evidence"]["output"] == output
+    assert result["evidence"]["accepted"] == accepted
+    saved_plan = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert saved_plan["plan_revision"] == revision + 1
+    assert saved_plan["plan"]["look"] == ""
+    assert saved_plan["plan"]["authoring"]["shared_state"]["look"] == {
+        "origin": "assistant_edited",
+        "evidence_id": operation_id,
+    }
+    replay = client.post(accept_url, json=body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == result
+    assert client.get(f"/api/sessions/{session_id}/plan").json()["plan_revision"] == revision + 1
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        {"look": "A suggested look.", "initial_wardrobe": "A suggested outfit."},
+        {"look": 17, "initial_wardrobe": "A suggested outfit."},
+    ],
+)
+def test_shared_suggestion_cancellation_discards_late_provider_response(
+    client, seeded, monkeypatch, output,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = _install_fake_structured_assistant(
+        monkeypatch,
+        [output],
+        entered=entered,
+        release=release,
+    )
+    operations_url = f"/api/sessions/{session_id}/plan/authoring/operations"
+    started = client.post(
+        operations_url,
+        json=_start_body("shared_suggestions", revision=revision),
+    )
+    assert started.status_code == 202, started.text
+    operation_id = started.json()["operation_id"]
+    assert entered.wait(timeout=2), "the suggestion worker did not reach the fake assistant"
+
+    cancelled = client.post(
+        f"{operations_url}/{operation_id}/cancel",
+        json={"expected_revision": revision},
+    )
+    assert cancelled.status_code == 202, cancelled.text
+    assert cancelled.json()["state"] == "cancel_requested"
+    release.set()
+
+    terminal = _wait_for_operation_state(client, session_id, operation_id, "cancelled")
+    assert terminal["result"] is None
+    assert len(calls) == 1
+    current = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert current["plan_revision"] == revision
+    assert current["plan"]["authoring"]["evidence"] == []
+    assert db.one(
+        "SELECT result_json FROM authoring_operation WHERE operation_id = ?",
+        operation_id,
+    )["result_json"] is None
+
+
+def test_shared_suggestion_response_cannot_replace_a_newer_manual_plan_value(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = _install_fake_structured_assistant(
+        monkeypatch,
+        [{"look": "A late assistant look.", "initial_wardrobe": "A late assistant outfit."}],
+        entered=entered,
+        release=release,
+    )
+    operations_url = f"/api/sessions/{session_id}/plan/authoring/operations"
+    started = client.post(
+        operations_url,
+        json=_start_body("shared_suggestions", revision=revision),
+    )
+    assert started.status_code == 202, started.text
+    operation_id = started.json()["operation_id"]
+    assert entered.wait(timeout=2), "the suggestion worker did not reach the fake assistant"
+
+    current = client.get(f"/api/sessions/{session_id}/plan").json()
+    current["plan"]["look"] = "An operator-chosen look."
+    saved = client.post(
+        f"/api/sessions/{session_id}/plan",
+        json={"plan": current["plan"], "expected_revision": revision},
+    )
+    assert saved.status_code == 200, saved.text
+    release.set()
+
+    terminal = _wait_for_operation_state(client, session_id, operation_id, "cancelled")
+    assert terminal["result"] is None
+    assert len(calls) == 1
+    latest = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert latest["plan_revision"] == revision + 1
+    assert latest["plan"]["look"] == "An operator-chosen look."
+    assert latest["plan"]["authoring"]["shared_state"]["look"] == {
+        "origin": "user",
+        "evidence_id": None,
+    }
+    assert latest["plan"]["authoring"]["evidence"] == []
+
+
+def test_manual_mode_keeps_explicit_empty_choices_without_starting_assistant_work(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    calls = _install_fake_structured_assistant(monkeypatch, [])
+    session_id, revision = _create_guided_session(
+        client,
+        seeded,
+        mode="manual",
+        look="A temporary look.",
+        initial_wardrobe="A temporary outfit.",
+    )
+    current = client.get(f"/api/sessions/{session_id}/plan").json()
+    current["plan"]["look"] = ""
+    current["plan"]["initial_wardrobe"] = ""
+    saved = client.post(
+        f"/api/sessions/{session_id}/plan",
+        json={"plan": current["plan"], "expected_revision": revision},
+    )
+    assert saved.status_code == 200, saved.text
+    current = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert current["shared_summary"]["available"] is True
+    assert current["plan"]["authoring"]["shared_state"] == {
+        "look": {"origin": "user", "evidence_id": None},
+        "initial_wardrobe": {"origin": "user", "evidence_id": None},
+    }
+
+    response = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body("shared_suggestions", revision=saved.json()["plan_revision"]),
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "invalid_request"
+    assert _operation_count(session_id) == 0
+    assert calls == []
 
 
 def _operation_snapshot(operation_id):

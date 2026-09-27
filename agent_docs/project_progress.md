@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 32 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 33 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -234,12 +234,13 @@ remain intact.
 
 ## Current Position
 
-Tasks 1.1 through 5.6 and Tasks 6.1-6.2 are complete.
+Tasks 1.1 through 5.6 and Tasks 6.1-6.3 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.
 The closed public view excludes fencing and request internals; exact request
 replay, cross-kind exclusion, ordered targets, configuration gates, and
-origin-aware shared suggestions were independently verified. Start performs no
-assistant call. Task 5.3 adds a ten-minute backend lease renewal and a signed
+origin-aware shared suggestions were independently verified. Task 6.3 now
+dispatches an assistant worker for new and resumed suggestion claims. Task 5.3
+adds a ten-minute backend lease renewal and a signed
 input ticket. Its short response transaction verifies the current owner, lease,
 plan revision, request, effective inputs, resource revisions, and workflow
 binding before saving operation result and ordered progress together. Independent
@@ -267,8 +268,8 @@ simultaneous mixed-kind starts, stale owners after a new fence, and recovery of
 partial progress after reopening SQLite. Existing tests cover response-loss
 replay, cancellation, plan edits, unavailable assistants, and failure/resume.
 Independent verification passed 2,335 Python tests, 48 privacy/control tests,
-strict OpenSpec validation, and `git diff --check`. Actual assistant execution
-and take snapshot integration remain in later tasks.
+strict OpenSpec validation, and `git diff --check`. Shared suggestion execution
+arrived in Task 6.3; take snapshot integration remains in Task 6.4.
 
 Task 6.1 makes the fused-scene choice explicit in Resources. The existing
 guided API restricts simple anchors to exact ready `rooms` revisions. Ready
@@ -287,6 +288,15 @@ approval before creating a ready snapshot. Independent verification passed
 2,337 Python tests, 434 frontend tests, the frontend build, 46 privacy/control
 tests, strict OpenSpec validation, and diff checks.
 
+Task 6.3 connects new and resumed `shared_suggestions` operations to the
+configured assistant. It requests only missing look/wardrobe choices with model
+context, brief, and authorized scene descriptions. Complete validated proposals
+and exact non-secret request evidence remain pending until reviewed, idempotent
+plan CAS acceptance; explicit empty and manual choices stay authoritative.
+Model `trigger` and `base_positive` are bound to the operation fingerprint so
+an in-flight change discards stale output. Independent acceptance passed 2,344
+Python tests, privacy checks, strict OpenSpec validation, and diff checks.
+
 ## Next Milestone
 
-Task 6.3 is next. Do not begin it automatically.
+Task 6.4 is next. Do not begin it automatically.

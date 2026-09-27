@@ -1642,8 +1642,14 @@ that it cannot resume; reload the plan and start a new operation. A crash
 after an assistant response but before its result is saved may require another
 assistant call on retry, so exactly-once remote billing is not guaranteed.
 
-These endpoints persist, inspect, accept, cancel, and reclaim operation state;
-they do not launch real assistant work yet.
+Only a new `shared_suggestions` claim or a resume that claims retry work
+schedules the configured assistant worker; replay returns the existing
+operation without dispatching it again. The worker requests only missing
+`look` and `initial_wardrobe` values, using selected-model context, the brief,
+and authorized scene descriptions. Proposals appear in operation status and do
+not change the plan until explicitly accepted. Cancellation and stale inputs
+fence worker output. Remote `prepare_takes` execution and `SessionView`
+suggestion controls remain future work.
 
 ### Operational rollback and disabling resource mode
 

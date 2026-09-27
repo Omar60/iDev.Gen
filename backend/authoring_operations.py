@@ -765,7 +765,10 @@ def _current_operation_context(
                     "authoring_inputs_stale",
                     "The current scene resources are no longer authorized; discard this response and reload the plan.",
                 )
-            effective_inputs = {"shared_summary": summary}
+            effective_inputs = {
+                "shared_summary": summary,
+                "model_context": resource_preparation._load_model_for_session(session_id),
+            }
     except AuthoringOperationError:
         raise
     except (
@@ -1622,6 +1625,37 @@ def fail_operation_item(
     with db.transaction():
         now = _utc_datetime(now_text, field="current time")
         row = _read_claim_row(claim)
+        if row["state"] == "cancel_requested":
+            if (
+                ticket.claim != claim
+                or row["operation_id"] != claim.operation_id
+                or int(row["session_id"]) != claim.session_id
+                or int(row["plan_revision"]) != claim.plan_revision
+                or int(row["fencing_token"]) != claim.fencing_token
+                or row["request_digest"] != claim.request_digest
+                or row["lease_expires_at"] != ticket.lease_expires_at
+            ):
+                raise AuthoringOperationError(
+                    409, "authoring_owner_stale", "This worker no longer owns the operation."
+                )
+            _transition_terminal(
+                row,
+                state="cancelled",
+                diagnostic_code="cancel_requested",
+                now_text=now_text,
+            )
+            saved = _get_operation(claim.operation_id)
+            if saved is None:
+                raise AuthoringOperationError(
+                    500,
+                    "operation_state_invalid",
+                    "The operation result could not be read after cancellation.",
+                )
+            return _operation_view(
+                saved,
+                planning_enabled=enabled,
+                assistant_available=True,
+            )
         _require_live_claim(row, claim, now=now)
         if ticket.claim != claim or row["lease_expires_at"] != ticket.lease_expires_at:
             raise AuthoringOperationError(409, "authoring_owner_stale", "This worker no longer owns the operation.")

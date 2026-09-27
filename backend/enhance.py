@@ -193,6 +193,7 @@ async def _request_completion(
     image: str = "",
     *,
     structured: bool = False,
+    request_evidence: dict[str, object] | None = None,
 ) -> str:
     """Shared configured URL/model/body/auth/timeout/retry/error boundary."""
     if not configured(config):
@@ -236,8 +237,8 @@ async def _request_completion(
         async with httpx.AsyncClient(timeout=TIMEOUT) as c:
             r = await c.post(url, json=body, headers=headers)
             if r.status_code == 400 and "reasoning" in r.text.lower():
-                plain = {k: v for k, v in body.items() if k != "reasoning_effort"}
-                r = await c.post(url, json=plain, headers=headers)
+                body = {k: v for k, v in body.items() if k != "reasoning_effort"}
+                r = await c.post(url, json=body, headers=headers)
     except httpx.HTTPError as exc:  # noqa: BLE001 - the safe URL and exception type are the useful half
         # A timeout stringifies to nothing at all, and "did not answer: " with
         # nothing after it is the least useful error this app could print.
@@ -259,6 +260,17 @@ async def _request_completion(
                 config,
             ),
         )
+    if request_evidence is not None:
+        request_evidence.clear()
+        request_evidence.update({
+            "messages": json.loads(json.dumps(body["messages"], ensure_ascii=False)),
+            "model": body["model"],
+            "parameters": {
+                key: json.loads(json.dumps(body[key], ensure_ascii=False))
+                for key in ("temperature", "stream", "response_format", "reasoning_effort")
+                if key in body
+            },
+        })
     try:
         choice = r.json()["choices"][0]
         content = choice["message"]["content"]
@@ -289,10 +301,16 @@ async def run(config: dict, p: EnhanceIn, image: str = "") -> list[dict]:
 
 
 async def run_structured(
-    config: dict, p: EnhanceIn, image: str = ""
+    config: dict,
+    p: EnhanceIn,
+    image: str = "",
+    *,
+    request_evidence: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """New JSON-object transport; preserve parsed structure exactly."""
-    content = await _request_completion(config, p, image, structured=True)
+    content = await _request_completion(
+        config, p, image, structured=True, request_evidence=request_evidence,
+    )
     raw_url = config.get("llm_url", "").rstrip("/")
     if raw_url and not raw_url.endswith("/chat/completions"):
         raw_url += "/chat/completions"

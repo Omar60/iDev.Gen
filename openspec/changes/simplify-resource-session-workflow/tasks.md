@@ -47,7 +47,7 @@
 
 - [x] 6.1 Restrict simple automatic anchors to ready rooms while retaining fused/manual/expert paths. Show Advanced or structured-scene alternatives and never auto-decompose fused prose.
 - [x] 6.2 Show complete authorized fused descriptions and require a reviewed adaptation or another resource for conflicts. Make adaptation recording use `_prepare_resource` or the shared authorized resolver, persist exact effective `source_value`, and revalidate it in review/finalization; verify translation-versus-payload values, missing required translation and changed sidecars without rewriting history.
-- [ ] 6.3 Run optional missing look/wardrobe suggestions only through the exclusive `shared_suggestions` operation after the operation foundation exists. Require idempotent reviewed acceptance before take consumption, preserve exact input/output/edits/origins and support explicit empty/manual decisions.
+- [x] 6.3 Run optional missing look/wardrobe suggestions only through the exclusive `shared_suggestions` operation after the operation foundation exists. Require idempotent reviewed acceptance before take consumption, preserve exact input/output/edits/origins and support explicit empty/manual decisions.
 - [ ] 6.4 Bridge `prepare_takes` operation output into resource preparation validation/finalization with real assistant provenance. Request only unlocked camera/framing/pose/expression and prevent output from mutating resources, adaptations, workflow or shared state.
 - [ ] 6.5 Test locked-field refusal, malformed/partial output, placeholders, shared-state protection and provenance replay. Demonstrate fused camera/pose conflict and location embedded in pose without advertising structural validation as semantic approval.
 
