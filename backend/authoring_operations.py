@@ -1170,6 +1170,7 @@ def persist_operation_response(
     items: Any,
     *,
     suggestion_input: Any = None,
+    finalize_take: Any = None,
     planning_enabled: bool | None = None,
 ) -> dict:
     """Atomically persist validated target results and ordered progress.
@@ -1179,6 +1180,8 @@ def persist_operation_response(
     and current resource/workflow authority so validated output alone cannot
     bypass those checks.
     """
+    from backend import resource_preparation
+
     if not isinstance(claim, OperationClaim) or not isinstance(ticket, OperationLeaseTicket):
         raise AuthoringOperationError(422, "invalid_request", "A backend operation lease ticket is required.")
     if not _is_authentic_operation_lease_ticket(ticket):
@@ -1269,6 +1272,45 @@ def persist_operation_response(
                         "authoring_inputs_stale",
                         "The response does not match the next ordered operation targets.",
                     )
+                finalized_take = False
+                if row["kind"] == "prepare_takes" and _resolve_planning_enabled(None):
+                    if len(normalized_items) != 1 or not callable(finalize_take):
+                        raise AuthoringOperationError(
+                            422, "invalid_operation_result",
+                            "Take preparation requires one server finalization callback.",
+                        )
+                    snapshot = finalize_take(targets[0], normalized_items[0]["result"])
+                    finalized_take = True
+                    if (not isinstance(snapshot, dict) or snapshot.get("status") != "ready"
+                            or snapshot.get("session_id") != claim.session_id
+                            or snapshot.get("plan_revision") != claim.plan_revision
+                            or snapshot.get("take_id") != targets[0]):
+                        raise AuthoringOperationError(
+                            422, "invalid_operation_result",
+                            "Take finalization did not produce the current ready snapshot.",
+                        )
+                    actual_snapshot = session_plan._prepared_take_row(
+                        claim.session_id, claim.plan_revision, targets[0],
+                    )
+                    if actual_snapshot is None or actual_snapshot["id"] != snapshot.get("id") or actual_snapshot["status"] != "ready":
+                        raise AuthoringOperationError(
+                            422, "invalid_operation_result",
+                            "Take finalization did not persist the current ready snapshot.",
+                        )
+                    evidence = snapshot.get("provenance", {}).get("authoring_evidence", {})
+                    writer_input = evidence.get("writer_synthesis", {}).get("writer_input") or {}
+                    normalized_items = [{
+                        "target": targets[0],
+                        "result": {
+                            "prepared_take_id": snapshot["id"],
+                            "take_id": targets[0],
+                            "assistant_output_digest": resource_store.canonical_digest(items[0]["result"]),
+                            "assistant_request_digest": resource_store.canonical_digest(
+                                writer_input.get("assistant_request", {})
+                            ),
+                        },
+                    }]
+                    encoded_items = json.dumps(normalized_items, ensure_ascii=False, separators=(",", ":"))
 
                 previous_result = _decode_json(row.get("result_json"), default=None)
                 if previous_result is None:
@@ -1324,6 +1366,10 @@ def persist_operation_response(
                 # Recheck at the authoritative write boundary in case the
                 # process gate changed while effective inputs were validated.
                 if not _resolve_planning_enabled(None):
+                    if finalized_take:
+                        raise AuthoringOperationError(
+                            503, "resource_planning_disabled", "Resource planning is disabled.",
+                        )
                     _transition_terminal(
                         row,
                         state="cancelled",
@@ -1339,6 +1385,11 @@ def persist_operation_response(
                         )
                     response_view = build_operation_view(saved, can_cancel=False, can_resume=False)
                 else:
+                    if row["kind"] == "prepare_takes" and not finalized_take:
+                        raise AuthoringOperationError(
+                            409, "authoring_inputs_stale",
+                            "Take finalization was skipped; discard this response.",
+                        )
                     updated = db.conn().execute(
                         """UPDATE authoring_operation
                            SET state = ?, lease_expires_at = ?, completed_json = ?,
@@ -1367,6 +1418,10 @@ def persist_operation_response(
                     if updated.rowcount != 1:
                         raise AuthoringOperationError(
                             409, "authoring_owner_stale", "This worker no longer owns the operation."
+                        )
+                    if row["kind"] == "prepare_takes":
+                        resource_preparation.validate_authoring_prepared_evidence(
+                            claim.session_id, claim.plan_revision, targets[0],
                         )
                     saved = _get_operation(claim.operation_id)
                     if saved is None:

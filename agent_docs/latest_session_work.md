@@ -2,26 +2,23 @@
 
 ## Current State
 
-OpenSpec Task 6.3 of `simplify-resource-session-workflow` passed independent
-acceptance. New and resumed `shared_suggestions` claims dispatch one configured
-assistant call for missing look/wardrobe choices. The worker sends model context,
-brief, and authorized scene descriptions; only complete validated proposals and
-the exact safe request evidence are persisted. Pending proposals never change
-the plan. Existing reviewed CAS acceptance records edits and origins, including
-explicit empty choices; manual decisions remain assistant-free.
+OpenSpec Task 6.4 of `simplify-resource-session-workflow` passed independent
+acceptance. The `prepare_takes` worker sends only unlocked structured creative
+fields through the configured assistant. Server preparation validates its real
+response and writes the ready snapshot with operation progress under one current
+fence and transaction. The committed result binds assistant request and output
+digests to the snapshot evidence. Cancellation, stale inputs and invalid output
+do not create a ready snapshot.
 
 ## Independent Verification
 
-The first review reproduced an in-flight change to model `trigger` and
-`base_positive` that left stale suggestions acceptable. The repair binds that
-model context to the operation fingerprint and renews the lease before prompt
-construction. Independent recheck passed `python -m pytest` (2,344 tests),
-`tests/test_no_personal_data.py` (10 tests), strict OpenSpec validation, and
-`git diff --check`. Frontend gates were not applicable because no frontend file
-changed.
+The first review found that altered assistant request provenance still passed
+validation and an internal operation result could complete without a snapshot.
+Both were repaired and independently rechecked. The final `python -m pytest`
+run passed 2,350 tests; privacy/control checks passed 46 tests; strict OpenSpec
+validation and `git diff --check` passed. No frontend files changed.
 
 ## Continuation
 
-Task 6.4 is next and has not started. Task 6.3 has no browser suggestion
-controls; those belong to Task 8.2. The `prepare_takes` remote worker belongs
-to Task 6.4. This deployment closes Task 6.3 only; there is no push.
+Task 6.5 is next and has not started. Predecessor context and exact duplicate
+comparison remain in Tasks 7.1 and 7.9. Task 6.4 closes locally without push.

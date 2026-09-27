@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 33 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 34 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -297,6 +297,16 @@ Model `trigger` and `base_positive` are bound to the operation fingerprint so
 an in-flight change discards stale output. Independent acceptance passed 2,344
 Python tests, privacy checks, strict OpenSpec validation, and diff checks.
 
+Task 6.4 connects `prepare_takes` to structured assistant output and server
+preparation. Only unlocked camera, framing, pose and expression fields enter the
+request or output; the ready snapshot and operation progress commit together
+under the current fence. Snapshot provenance binds the actual assistant request
+and validated output to the committed operation result. Cancellation, stale
+inputs and invalid output leave no ready snapshot. Independent acceptance passed
+2,350 Python tests, 46 privacy/control tests, strict OpenSpec validation and
+diff checks. Predecessor context and duplicate detection remain Tasks 7.1 and
+7.9.
+
 ## Next Milestone
 
-Task 6.4 is next. Do not begin it automatically.
+Task 6.5 is next. Do not begin it automatically.

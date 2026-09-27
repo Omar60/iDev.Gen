@@ -439,3 +439,9 @@
   model `trigger` and `base_positive` drifted during an in-flight call until
   they were included, with lease renewal before prompt construction. Keep the
   take worker and browser controls in their separately assigned tasks.
+- Task 6.4 couples each automatic ready snapshot to the operation progress
+  write inside one fenced transaction. Read-only evidence validation must bind
+  the exact assistant request as well as its output to that committed result;
+  checking only the request shape let altered model provenance pass review.
+  Reject an internal `prepare_takes` result without its ready snapshot. Keep
+  predecessor context and duplicate detection with their later assigned tasks.

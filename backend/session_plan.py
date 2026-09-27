@@ -2115,10 +2115,24 @@ def complete_authoring_preparation(result: Any) -> dict:
             # change, and no ``shot`` row survives.
             _safe_validate_workflow_binding(session_id)
             plan = _validate_preparation_target(session_id, plan_revision, take_id)
-            if classify_plan_authoring(plan) != PLAN_AUTHORING_KIND_MANUAL:
+            kind = classify_plan_authoring(plan)
+            if kind not in (PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC):
                 raise AuthoringEvidenceInvalid(
-                    "sealed manual persistence requires manual authoring-v1"
+                    "sealed persistence requires authoring-v1"
                 )
+            if kind == PLAN_AUTHORING_KIND_AUTOMATIC:
+                operation = db.one(
+                    "SELECT operation_id, session_id, plan_revision, kind, state "
+                    "FROM authoring_operation WHERE operation_id = ?",
+                    result.operation_id,
+                )
+                if (operation is None or operation["session_id"] != session_id
+                        or operation["plan_revision"] != plan_revision
+                        or operation["kind"] != "prepare_takes"
+                        or operation["state"] != "active"):
+                    raise AuthoringEvidenceInvalid(
+                        "automatic preparation requires a current active operation"
+                    )
             existing = _prepared_take_row(session_id, plan_revision, take_id)
             if existing is None:
                 raise PreparedTakeConflict(

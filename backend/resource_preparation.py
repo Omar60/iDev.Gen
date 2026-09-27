@@ -269,6 +269,7 @@ class _AuthoringPreparedResult:
     mapping_version: str
     compiler_version: str
     provenance: Any
+    operation_id: str | None = None
 
 
 def _is_sealed_authoring_result(value: Any) -> bool:
@@ -4436,9 +4437,21 @@ def build_authoring_evidence(
             raise session_plan.DirectPreparationNotAllowed(
                 "automatic authoring requires fenced operation result"
             )
-        raise session_plan.DirectPreparationNotAllowed(
-            "automatic authoring prepared takes not supported in task 2.4"
+        res_proj, digest_block = build_canonical_resource_projection(
+            preparation, validated_adaptations,
         )
+        return {
+            "schema_version": 1,
+            "mode": "automatic",
+            "source": "assistant" if writer_block["kind"] == WRITER_KIND_ASSISTANT else "fixed",
+            "manual_completion": {"descriptive_inputs": {}},
+            "writer_synthesis": writer_block,
+            "predecessor_projection": {"status": "not_recorded"},
+            "resource_projection": res_proj,
+            "effective_resource_input_digest": digest_block,
+            "duplicate_flags": {"status": "not_recorded", "flags": []},
+            "operation_id": operation_result,
+        }
 
     res_proj, digest_block = build_canonical_resource_projection(
         preparation, validated_adaptations,
@@ -4654,9 +4667,82 @@ def validate_authoring_prepared_evidence(
         )
 
     if plan_authoring_mode == "automatic":
-        raise session_plan.AuthoringEvidenceInvalid(
-            "automatic authoring prepared takes cannot be validated without fenced operation bridge"
+        if not isinstance(auth_ev.get("operation_id"), str):
+            raise session_plan.AuthoringEvidenceInvalid("automatic preparation requires operation provenance")
+        if auth_ev.get("manual_completion") != {"descriptive_inputs": {}}:
+            raise session_plan.AuthoringEvidenceInvalid("automatic preparation cannot carry manual completion")
+        if auth_ev.get("predecessor_projection") != {"status": "not_recorded"}:
+            raise session_plan.AuthoringEvidenceInvalid("automatic predecessor status is invalid")
+        if auth_ev.get("duplicate_flags") != {"status": "not_recorded", "flags": []}:
+            raise session_plan.AuthoringEvidenceInvalid("automatic duplicate status is invalid")
+        operation = db.one(
+            "SELECT session_id, plan_revision, kind, state, requested_json, result_json "
+            "FROM authoring_operation WHERE operation_id = ?",
+            auth_ev["operation_id"],
         )
+        if (operation is None or operation["session_id"] != session_id
+                or operation["plan_revision"] != plan_revision
+                or operation["kind"] != "prepare_takes"
+                or operation["state"] not in ("active", "succeeded", "failed", "cancelled", "expired")
+                or take_id not in json.loads(operation["requested_json"])):
+            raise session_plan.AuthoringEvidenceInvalid("automatic operation identity is invalid")
+        stored = session_plan._prepared_take_row(session_id, plan_revision, take_id)
+        raw_ws = auth_ev.get("writer_synthesis")
+        if not isinstance(raw_ws, dict):
+            raise session_plan.AuthoringEvidenceInvalid("automatic writer evidence is invalid")
+        raw_input = raw_ws.get("writer_input")
+        if raw_input is not None and not isinstance(raw_input, dict):
+            raise session_plan.AuthoringEvidenceInvalid("automatic assistant request is invalid")
+        if operation["state"] != "active" or (stored is not None and stored["status"] == "ready"):
+            try:
+                saved_items = json.loads(operation["result_json"])["items"]
+            except (TypeError, ValueError, KeyError) as exc:
+                raise session_plan.AuthoringEvidenceInvalid("automatic operation result is missing") from exc
+            matching = [item["result"] for item in saved_items if item["target"] == take_id]
+            expected_ref = {
+                "prepared_take_id": row_dict.get("id"),
+                "take_id": take_id,
+                "assistant_output_digest": resource_store.canonical_digest(
+                    raw_ws.get("writer_output") or {}
+                ),
+                "assistant_request_digest": resource_store.canonical_digest(
+                    (raw_input or {}).get("assistant_request", {})
+                ),
+            }
+            if matching != [expected_ref]:
+                raise session_plan.AuthoringEvidenceInvalid("automatic operation result does not match snapshot")
+        ws = auth_ev.get("writer_synthesis")
+        if (not isinstance(ws, dict) or set(ws) != CLOSED_WRITER_SYNTHESIS_KEYS
+                or provenance.get("writer_synthesis") != ws
+                or ws.get("version") != WRITER_SYNTHESIS_VERSION):
+            raise session_plan.AuthoringEvidenceInvalid("automatic writer evidence is invalid")
+        base_prep = prepare_take_inputs(session_id, plan_revision, take_id)
+        unlocked = compute_unlocked_fields(base_prep)
+        if auth_ev.get("source") != ("assistant" if unlocked else "fixed"):
+            raise session_plan.AuthoringEvidenceInvalid("automatic synthesis source is invalid")
+        if ws.get("requested_fields") != unlocked:
+            raise session_plan.AuthoringEvidenceInvalid("automatic requested fields differ from unlocked fields")
+        if unlocked:
+            if ws.get("kind") != WRITER_KIND_ASSISTANT:
+                raise session_plan.AuthoringEvidenceInvalid("automatic writer kind must be assistant")
+            writer_input = ws.get("writer_input")
+            if (not isinstance(writer_input, dict)
+                    or writer_input.get("request") != assemble_writer_request(base_prep, unlocked)
+                    or not isinstance(writer_input.get("assistant_request"), dict)
+                    or set(writer_input["assistant_request"]) != {"messages", "model", "parameters"}):
+                raise session_plan.AuthoringEvidenceInvalid("automatic assistant request is invalid")
+            try:
+                writer_output = validate_writer_output(ws.get("writer_output"), base_prep, unlocked)
+            except WriterOutputInvalid as exc:
+                raise session_plan.AuthoringEvidenceInvalid("automatic assistant output is invalid") from exc
+            fresh_prep = apply_writer_values(base_prep, writer_output)
+        else:
+            if ws != _writer_synthesis_block(
+                kind=WRITER_KIND_NONE, requested_fields=[], writer_input=None, writer_output=None,
+            ):
+                raise session_plan.AuthoringEvidenceInvalid("fixed automatic take must have no writer output")
+            fresh_prep = base_prep
+        manual_descriptive = {}
     elif plan_authoring_mode == "manual":
         if auth_ev.get("source") != "manual":
             raise session_plan.AuthoringEvidenceInvalid("manual authoring must have source 'manual'")
@@ -4746,13 +4832,14 @@ def validate_authoring_prepared_evidence(
         raise session_plan.AuthoringEvidenceInvalid(f"unsupported plan authoring mode: {plan_authoring_mode!r}")
 
     # Derive fresh preparation with manual_descriptive
-    fresh_prep = prepare_take_inputs(
-        session_id, plan_revision, take_id,
-        manual_completion=manual_descriptive,
-    )
+    if plan_authoring_mode == "manual":
+        fresh_prep = prepare_take_inputs(
+            session_id, plan_revision, take_id,
+            manual_completion=manual_descriptive,
+        )
 
     fresh_manual = fresh_prep.get("manual_completion", {}).get("descriptive_inputs") or {}
-    if manual_descriptive != fresh_manual:
+    if plan_authoring_mode == "manual" and manual_descriptive != fresh_manual:
         raise session_plan.AuthoringEvidenceInvalid(
             "manual_completion descriptive_inputs does not match server normalization"
         )
@@ -4915,6 +5002,7 @@ def finalize_take_preparation(
     manual_completion: Mapping[str, str] | None = None,
     adaptations: list[dict] | None = None,
     writer: WriterCallable | None = None,
+    _operation_result: tuple[Any, dict, dict] | None = None,
 ) -> dict:
     """Atomically finalize take preparation into an immutable snapshot.
 
@@ -4986,8 +5074,11 @@ def finalize_take_preparation(
         )
 
     # 2. Authority enforcement
-    session_plan.assert_direct_preparation_allowed(plan)
+    if _operation_result is None:
+        session_plan.assert_direct_preparation_allowed(plan)
     plan_kind = session_plan.classify_plan_authoring(plan)
+    if _operation_result is not None and plan_kind != session_plan.PLAN_AUTHORING_KIND_AUTOMATIC:
+        raise session_plan.PreparationAuthorityConflict("automatic operation requires automatic authoring")
     if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
         if writer is not None:
             raise PreparationArgumentError(
@@ -5072,6 +5163,47 @@ def finalize_take_preparation(
             if (k not in eff_choices or not eff_choices[k]) and isinstance(v, str) and v:
                 eff_choices[k] = v
 
+    if _operation_result is not None:
+        from backend import authoring_operations
+
+        ticket, writer_request, raw_output = _operation_result
+        if (not isinstance(ticket, authoring_operations.OperationLeaseTicket)
+                or not authoring_operations._is_authentic_operation_lease_ticket(ticket)
+                or ticket.claim.session_id != session_id
+                or ticket.claim.plan_revision != plan_revision):
+            raise session_plan.PreparationAuthorityConflict(
+                "automatic preparation requires a current fenced operation ticket"
+            )
+        operation_id = ticket.claim.operation_id
+        operation = db.one(
+            "SELECT state, kind, fencing_token, lease_expires_at, remaining_json "
+            "FROM authoring_operation WHERE operation_id = ?",
+            operation_id,
+        )
+        if (operation is None or operation["state"] != "active"
+                or operation["kind"] != "prepare_takes"
+                or operation["fencing_token"] != ticket.claim.fencing_token
+                or operation["lease_expires_at"] != ticket.lease_expires_at
+                or json.loads(operation["remaining_json"])[0] != take_id):
+            raise session_plan.PreparationAuthorityConflict(
+                "automatic preparation is no longer the current fenced item"
+            )
+        unlocked = compute_unlocked_fields(preparation)
+        if (type(writer_request) is not dict
+                or writer_request.get("request") != assemble_writer_request(preparation, unlocked)
+                or (unlocked and set(writer_request.get("assistant_request", {})) != {"messages", "model", "parameters"})):
+            raise PreparationArgumentError("automatic writer request changed before finalization")
+        validated_output = validate_writer_output(raw_output, preparation, unlocked=unlocked) if unlocked else {}
+        if not unlocked and raw_output:
+            raise WriterOutputInvalid("assistant returned fields when no choices were unlocked")
+        preparation = apply_writer_values(preparation, validated_output)
+        writer_block = _writer_synthesis_block(
+            kind=WRITER_KIND_ASSISTANT if unlocked else WRITER_KIND_NONE,
+            requested_fields=unlocked,
+            writer_input=writer_request if unlocked else None,
+            writer_output=validated_output if unlocked else None,
+        )
+
     # 5. Handle unlocked fields
     is_reference = bool(preparation.get("reference", False))
     ref_kind = ""
@@ -5084,8 +5216,9 @@ def finalize_take_preparation(
         ) or {})["kind"] or ""
 
     unlocked = [] if (is_reference and ref_kind != "guide") else compute_unlocked_fields(preparation)
-    writer_block = None
-    if unlocked:
+    if _operation_result is None:
+        writer_block = None
+    if unlocked and _operation_result is None:
         if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
             raise PreparationArgumentError(
                 f"session {session_id} take {take_id!r} has unlocked descriptive choices "
@@ -5105,7 +5238,7 @@ def finalize_take_preparation(
                 f"session {session_id} take {take_id!r} has unlocked descriptive choices "
                 f"{sorted(unlocked)!r}; supply manual_completion or provide a writer callable"
             )
-    else:
+    elif _operation_result is None:
         if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
             writer_block = _writer_synthesis_block(
                 kind=WRITER_KIND_MANUAL,
@@ -5205,6 +5338,7 @@ def finalize_take_preparation(
             validated_adaptations=validated_adaptations,
             manual_completion=validated_manual,
             writer_block=writer_block,
+            operation_result=operation_id if _operation_result is not None else None,
         )
 
     # 10. Persist through the authority boundary for this plan kind.
@@ -5215,7 +5349,7 @@ def finalize_take_preparation(
     # ``begin_preparation`` call below never runs.
     workflow_binding.validate_workflow_binding_against_session(session_id)
     session_plan.begin_preparation(session_id, plan_revision, take_id)
-    if plan_kind == session_plan.PLAN_AUTHORING_KIND_MANUAL:
+    if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
         authoring_result = _AuthoringPreparedResult(
             _AUTHORING_RESULT_SEAL,
             session_id,
@@ -5226,6 +5360,7 @@ def finalize_take_preparation(
             MAPPING_VERSION,
             COMPILER_VERSION,
             provenance,
+            operation_id if _operation_result is not None else None,
         )
         return session_plan.complete_authoring_preparation(authoring_result)
     return session_plan.complete_preparation(

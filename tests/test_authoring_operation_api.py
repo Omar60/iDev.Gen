@@ -19,6 +19,69 @@ from backend import authoring_operations
 
 
 _REAL_SCHEDULE_SHARED_SUGGESTION_OPERATION = main._schedule_shared_suggestion_operation
+_REAL_PERSIST_OPERATION_RESPONSE = authoring_operations.persist_operation_response
+
+
+def _persist_response_for_state_test(claim, ticket, items, **kwargs):
+    """Exercise operation state transitions with a real sealed take snapshot."""
+    row = db.one("SELECT kind FROM authoring_operation WHERE operation_id = ?", claim.operation_id)
+    if row is None or row["kind"] != "prepare_takes":
+        return _REAL_PERSIST_OPERATION_RESPONSE(claim, ticket, items, **kwargs)
+    if "finalize_take" in kwargs:
+        return _REAL_PERSIST_OPERATION_RESPONSE(claim, ticket, items, **kwargs)
+
+    converted = []
+    requests = {}
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("target"), str):
+            converted.append(item)
+            continue
+        target = item["target"]
+        try:
+            prep = main.resource_preparation.prepare_take_inputs(
+                claim.session_id, claim.plan_revision, target,
+            )
+            unlocked = main.resource_preparation.compute_unlocked_fields(prep)
+            request = main.resource_preparation.assemble_writer_request(prep, unlocked)
+        except Exception:
+            converted.append(item)
+            continue
+        requests[target] = {"request": request, "assistant_request": {
+            "messages": [{"role": "user", "content": "Invented test request."}],
+            "model": "test-model",
+            "parameters": {"response_format": {"type": "json_object"}},
+        }}
+        converted.append({"target": target, "result": {
+            field: f"invented {field} for {target}" for field in unlocked
+        }})
+
+    def finalize(target, result):
+        return main.resource_preparation.finalize_take_preparation(
+            claim.session_id, claim.plan_revision, target,
+            _operation_result=(ticket, requests[target], result),
+        )
+
+    return _REAL_PERSIST_OPERATION_RESPONSE(
+        claim, ticket, converted, finalize_take=finalize, **kwargs,
+    )
+
+
+def _assert_snapshot_results(items, session_id, targets):
+    assert [item["target"] for item in items] == targets
+    for item in items:
+        result = item["result"]
+        assert result["take_id"] == item["target"]
+        row = db.one("SELECT * FROM prepared_take WHERE id = ?", result["prepared_take_id"])
+        assert row["session_id"] == session_id
+        assert row["take_id"] == item["target"]
+        assert row["status"] == "ready"
+        evidence = json.loads(row["provenance"])["authoring_evidence"]["writer_synthesis"]
+        assert result["assistant_output_digest"] == resource_store.canonical_digest(
+            evidence["writer_output"] or {}
+        )
+        assert result["assistant_request_digest"] == resource_store.canonical_digest(
+            (evidence["writer_input"] or {}).get("assistant_request", {})
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -173,6 +236,157 @@ def _wait_for_operation_state(client, session_id, operation_id, expected_state, 
     assert latest is not None
     assert latest["state"] == expected_state, latest
     return latest
+
+
+def test_prepare_takes_commits_ready_snapshot_with_assistant_evidence(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+    output = {
+        "camera": "eye-level camera",
+        "framing": "full body framing",
+        "pose": "standing beside the window",
+        "expression": "a calm expression",
+    }
+    calls = _install_fake_structured_assistant(monkeypatch, [output])
+    started = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision),
+    )
+    assert started.status_code == 202, started.text
+    operation_id = started.json()["operation_id"]
+    view = _wait_for_operation_state(client, session_id, operation_id, "succeeded")
+    row = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+        session_id, revision, "take-001",
+    )
+    assert row["status"] == "ready"
+    evidence = json.loads(row["provenance"])["authoring_evidence"]
+    assert view["result"] == {"items": [{
+        "target": "take-001",
+        "result": {
+            "prepared_take_id": row["id"], "take_id": "take-001",
+            "assistant_output_digest": resource_store.canonical_digest(output),
+            "assistant_request_digest": resource_store.canonical_digest(
+                evidence["writer_synthesis"]["writer_input"]["assistant_request"]
+            ),
+        },
+    }]}
+    assert evidence["operation_id"] == operation_id
+    assert evidence["source"] == "assistant"
+    assert evidence["writer_synthesis"]["writer_output"] == output
+    assert evidence["writer_synthesis"]["writer_input"]["assistant_request"]["model"] == "test-model"
+    assert len(calls) == 1
+    main.resource_preparation.validate_authoring_prepared_evidence(
+        session_id, revision, "take-001",
+    )
+    recovered = main.session_plan.recover_preparation(session_id)
+    assert [item["take_id"] for item in recovered["completed"]] == ["take-001"]
+
+    changed = json.loads(row["provenance"])
+    changed["writer_synthesis"]["writer_input"]["assistant_request"]["model"] = "forged-model"
+    changed["authoring_evidence"]["writer_synthesis"]["writer_input"]["assistant_request"]["model"] = "forged-model"
+    db.run(
+        "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+        json.dumps(changed), row["id"],
+    )
+    with pytest.raises(main.session_plan.AuthoringEvidenceInvalid):
+        main.resource_preparation.validate_authoring_prepared_evidence(
+            session_id, revision, "take-001",
+        )
+    recovered = main.session_plan.recover_preparation(session_id)
+    assert {"take_id": "take-001", "status": "invalid_evidence", "diagnostic": "authoring_evidence_invalid"} in recovered["incomplete"]
+
+
+@pytest.mark.parametrize("output", [
+    {"camera": "eye-level", "framing": "full body", "pose": "standing", "expression": "calm", "look": "changed"},
+    {"camera": "eye-level", "framing": "full body", "pose": "standing", "expression": 7},
+])
+def test_prepare_takes_rejects_invalid_output_without_snapshot(
+    client, seeded, monkeypatch, output,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+    _install_fake_structured_assistant(monkeypatch, [output])
+    started = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision),
+    )
+    operation_id = started.json()["operation_id"]
+    failed = _wait_for_operation_state(client, session_id, operation_id, "failed")
+    assert failed["progress"]["completed"] == []
+    assert failed["result"] is None
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND take_id = ?",
+        session_id, "take-001",
+    ) is None
+
+
+def test_prepare_takes_discards_cancelled_inflight_response(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+    entered = threading.Event()
+    release = threading.Event()
+    _install_fake_structured_assistant(monkeypatch, [{
+        "camera": "eye-level", "framing": "full body",
+        "pose": "standing", "expression": "calm",
+    }], entered=entered, release=release)
+    url = f"/api/sessions/{session_id}/plan/authoring/operations"
+    started = client.post(url, json=_start_body(revision=revision))
+    operation_id = started.json()["operation_id"]
+    assert entered.wait(timeout=2)
+    cancelled = client.post(
+        f"{url}/{operation_id}/cancel", json={"expected_revision": revision},
+    )
+    assert cancelled.status_code == 202
+    release.set()
+    terminal = _wait_for_operation_state(client, session_id, operation_id, "cancelled")
+    assert terminal["progress"]["completed"] == []
+    assert terminal["result"] is None
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND take_id = ?",
+        session_id, "take-001",
+    ) is None
+
+
+def test_prepare_takes_snapshot_rolls_back_when_progress_write_fails(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+    entered = threading.Event()
+    release = threading.Event()
+    _install_fake_structured_assistant(monkeypatch, [{
+        "camera": "eye-level", "framing": "full body",
+        "pose": "standing", "expression": "calm",
+    }], entered=entered, release=release)
+    started = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision),
+    )
+    operation_id = started.json()["operation_id"]
+    assert entered.wait(timeout=2)
+    db.conn().execute("""
+        CREATE TRIGGER reject_completed_progress
+        BEFORE UPDATE OF completed_json ON authoring_operation
+        WHEN NEW.completed_json != OLD.completed_json
+        BEGIN SELECT RAISE(ABORT, 'progress write refused'); END
+    """)
+    release.set()
+    failed = _wait_for_operation_state(client, session_id, operation_id, "failed")
+    assert failed["progress"]["completed"] == []
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND take_id = ?",
+        session_id, "take-001",
+    ) is None
+    db.conn().execute("DROP TRIGGER reject_completed_progress")
 
 
 def test_start_returns_closed_view_replays_and_reads_without_assistant_call(
@@ -631,7 +845,7 @@ def _complete_shared_suggestions(client, seeded, monkeypatch, *, output=None):
         "initial_wardrobe": "A navy blouse.",
     }
     ticket = authoring_operations.renew_operation_lease(claim)
-    view = authoring_operations.persist_operation_response(
+    view = _persist_response_for_state_test(
         claim,
         ticket,
         [
@@ -1199,7 +1413,7 @@ def test_single_missing_shared_field_can_be_accepted_without_touching_explicit_v
     operation_id = started.json()["operation_id"]
     claim = authoring_operations.load_worker_claim(session_id, operation_id)
     ticket = authoring_operations.renew_operation_lease(claim)
-    authoring_operations.persist_operation_response(
+    _persist_response_for_state_test(
         claim,
         ticket,
         [{"target": "initial_wardrobe", "result": "A suggested linen shirt."}],
@@ -1320,7 +1534,7 @@ def test_suggestion_request_rejects_secret_parameters_before_operation_write(
     )
 
     with pytest.raises(authoring_operations.AuthoringOperationError) as caught:
-        authoring_operations.persist_operation_response(
+        _persist_response_for_state_test(
             claim,
             ticket,
             [
@@ -1509,7 +1723,7 @@ def _assert_refused_without_writes(claim, ticket, operation_id, items, expected_
     recovered = None
     for action in (
         lambda: authoring_operations.renew_operation_lease(claim),
-        lambda: authoring_operations.persist_operation_response(claim, ticket, items),
+        lambda: _persist_response_for_state_test(claim, ticket, items),
     ):
         with pytest.raises(authoring_operations.AuthoringOperationError) as exc_info:
             action()
@@ -1553,7 +1767,7 @@ def test_worker_renews_before_each_boundary_and_persists_ordered_results(
         return {"choices": {"pose": "standing beside a tall window"}}
 
     first_result = fake_remote_call()
-    first_view = authoring_operations.persist_operation_response(
+    first_view = _persist_response_for_state_test(
         claim,
         first_ticket,
         [{"target": "take-001", "result": first_result}],
@@ -1565,9 +1779,7 @@ def test_worker_renews_before_each_boundary_and_persists_ordered_results(
         "failed": None,
         "remaining": ["take-002"],
     }
-    assert first_view["result"] == {
-        "items": [{"target": "take-001", "result": first_result}],
-    }
+    _assert_snapshot_results(first_view["result"]["items"], session_id, ["take-001"])
 
     second_now = first_now + timedelta(minutes=2)
     monkeypatch.setattr(db, "now", lambda: second_now.isoformat(timespec="seconds"))
@@ -1575,7 +1787,7 @@ def test_worker_renews_before_each_boundary_and_persists_ordered_results(
     assert datetime.fromisoformat(second_ticket.lease_expires_at) == second_now + timedelta(minutes=10)
     assert not db.conn().in_transaction
     second_result = fake_remote_call()
-    final_view = authoring_operations.persist_operation_response(
+    final_view = _persist_response_for_state_test(
         claim,
         second_ticket,
         [{"target": "take-002", "result": second_result}],
@@ -1584,10 +1796,7 @@ def test_worker_renews_before_each_boundary_and_persists_ordered_results(
     assert final_view["lease_expires_at"] is None
     assert final_view["progress"]["completed"] == ["take-001", "take-002"]
     assert final_view["progress"]["remaining"] == []
-    assert final_view["result"]["items"] == [
-        {"target": "take-001", "result": first_result},
-        {"target": "take-002", "result": second_result},
-    ]
+    _assert_snapshot_results(final_view["result"]["items"], session_id, ["take-001", "take-002"])
     assert _operation_count(session_id) == 1
     assert not {"fencing_token", "request_digest"}.intersection(final_view)
 
@@ -1602,6 +1811,37 @@ def test_worker_renews_before_each_boundary_and_persists_ordered_results(
     )
     assert resumed_terminal.status_code == 200, resumed_terminal.text
     assert resumed_terminal.json() == final_view
+
+
+def test_prepare_result_cannot_advance_without_ready_snapshot(client, seeded, monkeypatch):
+    session_id, operation_id, claim = _start_worker(
+        client, seeded, monkeypatch, take_ids=["take-001"],
+    )
+    ticket = authoring_operations.renew_operation_lease(claim)
+    before = _operation_snapshot(operation_id)
+    with pytest.raises(authoring_operations.AuthoringOperationError) as exc_info:
+        _REAL_PERSIST_OPERATION_RESPONSE(
+            claim, ticket,
+            [{"target": "take-001", "result": {"pose": "invented pose"}}],
+        )
+    assert exc_info.value.code == "invalid_operation_result"
+    assert _operation_snapshot(operation_id) == before
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND take_id = ?",
+        session_id, "take-001",
+    ) is None
+    with pytest.raises(authoring_operations.AuthoringOperationError) as exc_info:
+        _REAL_PERSIST_OPERATION_RESPONSE(
+            claim, ticket,
+            [{"target": "take-001", "result": {"pose": "invented pose"}}],
+            finalize_take=lambda target, result: {
+                "id": 123, "session_id": session_id,
+                "plan_revision": claim.plan_revision,
+                "take_id": target, "status": "ready",
+            },
+        )
+    assert exc_info.value.code == "invalid_operation_result"
+    assert _operation_snapshot(operation_id) == before
 
 
 def test_status_read_does_not_renew_or_rewrite_the_lease(client, seeded, monkeypatch):
@@ -1684,7 +1924,7 @@ def test_cancel_and_in_flight_response_race_has_one_serialized_winner(
     def persist_response():
         barrier.wait(timeout=5)
         try:
-            return authoring_operations.persist_operation_response(
+            return _persist_response_for_state_test(
                 claim,
                 ticket,
                 [{"target": "take-001", "result": {"pose": "standing near a window"}}],
@@ -1724,7 +1964,7 @@ def test_expired_operation_resumes_with_new_fence_and_preserved_results(
     monkeypatch.setattr(db, "now", lambda: first_now.isoformat(timespec="seconds"))
     ticket = authoring_operations.renew_operation_lease(claim)
     first_result = {"choices": {"pose": "standing beside a tall window"}}
-    partial = authoring_operations.persist_operation_response(
+    partial = _persist_response_for_state_test(
         claim,
         ticket,
         [{"target": "take-001", "result": first_result}],
@@ -1740,9 +1980,7 @@ def test_expired_operation_resumes_with_new_fence_and_preserved_results(
     assert expired.json()["state"] == "expired"
     assert expired.json()["progress"]["completed"] == ["take-001"]
     assert expired.json()["progress"]["remaining"] == ["take-002"]
-    assert expired.json()["result"]["items"] == [
-        {"target": "take-001", "result": first_result},
-    ]
+    _assert_snapshot_results(expired.json()["result"]["items"], session_id, ["take-001"])
     assert expired.json()["can_resume"] is True
     expired_fence = _operation_snapshot(operation_id)["fencing_token"]
 
@@ -1768,7 +2006,7 @@ def test_expired_operation_resumes_with_new_fence_and_preserved_results(
 
     before_late_response = _operation_snapshot(operation_id)
     with pytest.raises(authoring_operations.AuthoringOperationError) as exc_info:
-        authoring_operations.persist_operation_response(
+        _persist_response_for_state_test(
             claim,
             ticket,
             [{"target": "take-002", "result": {"choices": {"pose": "stale result"}}}],
@@ -1779,17 +2017,14 @@ def test_expired_operation_resumes_with_new_fence_and_preserved_results(
     resumed_claim = authoring_operations.load_worker_claim(session_id, operation_id)
     resumed_ticket = authoring_operations.renew_operation_lease(resumed_claim)
     second_result = {"choices": {"pose": "standing beside a table"}}
-    completed = authoring_operations.persist_operation_response(
+    completed = _persist_response_for_state_test(
         resumed_claim,
         resumed_ticket,
         [{"target": "take-002", "result": second_result}],
     )
     assert completed["state"] == "succeeded"
     assert completed["progress"]["completed"] == ["take-001", "take-002"]
-    assert completed["result"]["items"] == [
-        {"target": "take-001", "result": first_result},
-        {"target": "take-002", "result": second_result},
-    ]
+    _assert_snapshot_results(completed["result"]["items"], session_id, ["take-001", "take-002"])
     assert client.get(operation_url).json() == completed
 
 
@@ -1802,7 +2037,7 @@ def test_resume_retries_failed_item_before_remaining_without_repeating_completed
     )
     first_ticket = authoring_operations.renew_operation_lease(claim)
     first_result = {"choices": {"pose": "sitting beside a lamp"}}
-    authoring_operations.persist_operation_response(
+    _persist_response_for_state_test(
         claim,
         first_ticket,
         [{"target": "take-001", "result": first_result}],
@@ -1832,9 +2067,7 @@ def test_resume_retries_failed_item_before_remaining_without_repeating_completed
         "failed": None,
         "remaining": ["take-002", "take-003"],
     }
-    assert resumed.json()["result"]["items"] == [
-        {"target": "take-001", "result": first_result},
-    ]
+    _assert_snapshot_results(resumed.json()["result"]["items"], session_id, ["take-001"])
     assert _operation_snapshot(operation_id)["fencing_token"] == failed_fence + 1
 
 
@@ -1846,7 +2079,7 @@ def test_startup_expires_prior_active_owners_and_finalizes_cancel_requests(
     )
     first_ticket = authoring_operations.renew_operation_lease(first_claim)
     first_result = {"choices": {"pose": "standing at an easel"}}
-    authoring_operations.persist_operation_response(
+    _persist_response_for_state_test(
         first_claim,
         first_ticket,
         [{"target": "take-001", "result": first_result}],
@@ -1857,7 +2090,7 @@ def test_startup_expires_prior_active_owners_and_finalizes_cancel_requests(
     )
     second_ticket = authoring_operations.renew_operation_lease(second_claim)
     second_result = {"choices": {"pose": "sitting on a bench"}}
-    authoring_operations.persist_operation_response(
+    _persist_response_for_state_test(
         second_claim,
         second_ticket,
         [{"target": "take-001", "result": second_result}],
@@ -1889,16 +2122,12 @@ def test_startup_expires_prior_active_owners_and_finalizes_cancel_requests(
     assert first["state"] == "expired"
     assert first["progress"]["completed"] == ["take-001"]
     assert first["progress"]["remaining"] == ["take-002"]
-    assert first["result"]["items"] == [
-        {"target": "take-001", "result": first_result},
-    ]
+    _assert_snapshot_results(first["result"]["items"], first_session, ["take-001"])
     assert "application restarted" in first["error"]
     assert second["state"] == "cancelled"
     assert second["progress"]["completed"] == ["take-001"]
     assert second["progress"]["remaining"] == ["take-002"]
-    assert second["result"]["items"] == [
-        {"target": "take-001", "result": second_result},
-    ]
+    _assert_snapshot_results(second["result"]["items"], second_session, ["take-001"])
     assert "preserved for resuming" in second["error"]
 
 
@@ -1913,7 +2142,7 @@ def test_feature_disable_cancels_before_renewal_or_late_response_persistence(
     monkeypatch.delenv("IDEVGEN_RESOURCE_PLANNING_ENABLED", raising=False)
 
     with pytest.raises(authoring_operations.AuthoringOperationError) as exc_info:
-        authoring_operations.persist_operation_response(
+        _persist_response_for_state_test(
             claim,
             ticket,
             [{"target": "take-001", "result": {"pose": "late output"}}],
@@ -1955,7 +2184,7 @@ def test_plan_cas_cancels_old_owner_and_discards_its_late_output(
     assert "plan changed" in before_late_response["error"]
 
     with pytest.raises(authoring_operations.AuthoringOperationError) as exc_info:
-        authoring_operations.persist_operation_response(
+        _persist_response_for_state_test(
             claim,
             ticket,
             [{"target": "take-001", "result": {"pose": "stale output"}}],
@@ -2211,7 +2440,7 @@ def test_fenced_response_rejects_translation_sidecar_drift_with_same_plan_and_di
 
     assert old_revision["content_digest"] == new_revision["content_digest"]
     with pytest.raises(authoring_operations.AuthoringOperationError) as exc_info:
-        authoring_operations.persist_operation_response(claim, ticket, items)
+        _persist_response_for_state_test(claim, ticket, items)
     assert exc_info.value.code == "authoring_inputs_stale"
     assert _operation_snapshot(operation_id) == before
     assert not db.conn().in_transaction
@@ -2224,7 +2453,7 @@ def test_fenced_response_rejects_translation_sidecar_drift_with_same_plan_and_di
     forged_ticket = replace(ticket, input_fingerprint=current_fingerprint)
     before_forged_persist = _operation_snapshot(operation_id)
     with pytest.raises(authoring_operations.AuthoringOperationError) as forged_info:
-        authoring_operations.persist_operation_response(claim, forged_ticket, items)
+        _persist_response_for_state_test(claim, forged_ticket, items)
     assert forged_info.value.code == "invalid_request"
     assert _operation_snapshot(operation_id) == before_forged_persist
     assert not db.conn().in_transaction
@@ -2254,7 +2483,7 @@ def test_modified_lease_ticket_signature_cannot_persist_a_response(client, seede
     before = _operation_snapshot(operation_id)
 
     with pytest.raises(authoring_operations.AuthoringOperationError) as exc_info:
-        authoring_operations.persist_operation_response(
+        _persist_response_for_state_test(
             claim,
             forged,
             [{"target": "take-001", "result": {"pose": "invented pose"}}],
@@ -2283,7 +2512,7 @@ def test_lease_ticket_signature_authenticates_claim_and_deadline(
     before = _operation_snapshot(operation_id)
 
     with pytest.raises(authoring_operations.AuthoringOperationError) as exc_info:
-        authoring_operations.persist_operation_response(
+        _persist_response_for_state_test(
             claim,
             forged,
             [{"target": "take-001", "result": {"pose": "invented pose"}}],
@@ -2309,7 +2538,7 @@ def test_response_and_progress_roll_back_together_when_the_write_fails(
     before = _operation_snapshot(operation_id)
     try:
         with pytest.raises(sqlite3.IntegrityError, match="test write rejection"):
-            authoring_operations.persist_operation_response(
+            _persist_response_for_state_test(
                 claim,
                 ticket,
                 [{"target": "take-001", "result": {"pose": "invented pose"}}],
@@ -2327,7 +2556,7 @@ def test_late_response_finalizes_a_cancelled_owner_without_waiting_for_lease_exp
     )
     first_ticket = authoring_operations.renew_operation_lease(claim)
     first_result = {"pose": "standing beside a tall window"}
-    authoring_operations.persist_operation_response(
+    _persist_response_for_state_test(
         claim,
         first_ticket,
         [{"target": "take-001", "result": first_result}],
@@ -2344,7 +2573,7 @@ def test_late_response_finalizes_a_cancelled_owner_without_waiting_for_lease_exp
     before_late_response = _operation_snapshot(operation_id)
 
     with pytest.raises(authoring_operations.AuthoringOperationError):
-        authoring_operations.persist_operation_response(
+        _persist_response_for_state_test(
             claim,
             ticket,
             [{"target": "take-002", "result": {"pose": "late output"}}],
@@ -2354,9 +2583,9 @@ def test_late_response_finalizes_a_cancelled_owner_without_waiting_for_lease_exp
     assert after_late_response["completed_json"] == before_late_response["completed_json"]
     assert after_late_response["remaining_json"] == before_late_response["remaining_json"]
     assert after_late_response["result_json"] == before_late_response["result_json"]
-    assert json.loads(after_late_response["result_json"])["items"] == [
-        {"target": "take-001", "result": first_result},
-    ]
+    _assert_snapshot_results(
+        json.loads(after_late_response["result_json"])["items"], session_id, ["take-001"],
+    )
     assert after_late_response["state"] == "cancelled"
     assert after_late_response["lease_expires_at"] is None
     assert after_late_response["fencing_token"] == before_late_response["fencing_token"] + 1
@@ -2425,7 +2654,7 @@ def test_feature_disable_inside_response_transaction_discards_late_output(
         "_current_operation_inputs",
         disable_after_inputs_are_checked,
     )
-    authoring_operations.persist_operation_response(
+    _persist_response_for_state_test(
         claim,
         ticket,
         [{"target": "take-001", "result": {"pose": "late output"}}],
@@ -2450,7 +2679,7 @@ def test_effective_input_digest_survives_progress_failure_resume_and_cancel(
     assert len(digest) == 64
 
     first_ticket = authoring_operations.renew_operation_lease(claim)
-    authoring_operations.persist_operation_response(
+    _persist_response_for_state_test(
         claim,
         first_ticket,
         [{"target": "take-001", "result": {"pose": "standing near a window"}}],
@@ -2479,7 +2708,7 @@ def test_effective_input_digest_survives_progress_failure_resume_and_cancel(
     assert _operation_snapshot(operation_id)["input_digest"] == digest
 
     with pytest.raises(authoring_operations.AuthoringOperationError):
-        authoring_operations.persist_operation_response(
+        _persist_response_for_state_test(
             resumed_claim,
             late_ticket,
             [{"target": "take-002", "result": {"pose": "late output"}}],
