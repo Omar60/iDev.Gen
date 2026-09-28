@@ -234,7 +234,7 @@ remain intact.
 
 ## Current Position
 
-Tasks 1.1 through 5.6 and Tasks 6.1-6.3 are complete.
+Tasks 1.1 through 6.5 and Task 7.1 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.
 The closed public view excludes fencing and request internals; exact request
 replay, cross-kind exclusion, ordered targets, configuration gates, and
@@ -304,8 +304,7 @@ under the current fence. Snapshot provenance binds the actual assistant request
 and validated output to the committed operation result. Cancellation, stale
 inputs and invalid output leave no ready snapshot. Independent acceptance passed
 2,350 Python tests, 46 privacy/control tests, strict OpenSpec validation and
-diff checks. Predecessor context and duplicate detection remain Tasks 7.1 and
-7.9.
+diff checks. Duplicate detection remains Task 7.9.
 
 Task 6.5 passed independent acceptance. Integrated operation tests reject
 locked, malformed, partial and placeholder output without ready snapshots or
@@ -316,6 +315,15 @@ as structural and requests semantic review. The full gates passed: 2,357 Python
 tests, 435 frontend tests, frontend build, strict OpenSpec validation and diff
 check.
 
+Task 7.1 passed independent acceptance. Automatic writer context includes
+persisted shared, scene, workflow and policy inputs and at most five preceding
+finalized four-field summaries, without a total-count dependency. Exact context
+and predecessor identities/revisions are replayable evidence. Invalid
+predecessor evidence blocks descendant recovery and approval, and type-sensitive
+JSON comparison rejects forged boolean IDs and ordinals. Independent gates
+passed 2,365 Python tests, 46 privacy/control tests, strict OpenSpec validation
+and diff checks.
+
 ## Next Milestone
 
-Task 7.1 is next. Do not begin it automatically.
+Task 7.2 is next. Do not begin it automatically.

@@ -43,14 +43,22 @@ def _persist_response_for_state_test(claim, ticket, items, **kwargs):
             )
             unlocked = main.resource_preparation.compute_unlocked_fields(prep)
             request = main.resource_preparation.assemble_writer_request(prep, unlocked)
+            context, predecessor_projection = main.resource_preparation.build_automatic_writer_context(
+                claim.session_id, claim.plan_revision, target, prep, request,
+            )
         except Exception:
             converted.append(item)
             continue
         requests[target] = {"request": request, "assistant_request": {
-            "messages": [{"role": "user", "content": "Invented test request."}],
+            "messages": [
+                {"role": "system", "content": "Invented test system."},
+                {"role": "user", "content": main.resource_preparation.automatic_writer_instruction(context)},
+            ],
             "model": "test-model",
             "parameters": {"response_format": {"type": "json_object"}},
         }}
+        requests[target]["context"] = context
+        requests[target]["predecessor_projection"] = predecessor_projection
         converted.append({"target": target, "result": {
             field: f"invented {field} for {target}" for field in unlocked
         }})
@@ -58,7 +66,13 @@ def _persist_response_for_state_test(claim, ticket, items, **kwargs):
     def finalize(target, result):
         return main.resource_preparation.finalize_take_preparation(
             claim.session_id, claim.plan_revision, target,
-            _operation_result=(ticket, requests[target], result),
+            _operation_result=(
+                ticket,
+                {key: requests[target][key] for key in ("request", "assistant_request")},
+                result,
+                requests[target]["context"],
+                requests[target]["predecessor_projection"],
+            ),
         )
 
     return _REAL_PERSIST_OPERATION_RESPONSE(
@@ -238,6 +252,16 @@ def _wait_for_operation_state(client, session_id, operation_id, expected_state, 
     return latest
 
 
+def _context_from_call(call):
+    user_message = next(
+        message["content"] for message in call["body"]["messages"]
+        if message["role"] == "user"
+    )
+    prefix, separator, serialized = user_message.partition("Context: ")
+    assert separator and prefix
+    return json.loads(serialized)
+
+
 def test_prepare_takes_commits_ready_snapshot_with_assistant_evidence(
     client, seeded, monkeypatch,
 ):
@@ -301,6 +325,7 @@ def test_prepare_takes_commits_ready_snapshot_with_assistant_evidence(
     assert db.one(
         "SELECT provenance FROM prepared_take WHERE id = ?", row["id"],
     )["provenance"] == provenance_before_replay
+
     main.resource_preparation.validate_authoring_prepared_evidence(
         session_id, revision, "take-001",
     )
@@ -320,6 +345,492 @@ def test_prepare_takes_commits_ready_snapshot_with_assistant_evidence(
         )
     recovered = main.session_plan.recover_preparation(session_id)
     assert {"take_id": "take-001", "status": "invalid_evidence", "diagnostic": "authoring_evidence_invalid"} in recovered["incomplete"]
+
+
+def test_prepare_takes_persists_ordered_five_take_context_and_replays(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    brief = "Keep the studio quiet and the subject relaxed."
+    look = "A consistent appearance with a soft natural finish."
+    wardrobe = "a cream linen shirt and dark trousers"
+    session_id, revision = _create_guided_session(
+        client, seeded, photo_count=12, look=look,
+        initial_wardrobe=wardrobe, brief=brief,
+    )
+    outputs = [
+        {
+            "camera": f"camera choice {index}",
+            "framing": f"framing choice {index}",
+            "pose": f"pose choice {index}",
+            "expression": f"expression choice {index}",
+        }
+        for index in range(1, 13)
+    ]
+    calls = _install_fake_structured_assistant(monkeypatch, outputs)
+    request_body = _start_body(
+        revision=revision,
+        take_ids=[f"take-{index:03d}" for index in range(1, 13)],
+    )
+    started = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=request_body,
+    )
+    assert started.status_code == 202, started.text
+    operation_id = started.json()["operation_id"]
+    view = _wait_for_operation_state(client, session_id, operation_id, "succeeded")
+    assert len(calls) == 12
+
+    saved = client.get(f"/api/sessions/{session_id}/plan")
+    assert saved.status_code == 200, saved.text
+    plan = saved.json()["plan"]
+    context = _context_from_call(calls[-1])
+    assert context["brief"] == brief
+    assert context["scene_anchor"] == plan["authoring"]["scene_anchor"]
+    assert context["shared_values"] == {
+        "look": look,
+        "initial_wardrobe": wardrobe,
+    }
+    assert context["workflow_binding"] == plan["authoring"]["workflow_binding"]
+    assert context["variation_policy"] == plan["authoring"]["variation_policy"]
+    assert context["take_id"] == "take-012"
+    assert context["ordinal"] == 12
+    assert context["preparation"]["resource_descriptive_inputs"][0]["descriptive_inputs"]["scene_theme"] == (
+        "Soft light enters an empty studio from a high window."
+    )
+
+    expected_summaries = [
+        {"take_id": f"take-{index:03d}", **outputs[index - 1]}
+        for index in range(7, 12)
+    ]
+    assert context["predecessors"] == expected_summaries
+    assert all(
+        set(summary) == {"take_id", "camera", "framing", "pose", "expression"}
+        for summary in context["predecessors"]
+    )
+    context_json = json.dumps(context, ensure_ascii=False, sort_keys=True)
+    assert "photo_count" not in context_json
+    assert "total_count" not in context_json
+    assert "prepared_take_id" not in context_json
+    assert "final_prompt" not in context_json
+    assert "data:image/" not in context_json
+    assert "image_url" not in context_json
+    for index in range(1, 12):
+        previous = db.one(
+            "SELECT final_prompt FROM prepared_take WHERE session_id = ? "
+            "AND plan_revision = ? AND take_id = ?",
+            session_id, revision, f"take-{index:03d}",
+        )
+        assert previous["final_prompt"] not in context_json
+
+    row = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+        session_id, revision, "take-012",
+    )
+    evidence = json.loads(row["provenance"])["authoring_evidence"]
+    assert evidence["schema_version"] == 2
+    assert evidence["writer_context"] == context
+    expected_refs = [
+        {
+            "take_id": f"take-{index:03d}",
+            "prepared_take_id": db.one(
+                "SELECT id FROM prepared_take WHERE session_id = ? "
+                "AND plan_revision = ? AND take_id = ?",
+                session_id, revision, f"take-{index:03d}",
+            )["id"],
+            "plan_revision": revision,
+        }
+        for index in range(7, 12)
+    ]
+    assert evidence["predecessor_projection"] == {
+        "status": "recorded",
+        "snapshots": expected_refs,
+    }
+    main.resource_preparation.validate_authoring_prepared_evidence(
+        session_id, revision, "take-012",
+    )
+
+    provenance_before_replay = row["provenance"]
+    replayed = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=request_body,
+    )
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json() == view
+    assert len(calls) == 12
+    assert db.one(
+        "SELECT provenance FROM prepared_take WHERE id = ?", row["id"],
+    )["provenance"] == provenance_before_replay
+
+    for parent_path, field, value in (
+        (("writer_context",), "brief", "forged brief"),
+        (("predecessor_projection", "snapshots", 0), "prepared_take_id", -1),
+    ):
+        tampered = json.loads(provenance_before_replay)
+        target = tampered["authoring_evidence"]
+        for key in parent_path:
+            target = target[key]
+        target[field] = value
+        db.run(
+            "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+            json.dumps(tampered), row["id"],
+        )
+        with pytest.raises(main.session_plan.AuthoringEvidenceInvalid):
+            main.resource_preparation.validate_authoring_prepared_evidence(
+                session_id, revision, "take-012",
+            )
+        db.run(
+            "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+            provenance_before_replay, row["id"],
+        )
+
+
+def test_fixed_automatic_take_persists_context_without_writer_call(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded, photo_count=2)
+    draft = client.get(f"/api/sessions/{session_id}/plan")
+    assert draft.status_code == 200, draft.text
+    plan = draft.json()["plan"]
+    plan["takes"][0].update({
+        "camera": "a fixed eye-level camera",
+        "framing": "a fixed full-body frame",
+        "pose": "a fixed standing pose",
+        "expression": "a fixed calm expression",
+    })
+    saved = client.post(
+        f"/api/sessions/{session_id}/plan",
+        json={"expected_revision": revision, "plan": plan},
+    )
+    assert saved.status_code == 200, saved.text
+    revision = saved.json()["plan_revision"]
+    calls = _install_fake_structured_assistant(monkeypatch, [])
+    request_body = _start_body(revision=revision, take_ids=["take-001"])
+    started = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=request_body,
+    )
+    assert started.status_code == 202, started.text
+    view = _wait_for_operation_state(
+        client, session_id, started.json()["operation_id"], "succeeded",
+    )
+    assert view["progress"]["completed"] == ["take-001"]
+    assert calls == []
+
+    row = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+        session_id, revision, "take-001",
+    )
+    evidence = json.loads(row["provenance"])["authoring_evidence"]
+    assert evidence["source"] == "fixed"
+    assert evidence["writer_synthesis"]["kind"] == "none"
+    assert evidence["writer_synthesis"]["writer_input"] is None
+    assert evidence["writer_context"]["take_id"] == "take-001"
+    assert evidence["writer_context"]["ordinal"] == 1
+    assert evidence["writer_context"]["preparation"]["requested_fields"] == []
+    assert evidence["predecessor_projection"] == {
+        "status": "recorded",
+        "snapshots": [],
+    }
+    main.resource_preparation.validate_authoring_prepared_evidence(
+        session_id, revision, "take-001",
+    )
+
+
+def test_invalid_predecessor_context_invalidates_descendant_recovery_and_approval(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded, photo_count=2)
+    calls = _install_fake_structured_assistant(monkeypatch, [
+        {"camera": f"camera {index}", "framing": f"framing {index}",
+         "pose": f"pose {index}", "expression": f"expression {index}"}
+        for index in (1, 2)
+    ])
+    started = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision, take_ids=["take-001", "take-002"]),
+    )
+    assert started.status_code == 202, started.text
+    operation_id = started.json()["operation_id"]
+    _wait_for_operation_state(client, session_id, operation_id, "succeeded")
+    assert len(calls) == 2
+
+    first = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+        session_id, revision, "take-001",
+    )
+    tampered = json.loads(first["provenance"])
+    tampered["authoring_evidence"]["writer_context"]["brief"] = "altered predecessor brief"
+    db.run(
+        "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+        json.dumps(tampered), first["id"],
+    )
+    rows_before_checks = db.q(
+        "SELECT id, take_id, status, linked_shot_id, updated_at, provenance "
+        "FROM prepared_take WHERE session_id = ? AND plan_revision = ? ORDER BY id",
+        session_id, revision,
+    )
+
+    recovered_response = client.get(f"/api/sessions/{session_id}/plan")
+    assert recovered_response.status_code == 200, recovered_response.text
+    recovery = recovered_response.json()["preparation"]
+    assert recovery["completed"] == []
+    assert [item["take_id"] for item in recovery["incomplete"]] == [
+        "take-001", "take-002",
+    ]
+    assert all(item["status"] == "invalid_evidence" for item in recovery["incomplete"])
+
+    approval = client.post(
+        f"/api/sessions/{session_id}/plan/review/approve",
+        json={"plan_revision": revision},
+    )
+    assert approval.status_code == 409, approval.text
+    assert "Prepared authoring evidence is invalid" in approval.text
+    assert db.one(
+        "SELECT session_id FROM session_plan_approval WHERE session_id = ?",
+        session_id,
+    ) is None
+    assert db.q(
+        "SELECT id, take_id, status, linked_shot_id, updated_at, provenance "
+        "FROM prepared_take WHERE session_id = ? AND plan_revision = ? ORDER BY id",
+        session_id, revision,
+    ) == rows_before_checks
+
+
+def test_automatic_writer_context_accepts_maximum_plan_ordinal(client, seeded):
+    session_id, revision = _create_guided_session(client, seeded, photo_count=500)
+    preparation = main.resource_preparation.prepare_take_inputs(
+        session_id, revision, "take-500",
+    )
+    unlocked = main.resource_preparation.compute_unlocked_fields(preparation)
+    context, projection = main.resource_preparation.build_automatic_writer_context(
+        session_id,
+        revision,
+        "take-500",
+        preparation,
+        main.resource_preparation.assemble_writer_request(preparation, unlocked),
+    )
+
+    assert context["ordinal"] == 500
+    assert context["predecessors"] == []
+    assert projection == {"status": "recorded", "snapshots": []}
+
+
+def test_automatic_evidence_validation_is_json_type_sensitive(client, seeded, monkeypatch):
+    session_id, operation_id, claim = _start_worker(
+        client, seeded, monkeypatch, take_ids=["take-001", "take-002"],
+    )
+    for index, take_id in enumerate(("take-001", "take-002"), 1):
+        ticket = authoring_operations.renew_operation_lease(claim)
+        view = _persist_response_for_state_test(
+            claim,
+            ticket,
+            [{"target": take_id, "result": {
+                "camera": f"camera {index}",
+                "framing": f"framing {index}",
+                "pose": f"pose {index}",
+                "expression": f"expression {index}",
+            }}],
+        )
+    assert view["state"] == "succeeded"
+
+    first = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?",
+        session_id, "take-001",
+    )
+    second = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?",
+        session_id, "take-002",
+    )
+    assert first["id"] == 1
+    assert first["plan_revision"] == 1
+    tamper_cases = []
+    first_provenance = json.loads(first["provenance"])
+    first_provenance["authoring_evidence"]["writer_context"]["ordinal"] = True
+    tamper_cases.append((first, first_provenance))
+    assert json.loads(second["provenance"])["authoring_evidence"]["predecessor_projection"]["snapshots"][0]["prepared_take_id"] == 1
+    for field in ("prepared_take_id", "plan_revision"):
+        second_provenance = json.loads(second["provenance"])
+        second_provenance["authoring_evidence"]["predecessor_projection"]["snapshots"][0][field] = True
+        tamper_cases.append((second, second_provenance))
+
+    for row, tampered in tamper_cases:
+        tampered_json = json.dumps(tampered)
+        db.run(
+            "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+            tampered_json, row["id"],
+        )
+        with pytest.raises(main.session_plan.AuthoringEvidenceInvalid):
+            main.resource_preparation.validate_authoring_prepared_evidence(
+                session_id, row["plan_revision"], row["take_id"],
+            )
+        after = db.one(
+            "SELECT status, updated_at, provenance FROM prepared_take WHERE id = ?",
+            row["id"],
+        )
+        assert after == {
+            "status": row["status"],
+            "updated_at": row["updated_at"],
+            "provenance": tampered_json,
+        }
+        db.run(
+            "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+            row["provenance"], row["id"],
+        )
+
+
+def test_finalization_rejects_boolean_context_ordinal_without_writes(
+    client, seeded, monkeypatch,
+):
+    session_id, operation_id, claim = _start_worker(
+        client, seeded, monkeypatch, take_ids=["take-001"],
+    )
+    ticket = authoring_operations.renew_operation_lease(claim)
+    preparation = main.resource_preparation.prepare_take_inputs(
+        session_id, claim.plan_revision, "take-001",
+    )
+    unlocked = main.resource_preparation.compute_unlocked_fields(preparation)
+    request = main.resource_preparation.assemble_writer_request(preparation, unlocked)
+    context, predecessor_projection = main.resource_preparation.build_automatic_writer_context(
+        session_id, claim.plan_revision, "take-001", preparation, request,
+    )
+    tampered_context = dict(context, ordinal=True)
+    writer_input = {
+        "request": request,
+        "assistant_request": {
+            "messages": [
+                {"role": "system", "content": "Invented test system."},
+                {
+                    "role": "user",
+                    "content": main.resource_preparation.automatic_writer_instruction(
+                        tampered_context,
+                    ),
+                },
+            ],
+            "model": "test-model",
+            "parameters": {"response_format": {"type": "json_object"}},
+        },
+    }
+    output = {
+        "camera": "camera one",
+        "framing": "full-body framing",
+        "pose": "standing pose",
+        "expression": "calm expression",
+    }
+    operation_before = db.one(
+        "SELECT state, completed_json, remaining_json, result_json "
+        "FROM authoring_operation WHERE operation_id = ?",
+        operation_id,
+    )
+
+    with pytest.raises(main.resource_preparation.PreparationArgumentError):
+        main.resource_preparation.finalize_take_preparation(
+            session_id,
+            claim.plan_revision,
+            "take-001",
+            _operation_result=(
+                ticket, writer_input, output, tampered_context, predecessor_projection,
+            ),
+        )
+
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND take_id = ?",
+        session_id, "take-001",
+    ) is None
+    assert db.one(
+        "SELECT state, completed_json, remaining_json, result_json "
+        "FROM authoring_operation WHERE operation_id = ?",
+        operation_id,
+    ) == operation_before
+
+
+@pytest.mark.parametrize("field", ["prepared_take_id", "plan_revision"])
+def test_finalization_rejects_boolean_predecessor_reference_without_writes(
+    client, seeded, monkeypatch, field,
+):
+    session_id, operation_id, claim = _start_worker(
+        client, seeded, monkeypatch, take_ids=["take-001", "take-002"],
+    )
+    first_ticket = authoring_operations.renew_operation_lease(claim)
+    _persist_response_for_state_test(
+        claim,
+        first_ticket,
+        [{"target": "take-001", "result": {
+            "camera": "camera one",
+            "framing": "full-body framing",
+            "pose": "standing pose",
+            "expression": "calm expression",
+        }}],
+    )
+
+    ticket = authoring_operations.renew_operation_lease(claim)
+    preparation = main.resource_preparation.prepare_take_inputs(
+        session_id, claim.plan_revision, "take-002",
+    )
+    unlocked = main.resource_preparation.compute_unlocked_fields(preparation)
+    request = main.resource_preparation.assemble_writer_request(preparation, unlocked)
+    context, predecessor_projection = main.resource_preparation.build_automatic_writer_context(
+        session_id, claim.plan_revision, "take-002", preparation, request,
+    )
+    assert predecessor_projection["snapshots"][0][field] == 1
+    tampered_projection = json.loads(json.dumps(predecessor_projection))
+    tampered_projection["snapshots"][0][field] = True
+    writer_input = {
+        "request": request,
+        "assistant_request": {
+            "messages": [
+                {"role": "system", "content": "Invented test system."},
+                {
+                    "role": "user",
+                    "content": main.resource_preparation.automatic_writer_instruction(context),
+                },
+            ],
+            "model": "test-model",
+            "parameters": {"response_format": {"type": "json_object"}},
+        },
+    }
+    output = {
+        "camera": "camera two",
+        "framing": "full-body framing",
+        "pose": "standing pose",
+        "expression": "calm expression",
+    }
+    operation_before = db.one(
+        "SELECT state, completed_json, remaining_json, result_json "
+        "FROM authoring_operation WHERE operation_id = ?",
+        operation_id,
+    )
+    rows_before = db.q(
+        "SELECT id, take_id, status, updated_at, provenance FROM prepared_take "
+        "WHERE session_id = ? AND plan_revision = ? ORDER BY id",
+        session_id, claim.plan_revision,
+    )
+
+    with pytest.raises(main.resource_preparation.PreparationArgumentError):
+        main.resource_preparation.finalize_take_preparation(
+            session_id,
+            claim.plan_revision,
+            "take-002",
+            _operation_result=(
+                ticket, writer_input, output, context, tampered_projection,
+            ),
+        )
+
+    assert db.q(
+        "SELECT id, take_id, status, updated_at, provenance FROM prepared_take "
+        "WHERE session_id = ? AND plan_revision = ? ORDER BY id",
+        session_id, claim.plan_revision,
+    ) == rows_before
+    assert db.one(
+        "SELECT state, completed_json, remaining_json, result_json "
+        "FROM authoring_operation WHERE operation_id = ?",
+        operation_id,
+    ) == operation_before
 
 
 @pytest.mark.parametrize("output", [

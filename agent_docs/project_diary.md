@@ -444,8 +444,15 @@
   the exact assistant request as well as its output to that committed result;
   checking only the request shape let altered model provenance pass review.
   Reject an internal `prepare_takes` result without its ready snapshot. Keep
-  predecessor context and duplicate detection with their later assigned tasks.
+  duplicate detection with its separately assigned task.
 - Task 6.5 verifies the real automatic operation boundary with invalid output
   and terminal replay, rather than relying only on the pure field validator.
   A fused scene can contradict camera, pose or location despite structurally
   valid output; show its complete text and prompt for explicit semantic review.
+- Task 7.1 records exact bounded writer context and predecessor references for
+  automatic takes, including fixed takes without an assistant call. Validate
+  finalized predecessors before trusting their summaries; an invalid ancestor
+  must block descendant recovery and approval. Compare persisted JSON evidence
+  with type-sensitive equality because Python equates booleans and integers.
+  Keep the full-plan operation digest for fencing; creative context excludes
+  the total count.

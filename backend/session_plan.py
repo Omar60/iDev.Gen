@@ -310,11 +310,19 @@ def validate_authoring_prepared_evidence(
     plan_revision: int,
     take_id: str,
     row: Mapping[str, Any] | None = None,
+    *,
+    _predecessor_validation_cache: dict | None = None,
+    _skip_predecessor_validation: bool = False,
 ) -> ValidatedAuthoringEvidence:
     """Validate server-owned authoring evidence for an authoring-v1 prepared take snapshot."""
     import resource_preparation
     return resource_preparation.validate_authoring_prepared_evidence(
-        session_id, plan_revision, take_id, row=row,
+        session_id,
+        plan_revision,
+        take_id,
+        row=row,
+        _predecessor_validation_cache=_predecessor_validation_cache,
+        _skip_predecessor_validation=_skip_predecessor_validation,
     )
 
 
@@ -2240,18 +2248,24 @@ def recover_preparation(session_id: int) -> dict:
     completed: list[dict] = []
     incomplete: list[dict] = []
     plan_kind = classify_plan_authoring(plan)
+    predecessor_validation_cache: dict = {}
     for take_id in ordered_take_ids:
         row = current_by_take.get(take_id)
         if row is None:
             incomplete.append({"take_id": take_id, "status": "missing"})
             continue
-        if row["status"] == PREPARED_TAKE_STATUS_GENERATED:
-            completed.append(_decode_prepared_take(row))
-        elif row["status"] == PREPARED_TAKE_STATUS_READY:
+        if row["status"] in (
+            PREPARED_TAKE_STATUS_READY,
+            PREPARED_TAKE_STATUS_GENERATED,
+        ):
             if plan_kind in (PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC):
                 try:
                     val = validate_authoring_prepared_evidence(
-                        session_id, plan_revision, take_id, row=row,
+                        session_id,
+                        plan_revision,
+                        take_id,
+                        row=row,
+                        _predecessor_validation_cache=predecessor_validation_cache,
                     )
                     completed.append(dict(val))
                 except AuthoringEvidenceInvalid:
@@ -3138,6 +3152,7 @@ def approve_plan_review(session_id: int, plan_revision: int) -> dict:
             )
         plan_kind = classify_plan_authoring(plan)
         if plan_kind in (PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC):
+            predecessor_validation_cache: dict = {}
             ready_rows = db.q(
                 "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND status = ? AND linked_shot_id IS NULL",
                 session_id,
@@ -3146,7 +3161,11 @@ def approve_plan_review(session_id: int, plan_revision: int) -> dict:
             )
             for r in ready_rows:
                 validate_authoring_prepared_evidence(
-                    session_id, plan_revision, str(r["take_id"]), row=r,
+                    session_id,
+                    plan_revision,
+                    str(r["take_id"]),
+                    row=r,
+                    _predecessor_validation_cache=predecessor_validation_cache,
                 )
         now = db.now()
         db.run(

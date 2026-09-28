@@ -53,7 +53,7 @@
 
 ## 7. Ordered preparation, dependency integrity and copy-forward
 
-- [ ] 7.1 Build deterministic context from persisted brief, anchor/authorized descriptions, shared values, workflow binding, policy, take ID/ordinal and at most five preceding finalized four-field summaries. Omit total count from requests/creative digests, persist exact context and predecessor identities/revisions, and verify stable ordering.
+- [x] 7.1 Build deterministic context from persisted brief, anchor/authorized descriptions, shared values, workflow binding, policy, take ID/ordinal and at most five preceding finalized four-field summaries. Omit total count from requests/creative digests, persist exact context and predecessor identities/revisions, and verify stable ordering.
 - [ ] 7.2 Implement sequential `prepare_takes` operation batches of at most twenty with per-take fenced persistence, partial failure state and Continue for larger plans. Reuse current ready/generated snapshots and verify forty-take continuation without regenerating the first batch.
 - [ ] 7.3 Implement conservative automatic downstream invalidation from the earliest edit/removal/reorder plus global authoring and existing wardrobe rules. Revoke review/fence operations on mode/input changes while preserving generated history and manual input-based behavior; verify deleting take ten preserves eligible earlier work.
 - [ ] 7.4 Add the versioned effective-resource-input projection/digest using the shared resolver and exact consumed adaptations. Revalidate it in read-only review/recovery and distinguish changed consumed values from unused sidecar metadata; verify missing legacy evidence is never backfilled.

@@ -1172,6 +1172,7 @@ def persist_operation_response(
     suggestion_input: Any = None,
     finalize_take: Any = None,
     planning_enabled: bool | None = None,
+    _predecessor_validation_cache: dict | None = None,
 ) -> dict:
     """Atomically persist validated target results and ordered progress.
 
@@ -1422,6 +1423,7 @@ def persist_operation_response(
                     if row["kind"] == "prepare_takes":
                         resource_preparation.validate_authoring_prepared_evidence(
                             claim.session_id, claim.plan_revision, targets[0],
+                            _predecessor_validation_cache=_predecessor_validation_cache,
                         )
                     saved = _get_operation(claim.operation_id)
                     if saved is None:
