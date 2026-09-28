@@ -2285,7 +2285,7 @@ export default function SessionView({
                                           </div>
                                         )}
                                         {conflicts.length === 0 && resolvedConflicts.length === 0 && !hasPlaceholders && !hasStaleAdaptations ? (
-                                          <p className="muted" style={{ margin: 0, fontSize: 12 }}>No resource conflicts detected for this take.</p>
+                                          <p className="muted" style={{ margin: 0, fontSize: 12 }}>No structural resource conflicts detected. Review free-text descriptions for semantic fit.</p>
                                         ) : null}
 
                                         {conflicts.length > 0 && (

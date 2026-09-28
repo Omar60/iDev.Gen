@@ -2879,6 +2879,59 @@ describe('Task 5.3: Wardrobe scope controls, pure resolution, reordering, and re
         expect(html).not.toContain('No resource conflicts detected for this take.')
       })
 
+      it('labels clear conflict checks as structural and keeps fused text and final prompt visible', () => {
+        const resourceSession = {
+          id: 806,
+          name: 'Free Text Review Shoot',
+          composition_mode: 'resource-v1',
+          workflow_id: 10,
+          model: { id: 1, name: 'Ada' },
+          shots: [],
+          settings: { composition_mode: 'resource-v1' },
+        }
+        const authorizedDescription = 'A fixed overhead camera looks into an invented greenhouse.'
+        const finalPrompt = `${authorizedDescription} A low-angle camera looks up from floor level. Standing in a city cafe.`
+        const html = renderToStaticMarkup(
+          React.createElement(SessionView, {
+            id: 806,
+            initialSession: resourceSession,
+            initialPlan: {
+              version: 'resource-v1',
+              look: '',
+              initial_wardrobe: '',
+              takes: [{ take_id: 'take-001', camera: '', framing: '', pose: '', expression: '' }],
+              selected_resources: [],
+              wardrobe_changes: [],
+            },
+            initialRevision: 1,
+            initialActiveStep: 'review',
+            initialExpandedTakeId: 'take-001',
+            initialPreparation: { plan_revision: 1, completed: [], incomplete: [{ take_id: 'take-001' }] },
+            initialTakeReviewData: {
+              'take-001': {
+                conflicts: [],
+                resolved_conflicts: [],
+                adaptations: [],
+                stale_adaptations: [],
+                unresolved_placeholders: [],
+                fused_descriptions: [{
+                  library_key: 'fused_scenes_review',
+                  source_id: 'scene_001',
+                  content_digest: 'abc123',
+                  descriptive_inputs: { prompt: authorizedDescription },
+                }],
+                final_prompt: finalPrompt,
+              },
+            },
+          })
+        )
+
+        expect(html).toContain('No structural resource conflicts detected. Review free-text descriptions for semantic fit.')
+        expect(html).toContain(authorizedDescription)
+        expect(html).toContain(finalPrompt)
+        expect(html).not.toContain('No resource conflicts detected for this take.')
+      })
+
       it('recordTakeAdaptation sends exact singular adaptation contract to API without adaptations list', async () => {
         let postedUrl = null
         let postedBody = null

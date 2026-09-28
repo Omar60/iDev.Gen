@@ -445,3 +445,7 @@
   checking only the request shape let altered model provenance pass review.
   Reject an internal `prepare_takes` result without its ready snapshot. Keep
   predecessor context and duplicate detection with their later assigned tasks.
+- Task 6.5 verifies the real automatic operation boundary with invalid output
+  and terminal replay, rather than relying only on the pure field validator.
+  A fused scene can contradict camera, pose or location despite structurally
+  valid output; show its complete text and prompt for explicit semantic review.

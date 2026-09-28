@@ -251,9 +251,10 @@ def test_prepare_takes_commits_ready_snapshot_with_assistant_evidence(
         "expression": "a calm expression",
     }
     calls = _install_fake_structured_assistant(monkeypatch, [output])
+    operation_body = _start_body(revision=revision, request_id=str(uuid.uuid4()))
     started = client.post(
         f"/api/sessions/{session_id}/plan/authoring/operations",
-        json=_start_body(revision=revision),
+        json=operation_body,
     )
     assert started.status_code == 202, started.text
     operation_id = started.json()["operation_id"]
@@ -277,8 +278,29 @@ def test_prepare_takes_commits_ready_snapshot_with_assistant_evidence(
     assert evidence["operation_id"] == operation_id
     assert evidence["source"] == "assistant"
     assert evidence["writer_synthesis"]["writer_output"] == output
-    assert evidence["writer_synthesis"]["writer_input"]["assistant_request"]["model"] == "test-model"
+    assistant_request = evidence["writer_synthesis"]["writer_input"]["assistant_request"]
+    sent_body = calls[0]["body"]
+    assert assistant_request == {
+        "messages": sent_body["messages"],
+        "model": sent_body["model"],
+        "parameters": {
+            key: sent_body[key]
+            for key in ("temperature", "stream", "response_format", "reasoning_effort")
+            if key in sent_body
+        },
+    }
     assert len(calls) == 1
+    provenance_before_replay = row["provenance"]
+    replayed = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=operation_body,
+    )
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json() == view
+    assert len(calls) == 1
+    assert db.one(
+        "SELECT provenance FROM prepared_take WHERE id = ?", row["id"],
+    )["provenance"] == provenance_before_replay
     main.resource_preparation.validate_authoring_prepared_evidence(
         session_id, revision, "take-001",
     )
@@ -303,8 +325,10 @@ def test_prepare_takes_commits_ready_snapshot_with_assistant_evidence(
 @pytest.mark.parametrize("output", [
     {"camera": "eye-level", "framing": "full body", "pose": "standing", "expression": "calm", "look": "changed"},
     {"camera": "eye-level", "framing": "full body", "pose": "standing", "expression": 7},
+    {"camera": "eye-level", "framing": "full body", "pose": "standing"},
+    ["not a JSON object"],
 ])
-def test_prepare_takes_rejects_invalid_output_without_snapshot(
+def test_prepare_takes_rejects_malformed_or_partial_output_without_snapshot(
     client, seeded, monkeypatch, output,
 ):
     _configure_assistant(monkeypatch)
@@ -323,6 +347,173 @@ def test_prepare_takes_rejects_invalid_output_without_snapshot(
         "SELECT id FROM prepared_take WHERE session_id = ? AND take_id = ?",
         session_id, "take-001",
     ) is None
+
+
+@pytest.mark.parametrize("locked_field", ["camera", "look", "initial_wardrobe"])
+def test_prepare_takes_refuses_locked_fields_without_mutating_plan_or_ready_state(
+    client, seeded, monkeypatch, locked_field,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    fixed_look = "A consistent studio appearance."
+    fixed_wardrobe = "a navy cotton shirt"
+    session_id, revision = _create_guided_session(
+        client, seeded, look=fixed_look, initial_wardrobe=fixed_wardrobe,
+    )
+    draft_response = client.get(f"/api/sessions/{session_id}/plan")
+    assert draft_response.status_code == 200, draft_response.text
+    draft = draft_response.json()
+    plan = draft["plan"]
+    fixed_camera = "a fixed 50mm camera"
+    if locked_field == "camera":
+        plan["takes"][0]["camera"] = fixed_camera
+        saved = client.post(
+            f"/api/sessions/{session_id}/plan",
+            json={"expected_revision": draft["plan_revision"], "plan": plan},
+        )
+        assert saved.status_code == 200, saved.text
+        revision = saved.json()["plan_revision"]
+
+    output = {
+        "camera": "an unapproved 24mm camera",
+        "framing": "full body",
+        "pose": "standing beside a window",
+        "expression": "calm",
+        locked_field: "an assistant override",
+    }
+    calls = _install_fake_structured_assistant(monkeypatch, [output])
+    started = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision),
+    )
+    assert started.status_code == 202, started.text
+    failed = _wait_for_operation_state(
+        client, session_id, started.json()["operation_id"], "failed",
+    )
+    assert failed["progress"]["completed"] == []
+    assert failed["result"] is None
+    assert len(calls) == 1
+    user_message = next(
+        item["content"] for item in calls[0]["body"]["messages"]
+        if item["role"] == "user"
+    )
+    context = json.loads(user_message.partition("Context: ")[2])
+    requested_fields = context["preparation"]["requested_fields"]
+    assert locked_field not in requested_fields
+    assert "look" not in requested_fields
+    assert "initial_wardrobe" not in requested_fields
+
+    current = client.get(f"/api/sessions/{session_id}/plan")
+    assert current.status_code == 200, current.text
+    current_plan = current.json()["plan"]
+    assert current_plan["look"] == fixed_look
+    assert current_plan["initial_wardrobe"] == fixed_wardrobe
+    assert current_plan["takes"][0].get("camera") == (
+        fixed_camera if locked_field == "camera" else plan["takes"][0].get("camera")
+    )
+    assert current.json()["preparation"]["completed"] == []
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+        session_id, revision, "take-001",
+    ) is None
+
+
+def test_prepare_takes_rejects_unresolved_writer_placeholder_without_snapshot(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+    calls = _install_fake_structured_assistant(monkeypatch, [{
+        "camera": "eye-level camera",
+        "framing": "full body",
+        "pose": "standing at {another_location}",
+        "expression": "calm",
+    }])
+    started = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision),
+    )
+    assert started.status_code == 202, started.text
+    failed = _wait_for_operation_state(
+        client, session_id, started.json()["operation_id"], "failed",
+    )
+    assert failed["progress"]["completed"] == []
+    assert failed["result"] is None
+    assert len(calls) == 1
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+        session_id, revision, "take-001",
+    ) is None
+
+
+def test_prepare_takes_preserves_fused_camera_pose_and_location_context_for_review(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, _ = _create_guided_session(client, seeded)
+    authorized_description = (
+        "A fixed overhead camera looks into an invented greenhouse. "
+        "She kneels beside its north wall, facing the lens."
+    )
+    library_key = f"operation-test-{uuid.uuid4().hex}"
+    source_id = "scene-001"
+    library_id = resource_store.ensure_library(library_key, kind="fused_scenes")
+    revision_id = resource_store.record_revision(
+        library_id,
+        source_id,
+        {"id": source_id, "prompt": authorized_description},
+        translation={"prompt": authorized_description},
+    )
+    fused_revision = resource_store.get_revision(revision_id=revision_id)
+    assert fused_revision is not None
+    draft_response = client.get(f"/api/sessions/{session_id}/plan")
+    assert draft_response.status_code == 200, draft_response.text
+    draft = draft_response.json()
+    plan = draft["plan"]
+    plan["selected_resources"].append({
+        "library_key": library_key,
+        "source_id": source_id,
+        "content_digest": fused_revision["content_digest"],
+    })
+    saved = client.post(
+        f"/api/sessions/{session_id}/plan",
+        json={"expected_revision": draft["plan_revision"], "plan": plan},
+    )
+    assert saved.status_code == 200, saved.text
+    revision = saved.json()["plan_revision"]
+    output = {
+        "camera": "A low-angle camera looks up from floor level.",
+        "framing": "a tight portrait",
+        "pose": "standing in a quiet city cafe across town",
+        "expression": "a calm expression",
+    }
+    calls = _install_fake_structured_assistant(monkeypatch, [output])
+    started = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision),
+    )
+    assert started.status_code == 202, started.text
+    terminal = _wait_for_operation_state(
+        client, session_id, started.json()["operation_id"], "succeeded",
+    )
+    assert terminal["progress"]["completed"] == ["take-001"]
+    assert len(calls) == 1
+
+    reviewed = client.get(
+        f"/api/sessions/{session_id}/plan/takes/take-001/review?plan_revision={revision}",
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    review = reviewed.json()
+    fused = next(
+        item for item in review["fused_descriptions"]
+        if item["library_key"] == library_key
+    )
+    assert fused["descriptive_inputs"]["prompt"] == authorized_description
+    assert review["snapshot"]["final_prompt"] == review["final_prompt"]
+    for exact_text in (authorized_description, *output.values()):
+        assert exact_text in review["final_prompt"]
 
 
 def test_prepare_takes_discards_cancelled_inflight_response(
