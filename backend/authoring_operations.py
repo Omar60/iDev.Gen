@@ -1171,6 +1171,7 @@ def persist_operation_response(
     *,
     suggestion_input: Any = None,
     finalize_take: Any = None,
+    reuse_take_snapshot: bool = False,
     planning_enabled: bool | None = None,
     _predecessor_validation_cache: dict | None = None,
 ) -> dict:
@@ -1275,42 +1276,74 @@ def persist_operation_response(
                     )
                 finalized_take = False
                 if row["kind"] == "prepare_takes" and _resolve_planning_enabled(None):
-                    if len(normalized_items) != 1 or not callable(finalize_take):
+                    if len(normalized_items) != 1 or (
+                        reuse_take_snapshot and finalize_take is not None
+                    ) or (
+                        not reuse_take_snapshot and not callable(finalize_take)
+                    ):
                         raise AuthoringOperationError(
                             422, "invalid_operation_result",
-                            "Take preparation requires one server finalization callback.",
+                            "Take preparation requires one server finalization or reuse result.",
                         )
-                    snapshot = finalize_take(targets[0], normalized_items[0]["result"])
+                    if reuse_take_snapshot:
+                        snapshot = session_plan._prepared_take_row(
+                            claim.session_id, claim.plan_revision, targets[0],
+                        )
+                        if snapshot is None or snapshot.get("status") not in (
+                            session_plan.PREPARED_TAKE_STATUS_READY,
+                            session_plan.PREPARED_TAKE_STATUS_GENERATED,
+                        ):
+                            raise AuthoringOperationError(
+                                409, "authoring_inputs_stale",
+                                "The current prepared take snapshot changed before it could be reused.",
+                            )
+                    else:
+                        snapshot = finalize_take(targets[0], normalized_items[0]["result"])
                     finalized_take = True
-                    if (not isinstance(snapshot, dict) or snapshot.get("status") != "ready"
+                    if (not isinstance(snapshot, dict) or snapshot.get("status") not in (
+                            session_plan.PREPARED_TAKE_STATUS_READY,
+                            session_plan.PREPARED_TAKE_STATUS_GENERATED,
+                        )
                             or snapshot.get("session_id") != claim.session_id
                             or snapshot.get("plan_revision") != claim.plan_revision
                             or snapshot.get("take_id") != targets[0]):
                         raise AuthoringOperationError(
                             422, "invalid_operation_result",
-                            "Take finalization did not produce the current ready snapshot.",
+                            "Take preparation did not return the current ready or generated snapshot.",
                         )
                     actual_snapshot = session_plan._prepared_take_row(
                         claim.session_id, claim.plan_revision, targets[0],
                     )
-                    if actual_snapshot is None or actual_snapshot["id"] != snapshot.get("id") or actual_snapshot["status"] != "ready":
+                    if (actual_snapshot is None or actual_snapshot["id"] != snapshot.get("id")
+                            or actual_snapshot["status"] != snapshot["status"]):
                         raise AuthoringOperationError(
                             422, "invalid_operation_result",
-                            "Take finalization did not persist the current ready snapshot.",
+                            "Take preparation did not persist the current snapshot.",
                         )
-                    evidence = snapshot.get("provenance", {}).get("authoring_evidence", {})
-                    writer_input = evidence.get("writer_synthesis", {}).get("writer_input") or {}
-                    normalized_items = [{
-                        "target": targets[0],
-                        "result": {
-                            "prepared_take_id": snapshot["id"],
-                            "take_id": targets[0],
-                            "assistant_output_digest": resource_store.canonical_digest(items[0]["result"]),
-                            "assistant_request_digest": resource_store.canonical_digest(
-                                writer_input.get("assistant_request", {})
-                            ),
-                        },
-                    }]
+                    if reuse_take_snapshot or snapshot["status"] == session_plan.PREPARED_TAKE_STATUS_GENERATED:
+                        normalized_items = [{
+                            "target": targets[0],
+                            "result": {
+                                "prepared_take_id": snapshot["id"],
+                                "take_id": targets[0],
+                                "status": snapshot["status"],
+                                "reused_current_snapshot": True,
+                            },
+                        }]
+                    else:
+                        evidence = snapshot.get("provenance", {}).get("authoring_evidence", {})
+                        writer_input = evidence.get("writer_synthesis", {}).get("writer_input") or {}
+                        normalized_items = [{
+                            "target": targets[0],
+                            "result": {
+                                "prepared_take_id": snapshot["id"],
+                                "take_id": targets[0],
+                                "assistant_output_digest": resource_store.canonical_digest(items[0]["result"]),
+                                "assistant_request_digest": resource_store.canonical_digest(
+                                    writer_input.get("assistant_request", {})
+                                ),
+                            },
+                        }]
                     encoded_items = json.dumps(normalized_items, ensure_ascii=False, separators=(",", ":"))
 
                 previous_result = _decode_json(row.get("result_json"), default=None)

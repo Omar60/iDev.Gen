@@ -3780,6 +3780,31 @@ async def _run_prepare_takes_operation(
         ticket = authoring_operations.renew_operation_lease(
             claim, planning_enabled=is_resource_planning_enabled(),
         )
+        current_snapshot = session_plan._prepared_take_row(
+            session_id, claim.plan_revision, take_id,
+        )
+        if current_snapshot is not None and current_snapshot["status"] in (
+            session_plan.PREPARED_TAKE_STATUS_READY,
+            session_plan.PREPARED_TAKE_STATUS_GENERATED,
+        ):
+            resource_preparation.validate_authoring_prepared_evidence(
+                session_id, claim.plan_revision, take_id, row=current_snapshot,
+                _predecessor_validation_cache=predecessor_validation_cache,
+            )
+            updated = authoring_operations.persist_operation_response(
+                claim, ticket, [{"target": take_id, "result": {}}],
+                reuse_take_snapshot=True,
+                planning_enabled=is_resource_planning_enabled(),
+                _predecessor_validation_cache=predecessor_validation_cache,
+            )
+            if updated["state"] == "active":
+                await _run_prepare_takes_operation(
+                    session_id,
+                    operation_id,
+                    _predecessor_validation_cache=predecessor_validation_cache,
+                )
+            return
+
         preparation = resource_preparation.prepare_take_inputs(
             session_id, claim.plan_revision, take_id,
         )

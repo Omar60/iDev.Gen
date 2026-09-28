@@ -456,3 +456,9 @@
   with type-sensitive equality because Python equates booleans and integers.
   Keep the full-plan operation digest for fencing; creative context excludes
   the total count.
+- Task 7.2 reuses current ready/generated snapshots before another assistant
+  call and records that reuse with the operation progress under the same fence.
+  Validate saved authoring evidence inside the persistence transaction as well
+  as before scheduling; a changed snapshot must not become completed progress.
+  Continue a larger plan with another bounded operation, preserving prior
+  snapshots and their original operation provenance.

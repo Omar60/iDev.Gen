@@ -347,6 +347,169 @@ def test_prepare_takes_commits_ready_snapshot_with_assistant_evidence(
     assert {"take_id": "take-001", "status": "invalid_evidence", "diagnostic": "authoring_evidence_invalid"} in recovered["incomplete"]
 
 
+def test_prepare_takes_reuses_current_ready_and_generated_snapshots_without_assistant_calls(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded, photo_count=2)
+    outputs = [
+        {
+            "camera": f"camera choice {index}",
+            "framing": f"framing choice {index}",
+            "pose": f"pose choice {index}",
+            "expression": f"expression choice {index}",
+        }
+        for index in range(1, 3)
+    ]
+    calls = _install_fake_structured_assistant(monkeypatch, outputs)
+    take_ids = ["take-001", "take-002"]
+    first = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision, take_ids=take_ids),
+    )
+    assert first.status_code == 202, first.text
+    first_view = _wait_for_operation_state(
+        client, session_id, first.json()["operation_id"], "succeeded",
+    )
+    assert len(calls) == 2
+
+    db.run(
+        "UPDATE prepared_take SET status = 'generated' "
+        "WHERE session_id = ? AND plan_revision = ? AND take_id = 'take-002'",
+        session_id, revision,
+    )
+    columns = (
+        "id, session_id, plan_revision, take_id, final_prompt, effective_state, "
+        "mapping_version, compiler_version, provenance, status, linked_shot_id, "
+        "created_at, updated_at"
+    )
+    before = db.q(
+        f"SELECT {columns} FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+        "ORDER BY take_id",
+        session_id, revision,
+    )
+    recovered = main.session_plan.recover_preparation(session_id)
+    assert [item["status"] for item in recovered["completed"]] == ["ready", "generated"]
+
+    second = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision, take_ids=take_ids),
+    )
+    assert second.status_code == 202, second.text
+    second_view = _wait_for_operation_state(
+        client, session_id, second.json()["operation_id"], "succeeded",
+    )
+
+    assert len(calls) == 2
+    assert second_view["progress"]["completed"] == take_ids
+    assert [item["result"]["status"] for item in second_view["result"]["items"]] == [
+        "ready", "generated",
+    ]
+    assert all(item["result"]["reused_current_snapshot"] for item in second_view["result"]["items"])
+    assert db.q(
+        f"SELECT {columns} FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+        "ORDER BY take_id",
+        session_id, revision,
+    ) == before
+    assert first_view["progress"]["completed"] == take_ids
+
+
+def test_prepare_takes_continues_a_forty_take_plan_in_two_bounded_operations(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded, photo_count=40)
+    take_ids = [f"take-{index:03d}" for index in range(1, 41)]
+    outputs = [
+        {
+            "camera": f"camera choice {index}",
+            "framing": f"framing choice {index}",
+            "pose": f"pose choice {index}",
+            "expression": f"expression choice {index}",
+        }
+        for index in range(1, 41)
+    ]
+    calls = _install_fake_structured_assistant(monkeypatch, outputs)
+
+    first_start = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision, take_ids=take_ids[:20]),
+    )
+    assert first_start.status_code == 202, first_start.text
+    first = _wait_for_operation_state(
+        client, session_id, first_start.json()["operation_id"], "succeeded",
+    )
+    assert first["progress"]["requested"] == take_ids[:20]
+    assert first["progress"]["completed"] == take_ids[:20]
+    assert len(calls) == 20
+    assert [_context_from_call(call)["take_id"] for call in calls] == take_ids[:20]
+    first_rows = db.q(
+        "SELECT id, take_id, final_prompt, effective_state, provenance, status, "
+        "linked_shot_id, created_at, updated_at FROM prepared_take "
+        "WHERE session_id = ? AND plan_revision = ? ORDER BY take_id",
+        session_id, revision,
+    )
+    assert len(first_rows) == 20
+    assert {
+        json.loads(row["provenance"])["authoring_evidence"]["operation_id"]
+        for row in first_rows
+    } == {first["operation_id"]}
+
+    second_start = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision, take_ids=take_ids[20:]),
+    )
+    assert second_start.status_code == 202, second_start.text
+    second = _wait_for_operation_state(
+        client, session_id, second_start.json()["operation_id"], "succeeded",
+    )
+    assert second["progress"]["requested"] == take_ids[20:]
+    assert second["progress"]["completed"] == take_ids[20:]
+    assert len(calls) == 40
+    assert [_context_from_call(call)["take_id"] for call in calls] == take_ids
+    assert db.q(
+        "SELECT id, take_id, final_prompt, effective_state, provenance, status, "
+        "linked_shot_id, created_at, updated_at FROM prepared_take "
+        "WHERE session_id = ? AND plan_revision = ? ORDER BY take_id",
+        session_id, revision,
+    )[:20] == first_rows
+    second_rows = db.q(
+        "SELECT take_id, provenance FROM prepared_take "
+        "WHERE session_id = ? AND plan_revision = ? AND take_id >= 'take-021' "
+        "ORDER BY take_id",
+        session_id, revision,
+    )
+    assert len(second_rows) == 20
+    assert {
+        json.loads(row["provenance"])["authoring_evidence"]["operation_id"]
+        for row in second_rows
+    } == {second["operation_id"]}
+    assert _operation_count(session_id) == 2
+
+
+def test_prepare_takes_rejects_twenty_one_targets_without_claim_or_assistant_call(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded, photo_count=21)
+    calls = _install_fake_structured_assistant(monkeypatch, [])
+
+    response = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(
+            revision=revision,
+            take_ids=[f"take-{index:03d}" for index in range(1, 22)],
+        ),
+    )
+
+    _error(response, 422, "invalid_request")
+    assert _operation_count(session_id) == 0
+    assert calls == []
+
+
 def test_prepare_takes_persists_ordered_five_take_context_and_replays(
     client, seeded, monkeypatch,
 ):
