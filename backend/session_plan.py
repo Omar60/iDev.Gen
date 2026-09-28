@@ -1497,16 +1497,48 @@ def _take_content_signature(take: dict) -> str:
         return ""
 
 
+def _uses_automatic_authoring(plan: dict) -> bool:
+    authoring = plan.get("authoring")
+    return (
+        isinstance(authoring, dict)
+        and authoring.get("mode") == AUTHORING_MODE_AUTOMATIC
+    )
+
+
+def _automatic_authoring_inputs_changed(
+    old_plan: dict, new_plan: dict,
+) -> bool:
+    """Return whether a global input consumed by automatic writing changed."""
+    if not (
+        _uses_automatic_authoring(old_plan)
+        or _uses_automatic_authoring(new_plan)
+    ):
+        return False
+    old_authoring = old_plan.get("authoring")
+    new_authoring = new_plan.get("authoring")
+    if not isinstance(old_authoring, dict):
+        old_authoring = {}
+    if not isinstance(new_authoring, dict):
+        new_authoring = {}
+    return any(
+        old_authoring.get(field) != new_authoring.get(field)
+        for field in (
+            "brief", "scene_anchor", "workflow_binding", "variation_policy",
+        )
+    )
+
+
 def _compute_affected_take_ids_for_plan_change(
     old_plan: dict, new_plan: dict,
+    *, invalidate_automatic_downstream: bool = False,
 ) -> set[str]:
     """Return the take IDs whose preparation inputs changed
     between ``old_plan`` and ``new_plan``, plus any take
     present in the old plan but absent from the new one.
 
     The function is the conservative invalidation rule the
-    ``session-plan`` spec names for wardrobe / order / per-
-    take edits: a take is in the result when ANY of the
+    ``session-plan`` spec names for wardrobe and per-take edits: a take is in
+    the result when ANY of the
     following holds between the two plans:
 
       * the take is in ``old_plan`` but missing from
@@ -1538,41 +1570,84 @@ def _compute_affected_take_ids_for_plan_change(
     ``_take_content_signature`` comparison without any
     code change here.
 
+    When ``invalidate_automatic_downstream`` is true, any removed, reordered,
+    edited or wardrobe-affected take also invalidates current takes from the
+    earliest changed position. Appends do not shift prior ordinals and do not
+    create a downstream boundary.
+
     The function is intentionally generic. It does NOT
     inspect any wardrobe string, scope value or take
-    count; it is a pure comparison of the per-take and
-    effective-wardrobe projections of two plans. A
+    count; it compares the per-take and effective-wardrobe projections of two
+    plans. A
     future plan shape with a different wardrobe / scope /
     take grammar keeps the same contract: the resolver
     walks the new shape, the comparison surfaces what
     changed, the invalidation pass targets the right
     rows.
 
-    Takes added by the new plan (present in ``new_plan``
-    but absent from ``old_plan``) are NOT in the result:
-    there is no old row to invalidate. The new revision
-    has to land a fresh prepared_take row for them, which
-    is the normal re-prepare path the recovery surface
-    already offers.
+    Added takes have no old row to invalidate. An appended take does not
+    affect prior ordinals; an insertion before existing automatic takes is
+    included at its new position because it shifts later context and ordinals.
     """
     old_effective = resolve_effective_wardrobes(old_plan)
     new_effective = resolve_effective_wardrobes(new_plan)
     old_by_id = _take_by_id(old_plan)
     new_by_id = _take_by_id(new_plan)
+    old_positions: dict[str, int] = {}
+    new_positions: dict[str, int] = {}
+    for position, take in enumerate(old_plan.get("takes", []) or []):
+        if isinstance(take, dict):
+            tid = take.get("take_id")
+            if isinstance(tid, str) and tid:
+                old_positions[tid] = position
+    for position, take in enumerate(new_plan.get("takes", []) or []):
+        if isinstance(take, dict):
+            tid = take.get("take_id")
+            if isinstance(tid, str) and tid:
+                new_positions[tid] = position
+
     affected: set[str] = set()
+    earliest_changed_position: int | None = None
+
+    def mark_downstream_from(position: int) -> None:
+        nonlocal earliest_changed_position
+        if (
+            earliest_changed_position is None
+            or position < earliest_changed_position
+        ):
+            earliest_changed_position = position
+
     for tid, old_take in old_by_id.items():
         new_take = new_by_id.get(tid)
         if new_take is None:
             affected.add(tid)
+            if invalidate_automatic_downstream:
+                mark_downstream_from(old_positions.get(tid, 0))
             continue
+        old_position = old_positions.get(tid, 0)
+        new_position = new_positions.get(tid, 0)
+        if (
+            invalidate_automatic_downstream
+            and old_position != new_position
+        ):
+            mark_downstream_from(min(old_position, new_position))
         if old_effective.get(tid, "") != new_effective.get(tid, ""):
             affected.add(tid)
+            if invalidate_automatic_downstream:
+                mark_downstream_from(min(old_position, new_position))
             continue
         if (
             _take_content_signature(old_take)
             != _take_content_signature(new_take)
         ):
             affected.add(tid)
+            if invalidate_automatic_downstream:
+                mark_downstream_from(min(old_position, new_position))
+    if earliest_changed_position is not None:
+        affected.update(
+            tid for tid, position in new_positions.items()
+            if position >= earliest_changed_position
+        )
     return affected
 
 
@@ -1585,8 +1660,8 @@ def invalidate_ungenerated_prepared_takes(
     """Mark ungenerated prepared_take rows for the session as
     ``invalidated`` according to the invalidation policy.
 
-    The pass is the single implementation called by
-    ``save_draft``. It targets rows whose status is ``pending`` or
+    The pass is the shared implementation used by plan CAS writes. It targets
+    rows whose status is ``pending`` or
     ``ready`` — ungenerated work that was prepared under a now-
     stale plan revision. A row at the new plan revision is left
     alone (the kept revision is the one a future task will write
@@ -1603,14 +1678,10 @@ def invalidate_ungenerated_prepared_takes(
     asks for. When both are ``None`` (the default), the pass
     invalidates every ungenerated row at a non-current revision
     — the strict policy for a save that changes the established
-    constants (``look``, ``initial_wardrobe`` or
-    ``selected_resources``). When at least one is provided, the
-    pass invalidates only the rows whose ``take_id`` is in
-    ``affected_take_ids`` OR is not in ``new_take_ids`` — the
-    conservative policy for a save that only edits
-    ``wardrobe_changes`` or the take order, where a take whose
-    effective state is byte-for-byte identical in the new plan
-    keeps its prior ``ready`` row untouched, and any row whose
+    constants or a global automatic-authoring input. When at least one is
+    provided, the pass invalidates only rows whose ``take_id`` is in
+    ``affected_take_ids`` OR is not in ``new_take_ids``. This preserves prior
+    ``ready`` rows outside the affected input/dependency boundary, and any row whose
     take_id is not in the new plan (a take removed by the edit, or
     a synthetic orphan row) is invalidated because it has no
     current plan to land under. The empty sets are a legal
@@ -2775,33 +2846,28 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
         # an inconsistent state, and a refused save never
         # reaches this call.
         #
-        # The boundary the ``session-plan`` spec asks for lives
-        # here. A save that changes the established constants
-        # (look, initial_wardrobe or selected_resources) keeps the
-        # strict policy: every ungenerated row at an older revision
-        # is invalidated. A save that only edits
-        # ``wardrobe_changes`` or the take order narrows the
-        # pass to the take IDs whose effective wardrobe actually
-        # changed between revisions, plus any take removed from
-        # the new plan. A take whose effective state and prompt
-        # remain byte-for-byte identical in the new plan keeps
-        # its prior ``ready`` row untouched, which is the
-        # "reuse the prior preparation" rule the 6.2 acceptance
-        # demands. The two policies live side by side so a
-        # continuity change after a generated take still raises
-        # ``PlanConstantsFrozenAfterGenerated`` above without
-        # reaching this pass.
+        # Global creative inputs invalidate all prior ungenerated rows.
+        # Automatic take edits also invalidate downstream rows because their
+        # writer context includes preceding takes and the ordinal.
         if current is None:
             affected_for_invalidation: set[str] | None = None
             new_take_ids_for_invalidation: set[str] | None = None
         else:
-            if constants_changed:
+            if (
+                constants_changed
+                or _automatic_authoring_inputs_changed(old_plan, validated)
+            ):
                 affected_for_invalidation = None
                 new_take_ids_for_invalidation = None
             else:
                 affected_for_invalidation = (
                     _compute_affected_take_ids_for_plan_change(
-                        old_plan, validated,
+                        old_plan,
+                        validated,
+                        invalidate_automatic_downstream=(
+                            _uses_automatic_authoring(old_plan)
+                            or _uses_automatic_authoring(validated)
+                        ),
                     )
                 )
                 new_take_ids_for_invalidation = _take_id_set(validated)

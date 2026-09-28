@@ -6990,3 +6990,200 @@ class TestTask46SharedStateSummary:
         assert "Review and save a valid plan" in summary["message"]
         assert summary["scene_descriptions"] == []
         assert "malformed shared-state sentinel" not in json.dumps(summary)
+
+
+def _task73_seed_session(
+    client, seeded, *, mode: str = "automatic", count: int = 12,
+    include_second_anchor: bool = False,
+) -> tuple[int, dict, dict | None]:
+    room = _task41_resource_revision()
+    other_room = None
+    selected_resources = [dict(room)]
+    if include_second_anchor:
+        library_id = resource_store.ensure_library(
+            "inv_task73_alternate_rooms", kind="rooms",
+        )
+        revision_id = resource_store.record_revision(
+            library_id,
+            "inv_task73_alternate_room_01",
+            {"label": "invented alternate studio", "scene_theme": "soft daylight"},
+            translation={"label": "invented alternate studio", "scene_theme": "soft daylight"},
+        )
+        revision = resource_store.get_revision(revision_id=revision_id)
+        assert revision is not None
+        other_room = {
+            "library_key": "inv_task73_alternate_rooms",
+            "source_id": "inv_task73_alternate_room_01",
+            "content_digest": revision["content_digest"],
+        }
+        selected_resources.append(other_room)
+
+    authoring = _task41_valid_authoring(
+        scene_anchor_triple=room,
+        snapshot=False,
+        progression=False,
+    )
+    authoring["mode"] = mode
+    plan = _task41_make_plan(
+        room, auth=authoring, takes=_task42_takes(count),
+    )
+    plan["selected_resources"] = selected_resources
+    session_id = _task34_resource_session(
+        client, seeded, f"task 7.3 {mode} invalidation",
+    )
+    _task41_seed_authoring_plan(session_id, plan)
+    return session_id, plan, other_room
+
+
+class TestTask73AutomaticInvalidation:
+    @pytest.mark.parametrize("change", ["edit", "reorder", "remove_take_ten"])
+    def test_automatic_take_change_invalidates_from_earliest_position(
+        self, client, seeded, change,
+    ):
+        session_id, plan, _ = _task73_seed_session(client, seeded)
+        initial_status = {}
+        for index in range(1, 13):
+            take_id = f"take-{index:03d}"
+            status = "generated" if index == 12 else (
+                "pending" if index == 5 else "ready"
+            )
+            linked_shot_id = _plant_shot(session_id) if status == "generated" else None
+            _plant_prepared_take(
+                session_id, 1, take_id, status=status,
+                linked_shot_id=linked_shot_id,
+                final_prompt="generated history prompt" if status == "generated" else "ready prompt",
+            )
+            initial_status[take_id] = status
+
+        candidate = json.loads(json.dumps(plan))
+        if change == "edit":
+            candidate["takes"][2]["pose"] = "a new seated pose"
+            expected_invalidated = {
+                f"take-{index:03d}" for index in range(3, 13)
+            }
+        elif change == "reorder":
+            candidate["takes"][2], candidate["takes"][9] = (
+                candidate["takes"][9], candidate["takes"][2]
+            )
+            expected_invalidated = {
+                f"take-{index:03d}" for index in range(3, 13)
+            }
+        else:
+            candidate["takes"].pop(9)
+            expected_invalidated = {
+                "take-010", "take-011", "take-012",
+            }
+
+        saved = session_plan.save_draft(session_id, candidate, 1)
+        assert saved["plan_revision"] == 2
+        rows = {
+            row["take_id"]: row
+            for row in _prepared_take_rows(session_id)
+        }
+        for take_id, original_status in initial_status.items():
+            expected = (
+                original_status
+                if original_status == "generated"
+                else "invalidated"
+                if take_id in expected_invalidated
+                else original_status
+            )
+            assert rows[take_id]["status"] == expected
+        assert rows["take-012"]["final_prompt"] == "generated history prompt"
+
+    def test_manual_take_edit_keeps_input_based_invalidation(self, client, seeded):
+        session_id, plan, _ = _task73_seed_session(
+            client, seeded, mode="manual", count=5,
+        )
+        for index in range(1, 6):
+            _plant_prepared_take(
+                session_id, 1, f"take-{index:03d}", status="ready",
+            )
+        candidate = json.loads(json.dumps(plan))
+        candidate["takes"][2]["pose"] = "a new manual pose"
+
+        session_plan.save_draft(session_id, candidate, 1)
+
+        rows = {
+            row["take_id"]: row["status"]
+            for row in _prepared_take_rows(session_id)
+        }
+        assert rows == {
+            "take-001": "ready",
+            "take-002": "ready",
+            "take-003": "invalidated",
+            "take-004": "ready",
+            "take-005": "ready",
+        }
+
+    @pytest.mark.parametrize(
+        "global_change",
+        ["brief", "scene_anchor", "variation_policy", "shared_state"],
+    )
+    def test_automatic_global_input_change_invalidates_all_ungenerated_rows(
+        self, client, seeded, global_change,
+    ):
+        session_id, plan, other_room = _task73_seed_session(
+            client, seeded,
+            include_second_anchor=global_change == "scene_anchor",
+        )
+        for index in range(1, 5):
+            _plant_prepared_take(
+                session_id, 1, f"take-{index:03d}",
+                status="pending" if index == 4 else "ready",
+            )
+        candidate = json.loads(json.dumps(plan))
+        if global_change == "brief":
+            candidate["authoring"]["brief"] += " with a changed light"
+        elif global_change == "scene_anchor":
+            candidate["authoring"]["scene_anchor"] = other_room
+        elif global_change == "variation_policy":
+            candidate["authoring"]["variation_policy"]["camera"] = {
+                "mode": "fixed", "value": "50mm", "value_origin": "user",
+            }
+        else:
+            candidate["look"] = "A user-confirmed new shared look."
+
+        session_plan.save_draft(session_id, candidate, 1)
+
+        assert {
+            row["status"] for row in _prepared_take_rows(session_id)
+        } == {"invalidated"}
+
+    def test_mode_only_change_preserves_completed_evidence_and_revokes_review(
+        self, client, seeded,
+    ):
+        session_id, plan, _ = _task73_seed_session(client, seeded, count=3)
+        prepared_id = _plant_prepared_take(
+            session_id, 1, "take-001", status="ready",
+        )
+        original_provenance = '{"source":"assistant_writer","revision":1}'
+        db.run(
+            "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+            original_provenance, prepared_id,
+        )
+        db.run(
+            "INSERT INTO session_plan_approval (session_id, plan_revision, approved_at) "
+            "VALUES (?, ?, ?)",
+            session_id, 1, db.now(),
+        )
+        candidate = json.loads(json.dumps(plan))
+        candidate["authoring"]["mode"] = "manual"
+
+        session_plan.save_draft(session_id, candidate, 1)
+
+        stored = session_plan.get_draft(session_id)
+        assert stored["plan"]["authoring"]["mode"] == "manual"
+        assert stored["plan"]["authoring"]["evidence"] == plan["authoring"]["evidence"]
+        assert stored["plan"]["authoring"]["shared_state"]["look"]["origin"] == "assistant"
+        prepared = db.one(
+            "SELECT status, provenance FROM prepared_take WHERE id = ?",
+            prepared_id,
+        )
+        assert prepared == {
+            "status": "ready", "provenance": original_provenance,
+        }
+        assert db.one(
+            "SELECT session_id FROM session_plan_approval WHERE session_id = ?",
+            session_id,
+        ) is None

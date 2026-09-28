@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 37 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 38 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -234,7 +234,7 @@ remain intact.
 
 ## Current Position
 
-Tasks 1.1 through 6.5 and Tasks 7.1-7.2 are complete.
+Tasks 1.1 through 6.5 and Tasks 7.1-7.3 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.
 The closed public view excludes fencing and request internals; exact request
 replay, cross-kind exclusion, ordered targets, configuration gates, and
@@ -333,6 +333,15 @@ Python suite passed with 2,370 tests, privacy/control checks passed with 46,
 and strict OpenSpec validation and diff checks passed. The frontend operation
 controls remain assigned to Task 8.4.
 
+Task 7.3 passed independent acceptance. Automatic plan edits invalidate
+ungenerated preparations from the earliest changed take position, while global
+creative inputs invalidate all affected automatic work. Removing take ten keeps
+earlier unchanged rows intact; manual plans retain input-based invalidation.
+Plan CAS still revokes review and fences old operations, while generated history
+and completed provenance remain unchanged. Independent verification passed
+2,380 Python tests, 46 privacy/control checks, strict OpenSpec validation and
+diff checks. Verified copy-forward into the new revision remains Task 7.5.
+
 ## Next Milestone
 
-Task 7.3 is next. Do not begin it automatically.
+Task 7.4 is next. Do not begin it automatically.

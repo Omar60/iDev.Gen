@@ -3058,6 +3058,34 @@ def test_plan_cas_cancels_old_owner_and_discards_its_late_output(
     assert _operation_snapshot(operation_id) == before_late_response
 
 
+def test_mode_only_plan_change_fences_old_owner_and_preserves_completed_choices(
+    client, seeded, monkeypatch,
+):
+    session_id, operation_id, claim = _start_worker(
+        client, seeded, monkeypatch, take_ids=["take-001"],
+    )
+    current = client.get(f"/api/sessions/{session_id}/plan")
+    assert current.status_code == 200, current.text
+    original_authoring = current.json()["plan"]["authoring"]
+    candidate = current.json()["plan"]
+    candidate["authoring"]["mode"] = "manual"
+
+    saved = client.post(
+        f"/api/sessions/{session_id}/plan",
+        json={"plan": candidate, "expected_revision": claim.plan_revision},
+    )
+
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["plan_revision"] == claim.plan_revision + 1
+    operation = _operation_snapshot(operation_id)
+    assert operation["state"] == "cancelled"
+    assert operation["fencing_token"] == claim.fencing_token + 1
+    latest = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert latest["plan"]["authoring"]["mode"] == "manual"
+    assert latest["plan"]["authoring"]["evidence"] == original_authoring["evidence"]
+    assert latest["plan"]["authoring"]["shared_state"] == original_authoring["shared_state"]
+
+
 def test_operation_view_sanitizes_persisted_failure_diagnostics(client, seeded, monkeypatch):
     session_id, operation_id, _ = _start_worker(
         client, seeded, monkeypatch, take_ids=["take-001"],

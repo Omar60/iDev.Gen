@@ -462,3 +462,10 @@
   as before scheduling; a changed snapshot must not become completed progress.
   Continue a larger plan with another bounded operation, preserving prior
   snapshots and their original operation provenance.
+- Task 7.3 computes automatic downstream invalidation from the first changed
+  take position, including removal and reorder, because ordinal and predecessor
+  context bind later drafts. Total count alone does not change earlier creative
+  inputs. Keep manual invalidation based on direct inputs and wardrobe, and
+  preserve generated rows and assistant provenance across mode changes. Old
+  ready rows outside the invalidation boundary remain historical until verified
+  copy-forward is implemented in Task 7.5.

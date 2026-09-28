@@ -2,22 +2,20 @@
 
 ## Current State
 
-OpenSpec Task 7.2 of `simplify-resource-session-workflow` passed independent
-acceptance. Automatic preparation commits each take and its progress under the
-current operation fence. Actions remain limited to twenty takes; a forty-take
-plan completed through two operations without rewriting the first batch.
-Current ready/generated snapshots are reused after authoritative evidence
-validation, with no repeat assistant call. Partial failure retains completed
-work and Resume retries from the failed take.
+OpenSpec Task 7.3 of `simplify-resource-session-workflow` passed independent
+acceptance. Automatic authoring now invalidates ungenerated work from the first
+edited, removed or reordered take, or for changed global creative inputs.
+Deleting take ten preserves eligible earlier rows. Manual plans retain their
+input-based rule. Plan saves revoke review and fence older operations; generated
+history and completed provenance remain unchanged.
 
 ## Independent Verification
 
-Independent verification passed `python -m pytest` (2,370 tests), the
+The independent reviewer passed `python -m pytest` (2,380 tests), the
 privacy/control checks (46 tests), strict OpenSpec validation, and
-`git diff --check`. A focused adversarial test confirmed that corrupted
-snapshot evidence cannot advance operation progress. Frontend files were
-unchanged; the UI operation controls remain scoped to Task 8.4.
+`git diff --check`. Frontend files were unchanged. Verified current-revision
+copy-forward remains assigned to Task 7.5.
 
 ## Continuation
 
-Task 7.3 is next and has not started. Task 7.2 closes locally without push.
+Task 7.4 is next and has not started. Task 7.3 closes locally without push.
