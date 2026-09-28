@@ -469,3 +469,9 @@
   preserve generated rows and assistant provenance across mode changes. Old
   ready rows outside the invalidation boundary remain historical until verified
   copy-forward is implemented in Task 7.5.
+- Task 7.4 hashes sorted resource triples with each authorized descriptive
+  field and list in resolver order, plus exact reviewed adaptations. Revalidate
+  unlinked ready rows against current inputs; unused sidecar metadata does not
+  change the digest. Never backfill missing historical evidence. Expert raw
+  prompts stay caller-owned, so their declared adaptations must match persisted
+  approvals exactly; the server cannot prove semantic use inside arbitrary text.

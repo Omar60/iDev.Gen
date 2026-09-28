@@ -3022,6 +3022,207 @@ def build_review_state(
     }
 
 
+def build_historical_review_state(snapshot: Mapping[str, Any]) -> dict:
+    """Project a linked snapshot without resolving mutable resource inputs again."""
+    provenance = snapshot.get("provenance")
+    if not isinstance(provenance, dict):
+        provenance = {}
+    auth_ev = provenance.get("authoring_evidence")
+    expert_ev = provenance.get("resource_input_evidence")
+    has_authoring_evidence = isinstance(auth_ev, dict)
+    evidence = auth_ev if has_authoring_evidence else expert_ev
+    projection = evidence.get("resource_projection") if isinstance(evidence, dict) else None
+    digest = (
+        evidence.get("effective_resource_input_digest")
+        if isinstance(evidence, dict) else None
+    )
+    selected_revisions = (
+        provenance.get("selected_resource_revisions")
+        if has_authoring_evidence or not isinstance(expert_ev, dict)
+        else expert_ev.get("selected_resource_revisions")
+    )
+    if not isinstance(selected_revisions, list):
+        selected_revisions = []
+    evidence_available = _historical_resource_projection_is_verifiable(
+        projection, digest, selected_revisions,
+    )
+    effective_inputs = (
+        projection.get("effective_descriptive_inputs")
+        if isinstance(projection, dict) else None
+    )
+    if not isinstance(effective_inputs, list):
+        effective_inputs = []
+
+    kind_by_triple = {
+        (
+            item.get("library_key"),
+            item.get("source_id"),
+            item.get("content_digest"),
+        ): item.get("kind")
+        for item in selected_revisions
+        if isinstance(item, dict)
+        and all(isinstance(item.get(key), str) for key in (
+            "library_key", "source_id", "content_digest",
+        ))
+    }
+    fused_by_triple: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in effective_inputs:
+        if not isinstance(item, dict):
+            continue
+        triple = (
+            item.get("library_key"),
+            item.get("source_id"),
+            item.get("content_digest"),
+        )
+        field = item.get("resource_field")
+        value = item.get("value")
+        if (
+            not all(isinstance(part, str) for part in triple)
+            or kind_by_triple.get(triple) != resource_prompts.KIND_FUSED_SCENES
+            or not isinstance(field, str)
+            or resource_prompts.classify_field(
+                resource_prompts.KIND_FUSED_SCENES,
+                resource_prompts.canonical_field_name(field),
+            ).get("role") != resource_prompts.ROLE_DESCRIPTIVE_INPUT
+            or not (
+                isinstance(value, str)
+                or (isinstance(value, list) and all(isinstance(part, str) for part in value))
+            )
+        ):
+            continue
+        fused_by_triple.setdefault(triple, {})[field] = value
+
+    consumed_adaptations = (
+        projection.get("consumed_adaptations", [])
+        if isinstance(projection, dict) else []
+    )
+    if not isinstance(consumed_adaptations, list):
+        consumed_adaptations = []
+    return {
+        "take_id": snapshot.get("take_id", ""),
+        "session_id": snapshot.get("session_id", 0),
+        "plan_revision": snapshot.get("plan_revision", 0),
+        "composition_mode": session_plan.MODE_RESOURCE_V1,
+        "effective_state": dict(snapshot.get("effective_state") or {}),
+        "selected_resource_revisions": [
+            {
+                "library_key": item.get("library_key", ""),
+                "source_id": item.get("source_id", ""),
+                "content_digest": item.get("content_digest", ""),
+                "kind": item.get("kind", ""),
+            }
+            for item in selected_revisions
+            if isinstance(item, dict)
+            and all(isinstance(item.get(key), str) for key in (
+                "library_key", "source_id", "content_digest", "kind",
+            ))
+        ],
+        "fused_descriptions": [
+            {
+                "library_key": triple[0],
+                "source_id": triple[1],
+                "content_digest": triple[2],
+                "kind": resource_prompts.KIND_FUSED_SCENES,
+                "descriptive_inputs": values,
+            }
+            for triple, values in fused_by_triple.items()
+        ],
+        "conflicts": [],
+        "resolved_conflicts": [],
+        "adaptations": [
+            dict(item)
+            for item in consumed_adaptations
+            if isinstance(item, dict)
+            and set(item) == {
+                "library_key", "source_id", "content_digest",
+                "resource_field", "source_value", "adapted_value",
+            }
+            and all(isinstance(item.get(key), str) for key in item)
+        ],
+        "stale_adaptations": [],
+        "unresolved_placeholders": [],
+        "resource_input_evidence_status": (
+            "available" if evidence_available else "unavailable"
+        ),
+        "resource_input_evidence_diagnostic": (
+            None if evidence_available else "resource_input_evidence_unavailable"
+        ),
+        "ready_for_finalization": evidence_available,
+    }
+
+
+def _historical_resource_projection_is_verifiable(
+    projection: Any,
+    digest: Any,
+    selected_revisions: list,
+) -> bool:
+    """Check saved evidence internally without consulting current sidecars."""
+    projection_keys = {
+        "version", "selected_resource_triples",
+        "effective_descriptive_inputs", "consumed_adaptations",
+    }
+    if (
+        not isinstance(projection, dict)
+        or set(projection) != projection_keys
+        or type(projection.get("version")) is not int
+        or projection["version"] != 1
+        or not isinstance(digest, dict)
+        or set(digest) != {"version", "digest"}
+        or type(digest.get("version")) is not int
+        or digest["version"] != 1
+        or not isinstance(digest.get("digest"), str)
+        or len(digest["digest"]) != 64
+        or any(char not in "0123456789abcdef" for char in digest["digest"])
+    ):
+        return False
+    triples = projection.get("selected_resource_triples")
+    effective_inputs = projection.get("effective_descriptive_inputs")
+    consumed_adaptations = projection.get("consumed_adaptations")
+    if not all(isinstance(value, list) for value in (
+        triples, effective_inputs, consumed_adaptations,
+    )):
+        return False
+    expected_digest = resource_store.canonical_digest({
+        "selected_resource_triples": triples,
+        "effective_descriptive_inputs": effective_inputs,
+        "consumed_adaptations": consumed_adaptations,
+    })
+    if digest["digest"] != expected_digest:
+        return False
+    if not isinstance(selected_revisions, list):
+        return False
+    saved_triples = [
+        {
+            "library_key": item.get("library_key"),
+            "source_id": item.get("source_id"),
+            "content_digest": item.get("content_digest"),
+        }
+        for item in selected_revisions
+        if isinstance(item, dict)
+        and all(isinstance(item.get(key), str) for key in (
+            "library_key", "source_id", "content_digest",
+        ))
+    ]
+    if len(saved_triples) != len(selected_revisions):
+        return False
+    projected_triples = [
+        {
+            "library_key": item.get("library_key"),
+            "source_id": item.get("source_id"),
+            "content_digest": item.get("content_digest"),
+        }
+        for item in triples
+        if isinstance(item, dict)
+        and all(isinstance(item.get(key), str) for key in (
+            "library_key", "source_id", "content_digest",
+        ))
+    ]
+    return (
+        len(projected_triples) == len(triples)
+        and saved_triples == projected_triples
+    )
+
+
 # -- Task 4.2: adaptation-aware assembly ---------------------------------
 
 
@@ -4511,29 +4712,34 @@ def build_canonical_resource_projection(
 
     Deterministic rules:
       - selected_resource_triples sorted by (library_key, source_id, content_digest)
-      - effective_descriptive_inputs in resolver field and list order
+      - effective_descriptive_inputs sorted by resource triple, preserving
+        resolver field order and each value's list order
       - consumed_adaptations sorted by resource triple and resource_field
       - only consumed adaptations with exact source_value and adapted_value
       - computed via resource_store.canonical_digest
     """
+    resource_entries = [
+        entry
+        for entry in preparation.get("resource_inputs", [])
+        if isinstance(entry, dict)
+    ]
+    resource_entries.sort(key=lambda entry: (
+        entry.get("library_key", ""),
+        entry.get("source_id", ""),
+        entry.get("content_digest", ""),
+    ))
     selected_resource_triples = [
         {
             "library_key": entry.get("library_key", ""),
             "source_id": entry.get("source_id", ""),
             "content_digest": entry.get("content_digest", ""),
         }
-        for entry in preparation.get("resource_inputs", [])
-        if isinstance(entry, dict)
+        for entry in resource_entries
     ]
-    selected_resource_triples.sort(
-        key=lambda item: (item["library_key"], item["source_id"], item["content_digest"])
-    )
 
     effective_descriptive_inputs = []
     resource_lookup: dict[tuple[str, str, str, str], Any] = {}
-    for entry in preparation.get("resource_inputs", []):
-        if not isinstance(entry, dict):
-            continue
+    for entry in resource_entries:
         lib_key = str(entry.get("library_key", ""))
         src_id = str(entry.get("source_id", ""))
         c_digest = str(entry.get("content_digest", ""))
@@ -4675,6 +4881,212 @@ def build_authoring_evidence(
         "operation_id": None,
     }
     return evidence
+
+
+def _prepare_authoring_evidence_inputs(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    *,
+    manual_completion: Mapping[str, str] | None = None,
+) -> dict:
+    try:
+        return prepare_take_inputs(
+            session_id,
+            plan_revision,
+            take_id,
+            manual_completion=manual_completion,
+        )
+    except PreparationError as exc:
+        raise session_plan.AuthoringEvidenceInvalid(
+            "current resource inputs are missing or unauthorized"
+        ) from exc
+
+
+def _pre_authoring_consumed_adaptations(
+    preparation: dict,
+    provenance: Mapping[str, Any],
+) -> list[dict]:
+    """Resolve expert-declared adaptations against authorized current inputs."""
+    persisted, stale = _load_persisted_adaptation_state(preparation)
+    if stale:
+        raise session_plan.AuthoringEvidenceInvalid(
+            "current expert adaptation evidence is stale"
+        )
+    declared = provenance.get("adaptations")
+    if declared is None:
+        if persisted:
+            raise session_plan.AuthoringEvidenceInvalid(
+                "raw expert provenance does not identify consumed adaptations"
+            )
+        return []
+    if not isinstance(declared, list):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "raw expert adaptations must be a list"
+        )
+
+    normalized_inputs = []
+    for index, item in enumerate(declared):
+        if not isinstance(item, dict):
+            raise session_plan.AuthoringEvidenceInvalid(
+                f"raw expert adaptation {index} is invalid"
+            )
+        allowed = ADAPTATION_KEYS | {"source_value"}
+        if set(item) - allowed:
+            raise session_plan.AuthoringEvidenceInvalid(
+                f"raw expert adaptation {index} has unsupported fields"
+            )
+        normalized_inputs.append({
+            key: item[key]
+            for key in ADAPTATION_KEYS
+            if key in item
+        })
+    try:
+        normalized = _resolve_applicable_adaptations(
+            preparation, normalized_inputs,
+        )
+    except PreparationError as exc:
+        raise session_plan.AuthoringEvidenceInvalid(
+            "raw expert adaptations are not authorized for current inputs"
+        ) from exc
+
+    persisted_normalized = [
+        {
+            "library_key": item["library_key"],
+            "source_id": item["source_id"],
+            "content_digest": item["content_digest"],
+            "resource_field": item["resource_field"],
+            "adapted_value": item["adapted_value"],
+            "source_value": item["source_value"],
+        }
+        for item in persisted
+    ]
+    sort_key = lambda item: (
+        item["library_key"], item["source_id"], item["content_digest"],
+        item["resource_field"],
+    )
+    if sorted(normalized, key=sort_key) != sorted(
+        persisted_normalized, key=sort_key,
+    ):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "raw expert adaptations do not match persisted approvals"
+        )
+    return normalized
+
+
+def build_pre_authoring_resource_input_evidence(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    provenance: Any,
+) -> dict:
+    """Build server-derived resource evidence for a raw expert snapshot.
+
+    Raw expert prompts remain caller-owned. Their resource dependencies are
+    separately bound to the shared authorized resolver; adaptations are only
+    included when declared in provenance and validated against current inputs.
+    An empty selection is versioned too, so every finalized resource-v1
+    snapshot records exactly which (empty) resource input set was consumed.
+    """
+    preparation = _prepare_authoring_evidence_inputs(
+        session_id, plan_revision, take_id,
+    )
+    resource_inputs = preparation.get("resource_inputs", [])
+    if not isinstance(provenance, dict):
+        provenance = {}
+    adaptations = _pre_authoring_consumed_adaptations(preparation, provenance)
+    projection, digest = build_canonical_resource_projection(
+        preparation, adaptations,
+    )
+    selected_revisions = [
+        {
+            "library_key": entry.get("library_key", ""),
+            "source_id": entry.get("source_id", ""),
+            "content_digest": entry.get("content_digest", ""),
+            "kind": entry.get("kind", ""),
+        }
+        for entry in resource_inputs
+        if isinstance(entry, dict)
+    ]
+    selected_revisions.sort(key=lambda item: (
+        item["library_key"], item["source_id"], item["content_digest"],
+    ))
+    return {
+        "version": 1,
+        "selected_resource_revisions": selected_revisions,
+        "resource_projection": projection,
+        "effective_resource_input_digest": digest,
+    }
+
+
+def validate_pre_authoring_resource_input_evidence(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    row: Mapping[str, Any] | None = None,
+) -> session_plan.ValidatedAuthoringEvidence:
+    """Revalidate versioned resource evidence on an unlinked expert snapshot."""
+    if row is None:
+        row = session_plan._prepared_take_row(
+            session_id, plan_revision, take_id,
+        )
+    if row is None:
+        raise session_plan.AuthoringEvidenceInvalid(
+            "prepared expert take has no persisted resource evidence"
+        )
+    current_revision, plan = session_plan._load_current_resource_plan(session_id)
+    if current_revision != plan_revision:
+        raise session_plan.AuthoringEvidenceInvalid(
+            "prepared expert take revision is stale"
+        )
+    if session_plan.classify_plan_authoring(plan) != (
+        session_plan.PLAN_AUTHORING_KIND_PRE_AUTHORING_EXPERT
+    ):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "prepared expert resource evidence used for an authoring plan"
+        )
+    row_dict = dict(row)
+    if (
+        row_dict.get("status") != session_plan.PREPARED_TAKE_STATUS_READY
+        or row_dict.get("linked_shot_id") is not None
+        or row_dict.get("session_id") != session_id
+        or row_dict.get("plan_revision") != plan_revision
+        or row_dict.get("take_id") != take_id
+    ):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "prepared expert snapshot identity or status is invalid"
+        )
+    decoded = session_plan._decode_prepared_take(row_dict)
+    provenance = decoded.get("provenance")
+    if not isinstance(provenance, dict):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "prepared expert provenance is unavailable"
+        )
+    saved_evidence = provenance.get("resource_input_evidence")
+    if (
+        not isinstance(saved_evidence, dict)
+        or set(saved_evidence) != {
+            "version", "selected_resource_revisions", "resource_projection",
+            "effective_resource_input_digest",
+        }
+        or type(saved_evidence.get("version")) is not int
+        or saved_evidence["version"] != 1
+    ):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "prepared expert resource evidence is missing or invalid"
+        )
+    expected = build_pre_authoring_resource_input_evidence(
+        session_id, plan_revision, take_id, provenance,
+    )
+    if expected is None or not _same_json_value(saved_evidence, expected):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "prepared expert resource evidence does not match current inputs"
+        )
+    return session_plan.ValidatedAuthoringEvidence(
+        decoded,
+        authoring_evidence=None,
+        is_authoring=False,
+    )
 
 
 def _validate_authoring_prepared_evidence(
@@ -4917,7 +5329,9 @@ def _validate_authoring_prepared_evidence(
                 or not _same_json_value(provenance.get("writer_synthesis"), ws)
                 or not _same_json_value(ws.get("version"), WRITER_SYNTHESIS_VERSION)):
             raise session_plan.AuthoringEvidenceInvalid("automatic writer evidence is invalid")
-        base_prep = prepare_take_inputs(session_id, plan_revision, take_id)
+        base_prep = _prepare_authoring_evidence_inputs(
+            session_id, plan_revision, take_id,
+        )
         unlocked = compute_unlocked_fields(base_prep)
         expected_context = None
         if schema_version == 2:
@@ -5077,7 +5491,7 @@ def _validate_authoring_prepared_evidence(
 
     # Derive fresh preparation with manual_descriptive
     if plan_authoring_mode == "manual":
-        fresh_prep = prepare_take_inputs(
+        fresh_prep = _prepare_authoring_evidence_inputs(
             session_id, plan_revision, take_id,
             manual_completion=manual_descriptive,
         )

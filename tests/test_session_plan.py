@@ -4257,6 +4257,23 @@ def _task34_snapshot(index: int) -> dict:
     }
 
 
+def _task74_empty_resource_input_evidence() -> dict:
+    canonical_input = {
+        "selected_resource_triples": [],
+        "effective_descriptive_inputs": [],
+        "consumed_adaptations": [],
+    }
+    return {
+        "version": 1,
+        "selected_resource_revisions": [],
+        "resource_projection": {"version": 1, **canonical_input},
+        "effective_resource_input_digest": {
+            "version": 1,
+            "digest": resource_store.canonical_digest(canonical_input),
+        },
+    }
+
+
 def _task34_resource_session(client, seeded, name: str) -> int:
     response = client.post("/api/sessions", json={
         "model_id": seeded["model_id"],
@@ -4313,7 +4330,14 @@ class TestPreparedTakePersistenceAndRecovery:
         assert completed.status_code == 200, completed.text
         body = completed.json()
         assert body["status"] == "ready"
-        for key, value in snapshot.items():
+        expected_snapshot = {
+            **snapshot,
+            "provenance": {
+                **snapshot["provenance"],
+                "resource_input_evidence": _task74_empty_resource_input_evidence(),
+            },
+        }
+        for key, value in expected_snapshot.items():
             assert body[key] == value
 
         raw = _task34_raw_prepared(sid, 1, "resume-01")
@@ -4323,7 +4347,7 @@ class TestPreparedTakePersistenceAndRecovery:
         assert json.loads(raw["effective_state"]) == snapshot["effective_state"]
         assert raw["mapping_version"] == snapshot["mapping_version"]
         assert raw["compiler_version"] == snapshot["compiler_version"]
-        assert json.loads(raw["provenance"]) == snapshot["provenance"]
+        assert json.loads(raw["provenance"]) == body["provenance"]
 
         reopened = client.get(f"/api/sessions/{sid}/plan")
         assert reopened.status_code == 200, reopened.text
@@ -4335,7 +4359,7 @@ class TestPreparedTakePersistenceAndRecovery:
         assert preparation["completed"][0]["effective_state"] == snapshot[
             "effective_state"
         ]
-        assert preparation["completed"][0]["provenance"] == snapshot["provenance"]
+        assert preparation["completed"][0]["provenance"] == body["provenance"]
 
     def test_blank_snapshot_strings_are_refused_without_finalizing_pending(
         self, client, seeded,
@@ -4760,10 +4784,16 @@ class TestSubmitPreparedTake:
             f"/api/sessions/{sid}/plan/preparations/begin",
             json={"plan_revision": 1, "take_id": "resume-01"},
         ).status_code == 200
-        assert client.post(
+        completed = client.post(
             f"/api/sessions/{sid}/plan/preparations/complete",
             json={"plan_revision": 1, "take_id": "resume-01", **snapshot},
-        ).status_code == 200
+        )
+        assert completed.status_code == 200, completed.text
+        completed_body = completed.json()
+        assert completed_body["provenance"] == {
+            **snapshot["provenance"],
+            "resource_input_evidence": _task74_empty_resource_input_evidence(),
+        }
 
         before = _task34_raw_prepared(sid, 1, "resume-01")
         assert before is not None
@@ -4785,7 +4815,15 @@ class TestSubmitPreparedTake:
         assert json.loads(raw["effective_state"]) == snapshot["effective_state"]
         assert raw["mapping_version"] == snapshot["mapping_version"]
         assert raw["compiler_version"] == snapshot["compiler_version"]
-        assert json.loads(raw["provenance"]) == snapshot["provenance"]
+        assert json.loads(raw["provenance"]) == completed_body["provenance"]
+
+        reopened = client.get(f"/api/sessions/{sid}/plan")
+        assert reopened.status_code == 200, reopened.text
+        recovered = next(
+            row for row in reopened.json()["preparation"]["completed"]
+            if row["take_id"] == "resume-01"
+        )
+        assert recovered["provenance"] == completed_body["provenance"]
 
         shots = db.q("SELECT * FROM shot WHERE session_id = ?", sid)
         assert len(shots) == 1

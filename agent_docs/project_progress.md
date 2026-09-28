@@ -342,6 +342,15 @@ and completed provenance remain unchanged. Independent verification passed
 2,380 Python tests, 46 privacy/control checks, strict OpenSpec validation and
 diff checks. Verified copy-forward into the new revision remains Task 7.5.
 
+Task 7.4 passed independent acceptance. Finalized takes record a versioned
+digest and canonical projection of authorized resource descriptions and
+consumed adaptations. Read-only review and recovery reject changed or missing
+evidence for unlinked ready rows without backfilling older snapshots; linked
+history remains visible from its saved evidence. The full Python suite passed
+2,389 tests, privacy/control checks passed 46, and strict OpenSpec and diff
+checks passed. Copy-forward and transactional Submit validation remain later
+tasks.
+
 ## Next Milestone
 
-Task 7.4 is next. Do not begin it automatically.
+Task 7.5 is next. Do not begin it automatically.

@@ -2,20 +2,21 @@
 
 ## Current State
 
-OpenSpec Task 7.3 of `simplify-resource-session-workflow` passed independent
-acceptance. Automatic authoring now invalidates ungenerated work from the first
-edited, removed or reordered take, or for changed global creative inputs.
-Deleting take ten preserves eligible earlier rows. Manual plans retain their
-input-based rule. Plan saves revoke review and fence older operations; generated
-history and completed provenance remain unchanged.
+OpenSpec Task 7.4 of `simplify-resource-session-workflow` passed independent
+acceptance. Finalized snapshots persist versioned effective resource input
+evidence from authorized descriptions and reviewed adaptations. Review and
+recovery detect changed or missing evidence for unlinked ready rows without
+writing or backfilling history. Linked/generated rows retain saved prompt and
+provenance. Raw expert prompts remain caller-owned; declared adaptations must
+match persisted approvals, while semantic use in arbitrary prompt text cannot
+be proven by the server.
 
 ## Independent Verification
 
-The independent reviewer passed `python -m pytest` (2,380 tests), the
+The independent reviewer passed `python -m pytest` (2,389 tests), the
 privacy/control checks (46 tests), strict OpenSpec validation, and
-`git diff --check`. Frontend files were unchanged. Verified current-revision
-copy-forward remains assigned to Task 7.5.
+`git diff --check`. Frontend files were unchanged.
 
 ## Continuation
 
-Task 7.4 is next and has not started. Task 7.3 closes locally without push.
+Task 7.5 is next and has not started. Task 7.4 closes locally without push.

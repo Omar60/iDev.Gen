@@ -4528,18 +4528,34 @@ def get_take_review(sid: int, take_id: str, plan_revision: int | None = None):
     if take_id not in takes:
         raise HTTPException(422, f"take_id {take_id!r} not found in current plan revision {current_rev}")
     try:
-        prep = resource_preparation.prepare_take_inputs(sid, current_rev, take_id)
-        review = resource_preparation.build_review_state(prep)
         snapshot = session_plan._prepared_take_row(sid, current_rev, take_id)
-        if snapshot is not None and snapshot["status"] in (
-            session_plan.PREPARED_TAKE_STATUS_READY,
-            session_plan.PREPARED_TAKE_STATUS_GENERATED,
-        ):
-            if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
-                session_plan.validate_authoring_prepared_evidence(
-                    sid, current_rev, take_id, row=snapshot,
-                )
         decoded_snap = session_plan._decode_prepared_take(snapshot) if snapshot else None
+        historical = snapshot is not None and (
+            snapshot["status"] == session_plan.PREPARED_TAKE_STATUS_GENERATED
+            or snapshot["linked_shot_id"] is not None
+        )
+        if historical:
+            review = resource_preparation.build_historical_review_state(decoded_snap)
+            prep = None
+        else:
+            if (
+                snapshot is not None
+                and snapshot["status"] == session_plan.PREPARED_TAKE_STATUS_READY
+                and snapshot["linked_shot_id"] is None
+            ):
+                if plan_kind in (
+                    session_plan.PLAN_AUTHORING_KIND_MANUAL,
+                    session_plan.PLAN_AUTHORING_KIND_AUTOMATIC,
+                ):
+                    session_plan.validate_authoring_prepared_evidence(
+                        sid, current_rev, take_id, row=snapshot,
+                    )
+                else:
+                    resource_preparation.validate_pre_authoring_resource_input_evidence(
+                        sid, current_rev, take_id, row=snapshot,
+                    )
+            prep = resource_preparation.prepare_take_inputs(sid, current_rev, take_id)
+            review = resource_preparation.build_review_state(prep)
         final_prompt = None
         if decoded_snap and decoded_snap.get("final_prompt"):
             final_prompt = decoded_snap.get("final_prompt")
@@ -4587,22 +4603,38 @@ def get_plan_review(sid: int, plan_revision: int | None = None):
     predecessor_validation_cache: dict = {}
     try:
         for take_id in takes:
-            prep = resource_preparation.prepare_take_inputs(sid, current_rev, take_id)
-            review = resource_preparation.build_review_state(prep)
             snapshot = session_plan._prepared_take_row(sid, current_rev, take_id)
-            if snapshot is not None and snapshot["status"] in (
-                session_plan.PREPARED_TAKE_STATUS_READY,
-                session_plan.PREPARED_TAKE_STATUS_GENERATED,
-            ):
-                if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
-                    session_plan.validate_authoring_prepared_evidence(
-                        sid,
-                        current_rev,
-                        take_id,
-                        row=snapshot,
-                        _predecessor_validation_cache=predecessor_validation_cache,
-                    )
             decoded_snap = session_plan._decode_prepared_take(snapshot) if snapshot else None
+            historical = snapshot is not None and (
+                snapshot["status"] == session_plan.PREPARED_TAKE_STATUS_GENERATED
+                or snapshot["linked_shot_id"] is not None
+            )
+            if historical:
+                review = resource_preparation.build_historical_review_state(decoded_snap)
+                prep = None
+            else:
+                if (
+                    snapshot is not None
+                    and snapshot["status"] == session_plan.PREPARED_TAKE_STATUS_READY
+                    and snapshot["linked_shot_id"] is None
+                ):
+                    if plan_kind in (
+                        session_plan.PLAN_AUTHORING_KIND_MANUAL,
+                        session_plan.PLAN_AUTHORING_KIND_AUTOMATIC,
+                    ):
+                        session_plan.validate_authoring_prepared_evidence(
+                            sid,
+                            current_rev,
+                            take_id,
+                            row=snapshot,
+                            _predecessor_validation_cache=predecessor_validation_cache,
+                        )
+                    else:
+                        resource_preparation.validate_pre_authoring_resource_input_evidence(
+                            sid, current_rev, take_id, row=snapshot,
+                        )
+                prep = resource_preparation.prepare_take_inputs(sid, current_rev, take_id)
+                review = resource_preparation.build_review_state(prep)
             final_prompt = None
             if decoded_snap and decoded_snap.get("final_prompt"):
                 final_prompt = decoded_snap.get("final_prompt")

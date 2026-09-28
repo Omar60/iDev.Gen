@@ -2092,14 +2092,6 @@ def complete_preparation(
     if not compiler_version.strip():
         raise PlanValidationError("compiler_version must be a non-empty string")
     encoded_state = _encode_snapshot_json(effective_state, "effective_state")
-    encoded_provenance = _encode_snapshot_json(provenance, "provenance")
-    desired = (
-        final_prompt,
-        encoded_state,
-        mapping_version,
-        compiler_version,
-        encoded_provenance,
-    )
     try:
         with db.transaction():
             # Task 4.3 re-check: the binding validator runs inside the
@@ -2117,21 +2109,63 @@ def complete_preparation(
                 raise PreparedTakeConflict(
                     f"prepared take {take_id!r} has no pending row; begin it first"
                 )
-            current_snapshot = (
-                existing["final_prompt"],
-                existing["effective_state"],
-                existing["mapping_version"],
-                existing["compiler_version"],
-                existing["provenance"],
-            )
             if existing["status"] != PREPARED_TAKE_STATUS_PENDING:
-                if _snapshots_equal(current_snapshot, desired):
+                # Server-derived resource evidence is immutable snapshot metadata.
+                # Compare retries against the caller-owned provenance without
+                # resolving mutable sidecars again, especially for linked history.
+                saved_provenance = _decode_prepared_take(existing).get("provenance")
+                supplied_provenance = provenance
+                if (
+                    isinstance(saved_provenance, dict)
+                    and "resource_input_evidence" in saved_provenance
+                ):
+                    saved_provenance = dict(saved_provenance)
+                    saved_provenance.pop("resource_input_evidence", None)
+                    if isinstance(supplied_provenance, dict):
+                        supplied_provenance = dict(supplied_provenance)
+                        supplied_provenance.pop("resource_input_evidence", None)
+                    else:
+                        supplied_provenance = {
+                            "expert_provenance": supplied_provenance,
+                        }
+                current_snapshot = (
+                    existing["final_prompt"],
+                    existing["effective_state"],
+                    existing["mapping_version"],
+                    existing["compiler_version"],
+                    _encode_snapshot_json(saved_provenance, "provenance"),
+                )
+                desired_snapshot = (
+                    final_prompt,
+                    encoded_state,
+                    mapping_version,
+                    compiler_version,
+                    _encode_snapshot_json(supplied_provenance, "provenance"),
+                )
+                if _snapshots_equal(current_snapshot, desired_snapshot):
                     return _decode_prepared_take(existing)
                 raise PreparedTakeConflict(
                     f"prepared take {take_id!r} at plan revision {plan_revision} "
                     f"is immutable {existing['status']} history and differs from "
-                    f"the requested snapshot"
+                    "the requested snapshot"
                 )
+
+            import resource_preparation
+
+            resource_evidence = resource_preparation.build_pre_authoring_resource_input_evidence(
+                session_id,
+                plan_revision,
+                take_id,
+                provenance,
+            )
+            if isinstance(provenance, dict):
+                persisted_provenance = dict(provenance)
+            else:
+                persisted_provenance = {"expert_provenance": provenance}
+            persisted_provenance["resource_input_evidence"] = resource_evidence
+            encoded_provenance = _encode_snapshot_json(
+                persisted_provenance, "provenance",
+            )
             now = db.now()
             db.run(
                 "UPDATE prepared_take SET final_prompt = ?, effective_state = ?, "
@@ -2329,15 +2363,28 @@ def recover_preparation(session_id: int) -> dict:
             PREPARED_TAKE_STATUS_READY,
             PREPARED_TAKE_STATUS_GENERATED,
         ):
-            if plan_kind in (PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC):
+            if (
+                row["status"] == PREPARED_TAKE_STATUS_READY
+                and row["linked_shot_id"] is None
+            ):
                 try:
-                    val = validate_authoring_prepared_evidence(
-                        session_id,
-                        plan_revision,
-                        take_id,
-                        row=row,
-                        _predecessor_validation_cache=predecessor_validation_cache,
-                    )
+                    if plan_kind in (
+                        PLAN_AUTHORING_KIND_MANUAL,
+                        PLAN_AUTHORING_KIND_AUTOMATIC,
+                    ):
+                        val = validate_authoring_prepared_evidence(
+                            session_id,
+                            plan_revision,
+                            take_id,
+                            row=row,
+                            _predecessor_validation_cache=predecessor_validation_cache,
+                        )
+                    else:
+                        import resource_preparation
+
+                        val = resource_preparation.validate_pre_authoring_resource_input_evidence(
+                            session_id, plan_revision, take_id, row=row,
+                        )
                     completed.append(dict(val))
                 except AuthoringEvidenceInvalid:
                     incomplete.append({
@@ -2346,7 +2393,23 @@ def recover_preparation(session_id: int) -> dict:
                         "diagnostic": "authoring_evidence_invalid",
                     })
             else:
-                completed.append(_decode_prepared_take(row))
+                decoded = _decode_prepared_take(row)
+                if (
+                    row["status"] == PREPARED_TAKE_STATUS_GENERATED
+                    or row["linked_shot_id"] is not None
+                ):
+                    import resource_preparation
+
+                    historical_review = resource_preparation.build_historical_review_state(
+                        decoded,
+                    )
+                    decoded["resource_input_evidence_status"] = historical_review[
+                        "resource_input_evidence_status"
+                    ]
+                    decoded["resource_input_evidence_diagnostic"] = historical_review[
+                        "resource_input_evidence_diagnostic"
+                    ]
+                completed.append(decoded)
         elif row["status"] == PREPARED_TAKE_STATUS_PENDING:
             incomplete.append({"take_id": take_id, "status": "pending"})
         else:
