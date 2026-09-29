@@ -2,21 +2,20 @@
 
 ## Current State
 
-OpenSpec Task 7.4 of `simplify-resource-session-workflow` passed independent
-acceptance. Finalized snapshots persist versioned effective resource input
-evidence from authorized descriptions and reviewed adaptations. Review and
-recovery detect changed or missing evidence for unlinked ready rows without
-writing or backfilling history. Linked/generated rows retain saved prompt and
-provenance. Raw expert prompts remain caller-owned; declared adaptations must
-match persisted approvals, while semantic use in arbitrary prompt text cannot
-be proven by the server.
+OpenSpec Task 7.5 of `simplify-resource-session-workflow` passed independent
+acceptance. A plan CAS copies eligible ready, unlinked authoring snapshots into
+the current revision with byte-identical prompts, original synthesis evidence,
+and verified source/destination lineage. Changed or unverifiable inputs, linked
+history and snapshots consuming adaptations remain uncopied. The new revision
+requires explicit approval before submission; the old revision remains stale.
 
 ## Independent Verification
 
-The independent reviewer passed `python -m pytest` (2,389 tests), the
-privacy/control checks (46 tests), strict OpenSpec validation, and
+The independent reviewer passed `python -m pytest` (2,394 tests), the
+privacy/control checks (46 tests), strict OpenSpec validation and
 `git diff --check`. Frontend files were unchanged.
 
 ## Continuation
 
-Task 7.5 is next and has not started. Task 7.4 closes locally without push.
+Task 7.6 is next and has not started. It owns verified carry-forward of only
+consumed applicable adaptations. Task 7.5 closes locally without push.

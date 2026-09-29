@@ -1689,6 +1689,160 @@ def _start_worker(client, seeded, monkeypatch, *, take_ids):
     return session_id, operation_id, claim
 
 
+def test_ready_snapshots_copy_forward_with_original_writer_evidence(
+    client, seeded, monkeypatch,
+):
+    session_id, _, claim = _start_worker(
+        client, seeded, monkeypatch, take_ids=["take-001", "take-002", "take-003"],
+    )
+    for index in (1, 2, 3):
+        ticket = authoring_operations.renew_operation_lease(claim)
+        _persist_response_for_state_test(
+            claim, ticket, [{"target": f"take-{index:03d}", "result": {
+                field: f"invented {field} {index}"
+                for field in ("camera", "framing", "pose", "expression")
+            }}],
+        )
+    source = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = 1 "
+        "AND take_id = 'take-001'", session_id,
+    )
+    plan = main.session_plan.get_draft(session_id)["plan"]
+    plan["takes"][2]["pose"] = "A different pose for the third take."
+    saved = main.session_plan.save_draft(session_id, plan, 1)
+    assert saved["plan_revision"] == 2
+    copied = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = 2 "
+        "AND take_id = 'take-001'", session_id,
+    )
+    assert copied is not None
+    assert copied["final_prompt"] == source["final_prompt"]
+    assert json.loads(copied["provenance"])["authoring_evidence"] == (
+        json.loads(source["provenance"])["authoring_evidence"]
+    )
+    assert json.loads(copied["provenance"])["copy_forward"]["source_prepared_id"] == source["id"]
+    main.resource_preparation.validate_authoring_prepared_evidence(
+        session_id, 2, "take-001",
+    )
+    recovered = main.session_plan.recover_preparation(session_id)
+    assert [item["take_id"] for item in recovered["completed"]] == ["take-001", "take-002"]
+    main.resource_preparation.validate_authoring_prepared_evidence(
+        session_id, 2, "take-002",
+    )
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND plan_revision = 2 "
+        "AND take_id = 'take-003'", session_id,
+    ) is None
+    main.session_plan.save_draft(
+        session_id, main.session_plan.get_draft(session_id)["plan"], 2,
+    )
+    main.resource_preparation.validate_authoring_prepared_evidence(
+        session_id, 3, "take-002",
+    )
+    with pytest.raises(main.session_plan.PlanRevisionStale):
+        main.session_plan.submit_prepared_take(session_id, 1, "take-001")
+    main.session_plan.approve_plan_review(session_id, 3)
+    submitted = main.session_plan.submit_prepared_take(session_id, 3, "take-001")
+    assert submitted["final_prompt"] == source["final_prompt"]
+    assert submitted["linked_shot_id"] is not None
+
+
+def _task75_ready_session(client, seeded, monkeypatch):
+    session_id, _, claim = _start_worker(
+        client, seeded, monkeypatch, take_ids=["take-001"],
+    )
+    ticket = authoring_operations.renew_operation_lease(claim)
+    _persist_response_for_state_test(
+        claim, ticket, [{"target": "take-001", "result": {
+            field: f"invented {field}"
+            for field in ("camera", "framing", "pose", "expression")
+        }}],
+    )
+    return session_id
+
+
+def test_copy_forward_conflicting_destination_rolls_back_plan_and_source(
+    client, seeded, monkeypatch,
+):
+    session_id = _task75_ready_session(client, seeded, monkeypatch)
+    source = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = 1",
+        session_id,
+    )
+    db.run(
+        "INSERT INTO prepared_take (session_id, plan_revision, take_id, status, "
+        "created_at, updated_at) VALUES (?, 2, 'take-001', 'pending', ?, ?)",
+        session_id, db.now(), db.now(),
+    )
+    before = db.q("SELECT * FROM prepared_take WHERE session_id = ?", session_id)
+    plan = main.session_plan.get_draft(session_id)["plan"]
+    with pytest.raises(main.session_plan.PreparedTakeConflict):
+        main.session_plan.save_draft(session_id, plan, 1)
+    assert main.session_plan.get_draft(session_id)["plan_revision"] == 1
+    assert db.q("SELECT * FROM prepared_take WHERE session_id = ?", session_id) == before
+    assert source["status"] == "ready"
+
+
+def test_copy_forward_rejects_changed_authorized_translation(
+    client, seeded, monkeypatch,
+):
+    session_id = _task75_ready_session(client, seeded, monkeypatch)
+    source = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = 1",
+        session_id,
+    )
+    plan = main.session_plan.get_draft(session_id)["plan"]
+    selected = plan["selected_resources"][0]
+    db.run(
+        "UPDATE asset_revision SET translation = ? WHERE library_id = "
+        "(SELECT id FROM resource_library WHERE library_key = ?) "
+        "AND source_id = ? AND content_digest = ?",
+        json.dumps({"scene_theme": "Invented changed authorized description."}),
+        selected["library_key"], selected["source_id"], selected["content_digest"],
+    )
+    saved = main.session_plan.save_draft(session_id, plan, 1)
+    assert saved["plan_revision"] == 2
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND plan_revision = 2",
+        session_id,
+    ) is None
+    assert db.one("SELECT status FROM prepared_take WHERE id = ?", source["id"])["status"] == "ready"
+
+
+def test_copy_forward_skips_corrupt_source_snapshot(client, seeded, monkeypatch):
+    session_id = _task75_ready_session(client, seeded, monkeypatch)
+    source = db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND plan_revision = 1",
+        session_id,
+    )
+    db.run(
+        "UPDATE prepared_take SET final_prompt = ? WHERE id = ?",
+        "Forged prompt.", source["id"],
+    )
+    plan = main.session_plan.get_draft(session_id)["plan"]
+    main.session_plan.save_draft(session_id, plan, 1)
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND plan_revision = 2",
+        session_id,
+    ) is None
+
+
+def test_copy_forward_never_requeues_linked_history(client, seeded, monkeypatch):
+    session_id = _task75_ready_session(client, seeded, monkeypatch)
+    main.session_plan.approve_plan_review(session_id, 1)
+    submitted = main.session_plan.submit_prepared_take(session_id, 1, "take-001")
+    plan = main.session_plan.get_draft(session_id)["plan"]
+    main.session_plan.save_draft(session_id, plan, 1)
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND plan_revision = 2",
+        session_id,
+    ) is None
+    assert db.one(
+        "SELECT linked_shot_id FROM prepared_take WHERE id = ?",
+        submitted["id"],
+    )["linked_shot_id"] == submitted["linked_shot_id"]
+
+
 def _start_shared_worker(client, seeded, monkeypatch):
     _configure_assistant(monkeypatch)
     session_id, revision = _create_guided_session(client, seeded)

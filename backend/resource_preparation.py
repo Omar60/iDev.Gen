@@ -3642,6 +3642,48 @@ def _same_json_value(left: Any, right: Any) -> bool:
         return False
 
 
+def _copy_content_digest(row: Mapping[str, Any]) -> str:
+    """Bind immutable snapshot content without its lifecycle status or timestamps."""
+    return resource_store.canonical_digest({
+        key: row.get(key) for key in (
+            "id", "session_id", "plan_revision", "take_id", "final_prompt",
+            "effective_state", "mapping_version", "compiler_version", "provenance",
+        )
+    })
+
+
+def _copy_input_digest(row: Mapping[str, Any], provenance: dict) -> str:
+    evidence = provenance.get("authoring_evidence") or {}
+    return resource_store.canonical_digest({
+        "effective_state": row.get("effective_state"),
+        "mapping_version": row.get("mapping_version"),
+        "compiler_version": row.get("compiler_version"),
+        "selected_resource_revisions": provenance.get("selected_resource_revisions"),
+        "resource_projection": evidence.get("resource_projection"),
+        "writer_context": evidence.get("writer_context"),
+        "predecessor_projection": evidence.get("predecessor_projection"),
+    })
+
+
+def _copy_origin(ref: dict) -> dict:
+    """Resolve one predecessor reference to its original synthesis row."""
+    row = db.one("SELECT * FROM prepared_take WHERE id = ?", ref.get("prepared_take_id"))
+    if (row is None or row["take_id"] != ref.get("take_id")
+            or row["plan_revision"] != ref.get("plan_revision")):
+        raise session_plan.AuthoringEvidenceInvalid("copy predecessor identity is invalid")
+    provenance = session_plan._decode_prepared_take(row)["provenance"]
+    copy = provenance.get("copy_forward")
+    if copy is None:
+        return ref
+    if not isinstance(copy, dict):
+        raise session_plan.AuthoringEvidenceInvalid("copy predecessor lineage is invalid")
+    return {
+        "take_id": ref["take_id"],
+        "prepared_take_id": copy.get("origin_prepared_id"),
+        "plan_revision": copy.get("origin_plan_revision"),
+    }
+
+
 def build_automatic_writer_context(
     session_id: int,
     plan_revision: int,
@@ -5205,7 +5247,50 @@ def _validate_authoring_prepared_evidence(
     if not isinstance(provenance, dict):
         raise session_plan.AuthoringEvidenceInvalid("provenance must be a JSON object")
 
-    prov_keys = set(provenance.keys())
+    copy = provenance.get("copy_forward")
+    source_revision = plan_revision
+    origin_id = row_dict.get("id")
+    if copy is not None:
+        if (not isinstance(copy, dict) or set(copy) != {
+                "source_prepared_id", "source_plan_revision", "destination_plan_revision",
+                "origin_prepared_id", "origin_plan_revision", "input_digest",
+                "content_digest", "adaptations",
+        } or type(copy["source_prepared_id"]) is not int
+                or type(copy["source_plan_revision"]) is not int
+                or type(copy["destination_plan_revision"]) is not int
+                or type(copy["origin_prepared_id"]) is not int
+                or type(copy["origin_plan_revision"]) is not int
+                or copy["destination_plan_revision"] != plan_revision
+                or copy["source_plan_revision"] >= plan_revision
+                or copy["adaptations"] != []):
+            raise session_plan.AuthoringEvidenceInvalid("copy-forward binding is invalid")
+        source = db.one("SELECT * FROM prepared_take WHERE id = ?", copy["source_prepared_id"])
+        if (source is None or source["session_id"] != session_id
+                or source["plan_revision"] != copy["source_plan_revision"]
+                or source["take_id"] != take_id or source["linked_shot_id"] is not None
+                or source["status"] not in ("ready", "invalidated")
+                or _copy_content_digest(source) != copy["content_digest"]):
+            raise session_plan.AuthoringEvidenceInvalid("copy-forward source content is invalid")
+        source_provenance = session_plan._decode_prepared_take(source)["provenance"]
+        source_copy = source_provenance.get("copy_forward")
+        original = dict(source_provenance)
+        original.pop("copy_forward", None)
+        current_original = dict(provenance)
+        current_original.pop("copy_forward", None)
+        if (not _same_json_value(original, current_original)
+                or any(row_dict.get(key) != source.get(key) for key in (
+                    "final_prompt", "effective_state", "mapping_version", "compiler_version",
+                )) or _copy_input_digest(row_dict, provenance) != copy["input_digest"]):
+            raise session_plan.AuthoringEvidenceInvalid("copy-forward snapshot content differs from source")
+        expected_origin = (
+            (source_copy["origin_prepared_id"], source_copy["origin_plan_revision"])
+            if isinstance(source_copy, dict) else (source["id"], source["plan_revision"])
+        )
+        if (copy["origin_prepared_id"], copy["origin_plan_revision"]) != expected_origin:
+            raise session_plan.AuthoringEvidenceInvalid("copy-forward origin is invalid")
+        source_revision = copy["origin_plan_revision"]
+        origin_id = copy["origin_prepared_id"]
+    prov_keys = set(provenance.keys()) - {"copy_forward"}
     if prov_keys != PROVENANCE_AUTHORING_KEYS:
         extra = sorted(prov_keys - PROVENANCE_AUTHORING_KEYS)
         missing = sorted(PROVENANCE_AUTHORING_KEYS - prov_keys)
@@ -5233,9 +5318,9 @@ def _validate_authoring_prepared_evidence(
         raise session_plan.AuthoringEvidenceInvalid(
             f"provenance session_id mismatch: {provenance.get('session_id')} != {session_id}"
         )
-    if type(provenance.get("plan_revision")) is not int or provenance["plan_revision"] != plan_revision:
+    if type(provenance.get("plan_revision")) is not int or provenance["plan_revision"] != source_revision:
         raise session_plan.AuthoringEvidenceInvalid(
-            f"provenance plan_revision mismatch: {provenance.get('plan_revision')} != {plan_revision}"
+            f"provenance plan_revision mismatch: {provenance.get('plan_revision')} != {source_revision}"
         )
     if provenance.get("take_id") != take_id:
         raise session_plan.AuthoringEvidenceInvalid(
@@ -5294,7 +5379,7 @@ def _validate_authoring_prepared_evidence(
             auth_ev["operation_id"],
         )
         if (operation is None or operation["session_id"] != session_id
-                or operation["plan_revision"] != plan_revision
+                or operation["plan_revision"] != source_revision
                 or operation["kind"] != "prepare_takes"
                 or operation["state"] not in ("active", "succeeded", "failed", "cancelled", "expired")
                 or take_id not in json.loads(operation["requested_json"])):
@@ -5313,7 +5398,7 @@ def _validate_authoring_prepared_evidence(
                 raise session_plan.AuthoringEvidenceInvalid("automatic operation result is missing") from exc
             matching = [item["result"] for item in saved_items if item["target"] == take_id]
             expected_ref = {
-                "prepared_take_id": row_dict.get("id"),
+                "prepared_take_id": origin_id,
                 "take_id": take_id,
                 "assistant_output_digest": resource_store.canonical_digest(
                     raw_ws.get("writer_output") or {}
@@ -5356,7 +5441,14 @@ def _validate_authoring_prepared_evidence(
             predecessor_projection = auth_ev.get("predecessor_projection")
             if (not isinstance(predecessor_projection, dict)
                     or set(predecessor_projection) != CLOSED_AUTOMATIC_PREDECESSOR_PROJECTION_KEYS
-                    or not _same_json_value(predecessor_projection, expected_predecessors)):
+                    or (not copy and not _same_json_value(predecessor_projection, expected_predecessors))
+                    or (copy and (
+                        predecessor_projection.get("status") != "recorded"
+                        or not _same_json_value(
+                            [_copy_origin(ref) for ref in predecessor_projection.get("snapshots", [])],
+                            [_copy_origin(ref) for ref in expected_predecessors["snapshots"]],
+                        )
+                    ))):
                 raise session_plan.AuthoringEvidenceInvalid(
                     "automatic predecessor projection does not match finalized snapshots"
                 )

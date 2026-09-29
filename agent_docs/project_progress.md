@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 38 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 40 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -234,7 +234,7 @@ remain intact.
 
 ## Current Position
 
-Tasks 1.1 through 6.5 and Tasks 7.1-7.3 are complete.
+Tasks 1.1 through 6.5 and Tasks 7.1-7.5 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.
 The closed public view excludes fencing and request internals; exact request
 replay, cross-kind exclusion, ordered targets, configuration gates, and
@@ -348,9 +348,17 @@ consumed adaptations. Read-only review and recovery reject changed or missing
 evidence for unlinked ready rows without backfilling older snapshots; linked
 history remains visible from its saved evidence. The full Python suite passed
 2,389 tests, privacy/control checks passed 46, and strict OpenSpec and diff
-checks passed. Copy-forward and transactional Submit validation remain later
-tasks.
+checks passed. Transactional Submit dependency validation remains Task 7.7.
+
+Task 7.5 passed independent acceptance. Plan CAS now copies only verified,
+ready, unlinked authoring snapshots to the new revision, preserving the exact
+prompt and original synthesis evidence while binding destination and lineage.
+Changed resource inputs, unverifiable evidence, linked history and consumed
+adaptations do not copy. Recovery, fresh approval and submission of a current
+copy were verified; old-revision submission remains stale. Independent gates
+passed 2,394 Python tests, 46 privacy/control checks, strict OpenSpec validation
+and diff checks. Adaptation carry-forward remains Task 7.6.
 
 ## Next Milestone
 
-Task 7.5 is next. Do not begin it automatically.
+Task 7.6 is next. Do not begin it automatically.

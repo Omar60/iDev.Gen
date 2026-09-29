@@ -2883,6 +2883,29 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
         # before any revision or prepared-take write.
         validate_fixed_variation_choices(validated)
         new_revision = actual + 1
+        copy_sources = []
+        if current is not None and classify_plan_authoring(old_plan) in (
+            PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC,
+        ):
+            for source in db.q(
+                "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+                "AND status = ? AND linked_shot_id IS NULL ORDER BY id",
+                session_id, actual, PREPARED_TAKE_STATUS_READY,
+            ):
+                if source["take_id"] not in _take_id_set(validated):
+                    continue
+                try:
+                    verified = validate_authoring_prepared_evidence(
+                        session_id, actual, source["take_id"], row=source,
+                    )
+                except (AuthoringEvidenceInvalid, PlanRevisionStale):
+                    continue
+                provenance = verified["provenance"]
+                evidence = provenance.get("authoring_evidence") or {}
+                projection = evidence.get("resource_projection") or {}
+                if provenance.get("adaptations") or projection.get("consumed_adaptations"):
+                    continue  # Adaptation carry-forward belongs to Task 7.6.
+                copy_sources.append(source)
         if actual == 0:
             db.run(
                 "INSERT INTO session_plan "
@@ -2896,6 +2919,49 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                 "updated_at = ? WHERE session_id = ?",
                 new_revision, encoded, now, session_id,
             )
+        if copy_sources:
+            from backend import resource_preparation
+
+            for source in copy_sources:
+                take_id = source["take_id"]
+                if _prepared_take_row(session_id, new_revision, take_id) is not None:
+                    raise PreparedTakeConflict(
+                        f"prepared take {take_id!r} already exists at revision {new_revision}"
+                    )
+                provenance = _decode_prepared_take(source)["provenance"]
+                source_copy = provenance.get("copy_forward")
+                provenance["copy_forward"] = {
+                    "source_prepared_id": source["id"],
+                    "source_plan_revision": actual,
+                    "destination_plan_revision": new_revision,
+                    "origin_prepared_id": (
+                        source_copy["origin_prepared_id"] if source_copy else source["id"]
+                    ),
+                    "origin_plan_revision": (
+                        source_copy["origin_plan_revision"] if source_copy else actual
+                    ),
+                    "input_digest": resource_preparation._copy_input_digest(source, provenance),
+                    "content_digest": resource_preparation._copy_content_digest(source),
+                    "adaptations": [],
+                }
+                db.run(
+                    "INSERT INTO prepared_take "
+                    "(session_id, plan_revision, take_id, final_prompt, effective_state, "
+                    "mapping_version, compiler_version, provenance, status, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    session_id, new_revision, take_id, source["final_prompt"],
+                    source["effective_state"], source["mapping_version"],
+                    source["compiler_version"],
+                    json.dumps(provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                    PREPARED_TAKE_STATUS_READY, now, now,
+                )
+                try:
+                    validate_authoring_prepared_evidence(session_id, new_revision, take_id)
+                except (AuthoringEvidenceInvalid, PlanRevisionStale):
+                    db.run(
+                        "DELETE FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+                        session_id, new_revision, take_id,
+                    )
         # Step 5: explicit invalidation. The pass is the single
         # implementation ``invalidate_ungenerated_prepared_takes``
         # owns; calling it from here keeps the invalidation SQL

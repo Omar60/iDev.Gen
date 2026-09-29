@@ -466,12 +466,18 @@
   take position, including removal and reorder, because ordinal and predecessor
   context bind later drafts. Total count alone does not change earlier creative
   inputs. Keep manual invalidation based on direct inputs and wardrobe, and
-  preserve generated rows and assistant provenance across mode changes. Old
-  ready rows outside the invalidation boundary remain historical until verified
-  copy-forward is implemented in Task 7.5.
+  preserve generated rows and assistant provenance across mode changes. Task 7.5
+  copies eligible earlier ready rows into the current revision.
 - Task 7.4 hashes sorted resource triples with each authorized descriptive
   field and list in resolver order, plus exact reviewed adaptations. Revalidate
   unlinked ready rows against current inputs; unused sidecar metadata does not
   change the digest. Never backfill missing historical evidence. Expert raw
   prompts stay caller-owned, so their declared adaptations must match persisted
   approvals exactly; the server cannot prove semantic use inside arbitrary text.
+- Task 7.5 validates source and destination snapshots inside plan CAS before
+  retaining an unchanged ready prompt. Its copy lineage keeps the original
+  assistant operation and predecessor identity while binding the new revision;
+  current copies still require explicit approval. Skip consumed adaptations
+  until Task 7.6 can verify and copy their exact authorization. Changed
+  translations, corrupt evidence, linked history and conflicting destinations
+  cannot become current ready copies.
