@@ -4460,11 +4460,6 @@ def submit_plan_preparation(sid: int, p: PreparedTakeSubmitIn):
             f"session {sid} composition_mode is {mode!r}, expected "
             f"{session_plan.MODE_RESOURCE_V1!r}",
         )
-    if not session_plan.is_plan_review_approved(sid, p.plan_revision):
-        raise HTTPException(
-            409,
-            f"session {sid} plan revision {p.plan_revision} has not been approved for submission",
-        )
     try:
         return session_plan.submit_prepared_take(
             sid, p.plan_revision, p.take_id,
@@ -4825,11 +4820,6 @@ def submit_selected_plan_preparations(sid: int, p: PreparedTakesSubmitSelectedIn
                 raise HTTPException(
                     409,
                     f"session {sid} plan revision is {current_rev}, requested {p.plan_revision}",
-                )
-            if not session_plan.is_plan_review_approved(sid, p.plan_revision):
-                raise HTTPException(
-                    409,
-                    f"session {sid} plan revision {p.plan_revision} has not been approved for submission",
                 )
             results = []
             for tid in p.take_ids:

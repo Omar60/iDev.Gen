@@ -7790,7 +7790,27 @@ def test_api_submit_errors_stale_invalid_and_incompatible(client, seeded):
     )
     assert r.status_code == 409
 
-    db.run("INSERT INTO prepared_take (session_id, plan_revision, take_id, status, final_prompt, created_at, updated_at) VALUES (?, 2, 'take-02', 'ready', '', ?, ?)", sid, db.now(), db.now())
+    assert client.post(
+        f"/api/sessions/{sid}/plan/preparations/begin",
+        json={"plan_revision": 2, "take_id": "take-02"},
+    ).status_code == 200
+    assert client.post(
+        f"/api/sessions/{sid}/plan/preparations/complete",
+        json={
+            "plan_revision": 2,
+            "take_id": "take-02",
+            "final_prompt": "finalized prompt",
+            "effective_state": {},
+            "mapping_version": "m1",
+            "compiler_version": "c1",
+            "provenance": {},
+        },
+    ).status_code == 200
+    db.run(
+        "UPDATE prepared_take SET final_prompt = '' "
+        "WHERE session_id = ? AND plan_revision = 2 AND take_id = 'take-02'",
+        sid,
+    )
     r = client.post(
         f"/api/sessions/{sid}/plan/preparations/submit",
         json={"plan_revision": 2, "take_id": "take-02"},

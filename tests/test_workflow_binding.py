@@ -1468,6 +1468,13 @@ class TestTask43RepairRegressions:
         ))
         with pytest.raises(workflow_binding.WorkflowChanged, match="graph"):
             session_plan.submit_prepared_take(sid, 1, "take-001")
+        recovered = session_plan.recover_preparation(sid)
+        assert recovered["completed"] == []
+        assert recovered["incomplete"] == [{
+            "take_id": "take-001",
+            "status": "invalid_evidence",
+            "diagnostic": "workflow_changed",
+        }]
         # No new shot row.
         assert db.q("SELECT * FROM shot WHERE session_id = ?", sid) == before_shots
         # No ``linked_shot_id`` set; ``status`` unchanged.
@@ -1477,10 +1484,9 @@ class TestTask43RepairRegressions:
         ))
         assert after_prepared == before_prepared
 
-    def test_submit_idempotent_branch_drift_also_refuses(self, client, seeded):
-        # Blocked 9 idempotent retry: a drift that lands after a take
-        # has already been generated must refuse the re-submission; the
-        # existing shot is returned only when the binding is intact.
+    def test_submit_idempotent_retry_preserves_linked_history_after_drift(self, client, seeded):
+        # A linked result is immutable history: live workflow drift does
+        # not require revalidation to return the existing shot on retry.
         import session_plan
         sid = _seed_authoring_session(
             client, model_id=seeded["model_id"], workflow_id=seeded["workflow_id"],
@@ -1529,8 +1535,8 @@ class TestTask43RepairRegressions:
             "UPDATE workflow SET kind = 'edit' WHERE id = ?",
             seeded["workflow_id"],
         )
-        with pytest.raises(workflow_binding.WorkflowChanged, match="kind"):
-            session_plan.submit_prepared_take(sid, 1, "take-001")
+        retry = session_plan.submit_prepared_take(sid, 1, "take-001")
+        assert retry["shot_id"] == shot_id
         assert dict(db.one(
             "SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?",
             sid, "take-001",

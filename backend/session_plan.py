@@ -2392,6 +2392,12 @@ def recover_preparation(session_id: int) -> dict:
                         "status": "invalid_evidence",
                         "diagnostic": "authoring_evidence_invalid",
                     })
+                except workflow_binding.WorkflowChanged as exc:
+                    incomplete.append({
+                        "take_id": take_id,
+                        "status": "invalid_evidence",
+                        "diagnostic": exc.code,
+                    })
             else:
                 decoded = _decode_prepared_take(row)
                 if (
@@ -3140,26 +3146,8 @@ def submit_prepared_take(
     if not isinstance(take_id, str) or not take_id.strip():
         raise PlanValidationError("take_id must be a non-empty string")
 
-    # Task 4.3: the workflow binding the plan froze must still match the
-    # live workflow row. Runs BEFORE the submission transaction so a drifted
-    # binding cannot leave a freshly inserted ``shot`` row behind. The
-    # idempotent generated-retry branch is covered by the same pre-check:
-    # re-submitting an already-generated take is a no-op, but the plan's
-    # identity still has to be intact for the answer to be authoritative.
-    _safe_validate_workflow_binding(session_id)
-
     try:
         with db.transaction():
-            # Task 4.3 re-check: validate again inside the same
-            # transactional write boundary to catch drift between the
-            # preflight and the submission write. The validator is
-            # read-only; a refusal rolls the transaction back without
-            # touching the shot or prepared_take row. The idempotent
-            # ``status == GENERATED`` short-circuit above is also
-            # gated by the in-transaction re-check, so a drift that
-            # lands between the preflight and the read of the existing
-            # row cannot make the helper return a stale shot id.
-            _safe_validate_workflow_binding(session_id)
             session = db.one("SELECT id, settings, model_id FROM session WHERE id = ?", session_id)
             if session is None:
                 raise SessionNotFound(f"session {session_id} not found")
@@ -3176,10 +3164,35 @@ def submit_prepared_take(
                     f"session {session_id} plan revision is {current_rev}, "
                     f"requested submission revision is {plan_revision}"
                 )
-            if not is_plan_review_approved(session_id, plan_revision):
+
+            existing = _prepared_take_row(session_id, plan_revision, take_id)
+            if (
+                existing is not None
+                and existing["status"] == PREPARED_TAKE_STATUS_GENERATED
+            ):
+                linked_id = existing["linked_shot_id"]
+                if linked_id is not None:
+                    shot = db.one("SELECT id FROM shot WHERE id = ?", linked_id)
+                    if shot is not None:
+                        decoded = _decode_prepared_take(existing)
+                        decoded["shot_id"] = linked_id
+                        return decoded
+                raise PreparedTakePersistenceError(
+                    f"prepared take {take_id!r} is marked generated but linked shot {linked_id} is missing"
+                )
+
+            approval = db.one(
+                "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
+                session_id,
+            )
+            if approval is None or int(approval["plan_revision"]) != plan_revision:
                 raise PlanReviewNotApproved(
                     f"session {session_id} plan revision {plan_revision} has not been approved for submission"
                 )
+
+            _validate_unlinked_ready_snapshot_dependencies(
+                session_id, plan_revision, plan,
+            )
             take_ids = {
                 t.get("take_id")
                 for t in plan.get("takes", [])
@@ -3199,24 +3212,11 @@ def submit_prepared_take(
                 )
             validated_fields = _validate_take_submission_fields(take_def, take_id)
 
-            existing = _prepared_take_row(session_id, plan_revision, take_id)
+            existing = existing or _prepared_take_row(session_id, plan_revision, take_id)
             if existing is None:
                 raise PreparedTakeConflict(
                     f"prepared take {take_id!r} at plan revision {plan_revision} "
                     f"has no prepared row; finalize it first"
-                )
-
-            # Idempotent retry: return existing shot if already generated
-            if existing["status"] == PREPARED_TAKE_STATUS_GENERATED:
-                linked_id = existing["linked_shot_id"]
-                if linked_id is not None:
-                    shot = db.one("SELECT id FROM shot WHERE id = ?", linked_id)
-                    if shot is not None:
-                        decoded = _decode_prepared_take(existing)
-                        decoded["shot_id"] = linked_id
-                        return decoded
-                raise PreparedTakePersistenceError(
-                    f"prepared take {take_id!r} is marked generated but linked shot {linked_id} is missing"
                 )
 
             if existing["status"] == PREPARED_TAKE_STATUS_INVALIDATED:
@@ -3234,6 +3234,12 @@ def submit_prepared_take(
             plan_kind = classify_plan_authoring(plan)
             if plan_kind in (PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC):
                 validate_authoring_prepared_evidence(
+                    session_id, plan_revision, take_id, row=existing,
+                )
+            else:
+                import resource_preparation
+
+                resource_preparation.validate_pre_authoring_resource_input_evidence(
                     session_id, plan_revision, take_id, row=existing,
                 )
 
@@ -3326,18 +3332,71 @@ def is_plan_review_approved(session_id: int, plan_revision: int) -> bool:
     )
     if row is None:
         return False
-    return int(row["plan_revision"]) == int(plan_revision)
+    if int(row["plan_revision"]) != int(plan_revision):
+        return False
+    try:
+        current_revision, plan = _load_current_resource_plan(session_id)
+        if current_revision != int(plan_revision):
+            return False
+        _validate_unlinked_ready_snapshot_dependencies(
+            session_id, int(plan_revision), plan,
+        )
+    except (
+        AuthoringEvidenceInvalid,
+        PlanRevisionStale,
+        PlanValidationError,
+        SessionNotFound,
+        SessionNotInResourceMode,
+        workflow_binding.WorkflowChanged,
+    ):
+        return False
+    return True
 
 
 def get_approved_plan_revision(session_id: int) -> int | None:
-    """Return the approved plan revision for session_id if still current."""
+    """Return the approved revision only while its current inputs still validate."""
     row = db.one(
         "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
         session_id,
     )
     if row is None:
         return None
-    return int(row["plan_revision"])
+    revision = int(row["plan_revision"])
+    return revision if is_plan_review_approved(session_id, revision) else None
+
+
+def _validate_unlinked_ready_snapshot_dependencies(
+    session_id: int,
+    plan_revision: int,
+    plan: dict,
+) -> None:
+    """Validate live workflow and resource inputs for all unlinked ready snapshots."""
+    _safe_validate_workflow_binding(session_id)
+    plan_kind = classify_plan_authoring(plan)
+    ready_rows = db.q(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+        "AND status = ? AND linked_shot_id IS NULL",
+        session_id,
+        plan_revision,
+        PREPARED_TAKE_STATUS_READY,
+    )
+    predecessor_validation_cache: dict = {}
+    for row in ready_rows:
+        take_id = str(row["take_id"])
+        if plan_kind in (PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC):
+            validate_authoring_prepared_evidence(
+                session_id,
+                plan_revision,
+                take_id,
+                row=row,
+                _predecessor_validation_cache=predecessor_validation_cache,
+            )
+        else:
+            import resource_preparation
+
+            resource_preparation.validate_pre_authoring_resource_input_evidence(
+                session_id, plan_revision, take_id, row=row,
+            )
 
 
 def approve_plan_review(session_id: int, plan_revision: int) -> dict:
@@ -3346,22 +3405,13 @@ def approve_plan_review(session_id: int, plan_revision: int) -> dict:
     Validates that:
     1. Session exists and is in resource-v1 mode.
     2. Current plan revision matches plan_revision (CAS check).
-    3. Task 4.3: the workflow binding the plan froze still matches the live
-       workflow row the session points to. The validator runs BEFORE the
-       approval transaction so a drift cannot leave an approval row behind.
+    3. The frozen workflow binding and every unlinked ready snapshot still
+       match current dependencies, inside the serialized approval transaction.
     """
     if not isinstance(plan_revision, int) or plan_revision <= 0:
         raise PlanValidationError("plan_revision must be a positive integer")
 
-    _safe_validate_workflow_binding(session_id)
-
     with db.transaction():
-        # Task 4.3 re-check: validate again inside the same
-        # transactional write boundary to catch drift between the
-        # preflight and the approval write. The validator is
-        # read-only; a refusal rolls the transaction back without
-        # touching the approval row.
-        _safe_validate_workflow_binding(session_id)
         session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
         if session is None:
             raise SessionNotFound(f"session {session_id} not found")
@@ -3375,23 +3425,9 @@ def approve_plan_review(session_id: int, plan_revision: int) -> dict:
             raise PlanRevisionStale(
                 f"session {session_id} plan revision is {current_rev}, requested {plan_revision}"
             )
-        plan_kind = classify_plan_authoring(plan)
-        if plan_kind in (PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC):
-            predecessor_validation_cache: dict = {}
-            ready_rows = db.q(
-                "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND status = ? AND linked_shot_id IS NULL",
-                session_id,
-                plan_revision,
-                PREPARED_TAKE_STATUS_READY,
-            )
-            for r in ready_rows:
-                validate_authoring_prepared_evidence(
-                    session_id,
-                    plan_revision,
-                    str(r["take_id"]),
-                    row=r,
-                    _predecessor_validation_cache=predecessor_validation_cache,
-                )
+        _validate_unlinked_ready_snapshot_dependencies(
+            session_id, plan_revision, plan,
+        )
         now = db.now()
         db.run(
             "INSERT INTO session_plan_approval (session_id, plan_revision, approved_at) "

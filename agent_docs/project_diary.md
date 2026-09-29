@@ -488,3 +488,9 @@
   identical destination rows, reject conflicts atomically, and leave missing
   or stale approvals for fresh review. Tests must cover both new insertion and
   identical-row reuse, then recover, approve and submit the current copy.
+- Task 7.7 derives approval effectiveness from current workflow and resource
+  inputs, rather than trusting the stored review revision. Validate every
+  unlinked ready snapshot within approval and submission transactions, including
+  pre-authoring expert evidence. An idempotent retry of linked history returns
+  its existing shot without revalidating mutable dependencies. A selected batch
+  must roll back all shot and link writes if one member becomes stale.

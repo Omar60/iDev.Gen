@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 41 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 42 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -370,6 +370,15 @@ privacy/control checks passed. One existing concurrent-CAS test failed in an
 earlier full run, then passed alone and in the final full run; monitor for
 intermittence. Strict OpenSpec validation and diff checks passed.
 
+Task 7.7 passed independent acceptance. Review and recovery identify stale
+unlinked snapshots; approval and domain submission revalidate workflow and
+resource inputs under their serialized write transactions. A stale selected
+batch member prevents all shot and link writes. Stored approval becomes
+ineffective after drift, while already-linked history and idempotent retry
+remain intact. Independent gates passed 2,403 Python tests, 46 privacy/control
+checks, strict OpenSpec validation and diff checks. Frontend files were not
+changed.
+
 ## Next Milestone
 
-Task 7.7 is next. Do not begin it automatically.
+Task 7.8 is next. Do not begin it automatically.

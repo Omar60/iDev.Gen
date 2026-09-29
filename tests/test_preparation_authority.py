@@ -1529,6 +1529,11 @@ class TestTask24AuthoringEvidenceContract:
             json={"plan_revision": 1},
         )
         assert response.status_code == 200, response.text
+        approved = client.post(
+            f"/api/sessions/{sid}/plan/review/approve",
+            json={"plan_revision": 1},
+        )
+        assert approved.status_code == 200, approved.text
         before = dict(db.one(
             "SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?",
             sid, "take-001",
@@ -1562,7 +1567,9 @@ class TestTask24AuthoringEvidenceContract:
         )
 
         review = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        plan_review = client.get(f"/api/sessions/{sid}/plan/review")
         assert review.status_code == 409
+        assert plan_review.status_code == 409
         assert review.json()["detail"] == backend_session_plan.AUTHORING_EVIDENCE_PUBLIC_MESSAGE
         recovered = backend_session_plan.recover_preparation(sid)
         assert recovered["completed"] == []
@@ -1571,8 +1578,304 @@ class TestTask24AuthoringEvidenceContract:
             "status": "invalid_evidence",
             "diagnostic": "authoring_evidence_invalid",
         }]
+        assert backend_session_plan.get_approved_plan_revision(sid) is None
+        assert not backend_session_plan.is_plan_review_approved(sid, 1)
+        assert db.one(
+            "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
+            sid,
+        )["plan_revision"] == 1
+        rejected_reapproval = client.post(
+            f"/api/sessions/{sid}/plan/review/approve",
+            json={"plan_revision": 1},
+        )
+        assert rejected_reapproval.status_code == 409
+        assert client.get(f"/api/sessions/{sid}/plan").json()[
+            "reviewed_revision"
+        ] is None
+        refused_submit = client.post(
+            f"/api/sessions/{sid}/plan/preparations/submit-selected",
+            json={"plan_revision": 1, "take_ids": ["take-001"]},
+        )
+        assert refused_submit.status_code == 409
+        assert db.q("SELECT id FROM shot WHERE session_id = ?", sid) == []
+        after_refusal = db.one(
+            "SELECT * FROM prepared_take WHERE id = ?", before["id"],
+        )
+        assert dict(after_refusal) == before
         assert dict(db.one("SELECT * FROM prepared_take WHERE id = ?", before["id"])) == before
-        assert db.q("SELECT * FROM session_plan_approval WHERE session_id = ?", sid) == []
+
+    def test_task_77_stale_expert_member_refuses_selected_batch_without_writes(
+        self, client, seeded,
+    ):
+        rev_one = _setup_resource_revision(source_id="inv_room_task77_batch_one")
+        rev_two = _setup_resource_revision(source_id="inv_room_task77_batch_two")
+        sid = _create_resource_session(client, seeded)
+        takes = [
+            {
+                "take_id": take_id,
+                "label": take_id,
+                "camera": "eye level",
+                "framing": "medium shot",
+                "pose": "standing",
+                "expression": "neutral",
+            }
+            for take_id in ("take-001", "take-002")
+        ]
+        selected_resources = [
+            {
+                "library_key": rev["library_key"],
+                "source_id": rev["source_id"],
+                "content_digest": rev["content_digest"],
+            }
+            for rev in (rev_one, rev_two)
+        ]
+        assert backend_session_plan.save_draft(
+            sid,
+            {
+                "version": "resource-v1",
+                "look": INV_LOOK,
+                "initial_wardrobe": INV_WARDROBE,
+                "takes": takes,
+                "selected_resources": selected_resources,
+                "wardrobe_changes": [],
+            },
+            expected_revision=0,
+        )["plan_revision"] == 1
+
+        second_take_adaptation = backend_resource_preparation.record_take_adaptation(
+            sid,
+            1,
+            "take-002",
+            {
+                "library_key": rev_two["library_key"],
+                "source_id": rev_two["source_id"],
+                "content_digest": rev_two["content_digest"],
+                "resource_field": "scene_theme",
+                "adapted_value": "a reviewed second-room scene",
+            },
+        )
+        adaptation_declaration = {
+            key: second_take_adaptation[key]
+            for key in (
+                "library_key", "source_id", "content_digest",
+                "resource_field", "source_value", "adapted_value",
+            )
+        }
+        selected_revision_evidence = [
+            {**selected, "kind": "rooms"}
+            for selected in selected_resources
+        ]
+
+        for take_id in ("take-001", "take-002"):
+            begun = client.post(
+                f"/api/sessions/{sid}/plan/preparations/begin",
+                json={"plan_revision": 1, "take_id": take_id},
+            )
+            assert begun.status_code == 200, begun.text
+            completed = client.post(
+                f"/api/sessions/{sid}/plan/preparations/complete",
+                json={
+                    "plan_revision": 1,
+                    "take_id": take_id,
+                    "final_prompt": f"prepared prompt for {take_id}",
+                    "effective_state": {"look": "saved expert look"},
+                    "mapping_version": "expert-map-v1",
+                    "compiler_version": "expert-compiler-v1",
+                    "provenance": {
+                        "selected_resource_revisions": selected_revision_evidence,
+                        **(
+                            {"adaptations": [adaptation_declaration]}
+                            if take_id == "take-002" else {}
+                        ),
+                    },
+                },
+            )
+            assert completed.status_code == 200, completed.text
+
+        approved = client.post(
+            f"/api/sessions/{sid}/plan/review/approve",
+            json={"plan_revision": 1},
+        )
+        assert approved.status_code == 200, approved.text
+        before = {
+            take_id: dict(db.one(
+                "SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?",
+                sid, take_id,
+            ))
+            for take_id in ("take-001", "take-002")
+        }
+        adaptation_row = db.one(
+            "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+            "AND plan_revision = ? AND take_id = ?",
+            sid, 1, "take-002",
+        )
+        assert adaptation_row["source_id"] == rev_two["source_id"]
+        db.run(
+            "UPDATE take_resource_adaptation SET adapted_value = ?, updated_at = ? "
+            "WHERE id = ?",
+            "a changed second-take adaptation",
+            db.now(),
+            adaptation_row["id"],
+        )
+        first_ready = db.one(
+            "SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?",
+            sid, "take-001",
+        )
+        second_ready = db.one(
+            "SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?",
+            sid, "take-002",
+        )
+        backend_resource_preparation.validate_pre_authoring_resource_input_evidence(
+            sid, 1, "take-001", row=first_ready,
+        )
+        with pytest.raises(backend_session_plan.AuthoringEvidenceInvalid):
+            backend_resource_preparation.validate_pre_authoring_resource_input_evidence(
+                sid, 1, "take-002", row=second_ready,
+            )
+
+        refused = client.post(
+            f"/api/sessions/{sid}/plan/preparations/submit-selected",
+            json={"plan_revision": 1, "take_ids": ["take-001", "take-002"]},
+        )
+        assert refused.status_code == 409
+        assert refused.json()["detail"] == backend_session_plan.AUTHORING_EVIDENCE_PUBLIC_MESSAGE
+        assert db.q("SELECT id FROM shot WHERE session_id = ?", sid) == []
+        for take_id, old_row in before.items():
+            assert dict(db.one(
+                "SELECT * FROM prepared_take WHERE id = ?", old_row["id"],
+            )) == old_row
+
+    def test_task_77_selected_submit_serializes_with_translation_update(
+        self, client, seeded, monkeypatch,
+    ):
+        import concurrent.futures
+        import threading
+
+        rev = _setup_resource_revision(source_id="inv_room_task77_submit_race")
+        sid = _create_resource_session(client, seeded)
+        takes = [
+            {
+                "take_id": take_id,
+                "label": take_id,
+                "camera": "eye level",
+                "framing": "medium shot",
+                "pose": "standing",
+                "expression": "neutral",
+            }
+            for take_id in ("take-001", "take-002")
+        ]
+        _seed_plan(sid, seeded, rev, takes=takes)
+        for take_id in ("take-001", "take-002"):
+            begun = client.post(
+                f"/api/sessions/{sid}/plan/preparations/begin",
+                json={"plan_revision": 1, "take_id": take_id},
+            )
+            assert begun.status_code == 200, begun.text
+            completed = client.post(
+                f"/api/sessions/{sid}/plan/preparations/complete",
+                json={
+                    "plan_revision": 1,
+                    "take_id": take_id,
+                    "final_prompt": f"prepared prompt for {take_id}",
+                    "effective_state": {"look": "saved expert look"},
+                    "mapping_version": "expert-map-v1",
+                    "compiler_version": "expert-compiler-v1",
+                    "provenance": {"selected_resource_revisions": [{
+                        "library_key": rev["library_key"],
+                        "source_id": rev["source_id"],
+                        "content_digest": rev["content_digest"],
+                        "kind": "rooms",
+                    }]},
+                },
+            )
+            assert completed.status_code == 200, completed.text
+        approved = client.post(
+            f"/api/sessions/{sid}/plan/review/approve",
+            json={"plan_revision": 1},
+        )
+        assert approved.status_code == 200, approved.text
+        before = {
+            take_id: dict(db.one(
+                "SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?",
+                sid, take_id,
+            ))
+            for take_id in ("take-001", "take-002")
+        }
+
+        stored_revision = resource_store.get_revision(
+            library_id=rev["library_id"],
+            source_id=rev["source_id"],
+            content_digest=rev["content_digest"],
+        )
+        translation_locked = threading.Event()
+        release_translation = threading.Event()
+        translation_committed = threading.Event()
+        submit_transaction_attempted = threading.Event()
+        submit_thread_id = []
+        original_transaction = db.transaction
+        original_validate = main.resource_preparation.validate_pre_authoring_resource_input_evidence
+
+        def observe_submit_transaction():
+            if submit_thread_id and threading.get_ident() == submit_thread_id[0]:
+                submit_transaction_attempted.set()
+            return original_transaction()
+
+        def validate_after_translation_commit(*args, **kwargs):
+            assert translation_committed.wait(timeout=5), (
+                "selected Submit reached evidence validation before the "
+                "concurrent translation transaction committed"
+            )
+            return original_validate(*args, **kwargs)
+
+        monkeypatch.setattr(db, "transaction", observe_submit_transaction)
+        monkeypatch.setattr(
+            main.resource_preparation,
+            "validate_pre_authoring_resource_input_evidence",
+            validate_after_translation_commit,
+        )
+
+        def update_translation():
+            with original_transaction():
+                db.run(
+                    "UPDATE asset_revision SET translation = ? WHERE id = ?",
+                    json.dumps({
+                        "label": stored_revision["translation"]["label"],
+                        "scene_theme": "a concurrently changed scene",
+                    }),
+                    stored_revision["id"],
+                )
+                translation_locked.set()
+                assert release_translation.wait(timeout=5)
+            translation_committed.set()
+
+        def submit_selected():
+            submit_thread_id.append(threading.get_ident())
+            return main.submit_selected_plan_preparations(
+                sid,
+                main.PreparedTakesSubmitSelectedIn(
+                    plan_revision=1,
+                    take_ids=["take-001", "take-002"],
+                ),
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            translation_future = executor.submit(update_translation)
+            assert translation_locked.wait(timeout=5)
+            submit_future = executor.submit(submit_selected)
+            assert submit_transaction_attempted.wait(timeout=5)
+            assert not translation_committed.is_set()
+            release_translation.set()
+            translation_future.result(timeout=5)
+            with pytest.raises(main.HTTPException) as refused:
+                submit_future.result(timeout=5)
+
+        assert refused.value.status_code == 409
+        assert translation_committed.is_set()
+        assert db.q("SELECT id FROM shot WHERE session_id = ?", sid) == []
+        for take_id, old_row in before.items():
+            assert dict(db.one(
+                "SELECT * FROM prepared_take WHERE id = ?", old_row["id"],
+            )) == old_row
 
     def test_task_74_missing_legacy_digest_is_not_backfilled(self, client, seeded):
         rev = _setup_resource_revision(source_id="inv_room_task74_legacy")
@@ -1696,6 +1999,14 @@ class TestTask24AuthoringEvidenceContract:
             "UPDATE prepared_take SET provenance = ? WHERE id = ?",
             missing_evidence, row["id"],
         )
+        rejected_approval = client.post(
+            f"/api/sessions/{sid}/plan/review/approve",
+            json={"plan_revision": 1},
+        )
+        assert rejected_approval.status_code == 409
+        assert db.q(
+            "SELECT * FROM session_plan_approval WHERE session_id = ?", sid,
+        ) == []
         revision = resource_store.get_revision(
             library_id=rev["library_id"],
             source_id=rev["source_id"],
@@ -1830,7 +2141,7 @@ class TestTask24AuthoringEvidenceContract:
         assert after["status"] == backend_session_plan.PREPARED_TAKE_STATUS_PENDING
         assert "resource_input_evidence" not in json.loads(after["provenance"])
 
-    def test_task_74_pre_authoring_expert_linked_history_reports_unavailable_evidence(
+    def test_task_77_pre_authoring_expert_linked_history_survives_resource_drift(
         self, client, seeded,
     ):
         rev = _setup_resource_revision(source_id="inv_room_task74_expert_history")
@@ -1879,18 +2190,47 @@ class TestTask24AuthoringEvidenceContract:
             "selected_resource_revisions"
         ]
         assert historical_projection["ready_for_finalization"] is True
-        legacy_provenance = json.loads(ready_row["provenance"])
-        del legacy_provenance["resource_input_evidence"]
-        legacy_provenance_json = json.dumps(legacy_provenance)
-        db.run(
-            "UPDATE prepared_take SET provenance = ? WHERE id = ?",
-            legacy_provenance_json, ready_row["id"],
-        )
         submitted = backend_session_plan.submit_prepared_take(sid, 1, "take-001")
-        generated = db.one(
+        submitted_row = db.one(
             "SELECT * FROM prepared_take WHERE session_id = ? AND take_id = ?",
             sid, "take-001",
         )
+        provenance = json.loads(submitted_row["provenance"])
+        del provenance["resource_input_evidence"][
+            "effective_resource_input_digest"
+        ]
+        missing_digest = json.dumps(provenance)
+
+        # Simulate a legacy/corrupted generated row after a legitimate submit.
+        # Production protects generated snapshots; restore that protection as
+        # soon as this test installs the historical evidence gap.
+        db.run("DROP TRIGGER IF EXISTS prepared_take_protect_generated")
+        try:
+            db.run(
+                "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+                missing_digest,
+                submitted_row["id"],
+            )
+        finally:
+            db.run(
+                "CREATE TRIGGER IF NOT EXISTS prepared_take_protect_generated "
+                "BEFORE UPDATE OF id, session_id, plan_revision, take_id, "
+                "final_prompt, effective_state, mapping_version, "
+                "compiler_version, provenance, status ON prepared_take "
+                "FOR EACH ROW WHEN OLD.status = 'generated' BEGIN "
+                "SELECT RAISE(ABORT, 'prepared_take in generated status is "
+                "immutable history: identity, status, final_prompt, "
+                "effective_state, mapping_version, compiler_version and "
+                "provenance cannot be rewritten after submission.'); END"
+            )
+        before_drift = dict(db.one(
+            "SELECT * FROM prepared_take WHERE id = ?", submitted_row["id"],
+        ))
+        assert before_drift["final_prompt"] == "immutable linked expert prompt"
+        assert "effective_resource_input_digest" not in json.loads(
+            before_drift["provenance"],
+        )["resource_input_evidence"]
+
         revision = resource_store.get_revision(
             library_id=rev["library_id"],
             source_id=rev["source_id"],
@@ -1905,16 +2245,11 @@ class TestTask24AuthoringEvidenceContract:
             revision["id"],
         )
 
-        idempotent_retry = backend_session_plan.complete_preparation(
+        submit_retry = backend_session_plan.submit_prepared_take(
             sid, 1, "take-001",
-            final_prompt="immutable linked expert prompt",
-            effective_state={"look": "saved linked look"},
-            mapping_version="expert-map-v1",
-            compiler_version="expert-compiler-v1",
-            provenance=provenance,
         )
-        assert idempotent_retry["status"] == "generated"
-        assert idempotent_retry["final_prompt"] == "immutable linked expert prompt"
+        assert submit_retry["shot_id"] == submitted["shot_id"]
+        assert len(db.q("SELECT id FROM shot WHERE session_id = ?", sid)) == 1
 
         take_review = client.get(
             f"/api/sessions/{sid}/plan/takes/take-001/review",
@@ -1930,21 +2265,38 @@ class TestTask24AuthoringEvidenceContract:
             "selected_resource_revisions"
         ]
         assert reviewed["resource_input_evidence_status"] == "unavailable"
+        assert reviewed["ready_for_finalization"] is False
         assert reviewed["resource_input_evidence_diagnostic"] == (
             "resource_input_evidence_unavailable"
         )
-        assert reviewed["ready_for_finalization"] is False
+        assert "effective_resource_input_digest" not in reviewed["snapshot"][
+            "provenance"]["resource_input_evidence"]
         assert reviewed["snapshot"]["provenance"]["custom_field"] == (
             "linked expert provenance"
         )
+        assert plan_review.json()["takes"][0][
+            "resource_input_evidence_status"
+        ] == "unavailable"
         assert recovered["completed"][0]["status"] == "generated"
         assert recovered["completed"][0]["linked_shot_id"] == submitted["shot_id"]
-        assert recovered["completed"][0]["resource_input_evidence_status"] == (
-            "unavailable"
+        assert recovered["completed"][0]["final_prompt"] == (
+            "immutable linked expert prompt"
         )
-        assert recovered["completed"][0]["resource_input_evidence_diagnostic"] == (
-            "resource_input_evidence_unavailable"
-        )
+        assert recovered["completed"][0][
+            "resource_input_evidence_status"
+        ] == "unavailable"
+        assert recovered["completed"][0][
+            "resource_input_evidence_diagnostic"
+        ] == "resource_input_evidence_unavailable"
+        assert "effective_resource_input_digest" not in recovered[
+            "completed"
+        ][0]["provenance"]["resource_input_evidence"]
+        assert dict(db.one(
+            "SELECT * FROM prepared_take WHERE id = ?", submitted_row["id"],
+        )) == before_drift
+        assert db.one(
+            "SELECT prompt FROM shot WHERE id = ?", submitted["shot_id"],
+        )["prompt"] == "immutable linked expert prompt"
 
     def test_task_74_linked_history_keeps_original_snapshot_after_resource_change(
         self, client, seeded,

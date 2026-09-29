@@ -5015,9 +5015,13 @@ class TestSubmitPreparedTake:
         session_plan.approve_plan_review(sid, 1)
 
         db.run(
-            "INSERT INTO prepared_take (session_id, plan_revision, take_id, status, final_prompt, created_at, updated_at) "
-            "VALUES (?, ?, ?, 'ready', '', ?, ?)",
-            sid, 1, "resume-01", db.now(), db.now(),
+            "INSERT INTO prepared_take (session_id, plan_revision, take_id, status, final_prompt, provenance, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'ready', '', ?, ?, ?)",
+            sid, 1, "resume-01",
+            json.dumps({
+                "resource_input_evidence": _task74_empty_resource_input_evidence(),
+            }),
+            db.now(), db.now(),
         )
 
         with pytest.raises(session_plan.PlanValidationError, match="invalid or empty final_prompt"):
@@ -5120,10 +5124,17 @@ class TestSubmitPreparedTake:
         session_plan.approve_plan_review(sid, 1)
 
         # Plant ready rows for each
-        _plant_prepared_take(sid, 1, "take-bad-seed", status="ready")
-        _plant_prepared_take(sid, 1, "take-bad-ref", status="ready")
-        _plant_prepared_take(sid, 1, "take-bad-strength", status="ready")
-        _plant_prepared_take(sid, 1, "take-bad-label", status="ready")
+        for take_id in (
+            "take-bad-seed", "take-bad-ref", "take-bad-strength", "take-bad-label",
+        ):
+            row_id = _plant_prepared_take(sid, 1, take_id, status="ready")
+            db.run(
+                "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+                json.dumps({
+                    "resource_input_evidence": _task74_empty_resource_input_evidence(),
+                }),
+                row_id,
+            )
 
         # 1. Non-integer seed
         with pytest.raises(session_plan.PlanValidationError, match="field 'seed' must be an integer"):
