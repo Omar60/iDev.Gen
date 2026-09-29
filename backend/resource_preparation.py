@@ -2598,6 +2598,10 @@ def load_take_adaptations(
     is the full row set, sorted by the seven columns so
     two calls return the same list order.
 
+    This remains an exact-revision lookup. The verified plan-CAS
+    copy-forward exception creates destination rows explicitly;
+    this loader never falls back to another revision.
+
     The function does NOT validate the persisted rows
     against the current preparation. A persisted
     adaptation whose triple the current plan no longer
@@ -3663,6 +3667,230 @@ def _copy_input_digest(row: Mapping[str, Any], provenance: dict) -> str:
         "writer_context": evidence.get("writer_context"),
         "predecessor_projection": evidence.get("predecessor_projection"),
     })
+
+
+def _copy_adaptation_digest(adaptation: Mapping[str, Any]) -> str:
+    """Bind one exact resource-field approval and both reviewed values."""
+    return resource_store.canonical_digest({
+        key: adaptation[key]
+        for key in (
+            "library_key", "source_id", "content_digest", "resource_field",
+            "source_value", "adapted_value",
+        )
+    })
+
+
+def _copy_forward_adaptations(
+    session_id: int,
+    source_plan_revision: int,
+    destination_plan_revision: int,
+    take_id: str,
+    consumed: Any,
+    destination_preparation: dict,
+    now: str,
+) -> tuple[list[dict], list[int]] | None:
+    """Copy only verified, still-applicable consumed approvals inside plan CAS.
+
+    The return value is ``(lineage, inserted_ids)``. ``None`` means the
+    snapshot cannot be copied because its source approval is missing or no
+    longer applies. Conflicting destination values raise the plan's CAS
+    conflict, so the caller rolls back the whole transaction.
+    """
+    if not isinstance(consumed, list):
+        return None
+    if not consumed:
+        return [], []
+
+    fields = (
+        "library_key", "source_id", "content_digest", "resource_field",
+        "source_value", "adapted_value",
+    )
+    ordered = sorted(
+        consumed,
+        key=lambda item: tuple(item.get(key, "") for key in fields[:4])
+        if isinstance(item, dict) else ("", "", "", ""),
+    )
+    if any(
+        not isinstance(item, dict)
+        or set(item) != set(fields)
+        or any(not isinstance(item.get(key), str) or not item[key] for key in fields)
+        for item in ordered
+    ):
+        return None
+
+    keys = [tuple(item[key] for key in fields[:4]) for item in ordered]
+    if len(set(keys)) != len(keys):
+        return None
+
+    source_rows = []
+    destination_rows = []
+    for item, key in zip(ordered, keys):
+        source = db.one(
+            "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+            "AND plan_revision = ? AND take_id = ? AND library_key = ? "
+            "AND source_id = ? AND content_digest = ? AND resource_field = ?",
+            session_id, source_plan_revision, take_id, *key,
+        )
+        if (source is None or source["source_value"] != item["source_value"]
+                or source["adapted_value"] != item["adapted_value"]):
+            return None
+        source_rows.append(source)
+
+    destination_candidates = [
+        dict(
+            source,
+            session_id=session_id,
+            plan_revision=destination_plan_revision,
+            take_id=take_id,
+        )
+        for source in source_rows
+    ]
+    applicable, stale = _partition_persisted_adaptations(
+        destination_preparation, destination_candidates,
+    )
+    if stale or len(applicable) != len(source_rows):
+        return None
+
+    for item, key in zip(ordered, keys):
+        destination = db.one(
+            "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+            "AND plan_revision = ? AND take_id = ? AND library_key = ? "
+            "AND source_id = ? AND content_digest = ? AND resource_field = ?",
+            session_id, destination_plan_revision, take_id, *key,
+        )
+        if destination is not None and (
+            destination["source_value"] != item["source_value"]
+            or destination["adapted_value"] != item["adapted_value"]
+        ):
+            raise session_plan.PreparedTakeConflict(
+                f"adaptation for take {take_id!r} conflicts at plan revision "
+                f"{destination_plan_revision}"
+            )
+        destination_rows.append(destination)
+
+    lineage = []
+    inserted_ids = []
+    for item, source, destination in zip(ordered, source_rows, destination_rows):
+        if destination is None:
+            db.run(
+                "INSERT INTO take_resource_adaptation "
+                "(session_id, plan_revision, take_id, library_key, source_id, "
+                "content_digest, resource_field, source_value, adapted_value, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                session_id, destination_plan_revision, take_id,
+                item["library_key"], item["source_id"], item["content_digest"],
+                item["resource_field"], item["source_value"], item["adapted_value"],
+                now, now,
+            )
+            destination = db.one(
+                "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+                "AND plan_revision = ? AND take_id = ? AND library_key = ? "
+                "AND source_id = ? AND content_digest = ? AND resource_field = ?",
+                session_id, destination_plan_revision, take_id,
+                item["library_key"], item["source_id"], item["content_digest"],
+                item["resource_field"],
+            )
+            if destination is None:
+                raise PreparedTakePersistenceError(
+                    f"copied adaptation for take {take_id!r} was not persisted"
+                )
+            inserted_ids.append(int(destination["id"]))
+        lineage.append({
+            "source_adaptation_id": int(source["id"]),
+            "source_plan_revision": source_plan_revision,
+            "destination_adaptation_id": int(destination["id"]),
+            "destination_plan_revision": destination_plan_revision,
+            "adaptation_digest": _copy_adaptation_digest(item),
+        })
+    return lineage, inserted_ids
+
+
+def _validate_copy_forward_adaptation_lineage(
+    copy: dict,
+    session_id: int,
+    take_id: str,
+    provenance: dict,
+) -> None:
+    """Verify the copied approvals against their exact source and destination rows."""
+    evidence = provenance.get("authoring_evidence")
+    projection = evidence.get("resource_projection") if isinstance(evidence, dict) else None
+    consumed = projection.get("consumed_adaptations") if isinstance(projection, dict) else None
+    lineage = copy.get("adaptations")
+    if not isinstance(consumed, list) or not isinstance(lineage, list):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "copy-forward adaptation lineage is invalid"
+        )
+    ordered = sorted(consumed, key=lambda item: tuple(
+        item.get(key, "") for key in (
+            "library_key", "source_id", "content_digest", "resource_field",
+        )
+    ) if isinstance(item, dict) else ("", "", "", ""))
+    if len(lineage) != len(ordered):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "copy-forward adaptation lineage does not match consumed approvals"
+        )
+    expected_keys = {
+        "source_adaptation_id", "source_plan_revision",
+        "destination_adaptation_id", "destination_plan_revision",
+        "adaptation_digest",
+    }
+    identity = (
+        "library_key", "source_id", "content_digest", "resource_field",
+        "source_value", "adapted_value",
+    )
+    for approval, ref in zip(ordered, lineage):
+        if (
+            not isinstance(approval, dict)
+            or set(approval) != set(identity)
+            or any(not isinstance(approval.get(key), str) or not approval[key] for key in identity)
+            or not isinstance(ref, dict)
+            or set(ref) != expected_keys
+            or type(ref.get("source_adaptation_id")) is not int
+            or ref["source_adaptation_id"] <= 0
+            or type(ref.get("destination_adaptation_id")) is not int
+            or ref["destination_adaptation_id"] <= 0
+            or type(ref.get("source_plan_revision")) is not int
+            or ref["source_plan_revision"] != copy["source_plan_revision"]
+            or type(ref.get("destination_plan_revision")) is not int
+            or ref["destination_plan_revision"] != copy["destination_plan_revision"]
+            or not isinstance(ref.get("adaptation_digest"), str)
+        ):
+            raise session_plan.AuthoringEvidenceInvalid(
+                "copy-forward adaptation lineage is invalid"
+            )
+        source = db.one(
+            "SELECT * FROM take_resource_adaptation WHERE id = ?",
+            ref["source_adaptation_id"],
+        )
+        destination = db.one(
+            "SELECT * FROM take_resource_adaptation WHERE id = ?",
+            ref["destination_adaptation_id"],
+        )
+        expected_digest = _copy_adaptation_digest(approval)
+        if (
+            source is None
+            or destination is None
+            or any(
+                source.get(key) != expected
+                or destination.get(key) != expected
+                for key, expected in {
+                    "session_id": session_id,
+                    "take_id": take_id,
+                    "library_key": approval["library_key"],
+                    "source_id": approval["source_id"],
+                    "content_digest": approval["content_digest"],
+                    "resource_field": approval["resource_field"],
+                    "source_value": approval["source_value"],
+                    "adapted_value": approval["adapted_value"],
+                }.items()
+            )
+            or source["plan_revision"] != ref["source_plan_revision"]
+            or destination["plan_revision"] != ref["destination_plan_revision"]
+            or ref["adaptation_digest"] != expected_digest
+        ):
+            raise session_plan.AuthoringEvidenceInvalid(
+                "copy-forward adaptation content or lineage is invalid"
+            )
 
 
 def _copy_origin(ref: dict) -> dict:
@@ -5262,7 +5490,7 @@ def _validate_authoring_prepared_evidence(
                 or type(copy["origin_plan_revision"]) is not int
                 or copy["destination_plan_revision"] != plan_revision
                 or copy["source_plan_revision"] >= plan_revision
-                or copy["adaptations"] != []):
+                or not isinstance(copy["adaptations"], list)):
             raise session_plan.AuthoringEvidenceInvalid("copy-forward binding is invalid")
         source = db.one("SELECT * FROM prepared_take WHERE id = ?", copy["source_prepared_id"])
         if (source is None or source["session_id"] != session_id
@@ -5288,6 +5516,9 @@ def _validate_authoring_prepared_evidence(
         )
         if (copy["origin_prepared_id"], copy["origin_plan_revision"]) != expected_origin:
             raise session_plan.AuthoringEvidenceInvalid("copy-forward origin is invalid")
+        _validate_copy_forward_adaptation_lineage(
+            copy, session_id, take_id, provenance,
+        )
         source_revision = copy["origin_plan_revision"]
         origin_id = copy["origin_prepared_id"]
     prov_keys = set(provenance.keys()) - {"copy_forward"}

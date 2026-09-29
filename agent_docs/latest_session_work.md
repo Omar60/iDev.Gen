@@ -2,20 +2,22 @@
 
 ## Current State
 
-OpenSpec Task 7.5 of `simplify-resource-session-workflow` passed independent
-acceptance. A plan CAS copies eligible ready, unlinked authoring snapshots into
-the current revision with byte-identical prompts, original synthesis evidence,
-and verified source/destination lineage. Changed or unverifiable inputs, linked
-history and snapshots consuming adaptations remain uncopied. The new revision
-requires explicit approval before submission; the old revision remains stale.
+OpenSpec Task 7.6 of `simplify-resource-session-workflow` passed independent
+acceptance. Verified plan-CAS copy-forward now carries only consumed and
+still-applicable adaptation rows, retaining exact source/adapted values and
+recording source/destination IDs, revisions and canonical adaptation digests.
+Conflicting destination rows roll back the save; missing or stale approvals
+leave the take without a ready copy. Original evidence remains unchanged and
+loaders still use exact revisions.
 
 ## Independent Verification
 
-The independent reviewer passed `python -m pytest` (2,394 tests), the
+The independent reviewer passed `python -m pytest` (2,401 tests), the
 privacy/control checks (46 tests), strict OpenSpec validation and
-`git diff --check`. Frontend files were unchanged.
+`git diff --check`. One existing concurrent-CAS test failed in an earlier
+full-suite run, then passed alone and in the final full suite. Frontend files
+were unchanged.
 
 ## Continuation
 
-Task 7.6 is next and has not started. It owns verified carry-forward of only
-consumed applicable adaptations. Task 7.5 closes locally without push.
+Task 7.6 is closed locally without push. Task 7.7 is next and has not started.

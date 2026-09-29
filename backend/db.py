@@ -654,6 +654,16 @@ END;
 --     adaptation of ``prompt`` does NOT resolve a conflict on
 --     ``scene_theme``).
 --
+-- Adaptations are not inherited by a general plan revision
+-- change. The sole exception is the verified plan-CAS
+-- copy-forward: in the same transaction it may copy or reuse
+-- only rows consumed by an eligible ready snapshot after exact
+-- source-value and destination-applicability checks. The
+-- prepared snapshot records both row IDs/revisions and the
+-- canonical adaptation digest in ``copy_forward.adaptations``.
+-- Loaders continue querying one exact revision; no historical
+-- fallback is added.
+--
 -- The session_id foreign key CASCADEs because a deleted
 -- session takes its reviewed adaptations with it, the same
 -- way prepared_take does. created_at/updated_at are the only

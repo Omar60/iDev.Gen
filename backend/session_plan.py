@@ -2700,7 +2700,11 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
          the existing one with ``plan_revision + 1``. The conflicts
          are written into the plan JSON under a ``conflicts`` key
          so a later GET returns them alongside the draft. In the
-         same transaction, every prepared_take row for the session
+         same transaction, eligible verified ready snapshots and
+         only their consumed, still-applicable adaptation rows are
+         copied to the new revision. This is the sole inheritance
+         exception; adaptation loaders still read an exact revision.
+         Every other prepared_take row for the session
          whose status is ``pending`` or ``ready`` and whose
          ``plan_revision`` differs from the new revision is moved
          to ``invalidated``. Rows already in ``generated`` or
@@ -2901,10 +2905,6 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                 except (AuthoringEvidenceInvalid, PlanRevisionStale):
                     continue
                 provenance = verified["provenance"]
-                evidence = provenance.get("authoring_evidence") or {}
-                projection = evidence.get("resource_projection") or {}
-                if provenance.get("adaptations") or projection.get("consumed_adaptations"):
-                    continue  # Adaptation carry-forward belongs to Task 7.6.
                 copy_sources.append(source)
         if actual == 0:
             db.run(
@@ -2929,6 +2929,31 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                         f"prepared take {take_id!r} already exists at revision {new_revision}"
                     )
                 provenance = _decode_prepared_take(source)["provenance"]
+                resource_projection = (
+                    (provenance.get("authoring_evidence") or {}).get("resource_projection")
+                    or {}
+                )
+                consumed_adaptations = resource_projection.get("consumed_adaptations", [])
+                destination_preparation = {}
+                if consumed_adaptations:
+                    try:
+                        destination_preparation = resource_preparation.prepare_take_inputs(
+                            session_id, new_revision, take_id,
+                        )
+                    except (resource_preparation.PreparationError, PlanValidationError):
+                        continue
+                adaptation_copy = resource_preparation._copy_forward_adaptations(
+                    session_id,
+                    actual,
+                    new_revision,
+                    take_id,
+                    consumed_adaptations,
+                    destination_preparation,
+                    now,
+                )
+                if adaptation_copy is None:
+                    continue
+                adaptation_lineage, inserted_adaptation_ids = adaptation_copy
                 source_copy = provenance.get("copy_forward")
                 provenance["copy_forward"] = {
                     "source_prepared_id": source["id"],
@@ -2942,7 +2967,7 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                     ),
                     "input_digest": resource_preparation._copy_input_digest(source, provenance),
                     "content_digest": resource_preparation._copy_content_digest(source),
-                    "adaptations": [],
+                    "adaptations": adaptation_lineage,
                 }
                 db.run(
                     "INSERT INTO prepared_take "
@@ -2962,6 +2987,11 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                         "DELETE FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
                         session_id, new_revision, take_id,
                     )
+                    for adaptation_id in inserted_adaptation_ids:
+                        db.run(
+                            "DELETE FROM take_resource_adaptation WHERE id = ?",
+                            adaptation_id,
+                        )
         # Step 5: explicit invalidation. The pass is the single
         # implementation ``invalidate_ungenerated_prepared_takes``
         # owns; calling it from here keeps the invalidation SQL

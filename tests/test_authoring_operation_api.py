@@ -1761,6 +1761,325 @@ def _task75_ready_session(client, seeded, monkeypatch):
     return session_id
 
 
+def _task76_adapted_ready_session(client, seeded, monkeypatch):
+    _configure_assistant(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+    anchor = main.session_plan.get_draft(session_id)["plan"]["authoring"]["scene_anchor"]
+    adaptation = main.resource_preparation.record_take_adaptation(
+        session_id,
+        revision,
+        "take-001",
+        {
+            "library_key": anchor["library_key"],
+            "source_id": anchor["source_id"],
+            "content_digest": anchor["content_digest"],
+            "resource_field": "scene_theme",
+            "adapted_value": "A reviewed scene adaptation.",
+        },
+    )
+    source_adaptation = db.one(
+        "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+        "AND plan_revision = ? AND take_id = ? AND resource_field = ?",
+        session_id, revision, "take-001", "scene_theme",
+    )
+    now = db.now()
+    db.run(
+        "INSERT INTO take_resource_adaptation "
+        "(session_id, plan_revision, take_id, library_key, source_id, "
+        "content_digest, resource_field, source_value, adapted_value, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        session_id, revision, "take-001", "unused-library",
+        "unused-source", "unused-digest", "scene_theme", "unused source",
+        "unused adaptation", now, now,
+    )
+    unused_adaptation = db.one(
+        "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+        "AND plan_revision = ? AND take_id = ? AND library_key = ?",
+        session_id, revision, "take-001", "unused-library",
+    )
+    started = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision, take_ids=["take-001", "take-002"]),
+    )
+    assert started.status_code == 202, started.text
+    claim = authoring_operations.load_worker_claim(
+        session_id, started.json()["operation_id"],
+    )
+    for index in (1, 2):
+        ticket = authoring_operations.renew_operation_lease(claim)
+        _persist_response_for_state_test(
+            claim, ticket, [{"target": f"take-{index:03d}", "result": {
+                field: f"invented {field} for take-{index:03d}"
+                for field in ("camera", "framing", "pose", "expression")
+            }}],
+        )
+    assert adaptation["source_value"] == source_adaptation["source_value"]
+    return session_id, dict(source_adaptation), dict(unused_adaptation)
+
+
+def _edit_later_take(plan):
+    plan["takes"][2]["pose"] = "A different pose for the third take."
+    return plan
+
+
+def test_copy_forward_carries_only_consumed_adaptation_and_submits(
+    client, seeded, monkeypatch,
+):
+    session_id, source_adaptation, unused_adaptation = _task76_adapted_ready_session(
+        client, seeded, monkeypatch,
+    )
+    now = db.now()
+    db.run(
+        "INSERT INTO take_resource_adaptation "
+        "(session_id, plan_revision, take_id, library_key, source_id, "
+        "content_digest, resource_field, source_value, adapted_value, "
+        "created_at, updated_at) VALUES (?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        session_id, "take-001", source_adaptation["library_key"],
+        source_adaptation["source_id"], source_adaptation["content_digest"],
+        source_adaptation["resource_field"], source_adaptation["source_value"],
+        source_adaptation["adapted_value"], now, now,
+    )
+    reused = db.one(
+        "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+        "AND plan_revision = 2 AND take_id = ? AND resource_field = ?",
+        session_id, "take-001", source_adaptation["resource_field"],
+    )
+    source_snapshot = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = 1 AND take_id = ?",
+        session_id, "take-001",
+    )
+    saved = main.session_plan.save_draft(
+        session_id,
+        _edit_later_take(main.session_plan.get_draft(session_id)["plan"]),
+        1,
+    )
+    assert saved["plan_revision"] == 2
+    copied = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = 2 AND take_id = ?",
+        session_id, "take-001",
+    )
+    assert copied is not None
+    assert copied["final_prompt"] == source_snapshot["final_prompt"]
+    assert source_adaptation["adapted_value"] in copied["final_prompt"]
+    provenance = json.loads(copied["provenance"])
+    assert provenance["authoring_evidence"] == json.loads(source_snapshot["provenance"])["authoring_evidence"]
+    lineage = provenance["copy_forward"]["adaptations"]
+    expected_digest = resource_store.canonical_digest({
+        key: source_adaptation[key]
+        for key in (
+            "library_key", "source_id", "content_digest", "resource_field",
+            "source_value", "adapted_value",
+        )
+    })
+    assert lineage == [{
+        "source_adaptation_id": source_adaptation["id"],
+        "source_plan_revision": 1,
+        "destination_adaptation_id": reused["id"],
+        "destination_plan_revision": 2,
+        "adaptation_digest": expected_digest,
+    }]
+    assert db.q(
+        "SELECT id, library_key, source_value, adapted_value FROM take_resource_adaptation "
+        "WHERE session_id = ? AND plan_revision = 2 AND take_id = ?",
+        session_id, "take-001",
+    ) == [{
+        "id": reused["id"],
+        "library_key": source_adaptation["library_key"],
+        "source_value": source_adaptation["source_value"],
+        "adapted_value": source_adaptation["adapted_value"],
+    }]
+    assert db.one(
+        "SELECT id FROM take_resource_adaptation WHERE session_id = ? "
+        "AND plan_revision = 2 AND take_id = ? AND library_key = ?",
+        session_id, "take-001", unused_adaptation["library_key"],
+    ) is None
+    assert db.one(
+        "SELECT source_value, adapted_value FROM take_resource_adaptation WHERE id = ?",
+        source_adaptation["id"],
+    ) == {
+        "source_value": source_adaptation["source_value"],
+        "adapted_value": source_adaptation["adapted_value"],
+    }
+
+    recovered = main.session_plan.recover_preparation(session_id)
+    assert [item["take_id"] for item in recovered["completed"]] == ["take-001", "take-002"]
+    main.session_plan.approve_plan_review(session_id, 2)
+    with pytest.raises(main.session_plan.PlanRevisionStale):
+        main.session_plan.submit_prepared_take(session_id, 1, "take-001")
+    submitted = main.session_plan.submit_prepared_take(session_id, 2, "take-001")
+    assert submitted["final_prompt"] == source_snapshot["final_prompt"]
+    assert submitted["linked_shot_id"] is not None
+
+
+def test_copy_forward_inserts_destination_adaptation_with_lineage(
+    client, seeded, monkeypatch,
+):
+    session_id, source_adaptation, _ = _task76_adapted_ready_session(
+        client, seeded, monkeypatch,
+    )
+    assert db.one(
+        "SELECT id FROM take_resource_adaptation WHERE session_id = ? "
+        "AND plan_revision = 2 AND take_id = ? AND resource_field = ?",
+        session_id, "take-001", source_adaptation["resource_field"],
+    ) is None
+
+    saved = main.session_plan.save_draft(
+        session_id,
+        _edit_later_take(main.session_plan.get_draft(session_id)["plan"]),
+        1,
+    )
+    assert saved["plan_revision"] == 2
+    destination_adaptation = db.one(
+        "SELECT * FROM take_resource_adaptation WHERE session_id = ? "
+        "AND plan_revision = 2 AND take_id = ? AND resource_field = ?",
+        session_id, "take-001", source_adaptation["resource_field"],
+    )
+    assert destination_adaptation is not None
+    assert destination_adaptation["id"] != source_adaptation["id"]
+    assert (
+        destination_adaptation["plan_revision"]
+        != source_adaptation["plan_revision"]
+    )
+    for key in (
+        "library_key", "source_id", "content_digest", "resource_field",
+        "source_value", "adapted_value",
+    ):
+        assert destination_adaptation[key] == source_adaptation[key]
+
+    copied = db.one(
+        "SELECT provenance FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = 2 AND take_id = ?",
+        session_id, "take-001",
+    )
+    assert copied is not None
+    expected_digest = resource_store.canonical_digest({
+        key: source_adaptation[key]
+        for key in (
+            "library_key", "source_id", "content_digest", "resource_field",
+            "source_value", "adapted_value",
+        )
+    })
+    assert json.loads(copied["provenance"])["copy_forward"]["adaptations"] == [{
+        "source_adaptation_id": source_adaptation["id"],
+        "source_plan_revision": source_adaptation["plan_revision"],
+        "destination_adaptation_id": destination_adaptation["id"],
+        "destination_plan_revision": destination_adaptation["plan_revision"],
+        "adaptation_digest": expected_digest,
+    }]
+
+
+def test_copy_forward_conflicting_destination_adaptation_rolls_back_all_rows(
+    client, seeded, monkeypatch,
+):
+    session_id, source_adaptation, _ = _task76_adapted_ready_session(
+        client, seeded, monkeypatch,
+    )
+    now = db.now()
+    db.run(
+        "INSERT INTO take_resource_adaptation "
+        "(session_id, plan_revision, take_id, library_key, source_id, "
+        "content_digest, resource_field, source_value, adapted_value, "
+        "created_at, updated_at) VALUES (?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        session_id, "take-001", source_adaptation["library_key"],
+        source_adaptation["source_id"], source_adaptation["content_digest"],
+        source_adaptation["resource_field"], source_adaptation["source_value"],
+        "A conflicting destination adaptation.", now, now,
+    )
+    before_plan = db.one(
+        "SELECT * FROM session_plan WHERE session_id = ?", session_id,
+    )
+    before_prepared = db.q(
+        "SELECT * FROM prepared_take WHERE session_id = ? ORDER BY id", session_id,
+    )
+    before_adaptations = db.q(
+        "SELECT * FROM take_resource_adaptation WHERE session_id = ? ORDER BY id",
+        session_id,
+    )
+    with pytest.raises(main.session_plan.PreparedTakeConflict):
+        main.session_plan.save_draft(
+            session_id, main.session_plan.get_draft(session_id)["plan"], 1,
+        )
+    assert db.one("SELECT * FROM session_plan WHERE session_id = ?", session_id) == before_plan
+    assert db.q(
+        "SELECT * FROM prepared_take WHERE session_id = ? ORDER BY id", session_id,
+    ) == before_prepared
+    assert db.q(
+        "SELECT * FROM take_resource_adaptation WHERE session_id = ? ORDER BY id",
+        session_id,
+    ) == before_adaptations
+
+
+@pytest.mark.parametrize("change", ["missing", "source_value", "fixed_state"])
+def test_copy_forward_skips_missing_stale_or_fixed_state_adaptation(
+    client, seeded, monkeypatch, change,
+):
+    session_id, source_adaptation, _ = _task76_adapted_ready_session(
+        client, seeded, monkeypatch,
+    )
+    plan = main.session_plan.get_draft(session_id)["plan"]
+    if change == "missing":
+        db.run(
+            "DELETE FROM take_resource_adaptation WHERE id = ?",
+            source_adaptation["id"],
+        )
+    elif change == "source_value":
+        db.run(
+            "UPDATE asset_revision SET translation = ? WHERE library_id = "
+            "(SELECT id FROM resource_library WHERE library_key = ?) "
+            "AND source_id = ? AND content_digest = ?",
+            json.dumps({"scene_theme": "A changed authorized scene description."}),
+            source_adaptation["library_key"], source_adaptation["source_id"],
+            source_adaptation["content_digest"],
+        )
+    else:
+        plan["takes"][0]["pose"] = "A changed fixed pose."
+    saved = main.session_plan.save_draft(session_id, plan, 1)
+    assert saved["plan_revision"] == 2
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = 2 AND take_id = ?",
+        session_id, "take-001",
+    ) is None
+    assert db.q(
+        "SELECT id FROM take_resource_adaptation WHERE session_id = ? "
+        "AND plan_revision = 2 AND take_id = ?",
+        session_id, "take-001",
+    ) == []
+
+
+def test_copy_forward_rejects_tampered_adaptation_digest(
+    client, seeded, monkeypatch,
+):
+    session_id, _, _ = _task76_adapted_ready_session(client, seeded, monkeypatch)
+    saved = main.session_plan.save_draft(
+        session_id,
+        _edit_later_take(main.session_plan.get_draft(session_id)["plan"]),
+        1,
+    )
+    assert saved["plan_revision"] == 2
+    copied = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = 2 AND take_id = ?",
+        session_id, "take-001",
+    )
+    provenance = json.loads(copied["provenance"])
+    provenance["copy_forward"]["adaptations"][0]["adaptation_digest"] = "0" * 64
+    db.run(
+        "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+        json.dumps(provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        copied["id"],
+    )
+    with pytest.raises(
+        main.session_plan.AuthoringEvidenceInvalid,
+        match="copy-forward adaptation content or lineage is invalid",
+    ):
+        main.resource_preparation.validate_authoring_prepared_evidence(
+            session_id, 2, "take-001",
+        )
+
+
 def test_copy_forward_conflicting_destination_rolls_back_plan_and_source(
     client, seeded, monkeypatch,
 ):

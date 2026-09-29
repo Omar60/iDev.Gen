@@ -477,7 +477,14 @@
 - Task 7.5 validates source and destination snapshots inside plan CAS before
   retaining an unchanged ready prompt. Its copy lineage keeps the original
   assistant operation and predecessor identity while binding the new revision;
-  current copies still require explicit approval. Skip consumed adaptations
-  until Task 7.6 can verify and copy their exact authorization. Changed
+  current copies still require explicit approval. Task 7.6 now carries only
+  consumed, verified adaptations into the destination revision. Changed
   translations, corrupt evidence, linked history and conflicting destinations
   cannot become current ready copies.
+- Task 7.6 keeps adaptation loaders scoped to the exact revision. Copy-forward
+  writes new authorization rows in the plan CAS only after checking consumed
+  source rows and destination applicability; lineage binds both row IDs and
+  a canonical digest of the resource field and exact reviewed values. Reuse
+  identical destination rows, reject conflicts atomically, and leave missing
+  or stale approvals for fresh review. Tests must cover both new insertion and
+  identical-row reuse, then recover, approve and submit the current copy.

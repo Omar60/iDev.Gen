@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 40 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 41 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -353,12 +353,23 @@ checks passed. Transactional Submit dependency validation remains Task 7.7.
 Task 7.5 passed independent acceptance. Plan CAS now copies only verified,
 ready, unlinked authoring snapshots to the new revision, preserving the exact
 prompt and original synthesis evidence while binding destination and lineage.
-Changed resource inputs, unverifiable evidence, linked history and consumed
-adaptations do not copy. Recovery, fresh approval and submission of a current
-copy were verified; old-revision submission remains stale. Independent gates
+Changed resource inputs, unverifiable evidence and linked history do not copy.
+Recovery, fresh approval and submission of a current copy were verified;
+old-revision submission remains stale. Independent gates
 passed 2,394 Python tests, 46 privacy/control checks, strict OpenSpec validation
-and diff checks. Adaptation carry-forward remains Task 7.6.
+and diff checks.
+
+Task 7.6 passed independent acceptance. Plan CAS copies or reuses only consumed,
+still-applicable adaptation rows under the new revision. Exact source and
+adapted values, source/destination row identities, and a canonical adaptation
+digest are verified through snapshot lineage; conflicting destination rows
+roll back the entire save. Missing or stale approvals leave the take needing
+fresh preparation. Recovery, explicit approval, and submission of an adapted
+copy passed. The final full Python suite passed 2,401 tests and 46
+privacy/control checks passed. One existing concurrent-CAS test failed in an
+earlier full run, then passed alone and in the final full run; monitor for
+intermittence. Strict OpenSpec validation and diff checks passed.
 
 ## Next Milestone
 
-Task 7.6 is next. Do not begin it automatically.
+Task 7.7 is next. Do not begin it automatically.
