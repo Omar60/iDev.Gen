@@ -4308,6 +4308,19 @@ class PlanDraftIn(BaseModel):
     expected_revision: int = 0
 
 
+class RefreshResourcesIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int
+
+    @field_validator("expected_revision", mode="before")
+    @classmethod
+    def validate_expected_revision(cls, value: Any) -> int:
+        if type(value) is not int or value <= 0:
+            raise ValueError("expected_revision must be a positive integer")
+        return value
+
+
 class PreparedTakeBeginIn(BaseModel):
     plan_revision: int
     take_id: str
@@ -4938,6 +4951,27 @@ def save_plan_draft(sid: int, p: PlanDraftIn):
         "plan_revision": result["plan_revision"],
         "conflicts": result["conflicts"],
     }
+
+
+@app.post("/api/sessions/{sid}/plan/refresh-resources")
+def refresh_plan_resources(sid: int, p: RefreshResourcesIn):
+    """Advance the plan only when persisted resource evidence has drifted."""
+    try:
+        return session_plan.refresh_resources(
+            sid,
+            p.expected_revision,
+            planning_enabled=is_resource_planning_enabled(),
+        )
+    except session_plan.ResourcePlanningDisabled as exc:
+        raise HTTPException(503, str(exc))
+    except session_plan.PlanValidationError as exc:
+        raise HTTPException(422, str(exc))
+    except session_plan.PlanRevisionStale as exc:
+        raise HTTPException(409, str(exc))
+    except session_plan.SessionNotInResourceMode as exc:
+        raise HTTPException(400, str(exc))
+    except session_plan.SessionNotFound as exc:
+        raise HTTPException(404, str(exc))
 
 
 @app.get("/api/sessions/{sid}/plan")

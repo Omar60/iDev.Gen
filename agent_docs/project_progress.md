@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 42 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 43 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -234,7 +234,7 @@ remain intact.
 
 ## Current Position
 
-Tasks 1.1 through 6.5 and Tasks 7.1-7.5 are complete.
+Tasks 1.1 through 6.5 and Tasks 7.1-7.8 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.
 The closed public view excludes fencing and request internals; exact request
 replay, cross-kind exclusion, ordered targets, configuration gates, and
@@ -381,4 +381,9 @@ changed.
 
 ## Next Milestone
 
-Task 7.8 is next. Do not begin it automatically.
+Task 7.8 passed independent acceptance under the Heavy internal Codex route.
+Explicit resource refresh uses CAS, preserves the creative plan and linked
+history, writes nothing without drift, and copies only verified unaffected
+work. Missing required evidence cannot use another plan kind's namespace.
+
+Task 7.9 is next and has not started. Do not begin it automatically.

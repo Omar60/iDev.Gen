@@ -494,3 +494,9 @@
   pre-authoring expert evidence. An idempotent retry of linked history returns
   its existing shot without revalidating mutable dependencies. A selected batch
   must roll back all shot and link writes if one member becomes stale.
+- Task 7.8 diagnoses current resource consumption before creating a dependency
+  revision. No-drift refresh leaves approval, operation ownership, timestamps
+  and preparation rows unchanged. Verify copy sources before advancing CAS,
+  compare only consumed adaptations, and protect linked take IDs across all
+  revisions. Resource evidence must use the persisted plan kind's namespace;
+  a structurally valid foreign block cannot replace missing original evidence.

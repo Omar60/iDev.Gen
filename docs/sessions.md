@@ -1572,7 +1572,33 @@ values remain available when scene resolution fails. Remediation may ask the
 user to correct the plan or translation and reload, or review imported
 resources and start a new session with an available ready scene revision
 before preparing takes. The summary is informational: it does not accept
-assistant suggestions or refresh resources.
+assistant suggestions.
+
+### Refreshing resource dependencies
+
+`POST /api/sessions/{sid}/plan/refresh-resources` accepts a closed JSON body
+containing a positive integer `expected_revision`. Unknown fields, booleans,
+fractions and numeric strings are rejected. A stale revision returns `409`.
+When the current unlinked ready snapshots and current-revision adaptations still
+match authorized resource inputs, the endpoint returns the same revision without
+writing plan, approval, operation, timestamp or preparation rows.
+
+When it finds changed or unverifiable resource evidence, it advances the plan by
+one revision while preserving the stored creative plan, stable take IDs,
+selections, look snapshot and frozen workflow binding. It reports affected takes,
+safe dependency diagnostics and required preparation. Affected unlinked work is
+invalidated, active authoring is fenced, and existing verified copy-forward
+applies only to demonstrably unaffected authoring snapshots and their consumed
+applicable adaptations. Linked/generated rows and old invalidated history remain
+unchanged; old adaptation rows remain historical, and a fresh adaptation can be
+recorded against the new revision. Unverified pre-authoring expert snapshots are
+not copied as ready.
+
+Refresh never calls an assistant, approves a plan, submits a take or runs image
+generation. Missing or invalid translations are reported as unverifiable
+dependencies; later preparation continues to use the normal resolver and may
+remain blocked until authorized translations are repaired. With
+`resource_planning_enabled` disabled, refresh returns `503`.
 
 ### Authoring operation claims, cancellation, and resume
 

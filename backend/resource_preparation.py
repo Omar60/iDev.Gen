@@ -1423,14 +1423,7 @@ def prepare_take_inputs(
     # conflict detector both rely on that order, and the
     # assembly step reads resources in the order the
     # preparation returns.
-    resource_entries: list[dict] = []
-    for sel in plan.get("selected_resources", []):
-        revision = _load_resource_revision(
-            library_key=str(sel["library_key"]),
-            source_id=str(sel["source_id"]),
-            content_digest=str(sel["content_digest"]),
-        )
-        resource_entries.append(_prepare_resource(revision))
+    resource_entries = _prepare_selected_resource_inputs(plan)
 
     effective_state = _resolve_take_effective_state(plan, take)
 
@@ -1479,6 +1472,27 @@ def prepare_take_inputs(
     # and carries no wall-clock timestamps.
     preparation["review_state"] = build_review_state(preparation, adaptations=None)
     return preparation
+
+
+def _prepare_selected_resource_inputs(plan: dict) -> list[dict]:
+    """Resolve the plan's exact selected revisions through the shared resource path."""
+    selected = plan.get("selected_resources", [])
+    if not isinstance(selected, list):
+        raise PreparationError("plan selected_resources must be a list")
+    resource_entries: list[dict] = []
+    for selection in selected:
+        if not isinstance(selection, dict):
+            raise PreparationError("plan selected_resources contains an invalid entry")
+        try:
+            revision = _load_resource_revision(
+                library_key=str(selection["library_key"]),
+                source_id=str(selection["source_id"]),
+                content_digest=str(selection["content_digest"]),
+            )
+        except KeyError as exc:
+            raise PreparationError("plan selected_resources contains an invalid entry") from exc
+        resource_entries.append(_prepare_resource(revision))
+    return resource_entries
 
 
 def _collect_writer_guidance(resource_entries: list[dict]) -> dict[str, Any]:
@@ -5073,6 +5087,133 @@ def build_canonical_resource_projection(
         "digest": digest,
     }
     return resource_projection, effective_resource_input_digest
+
+
+def diagnose_resource_refresh_drift(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    plan: dict,
+    ready_snapshot: Mapping[str, Any] | None,
+) -> list[str]:
+    """Return safe resource-only drift codes for one current take.
+
+    This intentionally resolves only selected resource inputs and exact-revision
+    adaptations. It does not validate or reinterpret the frozen workflow binding
+    or creative take fields, so refresh cannot silently rebind unrelated state.
+    """
+    try:
+        preparation = {
+            "session_id": session_id,
+            "plan_revision": plan_revision,
+            "take_id": take_id,
+            "resource_inputs": _prepare_selected_resource_inputs(plan),
+        }
+        persisted = load_take_adaptations(session_id, plan_revision, take_id)
+        applicable, stale = _partition_persisted_adaptations(preparation, persisted)
+    except (
+        PreparationError,
+        session_plan.PlanValidationError,
+        KeyError,
+        TypeError,
+        ValueError,
+        IndexError,
+    ):
+        return ["resource_dependency_unverifiable"]
+
+    codes = sorted({
+        "adaptation_source_changed"
+        if item.get("code") == "source_value_changed"
+        else "adaptation_source_unverifiable"
+        for item in stale
+    })
+    if ready_snapshot is None:
+        return codes
+
+    try:
+        decoded = session_plan._decode_prepared_take(dict(ready_snapshot))
+        provenance = decoded.get("provenance")
+        if not isinstance(provenance, dict):
+            raise ValueError("prepared provenance is unavailable")
+        if session_plan.classify_plan_authoring(plan) == (
+            session_plan.PLAN_AUTHORING_KIND_PRE_AUTHORING_EXPERT
+        ):
+            evidence = provenance.get("resource_input_evidence")
+            selected_revisions = (
+                evidence.get("selected_resource_revisions")
+                if isinstance(evidence, dict) else None
+            )
+        else:
+            evidence = provenance.get("authoring_evidence")
+            selected_revisions = provenance.get("selected_resource_revisions")
+        saved_projection = (
+            evidence.get("resource_projection")
+            if isinstance(evidence, dict) else None
+        )
+        saved_digest = (
+            evidence.get("effective_resource_input_digest")
+            if isinstance(evidence, dict) else None
+        )
+        if not _historical_resource_projection_is_verifiable(
+            saved_projection, saved_digest, selected_revisions,
+        ):
+            raise ValueError("prepared resource evidence is unavailable")
+
+        # A ready snapshot consumed only the approvals named by its evidence.
+        # A later unused approval must not change that historical input digest.
+        consumed = saved_projection["consumed_adaptations"]
+        applicable_by_key = {
+            tuple(item[key] for key in (
+                "library_key", "source_id", "content_digest", "resource_field",
+            )): item for item in applicable
+        }
+        consumed_now = []
+        for item in consumed:
+            if not isinstance(item, dict):
+                raise ValueError("consumed adaptation evidence is malformed")
+            key = tuple(item[key] for key in (
+                "library_key", "source_id", "content_digest", "resource_field",
+            ))
+            current = applicable_by_key.get(key)
+            if current is None or any(
+                current.get(field) != item.get(field)
+                for field in ("source_value", "adapted_value")
+            ):
+                codes.append("resource_dependency_unverifiable")
+                break
+            consumed_now.append(current)
+        current_projection, current_digest = build_canonical_resource_projection(
+            preparation, consumed_now,
+        )
+
+        current_revisions = sorted((
+            {
+                "library_key": entry.get("library_key", ""),
+                "source_id": entry.get("source_id", ""),
+                "content_digest": entry.get("content_digest", ""),
+                "kind": entry.get("kind", ""),
+            }
+            for entry in preparation["resource_inputs"]
+        ), key=lambda item: (
+            item["library_key"], item["source_id"], item["content_digest"],
+        ))
+        if not _same_json_value(selected_revisions, current_revisions):
+            codes.append("resource_dependency_changed")
+        if (
+            not _same_json_value(saved_projection, current_projection)
+            or not _same_json_value(saved_digest, current_digest)
+        ):
+            codes.append("resource_dependency_changed")
+    except (
+        session_plan.PlanValidationError,
+        KeyError,
+        TypeError,
+        ValueError,
+        IndexError,
+    ):
+        codes.append("resource_dependency_unverifiable")
+
+    return sorted(set(codes))
 
 
 def build_authoring_evidence(

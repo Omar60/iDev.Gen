@@ -195,9 +195,18 @@ initial wardrobe values beside their origins, plus authorized descriptive
 inputs from selected room and fused-scene revisions. Empty values add no
 constraint and do not hide those scene descriptions. If resolution fails, the
 summary returns an allowlisted diagnostic and remediation without exposing
-full resource payloads or raw translation sidecars. The projection needs no
-assistant call and does not accept suggestions or refresh resources. See
+full resource payloads or raw translation sidecars. The projection itself needs
+no assistant call and does not accept suggestions. See
 [sessions](docs/sessions.md#shared-session-summary).
+
+`POST /api/sessions/{sid}/plan/refresh-resources` checks the current revision's
+ready, unlinked resource evidence and persisted adaptation sources. A no-drift
+retry leaves the revision and database rows untouched. Confirmed drift advances
+the revision while preserving the saved creative plan and frozen workflow
+binding, invalidates affected work, fences active authoring, and copies only
+verified unaffected authoring snapshots. The response lists affected takes and
+required preparation; it never calls an assistant, approves, submits, or runs
+generation. See [sessions](docs/sessions.md#refreshing-resource-dependencies).
 
 Automatic authoring-v1 plans expose persisted operation controls. `POST
 /api/sessions/{sid}/plan/authoring/operations` records or replays a claim;

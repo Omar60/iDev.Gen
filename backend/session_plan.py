@@ -215,6 +215,10 @@ class PlanRevisionStale(Exception):
     """
 
 
+class ResourcePlanningDisabled(Exception):
+    """A resource-v1 write was attempted while its feature gate is disabled."""
+
+
 class SessionNotInResourceMode(Exception):
     """The session is not in resource-v1 mode and cannot hold a plan.
 
@@ -1713,6 +1717,7 @@ def invalidate_ungenerated_prepared_takes(
             "SET status = ?, updated_at = ? "
             "WHERE session_id = ? "
             "AND status IN (?, ?) "
+            "AND linked_shot_id IS NULL "
             "AND plan_revision != ?",
             PREPARED_TAKE_STATUS_INVALIDATED, now, session_id,
             PREPARED_TAKE_STATUS_PENDING, PREPARED_TAKE_STATUS_READY,
@@ -1743,6 +1748,7 @@ def invalidate_ungenerated_prepared_takes(
         "SET status = ?, updated_at = ? "
         "WHERE session_id = ? "
         "AND status IN (?, ?) "
+        "AND linked_shot_id IS NULL "
         "AND plan_revision != ? "
         f"AND ({where_extra})",
         *params,
@@ -2668,6 +2674,146 @@ def apply_shared_suggestion_acceptance(
         }
 
 
+def _verified_ready_copy_sources(
+    session_id: int,
+    source_revision: int,
+    take_ids: set[str],
+    *,
+    excluded_take_ids: set[str] | None = None,
+    tolerate_workflow_drift: bool = False,
+) -> tuple[list[dict], set[str]]:
+    """Verify source evidence while its plan revision is still current."""
+    excluded = excluded_take_ids or set()
+    ready_sources = [
+        row for row in db.q(
+            "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+            "AND status = ? AND linked_shot_id IS NULL ORDER BY id",
+            session_id, source_revision, PREPARED_TAKE_STATUS_READY,
+        )
+        if row["take_id"] in take_ids
+    ]
+    ready_source_ids = {row["take_id"] for row in ready_sources}
+    copy_sources = []
+    for source in ready_sources:
+        take_id = source["take_id"]
+        if take_id in excluded:
+            continue
+        try:
+            validate_authoring_prepared_evidence(
+                session_id, source_revision, take_id, row=source,
+            )
+        except (AuthoringEvidenceInvalid, PlanRevisionStale):
+            continue
+        except workflow_binding.WorkflowChanged:
+            if not tolerate_workflow_drift:
+                raise
+            continue
+        copy_sources.append(source)
+
+    return copy_sources, ready_source_ids
+
+
+def _copy_forward_ready_takes(
+    session_id: int,
+    source_revision: int,
+    destination_revision: int,
+    copy_sources: list[dict],
+    now: str,
+    *,
+    tolerate_workflow_drift: bool = False,
+) -> list[str]:
+    """Copy source-verified snapshots under the new revision."""
+    from backend import resource_preparation
+
+    copied_take_ids: list[str] = []
+    for source in copy_sources:
+        take_id = source["take_id"]
+        if _prepared_take_row(session_id, destination_revision, take_id) is not None:
+            raise PreparedTakeConflict(
+                f"prepared take {take_id!r} already exists at revision {destination_revision}"
+            )
+        provenance = _decode_prepared_take(source)["provenance"]
+        resource_projection = (
+            (provenance.get("authoring_evidence") or {}).get("resource_projection")
+            or {}
+        )
+        consumed_adaptations = resource_projection.get("consumed_adaptations", [])
+        destination_preparation = {}
+        if consumed_adaptations:
+            try:
+                destination_preparation = resource_preparation.prepare_take_inputs(
+                    session_id, destination_revision, take_id,
+                )
+            except (resource_preparation.PreparationError, PlanValidationError):
+                continue
+            except workflow_binding.WorkflowChanged:
+                if not tolerate_workflow_drift:
+                    raise
+                continue
+        adaptation_copy = resource_preparation._copy_forward_adaptations(
+            session_id,
+            source_revision,
+            destination_revision,
+            take_id,
+            consumed_adaptations,
+            destination_preparation,
+            now,
+        )
+        if adaptation_copy is None:
+            continue
+        adaptation_lineage, inserted_adaptation_ids = adaptation_copy
+        source_copy = provenance.get("copy_forward")
+        provenance["copy_forward"] = {
+            "source_prepared_id": source["id"],
+            "source_plan_revision": source_revision,
+            "destination_plan_revision": destination_revision,
+            "origin_prepared_id": (
+                source_copy["origin_prepared_id"] if source_copy else source["id"]
+            ),
+            "origin_plan_revision": (
+                source_copy["origin_plan_revision"] if source_copy else source_revision
+            ),
+            "input_digest": resource_preparation._copy_input_digest(source, provenance),
+            "content_digest": resource_preparation._copy_content_digest(source),
+            "adaptations": adaptation_lineage,
+        }
+        db.run(
+            "INSERT INTO prepared_take "
+            "(session_id, plan_revision, take_id, final_prompt, effective_state, "
+            "mapping_version, compiler_version, provenance, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            session_id, destination_revision, take_id, source["final_prompt"],
+            source["effective_state"], source["mapping_version"],
+            source["compiler_version"],
+            json.dumps(provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+            PREPARED_TAKE_STATUS_READY, now, now,
+        )
+        try:
+            validate_authoring_prepared_evidence(
+                session_id, destination_revision, take_id,
+            )
+        except (AuthoringEvidenceInvalid, PlanRevisionStale):
+            db.run(
+                "DELETE FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+                session_id, destination_revision, take_id,
+            )
+            for adaptation_id in inserted_adaptation_ids:
+                db.run("DELETE FROM take_resource_adaptation WHERE id = ?", adaptation_id)
+            continue
+        except workflow_binding.WorkflowChanged:
+            if not tolerate_workflow_drift:
+                raise
+            db.run(
+                "DELETE FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+                session_id, destination_revision, take_id,
+            )
+            for adaptation_id in inserted_adaptation_ids:
+                db.run("DELETE FROM take_resource_adaptation WHERE id = ?", adaptation_id)
+            continue
+        copied_take_ids.append(take_id)
+    return copied_take_ids
+
+
 def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
     """Save a draft plan with a compare-and-swap on the revision.
 
@@ -2897,21 +3043,9 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
         if current is not None and classify_plan_authoring(old_plan) in (
             PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC,
         ):
-            for source in db.q(
-                "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
-                "AND status = ? AND linked_shot_id IS NULL ORDER BY id",
-                session_id, actual, PREPARED_TAKE_STATUS_READY,
-            ):
-                if source["take_id"] not in _take_id_set(validated):
-                    continue
-                try:
-                    verified = validate_authoring_prepared_evidence(
-                        session_id, actual, source["take_id"], row=source,
-                    )
-                except (AuthoringEvidenceInvalid, PlanRevisionStale):
-                    continue
-                provenance = verified["provenance"]
-                copy_sources.append(source)
+            copy_sources, _ = _verified_ready_copy_sources(
+                session_id, actual, _take_id_set(validated),
+            )
         if actual == 0:
             db.run(
                 "INSERT INTO session_plan "
@@ -2925,79 +3059,9 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                 "updated_at = ? WHERE session_id = ?",
                 new_revision, encoded, now, session_id,
             )
-        if copy_sources:
-            from backend import resource_preparation
-
-            for source in copy_sources:
-                take_id = source["take_id"]
-                if _prepared_take_row(session_id, new_revision, take_id) is not None:
-                    raise PreparedTakeConflict(
-                        f"prepared take {take_id!r} already exists at revision {new_revision}"
-                    )
-                provenance = _decode_prepared_take(source)["provenance"]
-                resource_projection = (
-                    (provenance.get("authoring_evidence") or {}).get("resource_projection")
-                    or {}
-                )
-                consumed_adaptations = resource_projection.get("consumed_adaptations", [])
-                destination_preparation = {}
-                if consumed_adaptations:
-                    try:
-                        destination_preparation = resource_preparation.prepare_take_inputs(
-                            session_id, new_revision, take_id,
-                        )
-                    except (resource_preparation.PreparationError, PlanValidationError):
-                        continue
-                adaptation_copy = resource_preparation._copy_forward_adaptations(
-                    session_id,
-                    actual,
-                    new_revision,
-                    take_id,
-                    consumed_adaptations,
-                    destination_preparation,
-                    now,
-                )
-                if adaptation_copy is None:
-                    continue
-                adaptation_lineage, inserted_adaptation_ids = adaptation_copy
-                source_copy = provenance.get("copy_forward")
-                provenance["copy_forward"] = {
-                    "source_prepared_id": source["id"],
-                    "source_plan_revision": actual,
-                    "destination_plan_revision": new_revision,
-                    "origin_prepared_id": (
-                        source_copy["origin_prepared_id"] if source_copy else source["id"]
-                    ),
-                    "origin_plan_revision": (
-                        source_copy["origin_plan_revision"] if source_copy else actual
-                    ),
-                    "input_digest": resource_preparation._copy_input_digest(source, provenance),
-                    "content_digest": resource_preparation._copy_content_digest(source),
-                    "adaptations": adaptation_lineage,
-                }
-                db.run(
-                    "INSERT INTO prepared_take "
-                    "(session_id, plan_revision, take_id, final_prompt, effective_state, "
-                    "mapping_version, compiler_version, provenance, status, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    session_id, new_revision, take_id, source["final_prompt"],
-                    source["effective_state"], source["mapping_version"],
-                    source["compiler_version"],
-                    json.dumps(provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
-                    PREPARED_TAKE_STATUS_READY, now, now,
-                )
-                try:
-                    validate_authoring_prepared_evidence(session_id, new_revision, take_id)
-                except (AuthoringEvidenceInvalid, PlanRevisionStale):
-                    db.run(
-                        "DELETE FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
-                        session_id, new_revision, take_id,
-                    )
-                    for adaptation_id in inserted_adaptation_ids:
-                        db.run(
-                            "DELETE FROM take_resource_adaptation WHERE id = ?",
-                            adaptation_id,
-                        )
+        _copy_forward_ready_takes(
+            session_id, actual, new_revision, copy_sources, now,
+        )
         # Step 5: explicit invalidation. The pass is the single
         # implementation ``invalidate_ungenerated_prepared_takes``
         # owns; calling it from here keeps the invalidation SQL
@@ -3046,6 +3110,199 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
 
         authoring_operations.cancel_for_plan_change(session_id, new_revision)
     return {"plan_revision": new_revision, "conflicts": conflicts}
+
+
+def refresh_resources(
+    session_id: int,
+    expected_revision: int,
+    *,
+    planning_enabled: bool,
+) -> dict:
+    """CAS-refresh only when current resource evidence proves dependency drift."""
+    with db.transaction():
+        if planning_enabled is not True:
+            raise ResourcePlanningDisabled(
+                "Resource planning is disabled by configuration."
+            )
+        if type(expected_revision) is not int or expected_revision <= 0:
+            raise PlanValidationError(
+                "expected_revision must be a positive integer"
+            )
+
+        session = db.one(
+            "SELECT id, settings FROM session WHERE id = ?", session_id,
+        )
+        if session is None:
+            raise SessionNotFound(f"session {session_id} not found")
+        mode = read_composition_mode(session["settings"])
+        if mode != MODE_RESOURCE_V1:
+            raise SessionNotInResourceMode(
+                f"session {session_id} composition_mode is {mode!r}, "
+                f"expected {MODE_RESOURCE_V1!r}"
+            )
+
+        current = db.one(
+            "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+            session_id,
+        )
+        actual = 0 if current is None else int(current["plan_revision"])
+        if actual != expected_revision:
+            raise PlanRevisionStale(
+                f"session {session_id} plan revision is {actual}, "
+                f"expected {expected_revision}; refusing to refresh stale dependencies"
+            )
+        if current is None:
+            raise PlanRevisionStale(
+                f"session {session_id} has no current plan revision"
+            )
+        try:
+            plan = json.loads(current["plan_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise PlanValidationError("stored resource plan is unreadable") from exc
+        if not isinstance(plan, dict) or not isinstance(plan.get("takes"), list):
+            raise PlanValidationError("stored resource plan is malformed")
+
+        take_ids = [
+            take["take_id"]
+            for take in plan["takes"]
+            if isinstance(take, dict)
+            and isinstance(take.get("take_id"), str)
+            and take["take_id"]
+        ]
+        current_take_ids = set(take_ids)
+        ready_rows = db.q(
+            "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+            "AND status = ? AND linked_shot_id IS NULL ORDER BY id",
+            session_id, actual, PREPARED_TAKE_STATUS_READY,
+        )
+        ready_by_take = {
+            row["take_id"]: row for row in ready_rows
+            if row["take_id"] in current_take_ids
+        }
+        protected_take_ids = {
+            row["take_id"] for row in db.q(
+                "SELECT DISTINCT take_id FROM prepared_take "
+                "WHERE session_id = ? "
+                "AND (linked_shot_id IS NOT NULL OR status = ?)",
+                session_id, PREPARED_TAKE_STATUS_GENERATED,
+            )
+        }
+        adaptation_take_ids = {
+            row["take_id"] for row in db.q(
+                "SELECT DISTINCT take_id FROM take_resource_adaptation "
+                "WHERE session_id = ? AND plan_revision = ?",
+                session_id, actual,
+            )
+        }
+        candidates = (
+            (set(ready_by_take) | adaptation_take_ids)
+            & current_take_ids
+        ) - protected_take_ids
+        from backend import resource_preparation
+
+        direct_codes: dict[str, list[str]] = {}
+        for take_id in sorted(candidates):
+            codes = resource_preparation.diagnose_resource_refresh_drift(
+                session_id,
+                actual,
+                take_id,
+                plan,
+                ready_by_take.get(take_id),
+            )
+            if codes:
+                direct_codes[take_id] = codes
+
+        if not direct_codes:
+            return {
+                "plan_revision": actual,
+                "refreshed": False,
+                "affected_takes": [],
+                "required_preparation": [],
+                "copied_forward_takes": [],
+                "diagnostics": [],
+            }
+
+        affected_take_ids = set(direct_codes)
+        if classify_plan_authoring(plan) == PLAN_AUTHORING_KIND_AUTOMATIC:
+            positions = {
+                take_id: position for position, take_id in enumerate(take_ids)
+            }
+            direct_positions = [
+                positions[take_id] for take_id in affected_take_ids
+                if take_id in positions
+            ]
+            if direct_positions:
+                earliest = min(direct_positions)
+                affected_take_ids.update(take_ids[earliest:])
+        affected_work = affected_take_ids - protected_take_ids
+        new_revision = actual + 1
+        now = db.now()
+        ready_source_ids = {
+            row["take_id"] for row in ready_rows
+            if row["take_id"] not in protected_take_ids
+        }
+        copy_sources = []
+        if classify_plan_authoring(plan) in (
+            PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC,
+        ):
+            copy_sources, ready_source_ids = _verified_ready_copy_sources(
+                session_id, actual, current_take_ids,
+                excluded_take_ids=affected_work | protected_take_ids,
+                tolerate_workflow_drift=True,
+            )
+            ready_source_ids -= protected_take_ids
+
+        # Refresh preserves the stored normalized plan byte-for-byte, including
+        # its frozen workflow binding and all creative fields.
+        db.run(
+            "UPDATE session_plan SET plan_revision = ?, updated_at = ? "
+            "WHERE session_id = ?",
+            new_revision, now, session_id,
+        )
+        copied_take_ids = _copy_forward_ready_takes(
+            session_id,
+            actual,
+            new_revision,
+            copy_sources,
+            now,
+            tolerate_workflow_drift=True,
+        )
+        uncopied_ready = ready_source_ids - set(copied_take_ids) - affected_work
+        invalidate_ungenerated_prepared_takes(
+            session_id,
+            new_revision,
+            affected_take_ids=affected_work | uncopied_ready,
+            new_take_ids=current_take_ids,
+        )
+        invalidate_plan_approval(session_id)
+        from backend import authoring_operations
+
+        authoring_operations.cancel_for_plan_change(session_id, new_revision)
+
+        required_preparation = affected_work | uncopied_ready
+        diagnostics = [
+            {"take_id": take_id, "code": code}
+            for take_id, codes in sorted(direct_codes.items())
+            for code in codes
+        ]
+        diagnostics.extend(
+            {"take_id": take_id, "code": "automatic_downstream"}
+            for take_id in sorted(affected_work - set(direct_codes))
+        )
+        diagnostics.extend(
+            {"take_id": take_id, "code": "copy_forward_unavailable"}
+            for take_id in sorted(
+                uncopied_ready
+            )
+        )
+        return {
+            "plan_revision": new_revision,
+            "refreshed": True,
+            "affected_takes": sorted(affected_work | uncopied_ready),
+            "required_preparation": sorted(required_preparation),
+            "copied_forward_takes": sorted(copied_take_ids),
+            "diagnostics": diagnostics,
+        }
 
 
 def _update_session_origin(session_id: int, kind: str) -> None:
