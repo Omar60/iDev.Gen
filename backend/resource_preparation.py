@@ -585,6 +585,30 @@ CLOSED_DUPLICATE_FLAGS_KEYS: frozenset[str] = frozenset({
     "flags",
 })
 
+CLOSED_RECORDED_DUPLICATE_FLAGS_KEYS: frozenset[str] = frozenset({
+    "status",
+    "flags",
+    "comparison",
+})
+
+CLOSED_DUPLICATE_COMPARISON_KEYS: frozenset[str] = frozenset({
+    "version",
+    "candidate_prepared_take_id",
+    "candidate_plan_revision",
+    "candidate_choices_digest",
+    "representatives",
+    "representatives_digest",
+})
+
+CLOSED_DUPLICATE_REPRESENTATIVE_KEYS: frozenset[str] = frozenset({
+    "prepared_take_id",
+    "plan_revision",
+    "take_id",
+    "lineage_root_id",
+    "status",
+    "choices_digest",
+})
+
 CLOSED_EFFECTIVE_RESOURCE_DIGEST_KEYS: frozenset[str] = frozenset({
     "version",
     "digest",
@@ -5294,6 +5318,376 @@ def build_authoring_evidence(
     return evidence
 
 
+def _normalized_duplicate_choices(effective_state: Any) -> tuple[str, ...]:
+    if isinstance(effective_state, str):
+        try:
+            effective_state = json.loads(effective_state)
+        except (TypeError, ValueError) as exc:
+            raise session_plan.AuthoringEvidenceInvalid(
+                "duplicate comparison effective_state is invalid"
+            ) from exc
+    if not isinstance(effective_state, dict):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "duplicate comparison effective_state must be an object"
+        )
+    choices = effective_state.get("take_choices")
+    if not isinstance(choices, dict):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "duplicate comparison take_choices must be an object"
+        )
+    normalized = []
+    for field in sorted(TAKE_DESCRIPTIVE_CHOICES):
+        value = choices.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise session_plan.AuthoringEvidenceInvalid(
+                f"duplicate comparison requires a complete {field} choice"
+            )
+        normalized.append(" ".join(value.split()).casefold())
+    return tuple(normalized)
+
+
+def _duplicate_choices_digest(effective_state: Any) -> str:
+    return resource_store.canonical_digest(
+        list(_normalized_duplicate_choices(effective_state))
+    )
+
+
+def _snapshot_provenance(row: Mapping[str, Any]) -> dict:
+    raw = row.get("provenance")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise session_plan.AuthoringEvidenceInvalid(
+                "duplicate comparison provenance is invalid"
+            ) from exc
+    if not isinstance(raw, dict):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "duplicate comparison provenance must be an object"
+        )
+    return raw
+
+
+def _duplicate_lineage_root(row: Mapping[str, Any], seen: set[int] | None = None) -> tuple[int, int]:
+    """Verify copy-forward ancestry without consulting mutable resource state."""
+    row_id = row.get("id")
+    session_id = row.get("session_id")
+    plan_revision = row.get("plan_revision")
+    take_id = row.get("take_id")
+    if (type(row_id) is not int or type(session_id) is not int
+            or type(plan_revision) is not int or not isinstance(take_id, str)):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "duplicate comparison prepared-take identity is invalid"
+        )
+    visited = set() if seen is None else seen
+    if row_id in visited:
+        raise session_plan.AuthoringEvidenceInvalid(
+            "duplicate comparison copy-forward lineage contains a cycle"
+        )
+    visited.add(row_id)
+
+    provenance = _snapshot_provenance(row)
+    copy = provenance.get("copy_forward")
+    if copy is None:
+        return row_id, plan_revision
+    copy_keys = {
+        "source_prepared_id", "source_plan_revision", "destination_plan_revision",
+        "origin_prepared_id", "origin_plan_revision", "input_digest",
+        "content_digest", "adaptations",
+    }
+    if (not isinstance(copy, dict) or set(copy) != copy_keys
+            or any(type(copy.get(key)) is not int for key in (
+                "source_prepared_id", "source_plan_revision", "destination_plan_revision",
+                "origin_prepared_id", "origin_plan_revision",
+            ))
+            or copy["destination_plan_revision"] != plan_revision
+            or copy["source_plan_revision"] >= plan_revision
+            or not isinstance(copy.get("adaptations"), list)):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "duplicate comparison copy-forward binding is invalid"
+        )
+    source = db.one(
+        "SELECT * FROM prepared_take WHERE id = ?", copy["source_prepared_id"],
+    )
+    if (source is None or source["session_id"] != session_id
+            or source["plan_revision"] != copy["source_plan_revision"]
+            or source["take_id"] != take_id
+            or source["linked_shot_id"] is not None
+            or source["status"] not in ("ready", "invalidated")):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "duplicate comparison copy-forward source is invalid"
+        )
+    source_provenance = _snapshot_provenance(source)
+    source_original = dict(source_provenance)
+    source_original.pop("copy_forward", None)
+    current_original = dict(provenance)
+    current_original.pop("copy_forward", None)
+    if (not _same_json_value(source_original, current_original)
+            or any(row.get(key) != source.get(key) for key in (
+                "final_prompt", "effective_state", "mapping_version", "compiler_version",
+            ))
+            or copy.get("content_digest") != _copy_content_digest(source)
+            or copy.get("input_digest") != _copy_input_digest(row, provenance)):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "duplicate comparison copy-forward content is invalid"
+        )
+    _validate_copy_forward_adaptation_lineage(
+        copy, session_id, take_id, provenance,
+    )
+    root_id, root_revision = _duplicate_lineage_root(source, visited)
+    if (copy["origin_prepared_id"], copy["origin_plan_revision"]) != (
+        root_id, root_revision,
+    ):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "duplicate comparison copy-forward origin is invalid"
+        )
+    return root_id, root_revision
+
+
+def _has_real_generated_link(row: Mapping[str, Any], session_id: int) -> bool:
+    linked_id = row.get("linked_shot_id")
+    if row.get("status") != "generated" or type(linked_id) is not int:
+        return False
+    shot = db.one(
+        "SELECT id, session_id, prompt FROM shot WHERE id = ?", linked_id,
+    )
+    return bool(
+        shot is not None
+        and shot["session_id"] == session_id
+        and shot["prompt"] == row.get("final_prompt")
+    )
+
+
+def build_authoring_duplicate_flags(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    candidate_row: Mapping[str, Any],
+    effective_state: Mapping[str, Any],
+) -> dict:
+    """Freeze a replayable, lineage-aware duplicate comparison for one snapshot."""
+    candidate_root, candidate_root_revision = _duplicate_lineage_root(candidate_row)
+    candidate_digest = _duplicate_choices_digest(effective_state)
+    candidate_id = candidate_row.get("id")
+    if (candidate_root != candidate_id or candidate_root_revision != plan_revision
+            or candidate_row.get("session_id") != session_id
+            or candidate_row.get("take_id") != take_id):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "duplicate comparison candidate identity is invalid"
+        )
+
+    # ponytail: persist one O(n) lineage projection per take (O(n²) across a
+    # session capped at 500 current takes); use a shared immutable index only
+    # if linked history grows beyond that scale.
+    rows = db.q(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND "
+        "(status = 'generated' OR (plan_revision = ? AND status = 'ready' "
+        "AND linked_shot_id IS NULL)) ORDER BY id",
+        session_id, plan_revision,
+    )
+    validation_cache: dict = {}
+    representatives_by_root: dict[int, dict] = {}
+    for row in rows:
+        if row["id"] == candidate_id:
+            continue
+        status = row["status"]
+        if status == "generated":
+            if not _has_real_generated_link(row, session_id):
+                continue
+        else:
+            try:
+                validate_authoring_prepared_evidence(
+                    session_id,
+                    plan_revision,
+                    row["take_id"],
+                    row=row,
+                    _predecessor_validation_cache=validation_cache,
+                )
+            except (
+                session_plan.AuthoringEvidenceInvalid,
+                session_plan.PlanRevisionStale,
+                workflow_binding.WorkflowChanged,
+            ):
+                continue
+
+        try:
+            root_id, _ = _duplicate_lineage_root(row)
+            if root_id == candidate_root:
+                continue
+            choices_digest = _duplicate_choices_digest(row["effective_state"])
+        except session_plan.AuthoringEvidenceInvalid:
+            continue
+        entry = {
+            "prepared_take_id": int(row["id"]),
+            "plan_revision": int(row["plan_revision"]),
+            "take_id": str(row["take_id"]),
+            "lineage_root_id": root_id,
+            "status": status,
+            "choices_digest": choices_digest,
+        }
+        existing = representatives_by_root.get(root_id)
+        priority = (0 if status == "ready" else 1, -int(row["id"]))
+        if existing is None or priority < existing[0]:
+            representatives_by_root[root_id] = (priority, entry)
+
+    representatives = [
+        item[1]
+        for _, item in sorted(representatives_by_root.items())
+    ]
+    flags = [
+        dict(entry)
+        for entry in representatives
+        if entry["choices_digest"] == candidate_digest
+    ]
+    return {
+        "status": "recorded",
+        "flags": flags,
+        "comparison": {
+            "version": 1,
+            "candidate_prepared_take_id": candidate_root,
+            "candidate_plan_revision": candidate_root_revision,
+            "candidate_choices_digest": candidate_digest,
+            "representatives": representatives,
+            "representatives_digest": resource_store.canonical_digest(representatives),
+        },
+    }
+
+
+def _validate_recorded_duplicate_flags(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    row: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    *,
+    origin_id: int,
+    source_revision: int,
+) -> None:
+    duplicate_flags = evidence.get("duplicate_flags")
+    if (not isinstance(duplicate_flags, dict)
+            or set(duplicate_flags) != CLOSED_RECORDED_DUPLICATE_FLAGS_KEYS
+            or duplicate_flags.get("status") != "recorded"):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "automatic duplicate flags are invalid"
+        )
+    comparison = duplicate_flags.get("comparison")
+    if (not isinstance(comparison, dict)
+            or set(comparison) != CLOSED_DUPLICATE_COMPARISON_KEYS
+            or type(comparison.get("version")) is not int
+            or comparison["version"] != 1):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "automatic duplicate comparison is invalid"
+        )
+
+    candidate_root, candidate_root_revision = _duplicate_lineage_root(row)
+    candidate_digest = _duplicate_choices_digest(row.get("effective_state"))
+    if (comparison.get("candidate_prepared_take_id") != origin_id
+            or comparison.get("candidate_prepared_take_id") != candidate_root
+            or comparison.get("candidate_plan_revision") != source_revision
+            or comparison.get("candidate_plan_revision") != candidate_root_revision
+            or comparison.get("candidate_choices_digest") != candidate_digest
+            or type(comparison.get("candidate_prepared_take_id")) is not int
+            or type(comparison.get("candidate_plan_revision")) is not int):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "automatic duplicate candidate binding is invalid"
+        )
+
+    representatives = comparison.get("representatives")
+    if not isinstance(representatives, list):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "automatic duplicate representatives must be a list"
+        )
+    if comparison.get("representatives_digest") != resource_store.canonical_digest(
+        representatives,
+    ):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "automatic duplicate representative digest is invalid"
+        )
+
+    seen_roots: set[int] = set()
+    seen_rows: set[int] = set()
+    ordering: list[tuple[int, int]] = []
+    for item in representatives:
+        if (not isinstance(item, dict)
+                or set(item) != CLOSED_DUPLICATE_REPRESENTATIVE_KEYS
+                or type(item.get("prepared_take_id")) is not int
+                or type(item.get("plan_revision")) is not int
+                or type(item.get("lineage_root_id")) is not int
+                or not isinstance(item.get("take_id"), str)
+                or not item["take_id"]
+                or item.get("status") not in ("ready", "generated")
+                or not isinstance(item.get("choices_digest"), str)
+                or len(item["choices_digest"]) != 64
+                or any(char not in "0123456789abcdef" for char in item["choices_digest"])):
+            raise session_plan.AuthoringEvidenceInvalid(
+                "automatic duplicate representative is invalid"
+            )
+        prepared_id = item["prepared_take_id"]
+        root_id = item["lineage_root_id"]
+        if (prepared_id <= 0 or item["plan_revision"] <= 0 or root_id <= 0
+                or prepared_id in seen_rows or root_id in seen_roots
+                or root_id == candidate_root):
+            raise session_plan.AuthoringEvidenceInvalid(
+                "automatic duplicate representative lineage is invalid"
+            )
+        seen_rows.add(prepared_id)
+        seen_roots.add(root_id)
+        ordering.append((root_id, prepared_id))
+
+        recorded = db.one(
+            "SELECT * FROM prepared_take WHERE id = ?", prepared_id,
+        )
+        if (recorded is None or recorded["session_id"] != session_id
+                or recorded["take_id"] != item["take_id"]
+                or recorded["plan_revision"] != item["plan_revision"]):
+            raise session_plan.AuthoringEvidenceInvalid(
+                "automatic duplicate representative identity is missing"
+            )
+        current_status = recorded["status"]
+        if current_status == "generated" and not _has_real_generated_link(
+                recorded, session_id):
+            raise session_plan.AuthoringEvidenceInvalid(
+                "duplicate history generated link is invalid"
+            )
+        if item["status"] == "generated":
+            if current_status != "generated":
+                raise session_plan.AuthoringEvidenceInvalid(
+                    "generated duplicate history changed status"
+                )
+        elif current_status not in ("ready", "generated", "invalidated"):
+            raise session_plan.AuthoringEvidenceInvalid(
+                "ready duplicate history changed status"
+            )
+        if (current_status in ("ready", "invalidated")
+                and recorded["linked_shot_id"] is not None):
+            raise session_plan.AuthoringEvidenceInvalid(
+                "unlinked duplicate history has a shot link"
+            )
+        recorded_root, _ = _duplicate_lineage_root(recorded)
+        if recorded_root != root_id:
+            raise session_plan.AuthoringEvidenceInvalid(
+                "automatic duplicate representative root changed"
+            )
+        if _duplicate_choices_digest(recorded["effective_state"]) != item["choices_digest"]:
+            raise session_plan.AuthoringEvidenceInvalid(
+                "automatic duplicate representative choices changed"
+            )
+    if ordering != sorted(ordering):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "automatic duplicate representatives are not ordered"
+        )
+
+    expected_flags = [
+        dict(item)
+        for item in representatives
+        if item["choices_digest"] == candidate_digest
+    ]
+    if not _same_json_value(duplicate_flags.get("flags"), expected_flags):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "automatic duplicate flags do not match the saved comparison"
+        )
+
+
 def _prepare_authoring_evidence_inputs(
     session_id: int,
     plan_revision: int,
@@ -5711,7 +6105,7 @@ def _validate_authoring_prepared_evidence(
     ev_keys = set(auth_ev.keys())
     expected_ev_keys = (
         CLOSED_AUTOMATIC_AUTHORING_EVIDENCE_KEYS
-        if plan_authoring_mode == "automatic" and schema_version == 2
+        if plan_authoring_mode == "automatic" and schema_version in (2, 3)
         else CLOSED_AUTHORING_EVIDENCE_KEYS
     )
     if ev_keys != expected_ev_keys:
@@ -5722,7 +6116,7 @@ def _validate_authoring_prepared_evidence(
         )
 
     if (type(schema_version) is not int
-            or (plan_authoring_mode == "automatic" and schema_version not in (1, 2))
+            or (plan_authoring_mode == "automatic" and schema_version not in (1, 2, 3))
             or (plan_authoring_mode != "automatic" and schema_version != 1)):
         raise session_plan.AuthoringEvidenceInvalid(
             f"unsupported authoring_evidence schema_version: {schema_version}"
@@ -5742,9 +6136,20 @@ def _validate_authoring_prepared_evidence(
         if (schema_version == 1 and not _same_json_value(
                 auth_ev.get("predecessor_projection"), {"status": "not_recorded"})):
             raise session_plan.AuthoringEvidenceInvalid("legacy automatic predecessor status is invalid")
-        if not _same_json_value(
-                auth_ev.get("duplicate_flags"), {"status": "not_recorded", "flags": []}):
-            raise session_plan.AuthoringEvidenceInvalid("automatic duplicate status is invalid")
+        if schema_version in (1, 2):
+            if not _same_json_value(
+                    auth_ev.get("duplicate_flags"), {"status": "not_recorded", "flags": []}):
+                raise session_plan.AuthoringEvidenceInvalid("automatic duplicate status is invalid")
+        else:
+            _validate_recorded_duplicate_flags(
+                session_id,
+                plan_revision,
+                take_id,
+                row_dict,
+                auth_ev,
+                origin_id=origin_id,
+                source_revision=source_revision,
+            )
         operation = db.one(
             "SELECT session_id, plan_revision, kind, state, requested_json, result_json "
             "FROM authoring_operation WHERE operation_id = ?",
@@ -5791,7 +6196,7 @@ def _validate_authoring_prepared_evidence(
         )
         unlocked = compute_unlocked_fields(base_prep)
         expected_context = None
-        if schema_version == 2:
+        if schema_version in (2, 3):
             try:
                 expected_context, expected_predecessors = build_automatic_writer_context(
                     session_id,
@@ -5841,7 +6246,7 @@ def _validate_authoring_prepared_evidence(
                     or not isinstance(writer_input.get("assistant_request"), dict)
                     or set(writer_input["assistant_request"]) != {"messages", "model", "parameters"}):
                 raise session_plan.AuthoringEvidenceInvalid("automatic assistant request is invalid")
-            if schema_version == 2:
+            if schema_version in (2, 3):
                 messages = writer_input["assistant_request"].get("messages")
                 if (not isinstance(messages, list) or len(messages) != 2
                         or any(not isinstance(message, dict)

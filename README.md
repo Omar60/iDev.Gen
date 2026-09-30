@@ -101,7 +101,13 @@ source payload, but block final prompt preparation until explicitly resolved.
 Resource-based session drafts (`resource-v1`) do not depend on the measured
 component catalogue or catalogue cell uniqueness. Deliberate repetition of
 cameras or poses is fully supported, and an empty measured catalogue does not
-block resource draft creation or preparation.
+block resource draft creation or preparation. For automatic preparation, the
+session inspector flags exact matches across camera, framing, pose, and
+expression for review; it keeps the take, so deliberate repeats remain allowed.
+A newly completed automatic snapshot with nonempty duplicate flags clears
+approval for that plan revision; review the result and approve again before
+submitting. Reusing an identical completed snapshot preserves later approval.
+See [sessions](docs/sessions.md#resource-plan-preparation).
 
 The app exposes library and exact-revision inspection at
 `/api/resources/libraries` and

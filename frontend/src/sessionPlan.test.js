@@ -1389,6 +1389,62 @@ describe('SessionView React component rendering integration (renderToStaticMarku
     expect(html).toContain('Origin: assistant_edited')
   })
 
+  it('shows duplicate choice references for explicit review and ignores shared-camera-only snapshots', () => {
+    const flaggedHtml = renderToStaticMarkup(
+      React.createElement(SessionView, {
+        id: 501,
+        initialSession: baseSession,
+        initialPlan: basePlan,
+        initialRevision: 2,
+        initialActiveStep: 'review',
+        initialExpandedTakeId: 'take-001',
+        initialTakeReviewData: {
+          'take-001': {
+            snapshot: {
+              provenance: {
+                authoring_evidence: {
+                  duplicate_flags: {
+                    flags: [{ take_id: 'take-older', plan_revision: 7 }],
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    )
+
+    expect(flaggedHtml).toContain('Exact Duplicate Choices (1)')
+    expect(flaggedHtml).toContain('<code>take-older</code> (plan revision <code>7</code>)')
+    expect(flaggedHtml).toContain('camera, framing, pose, and expression')
+    expect(flaggedHtml).toContain('deliberate repeats are allowed after approval')
+
+    const sharedCameraOnlyHtml = renderToStaticMarkup(
+      React.createElement(SessionView, {
+        id: 501,
+        initialSession: baseSession,
+        initialPlan: {
+          ...basePlan,
+          takes: basePlan.takes.map((take) => ({ ...take, camera: '50mm' })),
+        },
+        initialRevision: 2,
+        initialActiveStep: 'review',
+        initialExpandedTakeId: 'take-001',
+        initialTakeReviewData: {
+          'take-001': {
+            snapshot: {
+              provenance: {
+                authoring_evidence: { duplicate_flags: { flags: [] } },
+              },
+            },
+          },
+        },
+      }),
+    )
+
+    expect(sharedCameraOnlyHtml).not.toContain('Exact Duplicate Choices')
+  })
+
   it('renders incomplete draft panel and suppresses steps/generation when draft failed to load', () => {
     const html = renderToStaticMarkup(
       React.createElement(SessionView, {

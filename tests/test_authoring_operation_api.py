@@ -59,9 +59,12 @@ def _persist_response_for_state_test(claim, ticket, items, **kwargs):
         }}
         requests[target]["context"] = context
         requests[target]["predecessor_projection"] = predecessor_projection
-        converted.append({"target": target, "result": {
-            field: f"invented {field} for {target}" for field in unlocked
-        }})
+        supplied_output = item.get("result")
+        if not isinstance(supplied_output, dict) or set(supplied_output) != set(unlocked):
+            supplied_output = {
+                field: f"invented {field} for {target}" for field in unlocked
+            }
+        converted.append({"target": target, "result": supplied_output})
 
     def finalize(target, result):
         return main.resource_preparation.finalize_take_preparation(
@@ -289,6 +292,9 @@ def test_prepare_takes_commits_ready_snapshot_with_assistant_evidence(
     )
     assert row["status"] == "ready"
     evidence = json.loads(row["provenance"])["authoring_evidence"]
+    assert evidence["schema_version"] == 3
+    assert evidence["duplicate_flags"]["status"] == "recorded"
+    assert evidence["duplicate_flags"]["flags"] == []
     assert view["result"] == {"items": [{
         "target": "take-001",
         "result": {
@@ -374,6 +380,20 @@ def test_prepare_takes_reuses_current_ready_and_generated_snapshots_without_assi
     )
     assert len(calls) == 2
 
+    for row in db.q(
+        "SELECT id, provenance FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = ?",
+        session_id, revision,
+    ):
+        provenance = json.loads(row["provenance"])
+        evidence = provenance["authoring_evidence"]
+        evidence["schema_version"] = 2
+        evidence["duplicate_flags"] = {"status": "not_recorded", "flags": []}
+        db.run(
+            "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+            json.dumps(provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+            row["id"],
+        )
     db.run(
         "UPDATE prepared_take SET status = 'generated' "
         "WHERE session_id = ? AND plan_revision = ? AND take_id = 'take-002'",
@@ -391,6 +411,12 @@ def test_prepare_takes_reuses_current_ready_and_generated_snapshots_without_assi
     )
     recovered = main.session_plan.recover_preparation(session_id)
     assert [item["status"] for item in recovered["completed"]] == ["ready", "generated"]
+    assert all(
+        json.loads(row["provenance"])["authoring_evidence"]["schema_version"] == 2
+        and json.loads(row["provenance"])["authoring_evidence"]["duplicate_flags"]
+        == {"status": "not_recorded", "flags": []}
+        for row in before
+    )
 
     second = client.post(
         f"/api/sessions/{session_id}/plan/authoring/operations",
@@ -592,7 +618,7 @@ def test_prepare_takes_persists_ordered_five_take_context_and_replays(
         session_id, revision, "take-012",
     )
     evidence = json.loads(row["provenance"])["authoring_evidence"]
-    assert evidence["schema_version"] == 2
+    assert evidence["schema_version"] == 3
     assert evidence["writer_context"] == context
     expected_refs = [
         {
@@ -1695,17 +1721,59 @@ def test_ready_snapshots_copy_forward_with_original_writer_evidence(
     session_id, _, claim = _start_worker(
         client, seeded, monkeypatch, take_ids=["take-001", "take-002", "take-003"],
     )
+    outputs = {
+        1: {
+            "camera": "wide camera",
+            "framing": "full body framing",
+            "pose": "standing beside a window",
+            "expression": "calm expression",
+        },
+        2: {
+            "camera": "  WIDE   CAMERA ",
+            "framing": "FULL BODY FRAMING",
+            "pose": " standing   beside a window ",
+            "expression": "CALM EXPRESSION",
+        },
+        3: {
+            "camera": "wide camera",
+            "framing": "medium framing",
+            "pose": "standing beside a window",
+            "expression": "calm expression",
+        },
+    }
     for index in (1, 2, 3):
         ticket = authoring_operations.renew_operation_lease(claim)
         _persist_response_for_state_test(
             claim, ticket, [{"target": f"take-{index:03d}", "result": {
-                field: f"invented {field} {index}"
-                for field in ("camera", "framing", "pose", "expression")
+                **outputs[index]
             }}],
         )
     source = db.one(
         "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = 1 "
         "AND take_id = 'take-001'", session_id,
+    )
+    source_duplicate = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = 1 "
+        "AND take_id = 'take-002'", session_id,
+    )
+    source_shared_camera = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = 1 "
+        "AND take_id = 'take-003'", session_id,
+    )
+    first_evidence = json.loads(source["provenance"])["authoring_evidence"]
+    duplicate_evidence = json.loads(source_duplicate["provenance"])["authoring_evidence"]
+    shared_camera_evidence = json.loads(source_shared_camera["provenance"])["authoring_evidence"]
+    assert first_evidence["schema_version"] == 3
+    assert duplicate_evidence["schema_version"] == 3
+    assert duplicate_evidence["duplicate_flags"]["flags"] == [
+        duplicate_evidence["duplicate_flags"]["comparison"]["representatives"][0]
+    ]
+    assert duplicate_evidence["duplicate_flags"]["flags"][0]["take_id"] == "take-001"
+    assert shared_camera_evidence["duplicate_flags"]["flags"] == []
+    assert json.loads(source_duplicate["provenance"])["authoring_evidence"][
+        "writer_synthesis"]["writer_output"] == outputs[2]
+    main.resource_preparation.validate_authoring_prepared_evidence(
+        session_id, 1, "take-001",
     )
     plan = main.session_plan.get_draft(session_id)["plan"]
     plan["takes"][2]["pose"] = "A different pose for the third take."
@@ -1720,6 +1788,15 @@ def test_ready_snapshots_copy_forward_with_original_writer_evidence(
     assert json.loads(copied["provenance"])["authoring_evidence"] == (
         json.loads(source["provenance"])["authoring_evidence"]
     )
+    copied_duplicate = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = 2 "
+        "AND take_id = 'take-002'", session_id,
+    )
+    source_duplicate_evidence = json.loads(source_duplicate["provenance"])["authoring_evidence"]
+    copied_duplicate_evidence = json.loads(copied_duplicate["provenance"])["authoring_evidence"]
+    assert source_duplicate_evidence["schema_version"] == 3
+    assert source_duplicate_evidence["duplicate_flags"]["flags"][0]["take_id"] == "take-001"
+    assert copied_duplicate_evidence == source_duplicate_evidence
     assert json.loads(copied["provenance"])["copy_forward"]["source_prepared_id"] == source["id"]
     main.resource_preparation.validate_authoring_prepared_evidence(
         session_id, 2, "take-001",
@@ -1745,6 +1822,193 @@ def test_ready_snapshots_copy_forward_with_original_writer_evidence(
     submitted = main.session_plan.submit_prepared_take(session_id, 3, "take-001")
     assert submitted["final_prompt"] == source["final_prompt"]
     assert submitted["linked_shot_id"] is not None
+
+
+def test_recorded_duplicate_flags_reject_tampered_review_projection(
+    client, seeded, monkeypatch,
+):
+    session_id, _, claim = _start_worker(
+        client, seeded, monkeypatch, take_ids=["take-001", "take-002"],
+    )
+    outputs = {
+        "take-001": {
+            "camera": "wide camera",
+            "framing": "full body framing",
+            "pose": "standing beside a window",
+            "expression": "calm expression",
+        },
+        "take-002": {
+            "camera": " WIDE camera ",
+            "framing": "full   body framing",
+            "pose": "Standing beside a window",
+            "expression": "CALM expression",
+        },
+    }
+    for take_id in ("take-001", "take-002"):
+        ticket = authoring_operations.renew_operation_lease(claim)
+        _persist_response_for_state_test(
+            claim, ticket, [{"target": take_id, "result": outputs[take_id]}],
+        )
+
+    row = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = 1 "
+        "AND take_id = 'take-002'", session_id,
+    )
+    provenance = json.loads(row["provenance"])
+    provenance["authoring_evidence"]["duplicate_flags"]["flags"] = []
+    db.run(
+        "UPDATE prepared_take SET provenance = ? WHERE id = ?",
+        json.dumps(provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        row["id"],
+    )
+    with pytest.raises(
+        main.session_plan.AuthoringEvidenceInvalid,
+        match="automatic duplicate flags do not match the saved comparison",
+    ):
+        main.resource_preparation.validate_authoring_prepared_evidence(
+            session_id, 1, "take-002",
+        )
+
+
+def test_duplicate_flags_include_linked_generated_history(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded, photo_count=2)
+    original = {
+        "camera": "wide camera",
+        "framing": "full body framing",
+        "pose": "standing beside a window",
+        "expression": "calm expression",
+    }
+    repeated = {
+        "camera": " WIDE CAMERA ",
+        "framing": "FULL   BODY framing",
+        "pose": " standing beside a window",
+        "expression": "CALM EXPRESSION ",
+    }
+    calls = _install_fake_structured_assistant(monkeypatch, [original, repeated])
+    main.session_plan.approve_plan_review(session_id, revision)
+
+    first = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision, take_ids=["take-001"]),
+    )
+    assert first.status_code == 202, first.text
+    _wait_for_operation_state(client, session_id, first.json()["operation_id"], "succeeded")
+    source = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+        "AND take_id = 'take-001'",
+        session_id, revision,
+    )
+    assert db.one(
+        "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
+        session_id,
+    )["plan_revision"] == revision
+    generated = main.session_plan.submit_prepared_take(session_id, revision, "take-001")
+    assert generated["linked_shot_id"] is not None
+
+    second = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision, take_ids=["take-002"]),
+    )
+    assert second.status_code == 202, second.text
+    _wait_for_operation_state(client, session_id, second.json()["operation_id"], "succeeded")
+    candidate = db.one(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+        "AND take_id = 'take-002'",
+        session_id, revision,
+    )
+    flags = json.loads(candidate["provenance"])["authoring_evidence"]["duplicate_flags"]["flags"]
+    assert len(flags) == 1
+    assert flags[0]["prepared_take_id"] == source["id"]
+    assert flags[0]["plan_revision"] == revision
+    assert flags[0]["take_id"] == "take-001"
+    assert flags[0]["lineage_root_id"] == source["id"]
+    assert flags[0]["status"] == "generated"
+    assert db.one(
+        "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
+        session_id,
+    ) is None
+    with pytest.raises(main.session_plan.PlanReviewNotApproved):
+        main.session_plan.submit_prepared_take(session_id, revision, "take-002")
+    main.resource_preparation.validate_authoring_prepared_evidence(
+        session_id, revision, "take-002",
+    )
+
+    main.session_plan.approve_plan_review(session_id, revision)
+    reused = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision, take_ids=["take-002"]),
+    )
+    assert reused.status_code == 202, reused.text
+    _wait_for_operation_state(client, session_id, reused.json()["operation_id"], "succeeded")
+    after_reuse = db.one(
+        "SELECT id, provenance FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = ? AND take_id = 'take-002'",
+        session_id, revision,
+    )
+    assert after_reuse == {
+        "id": candidate["id"],
+        "provenance": candidate["provenance"],
+    }
+    assert len(calls) == 2
+    assert db.one(
+        "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
+        session_id,
+    )["plan_revision"] == revision
+
+
+def test_duplicate_approval_revocation_rolls_back_with_failed_finalization(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded, photo_count=2)
+    main.session_plan.approve_plan_review(session_id, revision)
+    repeated = {
+        "camera": "wide camera",
+        "framing": "full body framing",
+        "pose": "standing beside a window",
+        "expression": "calm expression",
+    }
+    _install_fake_structured_assistant(monkeypatch, [repeated, repeated])
+
+    first = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision, take_ids=["take-001"]),
+    )
+    assert first.status_code == 202, first.text
+    _wait_for_operation_state(client, session_id, first.json()["operation_id"], "succeeded")
+
+    real_run = db.run
+
+    def fail_approval_delete(sql, *params):
+        if sql.strip().startswith("DELETE FROM session_plan_approval"):
+            raise RuntimeError("injected approval revocation failure")
+        return real_run(sql, *params)
+
+    monkeypatch.setattr(db, "run", fail_approval_delete)
+    second = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations",
+        json=_start_body(revision=revision, take_ids=["take-002"]),
+    )
+    assert second.status_code == 202, second.text
+    failed = _wait_for_operation_state(
+        client, session_id, second.json()["operation_id"], "failed",
+    )
+    assert failed["state"] == "failed"
+    pending = db.one(
+        "SELECT status FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+        "AND take_id = 'take-002'",
+        session_id, revision,
+    )
+    assert pending is None or pending["status"] == "pending"
+    assert db.one(
+        "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
+        session_id,
+    )["plan_revision"] == revision
 
 
 def _task75_ready_session(client, seeded, monkeypatch):

@@ -1309,6 +1309,25 @@ preparation row yet. Older revisions and invalidated rows are returned as
 reopening a plan never starts preparation and never regenerates a completed
 take.
 
+Automatic authoring-v1 preparation records and freezes exact-duplicate
+comparisons with completed snapshots. It compares normalized `camera`,
+`framing`, `pose`, and `expression` choices (trimmed, internal whitespace
+collapsed, and compared case-insensitively) without changing stored output.
+In Review, the session inspector shows an advisory listing one matching take
+and plan revision per verified copy-forward lineage, preferring current ready
+choices. It includes genuine generated history linked to a real shot, excludes
+the candidate's own lineage and stale or invalidated unlinked rows, and keeps
+distinct generated results separate even when their choices match. Review the
+warning before choosing Approve; it does not delete a take or retry preparation
+indefinitely, and deliberate repeats remain allowed. Completing a new automatic
+snapshot from `pending` with nonempty recorded duplicate flags clears approval
+for that same plan revision in the transaction. Review the result and approve
+again before submitting; idempotent reuse of an identical completed snapshot
+preserves any later approval. A shared camera alone is not a match.
+
+Automatic writer context includes five predecessor takes; it does not guarantee
+uniqueness across the whole session.
+
 A finalized `ready`, `generated`, or `invalidated` snapshot is immutable
 history. An identical completion retry can return the existing row, but a
 different snapshot is refused instead of overwriting it. Saving a newer plan

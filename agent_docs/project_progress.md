@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 43 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 44 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -234,7 +234,7 @@ remain intact.
 
 ## Current Position
 
-Tasks 1.1 through 6.5 and Tasks 7.1-7.8 are complete.
+Tasks 1.1 through 6.5 and Tasks 7.1-7.9 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.
 The closed public view excludes fencing and request internals; exact request
 replay, cross-kind exclusion, ordered targets, configuration gates, and
@@ -304,7 +304,7 @@ under the current fence. Snapshot provenance binds the actual assistant request
 and validated output to the committed operation result. Cancellation, stale
 inputs and invalid output leave no ready snapshot. Independent acceptance passed
 2,350 Python tests, 46 privacy/control tests, strict OpenSpec validation and
-diff checks. Duplicate detection remains Task 7.9.
+diff checks. Task 7.9 adds duplicate detection below.
 
 Task 6.5 passed independent acceptance. Integrated operation tests reject
 locked, malformed, partial and placeholder output without ready snapshots or
@@ -386,4 +386,15 @@ Explicit resource refresh uses CAS, preserves the creative plan and linked
 history, writes nothing without drift, and copies only verified unaffected
 work. Missing required evidence cannot use another plan kind's namespace.
 
-Task 7.9 is next and has not started. Do not begin it automatically.
+Task 7.9 passed independent acceptance under deployment
+`simplify-rsw-7_9-20260930`. Automatic preparation freezes normalized four-field
+duplicate comparisons against one verified representative per take/copy lineage
+and genuine generated history. It excludes the candidate lineage and stale or
+invalidated unlinked rows, preserves stored output and deliberate repeats, and
+shows matching takes in Review. A newly flagged snapshot revokes earlier
+approval transactionally; explicit approval after review permits submission,
+while identical reuse preserves later approval. The final full suite passed
+2,423 Python tests; frontend tests (436), build, privacy/control checks, strict
+OpenSpec validation and diff checks passed.
+
+Task 7.10 is next and has not started. Later work remains outside this deployment.

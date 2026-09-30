@@ -2027,6 +2027,11 @@ export default function SessionView({
                           const isExpanded = expandedTakeId === t.take_id
                           const rev = takeReviewData[t.take_id]
                           const snap = rev?.snapshot || completedItem
+                          const duplicateFlags = Array.isArray(
+                            snap?.provenance?.authoring_evidence?.duplicate_flags?.flags,
+                          )
+                            ? snap.provenance.authoring_evidence.duplicate_flags.flags
+                            : []
                           const finalPrompt = rev?.final_prompt || snap?.final_prompt
                           const conflicts = rev?.conflicts || []
                           const resolvedConflicts = rev?.adaptations || rev?.resolved_conflicts || []
@@ -2164,6 +2169,24 @@ export default function SessionView({
                                           <div style={{ fontSize: 12 }}>{snap?.effective_state?.look || plan?.look || '(none)'}</div>
                                         </div>
                                       </div>
+
+                                      {duplicateFlags.length > 0 && (
+                                        <div role="alert" style={{ padding: '8px 10px', background: '#2a2214', border: '1px solid #785a28', borderRadius: 6 }}>
+                                          <div style={{ fontWeight: 600, color: 'var(--warn)', marginBottom: 4 }}>
+                                            Exact Duplicate Choices ({duplicateFlags.length})
+                                          </div>
+                                          <p className="muted" style={{ margin: '0 0 6px', fontSize: 12 }}>
+                                            Each listed take matches all four normalized choices: camera, framing, pose, and expression. Review before approving; deliberate repeats are allowed after approval. A shared camera alone is not a duplicate.
+                                          </p>
+                                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12 }}>
+                                            {duplicateFlags.map((flag, index) => (
+                                              <li key={`${flag?.take_id || 'take'}:${flag?.plan_revision ?? 'revision'}:${index}`}>
+                                                Take <code>{flag?.take_id || 'unknown'}</code> (plan revision <code>{flag?.plan_revision ?? 'unknown'}</code>)
+                                              </li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      )}
 
                                       {/* Authoritative Final Prompt */}
                                       <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>

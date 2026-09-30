@@ -500,3 +500,9 @@
   compare only consumed adaptations, and protect linked take IDs across all
   revisions. Resource evidence must use the persisted plan kind's namespace;
   a structurally valid foreign block cannot replace missing original evidence.
+- Task 7.9 groups duplicate comparisons by verified copy lineage, not matching
+  text. Preserve distinct genuine generated origins and freeze representative
+  identities and choice digests at finalization so future rows do not rewrite
+  the review evidence. A newly flagged automatic snapshot must revoke earlier
+  approval in the same transaction; explicit later approval permits deliberate
+  repetition, and identical reuse must retain that approval and existing links.

@@ -2216,13 +2216,13 @@ def complete_authoring_preparation(result: Any) -> dict:
     plan_revision = result.plan_revision
     take_id = result.take_id
     encoded_state = _encode_snapshot_json(result.effective_state, "effective_state")
-    encoded_provenance = _encode_snapshot_json(result.provenance, "provenance")
-    desired = (
+    base_provenance = _encode_snapshot_json(result.provenance, "provenance")
+    desired_base = (
         result.final_prompt,
         encoded_state,
         result.mapping_version,
         result.compiler_version,
-        encoded_provenance,
+        base_provenance,
     )
     try:
         with db.transaction():
@@ -2257,6 +2257,49 @@ def complete_authoring_preparation(result: Any) -> dict:
                 raise PreparedTakeConflict(
                     f"prepared take {take_id!r} has no pending row; begin it first"
                 )
+            provenance = json.loads(base_provenance)
+            authoring_evidence = provenance.get("authoring_evidence")
+            encoded_provenance = base_provenance
+            revoke_review_approval = False
+            if (kind == PLAN_AUTHORING_KIND_AUTOMATIC
+                    and existing["status"] == PREPARED_TAKE_STATUS_PENDING):
+                if (not isinstance(authoring_evidence, dict)
+                        or authoring_evidence.get("schema_version") != 2):
+                    raise AuthoringEvidenceInvalid(
+                        "new automatic preparation must use schema version 2 builder evidence"
+                    )
+                authoring_evidence = dict(authoring_evidence)
+                candidate_row = {
+                    "id": int(existing["id"]),
+                    "session_id": session_id,
+                    "plan_revision": plan_revision,
+                    "take_id": take_id,
+                    "effective_state": encoded_state,
+                    "provenance": base_provenance,
+                    "status": PREPARED_TAKE_STATUS_READY,
+                }
+                duplicate_flags = resource_preparation.build_authoring_duplicate_flags(
+                    session_id,
+                    plan_revision,
+                    take_id,
+                    candidate_row,
+                    result.effective_state,
+                )
+                authoring_evidence["duplicate_flags"] = duplicate_flags
+                revoke_review_approval = bool(
+                    duplicate_flags.get("status") == "recorded"
+                    and duplicate_flags.get("flags")
+                )
+                authoring_evidence["schema_version"] = 3
+                provenance["authoring_evidence"] = authoring_evidence
+                encoded_provenance = _encode_snapshot_json(provenance, "provenance")
+            desired = (
+                result.final_prompt,
+                encoded_state,
+                result.mapping_version,
+                result.compiler_version,
+                encoded_provenance,
+            )
             current_snapshot = (
                 existing["final_prompt"],
                 existing["effective_state"],
@@ -2270,6 +2313,44 @@ def complete_authoring_preparation(result: Any) -> dict:
                         session_id, plan_revision, take_id, row=existing,
                     )
                     return _decode_prepared_take(existing)
+                if kind == PLAN_AUTHORING_KIND_AUTOMATIC and existing["status"] in (
+                    PREPARED_TAKE_STATUS_READY,
+                    PREPARED_TAKE_STATUS_GENERATED,
+                ):
+                    try:
+                        saved_provenance = json.loads(existing["provenance"])
+                    except (TypeError, ValueError):
+                        saved_provenance = None
+                    saved_evidence = (
+                        saved_provenance.get("authoring_evidence")
+                        if isinstance(saved_provenance, dict) else None
+                    )
+                    saved_duplicate_flags = (
+                        saved_evidence.get("duplicate_flags")
+                        if isinstance(saved_evidence, dict) else None
+                    )
+                    if (isinstance(saved_duplicate_flags, dict)
+                            and saved_evidence.get("schema_version") == 3
+                            and saved_duplicate_flags.get("status") == "recorded"):
+                        normalized_evidence = dict(saved_evidence)
+                        normalized_evidence["schema_version"] = 2
+                        normalized_evidence["duplicate_flags"] = {
+                            "status": "not_recorded", "flags": [],
+                        }
+                        normalized_provenance = dict(saved_provenance)
+                        normalized_provenance["authoring_evidence"] = normalized_evidence
+                        normalized_snapshot = (
+                            existing["final_prompt"],
+                            existing["effective_state"],
+                            existing["mapping_version"],
+                            existing["compiler_version"],
+                            _encode_snapshot_json(normalized_provenance, "provenance"),
+                        )
+                        if _snapshots_equal(normalized_snapshot, desired_base):
+                            validate_authoring_prepared_evidence(
+                                session_id, plan_revision, take_id, row=existing,
+                            )
+                            return _decode_prepared_take(existing)
                 raise PreparedTakeConflict(
                     f"prepared take {take_id!r} at plan revision {plan_revision} "
                     f"is immutable {existing['status']} history and differs from "
@@ -2309,6 +2390,13 @@ def complete_authoring_preparation(result: Any) -> dict:
             if row is None or row["status"] != PREPARED_TAKE_STATUS_READY:
                 raise PreparedTakePersistenceError(
                     f"prepared take {take_id!r} did not reach ready state"
+                )
+            if revoke_review_approval:
+                db.run(
+                    "DELETE FROM session_plan_approval "
+                    "WHERE session_id = ? AND plan_revision = ?",
+                    session_id,
+                    plan_revision,
                 )
             return _decode_prepared_take(row)
     except (
