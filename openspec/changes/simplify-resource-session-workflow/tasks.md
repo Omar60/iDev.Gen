@@ -62,7 +62,7 @@
 - [x] 7.7 Integrate resource/workflow validation into authoritative Review, Recovery, Approve and domain Submit transactions, including selected batches. Serialize dependency checks with linking, make one stale batch member cause zero shot/link writes, keep approvals ineffective after drift and preserve already-linked history.
 - [x] 7.8 Implement idempotent `refresh-resources` CAS with current-revision/no-drift no-op, unchanged creative fields, operation fencing, affected-take diagnostics and verified unaffected copy-forward. It must perform no assistant, approval, submission or generation work; verify concurrent retry and fresh adaptation under the next revision.
 - [x] 7.9 Flag normalized exact four-field duplicates against one representative per take/copy lineage plus genuine generated history, excluding the candidate lineage and stale/invalidated unlinked rows. Preserve deliberate repeats and require review without deletion or unbounded retry.
-- [ ] 7.10 Exercise copy-forward `recover -> approve -> submit`, translation/context/workflow mismatch, duplicate-copy conflict, adaptation visibility/conflict rollback, no duplicate-of-self, ready-approved translation drift, direct domain submission, translation/submit race, selected-batch zero writes, refresh/no-drift/retry and linked-history no-regeneration.
+- [x] 7.10 Exercise copy-forward `recover -> approve -> submit`, translation/context/workflow mismatch, duplicate-copy conflict, adaptation visibility/conflict rollback, no duplicate-of-self, ready-approved translation drift, direct domain submission, translation/submit race, selected-batch zero writes, refresh/no-drift/retry and linked-history no-regeneration.
 
 ## 8. Guided creation, operation and review UI
 

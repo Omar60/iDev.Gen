@@ -506,3 +506,15 @@
   the review evidence. A newly flagged automatic snapshot must revoke earlier
   approval in the same transaction; explicit later approval permits deliberate
   repetition, and identical reuse must retain that approval and existing links.
+- Task 7.10 acceptance distinguishes existing pre-authoring coverage from the
+  authoring-v1 operation pipeline. Translation/submission races must use the
+  canonical translation write boundary and synchronized competing actors;
+  linked-history checks need a real persisted shot, not only a generated marker.
+- Copy-forward destination conflicts must use the existing HTTP conflict mapper
+  in both plan save and resource refresh; transaction rollback alone left these
+  failures exposed as server errors.
+- Recovery without scheduling work cannot prove historical takes are protected
+  from automatic reauthoring. Task 7.10 reproduced a real linked take becoming
+  ready again after CAS. Reject earlier-revision submitted stable IDs in the
+  shared operation context, before claim creation or lease/response validation;
+  retain current-revision snapshot reuse and terminal request replay.

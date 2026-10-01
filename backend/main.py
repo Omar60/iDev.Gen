@@ -4939,6 +4939,8 @@ def save_plan_draft(sid: int, p: PlanDraftIn):
         raise HTTPException(422, str(exc))
     except session_plan.PlanRevisionStale as exc:
         raise HTTPException(409, str(exc))
+    except session_plan.PreparedTakeConflict as exc:
+        raise _prepared_take_http_error(exc)
     except session_plan.PlanConstantsFrozenAfterGenerated as exc:
         raise HTTPException(409, str(exc))
     except session_plan.PlanOwnershipConflict as exc:
@@ -4968,6 +4970,8 @@ def refresh_plan_resources(sid: int, p: RefreshResourcesIn):
         raise HTTPException(422, str(exc))
     except session_plan.PlanRevisionStale as exc:
         raise HTTPException(409, str(exc))
+    except session_plan.PreparedTakeConflict as exc:
+        raise _prepared_take_http_error(exc)
     except session_plan.SessionNotInResourceMode as exc:
         raise HTTPException(400, str(exc))
     except session_plan.SessionNotFound as exc:

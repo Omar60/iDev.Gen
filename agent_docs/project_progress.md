@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 44 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 45 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -234,7 +234,7 @@ remain intact.
 
 ## Current Position
 
-Tasks 1.1 through 6.5 and Tasks 7.1-7.9 are complete.
+Tasks 1.1 through 6.5 and Tasks 7.1-7.10 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.
 The closed public view excludes fencing and request internals; exact request
 replay, cross-kind exclusion, ordered targets, configuration gates, and
@@ -397,4 +397,16 @@ while identical reuse preserves later approval. The final full suite passed
 2,423 Python tests; frontend tests (436), build, privacy/control checks, strict
 OpenSpec validation and diff checks passed.
 
-Task 7.10 is next and has not started. Later work remains outside this deployment.
+Task 7.10 passed independent acceptance under deployment `srsw-710-20260930`
+on the Heavy internal Codex route. Integrated authoring-v1 regressions cover
+copy-forward, reviewed adaptations, isolated input drift, canonical translation
+races, zero-write batch refusal, refresh and real linked history. Plan save and
+refresh now report copy conflicts as HTTP 409. Shared operation validation
+refuses earlier-revision submitted take IDs before new assistant work while
+preserving current snapshot reuse and terminal replay. Independent verification
+passed 2,439 Python tests and 51 privacy/control tests, strict OpenSpec validation
+and diff checks. One existing concurrent-CAS test failed in the first full run,
+then passed alone and in the final full run without weaker assertions.
+
+Task 8.1 remains pending and has not started. Later work remains outside this
+deployment; no independent review remains pending and push is outside scope.

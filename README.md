@@ -212,7 +212,9 @@ the revision while preserving the saved creative plan and frozen workflow
 binding, invalidates affected work, fences active authoring, and copies only
 verified unaffected authoring snapshots. The response lists affected takes and
 required preparation; it never calls an assistant, approves, submits, or runs
-generation. See [sessions](docs/sessions.md#refreshing-resource-dependencies).
+generation. Plan saves and refreshes return HTTP 409 and roll back if copy-forward
+finds a conflicting destination snapshot or adaptation. See
+[sessions](docs/sessions.md#refreshing-resource-dependencies).
 
 Automatic authoring-v1 plans expose persisted operation controls. `POST
 /api/sessions/{sid}/plan/authoring/operations` records or replays a claim;
@@ -227,8 +229,13 @@ assistant worker in the background. It proposes only missing `look` or
 `initial_wardrobe` values from model context, the brief, and authorized scene
 descriptions; proposals appear in operation status without changing the plan.
 Reviewed values, including edited or empty ones, apply only through `/accept`.
-Cancellation and stale inputs fence worker output. Remote `prepare_takes`
-execution and `SessionView` suggestion controls remain future work. See
+New `prepare_takes` claims reject stable take IDs already submitted in an earlier
+plan revision with `409 authoring_inputs_stale`; omit them and choose pending
+takes. Current-revision ready or generated snapshots remain reusable, and the
+original terminal request can still be replayed.
+Cancellation and stale inputs fence worker output. `SessionView` controls for
+authoring operations and suggestions remain future work; remote `prepare_takes`
+execution is implemented in the backend. See
 [authoring operation claims and controls](docs/sessions.md#authoring-operation-claims-cancellation-and-resume)
 for the request, acceptance, recovery, and response contract.
 

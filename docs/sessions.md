@@ -1610,8 +1610,10 @@ invalidated, active authoring is fenced, and existing verified copy-forward
 applies only to demonstrably unaffected authoring snapshots and their consumed
 applicable adaptations. Linked/generated rows and old invalidated history remain
 unchanged; old adaptation rows remain historical, and a fresh adaptation can be
-recorded against the new revision. Unverified pre-authoring expert snapshots are
-not copied as ready.
+recorded against the new revision. A conflicting destination snapshot or
+adaptation makes plan-save and refresh copy-forward return HTTP `409`, rolling
+back the attempted plan and copy-forward writes. Unverified pre-authoring expert
+snapshots are not copied as ready.
 
 Refresh never calls an assistant, approves a plan, submits a take or runs image
 generation. Missing or invalid translations are reported as unverifiable
@@ -1648,6 +1650,12 @@ configuration returns `409 assistant_unavailable`, and a stale plan revision
 returns `409 plan_revision_stale`. The POST returns `503` while resource
 planning is disabled, including for an identical replay. GET and cancellation
 remain available while disabled; resume returns `503`.
+
+A new `prepare_takes` request containing stable take IDs already submitted in an
+earlier plan revision returns `409 authoring_inputs_stale` before an operation
+is claimed or assistant work begins. Omit those takes and choose pending targets.
+Current-revision ready or generated snapshots remain reusable, and the original
+terminal request can still be replayed.
 
 Suggestion acceptance writes the reviewed values, exact assistant input and
 output, accepted values, and per-field `assistant` or `assistant_edited`

@@ -709,6 +709,23 @@ def _current_operation_context(
                     "authoring_inputs_stale",
                     "The requested take order changed; discard this response and reload the plan.",
                 )
+            for take_id in requested:
+                submitted_history = db.one(
+                    "SELECT 1 FROM prepared_take WHERE session_id = ? AND take_id = ? "
+                    "AND plan_revision < ? "
+                    "AND (linked_shot_id IS NOT NULL OR status = ?) LIMIT 1",
+                    session_id,
+                    take_id,
+                    int(row["plan_revision"]),
+                    session_plan.PREPARED_TAKE_STATUS_GENERATED,
+                )
+                if submitted_history is not None:
+                    raise AuthoringOperationError(
+                        409,
+                        "authoring_inputs_stale",
+                        f"Take {take_id!r} was already submitted in an earlier plan revision; "
+                        "omit already submitted takes from this operation.",
+                    )
         elif row["kind"] == "shared_suggestions":
             shared_state = plan["authoring"]["shared_state"]
             current_targets = [
