@@ -1,4 +1,4 @@
-async function req(method, path, body) {
+async function request(method, path, body) {
   const res = await fetch(path, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -6,14 +6,24 @@ async function req(method, path, body) {
   })
   if (!res.ok) {
     let detail = res.statusText
-    try { detail = (await res.json()).detail ?? detail } catch { /* response was not JSON */ }
+    let hasStableErrorBody = false
+    try {
+      detail = (await res.json()).detail ?? detail
+      const keys = detail && typeof detail === 'object' ? Object.keys(detail).sort() : []
+      hasStableErrorBody = keys.length === 2 && keys[0] === 'code' && keys[1] === 'message'
+        && typeof detail.code === 'string' && Boolean(detail.code)
+        && typeof detail.message === 'string' && Boolean(detail.message)
+    } catch { /* response was not JSON */ }
     const err = new Error(typeof detail === 'string' ? detail : (detail?.message || JSON.stringify(detail)))
     err.detail = detail
     err.status = res.status
+    err.hasStableErrorBody = hasStableErrorBody
     throw err
   }
-  return res.status === 204 ? null : res.json()
+  return { status: res.status, data: res.status === 204 ? null : await res.json() }
 }
+
+const req = async (method, path, body) => (await request(method, path, body)).data
 
 // The File goes as the raw body, not as multipart: the server reads the bytes
 // and sniffs the format from them, so there is nothing a form part would add.
@@ -53,6 +63,7 @@ async function uploadMultipart(path, formData) {
 export const api = {
   get: (p) => req('GET', p),
   post: (p, b) => req('POST', p, b),
+  postWithStatus: (p, b) => request('POST', p, b),
   patch: (p, b) => req('PATCH', p, b),
   del: (p) => req('DELETE', p),
   upload,

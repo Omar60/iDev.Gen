@@ -208,9 +208,27 @@ describe('Task 8.2 independent UI acceptance', () => {
       if (url === '/api/config') return { llm_ok: false }
       return []
     })
-    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
       posts.push([url, structuredClone(body)])
-      return { session_id: sessionId, plan_revision: 1, plan: {} }
+      return {
+        status: 201,
+        data: {
+          session_id: sessionId,
+          plan_revision: 1,
+          plan: {
+            version: 'resource-v1',
+            takes: Array.from({ length: body.photo_count }, (_, index) => ({
+              take_id: `take-${String(index + 1).padStart(3, '0')}`,
+            })),
+            selected_resources: [body.scene_anchor],
+            authoring: {
+              schema_version: 1,
+              mode: body.mode,
+              scene_anchor: body.scene_anchor,
+            },
+          },
+        },
+      }
     })
 
     await act(async () => { root.render(<Resources requestedModelId="4" />) })

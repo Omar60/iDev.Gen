@@ -1545,11 +1545,21 @@ default exists, the form links to assign one on the character page or choose an
 Advanced override.
 
 The form makes no server writes until **Create guided session**. That action
-creates the draft through the guided-session endpoint and opens the returned
-session. It does not prepare or approve prompts, submit takes, or start
-generation. If the creation result is unknown, the form blocks another
-submission and links to **Sessions** to check; it offers no retry from that
-state.
+creates the draft through the atomic guided-session endpoint and navigates from
+its validated stored response: HTTP 201 is a new creation and HTTP 200 replays
+the saved result. Neither path prepares or approves prompts, submits takes, or
+starts generation.
+
+If a network or 5xx error occurs, an error response is unreadable or malformed,
+or a success response is unreadable, malformed, or incomplete, the outcome stays
+unknown. The form locks its inputs and **Retry creation** resends the exact same
+request ID and frozen body, even if the model or room inventory changes. A
+decoded stable 4xx error with `code` and `message` is treated as a definitive
+refusal and permits correction. A `409 idempotency_conflict` instead requires
+the explicit **Start a new creation attempt** action, which assigns a fresh
+request ID.
+The retry snapshot exists only in the open form; a browser reload discards it,
+and no reload recovery is provided.
 
 The explicit **Legacy session** action opens the previous measured-catalogue
 composer. The API contract also remains backward compatible: a create payload

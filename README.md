@@ -257,10 +257,16 @@ and Automatic remains selectable while synthesis is unavailable.
 The character's default workflow is used unless overridden; if none is set, the
 form links to assign one on the character page or choose an Advanced override.
 **Create guided session** creates the draft and opens it. If the result is
-unknown, the form blocks resubmission and links to **Sessions** to check whether
-the session was created. **Legacy session** still opens the measured-catalogue
-composer. Omitting `composition_mode` remains backward compatible and creates a
-legacy session; existing legacy sessions are not migrated, and disabling
+unknown, **Retry creation** resends the same request ID and frozen body. HTTP
+201 creates the session; HTTP 200 replays its stored result, and both navigate
+from the validated response. A decoded stable 4xx error unlocks correction;
+`409 idempotency_conflict` requires **Start a new creation attempt** with a new
+request ID. Network or 5xx errors and malformed or unreadable responses leave the
+outcome unknown. The retry snapshot lives only in the open form and is lost on
+browser reload. Creating a draft does not approve prompts, submit takes, or run
+generation. **Legacy session** still opens the measured-catalogue composer.
+Omitting `composition_mode` remains backward compatible and creates a legacy
+session; existing legacy sessions are not migrated, and disabling
 `resource_planning_enabled` leaves the legacy entry available. See
 [resource-based session drafts](docs/sessions.md#resource-based-session-drafts-resource-v1).
 

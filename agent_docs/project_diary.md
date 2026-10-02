@@ -531,3 +531,9 @@
   check the live session epoch. Readback after response loss must confirm both
   effective value and origin before reporting success; independent interleaving
   probes caught edit loss, a cross-session notice and a false empty-choice notice.
+- Task 8.3 retries unknown guided creation with its frozen request body and
+  UUID, independent of refreshed scene/model inventory. A malformed error body
+  does not prove rejection even when its HTTP status is 422; keep the attempt
+  unknown until a valid stored result or stable domain refusal arrives. Preserve
+  status through an opt-in API method without changing other callers, guard
+  duplicate sends synchronously, and keep the pre-authoring expert path separate.

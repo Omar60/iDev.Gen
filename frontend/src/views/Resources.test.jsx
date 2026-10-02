@@ -8,6 +8,34 @@ import Resources from './Resources.jsx'
 import { api } from '../api.js'
 import actualPayloadFreeLibraries from './__fixtures__/actual_payload_free_libraries.json'
 
+const guidedResponseFor = (request, sessionId = 42, status = 201) => ({
+  status,
+  data: {
+    session_id: sessionId,
+    plan_revision: 1,
+    plan: {
+      version: 'resource-v1',
+      look: request.look,
+      initial_wardrobe: request.initial_wardrobe,
+      takes: Array.from({ length: request.photo_count }, (_, index) => ({
+        take_id: `take-${String(index + 1).padStart(3, '0')}`,
+      })),
+      selected_resources: [request.scene_anchor],
+      authoring: {
+        schema_version: 1,
+        mode: request.mode,
+        scene_anchor: request.scene_anchor,
+        workflow_binding: {
+          workflow_id: request.workflow_id ?? 12,
+          kind: 'txt2img',
+          graph_digest: 'a'.repeat(64),
+          node_map_digest: 'b'.repeat(64),
+        },
+      },
+    },
+  },
+})
+
 describe('Resources Component - Task 1.5 Specification & Contract Tests', () => {
   let container = null
   let root = null
@@ -19,6 +47,10 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     vi.restoreAllMocks()
     vi.spyOn(api, 'get').mockResolvedValue([])
     vi.spyOn(api, 'post').mockResolvedValue({})
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
+      if (url !== '/api/sessions/guided') throw new Error(`Unexpected request: ${url}`)
+      return guidedResponseFor(body)
+    })
     vi.spyOn(api, 'uploadMultipart').mockResolvedValue({})
     vi.spyOn(api, 'patch').mockResolvedValue({})
     vi.spyOn(api, 'del').mockResolvedValue({})
@@ -4092,9 +4124,9 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       if (url === '/api/config') return { llm_ok: false, llm_vision_model: 'vision-model' }
       return []
     })
-    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
       postCalls.push([url, body])
-      if (url === '/api/sessions/guided') return { session_id: 95, plan_revision: 1, plan: {} }
+      if (url === '/api/sessions/guided') return guidedResponseFor(body, 95)
       throw new Error(`Unexpected request: ${url}`)
     })
     window.location.hash = ''
@@ -4133,6 +4165,8 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     })
     expect(window.location.hash).toBe('#/session/95')
     expect(postCalls.map(([url]) => url)).toEqual(['/api/sessions/guided'])
+    expect(api.post).not.toHaveBeenCalled()
+    expect(postCalls[0][1].request_id).toBeTruthy()
   })
 
   it.each(['0', '501', '1.5'])('8.1 refuses photo count %s before making a request', async (count) => {
@@ -4158,7 +4192,7 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     await act(async () => {
       Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
     })
-    expect(api.post).not.toHaveBeenCalled()
+    expect(api.postWithStatus).not.toHaveBeenCalled()
     expect(container.textContent).toContain('Photo count must be an integer from 1 through 500.')
   })
 
@@ -4188,11 +4222,11 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     await act(async () => {
       Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
     })
-    expect(api.post).not.toHaveBeenCalled()
+    expect(api.postWithStatus).not.toHaveBeenCalled()
     expect(container.textContent).toContain('Brief must be 2,000 characters or fewer.')
   })
 
-  it('8.1 disables resubmission when the guided creation outcome is unknown', async () => {
+  it('8.3 retries an unknown guided creation with the same frozen request and accepts its stored replay', async () => {
     const library = {
       id: 1,
       library_key: 'guided_rooms',
@@ -4207,7 +4241,12 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       if (url === '/api/config') return { llm_ok: false }
       return []
     })
-    vi.spyOn(api, 'post').mockRejectedValue(new Error('Network disconnected'))
+    const attempts = []
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
+      attempts.push([url, body])
+      if (attempts.length === 1) throw new Error('Network disconnected')
+      return guidedResponseFor(body, 97, 200)
+    })
     await renderComponent()
     await act(async () => {
       Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
@@ -4215,13 +4254,207 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     const submit = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session')
     await act(async () => { submit.click() })
 
-    expect(container.textContent).toContain('The creation result is unknown. The server may have created this session.')
-    expect(container.querySelector('a[href="#/sessions"]')).toBeTruthy()
+    expect(container.textContent).toContain('The creation result is unknown. Retry the same request')
+    expect(attempts).toHaveLength(1)
+    expect(Object.isFrozen(attempts[0][1])).toBe(true)
+    expect(Object.isFrozen(attempts[0][1].scene_anchor)).toBe(true)
     expect(submit.disabled).toBe(true)
+    expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Retry creation')).toBeTruthy()
     expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Cancel').disabled).toBe(true)
     expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').disabled).toBe(true)
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Retry creation').click()
+    })
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1][1]).toBe(attempts[0][1])
+    expect(window.location.hash).toBe('#/session/97')
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a server error', 503, true],
+    ['an unreadable validation response', 422, false],
+  ])('8.3 retains the exact request after %s', async (_label, status, hasStableErrorBody) => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready' } }],
+      auxiliary: [],
+    }
+    const attempts = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
+      attempts.push([url, body])
+      if (attempts.length === 1) {
+        throw Object.assign(new Error('Request could not be confirmed.'), { status, hasStableErrorBody })
+      }
+      return guidedResponseFor(body, 103, 200)
+    })
+
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+    })
+    const originalRequest = attempts[0][1]
+    expect(container.querySelector('#guided-brief').disabled).toBe(true)
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Retry creation').click()
+    })
+
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1][1]).toBe(originalRequest)
+    expect(attempts[1][1].request_id).toBe(originalRequest.request_id)
+    expect(window.location.hash).toBe('#/session/103')
+  })
+
+  it('8.3 retries a malformed success response with the same body and navigates only from the valid replay', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready' } }],
+      auxiliary: [],
+    }
+    const attempts = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
+      attempts.push([url, body])
+      if (attempts.length === 1) return { status: 201, data: { session_id: 104, plan_revision: 1, plan: {} } }
+      return guidedResponseFor(body, 105, 200)
+    })
+    window.location.hash = ''
+
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+    })
+    expect(window.location.hash).toBe('')
+    const originalRequest = attempts[0][1]
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Retry creation').click()
+    })
+
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1][1]).toBe(originalRequest)
+    expect(window.location.hash).toBe('#/session/105')
+  })
+
+  it('8.3 preserves edit recovery after a decoded validation error', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready' } }],
+      auxiliary: [],
+    }
+    const attempts = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
+      attempts.push(body)
+      if (attempts.length === 1) {
+        throw Object.assign(new Error('Choose a current ready room.'), {
+          status: 422,
+          hasStableErrorBody: true,
+          detail: { code: 'scene_anchor_not_ready', message: 'Choose a current ready room.' },
+        })
+      }
+      return guidedResponseFor(body, 106)
+    })
+
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    const submit = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session')
     await act(async () => { submit.click() })
-    expect(api.post).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('#guided-brief').disabled).toBe(false)
+    await act(async () => {
+      setTextareaValue(container.querySelector('#guided-brief'), 'Corrected after validation.')
+      submit.click()
+    })
+
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1].request_id).toBe(attempts[0].request_id)
+    expect(attempts[1].brief).toBe('Corrected after validation.')
+    expect(window.location.hash).toBe('#/session/106')
+  })
+
+  it('8.3 requires an explicit new attempt after an idempotency conflict', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready' } }],
+      auxiliary: [],
+    }
+    const attempts = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
+      attempts.push(body)
+      if (attempts.length === 1) {
+        throw Object.assign(new Error('Request ID is already in use.'), {
+          status: 409,
+          hasStableErrorBody: true,
+          detail: { code: 'idempotency_conflict', message: 'Request ID is already in use.' },
+        })
+      }
+      return guidedResponseFor(body, 107)
+    })
+
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+    })
+    expect(attempts).toHaveLength(1)
+    expect(container.textContent).toContain('already bound to different creation details')
+    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent === 'Retry creation')).toBe(false)
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Start a new creation attempt').click()
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+    })
+
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1].request_id).not.toBe(attempts[0].request_id)
+    expect(window.location.hash).toBe('#/session/107')
   })
 
   it('8.1 freezes guided inputs and other creation entry points while the request is pending', async () => {
@@ -4234,19 +4467,24 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       auxiliary: [],
     }
     let resolveGuided
+    let guidedRequest
     vi.spyOn(api, 'get').mockImplementation(async (url) => {
       if (url === '/api/resources/libraries') return [library]
       if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
       if (url === '/api/config') return { llm_ok: false }
       return []
     })
-    vi.spyOn(api, 'post').mockImplementation(() => new Promise((resolve) => { resolveGuided = resolve }))
+    vi.spyOn(api, 'postWithStatus').mockImplementation((url, body) => {
+      guidedRequest = body
+      return new Promise((resolve) => { resolveGuided = resolve })
+    })
     await renderComponent()
     await act(async () => {
       Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
     })
     const submit = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session')
     await act(async () => {
+      submit.click()
       submit.click()
       await Promise.resolve()
     })
@@ -4256,7 +4494,8 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     expect(container.querySelector('#guided-photo-count').disabled).toBe(true)
     expect(container.querySelector('#guided-brief').disabled).toBe(true)
     expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').disabled).toBe(true)
-    await act(async () => { resolveGuided({ session_id: 97, plan_revision: 1, plan: {} }) })
+    expect(api.postWithStatus).toHaveBeenCalledTimes(1)
+    await act(async () => { resolveGuided(guidedResponseFor(guidedRequest, 97)) })
     expect(window.location.hash).toBe('#/session/97')
   })
 
@@ -4277,9 +4516,9 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       if (url === '/api/workflows') return [{ id: 17, name: 'Workflow B' }]
       return []
     })
-    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
       postCalls.push([url, body])
-      if (url === '/api/sessions/guided') return { session_id: 96, plan_revision: 1, plan: {} }
+      if (url === '/api/sessions/guided') return guidedResponseFor(body, 96)
       throw new Error(`Unexpected request: ${url}`)
     })
 
@@ -4320,9 +4559,9 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       if (url === '/api/config') return { llm_ok: false }
       return []
     })
-    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
       postCalls.push([url, body])
-      if (url === '/api/sessions/guided') return { session_id: 99, plan_revision: 1, plan: {} }
+      if (url === '/api/sessions/guided') return guidedResponseFor(body, 99)
       throw new Error(`Unexpected request: ${url}`)
     })
 
@@ -4395,9 +4634,9 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       if (url === '/api/config') return configPromise
       return []
     })
-    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
       postCalls.push([url, body])
-      if (url === '/api/sessions/guided') return { session_id: 98, plan_revision: 1, plan: {} }
+      if (url === '/api/sessions/guided') return guidedResponseFor(body, 98)
       throw new Error(`Unexpected request: ${url}`)
     })
 
@@ -4463,7 +4702,11 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       if (url === '/api/config') return { llm_ok: false }
       return []
     })
-    vi.spyOn(api, 'post').mockReturnValue(guidedPromise)
+    let guidedRequest
+    vi.spyOn(api, 'postWithStatus').mockImplementation((url, body) => {
+      guidedRequest = body
+      return guidedPromise
+    })
 
     await renderComponent()
     await act(async () => {
@@ -4477,7 +4720,7 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     await act(async () => { root.unmount(); root = null })
     window.location.hash = '#/session/76'
     await act(async () => {
-      resolveGuided({ session_id: 99, plan_revision: 1, plan: {} })
+      resolveGuided(guidedResponseFor(guidedRequest, 99))
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
 
@@ -4509,7 +4752,7 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       if (url === '/api/config') return { llm_ok: false }
       return []
     })
-    vi.spyOn(api, 'post').mockRejectedValue(new Error('Network disconnected'))
+    vi.spyOn(api, 'postWithStatus').mockRejectedValue(new Error('Network disconnected'))
 
     await renderComponent()
     await act(async () => {

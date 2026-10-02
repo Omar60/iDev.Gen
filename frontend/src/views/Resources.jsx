@@ -33,6 +33,32 @@ const defaultGuidedPolicy = () => Object.fromEntries(
   GUIDED_DIMENSIONS.map(([field]) => [field, { mode: 'vary', value: '' }]),
 )
 
+const freezeGuidedRequest = (request) => Object.freeze({
+  ...request,
+  scene_anchor: Object.freeze({ ...request.scene_anchor }),
+  variation_policy: Object.freeze(Object.fromEntries(
+    Object.entries(request.variation_policy).map(([field, setting]) => [field, Object.freeze({ ...setting })]),
+  )),
+})
+
+const isGuidedSuccessResponse = ({ status, data }, request) => {
+  const plan = data?.plan
+  const matchesAnchor = (anchor) => anchor?.library_key === request.scene_anchor.library_key
+    && anchor?.source_id === request.scene_anchor.source_id
+    && anchor?.content_digest === request.scene_anchor.content_digest
+
+  return (status === 200 || status === 201)
+    && Number.isSafeInteger(data?.session_id) && data.session_id > 0
+    && data?.plan_revision === 1
+    && plan?.version === 'resource-v1'
+    && Array.isArray(plan.takes) && plan.takes.length === request.photo_count
+    && plan.takes.every((take) => typeof take?.take_id === 'string' && take.take_id.length > 0)
+    && Array.isArray(plan.selected_resources) && plan.selected_resources.some(matchesAnchor)
+    && plan.authoring?.schema_version === 1
+    && plan.authoring.mode === request.mode
+    && matchesAnchor(plan.authoring.scene_anchor)
+}
+
 export default function Resources({ requestedModelId = '' }) {
   const [tab, setTab] = useState('inventory') // 'inventory' | 'import'
   const [libraries, setLibraries] = useState([])
@@ -52,6 +78,7 @@ export default function Resources({ requestedModelId = '' }) {
   const [guidedAdvancedOpen, setGuidedAdvancedOpen] = useState(false)
   const [guidedRequestId, setGuidedRequestId] = useState('')
   const [guidedOutcomeUnknown, setGuidedOutcomeUnknown] = useState(false)
+  const [guidedRequestConflict, setGuidedRequestConflict] = useState(false)
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('all')
   const [importedIdentities, setImportedIdentities] = useState(() => new Set())
@@ -72,6 +99,8 @@ export default function Resources({ requestedModelId = '' }) {
   const activeSelectionIdRef = useRef(null)
   const selectionViewRef = useRef(null)
   const guidedRequestMountedRef = useRef(true)
+  const guidedRequestSnapshotRef = useRef(null)
+  const guidedSubmissionInFlightRef = useRef(false)
 
   // Legacy path import state (for compatibility)
   const [selections, setSelections] = useState([{ path: '', library_key: '' }])
@@ -572,11 +601,58 @@ export default function Resources({ requestedModelId = '' }) {
     setGuidedInitialWardrobe('')
     setGuidedAdvancedOpen(false)
     setGuidedRequestId(crypto.randomUUID())
+    guidedRequestSnapshotRef.current = null
     setGuidedOutcomeUnknown(false)
+    setGuidedRequestConflict(false)
     setError('')
   }
 
+  const sendGuidedRequest = async (request) => {
+    if (guidedSubmissionInFlightRef.current) return
+    guidedSubmissionInFlightRef.current = true
+    setBusy(true)
+    setError('')
+    try {
+      const response = await api.postWithStatus('/api/sessions/guided', request)
+      if (!guidedRequestMountedRef.current) return
+      if (!isGuidedSuccessResponse(response, request)) {
+        setGuidedOutcomeUnknown(true)
+        setGuidedRequestConflict(false)
+        setError('The server returned an incomplete guided creation result.')
+        return
+      }
+      setGuidedOutcomeUnknown(false)
+      setGuidedRequestConflict(false)
+      go(`/session/${response.data.session_id}`)
+    } catch (e) {
+      if (!guidedRequestMountedRef.current) return
+      const stableClientError = Number.isInteger(e.status)
+        && e.status >= 400 && e.status < 500
+        && e.hasStableErrorBody === true
+        && typeof e.detail?.code === 'string'
+        && typeof e.detail?.message === 'string'
+      if (stableClientError && e.status === 409 && e.detail.code === 'idempotency_conflict') {
+        setGuidedOutcomeUnknown(false)
+        setGuidedRequestConflict(true)
+        setError(e.message)
+      } else if (stableClientError) {
+        guidedRequestSnapshotRef.current = null
+        setGuidedOutcomeUnknown(false)
+        setGuidedRequestConflict(false)
+        setError(e.message)
+      } else {
+        setGuidedOutcomeUnknown(true)
+        setGuidedRequestConflict(false)
+        setError(e.message)
+      }
+    } finally {
+      guidedSubmissionInFlightRef.current = false
+      if (guidedRequestMountedRef.current) setBusy(false)
+    }
+  }
+
   const submitGuidedCreation = async () => {
+    if (guidedSubmissionInFlightRef.current || guidedOutcomeUnknown || guidedRequestConflict) return
     const character = models.find((model) => String(model.id) === guidedCharacterId)
     const scene = readyRoomChoices.find((choice) => choice.key === guidedSceneKey)
     const photoCount = Number(guidedPhotoCount)
@@ -616,35 +692,35 @@ export default function Resources({ requestedModelId = '' }) {
       return
     }
 
-    setBusy(true)
+    const request = freezeGuidedRequest({
+      request_id: guidedRequestId,
+      character_id: character.id,
+      workflow_id: guidedWorkflowOverrideId ? workflowOverrideId : null,
+      scene_anchor: exactRevisionTriple(scene.libraryKey, scene.revision),
+      photo_count: photoCount,
+      brief: guidedBrief,
+      mode: guidedMode,
+      variation_policy: variationPolicy,
+      look: guidedLook,
+      initial_wardrobe: guidedInitialWardrobe,
+    })
+    guidedRequestSnapshotRef.current = request
+    await sendGuidedRequest(request)
+  }
+
+  const retryGuidedCreation = () => {
+    if (!guidedOutcomeUnknown || guidedSubmissionInFlightRef.current) return
+    const request = guidedRequestSnapshotRef.current
+    if (request) void sendGuidedRequest(request)
+  }
+
+  const startGuidedCreationAttempt = () => {
+    if (busy || guidedSubmissionInFlightRef.current) return
+    guidedRequestSnapshotRef.current = null
+    setGuidedRequestId(crypto.randomUUID())
+    setGuidedOutcomeUnknown(false)
+    setGuidedRequestConflict(false)
     setError('')
-    try {
-      const result = await api.post('/api/sessions/guided', {
-        request_id: guidedRequestId,
-        character_id: character.id,
-        workflow_id: guidedWorkflowOverrideId ? workflowOverrideId : null,
-        scene_anchor: exactRevisionTriple(scene.libraryKey, scene.revision),
-        photo_count: photoCount,
-        brief: guidedBrief,
-        mode: guidedMode,
-        variation_policy: variationPolicy,
-        look: guidedLook,
-        initial_wardrobe: guidedInitialWardrobe,
-      })
-      if (!guidedRequestMountedRef.current) return
-      if (!Number.isInteger(result?.session_id) || result.session_id <= 0) {
-        setGuidedOutcomeUnknown(true)
-        setError('The server response did not include a session ID. Check Sessions before starting another session.')
-        return
-      }
-      go(`/session/${result.session_id}`)
-    } catch (e) {
-      if (!guidedRequestMountedRef.current) return
-      setError(e.message)
-      setGuidedOutcomeUnknown(!Number.isInteger(e.status) || e.status >= 500)
-    } finally {
-      if (guidedRequestMountedRef.current) setBusy(false)
-    }
   }
 
   const chooseStructuredScene = () => {
@@ -1069,6 +1145,7 @@ export default function Resources({ requestedModelId = '' }) {
     && Number(guidedCharacter.workflow_id) > 0
   const guidedHasWorkflow = guidedCharacterHasDefaultWorkflow
     || (Number.isInteger(Number(guidedWorkflowOverrideId)) && Number(guidedWorkflowOverrideId) > 0)
+  const guidedLocked = busy || guidedOutcomeUnknown || guidedRequestConflict
 
   const canImport = isImportEligible(selectionView, { activeSelectionId, pendingMutation: busy })
   const previewReport = selectionView?.preview ? parsePreviewSummary(selectionView.preview) : null
@@ -1089,7 +1166,9 @@ export default function Resources({ requestedModelId = '' }) {
               onClick={() => {
                 setGuidedSceneKey('')
                 setGuidedRequestId('')
+                guidedRequestSnapshotRef.current = null
                 setGuidedOutcomeUnknown(false)
+                setGuidedRequestConflict(false)
                 setError('')
               }}
             >
@@ -1106,7 +1185,7 @@ export default function Resources({ requestedModelId = '' }) {
                   setGuidedCharacterId(event.target.value)
                   setGuidedWorkflowOverrideId('')
                 }}
-                disabled={busy || guidedOutcomeUnknown}
+                disabled={guidedLocked}
                 required
               >
                 <option value="">Choose a character</option>
@@ -1119,7 +1198,7 @@ export default function Resources({ requestedModelId = '' }) {
                 id="guided-scene"
                 value={guidedSceneKey}
                 onChange={(event) => setGuidedSceneKey(event.target.value)}
-                disabled={busy || guidedOutcomeUnknown}
+                disabled={guidedLocked}
                 required
               >
                 {readyRoomChoices.map((choice) => <option key={choice.key} value={choice.key}>{choice.label}</option>)}
@@ -1136,7 +1215,7 @@ export default function Resources({ requestedModelId = '' }) {
                 required
                 value={guidedPhotoCount}
                 onChange={(event) => setGuidedPhotoCount(event.target.value)}
-                disabled={busy || guidedOutcomeUnknown}
+                disabled={guidedLocked}
               />
             </div>
             <div>
@@ -1146,7 +1225,7 @@ export default function Resources({ requestedModelId = '' }) {
                 maxLength={2000}
                 value={guidedBrief}
                 onChange={(event) => setGuidedBrief(event.target.value)}
-                disabled={busy || guidedOutcomeUnknown}
+                disabled={guidedLocked}
               />
             </div>
           </div>
@@ -1175,7 +1254,7 @@ export default function Resources({ requestedModelId = '' }) {
                   id="guided-mode"
                   value={guidedMode}
                   onChange={(event) => setGuidedMode(event.target.value)}
-                  disabled={assistantConfigured === null || busy || guidedOutcomeUnknown}
+                  disabled={assistantConfigured === null || guidedLocked}
                 >
                   {!guidedMode && <option value="" disabled>Checking assistant configuration…</option>}
                   <option value="automatic">Automatic</option>
@@ -1188,7 +1267,7 @@ export default function Resources({ requestedModelId = '' }) {
                   id="guided-workflow-override"
                   value={guidedWorkflowOverrideId}
                   onChange={(event) => setGuidedWorkflowOverrideId(event.target.value)}
-                  disabled={busy || guidedOutcomeUnknown}
+                  disabled={guidedLocked}
                 >
                   <option value="">{guidedCharacterHasDefaultWorkflow ? 'Use character default' : 'Choose an override'}</option>
                   {workflows.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}
@@ -1220,7 +1299,7 @@ export default function Resources({ requestedModelId = '' }) {
                         ...previous,
                         [field]: { ...setting, mode: event.target.value },
                       }))}
-                      disabled={busy || guidedOutcomeUnknown}
+                      disabled={guidedLocked}
                     >
                       <option value="vary">Vary</option>
                       <option value="fixed">Fixed</option>
@@ -1234,7 +1313,7 @@ export default function Resources({ requestedModelId = '' }) {
                           [field]: { ...setting, value: event.target.value },
                         }))}
                         placeholder={`Fixed ${label.toLowerCase()} value`}
-                        disabled={busy || guidedOutcomeUnknown}
+                        disabled={guidedLocked}
                       />
                     )}
                   </div>
@@ -1251,7 +1330,7 @@ export default function Resources({ requestedModelId = '' }) {
                   value={guidedLook}
                   onChange={(event) => setGuidedLook(event.target.value)}
                   placeholder="Optional appearance, place, or lighting constraint"
-                  disabled={busy || guidedOutcomeUnknown}
+                  disabled={guidedLocked}
                 />
               </div>
               <div>
@@ -1262,7 +1341,7 @@ export default function Resources({ requestedModelId = '' }) {
                   value={guidedInitialWardrobe}
                   onChange={(event) => setGuidedInitialWardrobe(event.target.value)}
                   placeholder="Optional clothing constraint for the first take"
-                  disabled={busy || guidedOutcomeUnknown}
+                  disabled={guidedLocked}
                 />
               </div>
             </div>
@@ -1273,14 +1352,25 @@ export default function Resources({ requestedModelId = '' }) {
 
           {guidedOutcomeUnknown && (
             <div className="error" role="alert">
-              The creation result is unknown. The server may have created this session. Check <a href="#/sessions">Sessions</a>; this form cannot submit again.
+              The creation result is unknown. Retry the same request to retrieve its stored result.
+              <button type="button" disabled={busy} onClick={retryGuidedCreation}>
+                {busy ? 'Retrying…' : 'Retry creation'}
+              </button>
+            </div>
+          )}
+          {guidedRequestConflict && (
+            <div className="error" role="alert">
+              This request ID is already bound to different creation details. Start a new attempt to use a fresh request ID.
+              <button type="button" disabled={busy} onClick={startGuidedCreationAttempt}>
+                Start a new creation attempt
+              </button>
             </div>
           )}
           <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
             <button
               type="button"
               className="primary"
-              disabled={busy || guidedOutcomeUnknown || !guidedCharacter || !guidedHasWorkflow || !guidedMode || assistantConfigured === null}
+              disabled={guidedLocked || !guidedCharacter || !guidedHasWorkflow || !guidedMode || assistantConfigured === null}
               onClick={submitGuidedCreation}
             >
               {busy ? 'Creating…' : 'Create guided session'}
