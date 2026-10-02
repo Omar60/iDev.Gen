@@ -518,3 +518,10 @@
   ready again after CAS. Reject earlier-revision submitted stable IDs in the
   shared operation context, before claim creation or lease/response validation;
   retain current-revision snapshot reuse and terminal request replay.
+- Task 8.1 uses the existing atomic guided boundary for its initial room form:
+  a generic plan save cannot create the server-owned workflow binding. Use the
+  backend's `llm_ok` signal for the initial mode, preserve exact scene identity,
+  and freeze creation inputs while a request is pending. An unknown creation
+  outcome must not expose a fresh submission; full retry UX remains Task 8.3.
+  Independent probes also require late creation responses to respect component
+  unmount and every expert entry button to honor the same active-form exclusion.

@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 45 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 46 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -408,5 +408,12 @@ passed 2,439 Python tests and 51 privacy/control tests, strict OpenSpec validati
 and diff checks. One existing concurrent-CAS test failed in the first full run,
 then passed alone and in the final full run without weaker assertions.
 
-Task 8.1 remains pending and has not started. Later work remains outside this
-deployment; no independent review remains pending and push is outside scope.
+Task 8.1 passed independent acceptance under deployment `srsw-81-20261001`,
+using internal Codex workers on the Heavy route. Ready rooms now open a guided
+form preserving character and exact scene, with twelve photos by default,
+optional brief, and mode/workflow under Advanced. Unknown creation outcomes
+block alternative creation; late responses cannot redirect after unmount.
+Verification passed 2,439 Python tests, 450 frontend tests, frontend build,
+46 privacy/control checks, strict OpenSpec validation and diff checks. No
+independent review remains pending. Task 8.2 has not started; no push is
+authorized. Complete response-loss retry UX remains assigned to Task 8.3.

@@ -39,6 +39,13 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     input.dispatchEvent(new Event('change', { bubbles: true }))
   }
 
+  const setTextareaValue = (textarea, value) => {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    setter.call(textarea, value)
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    textarea.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+
   const typeInputValue = (input, value) => {
     expect(input.disabled).toBe(false)
     input.focus()
@@ -3985,7 +3992,7 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     expect(api.get).toHaveBeenCalledWith('/api/resources/libraries/lib_pending/translations/rows')
   })
 
-  it('3.4 presents Ready with enabled Create session when model selected, disabled without model', async () => {
+  it('8.1 opens the guided form with the selected character and ready scene without writing', async () => {
     const library = {
       id: 1,
       library_key: 'lib_ready',
@@ -4008,10 +4015,6 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       if (url === '/api/models') return [{ id: 1, name: 'Model A' }]
       return []
     })
-    vi.spyOn(api, 'post').mockImplementation(async (url) => {
-      if (url === '/api/sessions') return { id: 99, name: 'Model A - room-ready' }
-      return {}
-    })
     vi.spyOn(api, 'patch').mockResolvedValue({})
 
     await renderComponent()
@@ -4024,10 +4027,435 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     expect(createSessionBtn.disabled).toBe(false)
 
     await act(async () => { createSessionBtn.click() })
-    expect(api.post).toHaveBeenCalledWith('/api/sessions', expect.objectContaining({
-      model_id: 1,
-      composition_mode: 'resource-v1',
-    }))
+    const form = container.querySelector('[aria-label="Guided session setup"]')
+    expect(form).toBeTruthy()
+    expect(form.querySelector('#guided-character').value).toBe('1')
+    expect(form.querySelector('#guided-scene').value).toBe(JSON.stringify(['lib_ready', 'room-ready', 'r'.repeat(64)]))
+    expect(form.querySelector('#guided-photo-count').value).toBe('12')
+    expect(form.querySelector('#guided-mode').value).toBe('manual')
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: 'configured text assistant', config: { llm_ok: true }, expectedMode: 'automatic' },
+    { label: 'vision-only configuration', config: { llm_ok: false, llm_vision_model: 'vision-model' }, expectedMode: 'manual' },
+  ])('8.1 defaults to the correct mode for $label', async ({ config, expectedMode }) => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 3,
+        library_key: 'guided_rooms',
+        source_id: 'room-3',
+        content_digest: 'a'.repeat(64),
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+      auxiliary: [],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return config
+      return []
+    })
+
+    await renderComponent({ requestedModelId: '4' })
+    const open = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session')
+    await act(async () => { open.click() })
+
+    expect(container.querySelector('#guided-mode').value).toBe(expectedMode)
+    if (expectedMode === 'manual') expect(container.querySelector('a[href="#/setup"]').textContent).toBe('Configure assistant')
+    expect(api.post).not.toHaveBeenCalled()
+  })
+
+  it('8.1 sends the guided contract with the exact room identity and permits explicit automatic mode without an assistant', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 3,
+        library_key: 'guided_rooms',
+        source_id: 'room-3',
+        content_digest: 'a'.repeat(64),
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+      auxiliary: [],
+    }
+    const postCalls = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false, llm_vision_model: 'vision-model' }
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      postCalls.push([url, body])
+      if (url === '/api/sessions/guided') return { session_id: 95, plan_revision: 1, plan: {} }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    window.location.hash = ''
+
+    await renderComponent({ requestedModelId: '4' })
+    const open = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session')
+    await act(async () => { open.click() })
+    await act(async () => { container.querySelector('summary').click() })
+    await act(async () => {
+      setSelectValue(container.querySelector('#guided-mode'), 'automatic')
+      setInputValue(container.querySelector('#guided-photo-count'), '500')
+      setTextareaValue(container.querySelector('#guided-brief'), 'b'.repeat(2000))
+    })
+    expect(container.querySelector('#guided-brief').maxLength).toBe(2000)
+    const submit = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session')
+    await act(async () => { submit.click() })
+
+    expect(postCalls).toHaveLength(1)
+    expect(postCalls[0][0]).toBe('/api/sessions/guided')
+    expect(postCalls[0][1]).toEqual({
+      request_id: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
+      character_id: 4,
+      workflow_id: null,
+      scene_anchor: { library_key: 'guided_rooms', source_id: 'room-3', content_digest: 'a'.repeat(64) },
+      photo_count: 500,
+      brief: 'b'.repeat(2000),
+      mode: 'automatic',
+    })
+    expect(window.location.hash).toBe('#/session/95')
+    expect(postCalls.map(([url]) => url)).toEqual(['/api/sessions/guided'])
+  })
+
+  it.each(['0', '501', '1.5'])('8.1 refuses photo count %s before making a request', async (count) => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready' } }],
+      auxiliary: [],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    await act(async () => { setInputValue(container.querySelector('#guided-photo-count'), count) })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+    })
+    expect(api.post).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('Photo count must be an integer from 1 through 500.')
+  })
+
+  it('8.1 refuses a brief over 2,000 characters while accepting the minimum photo count', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready' } }],
+      auxiliary: [],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    await act(async () => {
+      setInputValue(container.querySelector('#guided-photo-count'), '1')
+      setTextareaValue(container.querySelector('#guided-brief'), 'b'.repeat(2001))
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+    })
+    expect(api.post).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('Brief must be 2,000 characters or fewer.')
+  })
+
+  it('8.1 disables resubmission when the guided creation outcome is unknown', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready' } }],
+      auxiliary: [],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    vi.spyOn(api, 'post').mockRejectedValue(new Error('Network disconnected'))
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    const submit = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session')
+    await act(async () => { submit.click() })
+
+    expect(container.textContent).toContain('The creation result is unknown. The server may have created this session.')
+    expect(container.querySelector('a[href="#/sessions"]')).toBeTruthy()
+    expect(submit.disabled).toBe(true)
+    expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Cancel').disabled).toBe(true)
+    expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').disabled).toBe(true)
+    await act(async () => { submit.click() })
+    expect(api.post).toHaveBeenCalledTimes(1)
+  })
+
+  it('8.1 freezes guided inputs and other creation entry points while the request is pending', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready' } }],
+      auxiliary: [],
+    }
+    let resolveGuided
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(() => new Promise((resolve) => { resolveGuided = resolve }))
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    const submit = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session')
+    await act(async () => {
+      submit.click()
+      await Promise.resolve()
+    })
+
+    expect(container.querySelector('#guided-character').disabled).toBe(true)
+    expect(container.querySelector('#guided-scene').disabled).toBe(true)
+    expect(container.querySelector('#guided-photo-count').disabled).toBe(true)
+    expect(container.querySelector('#guided-brief').disabled).toBe(true)
+    expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').disabled).toBe(true)
+    await act(async () => { resolveGuided({ session_id: 97, plan_revision: 1, plan: {} }) })
+    expect(window.location.hash).toBe('#/session/97')
+  })
+
+  it('8.1 exposes both workflow remedies and uses an explicit Advanced override', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready' } }],
+      auxiliary: [],
+    }
+    const postCalls = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: null }]
+      if (url === '/api/config') return { llm_ok: false }
+      if (url === '/api/workflows') return [{ id: 17, name: 'Workflow B' }]
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      postCalls.push([url, body])
+      if (url === '/api/sessions/guided') return { session_id: 96, plan_revision: 1, plan: {} }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    await renderComponent({ requestedModelId: '4' })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    const form = container.querySelector('[aria-label="Guided session setup"]')
+    expect(form.querySelector('a[href="#/model/4"]').textContent).toBe('Assign a character default')
+    expect(form.querySelector('button.link').textContent).toContain('choose an Advanced workflow override')
+    expect(Array.from(form.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').disabled).toBe(true)
+
+    await act(async () => { form.querySelector('button.link').click() })
+    await act(async () => { setSelectValue(form.querySelector('#guided-workflow-override'), '17') })
+    expect(Array.from(form.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').disabled).toBe(false)
+    await act(async () => {
+      Array.from(form.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+    })
+
+    expect(postCalls).toHaveLength(1)
+    expect(postCalls[0][0]).toBe('/api/sessions/guided')
+    expect(postCalls[0][1]).toMatchObject({ character_id: 4, workflow_id: 17, mode: 'manual' })
+  })
+
+  it('8.1 submits twelve photos for the selected ready room and preserves an explicit manual mode', async () => {
+    const roomLibrary = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [
+        { revision_id: 3, source_id: 'room-alpha', content_digest: 'a'.repeat(64), readiness: { status: 'ready', pending_fields: {} } },
+        { revision_id: 4, source_id: 'room-beta', content_digest: 'b'.repeat(64), readiness: { status: 'ready', pending_fields: {} } },
+        { revision_id: 5, source_id: 'room-pending', content_digest: 'c'.repeat(64), readiness: { status: 'pending', pending_fields: { scene_theme: 'Missing translation' } } },
+      ],
+      auxiliary: [],
+    }
+    const fusedLibrary = {
+      id: 2,
+      library_key: 'guided_fused',
+      display_name: 'Guided Fused',
+      kind: 'fused_scenes',
+      revisions: [{ revision_id: 6, source_id: 'fused-scene', content_digest: 'd'.repeat(64), readiness: { status: 'ready', pending_fields: {} } }],
+      auxiliary: [],
+    }
+    let resolveConfig
+    const configPromise = new Promise((resolve) => { resolveConfig = resolve })
+    const postCalls = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [roomLibrary, fusedLibrary]
+      if (url === '/api/models') return [
+        { id: 4, name: 'Character A', workflow_id: 12 },
+        { id: 5, name: 'Character B', workflow_id: 27 },
+      ]
+      if (url === '/api/config') return configPromise
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      postCalls.push([url, body])
+      if (url === '/api/sessions/guided') return { session_id: 98, plan_revision: 1, plan: {} }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    await renderComponent({ requestedModelId: '4' })
+    const roomRow = Array.from(container.querySelectorAll('tr')).find((row) => row.textContent.includes('room-alpha'))
+    await act(async () => { Array.from(roomRow.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click() })
+
+    const form = container.querySelector('[aria-label="Guided session setup"]')
+    const scene = form.querySelector('#guided-scene')
+    const roomKey = (sourceId, digest) => JSON.stringify(['guided_rooms', sourceId, digest])
+    expect(Array.from(scene.options).map((option) => option.value)).toEqual([
+      roomKey('room-alpha', 'a'.repeat(64)),
+      roomKey('room-beta', 'b'.repeat(64)),
+    ])
+    const mode = form.querySelector('#guided-mode')
+    expect(mode.disabled).toBe(true)
+    await act(async () => { form.querySelector('summary').click() })
+    await act(async () => {
+      resolveConfig({ llm_ok: true })
+      await configPromise
+    })
+    expect(mode.value).toBe('automatic')
+    expect(mode.disabled).toBe(false)
+
+    await act(async () => {
+      setSelectValue(mode, 'manual')
+      setSelectValue(form.querySelector('#guided-character'), '5')
+      setSelectValue(scene, roomKey('room-beta', 'b'.repeat(64)))
+    })
+    expect(mode.value).toBe('manual')
+    expect(form.querySelector('#guided-photo-count').value).toBe('12')
+    await act(async () => {
+      Array.from(form.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+    })
+
+    expect(postCalls).toHaveLength(1)
+    expect(postCalls[0][0]).toBe('/api/sessions/guided')
+    expect(postCalls[0][1]).toMatchObject({
+      character_id: 5,
+      workflow_id: null,
+      scene_anchor: { library_key: 'guided_rooms', source_id: 'room-beta', content_digest: 'b'.repeat(64) },
+      photo_count: 12,
+      brief: '',
+      mode: 'manual',
+    })
+    expect(window.location.hash).toBe('#/session/98')
+  })
+
+  it('8.1 keeps the current page when a guided response arrives after Resources unmounts', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready', pending_fields: {} } }],
+      auxiliary: [],
+    }
+    let resolveGuided
+    const guidedPromise = new Promise((resolve) => { resolveGuided = resolve })
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    vi.spyOn(api, 'post').mockReturnValue(guidedPromise)
+
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+      await Promise.resolve()
+    })
+
+    await act(async () => { root.unmount(); root = null })
+    window.location.hash = '#/session/76'
+    await act(async () => {
+      resolveGuided({ session_id: 99, plan_revision: 1, plan: {} })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(window.location.hash).toBe('#/session/76')
+  })
+
+  it('8.1 does not expose a second session-creation entry point after an unknown outcome', async () => {
+    const libraries = [
+      {
+        id: 1,
+        library_key: 'guided_rooms',
+        display_name: 'Guided Rooms',
+        kind: 'rooms',
+        revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready', pending_fields: {} } }],
+        auxiliary: [],
+      },
+      {
+        id: 2,
+        library_key: 'guided_fused',
+        display_name: 'Guided Fused',
+        kind: 'fused_scenes',
+        revisions: [{ revision_id: 6, source_id: 'fused-scene', content_digest: 'd'.repeat(64), readiness: { status: 'ready', pending_fields: {} } }],
+        auxiliary: [],
+      },
+    ]
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return libraries
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    vi.spyOn(api, 'post').mockRejectedValue(new Error('Network disconnected'))
+
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+    })
+
+    const fusedRow = Array.from(container.querySelectorAll('tr')).find((row) => row.textContent.includes('fused-scene'))
+    const expertButton = Array.from(fusedRow.querySelectorAll('button')).find((button) => button.textContent === 'Use advanced editor')
+    expect(expertButton.disabled).toBe(true)
   })
 
   it('6.1 keeps ready fused prose in the expert draft path without guided creation or decomposition', async () => {
@@ -4086,6 +4514,44 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       content_digest: 'f'.repeat(64),
     }])
     expect(postCalls[1][1].plan).not.toHaveProperty('authoring')
+  })
+
+  it('8.1 keeps non-room resources on the existing expert draft path', async () => {
+    const library = {
+      id: 5,
+      library_key: 'component_ready_lib',
+      display_name: 'Ready Components',
+      kind: 'component_catalogue',
+      revisions: [{
+        revision_id: 2,
+        library_key: 'component_ready_lib',
+        source_id: 'component-2',
+        content_digest: 'c'.repeat(64),
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+      auxiliary: [],
+    }
+    const postCalls = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 1, name: 'Model A', workflow_id: 7 }]
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      postCalls.push([url, body])
+      if (url === '/api/sessions') return { id: 109, name: 'Model A - component-2' }
+      if (url === '/api/sessions/109/plan') return { revision: 1 }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    await renderComponent()
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+
+    expect(postCalls.map(([url]) => url)).toEqual(['/api/sessions', '/api/sessions/109/plan'])
+    expect(postCalls[0][1]).toMatchObject({ model_id: 1, composition_mode: 'resource-v1' })
+    expect(container.querySelector('[aria-label="Guided session setup"]')).toBeNull()
   })
 
   it('6.1 sends Choose a structured scene to room choices and clears conflicting filters', async () => {

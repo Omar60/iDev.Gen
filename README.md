@@ -190,10 +190,10 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
 - **Translations & Readiness**: Preview and apply translation maps directly from
   the UI, and inspect real-time readiness status and diagnostic sidecar error banners.
   (Single-revision translation updates are available via the HTTP API, not in the Resources UI).
-- **Start Session**: Ready room revisions offer **Create session** for a
-  `resource-v1` draft bound to the explicitly chosen character model. Ready fused
-  scene revisions offer **Use advanced editor** for the existing expert draft
-  path or **Choose a structured scene** to filter the inventory to rooms.
+- **Start Session**: A ready room's **Create session** opens a guided form to
+  create a `resource-v1` draft using the selected character and exact revision.
+  Fused scenes retain **Use advanced editor** and **Choose a structured scene**;
+  other resource kinds keep their existing expert paths.
 
 For authoring-v1 plans, `GET /api/sessions/{sid}/plan` also returns a
 `shared_summary`, shown in Review before preparation. It shows saved look and
@@ -239,13 +239,23 @@ execution is implemented in the backend. See
 [authoring operation claims and controls](docs/sessions.md#authoring-operation-claims-cancellation-and-resume)
 for the request, acceptance, recovery, and response contract.
 
-From a model, **+ New session** is the normal entry to this resource-planning
-flow and keeps that model selected while the user chooses an exact `ready`
-resource revision. **Legacy session** opens the previous measured-catalogue
-composer explicitly. The API remains backward compatible: omitting
-`composition_mode` creates a legacy session, existing legacy sessions are not
-migrated, and disabling `resource_planning_enabled` leaves the legacy entry
-available.
+From a model, **+ New session** opens Resources with that model selected.
+Choosing **Create session** on a ready room opens a write-free form with the
+character and exact room revision selected, a photo count defaulting to 12 (integer
+1–500), an optional brief (up to 2,000 characters), and authoring mode and
+workflow override under **Advanced**. The mode defaults to Automatic when a
+text assistant is configured and Manual otherwise. Without one, the form links
+to **Configure assistant**, and Automatic remains selectable while synthesis is
+unavailable.
+The character's default workflow is used unless overridden; if none is set, the
+form links to assign one on the character page or choose an Advanced override.
+**Create guided session** creates the draft and opens it. If the result is
+unknown, the form blocks resubmission and links to **Sessions** to check whether
+the session was created. **Legacy session** still opens the measured-catalogue
+composer. Omitting `composition_mode` remains backward compatible and creates a
+legacy session; existing legacy sessions are not migrated, and disabling
+`resource_planning_enabled` leaves the legacy entry available. See
+[resource-based session drafts](docs/sessions.md#resource-based-session-drafts-resource-v1).
 
 ### Database backup and operational rollback
 

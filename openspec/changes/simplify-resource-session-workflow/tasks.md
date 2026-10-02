@@ -66,7 +66,7 @@
 
 ## 8. Guided creation, operation and review UI
 
-- [ ] 8.1 Show character, ready scene, default twelve-photo count and optional brief initially. Carry selections forward, default automatic only for configured text synthesis, and show workflow-required remedies; keep explicit mode and workflow override under Advanced.
+- [x] 8.1 Show character, ready scene, default twelve-photo count and optional brief initially. Carry selections forward, default automatic only for configured text synthesis, and show workflow-required remedies; keep explicit mode and workflow override under Advanced.
 - [ ] 8.2 Put raw take fields, variation locks and look/wardrobe overrides under Advanced while preserving first-class manual editing. Connect shared summary and suggestion acceptance to authoritative CAS operations.
 - [ ] 8.3 Replace sequential session/plan writes with idempotent guided creation. Reuse the same request ID while outcome is unknown, handle `201/200/409` distinctly and navigate only from the stored response.
 - [ ] 8.4 Connect Prepare/Continue/Cancel/Resume to OperationView and adopt active work from another tab. Show completed/failed/remaining, assistant-unavailable, stale, cancelled, expired and cleanup-warning states with exact next actions; never renew leases from polling.

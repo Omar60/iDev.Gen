@@ -12,6 +12,7 @@ import {
   selectAvailableModelId,
   parseTranslationPreview,
   buildTranslationMapFromRows,
+  exactRevisionTriple,
   normalizeSelectionView,
   reduceSelectionView,
   isImportEligible,
@@ -26,6 +27,17 @@ export default function Resources({ requestedModelId = '' }) {
   const [libraries, setLibraries] = useState([])
   const [models, setModels] = useState([])
   const [selectedModelId, setSelectedModelId] = useState('')
+  const [assistantConfigured, setAssistantConfigured] = useState(null)
+  const [workflows, setWorkflows] = useState([])
+  const [guidedSceneKey, setGuidedSceneKey] = useState('')
+  const [guidedCharacterId, setGuidedCharacterId] = useState('')
+  const [guidedPhotoCount, setGuidedPhotoCount] = useState('12')
+  const [guidedBrief, setGuidedBrief] = useState('')
+  const [guidedMode, setGuidedMode] = useState('')
+  const [guidedWorkflowOverrideId, setGuidedWorkflowOverrideId] = useState('')
+  const [guidedAdvancedOpen, setGuidedAdvancedOpen] = useState(false)
+  const [guidedRequestId, setGuidedRequestId] = useState('')
+  const [guidedOutcomeUnknown, setGuidedOutcomeUnknown] = useState(false)
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('all')
   const [importedIdentities, setImportedIdentities] = useState(() => new Set())
@@ -45,6 +57,7 @@ export default function Resources({ requestedModelId = '' }) {
   const epochRef = useRef(1)
   const activeSelectionIdRef = useRef(null)
   const selectionViewRef = useRef(null)
+  const guidedRequestMountedRef = useRef(true)
 
   // Legacy path import state (for compatibility)
   const [selections, setSelections] = useState([{ path: '', library_key: '' }])
@@ -448,6 +461,26 @@ export default function Resources({ requestedModelId = '' }) {
     reloadModels()
   }, [requestedModelId])
 
+  useEffect(() => {
+    guidedRequestMountedRef.current = true
+    return () => { guidedRequestMountedRef.current = false }
+  }, [])
+
+  useEffect(() => {
+    api.get('/api/config')
+      .then((config) => setAssistantConfigured(Boolean(config?.llm_ok)))
+      .catch(() => setAssistantConfigured(false))
+    api.get('/api/workflows')
+      .then((data) => setWorkflows(data || []))
+      .catch(() => setWorkflows([]))
+  }, [])
+
+  useEffect(() => {
+    if (guidedSceneKey && !guidedMode && assistantConfigured !== null) {
+      setGuidedMode(assistantConfigured ? 'automatic' : 'manual')
+    }
+  }, [guidedSceneKey, guidedMode, assistantConfigured])
+
   // Inspection drawer fetch
   const toggleDetail = async (libraryKey, revision) => {
     const key = `${libraryKey}:${revision.source_id}:${revision.content_digest}`
@@ -509,6 +542,73 @@ export default function Resources({ requestedModelId = '' }) {
     } catch (e) {
       setError(e.message)
       setBusy(false)
+    }
+  }
+
+  const openGuidedCreation = (libraryKey, revision) => {
+    const anchor = exactRevisionTriple(libraryKey, revision)
+    setGuidedSceneKey(JSON.stringify([anchor.library_key, anchor.source_id, anchor.content_digest]))
+    setGuidedCharacterId(String(selectedModelId || requestedModelId || ''))
+    setGuidedPhotoCount('12')
+    setGuidedBrief('')
+    setGuidedMode(assistantConfigured === null ? '' : assistantConfigured ? 'automatic' : 'manual')
+    setGuidedWorkflowOverrideId('')
+    setGuidedAdvancedOpen(false)
+    setGuidedRequestId(crypto.randomUUID())
+    setGuidedOutcomeUnknown(false)
+    setError('')
+  }
+
+  const submitGuidedCreation = async () => {
+    const character = models.find((model) => String(model.id) === guidedCharacterId)
+    const scene = readyRoomChoices.find((choice) => choice.key === guidedSceneKey)
+    const photoCount = Number(guidedPhotoCount)
+    const workflowOverrideId = Number(guidedWorkflowOverrideId)
+    const hasDefaultWorkflow = Number.isInteger(Number(character?.workflow_id)) && Number(character.workflow_id) > 0
+
+    if (!character || !scene || !guidedRequestId || !['automatic', 'manual'].includes(guidedMode)) {
+      setError('Choose a character, a ready scene, and an authoring mode.')
+      return
+    }
+    if (!Number.isInteger(photoCount) || photoCount < 1 || photoCount > 500) {
+      setError('Photo count must be an integer from 1 through 500.')
+      return
+    }
+    if (guidedBrief.length > 2000) {
+      setError('Brief must be 2,000 characters or fewer.')
+      return
+    }
+    if (!hasDefaultWorkflow && !(Number.isInteger(workflowOverrideId) && workflowOverrideId > 0)) {
+      setGuidedAdvancedOpen(true)
+      setError('This character needs a default workflow or an Advanced workflow override.')
+      return
+    }
+
+    setBusy(true)
+    setError('')
+    try {
+      const result = await api.post('/api/sessions/guided', {
+        request_id: guidedRequestId,
+        character_id: character.id,
+        workflow_id: guidedWorkflowOverrideId ? workflowOverrideId : null,
+        scene_anchor: exactRevisionTriple(scene.libraryKey, scene.revision),
+        photo_count: photoCount,
+        brief: guidedBrief,
+        mode: guidedMode,
+      })
+      if (!guidedRequestMountedRef.current) return
+      if (!Number.isInteger(result?.session_id) || result.session_id <= 0) {
+        setGuidedOutcomeUnknown(true)
+        setError('The server response did not include a session ID. Check Sessions before starting another session.')
+        return
+      }
+      go(`/session/${result.session_id}`)
+    } catch (e) {
+      if (!guidedRequestMountedRef.current) return
+      setError(e.message)
+      setGuidedOutcomeUnknown(!Number.isInteger(e.status) || e.status >= 500)
+    } finally {
+      if (guidedRequestMountedRef.current) setBusy(false)
     }
   }
 
@@ -918,6 +1018,22 @@ export default function Resources({ requestedModelId = '' }) {
 
   const categories = extractCategories(libraries)
   const filteredLibraries = filterLibraries(libraries, { query, category })
+  const readyRoomChoices = libraries.flatMap((library) => library.kind === 'rooms'
+    ? (library.revisions || []).filter((revision) => checkReadiness(revision, { kind: library.kind }).isReady).map((revision) => {
+      const anchor = exactRevisionTriple(library.library_key, revision)
+      return {
+        key: JSON.stringify([anchor.library_key, anchor.source_id, anchor.content_digest]),
+        libraryKey: library.library_key,
+        label: `${library.display_name || library.library_key} · ${revision.source_id}`,
+        revision,
+      }
+    })
+    : [])
+  const guidedCharacter = models.find((model) => String(model.id) === guidedCharacterId)
+  const guidedCharacterHasDefaultWorkflow = Number.isInteger(Number(guidedCharacter?.workflow_id))
+    && Number(guidedCharacter.workflow_id) > 0
+  const guidedHasWorkflow = guidedCharacterHasDefaultWorkflow
+    || (Number.isInteger(Number(guidedWorkflowOverrideId)) && Number(guidedWorkflowOverrideId) > 0)
 
   const canImport = isImportEligible(selectionView, { activeSelectionId, pendingMutation: busy })
   const previewReport = selectionView?.preview ? parsePreviewSummary(selectionView.preview) : null
@@ -927,6 +1043,153 @@ export default function Resources({ requestedModelId = '' }) {
     <>
       {error && <div className="error">{error}</div>}
       {notice && <div className="panel" style={{ marginBottom: 12, borderColor: 'var(--accent)' }}>{notice}</div>}
+
+      {guidedSceneKey && (
+        <section className="panel" aria-label="Guided session setup" style={{ marginBottom: 14 }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2 style={{ margin: 0 }}>Start a guided session</h2>
+            <button
+              type="button"
+              disabled={busy || guidedOutcomeUnknown}
+              onClick={() => {
+                setGuidedSceneKey('')
+                setGuidedRequestId('')
+                setGuidedOutcomeUnknown(false)
+                setError('')
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+          <div className="grid-form" style={{ marginTop: 12 }}>
+            <div>
+              <label htmlFor="guided-character">Character</label>
+              <select
+                id="guided-character"
+                value={guidedCharacterId}
+                onChange={(event) => {
+                  setGuidedCharacterId(event.target.value)
+                  setGuidedWorkflowOverrideId('')
+                }}
+                disabled={busy || guidedOutcomeUnknown}
+                required
+              >
+                <option value="">Choose a character</option>
+                {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="guided-scene">Ready scene</label>
+              <select
+                id="guided-scene"
+                value={guidedSceneKey}
+                onChange={(event) => setGuidedSceneKey(event.target.value)}
+                disabled={busy || guidedOutcomeUnknown}
+                required
+              >
+                {readyRoomChoices.map((choice) => <option key={choice.key} value={choice.key}>{choice.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="guided-photo-count">Photo count</label>
+              <input
+                id="guided-photo-count"
+                type="number"
+                min="1"
+                max="500"
+                step="1"
+                required
+                value={guidedPhotoCount}
+                onChange={(event) => setGuidedPhotoCount(event.target.value)}
+                disabled={busy || guidedOutcomeUnknown}
+              />
+            </div>
+            <div>
+              <label htmlFor="guided-brief">Brief (optional)</label>
+              <textarea
+                id="guided-brief"
+                maxLength={2000}
+                value={guidedBrief}
+                onChange={(event) => setGuidedBrief(event.target.value)}
+                disabled={busy || guidedOutcomeUnknown}
+              />
+            </div>
+          </div>
+
+          {assistantConfigured === false && (
+            <p className="muted">
+              Manual is the default without a configured text assistant. <a href="#/setup">Configure assistant</a>.
+            </p>
+          )}
+          {assistantConfigured === null && <p className="muted">Checking assistant configuration…</p>}
+          {guidedCharacter && !guidedCharacterHasDefaultWorkflow && !guidedWorkflowOverrideId && (
+            <div className="error" role="alert">
+              This character has no default workflow. <a href={`#/model/${guidedCharacter.id}`}>Assign a character default</a> or{' '}
+              <button type="button" className="link" onClick={() => setGuidedAdvancedOpen(true)}>
+                choose an Advanced workflow override
+              </button>.
+            </div>
+          )}
+
+          <details open={guidedAdvancedOpen} onToggle={(event) => setGuidedAdvancedOpen(event.currentTarget.open)}>
+            <summary>Advanced</summary>
+            <div className="grid-form" style={{ marginTop: 10 }}>
+              <div>
+                <label htmlFor="guided-mode">Authoring mode</label>
+                <select
+                  id="guided-mode"
+                  value={guidedMode}
+                  onChange={(event) => setGuidedMode(event.target.value)}
+                  disabled={assistantConfigured === null || busy || guidedOutcomeUnknown}
+                >
+                  {!guidedMode && <option value="" disabled>Checking assistant configuration…</option>}
+                  <option value="automatic">Automatic</option>
+                  <option value="manual">Manual</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="guided-workflow-override">Workflow override</label>
+                <select
+                  id="guided-workflow-override"
+                  value={guidedWorkflowOverrideId}
+                  onChange={(event) => setGuidedWorkflowOverrideId(event.target.value)}
+                  disabled={busy || guidedOutcomeUnknown}
+                >
+                  <option value="">{guidedCharacterHasDefaultWorkflow ? 'Use character default' : 'Choose an override'}</option>
+                  {workflows.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}
+                </select>
+                <p className="muted" style={{ margin: '4px 0 0' }}>
+                  {guidedCharacterHasDefaultWorkflow
+                    ? 'The selected character default is used unless you choose an override.'
+                    : guidedWorkflowOverrideId
+                      ? 'The selected workflow override will be used.'
+                      : 'No character default is assigned. Choose an override or assign a default on the character page.'}
+                </p>
+                {workflows.length === 0 && <p className="muted">No workflows are available. <a href="#/workflows">Open Workflows</a>.</p>}
+              </div>
+            </div>
+            {guidedMode === 'automatic' && assistantConfigured === false && (
+              <p className="muted">This automatic draft is valid, but synthesis is unavailable until a text assistant is configured.</p>
+            )}
+          </details>
+
+          {guidedOutcomeUnknown && (
+            <div className="error" role="alert">
+              The creation result is unknown. The server may have created this session. Check <a href="#/sessions">Sessions</a>; this form cannot submit again.
+            </div>
+          )}
+          <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || guidedOutcomeUnknown || !guidedCharacter || !guidedHasWorkflow || !guidedMode || assistantConfigured === null}
+              onClick={submitGuidedCreation}
+            >
+              {busy ? 'Creating…' : 'Create guided session'}
+            </button>
+          </div>
+        </section>
+      )}
 
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
         <div>
@@ -1094,7 +1357,7 @@ export default function Resources({ requestedModelId = '' }) {
                                         <>
                                           <button
                                             className="primary"
-                                            disabled={busy || !selectedModelId}
+                                            disabled={busy || !selectedModelId || Boolean(guidedSceneKey) || guidedOutcomeUnknown}
                                             title={
                                               !selectedModelId
                                                 ? 'Select a model to open the advanced editor'
@@ -1115,13 +1378,15 @@ export default function Resources({ requestedModelId = '' }) {
                                       ) : (
                                         <button
                                           className="primary"
-                                          disabled={busy || !selectedModelId}
+                                          disabled={busy || !selectedModelId || Boolean(guidedSceneKey) || guidedOutcomeUnknown}
                                           title={
                                             !selectedModelId
                                               ? 'Select a model to create a session'
                                               : 'Create a resource-v1 session draft with this exact revision'
                                           }
-                                          onClick={() => startSessionWithRevision(lib.library_key, rev)}
+                                          onClick={() => lib.kind === 'rooms'
+                                            ? openGuidedCreation(lib.library_key, rev)
+                                            : startSessionWithRevision(lib.library_key, rev)}
                                         >
                                           {readiness.primaryAction?.label || 'Create session'}
                                         </button>

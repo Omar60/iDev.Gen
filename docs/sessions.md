@@ -1528,9 +1528,27 @@ cleaner when it is one or the other.
 ## Resource-based session drafts (resource-v1)
 
 **+ New session** from a model opens the **Resources** browser with that model
-preselected. The user then chooses an exact accepted revision marked `ready`
-and starts a `resource-v1` draft. Direct navigation to `#/resources` remains
-available and selects an existing model when possible.
+selected. For a ready room, **Create session** opens a write-free guided form
+with the character and exact room revision selected. It accepts a photo count
+(default 12, integer 1–500) and optional brief (up to 2,000 characters); the
+**Advanced** section exposes authoring mode and workflow override. Direct
+navigation to `#/resources` remains available and selects an existing model
+when possible. This guided path is for ready rooms; fused scenes and other
+resource kinds retain their existing expert paths.
+
+Authoring mode defaults to Automatic when a text assistant is configured and
+Manual otherwise. Without an assistant, the form links to **Configure assistant**;
+Automatic can still be selected, but synthesis is unavailable until one is
+configured. The character's default workflow is used unless overridden. If no
+default exists, the form links to assign one on the character page or choose an
+Advanced override.
+
+The form makes no server writes until **Create guided session**. That action
+creates the draft through the guided-session endpoint and opens the returned
+session. It does not prepare or approve prompts, submit takes, or start
+generation. If the creation result is unknown, the form blocks another
+submission and links to **Sessions** to check; it offers no retry from that
+state.
 
 The explicit **Legacy session** action opens the previous measured-catalogue
 composer. The API contract also remains backward compatible: a create payload
