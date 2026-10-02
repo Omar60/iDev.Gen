@@ -2,51 +2,66 @@
 
 ## Current State
 
-OpenSpec Task 8.1 of `simplify-resource-session-workflow` passed independent
-acceptance under deployment `srsw-81-20261001` using internal Codex workers
-on the Heavy route. Only Task 8.1 is newly marked complete; progress is 46 of
+OpenSpec Task 8.2 of `simplify-resource-session-workflow` passed independent
+acceptance under deployment `srw-8-2-20261002`, using internal Codex workers
+on the Heavy route. Only Task 8.2 is newly marked complete; progress is 47 of
 72 tasks. The initial working tree was clean on `main`.
 
 ## Accepted Behavior
 
-Ready room revisions open a write-free guided form carrying the selected
-character and exact scene triple. The initial authoring inputs are character,
-ready scene, photo count defaulting to twelve (integer 1-500), and optional
-brief capped at 2,000 characters. Authoring mode and workflow override live
-under Advanced. The backend's `llm_ok` signal chooses Automatic when configured
-and Manual otherwise; explicit Automatic remains valid without an assistant.
-Missing workflow offers assigning a character default or choosing an override.
+Guided creation and session editing expose shared look/wardrobe overrides and
+the complete four-dimension fixed/vary policy under Advanced. Fixed choices
+require explicit values. Raw take fields are under an Advanced disclosure,
+open by default for Manual and older plans, preserving direct manual editing.
 
-Creation reuses the existing atomic guided endpoint and navigates from its
-returned session ID. It does not call the assistant, prepare, approve, submit
-or run takes. Pending inputs are frozen. Unknown outcomes block all creation
-entry points in the current view and direct the user to Sessions. Responses
-arriving after Resources unmounts cannot redirect the current page. Fused and
-other expert resource paths remain available outside an active guided form.
+The saved shared summary is visible before preparation, including effective
+values, origins and complete authorized scene descriptions. Optional automatic
+shared suggestions remain editable proposals until explicit operation CAS
+acceptance; an identical acceptance retries its stored result after response
+loss. Accepted values and evidence are reloaded from the authoritative plan.
+The additive plan-save `shared_decisions` list records unchanged empty fields
+as explicit user choices in either authoring mode without an assistant. It
+preserves strict validation, metadata ownership and stale-CAS zero writes.
+
+Pending shared writes protect local edits. Live session epochs fence late
+responses, including reload continuations. Unknown-result readback checks both
+effective value and origin before reporting that an empty choice is saved.
+Suggestions and acceptance never prepare, approve, submit or run takes.
 
 ## Independent Verification
 
-The complete Python suite passed 2,439 tests with five warnings.
-The final frontend suite passed 450 tests in twelve files; its production build
-passed with the existing bundle-size warning (571.54 kB). Final privacy/control
-checks passed 46 tests with one warning. Strict OpenSpec validation and
+The independent complete Python suite passed 2,456 tests with five warnings.
+The final frontend suite passed 461 tests in thirteen files, and the production
+build passed with the existing bundle-size warning (586.17 kB). Final
+privacy/control checks passed 46 tests. Strict OpenSpec validation and
 `git diff --check` passed.
 
-Three independent component probes supplement implementation tests. They verify
-manual mode with a configured assistant, default twelve photos and changed exact
-scene/character selection; late-response navigation after unmount; and expert
-entry exclusion after an unknown outcome. The latter two failed before repair
-and passed afterward. The Python suite preceded the frontend-only repair;
-frontend, build and privacy/control gates cover the repaired source.
+Eleven independent backend probes and nine React component probes cover both
+authoring modes, CAS and metadata boundaries, pending proposals, acceptance
+retry, Advanced controls and stale responses. Three probes initially failed:
+an edit lost during an empty-choice CAS, a stale notice after changing sessions,
+and a false success notice after another tab replaced an empty decision.
+All three passed after repair. The full Python gate precedes the final
+frontend-only repair; fresh frontend/build/privacy gates cover the final source.
 
-Interactions were verified through React in happy-dom and backend TestClient,
-not a manual browser walkthrough. Complete retry/status UX remains Task 8.3;
-broader browser walkthrough acceptance remains Task 8.6.
+## Changed Files
+
+- `backend/main.py` and `backend/session_plan.py`: explicit empty-decision CAS.
+- `frontend/src/sessionPlan.js` and `frontend/src/views/SessionView.jsx`:
+  CAS payloads, Advanced editing, summaries, suggestion acceptance and guards.
+- `frontend/src/views/Resources.jsx`: guided Advanced policy and overrides.
+- `frontend/src/sessionPlan.test.js`, `frontend/src/views/Resources.test.jsx`
+  and `tests/test_authoring_operation_api.py`: implementation regressions.
+- `frontend/src/task8_2_independent.test.jsx` and
+  `tests/test_task_8_2_independent.py`: independent acceptance probes.
+- `README.md` and `docs/sessions.md`: verified UI/API behavior and limitations.
+- The three deployment-state documents and the Task 8.2 checkbox in
+  `openspec/changes/simplify-resource-session-workflow/tasks.md`.
 
 ## Closure and Continuation
 
-The accepted scope comprises Resources UI and component tests, README and the
-session guide, these deployment-state documents and the Task 8.1 checkbox.
 The user authorized the acceptance commit. No independent review remains
-pending, no next task has started, and no push is authorized. Task 8.2 is the
-next pending item and requires a separate instruction.
+pending, no next task has started, and no push is authorized. Task 8.3 is the
+next pending item and requires a separate instruction. Automatic preparation
+UI controls remain Task 8.4. Verification used React components and backend
+TestClient, not the broader browser walkthrough assigned to Task 8.6.

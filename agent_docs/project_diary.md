@@ -525,3 +525,9 @@
   outcome must not expose a fresh submission; full retry UX remains Task 8.3.
   Independent probes also require late creation responses to respect component
   unmount and every expert entry button to honor the same active-form exclusion.
+- Task 8.2 keeps explicit empty choices in the existing plan CAS through a
+  strict intent list, without accepting invented origin metadata. Pending
+  shared writes must protect edits, and each asynchronous continuation must
+  check the live session epoch. Readback after response loss must confirm both
+  effective value and origin before reporting success; independent interleaving
+  probes caught edit loss, a cross-session notice and a false empty-choice notice.

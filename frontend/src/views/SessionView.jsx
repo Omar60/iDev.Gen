@@ -203,12 +203,33 @@ export default function SessionView({
 
   const [plan, setPlan] = useState(initialPlan)
   const [planRevision, setPlanRevision] = useState(initialRevision)
+  const planRevisionRef = useRef(initialRevision)
+  planRevisionRef.current = planRevision
   const [planConflicts, setPlanConflicts] = useState(initialConflicts)
   const [planPreparation, setPlanPreparation] = useState(initialPreparation)
   const [sharedSummary, setSharedSummary] = useState(initialSharedSummary)
+  const [sharedOperation, setSharedOperation] = useState(null)
+  const [sharedProposalDrafts, setSharedProposalDrafts] = useState({})
+  const [sharedActionError, setSharedActionError] = useState('')
+  const [sharedActionNotice, setSharedActionNotice] = useState('')
+  const [sharedStartBusy, setSharedStartBusy] = useState(false)
+  const [sharedStartUnknown, setSharedStartUnknown] = useState(false)
+  const [sharedAcceptBusy, setSharedAcceptBusy] = useState(false)
+  const [sharedAcceptUnknown, setSharedAcceptUnknown] = useState(false)
+  const [manualDecisionBusy, setManualDecisionBusy] = useState(false)
+  const [expandedTakeFields, setExpandedTakeFields] = useState({})
   const [planDirty, setPlanDirty] = useState(false)
   const planDirtyRef = useRef(false)
   planDirtyRef.current = planDirty
+  const sharedOperationRef = useRef(null)
+  sharedOperationRef.current = sharedOperation
+  const sharedOperationEpochRef = useRef(0)
+  const sharedStartRequestRef = useRef(null)
+  const sharedAcceptanceRequestRef = useRef(null)
+  const sessionViewMountedRef = useRef(false)
+  const sessionViewEpochRef = useRef(0)
+  const sessionViewIdRef = useRef(id)
+  sessionViewIdRef.current = id
   const [planNotice, setPlanNotice] = useState('')
   const [activeStep, setActiveStep] = useState(initialActiveStep)
   const [reviewedRevision, setReviewedRevision] = useState(initialReviewedRevision)
@@ -238,14 +259,26 @@ export default function SessionView({
   }
 
   const isResource = isResourceSession(s)
+  const sharedAcceptancePending = sharedAcceptBusy || sharedAcceptUnknown
+  const planEditLocked = manualDecisionBusy || sharedAcceptancePending
+  const isCurrentSessionRequest = (sessionId, requestEpoch) => (
+    sessionViewMountedRef.current
+    && sessionViewEpochRef.current === requestEpoch
+    && String(sessionViewIdRef.current) === String(sessionId)
+  )
   const reviewBlocksFinalization = hasKnownStaleAdaptations
     || planReviewStatus === 'error'
     || (isResource && activeStep === 'review' && planReviewStatus !== 'ready')
 
-  const reload = () => api.get(`/api/sessions/${id}`).then((data) => {
+  const reload = () => {
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    return api.get(`/api/sessions/${sessionId}`).then((data) => {
+    if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
     setS(data)
     if (isResourceSession(data)) {
-      loadSessionPlan(id, api).then((res) => {
+      loadSessionPlan(sessionId, api).then((res) => {
+        if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
         if (res.ok) {
           if (typeof res.planRevision !== 'number' || res.planRevision < 0) {
             setPlan(null)
@@ -258,6 +291,9 @@ export default function SessionView({
             setTakeReviewData({})
             setError('Loaded draft missing valid plan_revision from backend')
             return
+          }
+          if (!planDirtyRef.current && planRevisionRef.current !== res.planRevision) {
+            resetSharedOperation()
           }
           setPlan((prev) => (planDirtyRef.current && prev ? prev : res.plan))
           setPlanRevision((prev) => (planDirtyRef.current && prev !== null ? prev : res.planRevision))
@@ -284,6 +320,7 @@ export default function SessionView({
           setError(res.error)
         }
       }).catch((e) => {
+        if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
         setPlan(null)
         setPlanRevision(null)
         setPlanConflicts([])
@@ -296,29 +333,390 @@ export default function SessionView({
         setError(e?.message || 'Failed to load plan')
       })
     }
-  }).catch((e) => setError(e.message))
+    }).catch((e) => {
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) setError(e.message)
+    })
+  }
 
-  const savePlan = async () => {
+  const resetSharedOperation = () => {
+    sharedOperationEpochRef.current += 1
+    sharedOperationRef.current = null
+    sharedStartRequestRef.current = null
+    sharedAcceptanceRequestRef.current = null
+    setSharedOperation(null)
+    setSharedProposalDrafts({})
+    setSharedStartBusy(false)
+    setSharedStartUnknown(false)
+    setSharedAcceptBusy(false)
+    setSharedAcceptUnknown(false)
+  }
+
+  const adoptAuthoritativePlan = (loaded, session) => {
+    if (!loaded?.ok || planDirtyRef.current) return false
+    if (planRevisionRef.current !== loaded.planRevision) resetSharedOperation()
+    setPlan(loaded.plan)
+    setPlanRevision(loaded.planRevision)
+    planRevisionRef.current = loaded.planRevision
+    setPlanConflicts(loaded.conflicts || [])
+    setPlanPreparation(loaded.preparation || null)
+    setSharedSummary(loaded.sharedSummary || null)
+    setPlanDirty(false)
+    planDirtyRef.current = false
+    setReviewedRevision(loaded.reviewedRevision ?? null)
+    setSelectedTakeIds(new Set())
+    setTakeReviewData({})
+    setPlanReviewStatus('idle')
+    if (session) setS(session)
+    return true
+  }
+
+  const reloadAuthoritativePlan = async (
+    sessionId,
+    minimumRevision = 0,
+    expectedSessionEpoch = sessionViewEpochRef.current,
+  ) => {
+    const [sessionResult, loaded] = await Promise.all([
+      api.get(`/api/sessions/${sessionId}`),
+      loadSessionPlan(sessionId, api),
+    ])
+    if (!isCurrentSessionRequest(sessionId, expectedSessionEpoch)) return false
+    if (!loaded.ok || loaded.planRevision < minimumRevision) {
+      setSharedActionError(loaded.error || 'The saved plan could not be reloaded at its accepted revision.')
+      return false
+    }
+    if (planDirtyRef.current) {
+      setSharedActionError('The saved plan changed while this draft has unsaved edits. Reload the saved plan before continuing.')
+      return false
+    }
+    return adoptAuthoritativePlan(loaded, sessionResult) ? loaded : false
+  }
+
+  const applySharedOperationView = (view) => {
+    sharedOperationRef.current = view
+    setSharedOperation(view)
+    if (view?.kind === 'shared_suggestions' && view.state === 'succeeded') {
+      const requested = Array.isArray(view.progress?.requested) ? view.progress.requested : []
+      const items = Array.isArray(view.result?.items) ? view.result.items : []
+      const drafts = {}
+      let valid = requested.length > 0
+        && requested.every((target) => ['look', 'initial_wardrobe'].includes(target))
+        && new Set(requested).size === requested.length
+        && items.length === requested.length
+      for (const item of items) {
+        if (
+          !item || !['look', 'initial_wardrobe'].includes(item.target)
+          || !requested.includes(item.target) || typeof item.result !== 'string'
+          || Object.prototype.hasOwnProperty.call(drafts, item.target)
+        ) {
+          valid = false
+          break
+        }
+        drafts[item.target] = item.result
+      }
+      if (valid && requested.some((target) => !Object.prototype.hasOwnProperty.call(drafts, target))) {
+        valid = false
+      }
+      if (valid) setSharedProposalDrafts(drafts)
+      else {
+        setSharedProposalDrafts({})
+        setSharedActionError('The saved shared suggestion result is incomplete or invalid. Reload the plan before continuing.')
+      }
+    } else {
+      setSharedProposalDrafts({})
+    }
+  }
+
+  const savePlan = async ({ sharedDecisions = null } = {}) => {
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    const explicitDecision = Boolean(sharedDecisions?.length)
+    if (explicitDecision && manualDecisionBusy) return
+    if (planEditLocked) {
+      setSharedActionError('Wait for the pending shared-choice operation to finish before editing the plan.')
+      return
+    }
     if (!plan || planRevision === null) {
       setError('Cannot save plan: no valid plan draft loaded')
       return
     }
-    const res = await executeSavePlan(id, plan, planRevision, api)
-    if (res.ok) {
-      setPlanRevision(res.planRevision)
-      setPlanConflicts(res.conflicts)
-      setPlanDirty(false)
-      setReviewedRevision(null)
-      setSelectedTakeIds(new Set())
-      setTakeReviewData({})
-      setPlanReviewStatus('idle')
-      setPlanNotice(`Plan saved (revision ${res.planRevision})`)
-      setTimeout(() => setPlanNotice(''), 4000)
-      reload()
-    } else {
-      setError(res.error)
+    if (sharedDecisions?.length && planDirtyRef.current) {
+      setSharedActionError('Save or discard the draft before recording an empty shared choice.')
+      return
+    }
+    const previousRevision = planRevisionRef.current
+    if (explicitDecision) setManualDecisionBusy(true)
+    try {
+      const res = await executeSavePlan(sessionId, plan, planRevision, api, sharedDecisions)
+      if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+      if (res.ok) {
+        setPlanRevision(res.planRevision)
+        planRevisionRef.current = res.planRevision
+        setPlanConflicts(res.conflicts)
+        setPlanDirty(false)
+        planDirtyRef.current = false
+        setReviewedRevision(null)
+        setSelectedTakeIds(new Set())
+        setTakeReviewData({})
+        setPlanReviewStatus('idle')
+        setPlanNotice(`Plan saved (revision ${res.planRevision})`)
+        setError('')
+        setTimeout(() => setPlanNotice(''), 4000)
+        if (res.planRevision !== previousRevision) {
+          resetSharedOperation()
+        }
+        if (explicitDecision) {
+          const refreshed = await reloadAuthoritativePlan(sessionId, res.planRevision, requestEpoch)
+          if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+          if (refreshed) setSharedActionNotice('The empty shared choice was saved in the authoritative plan.')
+        } else {
+          reload()
+        }
+      } else {
+        setError(res.error)
+        setSharedActionError(res.error)
+        if (res.status === 409 && !planDirtyRef.current) {
+          try {
+            const loaded = await reloadAuthoritativePlan(sessionId, 0, requestEpoch)
+            if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+            if (
+              explicitDecision && loaded
+              && sharedDecisions.every((field) => (
+                loaded.plan?.[field] === ''
+                && loaded.plan?.authoring?.shared_state?.[field]?.origin === 'user'
+              ))
+            ) {
+              setSharedActionNotice('The empty shared choice is saved in the authoritative plan.')
+              setSharedActionError('')
+              setError('')
+            }
+          } catch { /* Keep the local draft and show the CAS error. */ }
+        } else if (explicitDecision && (!res.status || res.status >= 500)) {
+          try {
+            const refreshed = await reloadAuthoritativePlan(sessionId, 0, requestEpoch)
+            if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+            if (
+              refreshed && sharedDecisions.every((field) => (
+                refreshed.plan?.[field] === ''
+                && refreshed.plan?.authoring?.shared_state?.[field]?.origin === 'user'
+              ))
+            ) {
+              setSharedActionNotice('The empty shared choice was saved in the authoritative plan.')
+              setSharedActionError('')
+              setError('')
+            }
+          } catch { /* The visible message keeps the unresolved outcome explicit. */ }
+        }
+      }
+    } catch (e) {
+      if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+      setError(e?.message || 'Failed to save plan draft')
+      setSharedActionError(e?.message || 'Failed to save plan draft')
+    } finally {
+      if (explicitDecision && isCurrentSessionRequest(sessionId, requestEpoch)) setManualDecisionBusy(false)
     }
   }
+
+  const startSharedSuggestions = async () => {
+    if (!plan?.authoring || planDirtyRef.current || typeof planRevisionRef.current !== 'number') return
+    if (sharedOperationRef.current && ['active', 'cancel_requested'].includes(sharedOperationRef.current.state)) return
+    const current = sharedStartRequestRef.current
+    const retryUnknown = sharedStartUnknown && current && current.expected_revision === planRevisionRef.current
+    if (!retryUnknown) resetSharedOperation()
+    const request = retryUnknown
+      ? current
+      : {
+          request_id: crypto.randomUUID(),
+          expected_revision: planRevisionRef.current,
+          kind: 'shared_suggestions',
+        }
+    sharedStartRequestRef.current = request
+    const operationEpoch = ++sharedOperationEpochRef.current
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    setSharedStartBusy(true)
+    setSharedActionError('')
+    setSharedActionNotice('')
+    try {
+      const view = await api.post(`/api/sessions/${sessionId}/plan/authoring/operations`, request)
+      if (
+        !isCurrentSessionRequest(sessionId, requestEpoch)
+        || operationEpoch !== sharedOperationEpochRef.current
+      ) return
+      if (!view || typeof view.operation_id !== 'string' || view.plan_revision !== request.expected_revision) {
+        setSharedStartUnknown(true)
+        setSharedActionError('The suggestion start result is unknown. Retry to check the same operation.')
+        return
+      }
+      if (planRevisionRef.current !== request.expected_revision) {
+        sharedStartRequestRef.current = null
+        setSharedStartUnknown(false)
+        setSharedActionError('The saved plan changed before the suggestion operation was confirmed. Reload the current plan before continuing.')
+        return
+      }
+      setSharedStartUnknown(false)
+      applySharedOperationView(view)
+    } catch (e) {
+      if (
+        !isCurrentSessionRequest(sessionId, requestEpoch)
+        || operationEpoch !== sharedOperationEpochRef.current
+      ) return
+      const activeOperation = e?.detail?.operation
+      if (activeOperation && typeof activeOperation.operation_id === 'string') {
+        if (activeOperation.plan_revision === request.expected_revision) {
+          setSharedStartUnknown(false)
+          applySharedOperationView(activeOperation)
+          setSharedActionError(e?.message || 'Another authoring operation is active for this session.')
+          return
+        }
+      }
+      if (e?.detail?.code === 'plan_revision_stale') {
+        sharedStartRequestRef.current = null
+        setSharedStartUnknown(false)
+        setSharedActionError(e.message)
+        if (!planDirtyRef.current) {
+          try { await reloadAuthoritativePlan(sessionId, 0, requestEpoch) } catch { /* The stale CAS message remains visible. */ }
+        }
+      } else if (!e?.status || e.status >= 500) {
+        setSharedStartUnknown(true)
+        setSharedActionError('The suggestion start result is unknown. Retry to check the same operation.')
+      } else {
+        setSharedStartUnknown(false)
+        setSharedActionError(e?.message || 'Shared suggestions could not be started.')
+      }
+    } finally {
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) setSharedStartBusy(false)
+    }
+  }
+
+  const acceptSharedSuggestions = async () => {
+    let pending = sharedAcceptanceRequestRef.current
+    if (!pending) {
+      const operation = sharedOperationRef.current
+      if (
+        !operation || operation.kind !== 'shared_suggestions' || operation.state !== 'succeeded'
+        || planDirtyRef.current || operation.plan_revision !== planRevisionRef.current
+      ) return
+      const accepted = {}
+      for (const item of operation.result?.items || []) {
+        if (
+          item && ['look', 'initial_wardrobe'].includes(item.target)
+          && Object.prototype.hasOwnProperty.call(sharedProposalDrafts, item.target)
+        ) accepted[item.target] = sharedProposalDrafts[item.target]
+      }
+      if (!Object.keys(accepted).length) {
+        setSharedActionError('Edit at least one proposed shared choice before accepting it.')
+        return
+      }
+      pending = {
+        operationId: operation.operation_id,
+        body: { expected_revision: operation.plan_revision, accepted },
+      }
+      sharedAcceptanceRequestRef.current = pending
+    }
+
+    const operationEpoch = ++sharedOperationEpochRef.current
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    setSharedAcceptBusy(true)
+    setSharedAcceptUnknown(false)
+    setSharedActionError('')
+    setSharedActionNotice('')
+    try {
+      const result = await api.post(
+        `/api/sessions/${sessionId}/plan/authoring/operations/${encodeURIComponent(pending.operationId)}/accept`,
+        pending.body,
+      )
+      if (
+        !isCurrentSessionRequest(sessionId, requestEpoch)
+        || operationEpoch !== sharedOperationEpochRef.current
+      ) return
+      if (!Number.isInteger(result?.plan_revision) || result.plan_revision <= pending.body.expected_revision) {
+        setSharedAcceptUnknown(true)
+        setSharedActionError('The acceptance result is unknown. Retry the same acceptance to check its saved result.')
+        return
+      }
+      sharedAcceptanceRequestRef.current = null
+      setSharedAcceptUnknown(false)
+      const reloaded = await reloadAuthoritativePlan(sessionId, result.plan_revision, requestEpoch)
+      if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+      if (reloaded) {
+        setSharedActionNotice('Accepted shared choices were reloaded from the saved plan.')
+      } else {
+        setSharedActionError((current) => current || 'Acceptance succeeded, but the authoritative plan must be reloaded before continuing.')
+      }
+    } catch (e) {
+      if (
+        !isCurrentSessionRequest(sessionId, requestEpoch)
+        || operationEpoch !== sharedOperationEpochRef.current
+      ) return
+      if (!e?.status || e.status >= 500) {
+        setSharedAcceptUnknown(true)
+        setSharedActionError('The acceptance result is unknown. Retry the same acceptance to check its saved result.')
+      } else {
+        sharedAcceptanceRequestRef.current = null
+        setSharedAcceptUnknown(false)
+        setSharedActionError(e?.message || 'Shared suggestions were not accepted.')
+        if (e?.detail?.code === 'plan_revision_stale' && !planDirtyRef.current) {
+          try { await reloadAuthoritativePlan(sessionId, 0, requestEpoch) } catch { /* The stale revision remains visible. */ }
+        }
+      }
+    } finally {
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) setSharedAcceptBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    sessionViewEpochRef.current += 1
+    sessionViewMountedRef.current = true
+    resetSharedOperation()
+    setManualDecisionBusy(false)
+    setSharedActionError('')
+    setSharedActionNotice('')
+    setExpandedTakeFields({})
+    return () => {
+      sessionViewMountedRef.current = false
+      sessionViewEpochRef.current += 1
+      sharedOperationEpochRef.current += 1
+    }
+  }, [id])
+
+  useEffect(() => {
+    const operation = sharedOperation
+    if (!operation || !['active', 'cancel_requested'].includes(operation.state)) return undefined
+    const sessionId = id
+    const operationId = operation.operation_id
+    const operationEpoch = sharedOperationEpochRef.current
+    let current = true
+    let timer = null
+    const poll = async () => {
+      try {
+        const view = await api.get(
+          `/api/sessions/${sessionId}/plan/authoring/operations/${encodeURIComponent(operationId)}`,
+        )
+        if (
+          !current || !sessionViewMountedRef.current || String(id) !== String(sessionId)
+          || operationEpoch !== sharedOperationEpochRef.current
+        ) return
+        setSharedActionError('')
+        if (view.plan_revision !== planRevisionRef.current) {
+          setSharedActionError('This operation belongs to an older plan revision. Reload the saved plan before continuing.')
+          resetSharedOperation()
+          return
+        }
+        applySharedOperationView(view)
+        if (['active', 'cancel_requested'].includes(view.state)) timer = window.setTimeout(poll, 1200)
+      } catch (e) {
+        if (!current || !sessionViewMountedRef.current || operationEpoch !== sharedOperationEpochRef.current) return
+        setSharedActionError(e?.message || 'Could not read authoring operation status.')
+        timer = window.setTimeout(poll, 2000)
+      }
+    }
+    timer = window.setTimeout(poll, 900)
+    return () => {
+      current = false
+      if (timer !== null) window.clearTimeout(timer)
+    }
+  }, [id, sharedOperation?.operation_id, sharedOperation?.state])
 
   const handleToggleTakeSelect = (takeId) => {
     setSelectedTakeIds((prev) => {
@@ -882,6 +1280,43 @@ export default function SessionView({
     tags: tags.filter((x) => x !== t),
   }))
 
+  const renderSavedSharedSummary = () => sharedSummary && (
+    <section
+      aria-label="Saved shared session summary"
+      style={{
+        border: '1px solid var(--line)',
+        borderRadius: 8,
+        padding: 12,
+        marginBottom: 12,
+        background: 'var(--panel-2)',
+      }}
+    >
+      <h4 style={{ margin: '0 0 4px' }}>Saved Shared Session Summary</h4>
+      <p className="muted" style={{ margin: '0 0 10px', fontSize: 12 }}>
+        This is the authoritative saved summary. Pending suggestions remain proposals until you accept them.
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+        {[
+          ['look', 'Look'],
+          ['initial_wardrobe', 'Initial Wardrobe'],
+        ].map(([field, label]) => {
+          const value = sharedSummary[field]
+          return (
+            <div key={field}>
+              <b>{label}:</b> {value?.value === '' ? 'No additional constraint' : value?.value || 'Unavailable'}
+              <div className="muted" style={{ fontSize: 11 }}>Origin: {value?.origin || 'Unavailable'}</div>
+            </div>
+          )
+        })}
+      </div>
+      {!sharedSummary.available && (
+        <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
+          {sharedSummary.message || 'Authorized scene descriptions are unavailable.'}
+        </p>
+      )}
+    </section>
+  )
+
   return (
     <>
       {error && <div className="error" onClick={() => setError('')}>{error}</div>}
@@ -1317,11 +1752,109 @@ export default function SessionView({
               <p className="muted" style={{ margin: '0 0 10px' }}>
                 Set constants shared across the session. The look sets appearance, location, and lighting.
               </p>
+              {plan?.authoring && (
+                <>
+                  {renderSavedSharedSummary()}
+                  <section aria-label="Shared choices" style={{ marginBottom: 14 }}>
+                    <h4 style={{ margin: '0 0 4px' }}>Shared Choices</h4>
+                    <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
+                      Edit the saved values directly, record an empty choice, or review an assistant proposal before accepting it.
+                    </p>
+                    <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                      {[
+                        ['look', 'Choose no additional look constraint'],
+                        ['initial_wardrobe', 'Choose no initial wardrobe constraint'],
+                      ].filter(([field]) => (
+                        (plan[field] ?? '') === ''
+                        && plan.authoring.shared_state?.[field]?.origin !== 'user'
+                      )).map(([field, label]) => (
+                        <button
+                          key={field}
+                          type="button"
+                          onClick={() => savePlan({ sharedDecisions: [field] })}
+                          disabled={planDirty || manualDecisionBusy || sharedAcceptancePending || planRevision === null}
+                          title={planDirty ? 'Save or discard unsaved plan edits first' : 'Record the empty choice through the plan revision CAS'}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    {plan?.authoring?.mode === 'automatic' && (
+                      <div style={{ borderTop: '1px solid var(--line)', paddingTop: 10, marginTop: 8 }}>
+                        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                          <div>
+                            <b>Shared suggestions</b>
+                            <div className="muted" style={{ fontSize: 12 }}>
+                              Suggestions do not affect the saved plan until you accept the edited values.
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={startSharedSuggestions}
+                            disabled={sharedStartBusy || sharedAcceptancePending || planDirty || manualDecisionBusy || planRevision === null || ['active', 'cancel_requested'].includes(sharedOperation?.state)}
+                          >
+                            {sharedStartBusy
+                              ? 'Starting…'
+                              : sharedStartUnknown
+                                ? 'Retry suggestion request'
+                                : 'Generate shared suggestions'}
+                          </button>
+                        </div>
+                        {sharedOperation && (
+                          <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }} role="status">
+                            Operation {sharedOperation.kind}: {sharedOperation.state}
+                          </p>
+                        )}
+                        {sharedOperation?.kind === 'shared_suggestions' && sharedOperation.state === 'succeeded' && (
+                          <div style={{ marginTop: 10 }}>
+                            {Object.entries(sharedProposalDrafts).map(([field, value]) => (
+                              <div key={field} style={{ marginBottom: 8 }}>
+                                <label htmlFor={`shared-proposal-${field}`}>
+                                  Proposed {field === 'look' ? 'look' : 'initial wardrobe'}
+                                </label>
+                                <textarea
+                                  id={`shared-proposal-${field}`}
+                                  rows={field === 'look' ? 3 : 2}
+                                  value={value}
+                                  disabled={manualDecisionBusy || sharedAcceptBusy || sharedAcceptUnknown}
+                                  onChange={(event) => setSharedProposalDrafts((previous) => ({
+                                    ...previous,
+                                    [field]: event.target.value,
+                                  }))}
+                                />
+                              </div>
+                            ))}
+                            <button
+                              type="button"
+                              className="primary"
+                              onClick={acceptSharedSuggestions}
+                              disabled={
+                                manualDecisionBusy || sharedAcceptBusy || planDirty
+                                || sharedOperation.plan_revision !== planRevision
+                                || !Object.keys(sharedProposalDrafts).length
+                              }
+                            >
+                              {sharedAcceptBusy
+                                ? 'Accepting…'
+                                : sharedAcceptUnknown
+                                  ? 'Retry acceptance'
+                                  : 'Accept edited suggestions'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {sharedActionError && <p className="error" role="alert" style={{ margin: '8px 0 0' }}>{sharedActionError}</p>}
+                    {sharedActionNotice && <p className="muted" role="status" style={{ margin: '8px 0 0' }}>{sharedActionNotice}</p>}
+                  </section>
+                </>
+              )}
               <div style={{ marginBottom: 12 }}>
                 <label>Look (appearance, place, light)</label>
                 <textarea
                   rows={3}
                   value={plan?.look ?? ''}
+                  disabled={planEditLocked}
                   placeholder="e.g. natural soft daylight in an open loft, detailed skin texture"
                   onChange={(e) => {
                     if (!plan) return
@@ -1336,6 +1869,7 @@ export default function SessionView({
                 <textarea
                   rows={2}
                   value={plan?.initial_wardrobe ?? ''}
+                  disabled={planEditLocked}
                   placeholder="e.g. wearing a charcoal wool overcoat and white silk shirt"
                   onChange={(e) => {
                     if (!plan) return
@@ -1367,7 +1901,7 @@ export default function SessionView({
               </div>
               <div className="row" style={{ marginTop: 12 }}>
                 <button onClick={() => navigateStep('character')}>← Back: Character</button>
-                <button onClick={savePlan} disabled={!planDirty}>Save Draft</button>
+                <button onClick={savePlan} disabled={!planDirty || planEditLocked}>Save Draft</button>
                 <span className="spacer" style={{ flex: 1 }} />
                 <button className="primary" onClick={() => navigateStep('takes')}>Next: Takes →</button>
               </div>
@@ -1392,6 +1926,7 @@ export default function SessionView({
                     </p>
                   </div>
                   <button
+                    disabled={planEditLocked}
                     onClick={() => {
                       if (!plan) return
                       setPlan({
@@ -1426,6 +1961,7 @@ export default function SessionView({
                   </div>
                 )}
 
+                <fieldset disabled={planEditLocked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
                   {(plan?.takes || []).map((take, index) => {
                     const detail = effectiveDetails[take.take_id] || { wardrobe: plan?.initial_wardrobe || '', source: 'initial' }
@@ -1433,6 +1969,9 @@ export default function SessionView({
                     const isCompleted = !planDirty && (planPreparation?.completed || []).some((c) => c.take_id === take.take_id)
                     const isInvalidated = !planDirty && !isCompleted && (planPreparation?.history || []).some((h) => h.take_id === take.take_id)
                     const isIncomplete = !planDirty && !isCompleted && (planPreparation?.incomplete || []).some((i) => i.take_id === take.take_id)
+                    const takeFieldsOpen = Object.prototype.hasOwnProperty.call(expandedTakeFields, take.take_id)
+                      ? expandedTakeFields[take.take_id]
+                      : plan?.authoring?.mode !== 'automatic'
 
                     return (
                       <div
@@ -1462,7 +2001,7 @@ export default function SessionView({
                             <button
                               className="icon"
                               title="Move take up"
-                              disabled={index === 0}
+                              disabled={planEditLocked || index === 0}
                               onClick={() => {
                                 setPlan({
                                   ...plan,
@@ -1477,7 +2016,7 @@ export default function SessionView({
                             <button
                               className="icon"
                               title="Move take down"
-                              disabled={index === (plan?.takes?.length || 1) - 1}
+                              disabled={planEditLocked || index === (plan?.takes?.length || 1) - 1}
                               onClick={() => {
                                 setPlan({
                                   ...plan,
@@ -1492,7 +2031,7 @@ export default function SessionView({
                             <button
                               className="icon danger"
                               title="Remove take"
-                              disabled={(plan?.takes || []).length <= 1}
+                              disabled={planEditLocked || (plan?.takes || []).length <= 1}
                               onClick={() => {
                                 setPlan({
                                   ...plan,
@@ -1507,26 +2046,37 @@ export default function SessionView({
                             </button>
                           </div>
                         </div>
-                        <div className="grid-form">
-                          <div>
-                            <label>Label</label>
-                            <input
-                              value={take.label || ''}
-                              placeholder="e.g. Wide shot at entrance"
-                              onChange={(e) => {
-                                setPlan({
-                                  ...plan,
-                                  takes: updateTake(plan.takes, take.take_id, { label: e.target.value }),
-                                })
-                                setPlanDirty(true)
-                                setReviewedRevision(null)
-                              }}
-                            />
-                          </div>
+                        <div style={{ marginBottom: 8 }}>
+                          <label>Label</label>
+                          <input
+                            value={take.label || ''}
+                            disabled={planEditLocked}
+                            placeholder="e.g. Wide shot at entrance"
+                            onChange={(e) => {
+                              setPlan({
+                                ...plan,
+                                takes: updateTake(plan.takes, take.take_id, { label: e.target.value }),
+                              })
+                              setPlanDirty(true)
+                              setReviewedRevision(null)
+                            }}
+                          />
+                        </div>
+                        <details
+                          open={takeFieldsOpen}
+                          onToggle={(event) => setExpandedTakeFields((previous) => ({
+                            ...previous,
+                            [take.take_id]: event.currentTarget.open,
+                          }))}
+                          style={{ marginBottom: 8 }}
+                        >
+                          <summary>Advanced take fields (camera, framing, pose, expression)</summary>
+                          <div className="grid-form" style={{ marginTop: 8 }}>
                           <div>
                             <label>Camera</label>
                             <input
                               value={take.camera || ''}
+                              disabled={planEditLocked}
                               placeholder="e.g. eye-level, 50mm"
                               onChange={(e) => {
                                 setPlan({
@@ -1542,6 +2092,7 @@ export default function SessionView({
                             <label>Framing</label>
                             <input
                               value={take.framing || ''}
+                              disabled={planEditLocked}
                               placeholder="e.g. medium full shot"
                               onChange={(e) => {
                                 setPlan({
@@ -1557,6 +2108,7 @@ export default function SessionView({
                             <label>Pose</label>
                             <input
                               value={take.pose || ''}
+                              disabled={planEditLocked}
                               placeholder="e.g. standing leaning against doorway"
                               onChange={(e) => {
                                 setPlan({
@@ -1572,6 +2124,7 @@ export default function SessionView({
                             <label>Expression</label>
                             <input
                               value={take.expression || ''}
+                              disabled={planEditLocked}
                               placeholder="e.g. calm neutral expression, direct eye contact"
                               onChange={(e) => {
                                 setPlan({
@@ -1583,7 +2136,8 @@ export default function SessionView({
                               }}
                             />
                           </div>
-                        </div>
+                          </div>
+                        </details>
 
                         {/* Wardrobe Display and Scope Controls */}
                         <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
@@ -1607,6 +2161,7 @@ export default function SessionView({
                               <button
                                 className="icon"
                                 style={{ fontSize: 11, padding: '2px 8px' }}
+                                disabled={planEditLocked}
                                 onClick={() => {
                                   setPlan({
                                     ...plan,
@@ -1626,6 +2181,7 @@ export default function SessionView({
                                 className="icon danger"
                                 style={{ fontSize: 11, padding: '2px 8px' }}
                                 title="Remove wardrobe change and restore inherited state"
+                                disabled={planEditLocked}
                                 onClick={() => {
                                   setPlan({
                                     ...plan,
@@ -1653,6 +2209,7 @@ export default function SessionView({
                                     type="radio"
                                     name={`scope-${take.take_id}`}
                                     checked={existingChange.scope === WARDROBE_SCOPE_THIS_TAKE}
+                                    disabled={planEditLocked}
                                     onChange={() => {
                                       setPlan({
                                         ...plan,
@@ -1672,6 +2229,7 @@ export default function SessionView({
                                     type="radio"
                                     name={`scope-${take.take_id}`}
                                     checked={existingChange.scope === WARDROBE_SCOPE_FROM_HERE}
+                                    disabled={planEditLocked}
                                     onChange={() => {
                                       setPlan({
                                         ...plan,
@@ -1692,6 +2250,7 @@ export default function SessionView({
                                 <textarea
                                   rows={2}
                                   value={existingChange.wardrobe}
+                                  disabled={planEditLocked}
                                   placeholder="Describe clothing for this take..."
                                   onChange={(e) => {
                                     setPlan({
@@ -1713,10 +2272,11 @@ export default function SessionView({
                     )
                   })}
                 </div>
+                </fieldset>
 
                 <div className="row" style={{ marginTop: 12 }}>
                   <button onClick={() => navigateStep('constants')}>← Back: Scene / Constants</button>
-                  <button onClick={savePlan} disabled={!planDirty}>Save Draft</button>
+                  <button onClick={savePlan} disabled={!planDirty || planEditLocked}>Save Draft</button>
                   <span className="spacer" style={{ flex: 1 }} />
                   <button className="primary" onClick={() => navigateStep('review')}>Next: Review →</button>
                 </div>
@@ -1760,7 +2320,7 @@ export default function SessionView({
                       <button
                         className="secondary"
                         onClick={handleApproveReview}
-                        disabled={planDirty || (planConflicts && planConflicts.length > 0) || planRevision === null || reviewBlocksFinalization}
+                        disabled={planDirty || planEditLocked || (planConflicts && planConflicts.length > 0) || planRevision === null || reviewBlocksFinalization}
                         title={
                           planDirty
                             ? 'Save plan changes before approving review'
@@ -1947,29 +2507,35 @@ export default function SessionView({
                 <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, padding: '8px 12px', background: 'var(--panel-2)', borderRadius: 8 }}>
                   <div className="row" style={{ gap: 10, alignItems: 'center' }}>
                     <span style={{ fontSize: 12, fontWeight: 600 }}>Actions:</span>
-                    <button
-                      onClick={handlePrepareAllIncomplete}
-                      disabled={planDirty || preparingAll || incompleteCount === 0 || reviewBlocksFinalization}
-                      title={
-                        planDirty
-                          ? 'Save draft before preparing'
-                          : hasKnownStaleAdaptations
-                            ? 'Save a new plan revision and review the authorized resource description before preparing'
-                            : reviewBlocksFinalization
-                              ? 'Load all take reviews before preparing'
-                            : incompleteCount === 0
-                              ? 'All takes already prepared'
-                              : `Prepare ${incompleteCount} take(s)`
-                      }
-                    >
-                      {preparingAll ? 'Preparing…' : `Prepare Incomplete Takes (${incompleteCount})`}
-                    </button>
+                    {plan?.authoring?.mode === 'automatic' ? (
+                      <span className="muted" role="status" style={{ fontSize: 12 }}>
+                        Automatic preparation controls are not available in this view yet; manual editing is available under Advanced.
+                      </span>
+                    ) : (
+                      <button
+                        onClick={handlePrepareAllIncomplete}
+                        disabled={planDirty || manualDecisionBusy || preparingAll || incompleteCount === 0 || reviewBlocksFinalization}
+                        title={
+                          planDirty
+                            ? 'Save draft before preparing'
+                            : hasKnownStaleAdaptations
+                              ? 'Save a new plan revision and review the authorized resource description before preparing'
+                              : reviewBlocksFinalization
+                                ? 'Load all take reviews before preparing'
+                              : incompleteCount === 0
+                                ? 'All takes already prepared'
+                                : `Prepare ${incompleteCount} take(s)`
+                        }
+                      >
+                        {preparingAll ? 'Preparing…' : `Prepare Incomplete Takes (${incompleteCount})`}
+                      </button>
+                    )}
                   </div>
                   <div className="row" style={{ gap: 10, alignItems: 'center' }}>
                     <button
                       className="primary"
                       onClick={handleSubmitSelectedTakes}
-                      disabled={selectedTakeIds.size === 0 || submittingTakes || planDirty || reviewedRevision !== planRevision}
+                      disabled={selectedTakeIds.size === 0 || submittingTakes || planDirty || planEditLocked || reviewedRevision !== planRevision}
                       title={
                         planDirty
                           ? 'Save draft before test generation'
@@ -2099,22 +2665,24 @@ export default function SessionView({
                                     >
                                       {isExpanded ? '▲ Close' : '▼ Review'}
                                     </button>
-                                    <button
-                                      style={{ fontSize: 11, padding: '2px 8px' }}
-                                      onClick={() => handlePrepareTake(t.take_id)}
-                                      disabled={planDirty || prepState === 'ready' || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
-                                      title={
-                                        planDirty
-                                          ? 'Save draft before preparing'
-                                          : hasStaleAdaptations
-                                            ? 'Save a new plan revision and review the authorized resource description before preparing'
-                                            : reviewBlocksFinalization
-                                              ? 'Load all take reviews before preparing'
-                                            : 'Compile authoritative preparation snapshot'
-                                      }
-                                    >
-                                      {preparingTakeId === t.take_id ? 'Preparing…' : 'Prepare'}
-                                    </button>
+                                    {plan?.authoring?.mode !== 'automatic' && (
+                                      <button
+                                        style={{ fontSize: 11, padding: '2px 8px' }}
+                                        onClick={() => handlePrepareTake(t.take_id)}
+                                        disabled={planDirty || prepState === 'ready' || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
+                                        title={
+                                          planDirty
+                                            ? 'Save draft before preparing'
+                                            : hasStaleAdaptations
+                                              ? 'Save a new plan revision and review the authorized resource description before preparing'
+                                              : reviewBlocksFinalization
+                                                ? 'Load all take reviews before preparing'
+                                              : 'Compile authoritative preparation snapshot'
+                                        }
+                                      >
+                                        {preparingTakeId === t.take_id ? 'Preparing…' : 'Prepare'}
+                                      </button>
+                                    )}
                                   </div>
                                 </td>
                               </tr>
@@ -2135,21 +2703,23 @@ export default function SessionView({
                                           >
                                             ↻ Refresh
                                           </button>
-                                          <button
-                                            onClick={() => handlePrepareTake(t.take_id)}
-                                            disabled={planDirty || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
-                                            title={
-                                              planDirty
-                                                ? 'Save draft before preparing'
-                                                : hasStaleAdaptations
-                                                  ? 'Save a new plan revision and review the authorized resource description before preparing'
-                                                  : reviewBlocksFinalization
-                                                    ? 'Load all take reviews before preparing'
-                                                  : 'Compile authoritative preparation snapshot'
-                                            }
-                                          >
-                                            {preparingTakeId === t.take_id ? 'Preparing…' : prepState === 'ready' ? 'Re-prepare Take' : 'Prepare Take'}
-                                          </button>
+                                          {plan?.authoring?.mode !== 'automatic' && (
+                                            <button
+                                              onClick={() => handlePrepareTake(t.take_id)}
+                                              disabled={planDirty || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
+                                              title={
+                                                planDirty
+                                                  ? 'Save draft before preparing'
+                                                  : hasStaleAdaptations
+                                                    ? 'Save a new plan revision and review the authorized resource description before preparing'
+                                                    : reviewBlocksFinalization
+                                                      ? 'Load all take reviews before preparing'
+                                                    : 'Compile authoritative preparation snapshot'
+                                              }
+                                            >
+                                              {preparingTakeId === t.take_id ? 'Preparing…' : prepState === 'ready' ? 'Re-prepare Take' : 'Prepare Take'}
+                                            </button>
+                                          )}
                                         </div>
                                       </div>
 
@@ -2394,14 +2964,14 @@ export default function SessionView({
 
                 <div className="row" style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--line)' }}>
                   <button onClick={() => navigateStep('takes')}>← Back: Takes</button>
-                  <button className={planDirty ? 'primary' : ''} onClick={savePlan} disabled={!planDirty}>
+                  <button className={planDirty ? 'primary' : ''} onClick={savePlan} disabled={!planDirty || planEditLocked}>
                     Save Plan
                   </button>
                   <span className="spacer" style={{ flex: 1 }} />
                   <button
                     className="primary"
                     onClick={() => navigateStep('generation')}
-                    disabled={reviewBlocksFinalization || !canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflicts })}
+                    disabled={planEditLocked || reviewBlocksFinalization || !canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflicts })}
                     title={
                       planDirty
                         ? 'Save plan before proceeding to generation'

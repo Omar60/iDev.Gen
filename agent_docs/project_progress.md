@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 46 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 47 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -415,5 +415,20 @@ optional brief, and mode/workflow under Advanced. Unknown creation outcomes
 block alternative creation; late responses cannot redirect after unmount.
 Verification passed 2,439 Python tests, 450 frontend tests, frontend build,
 46 privacy/control checks, strict OpenSpec validation and diff checks. No
-independent review remains pending. Task 8.2 has not started; no push is
-authorized. Complete response-loss retry UX remains assigned to Task 8.3.
+independent review remains pending for Task 8.1. Complete guided creation
+response-loss retry UX remains assigned to Task 8.3.
+
+Task 8.2 passed independent acceptance under deployment `srw-8-2-20261002`
+on the Heavy internal Codex route. Advanced exposes shared overrides and all
+four fixed/vary policies in guided creation and session editing; raw take
+fields open directly for Manual and older plans. Saved shared summaries precede
+preparation. Reviewed suggestions use the existing operation acceptance CAS,
+and explicit empty decisions use a strict additive `shared_decisions` option
+on plan save in either authoring mode. Pending writes protect local edits;
+session epochs and authoritative readback prevent stale or false notices.
+Independent gates passed 2,456 Python tests, 461 frontend tests, 46
+privacy/control checks, frontend build, strict OpenSpec validation and diff
+checks. No independent review remains pending. Task 8.3 is the next pending
+item; no subsequent task has started and no push is authorized. Automatic
+preparation UI controls remain Task 8.4; the broader browser walkthrough
+remains Task 8.6.

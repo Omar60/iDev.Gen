@@ -2902,7 +2902,13 @@ def _copy_forward_ready_takes(
     return copied_take_ids
 
 
-def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
+def save_draft(
+    session_id: int,
+    plan: Any,
+    expected_revision: int,
+    *,
+    shared_decisions: Any = None,
+) -> dict:
     """Save a draft plan with a compare-and-swap on the revision.
 
     The save runs five steps, in this order:
@@ -2969,6 +2975,20 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
     plan row, every prepared_take row, and every linked shot
     byte-for-byte unchanged.
     """
+    if shared_decisions is None:
+        explicit_empty_fields: set[str] = set()
+    elif (
+        type(shared_decisions) is not list
+        or any(type(field) is not str for field in shared_decisions)
+        or len(shared_decisions) != len(set(shared_decisions))
+        or not set(shared_decisions) <= {"look", "initial_wardrobe"}
+    ):
+        raise PlanValidationError(
+            "shared_decisions must be a duplicate-free subset of look and initial_wardrobe"
+        )
+    else:
+        explicit_empty_fields = set(shared_decisions)
+
     session = db.one(
         "SELECT id, settings FROM session WHERE id = ?",
         session_id,
@@ -3035,9 +3055,23 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                 "generic save cannot delete authoring from a plan with authoring"
             )
 
+        if explicit_empty_fields and not (has_old_auth and has_new_auth):
+            raise PlanOwnershipConflict(
+                "shared_decisions require an authoring-v1 plan"
+            )
+
         if has_old_auth and has_new_auth:
             old_auth = old_plan["authoring"]
             new_auth = validated["authoring"]
+
+            if explicit_empty_fields:
+                if any(
+                    old_plan.get(field, "") != "" or validated.get(field, "") != ""
+                    for field in explicit_empty_fields
+                ):
+                    raise PlanValidationError(
+                        "shared_decisions may only identify unchanged empty look or initial_wardrobe values"
+                    )
 
             # 1. workflow_binding
             if new_auth["workflow_binding"] != old_auth["workflow_binding"]:
@@ -3073,7 +3107,11 @@ def save_draft(session_id: int, plan: Any, expected_revision: int) -> dict:
                         raise PlanOwnershipConflict(
                             f"shared_state.{field} metadata cannot be modified when {field} is unchanged"
                         )
-                    reconciled_shared_state[field] = dict(old_meta)
+                    reconciled_shared_state[field] = (
+                        {"origin": "user", "evidence_id": None}
+                        if field in explicit_empty_fields
+                        else dict(old_meta)
+                    )
                 else:
                     reconciled_shared_state[field] = {"origin": "user", "evidence_id": None}
 

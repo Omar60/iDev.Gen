@@ -219,6 +219,15 @@ describe('sessionPlan pure helpers (Task 5.2)', () => {
       expect(() => buildPlanSavePayload(plan, -1)).toThrow()
       expect(() => buildPlanSavePayload(plan, 'bad')).toThrow()
     })
+
+    it('sends explicit shared decisions beside the unchanged plan wire shape', () => {
+      const plan = { version: MODE_RESOURCE_V1, look: '', takes: [{ take_id: 'take-001' }] }
+      const payload = buildPlanSavePayload(plan, 4, ['look'])
+      expect(payload.shared_decisions).toEqual(['look'])
+      expect(payload.plan.authoring).toBeUndefined()
+      expect(() => buildPlanSavePayload(plan, 4, ['look', 'look'])).toThrow(/duplicate-free/)
+      expect(() => buildPlanSavePayload(plan, 4, ['wardrobe'])).toThrow(/duplicate-free/)
+    })
   })
 
   // 6. Response with new revision updates the revision used for the next save
@@ -1362,7 +1371,13 @@ describe('SessionView React component rendering integration (renderToStaticMarku
       expect(html).toContain('Origin: none')
       expect(html).toContain('No additional constraint')
       expect(html).toContain('Authorized fused scene stays whole: an open room with a low camera.')
-      expect(html.indexOf('Shared Session Summary')).toBeLessThan(html.indexOf('Prepare Incomplete Takes'))
+      if (mode === 'automatic') {
+        expect(html).toContain('Automatic preparation controls are not available in this view yet')
+        expect(html).not.toContain('Prepare Incomplete Takes')
+        expect(html.indexOf('Shared Session Summary')).toBeLessThan(html.indexOf('Automatic preparation controls are not available'))
+      } else {
+        expect(html.indexOf('Shared Session Summary')).toBeLessThan(html.indexOf('Prepare Incomplete Takes'))
+      }
     })
   }
 

@@ -333,7 +333,7 @@ export function resolveEffectiveWardrobes(plan) {
 
 
 /** Build the CAS save payload matching the backend PlanDraftIn contract. */
-export function buildPlanSavePayload(plan, expectedRevision) {
+export function buildPlanSavePayload(plan, expectedRevision, sharedDecisions = null) {
   if (typeof expectedRevision !== 'number' || Number.isNaN(expectedRevision) || expectedRevision < 0) {
     throw new Error(`expected_revision must be a non-negative integer, got ${expectedRevision}`)
   }
@@ -350,10 +350,22 @@ export function buildPlanSavePayload(plan, expectedRevision) {
   if (normalized.authoring !== undefined) {
     payloadPlan.authoring = normalized.authoring
   }
-  return {
+  const payload = {
     plan: payloadPlan,
     expected_revision: expectedRevision,
   }
+  if (sharedDecisions !== null) {
+    const allowed = new Set(['look', 'initial_wardrobe'])
+    if (
+      !Array.isArray(sharedDecisions)
+      || sharedDecisions.some((field) => typeof field !== 'string' || !allowed.has(field))
+      || new Set(sharedDecisions).size !== sharedDecisions.length
+    ) {
+      throw new TypeError('sharedDecisions must be a duplicate-free subset of look and initial_wardrobe')
+    }
+    payload.shared_decisions = sharedDecisions
+  }
+  return payload
 }
 
 /** Load session plan from backend API.
@@ -420,7 +432,7 @@ export async function loadSessionPlan(sessionId, api) {
  *  or { ok: false, error, planRevision: expectedRevision } on CAS conflict or failure.
  *  Strictly requires a valid plan_revision returned by backend; never invents expectedRevision + 1.
  */
-export async function executeSavePlan(sessionId, plan, expectedRevision, api) {
+export async function executeSavePlan(sessionId, plan, expectedRevision, api, sharedDecisions = null) {
   if (!plan || typeof expectedRevision !== 'number' || expectedRevision < 0) {
     return {
       ok: false,
@@ -431,7 +443,7 @@ export async function executeSavePlan(sessionId, plan, expectedRevision, api) {
   }
 
   try {
-    const payload = buildPlanSavePayload(plan, expectedRevision)
+    const payload = buildPlanSavePayload(plan, expectedRevision, sharedDecisions)
     const res = await api.post(`/api/sessions/${sessionId}/plan`, payload)
     if (!res || typeof res.plan_revision !== 'number' || res.plan_revision < 0) {
       return {
@@ -453,6 +465,8 @@ export async function executeSavePlan(sessionId, plan, expectedRevision, api) {
       error: err?.message || 'Failed to save plan draft',
       planRevision: expectedRevision,
       conflicts: [],
+      status: err?.status,
+      detail: err?.detail,
     }
   }
 }

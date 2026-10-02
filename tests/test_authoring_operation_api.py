@@ -2874,6 +2874,115 @@ def test_manual_mode_keeps_explicit_empty_choices_without_starting_assistant_wor
     assert calls == []
 
 
+@pytest.mark.parametrize("mode", ["manual", "automatic"])
+def test_shared_decisions_mark_initial_empty_values_through_plan_cas(
+    client, seeded, monkeypatch,
+    mode,
+):
+    no_assistant = {**main.CONFIG, "llm_url": "", "llm_model": ""}
+    monkeypatch.setattr(main, "CONFIG", no_assistant)
+    calls = []
+
+    async def unexpected_assistant_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("an explicit empty choice must not call an assistant")
+
+    monkeypatch.setattr(main.enhance, "_request_completion", unexpected_assistant_call)
+    session_id, revision = _create_guided_session(client, seeded, mode=mode)
+    loaded = client.get(f"/api/sessions/{session_id}/plan").json()
+    plan = loaded["plan"]
+    assert plan["look"] == plan["initial_wardrobe"] == ""
+    assert plan["authoring"]["shared_state"] == {
+        "look": {"origin": "none", "evidence_id": None},
+        "initial_wardrobe": {"origin": "none", "evidence_id": None},
+    }
+
+    forged = json.loads(json.dumps(plan))
+    forged["authoring"]["shared_state"]["look"] = {
+        "origin": "user", "evidence_id": None,
+    }
+    refused = client.post(
+        f"/api/sessions/{session_id}/plan",
+        json={"plan": forged, "expected_revision": revision},
+    )
+    assert refused.status_code == 409, refused.text
+    assert "metadata cannot be modified when look is unchanged" in refused.json()["detail"]
+
+    changed = json.loads(json.dumps(plan))
+    changed["look"] = "A value is no longer empty."
+    refused_intent = client.post(
+        f"/api/sessions/{session_id}/plan",
+        json={
+            "plan": changed,
+            "expected_revision": revision,
+            "shared_decisions": ["look"],
+        },
+    )
+    assert refused_intent.status_code == 422, refused_intent.text
+    assert "unchanged empty" in refused_intent.json()["detail"]
+
+    body = {
+        "plan": plan,
+        "expected_revision": revision,
+        "shared_decisions": ["look", "initial_wardrobe"],
+    }
+    saved = client.post(f"/api/sessions/{session_id}/plan", json=body)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["plan_revision"] == revision + 1
+    authoritative = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert authoritative["plan"]["look"] == authoritative["plan"]["initial_wardrobe"] == ""
+    assert authoritative["plan"]["authoring"]["shared_state"] == {
+        "look": {"origin": "user", "evidence_id": None},
+        "initial_wardrobe": {"origin": "user", "evidence_id": None},
+    }
+    assert authoritative["plan"]["authoring"]["evidence"] == []
+    assert calls == []
+
+    stored_before_stale_retry = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    stale_retry = client.post(f"/api/sessions/{session_id}/plan", json=body)
+    assert stale_retry.status_code == 409, stale_retry.text
+    assert db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    ) == stored_before_stale_retry
+
+
+@pytest.mark.parametrize(
+    "shared_decisions",
+    [
+        ["look", "look"],
+        ["unknown"],
+        ["look", 1],
+        "look",
+    ],
+)
+def test_manual_shared_decisions_reject_malformed_fields_without_writes(
+    client, seeded, shared_decisions,
+):
+    session_id, revision = _create_guided_session(client, seeded, mode="manual")
+    before = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    loaded = client.get(f"/api/sessions/{session_id}/plan").json()
+    response = client.post(
+        f"/api/sessions/{session_id}/plan",
+        json={
+            "plan": loaded["plan"],
+            "expected_revision": revision,
+            "shared_decisions": shared_decisions,
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    ) == before
+
+
 def _operation_snapshot(operation_id):
     row = db.one(
         "SELECT state, fencing_token, lease_expires_at, input_digest, completed_json, "

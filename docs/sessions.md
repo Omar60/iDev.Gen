@@ -1530,11 +1530,12 @@ cleaner when it is one or the other.
 **+ New session** from a model opens the **Resources** browser with that model
 selected. For a ready room, **Create session** opens a write-free guided form
 with the character and exact room revision selected. It accepts a photo count
-(default 12, integer 1–500) and optional brief (up to 2,000 characters); the
-**Advanced** section exposes authoring mode and workflow override. Direct
-navigation to `#/resources` remains available and selects an existing model
-when possible. This guided path is for ready rooms; fused scenes and other
-resource kinds retain their existing expert paths.
+(default 12, integer 1–500) and optional brief (up to 2,000 characters);
+**Advanced** exposes authoring mode, workflow override, variation locks for
+camera, framing, pose, and expression, plus look and initial-wardrobe
+overrides. Direct navigation to `#/resources` remains available and selects an
+existing model when possible. This guided path is for ready rooms; fused scenes
+and other resource kinds retain their existing expert paths.
 
 Authoring mode defaults to Automatic when a text assistant is configured and
 Manual otherwise. Without an assistant, the form links to **Configure assistant**;
@@ -1591,10 +1592,14 @@ on the measured component catalogue, a `resource-v1` session draft:
 ### Shared session summary
 
 For authoring-v1 plans, `GET /api/sessions/{sid}/plan` includes a
-`shared_summary` that SessionView displays in Review before preparation. It
-shows saved `look` and `initial_wardrobe` values separately from their origins.
-An empty value means no additional constraint; it does not erase descriptions
-from selected scenes.
+`shared_summary` that SessionView displays before take preparation. It shows
+saved `look` and `initial_wardrobe` values separately from their origins. An
+empty value means no additional constraint; it does not erase descriptions from
+selected scenes. In **Shared Choices**, users can edit either value directly or
+record an explicit empty choice. Summary and manual editing work without an
+assistant. Per-take camera, framing, pose, and expression fields are under
+**Advanced take fields**; they open by default for Manual authoring and plans
+without automatic authoring, and start closed for Automatic authoring.
 
 The summary resolves the plan's exact selected revision triples and lists only
 authorized descriptive inputs for selected `rooms` and `fused_scenes`
@@ -1608,8 +1613,26 @@ remediation message, with no partial scene descriptions. Validated shared
 values remain available when scene resolution fails. Remediation may ask the
 user to correct the plan or translation and reload, or review imported
 resources and start a new session with an available ready scene revision
-before preparing takes. The summary is informational: it does not accept
+before preparing takes. The summary is informational and does not itself accept
 assistant suggestions.
+
+The plan-save request accepts an optional top-level `shared_decisions` array
+beside `plan` and `expected_revision`. It must be a duplicate-free list drawn
+from `look` and `initial_wardrobe`; each named field must remain empty in both
+the stored and submitted plan. This records the explicit empty choice with
+origin `user` and a null evidence ID inside the same plan revision CAS. It works
+in Manual and Automatic authoring modes. A generic plan save still cannot forge
+the server-owned shared-state metadata.
+
+Automatic plans also offer an explicit shared-suggestion request. Suggested
+values remain proposals until explicitly accepted; users may edit or clear them
+before acceptance, which writes through the operation-specific plan CAS.
+Repeating identical accepted content replays the saved result after a lost
+response. Suggestion
+requests and acceptance do not prepare takes, approve a plan, submit takes, or
+run generation.
+Automatic preparation controls are not available in this view yet; manual
+editing is available under Advanced.
 
 ### Refreshing resource dependencies
 
@@ -1719,8 +1742,11 @@ operation without dispatching it again. The worker requests only missing
 `look` and `initial_wardrobe` values, using selected-model context, the brief,
 and authorized scene descriptions. Proposals appear in operation status and do
 not change the plan until explicitly accepted. Cancellation and stale inputs
-fence worker output. Remote `prepare_takes` execution and `SessionView`
-suggestion controls remain future work.
+fence worker output. SessionView exposes shared-suggestion requests and
+acceptance; Automatic Prepare/Continue/Cancel/Resume UI controls remain future
+work. Remote `prepare_takes` execution is implemented in the backend. Shared
+suggestion controls do not implicitly approve or submit takes or start
+generation.
 
 ### Operational rollback and disabling resource mode
 

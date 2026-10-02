@@ -22,6 +22,17 @@ import {
   applyProposalsToRows,
 } from '../resources.js'
 
+const GUIDED_DIMENSIONS = [
+  ['camera', 'Camera'],
+  ['framing', 'Framing'],
+  ['pose', 'Pose'],
+  ['expression', 'Expression'],
+]
+
+const defaultGuidedPolicy = () => Object.fromEntries(
+  GUIDED_DIMENSIONS.map(([field]) => [field, { mode: 'vary', value: '' }]),
+)
+
 export default function Resources({ requestedModelId = '' }) {
   const [tab, setTab] = useState('inventory') // 'inventory' | 'import'
   const [libraries, setLibraries] = useState([])
@@ -35,6 +46,9 @@ export default function Resources({ requestedModelId = '' }) {
   const [guidedBrief, setGuidedBrief] = useState('')
   const [guidedMode, setGuidedMode] = useState('')
   const [guidedWorkflowOverrideId, setGuidedWorkflowOverrideId] = useState('')
+  const [guidedVariationPolicy, setGuidedVariationPolicy] = useState(defaultGuidedPolicy)
+  const [guidedLook, setGuidedLook] = useState('')
+  const [guidedInitialWardrobe, setGuidedInitialWardrobe] = useState('')
   const [guidedAdvancedOpen, setGuidedAdvancedOpen] = useState(false)
   const [guidedRequestId, setGuidedRequestId] = useState('')
   const [guidedOutcomeUnknown, setGuidedOutcomeUnknown] = useState(false)
@@ -553,6 +567,9 @@ export default function Resources({ requestedModelId = '' }) {
     setGuidedBrief('')
     setGuidedMode(assistantConfigured === null ? '' : assistantConfigured ? 'automatic' : 'manual')
     setGuidedWorkflowOverrideId('')
+    setGuidedVariationPolicy(defaultGuidedPolicy())
+    setGuidedLook('')
+    setGuidedInitialWardrobe('')
     setGuidedAdvancedOpen(false)
     setGuidedRequestId(crypto.randomUUID())
     setGuidedOutcomeUnknown(false)
@@ -578,6 +595,21 @@ export default function Resources({ requestedModelId = '' }) {
       setError('Brief must be 2,000 characters or fewer.')
       return
     }
+    const variationPolicy = Object.fromEntries(GUIDED_DIMENSIONS.map(([field]) => {
+      const setting = guidedVariationPolicy[field] || { mode: 'vary', value: '' }
+      if (setting.mode === 'fixed') {
+        if (typeof setting.value !== 'string' || !setting.value.trim()) {
+          return [field, { mode: 'fixed', value: '', value_origin: 'user' }]
+        }
+        return [field, { mode: 'fixed', value: setting.value, value_origin: 'user' }]
+      }
+      return [field, { mode: 'vary' }]
+    }))
+    if (GUIDED_DIMENSIONS.some(([field]) => variationPolicy[field].mode === 'fixed' && !variationPolicy[field].value.trim())) {
+      setGuidedAdvancedOpen(true)
+      setError('Enter a value for every fixed camera, framing, pose, and expression choice.')
+      return
+    }
     if (!hasDefaultWorkflow && !(Number.isInteger(workflowOverrideId) && workflowOverrideId > 0)) {
       setGuidedAdvancedOpen(true)
       setError('This character needs a default workflow or an Advanced workflow override.')
@@ -595,6 +627,9 @@ export default function Resources({ requestedModelId = '' }) {
         photo_count: photoCount,
         brief: guidedBrief,
         mode: guidedMode,
+        variation_policy: variationPolicy,
+        look: guidedLook,
+        initial_wardrobe: guidedInitialWardrobe,
       })
       if (!guidedRequestMountedRef.current) return
       if (!Number.isInteger(result?.session_id) || result.session_id <= 0) {
@@ -1166,6 +1201,69 @@ export default function Resources({ requestedModelId = '' }) {
                       : 'No character default is assigned. Choose an override or assign a default on the character page.'}
                 </p>
                 {workflows.length === 0 && <p className="muted">No workflows are available. <a href="#/workflows">Open Workflows</a>.</p>}
+              </div>
+            </div>
+            <h3 style={{ margin: '14px 0 6px' }}>Variation locks</h3>
+            <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
+              All four choices vary by default. Fix a choice only when every take should use the same value.
+            </p>
+            <div className="grid-form">
+              {GUIDED_DIMENSIONS.map(([field, label]) => {
+                const setting = guidedVariationPolicy[field] || { mode: 'vary', value: '' }
+                return (
+                  <div key={field}>
+                    <label htmlFor={`guided-${field}-mode`}>{label}</label>
+                    <select
+                      id={`guided-${field}-mode`}
+                      value={setting.mode}
+                      onChange={(event) => setGuidedVariationPolicy((previous) => ({
+                        ...previous,
+                        [field]: { ...setting, mode: event.target.value },
+                      }))}
+                      disabled={busy || guidedOutcomeUnknown}
+                    >
+                      <option value="vary">Vary</option>
+                      <option value="fixed">Fixed</option>
+                    </select>
+                    {setting.mode === 'fixed' && (
+                      <input
+                        aria-label={`Fixed ${label.toLowerCase()}`}
+                        value={setting.value}
+                        onChange={(event) => setGuidedVariationPolicy((previous) => ({
+                          ...previous,
+                          [field]: { ...setting, value: event.target.value },
+                        }))}
+                        placeholder={`Fixed ${label.toLowerCase()} value`}
+                        disabled={busy || guidedOutcomeUnknown}
+                      />
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            <h3 style={{ margin: '14px 0 6px' }}>Shared overrides</h3>
+            <div className="grid-form">
+              <div>
+                <label htmlFor="guided-look">Look override</label>
+                <textarea
+                  id="guided-look"
+                  rows={3}
+                  value={guidedLook}
+                  onChange={(event) => setGuidedLook(event.target.value)}
+                  placeholder="Optional appearance, place, or lighting constraint"
+                  disabled={busy || guidedOutcomeUnknown}
+                />
+              </div>
+              <div>
+                <label htmlFor="guided-initial-wardrobe">Initial wardrobe override</label>
+                <textarea
+                  id="guided-initial-wardrobe"
+                  rows={3}
+                  value={guidedInitialWardrobe}
+                  onChange={(event) => setGuidedInitialWardrobe(event.target.value)}
+                  placeholder="Optional clothing constraint for the first take"
+                  disabled={busy || guidedOutcomeUnknown}
+                />
               </div>
             </div>
             {guidedMode === 'automatic' && assistantConfigured === false && (

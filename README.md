@@ -195,14 +195,20 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
   Fused scenes retain **Use advanced editor** and **Choose a structured scene**;
   other resource kinds keep their existing expert paths.
 
-For authoring-v1 plans, `GET /api/sessions/{sid}/plan` also returns a
-`shared_summary`, shown in Review before preparation. It shows saved look and
-initial wardrobe values beside their origins, plus authorized descriptive
-inputs from selected room and fused-scene revisions. Empty values add no
-constraint and do not hide those scene descriptions. If resolution fails, the
-summary returns an allowlisted diagnostic and remediation without exposing
-full resource payloads or raw translation sidecars. The projection itself needs
-no assistant call and does not accept suggestions. See
+For authoring-v1 plans, `GET /api/sessions/{sid}/plan` returns a
+`shared_summary` shown before take preparation. It shows saved look and initial
+wardrobe values with their origins, plus authorized descriptions from selected
+rooms and fused scenes. Empty values add no constraint and do not hide scene
+descriptions. The projection needs no assistant call and exposes neither full
+resource payloads nor raw translation sidecars. In **Shared Choices**, users can
+edit these values or record an empty choice; Automatic mode also offers an
+explicit shared-suggestion request and edited-value acceptance. Proposals stay
+pending until explicitly accepted through the operation CAS; users may edit or
+clear proposed values before acceptance. An identical retry replays the saved
+acceptance after a lost response. Suggestion requests and acceptance
+do not prepare, approve, submit, or run generation. Automatic preparation
+controls are not available in this view yet; manual editing is available under
+Advanced. See
 [sessions](docs/sessions.md#shared-session-summary).
 
 `POST /api/sessions/{sid}/plan/refresh-resources` checks the current revision's
@@ -233,20 +239,21 @@ New `prepare_takes` claims reject stable take IDs already submitted in an earlie
 plan revision with `409 authoring_inputs_stale`; omit them and choose pending
 takes. Current-revision ready or generated snapshots remain reusable, and the
 original terminal request can still be replayed.
-Cancellation and stale inputs fence worker output. `SessionView` controls for
-authoring operations and suggestions remain future work; remote `prepare_takes`
-execution is implemented in the backend. See
+Cancellation and stale inputs fence worker output. `SessionView` exposes the
+shared-suggestion request and acceptance flow; Automatic
+Prepare/Continue/Cancel/Resume controls remain future work. Remote
+`prepare_takes` execution is implemented in the backend. See
 [authoring operation claims and controls](docs/sessions.md#authoring-operation-claims-cancellation-and-resume)
 for the request, acceptance, recovery, and response contract.
 
 From a model, **+ New session** opens Resources with that model selected.
 Choosing **Create session** on a ready room opens a write-free form with the
 character and exact room revision selected, a photo count defaulting to 12 (integer
-1–500), an optional brief (up to 2,000 characters), and authoring mode and
-workflow override under **Advanced**. The mode defaults to Automatic when a
-text assistant is configured and Manual otherwise. Without one, the form links
-to **Configure assistant**, and Automatic remains selectable while synthesis is
-unavailable.
+1–500), an optional brief (up to 2,000 characters), and authoring mode, workflow
+override, four variation locks, and look and initial-wardrobe overrides under
+**Advanced**. The mode defaults to Automatic when a text assistant is configured
+and Manual otherwise. Without one, the form links to **Configure assistant**,
+and Automatic remains selectable while synthesis is unavailable.
 The character's default workflow is used unless overridden; if none is set, the
 form links to assign one on the character page or choose an Advanced override.
 **Create guided session** creates the draft and opens it. If the result is

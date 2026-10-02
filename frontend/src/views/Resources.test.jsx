@@ -4122,6 +4122,14 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       photo_count: 500,
       brief: 'b'.repeat(2000),
       mode: 'automatic',
+      variation_policy: {
+        camera: { mode: 'vary' },
+        framing: { mode: 'vary' },
+        pose: { mode: 'vary' },
+        expression: { mode: 'vary' },
+      },
+      look: '',
+      initial_wardrobe: '',
     })
     expect(window.location.hash).toBe('#/session/95')
     expect(postCalls.map(([url]) => url)).toEqual(['/api/sessions/guided'])
@@ -4294,6 +4302,64 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     expect(postCalls).toHaveLength(1)
     expect(postCalls[0][0]).toBe('/api/sessions/guided')
     expect(postCalls[0][1]).toMatchObject({ character_id: 4, workflow_id: 17, mode: 'manual' })
+  })
+
+  it('8.2 keeps fixed choices and look/wardrobe overrides inside guided Advanced', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready' } }],
+      auxiliary: [],
+    }
+    const postCalls = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
+      postCalls.push([url, body])
+      if (url === '/api/sessions/guided') return { session_id: 99, plan_revision: 1, plan: {} }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    await renderComponent({ requestedModelId: '4' })
+    const roomRow = Array.from(container.querySelectorAll('tr')).find((row) => row.textContent.includes('room-3'))
+    await act(async () => { Array.from(roomRow.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click() })
+    const form = container.querySelector('[aria-label="Guided session setup"]')
+    const advanced = form.querySelector('details')
+    expect(advanced.open).toBe(false)
+    await act(async () => { advanced.querySelector('summary').click() })
+
+    await act(async () => {
+      setSelectValue(form.querySelector('#guided-camera-mode'), 'fixed')
+    })
+    const createButton = Array.from(form.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session')
+    await act(async () => { createButton.click() })
+    expect(postCalls).toHaveLength(0)
+    expect(container.querySelector('.error')?.textContent).toContain('fixed camera')
+
+    await act(async () => {
+      setInputValue(form.querySelector('[aria-label="Fixed camera"]'), '50mm portrait lens')
+      setTextareaValue(form.querySelector('#guided-look'), 'Soft window light in a quiet studio.')
+      setTextareaValue(form.querySelector('#guided-initial-wardrobe'), 'A charcoal jacket.')
+      createButton.click()
+    })
+
+    expect(postCalls).toHaveLength(1)
+    expect(postCalls[0][1]).toMatchObject({
+      variation_policy: {
+        camera: { mode: 'fixed', value: '50mm portrait lens', value_origin: 'user' },
+        framing: { mode: 'vary' },
+        pose: { mode: 'vary' },
+        expression: { mode: 'vary' },
+      },
+      look: 'Soft window light in a quiet studio.',
+      initial_wardrobe: 'A charcoal jacket.',
+    })
   })
 
   it('8.1 submits twelve photos for the selected ready room and preserves an explicit manual mode', async () => {

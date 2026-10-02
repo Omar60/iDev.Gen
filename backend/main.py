@@ -4306,6 +4306,21 @@ class PlanDraftIn(BaseModel):
     """
     plan: dict
     expected_revision: int = 0
+    shared_decisions: list[str] | None = None
+
+    @field_validator("shared_decisions", mode="before")
+    @classmethod
+    def validate_shared_decisions(cls, value: Any) -> list[str] | None:
+        if value is None:
+            return None
+        allowed = {"look", "initial_wardrobe"}
+        if (
+            type(value) is not list
+            or any(type(field) is not str or field not in allowed for field in value)
+            or len(value) != len(set(value))
+        ):
+            raise ValueError("shared_decisions must be a duplicate-free subset of look and initial_wardrobe")
+        return value
 
 
 class RefreshResourcesIn(BaseModel):
@@ -4934,6 +4949,7 @@ def save_plan_draft(sid: int, p: PlanDraftIn):
     try:
         result = session_plan.save_draft(
             sid, p.plan, p.expected_revision,
+            shared_decisions=p.shared_decisions,
         )
     except session_plan.PlanValidationError as exc:
         raise HTTPException(422, str(exc))
