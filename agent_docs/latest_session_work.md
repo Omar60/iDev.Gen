@@ -2,70 +2,60 @@
 
 ## Current State
 
-OpenSpec Task 8.5 of `simplify-resource-session-workflow` passed independent
-acceptance on the Heavy route using internal Codex workers. Only Task 8.5 is
-newly marked complete; progress is 50 of 72 tasks. The initial working tree
-was clean on `main` at `68b4633`.
+The main agent accepted OpenSpec Task 8.6 of
+`simplify-resource-session-workflow` under Heavy deployment
+`task86-ui-contract-20261003`. Progress is 51 of 72 tasks. Internal Codex
+workers implemented and independently verified this task from the clean
+`main` baseline `b0be8d7`. No independent review remains pending.
 
 ## Accepted Behavior
 
-Resource session cards and detail show authoritative plan look and initial
-wardrobe through the existing backend projection. Search retains the same
-projection; missing or invalid plans expose diagnostics without legacy fallback.
-Legacy sessions keep their established behavior.
+A temporary TestClient backend produces complete HTTP response fixtures for
+Resources and SessionView. The exact normalized capture is regenerated and
+compared by a Python test; variable identities, timestamps and temporary
+configuration paths have declared normalization. Eight rendered component
+integration tests use the real API transport with those captured status/body
+pairs. They cover safe selection revisions, stale responses, guided retry,
+workflow refusals, plan/session projection, partial progress and ownership
+across two component roots, without implicit approval, submission or generation.
 
-Review prioritizes the prepared snapshot's four effective creative choices,
-look and wardrobe. Explicit empty values remain empty decisions rather than
-falling back to a current draft. Prompt, resource revisions, writer request and
-output, provenance and duplicate evidence remain inspectable. Linked history
-from any revision retains its saved choices and cannot become a new preparation
-target merely because its current-revision recovery row is missing.
-
-Before saving edits, a confirmation identifies affected ready, pending, new,
-removed and historically linked takes. Refresh Resources uses the existing
-explicit dependency CAS and displays affected work, preparation requirements
-and retained copies. Generic review failures do not claim confirmed drift.
-A local draft edited during refresh is preserved with an actionable reload
-notice. Refresh does not call the assistant, approve, submit or run.
-
-Approve Review, Submit Test Selection and Run remain separate explicit gates.
-The selected test action queues reviewed ready takes and does not start Run.
+The fixtures exposed a manual batch notice reading an absent `completed_count`.
+The only production change derives that count from the returned `prepared`
+array. A deterministic local assistant and isolated demo backend serve the
+built frontend for a reproducible two-tab browser walkthrough. The guide also
+includes manual preparation and missing-workflow checks using invented data.
 
 ## Independent Verification
 
-The full Python suite passed 2,456 tests with five warnings. The independent
-backend Task 7.10 probe passed once. Final frontend verification passed all
-520 tests in 21 files, including the independent historical-state, refresh
-interleaving and explicit-action probes. The production build passed with the
-existing JavaScript chunk-size warning. Privacy/control checks passed 46 tests
-with one Pydantic warning. Strict OpenSpec validation and diff checks passed.
+- Full Python suite: 2,457 passed, five warnings.
+- Frontend suite: 528 passed in 22 files; the new contract file passed 8 tests.
+- Frontend production build passed with the existing chunk-size warning.
+- Fresh backend fixture comparison passed; privacy/control checks passed 46.
+- Strict noninteractive OpenSpec validation and diff checks passed.
 
-Independent verification reproduced prior linked history appearing as pending
-preparation. The Executor repaired shared state, target exclusion, warning and
-snapshot presentation; the Tester rechecked the repair. The Task 8.2 test now
-asserts no plan POST before the new confirmation and preserves its payload
-assertion. An independent fixture was corrected to represent a genuinely
-incomplete take instead of requesting preparation of a ready snapshot.
+The real browser adopted the same operation in two tabs, persisted one
+completed, one failed and one remaining take, then resumed to three prepared
+takes. Manual preparation displayed `2 prepared` and two ready snapshots.
+A workflowless invented model showed remedies without creating a session.
+Readbacks retained empty shots, no running generation, an unapproved plan and
+zero sessions for that model. Approval, submit and run were not invoked.
 
-Verification was interrupted once by the Tester's usage limit, then resumed
-from retained evidence. The final repair touched frontend only; the completed
-full Python result was retained rather than rerun without cause. No browser
-walkthrough was added; that broader acceptance belongs to Task 8.6.
+The current demo stopped with Ctrl+C, removed its temporary data and freed
+port 8777; its terminal reported exit code 1 after interruption. Two abandoned
+synthetic temporary folders from earlier launches remain because tool approval
+rejected removal with `blocked by policy`. No alternative deletion mechanism
+was attempted. This operational cleanup limitation does not affect the
+verified source or the reproducible current demo lifecycle.
 
 ## Changed Surfaces
 
-- `frontend/src/sessionPlan.js`, `frontend/src/views/SessionView.jsx` and
-  `frontend/src/views/Library.jsx`: authoritative display, impact preview,
-  explicit dependency recovery and preserved submitted history.
-- `frontend/src/sessionPlan.test.js`, `frontend/src/task8_2_independent.test.jsx`
-  and four Task 8.5 test files: implementation and independent coverage.
-- README and the session guide: the verified user controls and limitations.
-- The three deployment-state documents and the Task 8.5 checkbox.
+- `frontend/src/views/SessionView.jsx`: prepared-array count correction.
+- The Task 8.6 fixture, React contract tests, Python capture producer and drift test.
+- The isolated browser launcher and walkthrough, linked from README/session docs.
+- The three canonical deployment-state documents and only the Task 8.6 checkbox.
 
 ## Closure and Continuation
 
-The main agent accepted Task 8.5 from independent evidence. No independent
-review remains pending. The user authorized its isolated acceptance commit;
-final documentation/privacy/spec/diff checks and Git closure follow this
-handoff. Archivist owns the closing documentation and token report. Task 8.6
-has not started. No push is authorized.
+The user authorized the isolated acceptance commit. Final documentation gates
+and Git closure follow this verified handoff; Archivist owns the closing token
+report. Task 9.1 remains unstarted. No push is authorized.

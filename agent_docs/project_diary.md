@@ -550,3 +550,11 @@
   current draft. A stable take ID linked in any prior revision remains submitted
   history even when recovery lists its current revision as missing; downstream
   warnings and preparation targets must protect that history together.
+- Backend response fixtures need a reproducible producer and a drift check;
+  hand-authored component mocks alone cannot prove the HTTP contract. Manual
+  batch preparation returns a `prepared` snapshot array, so a UI count must
+  derive from that array rather than an invented `completed_count` field.
+- Reproducible browser acceptance can use the backend's existing static mount
+  with a fresh frontend build and isolated fake assistant. Keep observed HTTP
+  status/body and rendered labels in the guide; close SQLite before removing
+  temporary demo data on Windows, and verify both cleanup and listener shutdown.

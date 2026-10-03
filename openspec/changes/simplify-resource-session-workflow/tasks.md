@@ -71,7 +71,7 @@
 - [x] 8.3 Replace sequential session/plan writes with idempotent guided creation. Reuse the same request ID while outcome is unknown, handle `201/200/409` distinctly and navigate only from the stored response.
 - [x] 8.4 Connect Prepare/Continue/Cancel/Resume to OperationView and adopt active work from another tab. Show completed/failed/remaining, assistant-unavailable, stale, cancelled, expired and cleanup-warning states with exact next actions; never renew leases from polling.
 - [x] 8.5 Make plan-owned look/wardrobe primary in resource session detail/cards/search and make effective choices primary in Review. Expose prompt/provenance/duplicate/drift/downstream impact details while retaining explicit Approve, Submit/Run and small test-selection gates.
-- [ ] 8.6 Add component/integration tests for Resources and SessionView against real backend response fixtures, including safe selection revisions, `prepared`/progress shapes, two-tab ownership, guided retry, workflow errors, plan/session projection, stale responses and no implicit approval/submission/generation. Include a reproducible browser walkthrough, not only helper tests.
+- [x] 8.6 Add component/integration tests for Resources and SessionView against real backend response fixtures, including safe selection revisions, `prepared`/progress shapes, two-tab ownership, guided retry, workflow errors, plan/session projection, stale responses and no implicit approval/submission/generation. Include a reproducible browser walkthrough, not only helper tests.
 
 ## 9. Reusable personal looks and explicit wardrobe progression
 

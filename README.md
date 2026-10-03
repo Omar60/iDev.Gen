@@ -621,6 +621,17 @@ file move are genuinely verified.
 
 The frontend has its own: `npm --prefix frontend test`.
 
+Task 8.6's checked-in session API fixture can be checked against a fresh,
+isolated backend capture with:
+
+```bash
+python scripts/task8_6_fixtures.py --check
+```
+
+Use `--write` to refresh the fixture after an intentional API contract change.
+For rendered Resources and SessionView coverage against an isolated backend,
+follow the [Task 8.6 browser walkthrough](docs/task-8-6-browser-walkthrough.md).
+
 Dev dependencies: `pip install -r backend/requirements-dev.txt`.
 CI in `.github/workflows/ci.yml` runs the suite and builds the frontend.
 

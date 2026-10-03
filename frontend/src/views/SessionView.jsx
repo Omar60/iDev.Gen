@@ -1376,7 +1376,7 @@ export default function SessionView({
     try {
       const res = await preparePlanTakes(id, planRevision, takeIds, api)
       if (res.ok) {
-        setPlanNotice(`Batch preparation complete: ${res.completed_count ?? 0} prepared`)
+        setPlanNotice(`Batch preparation complete: ${res.prepared.length} prepared`)
         setTimeout(() => setPlanNotice(''), 4000)
         await reload()
       } else {

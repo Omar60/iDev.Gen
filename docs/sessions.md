@@ -1271,6 +1271,10 @@ exactly `(session_id, plan_revision, take_id)`: the session must exist, use
 resource mode, the revision must still be current, and the take id must exist in
 that revision.
 
+For a reproducible browser check of Resources, guided-session creation, and
+preparation recovery against an isolated backend, see the [Task 8.6 browser
+walkthrough](task-8-6-browser-walkthrough.md).
+
 Preparation lifecycle:
 
 - `POST /api/sessions/{sid}/plan/preparations/begin` records the take as

@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 50 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 51 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -474,5 +474,17 @@ diff checks. One historical-state defect was repaired and independently
 rechecked. The final frontend-only repair did not change backend source, so the
 completed full Python gate was retained. No independent review remains pending
 for Task 8.5. Documentation and its authorized isolated acceptance commit close
-this deployment. Task 8.6 has not started; no subsequent task or push is
-authorized.
+that deployment.
+
+Task 8.6 passed independent acceptance under deployment
+`task86-ui-contract-20261003` on the Heavy internal Codex route. Real backend
+response captures now drive eight rendered component contract tests and an
+exact regeneration check. The captured manual batch contract exposed and fixed
+the prepared-count notice. An isolated built-frontend walkthrough verified
+real two-tab ownership, partial failure/resume, manual preparation and missing
+workflow remedies without implicit approval, submission or generation.
+Independent gates passed 2,457 Python tests, 528 frontend tests in 22 files,
+46 privacy/control checks, fresh fixture comparison, frontend build, strict
+noninteractive OpenSpec validation and diff checks. No independent review
+remains pending. The authorized isolated acceptance commit closes Task 8.6;
+Task 9.1 remains unstarted. No subsequent task or push is authorized.
