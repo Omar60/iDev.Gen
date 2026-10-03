@@ -97,6 +97,7 @@ export default function Resources({ requestedModelId = '' }) {
   const genRef = useRef(0)
   const epochRef = useRef(1)
   const activeSelectionIdRef = useRef(null)
+  const checkingCleanupRef = useRef(false)
   const selectionViewRef = useRef(null)
   const guidedRequestMountedRef = useRef(true)
   const guidedRequestSnapshotRef = useRef(null)
@@ -109,6 +110,7 @@ export default function Resources({ requestedModelId = '' }) {
   const [legacyCommitReport, setLegacyCommitReport] = useState(null)
 
   const [busy, setBusy] = useState(false)
+  const [checkingCleanup, setCheckingCleanup] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -1040,6 +1042,36 @@ export default function Resources({ requestedModelId = '' }) {
     }
   }
 
+  const handleRetryCleanup = async () => {
+    const selectionId = selectionView?.selection_id
+    if (!selectionId || checkingCleanupRef.current) return
+    checkingCleanupRef.current = true
+    setCheckingCleanup(true)
+    setError('')
+    setNotice('')
+    const requestEpoch = epochRef.current
+    const requestGen = ++genRef.current
+    try {
+      const view = await api.get(`/api/resources/import-selections/${encodeURIComponent(selectionId)}`)
+      if (requestEpoch !== epochRef.current) return
+      const applied = applySelectionView(view, requestEpoch, requestGen)
+      if (!applied) {
+        setError('Cleanup status could not be verified. Retry the status check.')
+      } else {
+        setNotice(applied.cleanup_warning
+          ? 'Temporary cleanup is still pending. Retry the status check to request another cleanup attempt.'
+          : 'Temporary cleanup completed.')
+      }
+    } catch (err) {
+      if (requestEpoch === epochRef.current) setError(err.message || 'Could not retry temporary cleanup.')
+    } finally {
+      if (requestEpoch === epochRef.current) {
+        checkingCleanupRef.current = false
+        setCheckingCleanup(false)
+      }
+    }
+  }
+
   const handleReset = () => {
     epochRef.current += 1
     genRef.current = 0
@@ -1050,6 +1082,8 @@ export default function Resources({ requestedModelId = '' }) {
     setSelectedFiles([])
     setTargetDrafts({})
     setBusy(false)
+    checkingCleanupRef.current = false
+    setCheckingCleanup(false)
     setPreviewing(false)
     setError('')
     setNotice('')
@@ -2043,7 +2077,17 @@ export default function Resources({ requestedModelId = '' }) {
                   color: 'var(--warning-text, #ca8a04)',
                 }}
               >
-                <b>Temporary Cleanup Notice:</b> {selectionView.cleanup_warning}
+                <div>
+                  <b>Temporary Cleanup Notice:</b> {selectionView.cleanup_warning}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRetryCleanup}
+                  disabled={checkingCleanup}
+                  style={{ marginTop: 8 }}
+                >
+                  {checkingCleanup ? 'Checking cleanup…' : 'Retry cleanup status'}
+                </button>
               </div>
             )}
 

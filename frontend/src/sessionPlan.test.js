@@ -1372,9 +1372,10 @@ describe('SessionView React component rendering integration (renderToStaticMarku
       expect(html).toContain('No additional constraint')
       expect(html).toContain('Authorized fused scene stays whole: an open room with a low camera.')
       if (mode === 'automatic') {
-        expect(html).toContain('Automatic preparation controls are not available in this view yet')
+        expect(html).toContain('Prepare 2 take(s)')
+        expect(html).toContain('Automatic preparation needs a text assistant.')
         expect(html).not.toContain('Prepare Incomplete Takes')
-        expect(html.indexOf('Shared Session Summary')).toBeLessThan(html.indexOf('Automatic preparation controls are not available'))
+        expect(html.indexOf('Shared Session Summary')).toBeLessThan(html.indexOf('Prepare 2 take(s)'))
       } else {
         expect(html.indexOf('Shared Session Summary')).toBeLessThan(html.indexOf('Prepare Incomplete Takes'))
       }

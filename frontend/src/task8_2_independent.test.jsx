@@ -76,6 +76,24 @@ function planFor(mode = 'manual') {
   }
 }
 
+function suggestionOperationView(operationId, requested, items) {
+  return {
+    operation_id: operationId,
+    session_id: sessionId,
+    plan_revision: 1,
+    kind: 'shared_suggestions',
+    state: 'succeeded',
+    created_at: '2026-10-02T12:00:00Z',
+    updated_at: '2026-10-02T12:00:01Z',
+    lease_expires_at: null,
+    progress: { requested, completed: requested, failed: null, remaining: [] },
+    result: { items },
+    error: null,
+    can_cancel: false,
+    can_resume: false,
+  }
+}
+
 const session = {
   id: sessionId,
   name: 'Invented Task 8.2 session',
@@ -471,20 +489,10 @@ describe('Task 8.2 independent UI acceptance', () => {
     let acceptCount = 0
     state.handlePost = async (url, body, store) => {
       if (url === `/api/sessions/${sessionId}/plan/authoring/operations`) {
-        return {
-          operation_id: 'operation-task82',
-          session_id: sessionId,
-          plan_revision: 1,
-          kind: 'shared_suggestions',
-          state: 'succeeded',
-          progress: { requested: ['look', 'initial_wardrobe'] },
-          result: {
-            items: [
-              { target: 'look', result: proposed.look },
-              { target: 'initial_wardrobe', result: proposed.initial_wardrobe },
-            ],
-          },
-        }
+        return suggestionOperationView('operation-task82', ['look', 'initial_wardrobe'], [
+          { target: 'look', result: proposed.look },
+          { target: 'initial_wardrobe', result: proposed.initial_wardrobe },
+        ])
       }
       if (url.endsWith('/operation-task82/accept')) {
         acceptCount += 1
@@ -617,15 +625,9 @@ describe('Task 8.2 independent UI acceptance', () => {
     let resolveAcceptance
     state.handlePost = async (url) => {
       if (url === `/api/sessions/${sessionId}/plan/authoring/operations`) {
-        return {
-          operation_id: 'unmount-operation',
-          session_id: sessionId,
-          plan_revision: 1,
-          kind: 'shared_suggestions',
-          state: 'succeeded',
-          progress: { requested: ['look'] },
-          result: { items: [{ target: 'look', result: 'A proposed look.' }] },
-        }
+        return suggestionOperationView('unmount-operation', ['look'], [
+          { target: 'look', result: 'A proposed look.' },
+        ])
       }
       if (url.endsWith('/unmount-operation/accept')) {
         return new Promise((resolve) => { resolveAcceptance = resolve })
@@ -706,15 +708,9 @@ describe('Task 8.2 independent UI acceptance', () => {
     })
     state.handlePost = async (url) => {
       if (url === `/api/sessions/${sessionId}/plan/authoring/operations`) {
-        return {
-          operation_id: 'switch-operation',
-          session_id: sessionId,
-          plan_revision: 1,
-          kind: 'shared_suggestions',
-          state: 'succeeded',
-          progress: { requested: ['look'] },
-          result: { items: [{ target: 'look', result: 'A proposal to accept.' }] },
-        }
+        return suggestionOperationView('switch-operation', ['look'], [
+          { target: 'look', result: 'A proposal to accept.' },
+        ])
       }
       if (url.endsWith('/switch-operation/accept')) {
         holdOldReload = true

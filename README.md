@@ -186,7 +186,9 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
   `unused data`).
 - **Import Preview & Commit**: Input source file selections, run a preview to
   verify all outcomes (`new`, `unchanged`, `updated`, `unresolved`, auxiliary,
-  duplicates, missing), and commit verified sets into SQLite.
+  duplicates, missing), and commit verified sets into SQLite. A temporary
+  cleanup warning belongs to the import selection; **Retry cleanup status**
+  reloads that selection and triggers its existing lazy cleanup retry.
 - **Translations & Readiness**: Preview and apply translation maps directly from
   the UI, and inspect real-time readiness status and diagnostic sidecar error banners.
   (Single-revision translation updates are available via the HTTP API, not in the Resources UI).
@@ -230,19 +232,25 @@ fence. A succeeded shared-suggestion result can be reviewed through the
 `accept` route, which applies the accepted values through plan CAS and replays
 the saved result after a lost response. `can_cancel` and `can_resume` report
 current action eligibility. Startup and status reads recover stale ownership.
-New `shared_suggestions` claims and eligible resumes launch a configured
-assistant worker in the background. It proposes only missing `look` or
-`initial_wardrobe` values from model context, the brief, and authorized scene
-descriptions; proposals appear in operation status without changing the plan.
-Reviewed values, including edited or empty ones, apply only through `/accept`.
+New `shared_suggestions` and `prepare_takes` claims, and eligible resumes,
+launch configured assistant work in the background. Shared-suggestion
+proposals request only missing `look` or `initial_wardrobe` values from model
+context, the brief, and authorized scene descriptions; they appear in operation
+status without changing the plan. Reviewed values, including edited or empty
+ones, apply only through `/accept`.
 New `prepare_takes` claims reject stable take IDs already submitted in an earlier
 plan revision with `409 authoring_inputs_stale`; omit them and choose pending
 takes. Current-revision ready or generated snapshots remain reusable, and the
 original terminal request can still be replayed.
-Cancellation and stale inputs fence worker output. `SessionView` exposes the
-shared-suggestion request and acceptance flow; Automatic
-Prepare/Continue/Cancel/Resume controls remain future work. Remote
-`prepare_takes` execution is implemented in the backend. See
+Cancellation and stale inputs fence worker output. `SessionView` exposes both
+operation kinds in its existing panel. Automatic Prepare/Continue uses ordered
+batches of at most 20; progress, Cancel, and Resume follow the operation view's
+server-reported state and action flags. Polling does not renew the lease, and
+`409 authoring_active` adopts the existing operation across kinds. The browser
+stores only recovery hints; server operation state and prepared snapshots
+remain authoritative. Terminal preparation reloads the saved plan and reviews
+while staying in Review; it never approves, submits, or runs takes. Exactly-once
+remote billing after response loss is not guaranteed. See
 [authoring operation claims and controls](docs/sessions.md#authoring-operation-claims-cancellation-and-resume)
 for the request, acceptance, recovery, and response contract.
 

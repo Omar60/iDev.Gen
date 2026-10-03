@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 48 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 49 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -444,5 +444,17 @@ Independent verification passed 2,456 Python tests, 483 frontend tests,
 twelve independent UI probes, 46 privacy/control checks, frontend build,
 strict OpenSpec validation and diff checks. The Python full gate preceded
 frontend-only changes; final privacy/control checks cover the final source.
-No independent review remains pending for Task 8.3. Task 8.4 is next and
-requires a separate instruction; no subsequent task or push is authorized.
+No independent review remains pending for Task 8.3.
+
+Task 8.4 passed independent acceptance under deployment `srw-8-4-20261002`
+on the Heavy internal Codex route. SessionView connects automatic ordered
+batches of at most twenty to persisted operations, adopts active work across
+tabs and kinds, and exposes progress plus explicit Cancel/Resume. Unknown
+starts retain their UUID/body across retries and reopening; even a well-formed
+5xx remains unknown. Same-ID Resume reloads newly persisted preparation and
+reviews. GET polling cannot renew ownership or trigger generation. Resources
+offers Retry cleanup status on the existing SelectionView warning.
+Independent gates passed 2,456 Python tests, 492 frontend tests, 46
+privacy/control checks, frontend build, strict OpenSpec validation and diff
+checks. No independent review remains pending for Task 8.4. Task 8.5 requires
+a separate instruction; no subsequent task or push is authorized.

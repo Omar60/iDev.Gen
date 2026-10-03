@@ -537,3 +537,11 @@
   unknown until a valid stored result or stable domain refusal arrives. Preserve
   status through an opt-in API method without changing other callers, guard
   duplicate sends synchronously, and keep the pre-authoring expert path separate.
+- Task 8.4 keeps one operation panel across both authoring kinds. Browser
+  storage holds recovery hints only; server GETs own progress and eligibility.
+  Unknown starts must retain the frozen request even when a 5xx body looks
+  stable; independent real-transport probes caught that body validation alone
+  discarded the UUID. Only a stable 4xx refusal resolves a rejected start.
+  Resume keeps the operation ID, so terminal plan/review refresh must reset
+  across resumed ownership. Selection cleanup warnings remain outside the
+  closed OperationView and use the existing lazy-recovery GET action.

@@ -41,6 +41,129 @@ import {
   submitSelectedTakes,
 } from '../sessionPlan.js'
 
+const MAX_AUTOMATIC_TAKE_BATCH = 20
+const AUTHORING_OPERATION_STATES = new Set([
+  'active', 'cancel_requested', 'succeeded', 'failed', 'cancelled', 'expired',
+])
+const hasStableAuthoringError = (error, code) => (
+  Number.isInteger(error?.status) && error.status >= 400 && error.status < 500
+  && error?.hasStableErrorBody === true
+  && (!code || error?.detail?.code === code)
+)
+
+const authoringOperationStorageKey = (sessionId, planRevision) => (
+  `idevgen:authoring-operation:${sessionId}:${planRevision}`
+)
+const authoringOperationPointerKey = (sessionId) => (
+  `idevgen:authoring-operation:${sessionId}:latest`
+)
+
+const readRememberedAuthoringOperation = (sessionId, planRevision) => {
+  try {
+    const pointer = window.localStorage.getItem(authoringOperationPointerKey(sessionId))
+    const pointedRevision = pointer !== null && /^\d+$/.test(pointer) ? Number(pointer) : null
+    let storedRevision = Number.isInteger(pointedRevision) ? pointedRevision : planRevision
+    let raw = window.localStorage.getItem(authoringOperationStorageKey(sessionId, storedRevision))
+    if (!raw && storedRevision !== planRevision) {
+      storedRevision = planRevision
+      raw = window.localStorage.getItem(authoringOperationStorageKey(sessionId, storedRevision))
+    }
+    const saved = raw ? JSON.parse(raw) : null
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return null
+    if (typeof saved.operation_id === 'string' && saved.operation_id) {
+      return { operation_id: saved.operation_id, plan_revision: storedRevision }
+    }
+    const request = saved.request
+    if (!request || typeof request !== 'object' || Array.isArray(request)) return null
+    const keys = Object.keys(request).sort()
+    const expectedKeys = request.kind === 'prepare_takes'
+      ? ['expected_revision', 'kind', 'request_id', 'take_ids']
+      : ['expected_revision', 'kind', 'request_id']
+    if (
+      keys.length !== expectedKeys.length
+      || keys.some((key, index) => key !== expectedKeys[index])
+      || typeof request.request_id !== 'string'
+      || !/^[0-9a-f-]{36}$/i.test(request.request_id)
+      || !Number.isInteger(request.expected_revision)
+      || request.expected_revision !== storedRevision
+      || !['shared_suggestions', 'prepare_takes'].includes(request.kind)
+      || (request.kind === 'prepare_takes' && (
+        !Array.isArray(request.take_ids)
+        || request.take_ids.length < 1
+        || request.take_ids.length > MAX_AUTOMATIC_TAKE_BATCH
+        || request.take_ids.some((takeId) => typeof takeId !== 'string' || !takeId)
+        || new Set(request.take_ids).size !== request.take_ids.length
+      ))
+    ) return null
+    return { request, plan_revision: storedRevision }
+  } catch {
+    return null
+  }
+}
+
+const rememberAuthoringOperation = (sessionId, planRevision, record) => {
+  try {
+    window.localStorage.setItem(
+      authoringOperationStorageKey(sessionId, planRevision),
+      JSON.stringify(record),
+    )
+    const pointerKey = authoringOperationPointerKey(sessionId)
+    const pointer = window.localStorage.getItem(pointerKey)
+    const pointedRevision = pointer !== null && /^\d+$/.test(pointer) ? Number(pointer) : null
+    if (!Number.isInteger(pointedRevision) || planRevision >= pointedRevision) {
+      window.localStorage.setItem(pointerKey, String(planRevision))
+    }
+  } catch { /* Browser storage is only a recovery hint; the backend owns operation state. */ }
+}
+
+const forgetAuthoringOperation = (sessionId, planRevision) => {
+  try {
+    window.localStorage.removeItem(authoringOperationStorageKey(sessionId, planRevision))
+    const pointerKey = authoringOperationPointerKey(sessionId)
+    if (window.localStorage.getItem(pointerKey) === String(planRevision)) {
+      window.localStorage.removeItem(pointerKey)
+    }
+  } catch { /* Optional recovery hint. */ }
+}
+
+const isAuthoringOperationView = (view, sessionId) => {
+  const viewKeys = [
+    'can_cancel', 'can_resume', 'created_at', 'error', 'kind', 'lease_expires_at',
+    'operation_id', 'plan_revision', 'progress', 'result', 'session_id', 'state', 'updated_at',
+  ].sort()
+  if (
+    !view || typeof view !== 'object' || Array.isArray(view)
+    || Object.keys(view).sort().join('|') !== viewKeys.join('|')
+    || typeof view.operation_id !== 'string' || !view.operation_id
+    || String(view.session_id) !== String(sessionId)
+    || !Number.isInteger(view.plan_revision) || view.plan_revision < 0
+    || !['shared_suggestions', 'prepare_takes'].includes(view.kind)
+    || !AUTHORING_OPERATION_STATES.has(view.state)
+    || typeof view.created_at !== 'string' || typeof view.updated_at !== 'string'
+    || !(view.lease_expires_at === null || typeof view.lease_expires_at === 'string')
+    || !(view.error === null || typeof view.error === 'string')
+    || !(view.result === null || (typeof view.result === 'object' && !Array.isArray(view.result)))
+    || typeof view.can_cancel !== 'boolean' || typeof view.can_resume !== 'boolean'
+  ) return false
+
+  const progress = view.progress
+  const progressKeys = ['completed', 'failed', 'remaining', 'requested']
+  if (
+    !progress || typeof progress !== 'object' || Array.isArray(progress)
+    || Object.keys(progress).sort().join('|') !== progressKeys.join('|')
+    || ['requested', 'completed', 'remaining'].some((key) => (
+      !Array.isArray(progress[key]) || progress[key].some((takeId) => typeof takeId !== 'string')
+    ))
+  ) return false
+  if (progress.failed === null) return true
+  return Boolean(
+    progress.failed && typeof progress.failed === 'object' && !Array.isArray(progress.failed)
+    && Object.keys(progress.failed).sort().join('|') === 'error|take_id'
+    && typeof progress.failed.take_id === 'string'
+    && typeof progress.failed.error === 'string'
+  )
+}
+
 /** The wardrobe the shoot passes through, in order — the arc a composed run is
  *  dealt, one state per photograph after `spread`.
  *
@@ -216,6 +339,10 @@ export default function SessionView({
   const [sharedStartUnknown, setSharedStartUnknown] = useState(false)
   const [sharedAcceptBusy, setSharedAcceptBusy] = useState(false)
   const [sharedAcceptUnknown, setSharedAcceptUnknown] = useState(false)
+  const [preparationActionBusy, setPreparationActionBusy] = useState(false)
+  const [preparationStartUnknown, setPreparationStartUnknown] = useState(false)
+  const [preparationActionError, setPreparationActionError] = useState('')
+  const [preparationActionCode, setPreparationActionCode] = useState('')
   const [manualDecisionBusy, setManualDecisionBusy] = useState(false)
   const [expandedTakeFields, setExpandedTakeFields] = useState({})
   const [planDirty, setPlanDirty] = useState(false)
@@ -226,6 +353,10 @@ export default function SessionView({
   const sharedOperationEpochRef = useRef(0)
   const sharedStartRequestRef = useRef(null)
   const sharedAcceptanceRequestRef = useRef(null)
+  const preparationStartRequestRef = useRef(null)
+  const authoringActionInFlightRef = useRef(false)
+  const authoringOperationRefreshRef = useRef(null)
+  const restoredOperationKeyRef = useRef(null)
   const sessionViewMountedRef = useRef(false)
   const sessionViewEpochRef = useRef(0)
   const sessionViewIdRef = useRef(id)
@@ -293,7 +424,11 @@ export default function SessionView({
             return
           }
           if (!planDirtyRef.current && planRevisionRef.current !== res.planRevision) {
-            resetSharedOperation()
+            if (sharedOperationRef.current) {
+              setPreparationActionCode('plan_revision_stale')
+              setPreparationActionError('The saved plan changed. Reload the saved plan before resuming or starting preparation.')
+              setSharedProposalDrafts({})
+            }
           }
           setPlan((prev) => (planDirtyRef.current && prev ? prev : res.plan))
           setPlanRevision((prev) => (planDirtyRef.current && prev !== null ? prev : res.planRevision))
@@ -353,7 +488,11 @@ export default function SessionView({
 
   const adoptAuthoritativePlan = (loaded, session) => {
     if (!loaded?.ok || planDirtyRef.current) return false
-    if (planRevisionRef.current !== loaded.planRevision) resetSharedOperation()
+    if (planRevisionRef.current !== loaded.planRevision && sharedOperationRef.current) {
+      setPreparationActionCode('plan_revision_stale')
+      setPreparationActionError('The saved plan changed. Reload the saved plan before resuming or starting preparation.')
+      setSharedProposalDrafts({})
+    }
     setPlan(loaded.plan)
     setPlanRevision(loaded.planRevision)
     planRevisionRef.current = loaded.planRevision
@@ -391,9 +530,36 @@ export default function SessionView({
     return adoptAuthoritativePlan(loaded, sessionResult) ? loaded : false
   }
 
+  const refreshAfterAuthoringOperation = async (view) => {
+    if (
+      view?.kind !== 'prepare_takes'
+      || ['active', 'cancel_requested'].includes(view.state)
+      || view.plan_revision !== planRevisionRef.current
+      || authoringOperationRefreshRef.current === view.operation_id
+    ) return
+    authoringOperationRefreshRef.current = view.operation_id
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    const loaded = await reloadAuthoritativePlan(sessionId, view.plan_revision, requestEpoch)
+    if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+    if (!loaded) {
+      setPreparationActionCode('plan_revision_stale')
+      setPreparationActionError('Preparation finished, but the saved plan and take reviews could not be refreshed. Reload the saved plan before continuing.')
+      return
+    }
+    setReviewRefreshCounter((count) => count + 1)
+  }
+
   const applySharedOperationView = (view) => {
     sharedOperationRef.current = view
     setSharedOperation(view)
+    if (
+      view && typeof view.operation_id === 'string'
+      && Number.isInteger(view.plan_revision)
+      && ['shared_suggestions', 'prepare_takes'].includes(view.kind)
+    ) {
+      rememberAuthoringOperation(id, view.plan_revision, { operation_id: view.operation_id })
+    }
     if (view?.kind === 'shared_suggestions' && view.state === 'succeeded') {
       const requested = Array.isArray(view.progress?.requested) ? view.progress.requested : []
       const items = Array.isArray(view.result?.items) ? view.result.items : []
@@ -423,6 +589,9 @@ export default function SessionView({
       }
     } else {
       setSharedProposalDrafts({})
+    }
+    if (view?.kind === 'prepare_takes' && !['active', 'cancel_requested'].includes(view.state)) {
+      void refreshAfterAuthoringOperation(view)
     }
   }
 
@@ -462,7 +631,11 @@ export default function SessionView({
         setError('')
         setTimeout(() => setPlanNotice(''), 4000)
         if (res.planRevision !== previousRevision) {
-          resetSharedOperation()
+          if (sharedOperationRef.current) {
+            setPreparationActionCode('plan_revision_stale')
+            setPreparationActionError('The saved plan changed. Reload the saved plan before resuming or starting preparation.')
+            setSharedProposalDrafts({})
+          }
         }
         if (explicitDecision) {
           const refreshed = await reloadAuthoritativePlan(sessionId, res.planRevision, requestEpoch)
@@ -517,10 +690,15 @@ export default function SessionView({
   }
 
   const startSharedSuggestions = async () => {
-    if (!plan?.authoring || planDirtyRef.current || typeof planRevisionRef.current !== 'number') return
-    if (sharedOperationRef.current && ['active', 'cancel_requested'].includes(sharedOperationRef.current.state)) return
     const current = sharedStartRequestRef.current
-    const retryUnknown = sharedStartUnknown && current && current.expected_revision === planRevisionRef.current
+    const retryUnknown = Boolean(sharedStartUnknown && current?.kind === 'shared_suggestions')
+    const pendingPreparationRequest = preparationStartUnknown
+      && preparationStartRequestRef.current?.kind === 'prepare_takes'
+    if (authoringActionInFlightRef.current || pendingPreparationRequest) return
+    if (!retryUnknown && (
+      !plan?.authoring || planDirtyRef.current || typeof planRevisionRef.current !== 'number'
+      || (sharedOperationRef.current && ['active', 'cancel_requested'].includes(sharedOperationRef.current.state))
+    )) return
     if (!retryUnknown) resetSharedOperation()
     const request = retryUnknown
       ? current
@@ -530,9 +708,11 @@ export default function SessionView({
           kind: 'shared_suggestions',
         }
     sharedStartRequestRef.current = request
-    const operationEpoch = ++sharedOperationEpochRef.current
     const sessionId = id
     const requestEpoch = sessionViewEpochRef.current
+    rememberAuthoringOperation(sessionId, request.expected_revision, { request })
+    const operationEpoch = ++sharedOperationEpochRef.current
+    authoringActionInFlightRef.current = true
     setSharedStartBusy(true)
     setSharedActionError('')
     setSharedActionNotice('')
@@ -542,49 +722,58 @@ export default function SessionView({
         !isCurrentSessionRequest(sessionId, requestEpoch)
         || operationEpoch !== sharedOperationEpochRef.current
       ) return
-      if (!view || typeof view.operation_id !== 'string' || view.plan_revision !== request.expected_revision) {
+      if (!isAuthoringOperationView(view, sessionId) || view.plan_revision !== request.expected_revision) {
         setSharedStartUnknown(true)
         setSharedActionError('The suggestion start result is unknown. Retry to check the same operation.')
         return
       }
-      if (planRevisionRef.current !== request.expected_revision) {
-        sharedStartRequestRef.current = null
-        setSharedStartUnknown(false)
-        setSharedActionError('The saved plan changed before the suggestion operation was confirmed. Reload the current plan before continuing.')
-        return
-      }
+      sharedStartRequestRef.current = null
       setSharedStartUnknown(false)
       applySharedOperationView(view)
+      if (planRevisionRef.current !== request.expected_revision) {
+        setPreparationActionCode('plan_revision_stale')
+        setSharedActionError('The suggestion operation belongs to an older plan revision. Reload the current plan before continuing.')
+      }
     } catch (e) {
       if (
         !isCurrentSessionRequest(sessionId, requestEpoch)
         || operationEpoch !== sharedOperationEpochRef.current
       ) return
-      const activeOperation = e?.detail?.operation
-      if (activeOperation && typeof activeOperation.operation_id === 'string') {
-        if (activeOperation.plan_revision === request.expected_revision) {
-          setSharedStartUnknown(false)
-          applySharedOperationView(activeOperation)
-          setSharedActionError(e?.message || 'Another authoring operation is active for this session.')
-          return
-        }
-      }
-      if (e?.detail?.code === 'plan_revision_stale') {
+      const activeOperation = e?.status === 409
+        && e?.detail?.code === 'authoring_active'
+        && isAuthoringOperationView(e.detail.operation, sessionId)
+        ? e.detail.operation
+        : null
+      if (activeOperation) {
         sharedStartRequestRef.current = null
         setSharedStartUnknown(false)
+        applySharedOperationView(activeOperation)
+        setSharedActionError('Another authoring operation is active. Its saved progress is shown above.')
+        return
+      }
+      if (hasStableAuthoringError(e, 'plan_revision_stale')) {
+        sharedStartRequestRef.current = null
+        setSharedStartUnknown(false)
+        forgetAuthoringOperation(sessionId, request.expected_revision)
+        setPreparationActionCode('plan_revision_stale')
         setSharedActionError(e.message)
         if (!planDirtyRef.current) {
           try { await reloadAuthoritativePlan(sessionId, 0, requestEpoch) } catch { /* The stale CAS message remains visible. */ }
         }
-      } else if (!e?.status || e.status >= 500) {
+      } else if (!hasStableAuthoringError(e)) {
         setSharedStartUnknown(true)
         setSharedActionError('The suggestion start result is unknown. Retry to check the same operation.')
       } else {
         setSharedStartUnknown(false)
+        forgetAuthoringOperation(sessionId, request.expected_revision)
+        setPreparationActionCode(e?.detail?.code || '')
         setSharedActionError(e?.message || 'Shared suggestions could not be started.')
       }
     } finally {
-      if (isCurrentSessionRequest(sessionId, requestEpoch)) setSharedStartBusy(false)
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) {
+        authoringActionInFlightRef.current = false
+        setSharedStartBusy(false)
+      }
     }
   }
 
@@ -637,6 +826,8 @@ export default function SessionView({
       }
       sharedAcceptanceRequestRef.current = null
       setSharedAcceptUnknown(false)
+      forgetAuthoringOperation(sessionId, pending.body.expected_revision)
+      resetSharedOperation()
       const reloaded = await reloadAuthoritativePlan(sessionId, result.plan_revision, requestEpoch)
       if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
       if (reloaded) {
@@ -665,13 +856,248 @@ export default function SessionView({
     }
   }
 
+  const incompleteAuthoringTakeIds = () => (
+    !planDirty && Array.isArray(plan?.takes)
+      ? plan.takes.filter((take) => !['ready', 'generated'].includes(
+          getTakePreparationState(take.take_id, planPreparation, false),
+        )).map((take) => take.take_id)
+      : []
+  )
+
+  const startPreparationOperation = async () => {
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    const current = preparationStartRequestRef.current
+    const retryUnknown = Boolean(preparationStartUnknown && current?.kind === 'prepare_takes')
+    const pendingSharedRequest = sharedStartUnknown
+      && sharedStartRequestRef.current?.kind === 'shared_suggestions'
+    if (authoringActionInFlightRef.current || pendingSharedRequest) return
+    if (!retryUnknown && (
+      !plan?.authoring || plan.authoring.mode !== 'automatic'
+      || planDirtyRef.current || typeof planRevisionRef.current !== 'number'
+      || reviewBlocksFinalization
+      || (sharedOperationRef.current && ['active', 'cancel_requested'].includes(sharedOperationRef.current.state))
+      || sharedOperationRef.current?.can_resume
+    )) return
+    const takeIds = retryUnknown
+      ? current.take_ids
+      : incompleteAuthoringTakeIds().slice(0, MAX_AUTOMATIC_TAKE_BATCH)
+    if (!takeIds.length) return
+    if (!retryUnknown) resetSharedOperation()
+    const request = retryUnknown ? current : {
+      request_id: crypto.randomUUID(),
+      expected_revision: planRevisionRef.current,
+      kind: 'prepare_takes',
+      take_ids: takeIds,
+    }
+    preparationStartRequestRef.current = request
+    rememberAuthoringOperation(sessionId, request.expected_revision, { request })
+    const operationEpoch = ++sharedOperationEpochRef.current
+    authoringActionInFlightRef.current = true
+    setPreparationActionBusy(true)
+    setPreparingAll(true)
+    setPreparationActionError('')
+    setPreparationActionCode('')
+    setSharedActionError('')
+    try {
+      const view = await api.post(`/api/sessions/${sessionId}/plan/authoring/operations`, request)
+      if (
+        !isCurrentSessionRequest(sessionId, requestEpoch)
+        || operationEpoch !== sharedOperationEpochRef.current
+      ) return
+      if (!isAuthoringOperationView(view, sessionId)) {
+        setPreparationStartUnknown(true)
+        setPreparationActionError('The preparation start result could not be verified. Retry the same request to check its saved operation.')
+        return
+      }
+      if (view.plan_revision !== request.expected_revision) {
+        applySharedOperationView(view)
+        setPreparationStartUnknown(false)
+        setPreparationActionCode('plan_revision_stale')
+        setPreparationActionError('The saved plan changed before preparation started. Reload the saved plan before continuing.')
+        return
+      }
+      preparationStartRequestRef.current = null
+      setPreparationStartUnknown(false)
+      applySharedOperationView(view)
+    } catch (e) {
+      if (
+        !isCurrentSessionRequest(sessionId, requestEpoch)
+        || operationEpoch !== sharedOperationEpochRef.current
+      ) return
+      const activeOperation = e?.status === 409
+        && e?.detail?.code === 'authoring_active'
+        && isAuthoringOperationView(e.detail.operation, sessionId)
+        ? e.detail.operation
+        : null
+      if (activeOperation) {
+        preparationStartRequestRef.current = null
+        setPreparationStartUnknown(false)
+        applySharedOperationView(activeOperation)
+        setPreparationActionError('Another authoring operation is active. Its saved progress is shown above; no duplicate assistant work was started.')
+      } else if (hasStableAuthoringError(e, 'assistant_unavailable')) {
+        preparationStartRequestRef.current = null
+        setPreparationStartUnknown(false)
+        forgetAuthoringOperation(sessionId, request.expected_revision)
+        setPreparationActionCode('assistant_unavailable')
+        setPreparationActionError('The prompt assistant is unavailable. Configure it in Setup, then try preparation again.')
+      } else if (hasStableAuthoringError(e, 'plan_revision_stale')) {
+        preparationStartRequestRef.current = null
+        setPreparationStartUnknown(false)
+        forgetAuthoringOperation(sessionId, request.expected_revision)
+        setPreparationActionCode('plan_revision_stale')
+        setPreparationActionError(e?.message || 'The saved plan is stale. Reload it before preparing.')
+        if (!planDirtyRef.current) {
+          try { await reloadAuthoritativePlan(sessionId, 0, requestEpoch) } catch { /* Keep the stale-revision action visible. */ }
+        }
+      } else if (!hasStableAuthoringError(e)) {
+        setPreparationStartUnknown(true)
+        setPreparationActionError('The preparation start result is unknown. Retry the same request to check its saved operation.')
+      } else {
+        preparationStartRequestRef.current = null
+        setPreparationStartUnknown(false)
+        forgetAuthoringOperation(sessionId, request.expected_revision)
+        setPreparationActionCode(e?.detail?.code || '')
+        setPreparationActionError(e?.message || 'Automatic preparation could not be started.')
+      }
+    } finally {
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) {
+        authoringActionInFlightRef.current = false
+        setPreparationActionBusy(false)
+        setPreparingAll(false)
+      }
+    }
+  }
+
+  const resumeAuthoringOperation = async () => {
+    const operation = sharedOperationRef.current
+    if (
+      !operation || !operation.can_resume
+      || operation.plan_revision !== planRevisionRef.current
+      || authoringActionInFlightRef.current
+    ) return
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    const operationEpoch = ++sharedOperationEpochRef.current
+    // Resume keeps the operation ID, so a later terminal result must refresh
+    // persisted preparation and reviews even if this ID already finished once.
+    authoringOperationRefreshRef.current = null
+    authoringActionInFlightRef.current = true
+    setPreparationActionBusy(true)
+    setPreparationActionError('')
+    setPreparationActionCode('')
+    try {
+      const view = await api.post(
+        `/api/sessions/${sessionId}/plan/authoring/operations/${encodeURIComponent(operation.operation_id)}/resume`,
+        { expected_revision: operation.plan_revision },
+      )
+      if (!isCurrentSessionRequest(sessionId, requestEpoch) || operationEpoch !== sharedOperationEpochRef.current) return
+      if (!isAuthoringOperationView(view, sessionId)) {
+        setPreparationActionError('The resume result could not be verified. Retry Resume to check the same operation.')
+        return
+      }
+      applySharedOperationView(view)
+    } catch (e) {
+      if (!isCurrentSessionRequest(sessionId, requestEpoch) || operationEpoch !== sharedOperationEpochRef.current) return
+      const returnedOperation = isAuthoringOperationView(e?.detail?.operation, sessionId)
+        ? e.detail.operation
+        : null
+      if (returnedOperation) applySharedOperationView(returnedOperation)
+      if (e?.detail?.code === 'assistant_unavailable') {
+        setPreparationActionCode('assistant_unavailable')
+        setPreparationActionError('The prompt assistant is unavailable. Configure it in Setup, then resume this operation.')
+      } else if (e?.detail?.code === 'plan_revision_stale') {
+        setPreparationActionCode('plan_revision_stale')
+        setPreparationActionError('This operation belongs to an older plan revision. Reload the saved plan before continuing.')
+      } else if (e?.detail?.code === 'authoring_active' && returnedOperation) {
+        setPreparationActionError('Another authoring operation is active. Its saved progress is shown above.')
+      } else if (!e?.status || e.status >= 500) {
+        setPreparationActionError('The resume result is unknown. Retry Resume to check this same operation.')
+      } else {
+        setPreparationActionCode(e?.detail?.code || '')
+        setPreparationActionError(e?.message || 'The operation could not be resumed.')
+      }
+    } finally {
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) {
+        authoringActionInFlightRef.current = false
+        setPreparationActionBusy(false)
+      }
+    }
+  }
+
+  const cancelAuthoringOperation = async () => {
+    const operation = sharedOperationRef.current
+    if (!operation?.can_cancel || authoringActionInFlightRef.current) return
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    const operationEpoch = ++sharedOperationEpochRef.current
+    authoringActionInFlightRef.current = true
+    setPreparationActionBusy(true)
+    setPreparationActionError('')
+    setPreparationActionCode('')
+    try {
+      const view = await api.post(
+        `/api/sessions/${sessionId}/plan/authoring/operations/${encodeURIComponent(operation.operation_id)}/cancel`,
+        { expected_revision: operation.plan_revision },
+      )
+      if (!isCurrentSessionRequest(sessionId, requestEpoch) || operationEpoch !== sharedOperationEpochRef.current) return
+      if (!isAuthoringOperationView(view, sessionId)) {
+        setPreparationActionError('The cancellation result could not be verified. Retry Cancel to check this operation.')
+        return
+      }
+      applySharedOperationView(view)
+    } catch (e) {
+      if (!isCurrentSessionRequest(sessionId, requestEpoch) || operationEpoch !== sharedOperationEpochRef.current) return
+      const returnedOperation = isAuthoringOperationView(e?.detail?.operation, sessionId)
+        ? e.detail.operation
+        : null
+      if (returnedOperation) applySharedOperationView(returnedOperation)
+      setPreparationActionCode(e?.detail?.code || '')
+      setPreparationActionError(e?.message || 'The operation could not be cancelled. Retry Cancel to check its status.')
+    } finally {
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) {
+        authoringActionInFlightRef.current = false
+        setPreparationActionBusy(false)
+      }
+    }
+  }
+
+  const reloadSavedPlanForOperation = async () => {
+    if (planDirtyRef.current) {
+      setPreparationActionCode('plan_revision_stale')
+      setPreparationActionError('Save or discard unsaved plan edits before reloading the saved plan.')
+      return
+    }
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    setPreparationActionBusy(true)
+    try {
+      const loaded = await reloadAuthoritativePlan(sessionId, 0, requestEpoch)
+      if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+      if (loaded) {
+        setPreparationActionCode('')
+        setPreparationActionError('The saved plan and preparation progress were reloaded. Start a new operation for any remaining takes.')
+        setReviewRefreshCounter((count) => count + 1)
+      }
+    } finally {
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) setPreparationActionBusy(false)
+    }
+  }
+
   useEffect(() => {
     sessionViewEpochRef.current += 1
     sessionViewMountedRef.current = true
+    authoringActionInFlightRef.current = false
+    authoringOperationRefreshRef.current = null
+    restoredOperationKeyRef.current = null
     resetSharedOperation()
     setManualDecisionBusy(false)
     setSharedActionError('')
     setSharedActionNotice('')
+    setPreparationActionBusy(false)
+    setPreparationStartUnknown(false)
+    setPreparationActionError('')
+    setPreparationActionCode('')
     setExpandedTakeFields({})
     return () => {
       sessionViewMountedRef.current = false
@@ -679,6 +1105,57 @@ export default function SessionView({
       sharedOperationEpochRef.current += 1
     }
   }, [id])
+
+  useEffect(() => {
+    if (!Number.isInteger(planRevision) || planRevision < 0) return undefined
+    const sessionId = id
+    const remembered = readRememberedAuthoringOperation(sessionId, planRevision)
+    if (!remembered) return undefined
+    const restoreKey = `${sessionId}:${remembered.plan_revision}:${remembered.operation_id || remembered.request.request_id}`
+    if (restoredOperationKeyRef.current === restoreKey) return undefined
+    restoredOperationKeyRef.current = restoreKey
+    const requestEpoch = sessionViewEpochRef.current
+
+    if (remembered.request) {
+      if (remembered.request.kind === 'prepare_takes') {
+        preparationStartRequestRef.current = remembered.request
+        setPreparationStartUnknown(true)
+        setPreparationActionError('The previous preparation start result is unknown. Retry the same request to recover its saved operation.')
+      } else {
+        sharedStartRequestRef.current = remembered.request
+        setSharedStartUnknown(true)
+        setSharedActionError('The suggestion start result is unknown. Retry to check the same operation.')
+      }
+      return undefined
+    }
+
+    const operationId = remembered.operation_id
+    const operationEpoch = ++sharedOperationEpochRef.current
+    let current = true
+    api.get(
+      `/api/sessions/${sessionId}/plan/authoring/operations/${encodeURIComponent(operationId)}`,
+    ).then((view) => {
+      if (
+        !current || !isCurrentSessionRequest(sessionId, requestEpoch)
+        || operationEpoch !== sharedOperationEpochRef.current
+      ) return
+      if (!isAuthoringOperationView(view, sessionId)) {
+        setPreparationActionCode('operation_status_invalid')
+        setPreparationActionError('The saved operation status could not be verified. Reload the plan before continuing.')
+        return
+      }
+      applySharedOperationView(view)
+      if (view.plan_revision !== planRevisionRef.current) {
+        setPreparationActionCode('plan_revision_stale')
+        setPreparationActionError('This operation belongs to an older plan revision. Reload the saved plan before continuing.')
+      }
+    }).catch((e) => {
+      if (!current || !isCurrentSessionRequest(sessionId, requestEpoch)) return
+      setPreparationActionCode(e?.detail?.code || 'operation_status_unavailable')
+      setPreparationActionError(e?.message || 'Could not restore the saved authoring operation. Reload the plan before continuing.')
+    })
+    return () => { current = false }
+  }, [id, planRevision])
 
   useEffect(() => {
     const operation = sharedOperation
@@ -697,17 +1174,30 @@ export default function SessionView({
           !current || !sessionViewMountedRef.current || String(id) !== String(sessionId)
           || operationEpoch !== sharedOperationEpochRef.current
         ) return
-        setSharedActionError('')
-        if (view.plan_revision !== planRevisionRef.current) {
-          setSharedActionError('This operation belongs to an older plan revision. Reload the saved plan before continuing.')
-          resetSharedOperation()
+        if (!isAuthoringOperationView(view, sessionId)) {
+          setPreparationActionCode('operation_status_invalid')
+          setPreparationActionError('The authoring operation returned an invalid status view. Reload the plan before continuing.')
           return
         }
+        if (view.plan_revision !== planRevisionRef.current) {
+          applySharedOperationView(view)
+          setPreparationActionCode('plan_revision_stale')
+          setPreparationActionError('This operation belongs to an older plan revision. Reload the saved plan before continuing.')
+          return
+        }
+        setSharedActionError('')
+        setPreparationActionError('')
+        setPreparationActionCode('')
         applySharedOperationView(view)
         if (['active', 'cancel_requested'].includes(view.state)) timer = window.setTimeout(poll, 1200)
       } catch (e) {
         if (!current || !sessionViewMountedRef.current || operationEpoch !== sharedOperationEpochRef.current) return
-        setSharedActionError(e?.message || 'Could not read authoring operation status.')
+        if (e?.detail?.code === 'operation_not_found') {
+          setPreparationActionCode('operation_not_found')
+          setPreparationActionError('The saved operation status is unavailable. Reload the saved plan before starting new preparation.')
+          return
+        }
+        setPreparationActionError(e?.message || 'Could not read authoring operation status.')
         timer = window.setTimeout(poll, 2000)
       }
     }
@@ -998,6 +1488,20 @@ export default function SessionView({
   }, [s?.status])
 
   if (!s) return <p className="muted">{error || 'Loading…'}</p>
+
+  const automaticIncompleteTakeIds = incompleteAuthoringTakeIds()
+  const automaticBatchTakeIds = automaticIncompleteTakeIds.slice(0, MAX_AUTOMATIC_TAKE_BATCH)
+  const authoringOperationStale = Boolean(
+    sharedOperation && Number.isInteger(planRevision)
+    && sharedOperation.plan_revision !== planRevision,
+  )
+  const authoringOperationActive = Boolean(
+    sharedOperation && ['active', 'cancel_requested'].includes(sharedOperation.state),
+  )
+  const preparationRetryUnknown = Boolean(
+    preparationStartUnknown
+    && preparationStartRequestRef.current?.kind === 'prepare_takes',
+  )
 
   const done = s.shots.filter((x) => x.status === 'done').length
   const failed = s.shots.filter((x) => ['failed', 'cancelled'].includes(x.status)).length
@@ -1633,6 +2137,104 @@ export default function SessionView({
 
       {isResource && (
         <div className="panel" style={{ marginBottom: 14 }}>
+          {sharedOperation && (
+            <section
+              aria-label="Authoring operation"
+              style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 10, marginBottom: 14 }}
+            >
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <div>
+                  <b>Authoring operation</b>{' '}
+                  <code>{sharedOperation.operation_id}</code>{' '}
+                  <span className={`badge ${sharedOperation.state}`}>{sharedOperation.state}</span>
+                  <span className="muted"> · {sharedOperation.kind} · plan revision {sharedOperation.plan_revision}</span>
+                </div>
+                <div className="row" style={{ gap: 8 }}>
+                  {sharedOperation.can_cancel && (
+                    <button
+                      type="button"
+                      onClick={cancelAuthoringOperation}
+                      disabled={preparationActionBusy}
+                    >
+                      {preparationActionBusy ? 'Working…' : 'Cancel operation'}
+                    </button>
+                  )}
+                  {!authoringOperationStale && sharedOperation.can_resume && (
+                    <button
+                      type="button"
+                      onClick={resumeAuthoringOperation}
+                      disabled={preparationActionBusy}
+                    >
+                      {preparationActionBusy ? 'Working…' : 'Resume operation'}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div
+                style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 6, marginTop: 8, fontSize: 12 }}
+              >
+                <span><b>Requested:</b> {Array.isArray(sharedOperation.progress?.requested) ? (sharedOperation.progress.requested.join(', ') || 'None') : 'None'}</span>
+                <span><b>Completed:</b> {Array.isArray(sharedOperation.progress?.completed) ? (sharedOperation.progress.completed.join(', ') || 'None') : 'None'}</span>
+                <span><b>Failed:</b> {sharedOperation.progress?.failed
+                  ? `${sharedOperation.progress.failed.take_id}: ${sharedOperation.progress.failed.error}`
+                  : 'None'}</span>
+                <span><b>Remaining:</b> {Array.isArray(sharedOperation.progress?.remaining) ? (sharedOperation.progress.remaining.join(', ') || 'None') : 'None'}</span>
+              </div>
+              {sharedOperation.error && (
+                <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>{sharedOperation.error}</p>
+              )}
+              {authoringOperationStale && (
+                <p className="error" role="alert" style={{ margin: '8px 0 0', fontSize: 12 }}>
+                  This operation belongs to an older plan revision. Reload the saved plan before continuing.
+                </p>
+              )}
+              {!authoringOperationStale && !sharedOperation.can_resume
+                && ['failed', 'cancelled', 'expired'].includes(sharedOperation.state)
+                && (preparationActionCode === 'assistant_unavailable' || !llm) && (
+                  <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
+                    The prompt assistant is unavailable. <a href="#/setup">Configure assistant</a>, then resume this operation.
+                  </p>
+                )}
+              {!authoringOperationStale && !sharedOperation.can_resume
+                && ['failed', 'cancelled', 'expired'].includes(sharedOperation.state)
+                && preparationActionCode !== 'assistant_unavailable' && llm && (
+                  <div style={{ marginTop: 8 }}>
+                    <p className="muted" style={{ margin: '0 0 6px', fontSize: 12 }}>
+                      Resume is unavailable because the saved inputs need to be checked. Reload the saved plan before starting new preparation.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={reloadSavedPlanForOperation}
+                      disabled={preparationActionBusy || planDirty}
+                    >
+                      Reload saved plan
+                    </button>
+                  </div>
+                )}
+              {authoringOperationStale && (
+                <button
+                  type="button"
+                  onClick={reloadSavedPlanForOperation}
+                  disabled={preparationActionBusy || planDirty}
+                  style={{ marginTop: 8 }}
+                >
+                  Reload saved plan
+                </button>
+              )}
+            </section>
+          )}
+          {preparationActionError && (
+            <div className="error" role="alert" style={{ marginBottom: 12, padding: 8 }}>
+              {preparationActionError}{' '}
+              {preparationActionCode === 'assistant_unavailable' && <a href="#/setup">Configure assistant</a>}
+              {['plan_revision_stale', 'operation_status_invalid', 'operation_status_unavailable', 'operation_not_found'].includes(preparationActionCode)
+                && !authoringOperationStale && (
+                  <button type="button" onClick={reloadSavedPlanForOperation} disabled={preparationActionBusy || planDirty}>
+                    Reload saved plan
+                  </button>
+                )}
+            </div>
+          )}
           {!canPreparePlan({ plan, planRevision }) ? (
             <div>
               <h3>Resource Session Plan Incomplete</h3>
@@ -1791,7 +2393,14 @@ export default function SessionView({
                           <button
                             type="button"
                             onClick={startSharedSuggestions}
-                            disabled={sharedStartBusy || sharedAcceptancePending || planDirty || manualDecisionBusy || planRevision === null || ['active', 'cancel_requested'].includes(sharedOperation?.state)}
+                            disabled={
+                              sharedStartBusy || sharedAcceptancePending || manualDecisionBusy
+                              || preparationStartUnknown || preparationActionBusy
+                              || (!sharedStartUnknown && (
+                                planDirty || planRevision === null
+                                || ['active', 'cancel_requested'].includes(sharedOperation?.state)
+                              ))
+                            }
                           >
                             {sharedStartBusy
                               ? 'Starting…'
@@ -1800,11 +2409,6 @@ export default function SessionView({
                                 : 'Generate shared suggestions'}
                           </button>
                         </div>
-                        {sharedOperation && (
-                          <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }} role="status">
-                            Operation {sharedOperation.kind}: {sharedOperation.state}
-                          </p>
-                        )}
                         {sharedOperation?.kind === 'shared_suggestions' && sharedOperation.state === 'succeeded' && (
                           <div style={{ marginTop: 10 }}>
                             {Object.entries(sharedProposalDrafts).map(([field, value]) => (
@@ -2508,9 +3112,52 @@ export default function SessionView({
                   <div className="row" style={{ gap: 10, alignItems: 'center' }}>
                     <span style={{ fontSize: 12, fontWeight: 600 }}>Actions:</span>
                     {plan?.authoring?.mode === 'automatic' ? (
-                      <span className="muted" role="status" style={{ fontSize: 12 }}>
-                        Automatic preparation controls are not available in this view yet; manual editing is available under Advanced.
-                      </span>
+                      <>
+                        <button
+                          type="button"
+                          onClick={startPreparationOperation}
+                          disabled={
+                            manualDecisionBusy || preparationActionBusy
+                            || (!preparationRetryUnknown && (
+                              planDirty || reviewBlocksFinalization || authoringOperationActive
+                              || sharedOperation?.can_resume || sharedStartBusy || sharedStartUnknown
+                              || !llm || automaticBatchTakeIds.length === 0
+                            ))
+                          }
+                          title={
+                            preparationRetryUnknown
+                              ? 'Retry the same request ID and body to recover its operation'
+                              : planDirty
+                                ? 'Save draft before preparing'
+                                : reviewBlocksFinalization
+                                  ? 'Load all take reviews before preparing'
+                                  : !llm
+                                    ? 'Configure a text assistant before automatic preparation'
+                                    : `Prepare the next ${automaticBatchTakeIds.length} incomplete take(s), in plan order; each operation is limited to 20`
+                          }
+                        >
+                          {preparationActionBusy
+                            ? 'Starting preparation…'
+                            : preparationRetryUnknown
+                              ? 'Retry preparation'
+                              : automaticIncompleteTakeIds.length > 0 && (
+                                planPreparation?.completed?.length > 0
+                                || sharedOperation?.kind === 'prepare_takes'
+                              )
+                                ? `Continue preparation (${automaticBatchTakeIds.length})`
+                                : `Prepare ${automaticBatchTakeIds.length} take(s)`}
+                        </button>
+                        {automaticIncompleteTakeIds.length > 0 && !llm && (
+                          <span className="muted" role="status" style={{ fontSize: 12 }}>
+                            Automatic preparation needs a text assistant. <a href="#/setup">Configure assistant</a>.
+                          </span>
+                        )}
+                        {automaticIncompleteTakeIds.length > MAX_AUTOMATIC_TAKE_BATCH && (
+                          <span className="muted" role="status" style={{ fontSize: 12 }}>
+                            {automaticIncompleteTakeIds.length} takes remain; each batch prepares at most {MAX_AUTOMATIC_TAKE_BATCH}.
+                          </span>
+                        )}
+                      </>
                     ) : (
                       <button
                         onClick={handlePrepareAllIncomplete}

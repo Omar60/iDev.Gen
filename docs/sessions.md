@@ -1746,17 +1746,33 @@ that it cannot resume; reload the plan and start a new operation. A crash
 after an assistant response but before its result is saved may require another
 assistant call on retry, so exactly-once remote billing is not guaranteed.
 
-Only a new `shared_suggestions` claim or a resume that claims retry work
-schedules the configured assistant worker; replay returns the existing
-operation without dispatching it again. The worker requests only missing
-`look` and `initial_wardrobe` values, using selected-model context, the brief,
-and authorized scene descriptions. Proposals appear in operation status and do
-not change the plan until explicitly accepted. Cancellation and stale inputs
-fence worker output. SessionView exposes shared-suggestion requests and
-acceptance; Automatic Prepare/Continue/Cancel/Resume UI controls remain future
-work. Remote `prepare_takes` execution is implemented in the backend. Shared
-suggestion controls do not implicitly approve or submit takes or start
-generation.
+New `shared_suggestions` and `prepare_takes` claims, and eligible resumes,
+schedule configured assistant work; replay returns the existing operation
+without dispatching it again. Shared suggestions request only missing `look`
+and `initial_wardrobe` values, using selected-model context, the brief, and
+authorized scene descriptions. Proposals appear in operation status and do not
+change the plan until explicitly accepted. Cancellation and stale inputs fence
+worker output.
+
+SessionView uses its existing operation panel for both kinds. Automatic
+Prepare/Continue takes the next ordered batch of at most 20 and shows the
+operation ID, kind, revision, state, and requested/completed/failed/remaining
+progress. Cancel and Resume follow `can_cancel` and `can_resume`; Resume is
+available only while the original plan revision and effective inputs remain
+current. A new operation request that receives `409 authoring_active` adopts
+the active operation, including when the other tab requested a different kind.
+GET polling lazily recovers status without renewing the lease.
+
+The browser stores an operation ID, or the original UUID request after an
+unknown start, only as a recovery hint. On restore, a stored operation ID is
+resolved against server status; retrying an unknown start resends the same UUID
+and body. Prepared snapshots remain on the server if browser storage is lost.
+Assistant unavailability directs users to Setup; stale status requires
+reloading the saved plan, and changed resource or workflow inputs must be
+corrected before starting again. Terminal preparation reloads the saved plan
+and take reviews and stays in Review; it never approves, submits, or runs takes.
+Exactly-once remote billing after response loss is not guaranteed. Manual and
+pre-authoring expert preparation retain their existing flows.
 
 ### Operational rollback and disabling resource mode
 

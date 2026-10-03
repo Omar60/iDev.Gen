@@ -836,6 +836,11 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
       cleanup_warning: 'Temporary cleanup is incomplete and will be retried automatically.',
     }
 
+    const statusSpy = vi.spyOn(api, 'get').mockImplementation(async (url) => (
+      url === '/api/resources/import-selections/sel-warn'
+        ? { ...viewWithWarning, cleanup_warning: null }
+        : []
+    ))
     vi.spyOn(api, 'post').mockResolvedValue(viewWithWarning)
     vi.spyOn(api, 'uploadMultipart').mockResolvedValue(viewWithWarning)
 
@@ -848,6 +853,13 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     expect(container.textContent).toContain('Temporary cleanup is incomplete and will be retried automatically.')
     expect(container.textContent).not.toContain('cleanup_state')
     expect(container.textContent).not.toContain('OSError')
+    const retryCleanup = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.trim() === 'Retry cleanup status')
+    expect(retryCleanup).toBeTruthy()
+    await act(async () => { retryCleanup.click() })
+    expect(statusSpy).toHaveBeenCalledWith('/api/resources/import-selections/sel-warn')
+    expect(container.textContent).toContain('Temporary cleanup completed.')
+    expect(container.textContent).not.toContain('Temporary cleanup is incomplete and will be retried automatically.')
   })
 
   // 11. Historical target compatibility with explicit Advanced choice
