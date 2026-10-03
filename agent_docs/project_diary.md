@@ -565,3 +565,11 @@
 - A successful mutation must fence earlier list reads before merging its result.
   Independent Refresh/Save probes caught a late list erasing a new look and
   downgrading version history; both cases now have retained component tests.
+- Portable look equality covers the complete validated envelope, including
+  logical identity, display name and untrusted origin annotation. Keep that
+  digest separate from the appearance/outfit snapshot digest; normalize garment
+  definitions by the declared reference order before hashing.
+- A closed export projects only immutable saved definitions, never live
+  catalogue or private evidence. A path-based endpoint must support every key
+  allowed by its schema: independent tests caught a legal slash-containing look
+  key being rejected by the new export route before acceptance.

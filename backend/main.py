@@ -1420,6 +1420,11 @@ def get_saved_look_version(look_key: str, version: int = PathParam(ge=1)):
     return saved_looks.get_version(look_key, version)
 
 
+@app.get("/api/looks/{look_key:path}/versions/{version}/export")
+def export_saved_look_version(look_key: str, version: int = PathParam(ge=1)):
+    return saved_looks.export_version(look_key, version)
+
+
 def _require_saved_look_writes():
     if not is_resource_planning_enabled():
         raise HTTPException(

@@ -1,20 +1,71 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import copy
 import json
 import sqlite3
 import threading
+from urllib.parse import quote
 
 import pytest
 
 import db
 import main
-from backend import resource_store
+from backend import resource_store, saved_looks
 from backend.request_limits import DEFAULT_MAX_JSON_BODY_BYTES
 
 
 def _look_path(look_key: str, version: int) -> str:
-    return f"/api/looks/{look_key}/versions/{version}"
+    return f"/api/looks/{quote(look_key, safe='')}/versions/{version}"
+
+
+def _look_export_path(look_key: str, version: int) -> str:
+    return f"{_look_path(look_key, version)}/export"
+
+
+def _insert_historical_look(look_key: str) -> dict:
+    appearance = "Historical appearance."
+    outfit = None
+    snapshot = {
+        "look_id": look_key,
+        "version": 1,
+        "content_digest": resource_store.canonical_digest({
+            "appearance": appearance, "outfit": outfit,
+        }),
+        "appearance": appearance,
+        "outfit": outfit,
+    }
+    db.run(
+        """INSERT INTO saved_look_version
+           (look_key, version, name, snapshot_json, created_at)
+           VALUES (?, 1, ?, ?, ?)""",
+        look_key,
+        "Historical look",
+        json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+        db.now(),
+    )
+    return snapshot
+
+
+def _portable_look() -> dict:
+    return {
+        "schema_version": 1,
+        "look": {
+            "key": "portable-look",
+            "version": 3,
+            "name": "Layered blue look",
+            "appearance": "  arbitrary appearance prose\n",
+            "outfit": {
+                "key": "portable-outfit",
+                "garment_keys": ["portable-top", "portable-layer"],
+            },
+        },
+        "garments": [
+            {"key": "portable-layer", "wording": "a light cardigan", "aside": "unbuttoned"},
+            {"key": "portable-top", "wording": "a blue cotton top", "aside": ""},
+        ],
+        "provenance": None,
+    }
 
 
 def _seed_legacy_outfit() -> None:
@@ -303,3 +354,261 @@ def test_manual_write_routes_reject_oversized_bodies_before_endpoint_work(client
     assert db.one("SELECT COUNT(*) AS count FROM saved_look_version")["count"] == 0
     assert db.one("SELECT COUNT(*) AS count FROM garment")["count"] == 0
     assert db.one("SELECT COUNT(*) AS count FROM outfit")["count"] == 0
+
+
+def _portable_counts() -> dict[str, int]:
+    return {
+        table: db.one(f"SELECT COUNT(*) AS count FROM {table}")["count"]
+        for table in ("garment", "outfit", "saved_look_version")
+    }
+
+
+def _assert_portable_invalid(value: object) -> None:
+    with pytest.raises(saved_looks.SavedLookError) as error:
+        saved_looks.canonicalize_portable_look(value)
+    assert error.value.status_code == 422
+    assert error.value.code == "invalid_look"
+    assert error.value.message == "Look data is invalid."
+
+
+def test_portable_parser_rejects_duplicate_keys_and_non_json_values(client):
+    raw = json.dumps(_portable_look(), separators=(",", ":"))
+    duplicates = (
+        raw.replace('"schema_version":1,', '"schema_version":1,"schema_version":1,', 1),
+        raw.replace('"version":3,', '"version":3,"version":3,', 1),
+    )
+    invalid_values = (
+        raw.replace('"version":3,', '"version":NaN,', 1),
+        raw.replace('"version":3,', '"version":Infinity,', 1),
+    )
+    before = _portable_counts()
+
+    for invalid_json in (*duplicates, *invalid_values):
+        with pytest.raises(saved_looks.SavedLookError) as error:
+            saved_looks.parse_portable_look_json(invalid_json)
+        assert error.value.code == "invalid_look"
+    assert _portable_counts() == before
+
+
+def test_portable_parser_bounds_deep_json_and_large_integer_errors(client):
+    deeply_nested = "[" * 1200 + "0" + "]" * 1200
+    too_large_integer = json.dumps(_portable_look(), separators=(",", ":")).replace(
+        '"version":3,', '"version":' + ("9" * 5000) + ',', 1,
+    )
+    for raw in (deeply_nested, too_large_integer):
+        with pytest.raises(saved_looks.SavedLookError) as error:
+            saved_looks.parse_portable_look_json(raw)
+        assert error.value.code == "invalid_look"
+        assert error.value.message == "Look data is invalid."
+
+
+def test_portable_envelope_rejects_unknown_fields_types_and_incomplete_sets(client):
+    invalid = []
+
+    candidate = _portable_look()
+    candidate["unexpected"] = "must not be discarded"
+    invalid.append(candidate)
+
+    candidate = _portable_look()
+    candidate["look"]["unexpected"] = "must not be discarded"
+    invalid.append(candidate)
+
+    candidate = _portable_look()
+    candidate["garments"][0]["unexpected"] = "must not be discarded"
+    invalid.append(candidate)
+
+    for bad_version in (True, 1.0, "1"):
+        candidate = _portable_look()
+        candidate["look"]["version"] = bad_version
+        invalid.append(candidate)
+
+    for bad_schema in (True, 1.0, "1", 2):
+        candidate = _portable_look()
+        candidate["schema_version"] = bad_schema
+        invalid.append(candidate)
+
+    candidate = _portable_look()
+    candidate["look"]["outfit"]["garment_keys"] = ["portable-top", "portable-top"]
+    invalid.append(candidate)
+
+    candidate = _portable_look()
+    candidate["garments"].append(copy.deepcopy(candidate["garments"][0]))
+    invalid.append(candidate)
+
+    candidate = _portable_look()
+    candidate["garments"] = candidate["garments"][:1]
+    invalid.append(candidate)
+
+    candidate = _portable_look()
+    candidate["garments"].append({"key": "extra", "wording": "an extra item", "aside": ""})
+    invalid.append(candidate)
+
+    candidate = _portable_look()
+    candidate["look"]["outfit"] = None
+    invalid.append(candidate)
+
+    before = _portable_counts()
+    for envelope in invalid:
+        _assert_portable_invalid(envelope)
+    assert _portable_counts() == before
+
+
+def test_portable_order_digest_provenance_and_complete_snapshot_are_distinct(client):
+    input_envelope = _portable_look()
+    canonical = saved_looks.parse_portable_look_json(json.dumps(input_envelope))
+    assert [item["key"] for item in canonical["garments"]] == [
+        "portable-top", "portable-layer",
+    ]
+    assert canonical["look"]["appearance"] == "  arbitrary appearance prose\n"
+
+    reordered_input = copy.deepcopy(input_envelope)
+    reordered_input["garments"].reverse()
+    assert saved_looks.portable_content_digest(reordered_input) == saved_looks.portable_content_digest(canonical)
+    assert saved_looks.portable_content_digest(canonical) == resource_store.canonical_digest(canonical)
+
+    manual = copy.deepcopy(canonical)
+    manual["provenance"] = {"source": "manual", "image_sha256": None}
+    photo = copy.deepcopy(canonical)
+    photo["provenance"] = {"source": "photo", "image_sha256": "a" * 64}
+    assert saved_looks.portable_content_digest(manual) != saved_looks.portable_content_digest(photo)
+    assert saved_looks.portable_content_digest(canonical) != saved_looks.portable_content_digest(manual)
+
+    for source in ("manual", "assistant", "import"):
+        candidate = copy.deepcopy(canonical)
+        candidate["provenance"] = {"source": source, "image_sha256": None}
+        assert saved_looks.canonicalize_portable_look(candidate)["provenance"]["source"] == source
+    assert saved_looks.canonicalize_portable_look(photo)["provenance"] == photo["provenance"]
+
+    snapshot = saved_looks.portable_look_to_snapshot(manual)
+    assert snapshot == {
+        "look_id": "portable-look",
+        "version": 3,
+        "content_digest": resource_store.canonical_digest({
+            "appearance": canonical["look"]["appearance"],
+            "outfit": {
+                "outfit_key": "portable-outfit",
+                "garments": canonical["garments"],
+            },
+        }),
+        "appearance": canonical["look"]["appearance"],
+        "outfit": {
+            "outfit_key": "portable-outfit",
+            "garments": canonical["garments"],
+        },
+    }
+    photo_snapshot = saved_looks.portable_look_to_snapshot(photo)
+    assert photo_snapshot["content_digest"] == snapshot["content_digest"]
+
+
+def test_portable_canonicalization_maps_bad_unicode_to_safe_error(client):
+    envelope = _portable_look()
+    envelope["look"]["appearance"] = "unpaired: \ud800"
+    _assert_portable_invalid(envelope)
+    with pytest.raises(saved_looks.SavedLookError) as parse_error:
+        saved_looks.parse_portable_look_json(json.dumps(envelope))
+    assert parse_error.value.code == "invalid_look"
+    with pytest.raises(saved_looks.SavedLookError) as error:
+        saved_looks.portable_look_to_snapshot(envelope)
+    assert error.value.code == "invalid_look"
+
+
+def test_portable_provenance_is_closed_untrusted_annotation(client):
+    invalid_provenance = (
+        {"source": "other", "image_sha256": None},
+        {"source": "manual", "image_sha256": "a" * 64},
+        {"source": "photo", "image_sha256": "A" * 64},
+        {"source": "photo", "image_sha256": "a" * 63},
+        {"source": "assistant", "image_sha256": None, "approved": True},
+    )
+    for provenance in invalid_provenance:
+        candidate = _portable_look()
+        candidate["provenance"] = provenance
+        _assert_portable_invalid(candidate)
+
+    accepted = _portable_look()
+    accepted["provenance"] = {"source": "assistant", "image_sha256": None}
+    canonical = saved_looks.canonicalize_portable_look(accepted)
+    assert canonical["provenance"] == accepted["provenance"]
+    assert set(canonical) == {"schema_version", "look", "garments", "provenance"}
+
+
+def test_version_export_is_canonical_private_data_free_and_catalogue_independent(client):
+    created = client.post("/api/looks", json={
+        "name": "Exportable look",
+        "appearance": "Short dark curls.",
+        "garments": [
+            {"wording": "a blue cotton top"},
+            {"wording": "a light cardigan", "aside": "unbuttoned"},
+        ],
+    })
+    assert created.status_code == 200, created.text
+    saved = created.json()
+    before = _portable_counts()
+
+    response = client.get(_look_export_path(saved["key"], saved["version"]))
+    assert response.status_code == 200, response.text
+    exported = response.json()
+    assert set(exported) == {"schema_version", "look", "garments", "provenance"}
+    assert set(exported["look"]) == {"key", "version", "name", "appearance", "outfit"}
+    assert set(exported["look"]["outfit"]) == {"key", "garment_keys"}
+    assert exported["schema_version"] == 1
+    assert exported["look"]["key"] == saved["key"]
+    assert exported["look"]["version"] == saved["version"]
+    assert exported["look"]["outfit"]["key"] == saved["outfit"]["outfit_key"]
+    assert [garment["key"] for garment in exported["garments"]] == exported["look"]["outfit"]["garment_keys"]
+    assert exported["provenance"] is None
+    encoded = response.text
+    assert all(secret not in encoded for secret in (
+        "private-path", "data:image/", "api_key", "session_id", "assistant_request",
+    ))
+    assert saved_looks.portable_content_digest(exported) == saved_looks.portable_content_digest(
+        saved_looks.parse_portable_look_json(response.content)
+    )
+
+    for garment in saved["outfit"]["garments"]:
+        db.run("UPDATE garment SET wording = ? WHERE key = ?", "catalogue drift", garment["key"])
+    db.run("UPDATE outfit SET garments = ? WHERE key = ?", "changed-catalogue-order", saved["outfit"]["outfit_key"])
+    assert client.get(_look_export_path(saved["key"], saved["version"])).json() == exported
+    assert _portable_counts() == before
+
+
+def test_version_export_is_readable_while_writes_are_disabled(client, monkeypatch):
+    created = client.post("/api/looks", json={"name": "Readable export"})
+    assert created.status_code == 200, created.text
+    saved = created.json()
+    monkeypatch.delenv("IDEVGEN_RESOURCE_PLANNING_ENABLED", raising=False)
+    monkeypatch.setitem(main.CONFIG, "resource_planning_enabled", False)
+
+    response = client.get(_look_export_path(saved["key"], saved["version"]))
+    assert response.status_code == 200, response.text
+    assert response.json()["look"]["outfit"] is None
+    assert response.json()["garments"] == []
+    assert response.json()["provenance"] is None
+
+
+def test_version_export_returns_the_saved_look_not_found_error(client):
+    response = client.get(_look_export_path("missing-look", 1))
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "look_not_found"
+
+
+def test_version_export_matches_keys_with_slashes_and_preserves_older_routes(client):
+    keys = ("ordinary-look", "historical/look-key", "historical\\look-key")
+    for look_key in keys:
+        _insert_historical_look(look_key)
+
+    for look_key in keys:
+        response = client.get(_look_export_path(look_key, 1))
+        assert response.status_code == 200, response.text
+        assert response.json()["look"]["key"] == look_key
+        assert response.json()["look"]["version"] == 1
+
+    ordinary_detail = client.get(_look_path(keys[0], 1))
+    assert ordinary_detail.status_code == 200, ordinary_detail.text
+    slash_detail = client.get(_look_path(keys[1], 1))
+    assert slash_detail.status_code == 404
+    assert client.get(_look_export_path("missing-look", 7)).status_code == 404
+
+    manual = client.post("/api/looks", json={"name": "Manual route remains available"})
+    assert manual.status_code == 200, manual.text
+    assert client.get(_look_path(manual.json()["key"], 1)).status_code == 200

@@ -31,9 +31,35 @@ review it manually.
 
 ## Current scope
 
-This is the manual saved-look foundation. JSON import/export, photo extraction,
-a saved-look selector or application in session authoring, and wardrobe
-progression are not available in this editor.
+The browser editor remains manual and has no JSON controls. A read-only API
+endpoint exports an immutable version as `portable-look-v1`; import preflight
+and commit, photo extraction, applying a saved look in session authoring, and
+wardrobe progression remain future work. The pure parser is a validation helper,
+not an implemented import or round-trip/no-op flow.
+
+## Portable JSON export
+
+`GET /api/looks/{key}/versions/{version}/export` returns the requested version
+from its stored snapshot, including its local look, outfit, and garment keys.
+The closed envelope contains `schema_version: 1`, `look`, `garments`, and
+`provenance`. `look` contains `key`, `version`, `name`, `appearance`, and either
+`outfit: null` or `{key, garment_keys}`. Each garment contains only `key`,
+`wording`, and `aside`; the array follows `garment_keys` order and is empty when
+there is no outfit. The export is independent of later catalogue changes.
+
+Export currently sets `provenance` to `null`, because saved-look storage has no
+provenance. The portable parser accepts only `null` or the annotation
+`{source, image_sha256}`, with `source` in `manual`, `photo`, `assistant`, or
+`import`; a non-null lowercase SHA-256 value is allowed only for `photo`. This
+allowlisted annotation is untrusted data, not verified evidence. The portable
+content digest covers the complete canonical envelope, including that
+annotation. It differs from the saved version's `content_digest`, which covers
+only canonical `{appearance, outfit}` and excludes the name and version number.
+
+The closed envelope includes no photo bytes or paths, session data, or
+credentials. Parsing validates the complete shape, orders garments by
+`garment_keys`, and rejects duplicate JSON keys and non-JSON numeric constants.
+The portable-look API surface currently exposes export only.
 
 ## HTTP API
 
@@ -41,6 +67,7 @@ progression are not available in this editor.
 | --- | --- |
 | `GET /api/looks` | Latest summary for each look: `[{key, version, name, content_digest}]`. |
 | `GET /api/looks/{key}/versions/{version}` | Full version: `{key, version, name, content_digest, appearance, outfit}`. |
+| `GET /api/looks/{key}/versions/{version}/export` | Closed self-contained `portable-look-v1` envelope for that immutable version. |
 | `POST /api/looks` | Create version 1 with required `name`, optional `appearance`, and at most one of `garments` or `outfit_key`. |
 | `POST /api/looks/{key}/versions` | Append a version with the same content fields and required `expected_version`. |
 
@@ -54,6 +81,6 @@ catalogue. The content digest is derived from canonical `{appearance, outfit}`
 content; use `key` and `version` to identify a specific version.
 
 Writes are transactional and use the shared 10 MiB actual-request-body limit.
-When resource planning is disabled, reads remain available and writes return
-`503`. A stale `expected_version` returns `409`; invalid input returns `422`,
-and a missing look version returns `404`.
+When resource planning is disabled, reads including portable export remain
+available and writes return `503`. A stale `expected_version` returns `409`;
+invalid input returns `422`, and a missing look version returns `404`.

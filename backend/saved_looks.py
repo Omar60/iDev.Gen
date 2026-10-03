@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import unicodedata
 from uuid import uuid4
 
@@ -28,6 +29,185 @@ def _write_conflict() -> None:
 
 def _stored_data_invalid() -> None:
     raise SavedLookError(500, "look_data_invalid", "Saved look data is invalid.")
+
+
+_PORTABLE_JSON_INTEGER_DIGITS = 4300
+_PORTABLE_SOURCES = {"manual", "photo", "assistant", "import"}
+
+
+def _portable_digest(value: object) -> str:
+    try:
+        return resource_store.canonical_digest(value)
+    except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
+        _invalid()
+
+
+def _portable_json_object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _portable_json_integer(value: str) -> int:
+    configured_limit = getattr(sys, "get_int_max_str_digits", lambda: 0)()
+    digit_limit = min(_PORTABLE_JSON_INTEGER_DIGITS, configured_limit) if configured_limit else _PORTABLE_JSON_INTEGER_DIGITS
+    if len(value.lstrip("-")) > digit_limit:
+        raise ValueError("integer is too large")
+    return int(value)
+
+
+def _reject_json_constant(_value: str):
+    raise ValueError("non-JSON numeric constant")
+
+
+def _valid_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _canonicalize_portable_look(value: object) -> tuple[dict, str]:
+    if type(value) is not dict or set(value) != {
+        "schema_version", "look", "garments", "provenance",
+    }:
+        _invalid()
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        _invalid()
+
+    look = value["look"]
+    if type(look) is not dict or set(look) != {
+        "key", "version", "name", "appearance", "outfit",
+    }:
+        _invalid()
+    if (
+        not _valid_key(look["key"])
+        or type(look["version"]) is not int
+        or look["version"] < 1
+        or not _valid_name(look["name"])
+        or not isinstance(look["appearance"], str)
+    ):
+        _invalid()
+
+    outfit = look["outfit"]
+    garment_keys = []
+    if outfit is not None:
+        if type(outfit) is not dict or set(outfit) != {"key", "garment_keys"}:
+            _invalid()
+        garment_keys = outfit["garment_keys"]
+        if (
+            not _valid_key(outfit["key"])
+            or type(garment_keys) is not list
+            or not garment_keys
+            or any(not _valid_key(key) for key in garment_keys)
+            or len(garment_keys) != len(set(garment_keys))
+        ):
+            _invalid()
+
+    raw_garments = value["garments"]
+    if type(raw_garments) is not list:
+        _invalid()
+    by_key = {}
+    for garment in raw_garments:
+        if type(garment) is not dict or set(garment) != {"key", "wording", "aside"}:
+            _invalid()
+        if (
+            not _valid_key(garment["key"])
+            or garment["key"] in by_key
+            or not _valid_wording(garment["wording"])
+            or not _valid_wording(garment["aside"], allow_empty=True)
+        ):
+            _invalid()
+        by_key[garment["key"]] = {
+            "key": garment["key"],
+            "wording": garment["wording"],
+            "aside": garment["aside"],
+        }
+    if set(by_key) != set(garment_keys):
+        _invalid()
+
+    provenance = value["provenance"]
+    if provenance is not None:
+        if type(provenance) is not dict or set(provenance) != {"source", "image_sha256"}:
+            _invalid()
+        source = provenance["source"]
+        image_sha256 = provenance["image_sha256"]
+        if (
+            not isinstance(source, str)
+            or source not in _PORTABLE_SOURCES
+            or (image_sha256 is not None and not _valid_sha256(image_sha256))
+            or (image_sha256 is not None and source != "photo")
+        ):
+            _invalid()
+        provenance = {"source": source, "image_sha256": image_sha256}
+
+    canonical = {
+        "schema_version": 1,
+        "look": {
+            "key": look["key"],
+            "version": look["version"],
+            "name": look["name"],
+            "appearance": look["appearance"],
+            "outfit": None if outfit is None else {
+                "key": outfit["key"],
+                "garment_keys": list(garment_keys),
+            },
+        },
+        "garments": [by_key[key] for key in garment_keys],
+        "provenance": provenance,
+    }
+    return canonical, _portable_digest(canonical)
+
+
+def canonicalize_portable_look(value: object) -> dict:
+    """Validate portable-look-v1 and order complete garments by reference."""
+    return _canonicalize_portable_look(value)[0]
+
+
+def parse_portable_look_json(raw: str | bytes) -> dict:
+    """Parse closed portable-look-v1 JSON, rejecting duplicate and invalid values."""
+    if type(raw) not in (str, bytes):
+        _invalid()
+    try:
+        value = json.loads(
+            raw,
+            object_pairs_hook=_portable_json_object,
+            parse_int=_portable_json_integer,
+            parse_constant=_reject_json_constant,
+        )
+    except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
+        _invalid()
+    return canonicalize_portable_look(value)
+
+
+def portable_content_digest(value: object) -> str:
+    """Digest the complete canonical pre-remap envelope, including annotation."""
+    return _canonicalize_portable_look(value)[1]
+
+
+def portable_look_to_snapshot(value: object) -> dict:
+    """Convert a validated envelope into a complete, ordered session snapshot."""
+    envelope, _ = _canonicalize_portable_look(value)
+    look = envelope["look"]
+    outfit = look["outfit"]
+    snapshot_outfit = None if outfit is None else {
+        "outfit_key": outfit["key"],
+        "garments": envelope["garments"],
+    }
+    return {
+        "look_id": look["key"],
+        "version": look["version"],
+        "content_digest": _portable_digest({
+            "appearance": look["appearance"],
+            "outfit": snapshot_outfit,
+        }),
+        "appearance": look["appearance"],
+        "outfit": snapshot_outfit,
+    }
 
 
 def _has_control(value: str) -> bool:
@@ -114,7 +294,7 @@ def _read_row(row: dict) -> dict:
         snapshot = _validate_snapshot(json.loads(row["snapshot_json"]), row)
     except SavedLookError:
         raise
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except (TypeError, ValueError, RecursionError, json.JSONDecodeError):
         _stored_data_invalid()
     return {
         "key": row["look_key"],
@@ -155,6 +335,35 @@ def get_version(look_key: str, version: int) -> dict:
     if row is None:
         raise SavedLookError(404, "look_not_found", "Saved look was not found.")
     return _read_row(row)
+
+
+def export_version(look_key: str, version: int) -> dict:
+    """Export only the closed portable envelope from the immutable snapshot."""
+    saved = get_version(look_key, version)
+    outfit = saved["outfit"]
+    envelope = {
+        "schema_version": 1,
+        "look": {
+            "key": saved["key"],
+            "version": saved["version"],
+            "name": saved["name"],
+            "appearance": saved["appearance"],
+            "outfit": None if outfit is None else {
+                "key": outfit["outfit_key"],
+                "garment_keys": [garment["key"] for garment in outfit["garments"]],
+            },
+        },
+        "garments": [] if outfit is None else [
+            {
+                "key": garment["key"],
+                "wording": garment["wording"],
+                "aside": garment["aside"],
+            }
+            for garment in outfit["garments"]
+        ],
+        "provenance": None,
+    }
+    return canonicalize_portable_look(envelope)
 
 
 def _history(look_key: str) -> list[dict]:

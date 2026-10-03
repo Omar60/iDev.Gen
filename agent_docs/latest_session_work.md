@@ -2,57 +2,56 @@
 
 ## Current State
 
-OpenSpec Task 9.1 of `simplify-resource-session-workflow` passed independent
-acceptance under Heavy deployment `srsw-next-20261003-01`. Progress is 52 of
-72 tasks. Internal Codex workers implemented from clean `main` baseline
-`1071b8b`; no external handoff was created. No independent review remains
-pending for this task.
+OpenSpec Task 9.2 of `simplify-resource-session-workflow` passed independent
+acceptance under Heavy deployment `simplify-resource-session-next-20261003`.
+Progress is 53 of 72 tasks. Internal Codex workers implemented from clean
+`main` baseline `40115cf`; no external handoff was created. No independent
+review remains pending for this task.
 
 ## Accepted Behavior
 
-The manual Looks view creates named appearance-only or ordered-outfit presets
-without typed technical keys. It reuses existing garments/outfits and supports
-new wording, optional moved-aside wording, one-piece clothing, layers,
-accessories and explicit removal order. Appearance remains separate and carries
-a manual clothing-review reminder.
+Pure portable-look-v1 parsing validates the entire closed envelope before any
+usable result. Unknown members, malformed types, duplicate JSON keys,
+non-JSON numbers, incomplete or duplicate garment definitions and invalid
+origin annotations fail with a fixed safe error. Canonical garments follow
+outfit.garment_keys without changing the caller's input.
 
-A saved version contains its complete ordered definitions and canonical
-appearance/outfit digest. Creation and new-version CAS write atomically; stale
-edits leave no partial records. Changed garment/outfit content uses new keys,
-leaving legacy rows and previous versions intact. Historical reads and re-save
-remain independent of catalogue drift. Successful saves fence earlier list
-responses so they cannot erase a new row or downgrade its latest version.
+The portable content digest covers the complete canonical pre-remap envelope,
+including identity, name and untrusted origin annotation. Conversion creates a
+complete ordered session snapshot whose existing content digest covers only
+appearance and outfit. An annotation never proves an assistant call or approval.
 
-JSON import/export, photo extraction, applying presets to sessions and wardrobe
-progression remain later tasks. No assistant, preparation, approval, submission
-or generation is implicit in the manual editor.
+GET /api/looks/{look_key}/versions/{version}/export returns the closed envelope
+from the immutable historical snapshot with local keys. It excludes private
+metadata and remains independent of catalogue drift and available while writes
+are disabled. Current storage has no portable annotation, so export uses null
+provenance. The repaired new route supports legal slash-containing keys while
+historical routes retain their behavior.
 
 ## Independent Verification
 
-- Full Python suite: 2,466 passed, five existing warnings.
-- Frontend suite: 536 passed in 23 files; production build passed with the
-  existing chunk-size warning.
-- Saved-look API, rollback/concurrency, historical catalogue-drift and rendered
-  Refresh/Save probes passed.
-- Privacy/control checks, strict noninteractive OpenSpec validation and diff
-  checks passed.
+- Full Python suite: 2,480 passed, five existing warnings.
+- Focused saved-look and independent adversarial tests: 23 passed.
+- Combined looks and privacy/control checks: 69 passed.
+- Strict noninteractive OpenSpec validation and diff checks passed.
+- Frontend was not changed; its conditional build/test gates do not apply.
 
-An earlier full run failed in the existing concurrent plan-CAS test. It also
-failed in an extracted clean baseline without this task's diff; the final full
-run passed. No assertion or session-plan concurrency code was changed.
-Temporary diagnostic probes/logs reside in ignored tooling cache and are not
-part of the deliverable.
+Independent verification first reproduced a legal slash-containing key returning
+404. The narrow export-route repair and retained regression passed independent
+recheck before acceptance. No other required defect remains.
 
 ## Changed Surfaces
 
-- Backend schema, saved-look service and four HTTP boundaries; isolated API
-  tests and fixture cleanup.
-- App navigation, manual Looks view, local styling and component regressions.
-- README, matching saved-look guide/index, verified overview/structure updates,
-  the three deployment-state documents and only the Task 9.1 checkbox.
+- Saved-look parser, canonicalization, digests, snapshot conversion and export.
+- One read-only HTTP export route, existing API tests and independent probes.
+- README, matching saved-look guide, the three deployment-state documents and
+  only the Task 9.2 checkbox.
 
 ## Closure and Continuation
 
-The user authorized the isolated acceptance commit. Archivist owns the closing
-Git receipt and token report; implementation and independent review are complete.
-Task 9.2 remains unstarted. No subsequent task or push is authorized.
+The user authorized the isolated local acceptance commit. Implementation and
+independent review are complete; the closing Git receipt and deployment token
+report accompany the final handoff. Task 9.3 remains unstarted. No subsequent
+task or push is authorized. Transactional import/preflight/receipts, browser
+JSON controls, photo extraction, session application and progression remain
+outside this task.

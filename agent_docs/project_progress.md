@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 52 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 53 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -500,4 +500,16 @@ and diff checks. An unchanged concurrent plan-CAS test also failed on the clean
 baseline before the final full run passed; its logic and assertions were not
 changed. No independent review remains pending for Task 9.1. The user authorized
 the isolated acceptance commit. Archivist owns the closing Git receipt and
-token report. Task 9.2 remains unstarted; no subsequent task or push is authorized.
+token report. Task 9.2 was next at that checkpoint.
+
+Task 9.2 passed independent acceptance under Heavy deployment
+`simplify-resource-session-next-20261003`. Pure `portable-look-v1` parsing
+validates the complete closed envelope and preserves untrusted origin
+annotations; canonical ordering binds full portable equality while the session
+snapshot retains its separate appearance/outfit digest. Read-only export uses
+immutable saved definitions and local keys, with null provenance for the
+current storage. The new route supports all schema-legal key characters.
+Independent verification passed 2,480 Python tests, 69 focused looks and
+privacy/control checks, strict OpenSpec validation and diff checks. No frontend
+files changed and no independent review remains pending. Task 9.3 remains
+unstarted; no subsequent task or push is authorized.
