@@ -323,6 +323,11 @@ describe('Task 8.2 independent UI acceptance', () => {
     setValue(labeledInput('Expression'), 'small smile')
     await clickButton('Save Draft')
     await flush()
+    expect(manualState.posts.filter(([url]) => url === `/api/sessions/${sessionId}/plan`)).toEqual([])
+    const saveImpactDialog = container.querySelector('[role="dialog"]')
+    expect(saveImpactDialog?.textContent).toContain('Review downstream impact before saving')
+    await clickButton('Save Plan Changes', saveImpactDialog)
+    await flush()
     const save = manualState.posts.find(([url]) => url === `/api/sessions/${sessionId}/plan`)
     expect(save?.[1].plan.takes[0]).toMatchObject({
       camera: '35mm from above',

@@ -208,9 +208,9 @@ explicit shared-suggestion request and edited-value acceptance. Proposals stay
 pending until explicitly accepted through the operation CAS; users may edit or
 clear proposed values before acceptance. An identical retry replays the saved
 acceptance after a lost response. Suggestion requests and acceptance
-do not prepare, approve, submit, or run generation. Automatic preparation
-controls are not available in this view yet; manual editing is available under
-Advanced. See
+do not prepare, approve, submit, or run generation. Automatic preparation is
+available from Review; it remains separate from approval, submission, and Run.
+See
 [sessions](docs/sessions.md#shared-session-summary).
 
 `POST /api/sessions/{sid}/plan/refresh-resources` checks the current revision's
@@ -223,6 +223,19 @@ required preparation; it never calls an assistant, approves, submits, or runs
 generation. Plan saves and refreshes return HTTP 409 and roll back if copy-forward
 finds a conflicting destination snapshot or adaptation. See
 [sessions](docs/sessions.md#refreshing-resource-dependencies).
+
+For `resource-v1` sessions, Library cards and session detail show the plan-owned
+look and initial wardrobe; those values also back look/wardrobe search. A
+missing plan shows its diagnostic instead of substituting legacy session
+values. Review shows saved effective choices, including explicit empty values,
+and preserves submitted history from its saved snapshot. Expand a take to
+inspect its final prompt, provenance, writer request/output, and duplicate
+evidence. Before saving plan edits, a confirmation lists affected work and
+retained generated history. **Refresh Resources** explicitly checks dependencies
+through the revision CAS and reports affected takes and required preparation;
+it does not prepare, approve, submit, or run generation. Review approval,
+**Submit Test Selection**, and **Run** remain separate actions. See
+[resource session review](docs/sessions.md#reviewing-and-saving-a-resource-plan).
 
 Automatic authoring-v1 plans expose persisted operation controls. `POST
 /api/sessions/{sid}/plan/authoring/operations` records or replays a claim;
@@ -301,9 +314,10 @@ To operationally disable the resource planning feature without destructive schem
 Sessions are reachable through the model that owns them — **Library** lists
 them across every model. Each session carries free-text **tags** edited on the
 session view; the library has a search box (matches the name, look and
-wardrobe) and the tags currently in use as chips. Tags survive a session being
-cloned, and are matched whole: a query of `night` lists a `night` session and
-not a `nightclub` one. See [sessions](docs/sessions.md#tags-and-the-library).
+wardrobe) and the tags currently in use as chips. For `resource-v1` sessions,
+the look and initial wardrobe come from the saved plan. Tags survive a session
+being cloned, and are matched whole: a query of `night` lists a `night` session
+and not a `nightclub` one. See [sessions](docs/sessions.md#tags-and-the-library).
 
 ## Slideshow
 

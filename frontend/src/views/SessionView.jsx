@@ -21,6 +21,7 @@ import {
   removeWardrobeChange,
   resolveEffectiveWardrobes,
   resolveEffectiveWardrobeDetails,
+  computePlanChangeImpact,
   WARDROBE_SCOPE_THIS_TAKE,
   WARDROBE_SCOPE_FROM_HERE,
   buildPlanSavePayload,
@@ -32,6 +33,7 @@ import {
   canGenerateSession,
   isLegacyControlVisible,
   getTakePreparationState,
+  hasGeneratedTakeHistory,
   loadTakeReview,
   approvePlanReview,
   recordTakeAdaptation,
@@ -57,6 +59,24 @@ const authoringOperationStorageKey = (sessionId, planRevision) => (
 const authoringOperationPointerKey = (sessionId) => (
   `idevgen:authoring-operation:${sessionId}:latest`
 )
+
+const hasOwn = (value, key) => (
+  value !== null && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, key)
+)
+
+const errorDetailMessage = (detail) => {
+  if (typeof detail === 'string') return detail
+  if (detail === undefined || detail === null) return ''
+  try { return JSON.stringify(detail, null, 2) } catch { return String(detail) }
+}
+
+const isAuthoringEvidenceInvalid = (failure) => {
+  const detail = failure?.detail
+  return detail?.code === 'authoring_evidence_invalid'
+    || (typeof detail === 'string' && detail.trim().startsWith('authoring_evidence_invalid:'))
+}
+
+const takeIdSummary = (takeIds) => takeIds.length ? takeIds.join(', ') : 'None'
 
 const readRememberedAuthoringOperation = (sessionId, planRevision) => {
   try {
@@ -325,6 +345,7 @@ export default function SessionView({
   const llm = !!config.llm_ok
 
   const [plan, setPlan] = useState(initialPlan)
+  const [savedPlan, setSavedPlan] = useState(initialPlan)
   const [planRevision, setPlanRevision] = useState(initialRevision)
   const planRevisionRef = useRef(initialRevision)
   planRevisionRef.current = planRevision
@@ -362,6 +383,10 @@ export default function SessionView({
   const sessionViewIdRef = useRef(id)
   sessionViewIdRef.current = id
   const [planNotice, setPlanNotice] = useState('')
+  const [planSaveImpact, setPlanSaveImpact] = useState(null)
+  const [planReviewFailure, setPlanReviewFailure] = useState(null)
+  const [resourceRefreshBusy, setResourceRefreshBusy] = useState(false)
+  const [resourceRefreshOutcome, setResourceRefreshOutcome] = useState(null)
   const [activeStep, setActiveStep] = useState(initialActiveStep)
   const [reviewedRevision, setReviewedRevision] = useState(initialReviewedRevision)
   const [selectedTakeIds, setSelectedTakeIds] = useState(() => new Set())
@@ -400,6 +425,8 @@ export default function SessionView({
   const reviewBlocksFinalization = hasKnownStaleAdaptations
     || planReviewStatus === 'error'
     || (isResource && activeStep === 'review' && planReviewStatus !== 'ready')
+  const canRefreshResourceDependencies = isResource && !planDirty && planRevision !== null
+    && (isAuthoringEvidenceInvalid(planReviewFailure) || hasKnownStaleAdaptations)
 
   const reload = () => {
     const sessionId = id
@@ -413,6 +440,7 @@ export default function SessionView({
         if (res.ok) {
           if (typeof res.planRevision !== 'number' || res.planRevision < 0) {
             setPlan(null)
+            setSavedPlan(null)
             setPlanRevision(null)
             setPlanConflicts([])
             setPlanPreparation(null)
@@ -432,6 +460,7 @@ export default function SessionView({
           }
           setPlan((prev) => (planDirtyRef.current && prev ? prev : res.plan))
           setPlanRevision((prev) => (planDirtyRef.current && prev !== null ? prev : res.planRevision))
+          if (!planDirtyRef.current) setSavedPlan(res.plan)
           setPlanConflicts(res.conflicts)
           setPlanPreparation(res.preparation || null)
           if (!planDirtyRef.current) setSharedSummary(res.sharedSummary || null)
@@ -444,6 +473,7 @@ export default function SessionView({
           }
         } else {
           setPlan(null)
+          setSavedPlan(null)
           setPlanRevision(null)
           setPlanConflicts([])
           setPlanPreparation(null)
@@ -457,6 +487,7 @@ export default function SessionView({
       }).catch((e) => {
         if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
         setPlan(null)
+        setSavedPlan(null)
         setPlanRevision(null)
         setPlanConflicts([])
         setPlanPreparation(null)
@@ -494,6 +525,7 @@ export default function SessionView({
       setSharedProposalDrafts({})
     }
     setPlan(loaded.plan)
+    setSavedPlan(loaded.plan)
     setPlanRevision(loaded.planRevision)
     planRevisionRef.current = loaded.planRevision
     setPlanConflicts(loaded.conflicts || [])
@@ -528,6 +560,47 @@ export default function SessionView({
       return false
     }
     return adoptAuthoritativePlan(loaded, sessionResult) ? loaded : false
+  }
+
+  const refreshResourceDependencies = async () => {
+    if (!isResource || planDirtyRef.current || planRevisionRef.current === null || resourceRefreshBusy) return
+    const sessionId = id
+    const requestEpoch = sessionViewEpochRef.current
+    setResourceRefreshBusy(true)
+    setResourceRefreshOutcome(null)
+    try {
+      const result = await api.post(`/api/sessions/${sessionId}/plan/refresh-resources`, {
+        expected_revision: planRevisionRef.current,
+      })
+      if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+      const outcome = {
+        type: result?.refreshed ? 'refreshed' : 'no-drift',
+        affectedTakes: Array.isArray(result?.affected_takes) ? result.affected_takes : [],
+        requiredPreparation: Array.isArray(result?.required_preparation) ? result.required_preparation : [],
+        copiedForwardTakes: Array.isArray(result?.copied_forward_takes) ? result.copied_forward_takes : [],
+        diagnostics: Array.isArray(result?.diagnostics) ? result.diagnostics : [],
+        planRevision: result?.plan_revision,
+      }
+      setResourceRefreshOutcome(outcome)
+      if (result?.refreshed && Number.isInteger(result.plan_revision)) {
+        const loaded = await reloadAuthoritativePlan(sessionId, result.plan_revision, requestEpoch)
+        if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+        if (!loaded) {
+          setResourceRefreshOutcome((previous) => ({ ...previous, reloadFailed: true }))
+        }
+      }
+      setReviewRefreshCounter((count) => count + 1)
+    } catch (error) {
+      if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+      setResourceRefreshOutcome({
+        type: 'error',
+        status: error?.status,
+        detail: error?.detail,
+        message: error?.message || 'Resource dependency refresh failed.',
+      })
+    } finally {
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) setResourceRefreshBusy(false)
+    }
   }
 
   const refreshAfterAuthoringOperation = async (view) => {
@@ -595,7 +668,7 @@ export default function SessionView({
     }
   }
 
-  const savePlan = async ({ sharedDecisions = null } = {}) => {
+  const savePlan = async ({ sharedDecisions = null, impactConfirmed = false, confirmedPlan = null } = {}) => {
     const sessionId = id
     const requestEpoch = sessionViewEpochRef.current
     const explicitDecision = Boolean(sharedDecisions?.length)
@@ -612,12 +685,21 @@ export default function SessionView({
       setSharedActionError('Save or discard the draft before recording an empty shared choice.')
       return
     }
+    if (!explicitDecision && planDirtyRef.current) {
+      if (!impactConfirmed || confirmedPlan !== plan) {
+        setPlanSaveImpact({ ...computePlanChangeImpact(savedPlan, plan, planPreparation), draft: plan })
+        return
+      }
+      setPlanSaveImpact(null)
+    }
     const previousRevision = planRevisionRef.current
     if (explicitDecision) setManualDecisionBusy(true)
     try {
       const res = await executeSavePlan(sessionId, plan, planRevision, api, sharedDecisions)
       if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
       if (res.ok) {
+        if (!explicitDecision) setSavedPlan(plan)
+        setResourceRefreshOutcome(null)
         setPlanRevision(res.planRevision)
         planRevisionRef.current = res.planRevision
         setPlanConflicts(res.conflicts)
@@ -856,13 +938,15 @@ export default function SessionView({
     }
   }
 
-  const incompleteAuthoringTakeIds = () => (
+  const incompletePlanTakeIds = () => (
     !planDirty && Array.isArray(plan?.takes)
       ? plan.takes.filter((take) => !['ready', 'generated'].includes(
           getTakePreparationState(take.take_id, planPreparation, false),
         )).map((take) => take.take_id)
       : []
   )
+
+  const incompleteAuthoringTakeIds = () => incompletePlanTakeIds()
 
   const startPreparationOperation = async () => {
     const sessionId = id
@@ -1087,6 +1171,10 @@ export default function SessionView({
   useEffect(() => {
     sessionViewEpochRef.current += 1
     sessionViewMountedRef.current = true
+    setPlanSaveImpact(null)
+    setPlanReviewFailure(null)
+    setResourceRefreshBusy(false)
+    setResourceRefreshOutcome(null)
     authoringActionInFlightRef.current = false
     authoringOperationRefreshRef.current = null
     restoredOperationKeyRef.current = null
@@ -1281,10 +1369,12 @@ export default function SessionView({
 
   const handlePrepareAllIncomplete = async () => {
     if (planRevision === null || planDirty || reviewBlocksFinalization) return
+    const takeIds = incompletePlanTakeIds()
+    if (!takeIds.length) return
     setPreparingAll(true)
     setError('')
     try {
-      const res = await preparePlanTakes(id, planRevision, api)
+      const res = await preparePlanTakes(id, planRevision, takeIds, api)
       if (res.ok) {
         setPlanNotice(`Batch preparation complete: ${res.completed_count ?? 0} prepared`)
         setTimeout(() => setPlanNotice(''), 4000)
@@ -1440,13 +1530,20 @@ export default function SessionView({
   useEffect(() => {
     if (!isResource || activeStep !== 'review' || planDirty || planRevision === null) {
       setPlanReviewStatus('idle')
+      setPlanReviewFailure(null)
       return undefined
     }
     let current = true
     setPlanReviewStatus('loading')
+    setPlanReviewFailure(null)
     loadPlanReviews(id, planRevision, api).then((result) => {
       if (!current) return
       if (!result.ok || result.planRevision !== planRevision) {
+        setPlanReviewFailure({
+          error: result.error || `Review response revision ${result.planRevision ?? 'unknown'} does not match ${planRevision}.`,
+          status: result.status,
+          detail: result.detail,
+        })
         setPlanReviewStatus('error')
         return
       }
@@ -1458,7 +1555,10 @@ export default function SessionView({
       setTakeReviewData(reviewsByTake)
       setPlanReviewStatus('ready')
     }).catch(() => {
-      if (current) setPlanReviewStatus('error')
+      if (current) {
+        setPlanReviewFailure({ error: 'Failed to load plan reviews.' })
+        setPlanReviewStatus('error')
+      }
     })
     return () => { current = false }
   }, [id, isResource, activeStep, planDirty, planRevision, reviewRefreshCounter])
@@ -1490,6 +1590,7 @@ export default function SessionView({
   if (!s) return <p className="muted">{error || 'Loading…'}</p>
 
   const automaticIncompleteTakeIds = incompleteAuthoringTakeIds()
+  const incompleteTakeIds = incompletePlanTakeIds()
   const automaticBatchTakeIds = automaticIncompleteTakeIds.slice(0, MAX_AUTOMATIC_TAKE_BATCH)
   const authoringOperationStale = Boolean(
     sharedOperation && Number.isInteger(planRevision)
@@ -1824,6 +1925,57 @@ export default function SessionView({
   return (
     <>
       {error && <div className="error" onClick={() => setError('')}>{error}</div>}
+      {planSaveImpact && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 1000, display: 'grid', placeItems: 'center',
+          padding: 16, background: 'rgba(0, 0, 0, 0.72)',
+        }}>
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="plan-save-impact-title"
+            className="panel"
+            style={{ width: 'min(680px, 100%)', maxHeight: '90vh', overflowY: 'auto' }}
+          >
+            <h3 id="plan-save-impact-title" style={{ marginTop: 0 }}>Review downstream impact before saving</h3>
+            <p className="muted" style={{ fontSize: 13 }}>
+              {planSaveImpact.reason === 'plan-wide'
+                ? 'Plan-owned constants or automatic authoring inputs changed; existing ungenerated work may need new preparation.'
+                : planSaveImpact.reason === 'automatic-downstream'
+                  ? 'A take edit, removal, wardrobe change, or reorder changes later automatic authoring context.'
+                  : 'This save changes take-level preparation inputs.'}
+            </p>
+            {!planSaveImpact.baselineAvailable && (
+              <p role="alert" className="muted">The saved baseline is unavailable, so current takes are treated conservatively as affected.</p>
+            )}
+            <div style={{ display: 'grid', gap: 8, fontSize: 13 }}>
+              <div><b>Affected takes:</b> {takeIdSummary(planSaveImpact.affectedTakeIds)}</div>
+              <div><b>Ready takes requiring re-preparation:</b> {takeIdSummary(planSaveImpact.readyTakeIds)}</div>
+              <div><b>Pending or incomplete affected takes:</b> {takeIdSummary(planSaveImpact.pendingTakeIds)}</div>
+              <div><b>New takes needing first preparation:</b> {takeIdSummary(planSaveImpact.addedTakeIds)}</div>
+              <div><b>Removed plan rows:</b> {takeIdSummary(planSaveImpact.removedTakeIds)}</div>
+              <div><b>Generated or shot-linked history retained:</b> {takeIdSummary(planSaveImpact.generatedTakeIds)}</div>
+            </div>
+            <p className="muted" style={{ marginBottom: 0, fontSize: 12 }}>
+              Saving does not approve the review, submit takes, or start Run. Generated photos and their history remain intact.
+            </p>
+            <div className="row" style={{ justifyContent: 'flex-end', marginTop: 16 }}>
+              <button type="button" onClick={() => setPlanSaveImpact(null)}>Cancel</button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => {
+                  const confirmation = planSaveImpact
+                  setPlanSaveImpact(null)
+                  void savePlan({ impactConfirmed: true, confirmedPlan: confirmation.draft })
+                }}
+              >
+                Save Plan Changes
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       {roomReport && (
         <div className="muted" onClick={() => setRoomReport(null)}>
           {roomReport.refused.length === 0
@@ -1848,13 +2000,28 @@ export default function SessionView({
             {s.settings.sampler && <> · <Sent slot="sampler">{s.settings.sampler}</Sent></>}
             {s.settings.scheduler && <> · <Sent slot="scheduler">{s.settings.scheduler}</Sent></>}
           </p>
-          {s.look && <p className="muted" style={{ marginTop: -6 }}><b>Look:</b> {s.look}</p>}
+          {isResource ? (
+            s.diagnostic ? (
+              <p role="alert" className="muted" style={{ marginTop: -6 }}>
+                <b>Resource plan needs attention{s.diagnostic.code ? ` (${s.diagnostic.code})` : ''}:</b> {s.diagnostic.message || 'Plan-owned look and wardrobe are unavailable.'}
+              </p>
+            ) : (
+              <div className="muted" style={{ marginTop: -6, fontSize: 13 }}>
+                <p style={{ margin: '0 0 3px' }}>
+                  <b>Plan look:</b> {typeof s.look === 'string' ? (s.look || 'No additional look constraint') : 'Unavailable'}
+                </p>
+                <p style={{ margin: 0 }}>
+                  <b>Initial wardrobe:</b> {typeof s.wardrobe === 'string' ? (s.wardrobe || 'No wardrobe description') : 'Unavailable'}
+                </p>
+              </div>
+            )
+          ) : s.look && <p className="muted" style={{ marginTop: -6 }}><b>Look:</b> {s.look}</p>}
           {/* Where the look came from, and the way out of saying so. The key
               and not a label: this screen does not load the room library, and
               a session can outlive the library it was filled from. Detaching
               patches the key alone - the look is not a field this route
               accepts, so the words cannot move with it. */}
-          {s.room_key && (
+          {!isResource && s.room_key && (
             <p className="muted" style={{ marginTop: -6 }}>
               Filled from <code>{s.room_key}</code>{' '}
               <button onClick={() => call(() => api.patch(`/api/sessions/${id}`, { room_key: '' }))}
@@ -1863,7 +2030,7 @@ export default function SessionView({
               </button>
             </p>
           )}
-          {s.wardrobe && (
+          {!isResource && s.wardrobe && (
             <p className="muted" style={{ marginTop: -6 }}>
               <b>Wardrobe:</b> {s.wardrobe} <i>— what a take wears unless it says otherwise</i>
             </p>
@@ -2514,11 +2681,10 @@ export default function SessionView({
 
           {activeStep === 'takes' && (() => {
             const effectiveDetails = plan ? resolveEffectiveWardrobeDetails(plan) : {}
-            const rePrepCount = !planDirty && planPreparation?.incomplete?.length > 0
-              ? (planPreparation.incomplete || []).filter((inc) =>
-                  (planPreparation.history || []).some((h) => h.take_id === inc.take_id)
-                ).length
-              : 0
+            const rePrepCount = incompleteTakeIds.filter((takeId) => (
+              (planPreparation?.history || []).some((item) => item.take_id === takeId)
+              && !hasGeneratedTakeHistory(takeId, planPreparation)
+            )).length
 
             return (
               <div>
@@ -2551,7 +2717,7 @@ export default function SessionView({
                   </div>
                 )}
 
-                {!planDirty && planPreparation?.incomplete?.length > 0 && (
+                {!planDirty && incompleteTakeIds.length > 0 && (
                   <div style={{ padding: '6px 10px', background: 'var(--panel-2)', border: '1px solid var(--line)', borderRadius: 6, marginBottom: 10, fontSize: 12 }}>
                     {rePrepCount > 0 ? (
                       <span style={{ color: 'var(--warn)' }}>
@@ -2559,7 +2725,7 @@ export default function SessionView({
                       </span>
                     ) : (
                       <span className="muted">
-                        {planPreparation.incomplete.length} take(s) require preparation before generation.
+                        {incompleteTakeIds.length} take(s) require preparation before generation.
                       </span>
                     )}
                   </div>
@@ -2570,9 +2736,16 @@ export default function SessionView({
                   {(plan?.takes || []).map((take, index) => {
                     const detail = effectiveDetails[take.take_id] || { wardrobe: plan?.initial_wardrobe || '', source: 'initial' }
                     const existingChange = (plan?.wardrobe_changes || []).find((c) => c.take_id === take.take_id)
-                    const isCompleted = !planDirty && (planPreparation?.completed || []).some((c) => c.take_id === take.take_id)
-                    const isInvalidated = !planDirty && !isCompleted && (planPreparation?.history || []).some((h) => h.take_id === take.take_id)
-                    const isIncomplete = !planDirty && !isCompleted && (planPreparation?.incomplete || []).some((i) => i.take_id === take.take_id)
+                    const takeState = getTakePreparationState(take.take_id, planPreparation, planDirty)
+                    const isGenerated = takeState === 'generated'
+                    const isCompleted = takeState === 'ready'
+                    const isInvalidated = takeState === 'invalidated'
+                    const isIncomplete = incompleteTakeIds.includes(take.take_id)
+                    const generatedItem = (planPreparation?.completed || []).find((item) => (
+                      item.take_id === take.take_id && (item.status === 'generated' || item.linked_shot_id != null)
+                    )) || (planPreparation?.history || []).find((item) => (
+                      item.take_id === take.take_id && (item.status === 'generated' || item.linked_shot_id != null)
+                    ))
                     const takeFieldsOpen = Object.prototype.hasOwnProperty.call(expandedTakeFields, take.take_id)
                       ? expandedTakeFields[take.take_id]
                       : plan?.authoring?.mode !== 'automatic'
@@ -2591,7 +2764,9 @@ export default function SessionView({
                           <div className="row" style={{ gap: 8, alignItems: 'center' }}>
                             <span className="badge" style={{ fontWeight: 600 }}>{take.take_id}</span>
                             <span className="muted">Take {index + 1}</span>
-                            {planDirty ? (
+                            {isGenerated ? (
+                              <span className="badge ready">✓ Generated [Shot #{generatedItem?.linked_shot_id || '—'}]</span>
+                            ) : planDirty ? (
                               <span className="muted" style={{ fontSize: 11, color: 'var(--warn)' }}>⚠️ Unsaved edits</span>
                             ) : isCompleted ? (
                               <span className="badge ready">✓ Ready</span>
@@ -2890,14 +3065,11 @@ export default function SessionView({
 
           {activeStep === 'review' && (() => {
             const effectiveDetails = plan ? resolveEffectiveWardrobeDetails(plan) : {}
-            const rePrepCount = !planDirty && planPreparation?.incomplete?.length > 0
-              ? (planPreparation.incomplete || []).filter((inc) =>
-                  (planPreparation.history || []).some((h) => h.take_id === inc.take_id)
-                ).length
-              : 0
-            const incompleteCount = !planDirty && planPreparation?.incomplete?.length > 0
-              ? planPreparation.incomplete.length
-              : 0
+            const rePrepCount = incompleteTakeIds.filter((takeId) => (
+              (planPreparation?.history || []).some((item) => item.take_id === takeId)
+              && !hasGeneratedTakeHistory(takeId, planPreparation)
+            )).length
+            const incompleteCount = incompleteTakeIds.length
 
             const readyTakeIds = (plan?.takes || []).filter((t) => {
               const st = getTakePreparationState(t.take_id, planPreparation, planDirty)
@@ -3014,6 +3186,16 @@ export default function SessionView({
                     <div style={{ fontWeight: 600, marginBottom: 6 }}>Resources</div>
                     <div className="muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
                       <div><b>Pinned Resources:</b> {plan?.selected_resources?.length || 0}</div>
+                      {isResource && (s.diagnostic ? (
+                        <div role="alert" style={{ marginTop: 6 }}>
+                          <b>Resource plan needs attention{s.diagnostic.code ? ` (${s.diagnostic.code})` : ''}:</b> {s.diagnostic.message || 'Plan-owned look and wardrobe are unavailable.'}
+                        </div>
+                      ) : (
+                        <>
+                          <div><b>Plan look:</b> {typeof plan?.look === 'string' ? (plan.look || 'No additional look constraint') : 'Unavailable'}</div>
+                          <div><b>Initial wardrobe:</b> {typeof plan?.initial_wardrobe === 'string' ? (plan.initial_wardrobe || 'No wardrobe description') : 'Unavailable'}</div>
+                        </>
+                      ))}
                     </div>
                   </div>
                 </div>
@@ -3092,8 +3274,30 @@ export default function SessionView({
                   <div role="alert" style={{ background: '#2a2214', border: '1px solid #785a28', borderRadius: 8, padding: 10, marginBottom: 14 }}>
                     <div style={{ fontWeight: 600, color: 'var(--warn)', marginBottom: 4 }}>Take Review Unavailable</div>
                     <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-                      Take reviews could not be verified. Check the selected resources and their authorized translations, then reload before approving or preparing.
+                      {isAuthoringEvidenceInvalid(planReviewFailure)
+                        ? 'The backend rejected prepared authoring evidence. Resource drift is not confirmed; use Refresh Resources to check dependencies before deciding what to do next.'
+                        : planReviewFailure?.error || 'Take reviews could not be verified. Reload before approving or preparing.'}
                     </p>
+                    {planReviewFailure?.status && (
+                      <p className="muted" style={{ margin: '4px 0 0', fontSize: 11 }}>Backend status: {planReviewFailure.status}</p>
+                    )}
+                    {planReviewFailure?.detail !== undefined && (
+                      <details style={{ marginTop: 6, fontSize: 11 }}>
+                        <summary>Backend review detail</summary>
+                        <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{errorDetailMessage(planReviewFailure.detail)}</pre>
+                      </details>
+                    )}
+                    {canRefreshResourceDependencies && (
+                      <button
+                        type="button"
+                        style={{ marginTop: 8 }}
+                        onClick={refreshResourceDependencies}
+                        disabled={resourceRefreshBusy}
+                        title="Check pinned resource dependencies; this does not approve, submit, prepare, or run takes."
+                      >
+                        {resourceRefreshBusy ? 'Checking resources…' : 'Refresh Resources'}
+                      </button>
+                    )}
                   </div>
                 )}
                 {hasKnownStaleAdaptations && (
@@ -3107,7 +3311,71 @@ export default function SessionView({
                   </div>
                 )}
 
-                {/* Step 4 Toolbar: Batch Preparation & Selected Test Generation */}
+                {canRefreshResourceDependencies && planReviewStatus !== 'error' && (
+                  <div style={{ marginBottom: 14 }}>
+                    <button
+                      type="button"
+                      onClick={refreshResourceDependencies}
+                      disabled={resourceRefreshBusy}
+                      title="Check pinned resource dependencies; this does not approve, submit, prepare, or run takes."
+                    >
+                      {resourceRefreshBusy ? 'Checking resources…' : 'Refresh Resources'}
+                    </button>
+                  </div>
+                )}
+
+                {resourceRefreshOutcome && (
+                  <div
+                    role={resourceRefreshOutcome.type === 'error' ? 'alert' : 'status'}
+                    style={{
+                      background: resourceRefreshOutcome.type === 'error' ? '#2a2214' : 'var(--panel-2)',
+                      border: `1px solid ${resourceRefreshOutcome.type === 'error' ? '#785a28' : 'var(--line)'}`,
+                      borderRadius: 8, padding: 10, marginBottom: 14,
+                    }}
+                  >
+                    {resourceRefreshOutcome.type === 'refreshed' ? (
+                      <>
+                        <div style={{ fontWeight: 600 }}>Resource drift confirmed; plan advanced to revision {resourceRefreshOutcome.planRevision}.</div>
+                        <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                          Affected takes: {takeIdSummary(resourceRefreshOutcome.affectedTakes)}. Required preparation: {takeIdSummary(resourceRefreshOutcome.requiredPreparation)}. Copied forward: {takeIdSummary(resourceRefreshOutcome.copiedForwardTakes)}.
+                        </div>
+                        {resourceRefreshOutcome.diagnostics.length > 0 && (
+                          <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12 }}>
+                            {resourceRefreshOutcome.diagnostics.map((item, index) => (
+                              <li key={`${item?.take_id || 'take'}:${item?.code || 'diagnostic'}:${index}`}>
+                                Take {item?.take_id || 'unknown'}: {item?.code || 'resource dependency changed'}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {resourceRefreshOutcome.reloadFailed && (
+                          <p className="muted" style={{ margin: '6px 0 0', fontSize: 12 }}>The plan revision changed, but its new authoritative state could not be loaded. Reload before continuing.</p>
+                        )}
+                      </>
+                    ) : resourceRefreshOutcome.type === 'no-drift' ? (
+                      <>
+                        <div style={{ fontWeight: 600 }}>No resource drift found.</div>
+                        <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                          The check did not change the plan. Take review remains subject to the backend result shown above.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ fontWeight: 600 }}>Resource dependency check failed; drift was not determined.</div>
+                        <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>{resourceRefreshOutcome.message}</p>
+                        {resourceRefreshOutcome.status && <div className="muted" style={{ fontSize: 11 }}>Backend status: {resourceRefreshOutcome.status}</div>}
+                        {resourceRefreshOutcome.detail !== undefined && (
+                          <details style={{ marginTop: 6, fontSize: 11 }}>
+                            <summary>Backend refresh detail</summary>
+                            <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{errorDetailMessage(resourceRefreshOutcome.detail)}</pre>
+                          </details>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* Step 4 Toolbar: Batch Preparation & Selected Test Submission */}
                 <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, padding: '8px 12px', background: 'var(--panel-2)', borderRadius: 8 }}>
                   <div className="row" style={{ gap: 10, alignItems: 'center' }}>
                     <span style={{ fontSize: 12, fontWeight: 600 }}>Actions:</span>
@@ -3185,15 +3453,15 @@ export default function SessionView({
                       disabled={selectedTakeIds.size === 0 || submittingTakes || planDirty || planEditLocked || reviewedRevision !== planRevision}
                       title={
                         planDirty
-                          ? 'Save draft before test generation'
+                          ? 'Save draft before submitting test selection'
                           : reviewedRevision !== planRevision
-                            ? 'Review must be approved for current revision before generation'
+                            ? 'Review must be approved for the current revision before submission'
                             : selectedTakeIds.size === 0
-                              ? 'Select at least one ready take to test generate'
-                              : `Test generate ${selectedTakeIds.size} selected take(s)`
+                              ? 'Select at least one ready take to submit for test generation'
+                              : `Submit ${selectedTakeIds.size} selected take(s) to the queue; use Run separately to generate`
                       }
                     >
-                      {submittingTakes ? 'Submitting…' : `Test Generate Selected (${selectedTakeIds.size})`}
+                      {submittingTakes ? 'Submitting…' : `Submit Test Selection (${selectedTakeIds.size})`}
                     </button>
                   </div>
                 </div>
@@ -3203,7 +3471,7 @@ export default function SessionView({
                     <div style={{ fontWeight: 600 }}>Planned Takes ({plan?.takes?.length || 0})</div>
                     {selectedTakeIds.size > 0 && (
                       <span className="muted" style={{ fontSize: 12 }}>
-                        {selectedTakeIds.size} take{selectedTakeIds.size === 1 ? '' : 's'} selected for test generation
+                        {selectedTakeIds.size} take{selectedTakeIds.size === 1 ? '' : 's'} selected for test submission
                       </span>
                     )}
                   </div>
@@ -3222,10 +3490,10 @@ export default function SessionView({
                           </th>
                           <th>Take ID</th>
                           <th>Label</th>
-                          <th>Camera</th>
-                          <th>Framing</th>
-                          <th>Pose</th>
-                          <th>Expression</th>
+                          <th>Effective Camera</th>
+                          <th>Effective Framing</th>
+                          <th>Effective Pose</th>
+                          <th>Effective Expression</th>
                           <th>Effective Wardrobe</th>
                           <th>Status</th>
                           <th style={{ textAlign: 'right' }}>Actions</th>
@@ -3236,16 +3504,45 @@ export default function SessionView({
                           const d = effectiveDetails[t.take_id] || { wardrobe: plan?.initial_wardrobe || '', source: 'initial' }
                           const prepState = getTakePreparationState(t.take_id, planPreparation, planDirty)
                           const completedItem = (planPreparation?.completed || []).find((c) => c.take_id === t.take_id)
+                          const generatedItem = completedItem && (completedItem.status === 'generated' || completedItem.linked_shot_id != null)
+                            ? completedItem
+                            : (planPreparation?.history || []).find((item) => (
+                              item.take_id === t.take_id && (item.status === 'generated' || item.linked_shot_id != null)
+                            ))
                           const isSelectable = !planDirty && prepState === 'ready' && !submittingTakes
                           const isExpanded = expandedTakeId === t.take_id
                           const rev = takeReviewData[t.take_id]
-                          const snap = rev?.snapshot || completedItem
+                          const snap = rev?.snapshot || generatedItem || completedItem
+                          const choiceSnapshot = snap?.effective_state?.take_choices
+                          const displayChoice = (field) => {
+                            if (choiceSnapshot && typeof choiceSnapshot === 'object') {
+                              return hasOwn(choiceSnapshot, field)
+                                ? (choiceSnapshot[field] === '' ? '(empty in prepared snapshot)' : choiceSnapshot[field])
+                                : 'Not recorded in prepared snapshot'
+                            }
+                            if (snap?.effective_state) return 'Not recorded in prepared snapshot'
+                            return `Planned: ${t[field] || '—'}`
+                          }
+                          const displaySnapshotField = (field, plannedValue, emptyLabel) => {
+                            const effectiveState = snap?.effective_state
+                            if (hasOwn(effectiveState, field)) {
+                              return effectiveState[field] === ''
+                                ? `(empty in prepared snapshot: ${emptyLabel})`
+                                : effectiveState[field]
+                            }
+                            if (effectiveState) return 'Not recorded in prepared snapshot'
+                            return `Planned: ${plannedValue === '' ? emptyLabel : (plannedValue || '(none)')}`
+                          }
                           const duplicateFlags = Array.isArray(
-                            snap?.provenance?.authoring_evidence?.duplicate_flags?.flags,
+                            (snap?.provenance || rev?.provenance)?.authoring_evidence?.duplicate_flags?.flags,
                           )
-                            ? snap.provenance.authoring_evidence.duplicate_flags.flags
+                            ? (snap?.provenance || rev?.provenance).authoring_evidence.duplicate_flags.flags
                             : []
-                          const finalPrompt = rev?.final_prompt || snap?.final_prompt
+                          const snapshotProvenance = snap?.provenance || rev?.provenance || {}
+                          const authoringEvidence = snapshotProvenance?.authoring_evidence || {}
+                          const duplicateEvidence = authoringEvidence?.duplicate_flags || {}
+                          const writerSynthesis = authoringEvidence?.writer_synthesis || snapshotProvenance?.writer_synthesis
+                          const finalPrompt = snap?.final_prompt || rev?.final_prompt
                           const conflicts = rev?.conflicts || []
                           const resolvedConflicts = rev?.adaptations || rev?.resolved_conflicts || []
                           const unresolvedPlaceholders = rev?.unresolved_placeholders || []
@@ -3253,7 +3550,13 @@ export default function SessionView({
                           const staleAdaptations = rev?.stale_adaptations || []
                           const hasStaleAdaptations = staleAdaptations.length > 0
                           const hasPlaceholders = unresolvedPlaceholders.length > 0 || rev?.has_standing_placeholders || false
-                          const pinnedResources = rev?.selected_resource_revisions || snap?.provenance?.selected_resource_revisions || plan?.selected_resources || []
+                          const pinnedResources = Array.isArray(snap?.provenance?.selected_resource_revisions)
+                              ? snap.provenance.selected_resource_revisions
+                              : Array.isArray(rev?.selected_resource_revisions)
+                                ? rev.selected_resource_revisions
+                              : snap
+                                ? []
+                                : (plan?.selected_resources || [])
 
                           return (
                             <React.Fragment key={t.take_id}>
@@ -3265,10 +3568,10 @@ export default function SessionView({
                                     onChange={() => handleToggleTakeSelect(t.take_id)}
                                     disabled={!isSelectable}
                                     title={
-                                      planDirty
-                                        ? 'Save draft first'
-                                        : prepState === 'generated'
-                                          ? 'Take already generated as a shot'
+                                      prepState === 'generated'
+                                        ? 'Take already generated as a shot'
+                                        : planDirty
+                                          ? 'Save draft first'
                                           : prepState !== 'ready'
                                             ? 'Take must be prepared before test generation'
                                             : `Select take ${t.take_id} for test generation`
@@ -3277,24 +3580,26 @@ export default function SessionView({
                                 </td>
                                 <td><span className="badge">{t.take_id}</span></td>
                                 <td>{t.label || '—'}</td>
-                                <td>{t.camera || '—'}</td>
-                                <td>{t.framing || '—'}</td>
-                                <td>{t.pose || '—'}</td>
-                                <td>{t.expression || '—'}</td>
+                                <td>{displayChoice('camera')}</td>
+                                <td>{displayChoice('framing')}</td>
+                                <td>{displayChoice('pose')}</td>
+                                <td>{displayChoice('expression')}</td>
                                 <td>
-                                  <div style={{ fontSize: 12 }}>{d.wardrobe || '—'}</div>
+                                  <div style={{ fontSize: 12 }}>{displaySnapshotField('wardrobe', d.wardrobe, 'no wardrobe description')}</div>
                                   <span className="badge" style={{ fontSize: 10 }}>
-                                    {d.source === 'initial' && 'initial'}
-                                    {d.source === 'from_here' && 'from_here'}
-                                    {d.source === 'inherited_from_here' && `from ${d.inheritedFrom}`}
-                                    {d.source === 'this_take' && 'this_take'}
+                                    {hasOwn(snap?.effective_state, 'scope')
+                                      ? `snapshot: ${snap.effective_state.scope || 'initial'}`
+                                      : d.source === 'initial' && 'initial'}
+                                    {!hasOwn(snap?.effective_state, 'scope') && d.source === 'from_here' && 'from_here'}
+                                    {!hasOwn(snap?.effective_state, 'scope') && d.source === 'inherited_from_here' && `from ${d.inheritedFrom}`}
+                                    {!hasOwn(snap?.effective_state, 'scope') && d.source === 'this_take' && 'this_take'}
                                   </span>
                                 </td>
                                 <td>
-                                  {planDirty || prepState === 'unsaved' ? (
+                                  {prepState === 'generated' ? (
+                                    <span className="badge ready">✓ Generated [Shot #{generatedItem?.linked_shot_id || '—'}]</span>
+                                  ) : planDirty || prepState === 'unsaved' ? (
                                     <span className="badge warn">Unsaved edits</span>
-                                  ) : prepState === 'generated' ? (
-                                    <span className="badge ready">✓ Generated [Shot #{completedItem?.linked_shot_id || '—'}]</span>
                                   ) : prepState === 'ready' ? (
                                     <span className="badge ready">Ready</span>
                                   ) : prepState === 'invalidated' ? (
@@ -3316,10 +3621,12 @@ export default function SessionView({
                                       <button
                                         style={{ fontSize: 11, padding: '2px 8px' }}
                                         onClick={() => handlePrepareTake(t.take_id)}
-                                        disabled={planDirty || prepState === 'ready' || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
+                                        disabled={planDirty || prepState === 'ready' || prepState === 'generated' || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
                                         title={
                                           planDirty
                                             ? 'Save draft before preparing'
+                                            : prepState === 'generated'
+                                              ? 'This take is already linked to a generated shot'
                                             : hasStaleAdaptations
                                               ? 'Save a new plan revision and review the authorized resource description before preparing'
                                               : reviewBlocksFinalization
@@ -3327,7 +3634,7 @@ export default function SessionView({
                                               : 'Compile authoritative preparation snapshot'
                                         }
                                       >
-                                        {preparingTakeId === t.take_id ? 'Preparing…' : 'Prepare'}
+                                        {preparingTakeId === t.take_id ? 'Preparing…' : prepState === 'generated' ? 'Already Generated' : 'Prepare'}
                                       </button>
                                     )}
                                   </div>
@@ -3353,10 +3660,12 @@ export default function SessionView({
                                           {plan?.authoring?.mode !== 'automatic' && (
                                             <button
                                               onClick={() => handlePrepareTake(t.take_id)}
-                                              disabled={planDirty || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
+                                            disabled={planDirty || prepState === 'generated' || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
                                               title={
                                                 planDirty
                                                   ? 'Save draft before preparing'
+                                                : prepState === 'generated'
+                                                  ? 'This take is already linked to a generated shot'
                                                   : hasStaleAdaptations
                                                     ? 'Save a new plan revision and review the authorized resource description before preparing'
                                                     : reviewBlocksFinalization
@@ -3364,7 +3673,7 @@ export default function SessionView({
                                                     : 'Compile authoritative preparation snapshot'
                                               }
                                             >
-                                              {preparingTakeId === t.take_id ? 'Preparing…' : prepState === 'ready' ? 'Re-prepare Take' : 'Prepare Take'}
+                                            {preparingTakeId === t.take_id ? 'Preparing…' : prepState === 'ready' ? 'Re-prepare Take' : prepState === 'generated' ? 'Already Generated' : 'Prepare Take'}
                                             </button>
                                           )}
                                         </div>
@@ -3374,16 +3683,18 @@ export default function SessionView({
                                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 10 }}>
                                         <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>
                                           <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>Effective Wardrobe</div>
-                                          <div style={{ fontSize: 12 }}>{snap?.effective_state?.wardrobe || d.wardrobe || '(none)'}</div>
+                                          <div style={{ fontSize: 12 }}>{displaySnapshotField('wardrobe', d.wardrobe, 'no wardrobe description')}</div>
                                           <div style={{ marginTop: 4 }}>
                                             <span className="badge" style={{ fontSize: 10 }}>
-                                              Source: {d.source === 'initial' ? 'Inherited from initial wardrobe' : d.source === 'from_here' ? 'Persistent change (from here onward)' : d.source === 'inherited_from_here' ? `Inherited from ${d.inheritedFrom}` : 'This take only override'}
+                                              {hasOwn(snap?.effective_state, 'scope')
+                                                ? `Prepared snapshot scope: ${snap.effective_state.scope || 'initial wardrobe'}`
+                                                : `Plan source: ${d.source === 'initial' ? 'Inherited from initial wardrobe' : d.source === 'from_here' ? 'Persistent change (from here onward)' : d.source === 'inherited_from_here' ? `Inherited from ${d.inheritedFrom}` : 'This take only override'}`}
                                             </span>
                                           </div>
                                         </div>
                                         <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>
                                           <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>Effective Look</div>
-                                          <div style={{ fontSize: 12 }}>{snap?.effective_state?.look || plan?.look || '(none)'}</div>
+                                          <div style={{ fontSize: 12 }}>{displaySnapshotField('look', plan?.look, 'no additional look constraint')}</div>
                                         </div>
                                       </div>
 
@@ -3403,6 +3714,11 @@ export default function SessionView({
                                             ))}
                                           </ul>
                                         </div>
+                                      )}
+                                      {duplicateFlags.length === 0 && duplicateEvidence.status && (
+                                        <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                                          Duplicate check: {duplicateEvidence.status.replaceAll('_', ' ')}.
+                                        </p>
                                       )}
 
                                       {/* Authoritative Final Prompt */}
@@ -3490,6 +3806,27 @@ export default function SessionView({
                                             </ul>
                                           </div>
                                         )}
+                                        <details style={{ marginTop: 8, fontSize: 11 }}>
+                                          <summary>Inspect authoring evidence and writer request/output</summary>
+                                          <div className="muted" style={{ margin: '6px 0' }}>
+                                            <b>Mode:</b> {authoringEvidence.mode || 'Unavailable'} ·{' '}
+                                            <b>Source:</b> {authoringEvidence.source || 'Unavailable'} ·{' '}
+                                            <b>Operation:</b> {authoringEvidence.operation_id || 'None'}
+                                          </div>
+                                          <pre style={{
+                                            margin: 0, padding: 8, background: 'var(--bg)', borderRadius: 4,
+                                            whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 260, overflowY: 'auto',
+                                          }}>
+                                            {JSON.stringify({
+                                              writer_synthesis: writerSynthesis || null,
+                                              writer_context: authoringEvidence.writer_context ?? null,
+                                              predecessor_projection: authoringEvidence.predecessor_projection ?? null,
+                                              manual_completion: authoringEvidence.manual_completion ?? null,
+                                              duplicate_flags: duplicateEvidence,
+                                              effective_resource_input_digest: authoringEvidence.effective_resource_input_digest ?? null,
+                                            }, null, 2)}
+                                          </pre>
+                                        </details>
                                       </div>
 
                                       {/* Conflicts and Adaptations */}

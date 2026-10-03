@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 49 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 50 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -456,5 +456,23 @@ reviews. GET polling cannot renew ownership or trigger generation. Resources
 offers Retry cleanup status on the existing SelectionView warning.
 Independent gates passed 2,456 Python tests, 492 frontend tests, 46
 privacy/control checks, frontend build, strict OpenSpec validation and diff
-checks. No independent review remains pending for Task 8.4. Task 8.5 requires
-a separate instruction; no subsequent task or push is authorized.
+checks. No independent review remains pending for Task 8.4.
+
+Task 8.5 passed independent acceptance under the Heavy internal Codex route.
+Resource session cards and detail expose plan-owned constants, while Review
+prioritizes saved effective choices, including explicit empty values. Prompt,
+writer evidence, duplicate and dependency diagnostics remain inspectable.
+Resource refresh uses the existing explicit CAS without preparing, approving,
+submitting or running. A confirmation explains downstream impact before saving.
+Linked stable IDs from any revision retain their historical choices and remain
+excluded from preparation targets. Submit Test Selection queues only reviewed
+selected takes; Run remains separate.
+
+Independent verification passed 2,456 Python tests, 520 frontend tests,
+46 privacy/control checks, the frontend build, strict OpenSpec validation and
+diff checks. One historical-state defect was repaired and independently
+rechecked. The final frontend-only repair did not change backend source, so the
+completed full Python gate was retained. No independent review remains pending
+for Task 8.5. Documentation and its authorized isolated acceptance commit close
+this deployment. Task 8.6 has not started; no subsequent task or push is
+authorized.

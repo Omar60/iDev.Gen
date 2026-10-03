@@ -2687,7 +2687,7 @@ describe('Task 5.3: Wardrobe scope controls, pure resolution, reordering, and re
         )
 
         expect(html).toContain('Actions:')
-        expect(html).toContain('Test Generate Selected (0)')
+        expect(html).toContain('Submit Test Selection (0)')
         expect(html).toContain('Approve Review (Rev 1)')
         expect(html).toContain('▼ Review')
         expect(html).toContain('Ready</span>')
@@ -2762,7 +2762,7 @@ describe('Task 5.3: Wardrobe scope controls, pure resolution, reordering, and re
           })
         )
 
-        expect(html).not.toContain('Test Generate Selected')
+        expect(html).not.toContain('Submit Test Selection')
         expect(html).not.toContain('Prepare Incomplete Takes')
         expect(html).not.toContain('Approve Review')
         expect(html).not.toContain('▼ Review')
@@ -3228,7 +3228,7 @@ describe('Task 5.3: Wardrobe scope controls, pure resolution, reordering, and re
         // Does not show "Approve Review (Rev 2)" button
         expect(html).not.toContain('Approve Review (Rev 2)')
         // Test generate button is rendered and shows 0 selected
-        expect(html).toContain('Test Generate Selected (0)')
+        expect(html).toContain('Submit Test Selection (0)')
       })
     })
   })

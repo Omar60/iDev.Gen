@@ -545,3 +545,8 @@
   Resume keeps the operation ID, so terminal plan/review refresh must reset
   across resumed ownership. Selection cleanup warnings remain outside the
   closed OperationView and use the existing lazy-recovery GET action.
+- Task 8.5 review distinguishes plan-owned session constants from saved take
+  choices. Preserve explicit empty snapshot values instead of substituting a
+  current draft. A stable take ID linked in any prior revision remains submitted
+  history even when recovery lists its current revision as missing; downstream
+  warnings and preparation targets must protect that history together.

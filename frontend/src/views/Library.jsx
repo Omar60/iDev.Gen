@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api, shotImage } from '../api'
 import { go } from '../App.jsx'
+import { isResourceSession } from '../sessionPlan.js'
 
 /** A session across every model, one row per shoot, the cover photograph as
  *  thumbnail. The search box and the tag chips above the list both filter
@@ -100,6 +101,20 @@ export default function Library() {
                 <div className="name">{s.name}</div>
                 <div className="muted">{s.model_name}</div>
                 <div className="muted">{s.done_count}/{s.shot_count} done</div>
+                {isResourceSession(s) && (
+                  <div className="muted" style={{ marginTop: 6, fontSize: 12, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                    {s.diagnostic ? (
+                      <div role="alert">
+                        Resource plan needs attention{s.diagnostic.code ? <> (<code>{s.diagnostic.code}</code>)</> : null}: {s.diagnostic.message || 'Look and wardrobe are unavailable.'}
+                      </div>
+                    ) : (
+                      <>
+                        <div><b>Look:</b> {typeof s.look === 'string' ? (s.look || 'No additional look constraint') : 'Unavailable'}</div>
+                        <div><b>Initial wardrobe:</b> {typeof s.wardrobe === 'string' ? (s.wardrobe || 'No wardrobe description') : 'Unavailable'}</div>
+                      </>
+                    )}
+                  </div>
+                )}
                 {(s.tags || []).length > 0 && (
                   <div className="row" style={{ marginTop: 6, gap: 4 }}>
                     {s.tags.map((t) => (

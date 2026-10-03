@@ -331,6 +331,143 @@ export function resolveEffectiveWardrobes(plan) {
   return effective
 }
 
+const stableJson = (value) => {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+const isGeneratedTakeRecord = (item) => Boolean(
+  item && (item.status === 'generated' || item.linked_shot_id != null),
+)
+
+export function hasGeneratedTakeHistory(takeId, preparation) {
+  return [...(preparation?.completed || []), ...(preparation?.history || [])]
+    .some((item) => item?.take_id === takeId && isGeneratedTakeRecord(item))
+}
+
+/** Preview which ungenerated take work the backend's plan-save rules affect. */
+export function computePlanChangeImpact(savedPlan, draftPlan, preparation = null) {
+  const oldPlan = normalizePlan(savedPlan)
+  const newPlan = normalizePlan(draftPlan)
+  const oldTakes = oldPlan.takes || []
+  const newTakes = newPlan.takes || []
+  const oldById = new Map(oldTakes.map((take) => [take.take_id, take]))
+  const newById = new Map(newTakes.map((take) => [take.take_id, take]))
+  const oldPositions = new Map(oldTakes.map((take, index) => [take.take_id, index]))
+  const newPositions = new Map(newTakes.map((take, index) => [take.take_id, index]))
+  const automatic = oldPlan.authoring?.mode === 'automatic' || newPlan.authoring?.mode === 'automatic'
+  const globalChange = [
+    ['look', oldPlan.look, newPlan.look],
+    ['initial_wardrobe', oldPlan.initial_wardrobe, newPlan.initial_wardrobe],
+    ['selected_resources', oldPlan.selected_resources, newPlan.selected_resources],
+  ].some(([, before, after]) => stableJson(before) !== stableJson(after))
+  const authoringInputsChanged = automatic && [
+    'brief', 'scene_anchor', 'workflow_binding', 'variation_policy',
+  ].some((field) => stableJson(oldPlan.authoring?.[field] ?? null) !== stableJson(newPlan.authoring?.[field] ?? null))
+  const affected = new Set()
+  const draftAddedTakeIds = newTakes
+    .map((take) => take.take_id)
+    .filter((takeId) => !oldById.has(takeId))
+  let earliestChangedPosition = null
+  const markDownstreamFrom = (position) => {
+    earliestChangedPosition = earliestChangedPosition === null
+      ? position
+      : Math.min(earliestChangedPosition, position)
+  }
+
+  if (!savedPlan) {
+    for (const take of newTakes) affected.add(take.take_id)
+  } else if (globalChange || authoringInputsChanged) {
+    for (const take of [...oldTakes, ...newTakes]) affected.add(take.take_id)
+  } else {
+    let oldWardrobes = {}
+    let newWardrobes = {}
+    let wardrobeResolutionFailed = false
+    try {
+      oldWardrobes = resolveEffectiveWardrobes(oldPlan)
+      newWardrobes = resolveEffectiveWardrobes(newPlan)
+    } catch {
+      wardrobeResolutionFailed = true
+      for (const take of [...oldTakes, ...newTakes]) affected.add(take.take_id)
+    }
+
+    if (!wardrobeResolutionFailed) {
+      for (const [takeId, oldTake] of oldById) {
+        const newTake = newById.get(takeId)
+        const oldPosition = oldPositions.get(takeId) ?? 0
+        const newPosition = newPositions.get(takeId) ?? 0
+        if (!newTake) {
+          affected.add(takeId)
+          if (automatic) markDownstreamFrom(oldPosition)
+          continue
+        }
+        if (automatic && oldPosition !== newPosition) {
+          markDownstreamFrom(Math.min(oldPosition, newPosition))
+        }
+        if (oldWardrobes[takeId] !== newWardrobes[takeId]) {
+          affected.add(takeId)
+          if (automatic) markDownstreamFrom(Math.min(oldPosition, newPosition))
+          continue
+        }
+        const signature = (take) => {
+          const { take_id, ...content } = take || {}
+          return stableJson(content)
+        }
+        if (signature(oldTake) !== signature(newTake)) {
+          affected.add(takeId)
+          if (automatic) markDownstreamFrom(Math.min(oldPosition, newPosition))
+        }
+      }
+      if (earliestChangedPosition !== null) {
+        for (const [takeId, position] of newPositions) {
+          if (position >= earliestChangedPosition) affected.add(takeId)
+        }
+      }
+    }
+  }
+
+  const currentCompleted = Array.isArray(preparation?.completed) ? preparation.completed : []
+  const history = Array.isArray(preparation?.history) ? preparation.history : []
+  const generatedHistory = new Set([...currentCompleted, ...history]
+    .filter(isGeneratedTakeRecord)
+    .map((item) => item.take_id))
+  const addedTakeIds = draftAddedTakeIds.filter((takeId) => !generatedHistory.has(takeId))
+  const ready = new Set(currentCompleted
+    .filter((item) => item && item.status === 'ready' && item.linked_shot_id == null)
+    .map((item) => item.take_id))
+  const affectedTakeIds = [
+    ...newTakes.map((take) => take.take_id).filter((takeId) => affected.has(takeId)),
+    ...oldTakes.map((take) => take.take_id).filter((takeId) => affected.has(takeId) && !newById.has(takeId)),
+  ]
+  const currentAffected = affectedTakeIds.filter((takeId) => newById.has(takeId))
+  const removedTakeIds = affectedTakeIds.filter((takeId) => !newById.has(takeId))
+  const generatedTakeIds = [...new Set([
+    ...affectedTakeIds.filter((takeId) => generatedHistory.has(takeId)),
+    ...draftAddedTakeIds.filter((takeId) => generatedHistory.has(takeId)),
+  ])]
+  const requiredPreparationTakeIds = currentAffected.filter((takeId) => !generatedHistory.has(takeId))
+  return {
+    baselineAvailable: Boolean(savedPlan),
+    affectedTakeIds,
+    addedTakeIds,
+    requiredPreparationTakeIds,
+    readyTakeIds: requiredPreparationTakeIds.filter((takeId) => ready.has(takeId)),
+    pendingTakeIds: requiredPreparationTakeIds.filter((takeId) => !ready.has(takeId)),
+    removedTakeIds,
+    generatedTakeIds,
+    reason: !savedPlan
+      ? 'baseline-unavailable'
+      : globalChange || authoringInputsChanged
+      ? 'plan-wide'
+      : automatic && earliestChangedPosition !== null
+        ? 'automatic-downstream'
+        : 'direct-input',
+  }
+}
+
 
 /** Build the CAS save payload matching the backend PlanDraftIn contract. */
 export function buildPlanSavePayload(plan, expectedRevision, sharedDecisions = null) {
@@ -511,7 +648,14 @@ export async function loadPlanReviews(sessionId, planRevisionOrApi = null, maybe
     const data = await api.get(url)
     return { ok: true, takes: data.takes || [], planRevision: data.plan_revision, ...(data || {}), error: null }
   } catch (err) {
-    return { ok: false, takes: [], planRevision: null, error: err?.message || 'Failed to load plan reviews' }
+    return {
+      ok: false,
+      takes: [],
+      planRevision: null,
+      error: err?.message || 'Failed to load plan reviews',
+      status: err?.status,
+      detail: err?.detail,
+    }
   }
 }
 
@@ -665,28 +809,28 @@ export async function submitSelectedTakes(...args) {
 
 /** Determine take preparation status from preparation snapshot state. */
 export function getTakePreparationState(takeId, preparation, planDirty = false) {
+  if (hasGeneratedTakeHistory(takeId, preparation)) return 'generated'
   if (planDirty) return 'unsaved'
   if (!preparation) return 'missing'
 
   // 1. Check completed takes
   for (const c of preparation.completed || []) {
     if (c.take_id === takeId) {
-      if (c.status === 'generated' || c.linked_shot_id) return 'generated'
       if (c.status === 'ready') return 'ready'
     }
   }
 
-  // 2. Check incomplete takes
-  for (const inc of preparation.incomplete || []) {
-    if (inc.take_id === takeId) {
-      return inc.status || 'missing'
-    }
-  }
-
-  // 3. Check history (invalidated)
+  // 2. Check invalidated history before a missing/stale row in the current revision.
   for (const h of preparation.history || []) {
     if (h.take_id === takeId) {
       return 'invalidated'
+    }
+  }
+
+  // 3. Check incomplete takes
+  for (const inc of preparation.incomplete || []) {
+    if (inc.take_id === takeId) {
+      return inc.status || 'missing'
     }
   }
 

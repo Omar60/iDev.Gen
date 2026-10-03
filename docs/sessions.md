@@ -135,13 +135,15 @@ cloned, so a clone of *Balcony shoot* is itself a *Balcony* session.
 
 **Library** lists every session across every model, newest first, with a search
 box and the tags currently in use as chips above the list. The search reads
-the session's name, look and wardrobe as a case-insensitive substring; a tag
-chip is a whole-tag match (so `night` lists the session tagged `night` and not
-the one tagged `nightclub`). Both filters given, both must hold. Each row
-shows the session's cover photograph — the highest-rated, non-rejected
-finished shot — so the screen shows one frame per session without a request
-per row. A query that matches nothing reads as *Nothing matched* rather than an
-empty area.
+the session's name, look and wardrobe as a case-insensitive substring. For
+`resource-v1` sessions, look and initial wardrobe come from the saved plan and
+are shown on the card and session detail; a missing plan shows its diagnostic
+instead of falling back to legacy session values. A tag chip is a whole-tag
+match (so `night` lists the session tagged `night` and not the one tagged
+`nightclub`). Both filters given, both must hold. Each row shows the session's
+cover photograph — the highest-rated, non-rejected finished shot — so the
+screen shows one frame per session without a request per row. A query that
+matches nothing reads as *Nothing matched* rather than an empty area.
 
 ## The shots
 
@@ -1638,11 +1640,10 @@ Automatic plans also offer an explicit shared-suggestion request. Suggested
 values remain proposals until explicitly accepted; users may edit or clear them
 before acceptance, which writes through the operation-specific plan CAS.
 Repeating identical accepted content replays the saved result after a lost
-response. Suggestion
-requests and acceptance do not prepare takes, approve a plan, submit takes, or
-run generation.
-Automatic preparation controls are not available in this view yet; manual
-editing is available under Advanced.
+response. Suggestion requests and acceptance do not prepare takes, approve a
+plan, submit takes, or run generation. Automatic preparation is available in
+Review as a separate explicit action; approval, test submission, and Run remain
+separate gates.
 
 ### Refreshing resource dependencies
 
@@ -1671,6 +1672,41 @@ generation. Missing or invalid translations are reported as unverifiable
 dependencies; later preparation continues to use the normal resolver and may
 remain blocked until authorized translations are repaired. With
 `resource_planning_enabled` disabled, refresh returns `503`.
+
+### Reviewing and saving a resource plan
+
+The resource session detail shows plan-owned look and initial wardrobe. If the
+plan is missing, it shows the diagnostic and leaves those values unavailable
+rather than substituting the legacy session fields. Library cards use the same
+plan projection, and Library search matches those values for resource sessions.
+
+Review displays each take's saved effective camera, framing, pose, expression,
+look, and wardrobe from its prepared snapshot. Explicit empty values remain
+visible as empty in that snapshot. Linked/generated history is shown from its
+own saved snapshot even after the current plan changes; it is retained history,
+not a selectable new submission. Expand a take to inspect its authoritative
+final prompt, resource revisions, provenance, and writer request/output.
+Recorded exact duplicates are also visible: they match all four normalized
+choices (camera, framing, pose, and expression). They require review but do not
+remove takes; deliberate repeats are allowed, and a shared camera alone is not
+a duplicate.
+
+Before a plan change is saved, **Review downstream impact before saving** lists
+affected takes, ready takes requiring re-preparation, pending or incomplete
+work, new or removed plan rows, and generated or shot-linked history that will
+be retained. No save is sent until **Save Plan Changes** is confirmed. That
+revision CAS saves the plan; it does not automatically start preparation,
+approve Review, submit takes, or run generation.
+
+When resource review needs a dependency check, **Refresh Resources** explicitly
+calls `POST /api/sessions/{sid}/plan/refresh-resources` with the expected plan
+revision. This CAS check reports confirmed affected takes and required
+preparation, or reports that no drift was found; a failed review read alone
+does not confirm drift. Refresh does not edit creative fields, call an
+assistant, prepare, approve, submit, or run. Users can explicitly prepare
+incomplete takes, approve the current Review revision, submit selected ready
+takes with **Submit Test Selection**, and press **Run** separately to start
+generation.
 
 ### Authoring operation claims, cancellation, and resume
 
