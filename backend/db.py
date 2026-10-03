@@ -299,6 +299,25 @@ CREATE TABLE IF NOT EXISTS outfit (
 
 CREATE UNIQUE INDEX IF NOT EXISTS outfit_key ON outfit (key);
 
+-- Personal saved looks are immutable versions of appearance plus an ordered,
+-- self-contained outfit snapshot. Catalogue keys remain useful identities,
+-- while historical reads never depend on mutable wardrobe rows.
+CREATE TABLE IF NOT EXISTS saved_look_version (
+    id            INTEGER PRIMARY KEY,
+    look_key      TEXT NOT NULL,
+    version       INTEGER NOT NULL CHECK (version > 0),
+    name          TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    UNIQUE (look_key, version)
+);
+
+CREATE TRIGGER IF NOT EXISTS saved_look_version_immutable
+BEFORE UPDATE ON saved_look_version
+BEGIN
+    SELECT RAISE(ABORT, 'saved look versions are immutable');
+END;
+
 CREATE INDEX IF NOT EXISTS ix_shot_session ON shot(session_id);
 CREATE INDEX IF NOT EXISTS ix_session_model ON session(model_id);
 

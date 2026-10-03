@@ -26,7 +26,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Path as PathParam, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -58,6 +58,7 @@ from backend import resource_translation
 from backend import resource_selection
 from backend import guided_sessions
 from backend import authoring_operations
+from backend import saved_looks
 from backend.request_limits import RequestLimitRoute
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -107,6 +108,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="iDev.Gen", lifespan=lifespan)
+
+
+def _request_limited_post(path: str):
+    def decorator(func):
+        app.router.add_api_route(
+            path,
+            func,
+            methods=["POST"],
+            route_class_override=RequestLimitRoute,
+        )
+        return func
+    return decorator
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +188,7 @@ def _is_stable_envelope_path(path: str) -> bool:
     """
     return (
         path.startswith(_STABLE_ENVELOPE_PATH_PREFIX)
+        or path.startswith("/api/looks")
         or path == "/api/sessions/guided"
         or "/plan/authoring/operations" in path
     )
@@ -297,6 +311,11 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
 @app.exception_handler(resource_selection.SelectionStateInvalidError)
 async def _selection_state_invalid_handler(request: Request, exc: resource_selection.SelectionStateInvalidError):
     return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
+
+
+@app.exception_handler(saved_looks.SavedLookError)
+async def _saved_look_error_handler(request: Request, exc: saved_looks.SavedLookError):
+    return _stable_error(exc.status_code, exc.code, exc.message)
 
 
 @app.exception_handler(Exception)
@@ -1360,6 +1379,72 @@ def _garment_keys(value) -> list[str]:
     if isinstance(value, str):
         value = value.split(",")
     return [k.strip() for k in (value or []) if str(k).strip()]
+
+
+# ---------------------------------------------------------------- saved looks
+
+class SavedLookGarmentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str | None = Field(default=None, strict=True, max_length=128)
+    wording: str | None = Field(default=None, strict=True)
+    aside: str | None = Field(default=None, strict=True)
+
+
+class SavedLookWriteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(strict=True, max_length=128)
+    appearance: str = Field(default="", strict=True)
+    garments: list[SavedLookGarmentIn] | None = None
+    outfit_key: str | None = Field(default=None, strict=True, max_length=128)
+
+    @model_validator(mode="after")
+    def one_outfit_source(self):
+        if {"garments", "outfit_key"}.issubset(self.model_fields_set):
+            raise ValueError("Provide an outfit key or garment definitions.")
+        return self
+
+
+class SavedLookVersionIn(SavedLookWriteIn):
+    expected_version: int = Field(strict=True, ge=1)
+
+
+@app.get("/api/looks")
+def list_saved_looks():
+    return saved_looks.list_latest()
+
+
+@app.get("/api/looks/{look_key}/versions/{version}")
+def get_saved_look_version(look_key: str, version: int = PathParam(ge=1)):
+    return saved_looks.get_version(look_key, version)
+
+
+def _require_saved_look_writes():
+    if not is_resource_planning_enabled():
+        raise HTTPException(
+            503,
+            detail={
+                "code": "resource_planning_disabled",
+                "message": "Saved-look writing is disabled.",
+            },
+        )
+
+
+@_request_limited_post("/api/looks")
+def create_saved_look(payload: SavedLookWriteIn):
+    _require_saved_look_writes()
+    return saved_looks.create(payload.model_dump(exclude_unset=True))
+
+
+@_request_limited_post("/api/looks/{look_key}/versions")
+def create_saved_look_version(look_key: str, payload: SavedLookVersionIn):
+    _require_saved_look_writes()
+    return saved_looks.create_version(
+        look_key,
+        payload.expected_version,
+        payload.model_dump(exclude_unset=True, exclude={"expected_version"}),
+    )
 
 
 # ------------------------------------------------------------------ readings
@@ -2802,18 +2887,6 @@ def commit_import_selection(selection_id: str, p: ResourceSelectionCommitIn):
     return JSONResponse(content=result_view, status_code=200)
 
 
-def _translation_limit_post(path: str):
-    def decorator(func):
-        app.router.add_api_route(
-            path,
-            func,
-            methods=["POST"],
-            route_class_override=RequestLimitRoute,
-        )
-        return func
-    return decorator
-
-
 class ResourceTranslationPreviewIn(BaseModel):
     translation_map: Any = None
     map_path: str | None = None
@@ -2937,7 +3010,7 @@ def _resolve_translation_map_input(
     return translation_map if translation_map is not None else map_path
 
 
-@_translation_limit_post("/api/resources/libraries/{library_key}/translations/preview")
+@_request_limited_post("/api/resources/libraries/{library_key}/translations/preview")
 def preview_resource_library_translations(library_key: str, p: ResourceTranslationPreviewIn):
     """Preview translation map application without modifying database state."""
     if not is_resource_planning_enabled():
@@ -2961,7 +3034,7 @@ def preview_resource_library_translations(library_key: str, p: ResourceTranslati
         raise HTTPException(422, str(exc)) from exc
 
 
-@_translation_limit_post("/api/resources/libraries/{library_key}/translations/apply")
+@_request_limited_post("/api/resources/libraries/{library_key}/translations/apply")
 def apply_resource_library_translations(library_key: str, p: ResourceTranslationApplyIn):
     """Atomically apply a translation map to a library with TOCTOU verification."""
     if not is_resource_planning_enabled():
@@ -3070,7 +3143,7 @@ class ResourceTranslationProposalsIn(BaseModel):
         return self
 
 
-@_translation_limit_post("/api/resources/libraries/{library_key}/translations/proposals")
+@_request_limited_post("/api/resources/libraries/{library_key}/translations/proposals")
 async def propose_resource_library_translations(
     library_key: str,
     request: Request,

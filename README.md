@@ -53,6 +53,13 @@ The kinds are one workflow, not five. **→** on any finished photo continues wi
 it — the same session switched to that kind, or a fresh session with the photo
 copied in as its reference. The photo never leaves the app.
 
+## Saved looks
+
+The separate **Looks** view (`#/looks`) stores named, versioned appearance
+snapshots with optional ordered garment outfits. The snapshots remain readable
+if the live wardrobe catalogue changes; the manual editor is not yet connected
+to session authoring. See [Saved looks](docs/looks.md).
+
 ## Composing from the catalogue
 
 A take can also be **dealt** instead of written: one camera, one act and one

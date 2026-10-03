@@ -2,60 +2,57 @@
 
 ## Current State
 
-The main agent accepted OpenSpec Task 8.6 of
-`simplify-resource-session-workflow` under Heavy deployment
-`task86-ui-contract-20261003`. Progress is 51 of 72 tasks. Internal Codex
-workers implemented and independently verified this task from the clean
-`main` baseline `b0be8d7`. No independent review remains pending.
+OpenSpec Task 9.1 of `simplify-resource-session-workflow` passed independent
+acceptance under Heavy deployment `srsw-next-20261003-01`. Progress is 52 of
+72 tasks. Internal Codex workers implemented from clean `main` baseline
+`1071b8b`; no external handoff was created. No independent review remains
+pending for this task.
 
 ## Accepted Behavior
 
-A temporary TestClient backend produces complete HTTP response fixtures for
-Resources and SessionView. The exact normalized capture is regenerated and
-compared by a Python test; variable identities, timestamps and temporary
-configuration paths have declared normalization. Eight rendered component
-integration tests use the real API transport with those captured status/body
-pairs. They cover safe selection revisions, stale responses, guided retry,
-workflow refusals, plan/session projection, partial progress and ownership
-across two component roots, without implicit approval, submission or generation.
+The manual Looks view creates named appearance-only or ordered-outfit presets
+without typed technical keys. It reuses existing garments/outfits and supports
+new wording, optional moved-aside wording, one-piece clothing, layers,
+accessories and explicit removal order. Appearance remains separate and carries
+a manual clothing-review reminder.
 
-The fixtures exposed a manual batch notice reading an absent `completed_count`.
-The only production change derives that count from the returned `prepared`
-array. A deterministic local assistant and isolated demo backend serve the
-built frontend for a reproducible two-tab browser walkthrough. The guide also
-includes manual preparation and missing-workflow checks using invented data.
+A saved version contains its complete ordered definitions and canonical
+appearance/outfit digest. Creation and new-version CAS write atomically; stale
+edits leave no partial records. Changed garment/outfit content uses new keys,
+leaving legacy rows and previous versions intact. Historical reads and re-save
+remain independent of catalogue drift. Successful saves fence earlier list
+responses so they cannot erase a new row or downgrade its latest version.
+
+JSON import/export, photo extraction, applying presets to sessions and wardrobe
+progression remain later tasks. No assistant, preparation, approval, submission
+or generation is implicit in the manual editor.
 
 ## Independent Verification
 
-- Full Python suite: 2,457 passed, five warnings.
-- Frontend suite: 528 passed in 22 files; the new contract file passed 8 tests.
-- Frontend production build passed with the existing chunk-size warning.
-- Fresh backend fixture comparison passed; privacy/control checks passed 46.
-- Strict noninteractive OpenSpec validation and diff checks passed.
+- Full Python suite: 2,466 passed, five existing warnings.
+- Frontend suite: 536 passed in 23 files; production build passed with the
+  existing chunk-size warning.
+- Saved-look API, rollback/concurrency, historical catalogue-drift and rendered
+  Refresh/Save probes passed.
+- Privacy/control checks, strict noninteractive OpenSpec validation and diff
+  checks passed.
 
-The real browser adopted the same operation in two tabs, persisted one
-completed, one failed and one remaining take, then resumed to three prepared
-takes. Manual preparation displayed `2 prepared` and two ready snapshots.
-A workflowless invented model showed remedies without creating a session.
-Readbacks retained empty shots, no running generation, an unapproved plan and
-zero sessions for that model. Approval, submit and run were not invoked.
-
-The current demo stopped with Ctrl+C, removed its temporary data and freed
-port 8777; its terminal reported exit code 1 after interruption. Two abandoned
-synthetic temporary folders from earlier launches remain because tool approval
-rejected removal with `blocked by policy`. No alternative deletion mechanism
-was attempted. This operational cleanup limitation does not affect the
-verified source or the reproducible current demo lifecycle.
+An earlier full run failed in the existing concurrent plan-CAS test. It also
+failed in an extracted clean baseline without this task's diff; the final full
+run passed. No assertion or session-plan concurrency code was changed.
+Temporary diagnostic probes/logs reside in ignored tooling cache and are not
+part of the deliverable.
 
 ## Changed Surfaces
 
-- `frontend/src/views/SessionView.jsx`: prepared-array count correction.
-- The Task 8.6 fixture, React contract tests, Python capture producer and drift test.
-- The isolated browser launcher and walkthrough, linked from README/session docs.
-- The three canonical deployment-state documents and only the Task 8.6 checkbox.
+- Backend schema, saved-look service and four HTTP boundaries; isolated API
+  tests and fixture cleanup.
+- App navigation, manual Looks view, local styling and component regressions.
+- README, matching saved-look guide/index, verified overview/structure updates,
+  the three deployment-state documents and only the Task 9.1 checkbox.
 
 ## Closure and Continuation
 
-The user authorized the isolated acceptance commit. Final documentation gates
-and Git closure follow this verified handoff; Archivist owns the closing token
-report. Task 9.1 remains unstarted. No push is authorized.
+The user authorized the isolated acceptance commit. Archivist owns the closing
+Git receipt and token report; implementation and independent review are complete.
+Task 9.2 remains unstarted. No subsequent task or push is authorized.

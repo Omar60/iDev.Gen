@@ -39,6 +39,8 @@ continues to serve measured catalogue and room-seed use cases.
   and create a legacy session or a ready-resource session plan.
 - Add or compose shots, optionally use references, prepare/review resource takes,
   then explicitly run them through the serial queue.
+- Create named saved Looks as immutable appearance snapshots with optional
+  ordered outfits; the manual editor is not yet connected to session authoring.
 - Import and translate resources or legacy room libraries, inspect readiness,
   judge catalogue evidence, and use the Library and Slideshow views.
 

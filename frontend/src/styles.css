@@ -46,6 +46,11 @@ h3 { font-size: 14px; margin: 0 0 8px; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .grid-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.looks-layout { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 2fr); gap: 14px; margin-top: 14px; align-items: start; }
+.looks-list { display: grid; gap: 6px; margin-top: 10px; }
+.looks-list button { width: 100%; text-align: left; }
+.looks-garment { border: 1px solid var(--line); border-radius: 8px; margin: 10px 0; padding: 10px; }
+.looks-garment-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 
 label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
 input, select, textarea, button, .button {
@@ -118,6 +123,10 @@ a.badge:hover { text-decoration: none; background: var(--panel-2); }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
 th { color: var(--muted); font-weight: 500; }
+
+@media (max-width: 720px) {
+  .looks-layout { grid-template-columns: 1fr; }
+}
 
 .error { color: var(--bad); background: #2a1417; border: 1px solid #5b2126; padding: 8px 10px; border-radius: 6px; margin-bottom: 12px; }
 

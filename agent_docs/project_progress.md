@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 51 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 52 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -487,4 +487,17 @@ Independent gates passed 2,457 Python tests, 528 frontend tests in 22 files,
 46 privacy/control checks, fresh fixture comparison, frontend build, strict
 noninteractive OpenSpec validation and diff checks. No independent review
 remains pending. The authorized isolated acceptance commit closes Task 8.6;
-Task 9.1 remains unstarted. No subsequent task or push is authorized.
+Task 9.1 was next at that checkpoint. No push was authorized.
+Task 9.1 passed independent acceptance under deployment
+`srsw-next-20261003-01` on the Heavy internal Codex route. The manual Looks
+editor separates appearance from an optional ordered outfit and hides technical
+keys. Atomic saved-look versions preserve complete historical definitions,
+legacy keys and exact content digests; stale edits cannot allocate partial
+records. A stale list response after Save was repaired and independently
+rechecked. Final verification passed 2,466 Python tests, 536 frontend tests in
+23 files, frontend build, privacy/control checks, strict OpenSpec validation
+and diff checks. An unchanged concurrent plan-CAS test also failed on the clean
+baseline before the final full run passed; its logic and assertions were not
+changed. No independent review remains pending for Task 9.1. The user authorized
+the isolated acceptance commit. Archivist owns the closing Git receipt and
+token report. Task 9.2 remains unstarted; no subsequent task or push is authorized.

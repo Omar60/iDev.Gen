@@ -558,3 +558,10 @@
   with a fresh frontend build and isolated fake assistant. Keep observed HTTP
   status/body and rendered labels in the guide; close SQLite before removing
   temporary demo data on Windows, and verify both cleanup and listener shutdown.
+- Saved-look history stores complete ordered garment definitions and validates
+  the appearance/outfit digest without live catalogue reads. Reuse verified
+  historical definitions when appending a version; changed garment wording
+  gets a new key, and a name-only edit can retain its content digest.
+- A successful mutation must fence earlier list reads before merging its result.
+  Independent Refresh/Save probes caught a late list erasing a new look and
+  downgrading version history; both cases now have retained component tests.

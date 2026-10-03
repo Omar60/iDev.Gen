@@ -77,7 +77,7 @@
 
 This group depends on the shared body limiter, field-preserving transport, closed authoring schema and operation foundation. Complete it before final acceptance.
 
-- [ ] 9.1 Reuse garment/outfit catalogue reads and add the minimal versioned saved-look wrapper separating appearance from ordered garments. Forms hide technical keys; edits create immutable versions/new records and never reword used legacy keys. Verify one-piece garments, layers and accessories.
+- [x] 9.1 Reuse garment/outfit catalogue reads and add the minimal versioned saved-look wrapper separating appearance from ordered garments. Forms hide technical keys; edits create immutable versions/new records and never reword used legacy keys. Verify one-piece garments, layers and accessories.
 - [ ] 9.2 Implement closed `portable-look-v1` parsing, canonical ordering/digest, allowed untrusted provenance and canonical export equality. Validate the entire envelope before writes and verify malformed/unknown content, private photos/paths/session data and credentials never export.
 - [ ] 9.3 Implement transactional portable import preflight/revalidation, exact new-version/save-copy conflict choices and atomic writes without delegating to `/api/wardrobe/import`. Persist/deduplicate pre-remap content receipts with original/destination identities and exact local mappings; verify identical re-import, remapped retry, concurrent conflict and zero writes after a late invalid item.
 - [ ] 9.4 Add legacy garment/outfit JSON as outfit-only input through the same preflight and shared 10 MiB actual-body boundary while leaving `/api/wardrobe/import` semantics unchanged. Verify missing/false Content-Length, unknown garment references and explicit conversion to a named look.

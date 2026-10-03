@@ -127,7 +127,7 @@ def client():
     with TestClient(main.app) as c:
         yield c
     for table in ("shot", "session", "model", "workflow", "cell", "component", "reading",
-                  "garment", "outfit"):
+                  "garment", "outfit", "saved_look_version"):
         db.run(f"DELETE FROM {table}")
 
 
