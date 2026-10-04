@@ -573,3 +573,12 @@
   catalogue or private evidence. A path-based endpoint must support every key
   allowed by its schema: independent tests caught a legal slash-containing look
   key being rejected by the new export route before acceptance.
+- Portable imports retain a unique original-identity/pre-remap-digest receipt
+  alongside their immutable destination and exact local mappings. Validate that
+  destination before replay; export equality and receipt equality are separate
+  no-op paths. Portable origin annotations never become trusted local evidence.
+- Every import replay shortcut must honor the reviewed destination, including
+  local equality after a store change. Keep portable schema validation separate
+  from SQLite storage limits; refusing an unrepresentable next version must
+  preserve the valid save-copy option. Independent regressions caught both
+  overflow and a destination substitution before Task 9.3 acceptance.

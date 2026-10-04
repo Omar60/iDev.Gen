@@ -31,11 +31,10 @@ review it manually.
 
 ## Current scope
 
-The browser editor remains manual and has no JSON controls. A read-only API
-endpoint exports an immutable version as `portable-look-v1`; import preflight
-and commit, photo extraction, applying a saved look in session authoring, and
-wardrobe progression remain future work. The pure parser is a validation helper,
-not an implemented import or round-trip/no-op flow.
+The browser editor remains manual and has no JSON controls. The REST API
+supports `portable-look-v1` export and reviewed import preview/commit. Photo
+extraction, applying a saved look in session authoring, and wardrobe progression
+remain future work.
 
 ## Portable JSON export
 
@@ -47,19 +46,62 @@ The closed envelope contains `schema_version: 1`, `look`, `garments`, and
 `wording`, and `aside`; the array follows `garment_keys` order and is empty when
 there is no outfit. The export is independent of later catalogue changes.
 
-Export currently sets `provenance` to `null`, because saved-look storage has no
-provenance. The portable parser accepts only `null` or the annotation
-`{source, image_sha256}`, with `source` in `manual`, `photo`, `assistant`, or
-`import`; a non-null lowercase SHA-256 value is allowed only for `photo`. This
-allowlisted annotation is untrusted data, not verified evidence. The portable
-content digest covers the complete canonical envelope, including that
-annotation. It differs from the saved version's `content_digest`, which covers
-only canonical `{appearance, outfit}` and excludes the name and version number.
+Export sets `provenance` to `null` for locally authored versions. For imported
+versions it returns the incoming annotation retained separately in the private
+import receipt; the annotation is not verified evidence. The portable parser
+accepts only `null` or the annotation `{source, image_sha256}`, with `source` in
+`manual`, `photo`, `assistant`, or `import`; a non-null lowercase SHA-256 value
+is allowed only for `photo`. This allowlisted annotation is untrusted data. The
+portable content digest covers
+the complete canonical envelope, including that annotation. It differs from the
+saved version's `content_digest`, which covers only canonical
+`{appearance, outfit}` and excludes the name and version number.
 
 The closed envelope includes no photo bytes or paths, session data, or
 credentials. Parsing validates the complete shape, orders garments by
 `garment_keys`, and rejects duplicate JSON keys and non-JSON numeric constants.
-The portable-look API surface currently exposes export only.
+
+## Portable JSON import
+
+Import is available through the API. It does not change the legacy
+`/api/wardrobe/import` behavior.
+
+`POST /api/looks/import/preview` accepts the raw `portable-look-v1` envelope.
+Its response includes the import status, original identity, destination or
+available choices, exact local garment/outfit mappings, any remaps, and the
+`portable_content_digest`, `review_digest`, and `preview_token`. A ready import
+uses `choice: "import"`. An occupied source version with different contents,
+an unused version older than the latest under that key, or a source identity
+already imported with different content requires an explicit choice: `new_version`
+uses the latest version plus one under the source key, while `save_copy` uses a
+new key at version 1. An unused source key or a free version above its latest
+may retain the envelope's declared version. The preview exposes any generated
+destination keys and remaps for review. Garment keys containing commas are
+remapped because legacy outfits store ordered keys as comma-separated text.
+For a conflict when the latest local version is `9223372036854775807`, preview
+offers only `save_copy`; no higher SQLite version can be allocated.
+
+Both import endpoints limit the actual streamed body to 10 MiB. Import also
+limits `look.version` to SQLite's signed integer range, 1 through
+`9223372036854775807`; larger schema-valid values return `422 invalid_look`.
+
+`POST /api/looks/import/commit` accepts a JSON object with exactly these
+top-level keys: `envelope`, `preview_token`, `review_digest`, and `choice`. The
+`envelope` must be the reviewed portable envelope; `choice` is `import`,
+`new_version`, or `save_copy`. The HMAC-signed preview
+token binds the canonical content, store state, mappings and available choices,
+and expires after 15 minutes. Commit revalidates the reviewed plan and writes
+the look version, mapped catalogue entries, and import receipt atomically. If
+the store or mapping changed, commit returns a conflict and requires a new
+preview.
+
+The receipt records the original pre-remap identity and portable content digest,
+the local destination, and exact mappings. An identical re-import is a no-op,
+including after remapping, and checks that the recorded destination is intact.
+If an envelope already matches a local export, preview reports `already_equal`
+and commit is also a no-op. Import `local_origin` is a local classification
+separate from portable `provenance`; exports contain local keys and the
+allowlisted annotation but never the internal receipt.
 
 ## HTTP API
 
@@ -68,6 +110,8 @@ The portable-look API surface currently exposes export only.
 | `GET /api/looks` | Latest summary for each look: `[{key, version, name, content_digest}]`. |
 | `GET /api/looks/{key}/versions/{version}` | Full version: `{key, version, name, content_digest, appearance, outfit}`. |
 | `GET /api/looks/{key}/versions/{version}/export` | Closed self-contained `portable-look-v1` envelope for that immutable version. |
+| `POST /api/looks/import/preview` | Plan an import from a raw `portable-look-v1` envelope; does not write catalogue or look rows. |
+| `POST /api/looks/import/commit` | Commit the reviewed envelope with its preview token, digest, and explicit choice. |
 | `POST /api/looks` | Create version 1 with required `name`, optional `appearance`, and at most one of `garments` or `outfit_key`. |
 | `POST /api/looks/{key}/versions` | Append a version with the same content fields and required `expected_version`. |
 
@@ -80,7 +124,10 @@ snapshot stores complete garment text instead of relying on the current
 catalogue. The content digest is derived from canonical `{appearance, outfit}`
 content; use `key` and `version` to identify a specific version.
 
-Writes are transactional and use the shared 10 MiB actual-request-body limit.
-When resource planning is disabled, reads including portable export remain
-available and writes return `503`. A stale `expected_version` returns `409`;
-invalid input returns `422`, and a missing look version returns `404`.
+Writes are transactional and use the shared 10 MiB actual-request-body limit,
+measured from the streamed request body. Import preview and commit enforce this
+limit even when `Content-Length` is missing or inaccurate. When resource
+planning is disabled, saved-look mutations including import commit return
+`503`; reads and import preview remain available. A stale `expected_version`
+returns `409`; invalid input returns `422`, and a missing look version returns
+`404`.

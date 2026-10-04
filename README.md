@@ -57,10 +57,10 @@ copied in as its reference. The photo never leaves the app.
 
 The separate **Looks** view (`#/looks`) stores named, versioned appearance
 snapshots with optional ordered garment outfits. The snapshots remain readable
-if the live wardrobe catalogue changes. A read-only API endpoint exports one
-immutable version as a self-contained `portable-look-v1` JSON envelope; the
-browser has no JSON controls yet, and session authoring is not connected. See
-[Saved looks](docs/looks.md).
+if the live wardrobe catalogue changes. The REST API exports immutable versions
+as self-contained `portable-look-v1` JSON envelopes and supports a reviewed
+preview/commit import flow. The browser has no JSON controls yet, and session
+authoring is not connected. See [Saved looks](docs/looks.md).
 
 ## Composing from the catalogue
 

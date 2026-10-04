@@ -318,6 +318,34 @@ BEGIN
     SELECT RAISE(ABORT, 'saved look versions are immutable');
 END;
 
+-- A portable import receipt remembers the pre-remap source identity and the
+-- exact local version/catalogue keys produced by one import. It is separate
+-- from the closed export envelope and immutable alongside the saved version.
+CREATE TABLE IF NOT EXISTS saved_look_import_receipt (
+    id                       INTEGER PRIMARY KEY,
+    original_look_key        TEXT NOT NULL,
+    original_version         INTEGER NOT NULL CHECK (original_version > 0),
+    portable_content_digest  TEXT NOT NULL CHECK (length(portable_content_digest) = 64),
+    destination_look_key     TEXT NOT NULL,
+    destination_version      INTEGER NOT NULL CHECK (destination_version > 0),
+    local_origin             TEXT NOT NULL CHECK (local_origin = 'import'),
+    portable_annotation_json TEXT,
+    garment_mapping_json     TEXT NOT NULL,
+    outfit_mapping_json      TEXT NOT NULL,
+    destination_digest       TEXT NOT NULL CHECK (length(destination_digest) = 64),
+    created_at               TEXT NOT NULL,
+    UNIQUE (original_look_key, original_version, portable_content_digest)
+);
+
+CREATE INDEX IF NOT EXISTS ix_saved_look_import_destination
+    ON saved_look_import_receipt(destination_look_key, destination_version);
+
+CREATE TRIGGER IF NOT EXISTS saved_look_import_receipt_immutable
+BEFORE UPDATE ON saved_look_import_receipt
+BEGIN
+    SELECT RAISE(ABORT, 'saved look import receipts are immutable');
+END;
+
 CREATE INDEX IF NOT EXISTS ix_shot_session ON shot(session_id);
 CREATE INDEX IF NOT EXISTS ix_session_model ON session(model_id);
 

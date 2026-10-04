@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 53 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 54 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -511,5 +511,20 @@ immutable saved definitions and local keys, with null provenance for the
 current storage. The new route supports all schema-legal key characters.
 Independent verification passed 2,480 Python tests, 69 focused looks and
 privacy/control checks, strict OpenSpec validation and diff checks. No frontend
-files changed and no independent review remains pending. Task 9.3 remains
-unstarted; no subsequent task or push is authorized.
+files changed and no independent review remains pending for Task 9.2.
+
+Task 9.3 passed independent acceptance under Heavy deployment
+`sr-sw-9-3-20261003` with internal Codex implementation and verification.
+Portable import preview/commit binds exact reviewed content, mappings and
+destinations, then atomically writes catalogue rows, immutable look versions
+and pre-remap receipts. Original-envelope and local-export equality reuse
+intact saved versions without additional writes. Storage overflow and a
+reviewed-destination mismatch were repaired and independently rechecked;
+save-copy remains available when no higher SQLite version is representable.
+The final complete Python suite passed 2,512 tests; privacy/control checks,
+strict OpenSpec validation and diff checks passed. Earlier CAS race failures
+did not recur in the final full run; no unrelated repair was made. No frontend
+files changed and no independent product review remains pending. The user
+authorized the isolated local acceptance commit; its Git receipt and the Heavy
+token report accompany the closing handoff.
+Task 9.4 and subsequent tasks are unstarted; no push is authorized.
