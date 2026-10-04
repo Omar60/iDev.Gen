@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 54 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 55 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -527,4 +527,18 @@ did not recur in the final full run; no unrelated repair was made. No frontend
 files changed and no independent product review remains pending. The user
 authorized the isolated local acceptance commit; its Git receipt and the Heavy
 token report accompany the closing handoff.
-Task 9.4 and subsequent tasks are unstarted; no push is authorized.
+Task 9.4 passed independent acceptance under Heavy deployment
+`simplify-workflow-next-20261004`. The existing bounded Looks import endpoints
+now accept legacy garments/outfits as outfit-only input. Complete preflight and
+transactional revalidation preserve legacy keys, expose explicit save-copy
+remapping, and retain an immutable canonical-input receipt for verified replay.
+The import creates no saved look; explicit named conversion uses the existing
+look-create route. The legacy wardrobe import is unchanged.
+
+Final verification passed 2,537 Python tests, 60 focused import/compatibility
+tests, 46 privacy/control checks, strict OpenSpec validation, compilation and
+diff checks. An earlier full run failed the unchanged concurrent plan-CAS test;
+its isolated run and the final full gate passed without assertion or source
+changes. No independent product review remains pending. Documentation and the
+authorized isolated acceptance commit close this deployment; Task 9.5 and
+subsequent tasks remain unstarted. No push is authorized.

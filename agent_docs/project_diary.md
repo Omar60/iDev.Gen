@@ -582,3 +582,12 @@
   from SQLite storage limits; refusing an unrepresentable next version must
   preserve the valid save-copy option. Independent regressions caught both
   overflow and a destination substitution before Task 9.3 acceptance.
+- Legacy garment/outfit imports have no look identity. Keep their canonical
+  input receipt separate from portable look receipts and create a named look
+  only through an explicit later action. Receipt replay must verify complete
+  destination definitions, including catalogue-only references and labels;
+  changes require diagnosis rather than allocating replacement records.
+- Prove atomic import rollback at the last receipt write, not only through
+  invalid preflight input. Distinct preview token purposes prevent one import
+  format from authorizing the other; unrepresentable garment keys require
+  reviewed remapping before comma-separated outfit storage.

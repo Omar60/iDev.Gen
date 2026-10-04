@@ -32,9 +32,9 @@ review it manually.
 ## Current scope
 
 The browser editor remains manual and has no JSON controls. The REST API
-supports `portable-look-v1` export and reviewed import preview/commit. Photo
-extraction, applying a saved look in session authoring, and wardrobe progression
-remain future work.
+supports `portable-look-v1` export/import and reviewed legacy outfit-only import
+through preview/commit. Photo extraction, applying a saved look in session
+authoring, and wardrobe progression remain future work.
 
 ## Portable JSON export
 
@@ -81,8 +81,9 @@ remapped because legacy outfits store ordered keys as comma-separated text.
 For a conflict when the latest local version is `9223372036854775807`, preview
 offers only `save_copy`; no higher SQLite version can be allocated.
 
-Both import endpoints limit the actual streamed body to 10 MiB. Import also
-limits `look.version` to SQLite's signed integer range, 1 through
+Preview and commit requests limit the actual streamed body to 10 MiB, including
+when `Content-Length` is missing or inaccurate. Import also limits
+`look.version` to SQLite's signed integer range, 1 through
 `9223372036854775807`; larger schema-valid values return `422 invalid_look`.
 
 `POST /api/looks/import/commit` accepts a JSON object with exactly these
@@ -103,6 +104,63 @@ and commit is also a no-op. Import `local_origin` is a local classification
 separate from portable `provenance`; exports contain local keys and the
 allowlisted annotation but never the internal receipt.
 
+## Legacy garment/outfit JSON import
+
+The same preview and commit endpoints also accept the legacy outfit-only shape
+when the input has no `schema_version`. The closed object contains one or both
+of `garments` and `outfits`; each must be an array. Garments have `key`,
+`wording`, and optional `aside`. Outfits have `key`, optional `label`, and
+`garments`, which may be an ordered key array or the legacy comma-separated
+string. Multiple outfits and garment-only imports are supported. Outfit keys
+may reference garments defined in the input or already present in the catalogue;
+an unknown reference rejects the whole preview before writes.
+Whitespace around keys, wording, aside, labels, and garment references is
+stripped. An omitted `aside` becomes an empty string; an omitted or blank
+`label` defaults to the outfit key.
+
+For example, preview this raw JSON at `POST /api/looks/import/preview`:
+
+```json
+{
+  "garments": [
+    {"key": "cotton-shirt", "wording": "a cotton shirt"}
+  ],
+  "outfits": [
+    {"key": "summer-layers", "label": "Summer layers", "garments": ["cotton-shirt"]}
+  ]
+}
+```
+
+Preview resolves every reference and returns its exact mappings and any
+remapped keys without writing catalogue rows. Commit uses the same request
+wrapper as portable import, with the legacy object under `envelope`; choose
+`import` when keys are unchanged. If a garment or outfit key conflicts with
+different local content, preview generates destination keys and offers only
+`save_copy`. Garment keys containing commas are also remapped because the
+catalogue stores outfit references as comma-separated text. Commit rechecks the
+reviewed catalogue state and, when it writes rows, stores a separate
+integrity-verified legacy import receipt with the mapped destination. A receipt
+replay checks its destination and is a no-op. An import whose content is
+already present is also a no-op.
+
+After an imported receipt exists, a new preview reports `receipt_replay` and
+offers only `import`. Retrying the original reviewed commit uses its original
+token and choice, including `save_copy` when that was the accepted choice. Use
+the choices returned by the current preview; do not infer a choice from the
+mapping.
+
+Legacy and portable preview tokens are protocol-specific and cannot be used
+across the two import types; both expire after 15 minutes. Both import routes
+enforce the same 10 MiB limit against actual streamed request bytes, regardless
+of `Content-Length`.
+
+A legacy import writes catalogue garments and outfits only; it does not create
+a `saved_look_version`. To explicitly create a named look from an imported
+outfit, call `POST /api/looks` with the desired name and its outfit key, for
+example `{ "name": "Summer layers", "outfit_key": "summer-layers" }`. This
+path leaves the existing `/api/wardrobe/import` behavior unchanged. The browser
+still has no JSON controls, and session authoring remains separate.
+
 ## HTTP API
 
 | Request | Result |
@@ -110,8 +168,8 @@ allowlisted annotation but never the internal receipt.
 | `GET /api/looks` | Latest summary for each look: `[{key, version, name, content_digest}]`. |
 | `GET /api/looks/{key}/versions/{version}` | Full version: `{key, version, name, content_digest, appearance, outfit}`. |
 | `GET /api/looks/{key}/versions/{version}/export` | Closed self-contained `portable-look-v1` envelope for that immutable version. |
-| `POST /api/looks/import/preview` | Plan an import from a raw `portable-look-v1` envelope; does not write catalogue or look rows. |
-| `POST /api/looks/import/commit` | Commit the reviewed envelope with its preview token, digest, and explicit choice. |
+| `POST /api/looks/import/preview` | Plan an import from a raw `portable-look-v1` envelope or legacy garment/outfit JSON; does not write catalogue or look rows. |
+| `POST /api/looks/import/commit` | Commit the reviewed portable or legacy envelope with its preview token, digest, and explicit choice. |
 | `POST /api/looks` | Create version 1 with required `name`, optional `appearance`, and at most one of `garments` or `outfit_key`. |
 | `POST /api/looks/{key}/versions` | Append a version with the same content fields and required `expected_version`. |
 

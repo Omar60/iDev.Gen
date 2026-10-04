@@ -44,6 +44,7 @@ _PORTABLE_SOURCES = {"manual", "photo", "assistant", "import"}
 _SQLITE_INTEGER_MAX = (1 << 63) - 1
 _PORTABLE_IMPORT_PREVIEW_TTL_SECONDS = 15 * 60
 _PORTABLE_IMPORT_PREVIEW_PURPOSE = "portable-look-import-v1"
+_LEGACY_IMPORT_PREVIEW_PURPOSE = "legacy-wardrobe-import-v1"
 
 
 def _portable_digest(value: object) -> str:
@@ -202,6 +203,131 @@ def parse_portable_look_json(raw: str | bytes) -> dict:
 def portable_content_digest(value: object) -> str:
     """Digest the complete canonical pre-remap envelope, including annotation."""
     return _canonicalize_portable_look(value)[1]
+
+
+def _parse_import_json(raw: str | bytes) -> object:
+    if type(raw) not in (str, bytes):
+        _invalid()
+    try:
+        return json.loads(
+            raw,
+            object_pairs_hook=_portable_json_object,
+            parse_int=_portable_json_integer,
+            parse_constant=_reject_json_constant,
+        )
+    except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
+        _invalid()
+
+
+def _canonicalize_legacy_wardrobe(value: object) -> dict:
+    if (
+        type(value) is not dict
+        or not value
+        or set(value) - {"garments", "outfits"}
+    ):
+        _invalid()
+
+    garments = []
+    seen_garments: set[str] = set()
+    if "garments" in value:
+        if type(value["garments"]) is not list:
+            _invalid()
+        for item in value["garments"]:
+            if type(item) is not dict or set(item) - {"key", "wording", "aside"} or not {"key", "wording"}.issubset(item):
+                _invalid()
+            key, wording = item["key"], item["wording"]
+            aside = item.get("aside", "")
+            if not isinstance(key, str) or not isinstance(wording, str) or not isinstance(aside, str):
+                _invalid()
+            key, wording, aside = key.strip(), wording.strip(), aside.strip()
+            if (
+                not _valid_key(key)
+                or key in seen_garments
+                or not _valid_wording(wording)
+                or not _valid_wording(aside, allow_empty=True)
+            ):
+                _invalid()
+            seen_garments.add(key)
+            garments.append({"key": key, "wording": wording, "aside": aside})
+
+    outfits = []
+    seen_outfits: set[str] = set()
+    if "outfits" in value:
+        if type(value["outfits"]) is not list:
+            _invalid()
+        for item in value["outfits"]:
+            if type(item) is not dict or set(item) - {"key", "label", "garments"} or not {"key", "garments"}.issubset(item):
+                _invalid()
+            key, references = item["key"], item["garments"]
+            label = item["label"] if "label" in item else None
+            if not isinstance(key, str) or ("label" in item and not isinstance(label, str)):
+                _invalid()
+            key = key.strip()
+            label = key if "label" not in item else label.strip()
+            if not label:
+                label = key
+            if not _valid_key(key) or key in seen_outfits or not _valid_name(label):
+                _invalid()
+            if isinstance(references, str):
+                references = references.split(",")
+            if type(references) is not list or not references:
+                _invalid()
+            ordered_keys = []
+            seen_references: set[str] = set()
+            for reference in references:
+                if not isinstance(reference, str):
+                    _invalid()
+                reference = reference.strip()
+                if not _valid_key(reference) or reference in seen_references:
+                    _invalid()
+                seen_references.add(reference)
+                ordered_keys.append(reference)
+            seen_outfits.add(key)
+            outfits.append({"key": key, "label": label, "garments": ordered_keys})
+
+    if not garments and not outfits:
+        _invalid()
+    return {
+        "garments": sorted(garments, key=lambda item: item["key"]),
+        "outfits": sorted(outfits, key=lambda item: item["key"]),
+    }
+
+
+def canonicalize_legacy_wardrobe(value: object) -> dict:
+    """Validate and normalize legacy garment/outfit JSON for reviewed import."""
+    return _canonicalize_legacy_wardrobe(value)
+
+
+def _canonicalize_look_import_document(value: object) -> tuple[str, dict]:
+    if type(value) is not dict:
+        _invalid()
+    if "schema_version" in value:
+        return "portable", canonicalize_portable_look(value)
+    return "legacy", canonicalize_legacy_wardrobe(value)
+
+
+def parse_look_import_preview_json(raw: str | bytes) -> tuple[str, dict]:
+    return _canonicalize_look_import_document(_parse_import_json(raw))
+
+
+def parse_look_import_commit_json(raw: str | bytes) -> tuple[str, dict, str, str, str]:
+    request = _parse_import_json(raw)
+    if type(request) is not dict or set(request) != {
+        "envelope", "preview_token", "review_digest", "choice",
+    }:
+        _invalid()
+    kind, document = _canonicalize_look_import_document(request["envelope"])
+    token, review_digest, choice = request["preview_token"], request["review_digest"], request["choice"]
+    if (
+        not isinstance(token, str)
+        or not token
+        or len(token) > 65536
+        or not _valid_sha256(review_digest)
+        or not isinstance(choice, str)
+        or choice not in {"import", "new_version", "save_copy"}
+    ):
+        _invalid()
+    return kind, document, token, review_digest, choice
 
 
 def _validate_import_storage_version(envelope: dict) -> None:
@@ -764,11 +890,14 @@ def _portable_outfit_fingerprint(garments: list[dict]) -> str:
     return _portable_digest({"garments": garments})
 
 
-def _generated_key(prefix: str, reserved: set[str], key: bytes, seed: dict) -> str:
+def _generated_key(
+    prefix: str, reserved: set[str], key: bytes, seed: dict,
+    *, purpose: str = _PORTABLE_IMPORT_PREVIEW_PURPOSE,
+) -> str:
     attempt = 0
     while True:
         seed_bytes = json.dumps(
-            {"purpose": _PORTABLE_IMPORT_PREVIEW_PURPOSE, "seed": seed, "attempt": attempt},
+            {"purpose": purpose, "seed": seed, "attempt": attempt},
             ensure_ascii=True, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")
         suffix = hmac.new(key, seed_bytes, hashlib.sha256).hexdigest()[:32]
@@ -1144,6 +1273,526 @@ def commit_portable_import(value: object, preview_token: str, review_digest: str
         _write_conflict()
     except sqlite3.Error:
         _write_conflict()
+
+
+def _legacy_import_invalid_receipt() -> None:
+    raise SavedLookError(500, "look_import_receipt_invalid", "Legacy import receipt is inconsistent.")
+
+
+def _legacy_import_stale() -> None:
+    raise SavedLookError(409, "look_import_preview_stale", "The look store changed; preview the import again.")
+
+
+def _legacy_import_choice_invalid() -> None:
+    raise SavedLookError(409, "look_import_choice_invalid", "The reviewed import choice is no longer available.")
+
+
+def _legacy_store_state_digest() -> str:
+    return _portable_digest({
+        "portable_store": _portable_store_state_digest(),
+        "legacy_receipts": db.q(
+            "SELECT * FROM saved_look_legacy_import_receipt ORDER BY legacy_content_digest"
+        ),
+    })
+
+
+def _legacy_review_digest(plan: dict, state_digest: str, content_digest: str) -> str:
+    return _portable_digest({
+        "purpose": _LEGACY_IMPORT_PREVIEW_PURPOSE,
+        "plan": plan,
+        "store_state_digest": state_digest,
+        "legacy_content_digest": content_digest,
+    })
+
+
+def _legacy_preview_token(
+    plan: dict, state_digest: str, content_digest: str, key: bytes,
+) -> tuple[str, str]:
+    review_digest = _legacy_review_digest(plan, state_digest, content_digest)
+    payload = {
+        "version": 1,
+        "purpose": _LEGACY_IMPORT_PREVIEW_PURPOSE,
+        "expires_at": int(time.time()) + _PORTABLE_IMPORT_PREVIEW_TTL_SECONDS,
+        "store_state_digest": state_digest,
+        "legacy_content_digest": content_digest,
+        "review_digest": review_digest,
+        "mode": plan["mode"],
+        "choices": plan["choices"],
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = hmac.new(
+        key, _LEGACY_IMPORT_PREVIEW_PURPOSE.encode("ascii") + b"\0" + encoded, hashlib.sha256,
+    ).hexdigest()
+    token = base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=") + "." + signature
+    return token, review_digest
+
+
+def _read_legacy_preview_token(token: str) -> dict:
+    try:
+        encoded_text, signature = token.split(".", 1)
+        if (
+            not encoded_text
+            or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-" for char in encoded_text)
+            or len(signature) != 64
+            or any(char not in "0123456789abcdef" for char in signature)
+        ):
+            raise ValueError("invalid token")
+        encoded = base64.urlsafe_b64decode(
+            (encoded_text + "=" * ((4 - len(encoded_text) % 4) % 4)).encode("ascii")
+        )
+        expected = hmac.new(
+            _portable_preview_key(create=False),
+            _LEGACY_IMPORT_PREVIEW_PURPOSE.encode("ascii") + b"\0" + encoded,
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("invalid token")
+        payload = json.loads(encoded, object_pairs_hook=_portable_json_object)
+        if (
+            type(payload) is not dict
+            or set(payload) != {
+                "version", "purpose", "expires_at", "store_state_digest",
+                "legacy_content_digest", "review_digest", "mode", "choices",
+            }
+            or type(payload["version"]) is not int
+            or payload["version"] != 1
+            or payload["purpose"] != _LEGACY_IMPORT_PREVIEW_PURPOSE
+            or type(payload["expires_at"]) is not int
+            or payload["expires_at"] <= int(time.time())
+            or not _valid_sha256(payload["store_state_digest"])
+            or not _valid_sha256(payload["legacy_content_digest"])
+            or not _valid_sha256(payload["review_digest"])
+            or payload["mode"] not in {"receipt_replay", "choice_required", "import", "already_equal"}
+            or type(payload["choices"]) is not list
+            or payload["choices"] != (["save_copy"] if payload["mode"] == "choice_required" else ["import"])
+        ):
+            raise ValueError("invalid token")
+        return payload
+    except (AttributeError, KeyError, TypeError, ValueError, RecursionError, UnicodeError):
+        raise SavedLookError(409, "look_import_preview_invalid", "Import preview is invalid or expired.") from None
+
+
+def _legacy_remapped(mapping: dict) -> list[dict]:
+    remapped = []
+    for kind in ("garments", "outfits"):
+        for source_key, destination_key in sorted(mapping[kind].items()):
+            if source_key != destination_key:
+                reason = "unrepresentable_key" if kind == "garments" and "," in source_key else "key_conflict"
+                remapped.append({
+                    "kind": kind[:-1], "from": source_key, "to": destination_key, "reason": reason,
+                })
+    return remapped
+
+
+def _legacy_mapping_from_receipt(receipt: dict, document: dict) -> dict:
+    try:
+        mapping = {
+            "garments": json.loads(receipt["garment_mapping_json"], object_pairs_hook=_portable_json_object),
+            "outfits": json.loads(receipt["outfit_mapping_json"], object_pairs_hook=_portable_json_object),
+        }
+    except (KeyError, TypeError, ValueError, RecursionError, UnicodeError):
+        _legacy_import_invalid_receipt()
+    source_garments = {item["key"] for item in document["garments"]}
+    source_garments.update(key for outfit in document["outfits"] for key in outfit["garments"])
+    source_outfits = {item["key"] for item in document["outfits"]}
+    if (
+        type(mapping["garments"]) is not dict
+        or type(mapping["outfits"]) is not dict
+        or set(mapping["garments"]) != source_garments
+        or set(mapping["outfits"]) != source_outfits
+        or any(not _valid_key(key) or not _valid_key(value) for key, value in mapping["garments"].items())
+        or any(not _valid_key(key) or not _valid_key(value) for key, value in mapping["outfits"].items())
+        or len(set(mapping["garments"].values())) != len(mapping["garments"])
+        or len(set(mapping["outfits"].values())) != len(mapping["outfits"])
+    ):
+        _legacy_import_invalid_receipt()
+    return mapping
+
+
+def _legacy_destination_projection(
+    document: dict, mapping: dict, *, receipt: bool = False,
+) -> dict:
+    def invalid():
+        if receipt:
+            _legacy_import_invalid_receipt()
+        _legacy_import_stale()
+
+    source_definitions = {item["key"]: item for item in document["garments"]}
+    source_outfits = {item["key"]: item for item in document["outfits"]}
+    resolved_garments = []
+    for source_key, destination_key in sorted(mapping["garments"].items()):
+        row = db.one(
+            "SELECT key, wording, aside FROM garment WHERE key = ?", destination_key,
+        )
+        if row is None or not _valid_key(row["key"]) or not _valid_wording(row["wording"]):
+            invalid()
+        if not _valid_wording(row["aside"], allow_empty=True):
+            invalid()
+        definition = {
+            "source_key": source_key,
+            "key": row["key"],
+            "wording": row["wording"],
+            "aside": row["aside"],
+        }
+        expected = source_definitions.get(source_key)
+        if expected is not None and (
+            definition["wording"] != expected["wording"]
+            or definition["aside"] != expected["aside"]
+        ):
+            invalid()
+        resolved_garments.append(definition)
+
+    resolved_outfits = []
+    for source_key, destination_key in sorted(mapping["outfits"].items()):
+        source = source_outfits[source_key]
+        garment_keys = [mapping["garments"][key] for key in source["garments"]]
+        row = db.one(
+            "SELECT key, label, garments FROM outfit WHERE key = ?", destination_key,
+        )
+        if (
+            row is None
+            or not _valid_key(row["key"])
+            or not isinstance(row["label"], str)
+            or row["label"] != source["label"]
+            or row["garments"] != ",".join(garment_keys)
+        ):
+            invalid()
+        resolved_outfits.append({
+            "source_key": source_key,
+            "key": row["key"],
+            "label": row["label"],
+            "garments": row["garments"].split(","),
+        })
+
+    return {
+        "mapping": mapping,
+        "garments": resolved_garments,
+        "outfits": resolved_outfits,
+    }
+
+
+def _verify_legacy_import_receipt(receipt: dict, document: dict) -> dict:
+    content_digest = _portable_digest(document)
+    if (
+        receipt.get("legacy_content_digest") != content_digest
+        or not _valid_sha256(receipt.get("review_digest"))
+        or receipt.get("choice") not in {"import", "save_copy"}
+        or not _valid_sha256(receipt.get("destination_digest"))
+    ):
+        _legacy_import_invalid_receipt()
+    mapping = _legacy_mapping_from_receipt(receipt, document)
+    has_remapping = bool(_legacy_remapped(mapping))
+    if receipt["choice"] != ("save_copy" if has_remapping else "import"):
+        _legacy_import_invalid_receipt()
+    projection = _legacy_destination_projection(document, mapping, receipt=True)
+    if _portable_digest(projection) != receipt["destination_digest"]:
+        _legacy_import_invalid_receipt()
+    return {
+        "mapping": mapping,
+        "remapped": _legacy_remapped(mapping),
+        "resolved_garments": projection["garments"],
+        "resolved_outfits": projection["outfits"],
+    }
+
+
+def _find_legacy_import_receipt(content_digest: str, document: dict) -> tuple[dict, dict] | None:
+    receipt = db.one(
+        "SELECT * FROM saved_look_legacy_import_receipt WHERE legacy_content_digest = ?",
+        content_digest,
+    )
+    return None if receipt is None else (receipt, _verify_legacy_import_receipt(receipt, document))
+
+
+def _legacy_fresh_plan(
+    document: dict, content_digest: str, state_digest: str, key: bytes,
+) -> dict:
+    index = _catalogue_index()
+    definitions = {item["key"]: item for item in document["garments"]}
+    source_keys = set(definitions)
+    source_keys.update(key for outfit in document["outfits"] for key in outfit["garments"])
+    resolved_by_source = {}
+    for source_key in sorted(source_keys):
+        definition = definitions.get(source_key) or index["garment_rows"].get(source_key)
+        if definition is None:
+            raise SavedLookError(422, "look_import_unknown_garment", "An outfit references an unknown garment.")
+        resolved_by_source[source_key] = {
+            "key": source_key,
+            "wording": definition["wording"],
+            "aside": definition["aside"],
+        }
+
+    reserved_garments = set(index["garments"]) | source_keys
+    garment_mapping = {}
+    remapped = []
+    for source_key in sorted(source_keys):
+        definition = resolved_by_source[source_key]
+        candidates = index["garments"].get(source_key, set())
+        reason = "unrepresentable_key" if "," in source_key else (
+            "key_conflict"
+            if source_key in definitions and candidates
+            and candidates != {(definition["wording"], definition["aside"])}
+            else ""
+        )
+        destination_key = source_key
+        if reason:
+            destination_key = _generated_key(
+                "garment-import", reserved_garments, key,
+                {
+                    "kind": "garment", "source_key": source_key,
+                    "legacy_content_digest": content_digest, "state_digest": state_digest,
+                },
+                purpose=_LEGACY_IMPORT_PREVIEW_PURPOSE,
+            )
+            remapped.append({
+                "kind": "garment", "from": source_key, "to": destination_key, "reason": reason,
+            })
+        garment_mapping[source_key] = destination_key
+
+    resolved_by_local = {
+        garment_mapping[source_key]: {
+            "key": garment_mapping[source_key],
+            "wording": definition["wording"],
+            "aside": definition["aside"],
+        }
+        for source_key, definition in resolved_by_source.items()
+    }
+    outfit_mapping = {}
+    reserved_outfits = set(index["outfits"])
+    reserved_outfits.update(outfit["key"] for outfit in document["outfits"])
+    resolved_outfits = []
+    for source in document["outfits"]:
+        source_key = source["key"]
+        garment_keys = [garment_mapping[item] for item in source["garments"]]
+        desired_garments = [resolved_by_local[item] for item in garment_keys]
+        desired_fingerprint = _portable_outfit_fingerprint(desired_garments)
+        candidates = index["outfits"].get(source_key, set())
+        existing = db.one("SELECT label, garments FROM outfit WHERE key = ?", source_key)
+        conflicts = bool(candidates and candidates != {desired_fingerprint})
+        if existing is not None and (
+            existing["label"] != source["label"]
+            or existing["garments"] != ",".join(garment_keys)
+        ):
+            conflicts = True
+        destination_key = source_key
+        if conflicts:
+            destination_key = _generated_key(
+                "outfit-import", reserved_outfits, key,
+                {
+                    "kind": "outfit", "source_key": source_key,
+                    "legacy_content_digest": content_digest, "state_digest": state_digest,
+                },
+                purpose=_LEGACY_IMPORT_PREVIEW_PURPOSE,
+            )
+            remapped.append({
+                "kind": "outfit", "from": source_key, "to": destination_key, "reason": "key_conflict",
+            })
+        outfit_mapping[source_key] = destination_key
+        resolved_outfits.append({
+            "source_key": source_key,
+            "key": destination_key,
+            "label": source["label"],
+            "garments": garment_keys,
+        })
+        index["outfits"].setdefault(destination_key, set()).add(desired_fingerprint)
+
+    mapping = {"garments": garment_mapping, "outfits": outfit_mapping}
+    imported_garments = {}
+    for source_key, definition in definitions.items():
+        local_key = garment_mapping[source_key]
+        imported_garments[local_key] = {
+            "key": local_key, "wording": definition["wording"], "aside": definition["aside"],
+        }
+    for source_key, local_key in garment_mapping.items():
+        if source_key not in definitions and source_key != local_key:
+            definition = resolved_by_source[source_key]
+            imported_garments[local_key] = {
+                "key": local_key, "wording": definition["wording"], "aside": definition["aside"],
+            }
+
+    resolved_garments = [
+        {
+            "source_key": source_key,
+            "key": garment_mapping[source_key],
+            "wording": resolved_by_source[source_key]["wording"],
+            "aside": resolved_by_source[source_key]["aside"],
+        }
+        for source_key in sorted(source_keys)
+    ]
+    write_garments = [imported_garments[name] for name in sorted(imported_garments)]
+    write_outfits = [
+        {"key": item["key"], "label": item["label"], "garments": item["garments"]}
+        for item in resolved_outfits
+    ]
+    write_garments = [
+        item for item in write_garments
+        if db.one("SELECT 1 FROM garment WHERE key = ?", item["key"]) is None
+    ]
+    write_outfits = [
+        item for item in write_outfits
+        if db.one("SELECT 1 FROM outfit WHERE key = ?", item["key"]) is None
+    ]
+    mode = "choice_required" if remapped else ("import" if write_garments or write_outfits else "already_equal")
+    return {
+        "mode": mode,
+        "status": "choice_required" if remapped else ("ready" if mode == "import" else "already_equal"),
+        "choices": ["save_copy"] if remapped else ["import"],
+        "mapping": mapping,
+        "remapped": remapped,
+        "resolved_garments": resolved_garments,
+        "resolved_outfits": resolved_outfits,
+        "write_garments": write_garments,
+        "write_outfits": write_outfits,
+        "no_op": mode == "already_equal",
+    }
+
+
+def _legacy_replay_plan(verified: dict) -> dict:
+    return {
+        "mode": "receipt_replay",
+        "status": "already_imported",
+        "choices": ["import"],
+        "mapping": verified["mapping"],
+        "remapped": verified["remapped"],
+        "resolved_garments": verified["resolved_garments"],
+        "resolved_outfits": verified["resolved_outfits"],
+        "write_garments": [],
+        "write_outfits": [],
+        "no_op": True,
+    }
+
+
+def _build_legacy_import_plan(
+    document: dict, content_digest: str, state_digest: str, key: bytes,
+) -> dict:
+    receipt = _find_legacy_import_receipt(content_digest, document)
+    if receipt is not None:
+        return _legacy_replay_plan(receipt[1])
+    return _legacy_fresh_plan(document, content_digest, state_digest, key)
+
+
+def preview_legacy_import(value: object) -> dict:
+    document = _canonicalize_legacy_wardrobe(value)
+    content_digest = _portable_digest(document)
+    with db.transaction():
+        state_digest = _legacy_store_state_digest()
+        key = _portable_preview_key(create=True)
+        plan = _build_legacy_import_plan(document, content_digest, state_digest, key)
+        token, review_digest = _legacy_preview_token(plan, state_digest, content_digest, key)
+        return {
+            **plan,
+            "legacy_content_digest": content_digest,
+            "review_digest": review_digest,
+            "preview_token": token,
+        }
+
+
+def _commit_legacy_rows(document: dict, plan: dict) -> str:
+    created_at = db.now()
+    for garment in plan["write_garments"]:
+        existing = db.one(
+            "SELECT wording, aside FROM garment WHERE key = ?", garment["key"],
+        )
+        if existing is None:
+            db.run(
+                "INSERT INTO garment (key, wording, aside, created_at) VALUES (?, ?, ?, ?)",
+                garment["key"], garment["wording"], garment["aside"], created_at,
+            )
+        elif existing["wording"] != garment["wording"] or existing["aside"] != garment["aside"]:
+            _legacy_import_stale()
+    for outfit in plan["write_outfits"]:
+        garments = ",".join(outfit["garments"])
+        existing = db.one(
+            "SELECT label, garments FROM outfit WHERE key = ?", outfit["key"],
+        )
+        if existing is None:
+            db.run(
+                "INSERT INTO outfit (key, label, garments, created_at) VALUES (?, ?, ?, ?)",
+                outfit["key"], outfit["label"], garments, created_at,
+            )
+        elif existing["label"] != outfit["label"] or existing["garments"] != garments:
+            _legacy_import_stale()
+    projection = _legacy_destination_projection(document, plan["mapping"])
+    return _portable_digest(projection)
+
+
+def _legacy_import_result(plan: dict, *, no_op: bool) -> dict:
+    return {
+        "mapping": plan["mapping"],
+        "remapped": plan["remapped"],
+        "garments": plan["resolved_garments"],
+        "outfits": plan["resolved_outfits"],
+        "no_op": no_op,
+    }
+
+
+def commit_legacy_import(
+    value: object, preview_token: str, review_digest: str, choice: str,
+) -> dict:
+    document = _canonicalize_legacy_wardrobe(value)
+    content_digest = _portable_digest(document)
+    payload = _read_legacy_preview_token(preview_token)
+    if (
+        payload["legacy_content_digest"] != content_digest
+        or payload["review_digest"] != review_digest
+    ):
+        raise SavedLookError(409, "look_import_preview_mismatch", "Import content or review changed; preview the import again.")
+    try:
+        with db.transaction():
+            receipt_pair = _find_legacy_import_receipt(content_digest, document)
+            if receipt_pair is not None:
+                receipt, verified = receipt_pair
+                if payload["mode"] == "receipt_replay":
+                    plan = _legacy_replay_plan(verified)
+                    if (
+                        payload["choices"] != plan["choices"]
+                        or _legacy_review_digest(plan, payload["store_state_digest"], content_digest) != review_digest
+                        or choice != "import"
+                    ):
+                        _legacy_import_choice_invalid()
+                elif (
+                    payload["mode"] not in {"choice_required", "import"}
+                    or receipt["review_digest"] != review_digest
+                    or receipt["choice"] != choice
+                ):
+                    _legacy_import_stale()
+                return _legacy_import_result(_legacy_replay_plan(verified), no_op=True)
+
+            state_digest = _legacy_store_state_digest()
+            if state_digest != payload["store_state_digest"]:
+                _legacy_import_stale()
+            plan = _build_legacy_import_plan(document, content_digest, state_digest, _portable_preview_key(create=False))
+            if (
+                plan["mode"] != payload["mode"]
+                or plan["choices"] != payload["choices"]
+                or _legacy_review_digest(plan, state_digest, content_digest) != review_digest
+            ):
+                _legacy_import_stale()
+            if choice not in plan["choices"]:
+                _legacy_import_choice_invalid()
+
+            destination_digest = _commit_legacy_rows(document, plan)
+            if plan["mode"] != "already_equal":
+                db.run(
+                    """INSERT INTO saved_look_legacy_import_receipt
+                       (legacy_content_digest, review_digest, choice,
+                        garment_mapping_json, outfit_mapping_json,
+                        destination_digest, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    content_digest,
+                    review_digest,
+                    choice,
+                    json.dumps(plan["mapping"]["garments"], ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+                    json.dumps(plan["mapping"]["outfits"], ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+                    destination_digest,
+                    db.now(),
+                )
+            return _legacy_import_result(plan, no_op=plan["no_op"])
+    except SavedLookError:
+        raise
+    except sqlite3.IntegrityError:
+        _legacy_import_stale()
+    except sqlite3.Error:
+        _legacy_import_stale()
 
 
 def _unique_key(prefix: str, table: str, reserved: set[str]) -> str:

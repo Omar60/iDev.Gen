@@ -346,6 +346,26 @@ BEGIN
     SELECT RAISE(ABORT, 'saved look import receipts are immutable');
 END;
 
+-- Legacy wardrobe imports have no look key or version. Keep their canonical
+-- source digest, reviewed destination mapping and content receipt separately
+-- from portable saved-look receipts; they never fabricate a saved look.
+CREATE TABLE IF NOT EXISTS saved_look_legacy_import_receipt (
+    id                       INTEGER PRIMARY KEY,
+    legacy_content_digest    TEXT NOT NULL UNIQUE CHECK (length(legacy_content_digest) = 64),
+    review_digest            TEXT NOT NULL CHECK (length(review_digest) = 64),
+    choice                   TEXT NOT NULL CHECK (choice IN ('import', 'save_copy')),
+    garment_mapping_json     TEXT NOT NULL,
+    outfit_mapping_json      TEXT NOT NULL,
+    destination_digest       TEXT NOT NULL CHECK (length(destination_digest) = 64),
+    created_at               TEXT NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS saved_look_legacy_import_receipt_immutable
+BEFORE UPDATE ON saved_look_legacy_import_receipt
+BEGIN
+    SELECT RAISE(ABORT, 'legacy look import receipts are immutable');
+END;
+
 CREATE INDEX IF NOT EXISTS ix_shot_session ON shot(session_id);
 CREATE INDEX IF NOT EXISTS ix_session_model ON session(model_id);
 

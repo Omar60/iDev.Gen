@@ -1454,17 +1454,21 @@ def create_saved_look_version(look_key: str, payload: SavedLookVersionIn):
 
 @_request_limited_post("/api/looks/import/preview")
 async def preview_saved_look_import(request: Request):
-    envelope = saved_looks.parse_portable_look_json(await request.body())
-    return saved_looks.preview_portable_import(envelope)
+    kind, document = saved_looks.parse_look_import_preview_json(await request.body())
+    if kind == "legacy":
+        return saved_looks.preview_legacy_import(document)
+    return saved_looks.preview_portable_import(document)
 
 
 @_request_limited_post("/api/looks/import/commit")
 async def commit_saved_look_import(request: Request):
     _require_saved_look_writes()
-    envelope, token, review_digest, choice = saved_looks.parse_portable_look_commit_json(
+    kind, document, token, review_digest, choice = saved_looks.parse_look_import_commit_json(
         await request.body()
     )
-    return saved_looks.commit_portable_import(envelope, token, review_digest, choice)
+    if kind == "legacy":
+        return saved_looks.commit_legacy_import(document, token, review_digest, choice)
+    return saved_looks.commit_portable_import(document, token, review_digest, choice)
 
 
 # ------------------------------------------------------------------ readings
