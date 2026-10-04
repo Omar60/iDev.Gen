@@ -59,6 +59,7 @@ from backend import resource_selection
 from backend import guided_sessions
 from backend import authoring_operations
 from backend import saved_looks
+from backend import photo_staging
 from backend.request_limits import RequestLimitRoute
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -104,6 +105,7 @@ async def lifespan(app: FastAPI):
     db.run("UPDATE shot SET status='failed', error='interrupted when the app closed' WHERE status='running'")
     resource_selection.startup_recovery()
     authoring_operations.startup_recovery(planning_enabled=is_resource_planning_enabled())
+    photo_staging.startup_recovery()
     yield
 
 
@@ -1434,6 +1436,66 @@ def _require_saved_look_writes():
                 "message": "Saved-look writing is disabled.",
             },
         )
+
+
+@app.post("/api/looks/photo-stages", status_code=201)
+async def upload_look_photo(request: Request):
+    """Validate and privately stage one browser-selected saved-look photo."""
+    _require_saved_look_writes()
+    content_types = [value for name, value in request.scope.get("headers", []) if name.lower() == b"content-type"]
+    if len(content_types) != 1:
+        return _stable_error(422, "invalid_multipart", "Upload one photo as a multipart file named 'file'.")
+    try:
+        _, boundary = parse_and_validate_multipart_content_type(content_types[0])
+        data = await photo_staging.read_multipart_photo(request, boundary)
+        return JSONResponse(photo_staging.create_stage(data), status_code=201)
+    except ValueError:
+        return _stable_error(422, "invalid_multipart", "Upload one photo as a multipart file named 'file'.")
+    except photo_staging.PhotoStageError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message)
+
+
+@app.get("/api/looks/photo-stages/{photo_id}")
+def get_look_photo_stage(photo_id: str):
+    view = photo_staging.get_stage(photo_id)
+    if view is None:
+        return _stable_error(404, "photo_stage_not_found", "Photo stage was not found.")
+    return JSONResponse(content=view, status_code=200)
+
+
+@app.get("/api/looks/photo-stages/{photo_id}/preview")
+def preview_look_photo_stage(photo_id: str):
+    try:
+        path, media_type = photo_staging.preview_path(photo_id)
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"},
+        )
+    except photo_staging.PhotoStageError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message)
+
+
+@app.post("/api/looks/photo-stages/{photo_id}/cancel")
+def cancel_look_photo_stage(photo_id: str):
+    try:
+        return JSONResponse(content=photo_staging.cancel_stage(photo_id), status_code=200)
+    except photo_staging.PhotoStageError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message)
+
+
+@_request_limited_post("/api/looks/photo-stages/{photo_id}/save")
+def save_look_from_photo_stage(photo_id: str, payload: SavedLookWriteIn):
+    """Save reviewed manual fields; the staged image is not assistant evidence."""
+    _require_saved_look_writes()
+    try:
+        return photo_staging.save_look(
+            photo_id,
+            payload.model_dump(exclude_unset=True),
+            saved_looks.create,
+        )
+    except photo_staging.PhotoStageError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message)
 
 
 @_request_limited_post("/api/looks")

@@ -366,6 +366,40 @@ BEGIN
     SELECT RAISE(ABORT, 'legacy look import receipts are immutable');
 END;
 
+-- Private, short-lived look-photo input. The opaque ID is the only public
+-- handle; the source path and digest remain server-owned. A terminal row
+-- keeps its status and idempotent save result until its fixed expiry plus the
+-- tombstone retention window.
+CREATE TABLE IF NOT EXISTS look_photo_stage (
+    id                    INTEGER PRIMARY KEY,
+    photo_id              TEXT NOT NULL UNIQUE,
+    state                 TEXT NOT NULL DEFAULT 'publishing',
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    expires_at            TEXT NOT NULL,
+    staged_path           TEXT NOT NULL,
+    byte_count            INTEGER NOT NULL,
+    image_format          TEXT NOT NULL,
+    media_type            TEXT NOT NULL,
+    width                 INTEGER NOT NULL,
+    height                INTEGER NOT NULL,
+    source_sha256         TEXT NOT NULL CHECK (length(source_sha256) = 64),
+    cleanup_state         TEXT NOT NULL DEFAULT 'none',
+    cleanup_warning       TEXT NOT NULL DEFAULT '',
+    save_payload_digest   TEXT,
+    saved_look_key        TEXT,
+    saved_look_version    INTEGER,
+    saved_result_json     TEXT,
+    CHECK (state IN ('publishing', 'staged', 'saved', 'cancelled', 'expired')),
+    CHECK (byte_count > 0 AND byte_count <= 10485760),
+    CHECK (width > 0 AND height > 0 AND width * height <= 25000000),
+    CHECK (image_format IN ('JPEG', 'PNG', 'WEBP')),
+    CHECK (cleanup_state IN ('none', 'pending', 'cleaned', 'failed'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_look_photo_stage_state_expires
+    ON look_photo_stage(state, expires_at);
+
 CREATE INDEX IF NOT EXISTS ix_shot_session ON shot(session_id);
 CREATE INDEX IF NOT EXISTS ix_session_model ON session(model_id);
 

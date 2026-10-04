@@ -591,3 +591,17 @@
   invalid preflight input. Distinct preview token purposes prevent one import
   format from authorizing the other; unrepresentable garment keys require
   reviewed remapping before comma-separated outfit storage.
+- Pillow decode alone accepts trailing payloads. Photo staging also verifies
+  exact container termination and PNG CRCs; valid embedded metadata remains
+  supported without claiming universal detection of hidden payloads.
+- Persist photo ownership before writing either temporary or published bytes.
+  A post-rename process-loss probe exposed files invisible to row-based expiry;
+  durable publishing state and deterministic owned names make recovery possible.
+- Bounded cleanup needs forward progress despite persistent locks. Rotate
+  eligible rows and treat missing owned files individually so a disappearing
+  temporary file cannot hide a remaining published image.
+- Concurrent HTTP probes use one test client per thread. Sharing one client
+  produced a harness SQLite failure; preserve assertions when repairing the
+  harness, and rerun the complete suite before acceptance.
+- Check the staged diff before committing new files. An unstaged diff omits
+  untracked additions and did not expose surplus blank lines at their EOF.

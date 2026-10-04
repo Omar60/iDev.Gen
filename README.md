@@ -61,8 +61,10 @@ if the live wardrobe catalogue changes. The REST API exports immutable versions
 as self-contained `portable-look-v1` JSON envelopes and accepts both those
 envelopes and legacy garment/outfit-only JSON through reviewed preview/commit
 imports. A legacy catalogue import does not create a named look; that conversion
-is explicit. The browser has no JSON controls yet, and session authoring is not
-connected. See [Saved looks](docs/looks.md).
+is explicit. The API also offers temporary photo staging for a manually reviewed
+look save; it does not infer appearance or garments. The browser has no JSON or
+photo controls yet, and session authoring is not connected. See
+[Saved looks](docs/looks.md).
 
 ## Composing from the catalogue
 

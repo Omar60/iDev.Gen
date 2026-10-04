@@ -31,10 +31,40 @@ review it manually.
 
 ## Current scope
 
-The browser editor remains manual and has no JSON controls. The REST API
-supports `portable-look-v1` export/import and reviewed legacy outfit-only import
-through preview/commit. Photo extraction, applying a saved look in session
-authoring, and wardrobe progression remain future work.
+The browser editor remains manual and has no JSON or photo controls. The REST
+API supports `portable-look-v1` export/import and reviewed legacy outfit-only
+import through preview/commit. It also provides temporary photo staging for a
+manually reviewed look save. Staging does not infer appearance or garments, send
+the image to an assistant, or make it a generation reference. Photo extraction,
+applying a saved look in session authoring, and wardrobe progression remain
+future work.
+
+## Temporary photo staging API
+
+`POST /api/looks/photo-stages` accepts exactly one `multipart/form-data` file
+part named `file` and returns `201` with an opaque `photo_id` and stage status.
+The server identifies JPEG, PNG, or WebP from the bytes, verifies the complete
+container (including PNG chunk checksums), and fully decodes one frame with
+Pillow. Trailing data is refused; client filename and declared MIME type are not
+trusted. The actual file is limited to 10 MiB and 25 megapixels. Multipart
+framing has a separate 64 KiB allowance.
+
+The stage can be previewed and checked before a caller submits the same JSON
+fields accepted by `POST /api/looks` to the save endpoint. Those fields remain
+manual and reviewed. Repeating a save with identical content returns the stored
+result; a different payload for an already-saved stage returns `409`. Saving
+creates the look without retaining the staged image as look content.
+
+Expiry is fixed at 24 hours after creation and does not extend on access. A
+terminal stage status is retained for 24 hours after its original expiry and may
+be purged after that when cleanup succeeds; failed cleanup can keep it available
+longer. Status returns `200` for a retained terminal stage; an expired stage's
+preview, save, or cancel returns `410`, and a purged ID returns `404`. Save and
+cancel persist their terminal state before deleting staged bytes. If cleanup
+fails, status includes `cleanup_warning`; a later stage access retries cleanup.
+A cleanup warning does not undo a saved look. With resource planning disabled,
+stage creation and save return `503`; status, preview, and cancel remain
+available.
 
 ## Portable JSON export
 
@@ -172,6 +202,11 @@ still has no JSON controls, and session authoring remains separate.
 | `POST /api/looks/import/commit` | Commit the reviewed portable or legacy envelope with its preview token, digest, and explicit choice. |
 | `POST /api/looks` | Create version 1 with required `name`, optional `appearance`, and at most one of `garments` or `outfit_key`. |
 | `POST /api/looks/{key}/versions` | Append a version with the same content fields and required `expected_version`. |
+| `POST /api/looks/photo-stages` | Stage one validated JPEG, PNG, or WebP image for preview and a manually reviewed save. |
+| `GET /api/looks/photo-stages/{photo_id}` | Read temporary photo-stage status and metadata. |
+| `GET /api/looks/photo-stages/{photo_id}/preview` | Read staged image bytes for preview. |
+| `POST /api/looks/photo-stages/{photo_id}/cancel` | Cancel photo staging. |
+| `POST /api/looks/photo-stages/{photo_id}/save` | Save the reviewed look fields accepted by `POST /api/looks`. |
 
 Each garment definition can provide `key`, `wording`, and `aside`; omit `key`
 to create a new garment identity. Omit both outfit fields when creating to save

@@ -27,8 +27,9 @@ Verified baseline from the repository layout and application entry points.
   `resource_preparation.py`, and prompt/resource modules. Resource import,
   immutable storage, readiness, and translations are handled by the
   `resource_*` modules.
-- `backend/saved_looks.py` stores self-contained saved-look versions;
-  `frontend/src/views/Looks.jsx` provides the manual editor.
+- `backend/saved_looks.py` stores self-contained saved-look versions, while
+  `backend/photo_staging.py` validates temporary look photos and owns their
+  expiry and cleanup. `frontend/src/views/Looks.jsx` provides the manual editor.
 - Legacy room imports and catalogue preparation use `importer.py`,
   `room_registry.py`, `extractor.py`, `cut_map.py`, `mining.py`, and
   `translation_map.py`. Catalogue composition, judging, wardrobe, and image

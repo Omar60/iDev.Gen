@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 55 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 56 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -540,5 +540,17 @@ tests, 46 privacy/control checks, strict OpenSpec validation, compilation and
 diff checks. An earlier full run failed the unchanged concurrent plan-CAS test;
 its isolated run and the final full gate passed without assertion or source
 changes. No independent product review remains pending. Documentation and the
-authorized isolated acceptance commit close this deployment; Task 9.5 and
-subsequent tasks remain unstarted. No push is authorized.
+authorized isolated acceptance commit closed Task 9.4. No push is authorized.
+
+Task 9.5 passed independent acceptance under Heavy deployment
+`srsw_9_5_20261004`. Private one-image photo staging verifies actual
+JPEG/PNG/WebP containers, complete Pillow decode, 10 MiB file bytes and 25 MP.
+Fixed expiry, bounded recovery and post-commit save/cancel cleanup preserve
+manual saved looks and expose retryable cleanup warnings. A durable publishing
+owner precedes filesystem writes; recovery covers partial and published bytes.
+Selection performs no inference, and extraction/browser controls remain later
+tasks. Final verification passed 2,599 Python tests with one native-symlink
+test skipped for Windows permissions, plus 46 privacy/control checks, strict
+OpenSpec validation and diff checks. Portable confinement tests passed. No
+independent product review remains pending. The authorized isolated local
+commit closes this deployment; Task 9.6 and subsequent tasks remain unstarted.
