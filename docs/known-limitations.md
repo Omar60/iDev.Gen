@@ -16,11 +16,10 @@ discover them mid-shoot.
 - **One LoRA per model.** A session drives a single LoRA loader. Character +
   style combos need a workflow that already stacks them, and the extra loaders
   keep their own fixed values.
-- **One look per session, and no look library.** The look — hair, makeup, the
-  place, the light — is fixed once and that constraint is the point. The
-  wardrobe is not: it rides on every take and a take may change it. But there is
-  no way to save either and reuse it in the next session. Copy the text, or use
-  **⟳ More like this**.
+- **One look per session.** The look — hair, makeup, the place, the light — is
+  fixed once and that constraint is the point. Saved looks preserve reusable
+  appearance and outfit snapshots, but session authoring does not yet load or
+  apply them. Copy the text, or use **⟳ More like this**.
 - **A long shoot is written in rounds, and it takes minutes.** Asked for forty
   lines at once an assistant answers about thirty, shorter than asked, with the
   middle of the shoot missing — so forty takes with their wardrobes is ten calls
@@ -61,11 +60,13 @@ discover them mid-shoot.
   session runs makes both wait, and the model may be swapped in and out of VRAM
   between the two. Write the shoot first, then Run — or point the assistant at a
   hosted endpoint, which leaves the card to ComfyUI entirely.
-- **A photo picked from disk is scaled to 1024px before it is sent**, which is
-  what small vision models read anyway. A photo already in the app — the anchor
-  — is sent at full size. Photo requests need an explicit `llm_vision_model`;
-  they do not fall back to the text model. Setup describes capability detection
-  and the errors for missing or unsupported vision models.
+- **The session composer scales a photo picked from disk to 1024px before it is
+  sent**, which is what small vision models read anyway. A photo already in the
+  app — the anchor — is sent at full size. Saved-look photo staging also sends
+  the validated staged image to the configured assistant. Photo requests need
+  an explicit `llm_vision_model`; they do not fall back to the text model. Setup
+  describes capability detection and the errors for missing or unsupported
+  vision models.
 - **Words are not a photograph.** A look written in detail holds the attributes
   it names — colour, fabric, neckline, hem — and nothing else: button count,
   exact drape and the seams no sentence mentions still drift between frames. For

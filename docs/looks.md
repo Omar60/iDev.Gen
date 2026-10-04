@@ -34,12 +34,12 @@ review it manually.
 The browser editor remains manual and has no JSON or photo controls. The REST
 API supports `portable-look-v1` export/import and reviewed legacy outfit-only
 import through preview/commit. It also provides temporary photo staging for a
-manually reviewed look save. Staging does not infer appearance or garments, send
-the image to an assistant, or make it a generation reference. This is separate
-from the session composer’s **Wardrobe from a photo** helper, which uses the
-configured vision model described in [Setup](getting-started.md#setup). Directly
-extracting a staged photo into a saved look, applying a saved look in session
-authoring, and wardrobe progression remain future work.
+manual look save or an assistant-generated, editable proposal. Extraction sends
+the staged image to the explicitly configured vision model described in
+[Setup](getting-started.md#setup); the proposal is not saved until reviewed.
+This API remains separate from the session composer’s **Wardrobe from a photo**
+helper. Staged photos do not become generation references, and session authoring
+does not yet apply saved looks or provide wardrobe progression.
 
 ## Temporary photo staging API
 
@@ -53,7 +53,8 @@ framing has a separate 64 KiB allowance.
 
 The stage can be previewed and checked before a caller submits the same JSON
 fields accepted by `POST /api/looks` to the save endpoint. Those fields remain
-manual and reviewed. Repeating a save with identical content returns the stored
+manual and reviewed. See the extraction endpoints below for the assistant
+proposal path. Repeating a save with identical content returns the stored
 result; a different payload for an already-saved stage returns `409`. Saving
 creates the look without retaining the staged image as look content.
 
@@ -65,8 +66,64 @@ preview, save, or cancel returns `410`, and a purged ID returns `404`. Save and
 cancel persist their terminal state before deleting staged bytes. If cleanup
 fails, status includes `cleanup_warning`; a later stage access retries cleanup.
 A cleanup warning does not undo a saved look. With resource planning disabled,
-stage creation and save return `503`; status, preview, and cancel remain
-available.
+stage creation, extraction, and either save return `503`; status, preview, and
+cancel remain available.
+
+## Photo extraction and review API
+
+`POST /api/looks/photo-stages/{photo_id}/extract` accepts an empty JSON object
+and asks the configured vision model for visible general appearance, garment
+candidates, and unresolved details. The response contains a stage-bound
+`proposal_id`, `appearance`, `garments`, and `unresolved` items with IDs such as
+`u1`. Garments are candidates, not an accepted or ranked outfit. Extraction
+requires both the configured assistant endpoint/model and an explicit
+`llm_vision_model`; otherwise it returns `409 vision_unavailable`.
+If the provider fails or returns an invalid proposal, extraction returns `502`,
+saves no look, and leaves the stage available for preview until its normal
+expiry.
+
+Review the proposal and submit it to
+`POST /api/looks/photo-stages/{photo_id}/save-extracted` with the proposal ID,
+look name, edited appearance, the complete ordered `garments` list, and one
+`unresolved_decisions` entry per unresolved ID. Each garment is an object with
+`wording` and optional `aside`; these are new garment definitions, with no
+client-supplied catalogue keys. Each decision must either use
+`action: "correct"` with correction text included in the reviewed look, or
+`action: "omit"`. Set both `review_confirmed` and
+`removal_order_confirmed` to `true`; the server rejects incomplete decisions,
+unconfirmed review, stale proposals, and attempts to save a successful proposal
+through the manual save endpoint. If extraction did not produce a successful
+proposal, the existing `/save` endpoint remains available for manually entered
+look fields.
+
+For example, this request corrects `u1` with wording included in a garment:
+
+```json
+{
+  "proposal_id": "0123456789abcdef0123456789abcdef",
+  "name": "Blue shirt",
+  "appearance": "Long dark hair tied back.",
+  "garments": [
+    {"wording": "a blue cotton shirt", "aside": "unbuttoned at the collar"}
+  ],
+  "unresolved_decisions": [
+    {"id": "u1", "action": "correct", "correction": "blue cotton shirt"}
+  ],
+  "review_confirmed": true,
+  "removal_order_confirmed": true
+}
+```
+
+Saving commits the immutable look version, photo evidence, and saved-stage
+receipt in one transaction. Staged photo bytes are cleaned up after that commit.
+`GET /api/looks/{key}/versions/{version}/photo-evidence` returns the
+source SHA-256, media type, byte count and dimensions, the sanitized request
+projection, the assistant proposal, and the reviewed corrections. The request
+projection records the exact textual messages, model, and generation parameters
+(`temperature`, `stream`, `response_format`, and `reasoning_effort` when sent),
+but replaces the image data URI with source metadata. It excludes the provider
+endpoint, headers, credentials, and photo bytes or URI. This route returns
+`404` for versions without saved photo evidence.
 
 ## Portable JSON export
 
@@ -78,9 +135,12 @@ The closed envelope contains `schema_version: 1`, `look`, `garments`, and
 `wording`, and `aside`; the array follows `garment_keys` order and is empty when
 there is no outfit. The export is independent of later catalogue changes.
 
-Export sets `provenance` to `null` for locally authored versions. For imported
-versions it returns the incoming annotation retained separately in the private
-import receipt; the annotation is not verified evidence. The portable parser
+Manually authored local versions export `provenance: null`. A photo-extracted
+version exports only `{source: "photo", image_sha256: "..."}`; its full
+extraction evidence remains available through the photo-evidence API and is not
+included in portable JSON. For imported versions export returns the incoming
+annotation retained separately in the private import receipt; the annotation
+is not verified evidence. The portable parser
 accepts only `null` or the annotation `{source, image_sha256}`, with `source` in
 `manual`, `photo`, `assistant`, or `import`; a non-null lowercase SHA-256 value
 is allowed only for `photo`. This allowlisted annotation is untrusted data. The
@@ -209,6 +269,9 @@ still has no JSON controls, and session authoring remains separate.
 | `GET /api/looks/photo-stages/{photo_id}/preview` | Read staged image bytes for preview. |
 | `POST /api/looks/photo-stages/{photo_id}/cancel` | Cancel photo staging. |
 | `POST /api/looks/photo-stages/{photo_id}/save` | Save the reviewed look fields accepted by `POST /api/looks`. |
+| `POST /api/looks/photo-stages/{photo_id}/extract` | Request an editable proposal from the configured vision model. |
+| `POST /api/looks/photo-stages/{photo_id}/save-extracted` | Save the reviewed proposal and its durable photo evidence. |
+| `GET /api/looks/{key}/versions/{version}/photo-evidence` | Read evidence for a photo-extracted look version. |
 
 Each garment definition can provide `key`, `wording`, and `aside`; omit `key`
 to create a new garment identity. Omit both outfit fields when creating to save

@@ -318,6 +318,29 @@ BEGIN
     SELECT RAISE(ABORT, 'saved look versions are immutable');
 END;
 
+-- Full photo-extraction evidence belongs to the saved version, not its
+-- purgeable upload stage or portable JSON envelope.
+CREATE TABLE IF NOT EXISTS saved_look_photo_evidence (
+    look_key                 TEXT NOT NULL,
+    version                  INTEGER NOT NULL CHECK (version > 0),
+    image_sha256             TEXT NOT NULL CHECK (length(image_sha256) = 64),
+    media_type               TEXT NOT NULL CHECK (media_type IN ('image/jpeg', 'image/png', 'image/webp')),
+    byte_count               INTEGER NOT NULL CHECK (byte_count > 0 AND byte_count <= 10485760),
+    width                    INTEGER NOT NULL CHECK (width > 0),
+    height                   INTEGER NOT NULL CHECK (height > 0 AND width * height <= 25000000),
+    request_projection_json  TEXT NOT NULL,
+    output_json              TEXT NOT NULL,
+    corrections_json         TEXT NOT NULL,
+    created_at               TEXT NOT NULL,
+    PRIMARY KEY (look_key, version)
+);
+
+CREATE TRIGGER IF NOT EXISTS saved_look_photo_evidence_immutable
+BEFORE UPDATE ON saved_look_photo_evidence
+BEGIN
+    SELECT RAISE(ABORT, 'saved photo evidence is immutable');
+END;
+
 -- A portable import receipt remembers the pre-remap source identity and the
 -- exact local version/catalogue keys produced by one import. It is separate
 -- from the closed export envelope and immutable alongside the saved version.
@@ -399,6 +422,30 @@ CREATE TABLE IF NOT EXISTS look_photo_stage (
 
 CREATE INDEX IF NOT EXISTS ix_look_photo_stage_state_expires
     ON look_photo_stage(state, expires_at);
+
+-- Extraction attempts are stage-bound and transient. A successful proposal
+-- can be committed only by its opaque ID; durable evidence lives above.
+CREATE TABLE IF NOT EXISTS photo_look_proposal (
+    id                       INTEGER PRIMARY KEY,
+    photo_id                 TEXT NOT NULL,
+    proposal_id              TEXT NOT NULL UNIQUE CHECK (length(proposal_id) = 32),
+    generation               INTEGER NOT NULL CHECK (generation > 0),
+    state                    TEXT NOT NULL CHECK (state IN ('pending', 'ready', 'failed')),
+    created_at               TEXT NOT NULL,
+    image_sha256             TEXT NOT NULL CHECK (length(image_sha256) = 64),
+    media_type               TEXT NOT NULL CHECK (media_type IN ('image/jpeg', 'image/png', 'image/webp')),
+    byte_count               INTEGER NOT NULL CHECK (byte_count > 0 AND byte_count <= 10485760),
+    width                    INTEGER NOT NULL CHECK (width > 0),
+    height                   INTEGER NOT NULL CHECK (height > 0 AND width * height <= 25000000),
+    request_projection_json  TEXT,
+    output_json              TEXT,
+    UNIQUE (photo_id, generation),
+    CHECK ((state IN ('pending', 'failed') AND request_projection_json IS NULL AND output_json IS NULL)
+        OR (state = 'ready' AND request_projection_json IS NOT NULL AND output_json IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS ix_photo_look_proposal_stage_generation
+    ON photo_look_proposal(photo_id, generation);
 
 CREATE INDEX IF NOT EXISTS ix_shot_session ON shot(session_id);
 CREATE INDEX IF NOT EXISTS ix_session_model ON session(model_id);

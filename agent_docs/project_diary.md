@@ -613,3 +613,17 @@
   results as well as provider rejection. Keep text errors compatible and do
   not claim staged-photo extraction integration from independent lifecycle
   retention tests; that connection belongs to the proposal task.
+- Photo proposals need separate transient ownership and durable version evidence:
+  stage cleanup and tombstone purge must never remove the saved textual request,
+  validated output, source metadata or exact reviewed corrections. Replace image
+  request parts with verified metadata from the same bytes actually submitted;
+  retain final request parameters after provider fallback, not endpoint or
+  authentication configuration.
+- A cleaned photo cannot be reopened to authorize an identical save retry. Check
+  the durable receipt first, while preserving changed-content conflicts and
+  atomic look/evidence/receipt persistence. Manual saving remains available after
+  extraction failure but cannot bypass review of a published proposal.
+- Failed newer extraction attempts still fence older in-flight responses. Keep
+  a monotonic start authority until stage termination instead of deriving it
+  from only surviving successful attempts. Photo recovery readback also needs
+  the database lock when it races a save; cleanup remains post-commit work.

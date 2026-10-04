@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import threading
 import uuid
 
@@ -198,6 +199,64 @@ def verify_photo(data: bytes) -> dict:
     }
 
 
+def read_staged_photo(photo_id: str) -> tuple[bytes, dict]:
+    """Read and re-verify the bounded bytes that will be sent to vision."""
+    row = _recover_one(photo_id)
+    opportunistic_sweep(exclude=photo_id)
+    row = db.one("SELECT * FROM look_photo_stage WHERE photo_id = ?", photo_id) if row else None
+    if row is None or row["state"] == "publishing":
+        raise PhotoStageError(404, "photo_stage_not_found", "Photo stage was not found.")
+    if row["state"] == "expired":
+        raise PhotoStageError(410, "photo_stage_expired", "This photo stage has expired.")
+    if row["state"] == "cancelled":
+        raise PhotoStageError(410, "photo_stage_cancelled", "This photo stage was cancelled.")
+    if row["state"] == "saved":
+        raise PhotoStageError(409, "photo_stage_saved", "This photo stage has already been saved.")
+
+    path = _stage_path(photo_id)
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_PHOTO_BYTES:
+            raise OSError("staged file is not a bounded regular file")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode) or opened.st_size > MAX_PHOTO_BYTES:
+                raise OSError("staged file is not a bounded regular file")
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise OSError("staged file changed while opening")
+            data = stream.read(MAX_PHOTO_BYTES + 1)
+            if len(data) > MAX_PHOTO_BYTES or len(data) != opened.st_size:
+                raise OSError("staged file size changed")
+        after = path.lstat()
+        if not stat.S_ISREG(after.st_mode) or (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino):
+            raise OSError("staged file changed while reading")
+        metadata = verify_photo(data)
+    except PhotoStageError:
+        raise
+    except (OSError, RuntimeError, ValueError):
+        raise PhotoStageError(409, "photo_stage_changed", "The staged photo changed; upload it again.") from None
+
+    expected = {
+        "byte_count": row["byte_count"],
+        "image_format": row["image_format"],
+        "media_type": row["media_type"],
+        "width": row["width"],
+        "height": row["height"],
+        "source_sha256": row["source_sha256"],
+    }
+    if metadata != expected:
+        raise PhotoStageError(409, "photo_stage_changed", "The staged photo changed; upload it again.")
+    return data, {
+        "sha256": metadata["source_sha256"],
+        "media_type": metadata["media_type"],
+        "byte_count": metadata["byte_count"],
+        "width": metadata["width"],
+        "height": metadata["height"],
+    }
+
+
 async def read_multipart_photo(request: Request, boundary: str) -> bytes:
     """Read exactly one file part with independent file and framing limits."""
     lengths = request.headers.getlist("content-length")
@@ -371,6 +430,7 @@ def _maybe_purge(row: dict, now: datetime) -> bool:
             or now < _parse_iso(current["expires_at"]) + TOMBSTONE_LIFETIME
         ):
             return False
+        db.run("DELETE FROM photo_look_proposal WHERE photo_id = ?", row["photo_id"])
         db.run("DELETE FROM look_photo_stage WHERE photo_id = ?", row["photo_id"])
     return True
 
@@ -386,18 +446,21 @@ def _recover_one(photo_id: str, now: datetime | None = None) -> dict | None:
                 "UPDATE look_photo_stage SET state = 'expired', cleanup_state = 'pending', cleanup_warning = '', updated_at = ? WHERE photo_id = ? AND state IN ('staged', 'publishing')",
                 _iso(instant), photo_id,
             )
-            _schedule_cleanup(photo_id)
-    row = db.one("SELECT * FROM look_photo_stage WHERE photo_id = ?", photo_id)
-    if row is None:
-        return None
-    if row["state"] in _TERMINAL_STATES and row["cleanup_state"] in ("pending", "failed"):
-        _schedule_cleanup(photo_id)
+            db.run("DELETE FROM photo_look_proposal WHERE photo_id = ?", photo_id)
+        elif row["state"] in _TERMINAL_STATES:
+            db.run("DELETE FROM photo_look_proposal WHERE photo_id = ?", photo_id)
         row = db.one("SELECT * FROM look_photo_stage WHERE photo_id = ?", photo_id)
         if row is None:
             return None
-    if _maybe_purge(row, instant):
-        return None
-    return db.one("SELECT * FROM look_photo_stage WHERE photo_id = ?", photo_id)
+        if row["state"] in _TERMINAL_STATES and row["cleanup_state"] in ("pending", "failed"):
+            _schedule_cleanup(photo_id)
+        if _maybe_purge(row, instant):
+            return None
+    # Cleanup hooks run after the transaction releases its lock. Re-read under
+    # the same database lock so concurrent stage requests never share an
+    # unsynchronized SQLite cursor, and callers see the cleanup result.
+    with db.transaction():
+        return db.one("SELECT * FROM look_photo_stage WHERE photo_id = ?", photo_id)
 
 
 def _pending_ids(limit: int, now: datetime, exclude: str | None = None) -> list[str]:
@@ -538,6 +601,7 @@ def _fail_publication(photo_id: str) -> None:
                 "UPDATE look_photo_stage SET state = 'cancelled', cleanup_state = 'pending', cleanup_warning = '', updated_at = ? WHERE photo_id = ?",
                 _iso(_now()), photo_id,
             )
+            db.run("DELETE FROM photo_look_proposal WHERE photo_id = ?", photo_id)
             _schedule_cleanup(photo_id)
         elif row["state"] in _TERMINAL_STATES:
             db.run(
@@ -624,12 +688,14 @@ def cancel_stage(photo_id: str) -> dict:
                 "UPDATE look_photo_stage SET state = 'cancelled', cleanup_state = 'pending', cleanup_warning = '', updated_at = ? WHERE photo_id = ?",
                 _iso(now), photo_id,
             )
+            db.run("DELETE FROM photo_look_proposal WHERE photo_id = ?", photo_id)
             _schedule_cleanup(photo_id)
         elif current["state"] in ("staged", "publishing") and now >= _parse_iso(current["expires_at"]):
             db.run(
                 "UPDATE look_photo_stage SET state = 'expired', cleanup_state = 'pending', cleanup_warning = '', updated_at = ? WHERE photo_id = ?",
                 _iso(now), photo_id,
             )
+            db.run("DELETE FROM photo_look_proposal WHERE photo_id = ?", photo_id)
             _schedule_cleanup(photo_id)
             expired_during_cancel = True
         elif current["state"] == "publishing":
@@ -652,9 +718,32 @@ def _payload_digest(payload: dict) -> str:
     return sha256(encoded.encode("ascii")).hexdigest()
 
 
-def save_look(photo_id: str, payload: dict, create_look) -> dict:
-    """Create a manual look and terminal stage receipt in the same transaction."""
-    digest = _payload_digest(payload)
+def replay_saved_look(photo_id: str, digest_payload: dict) -> dict | None:
+    """Return an exact successful save retry without reopening the cleaned image."""
+    digest = _payload_digest(digest_payload)
+    row = _recover_one(photo_id)
+    opportunistic_sweep(exclude=photo_id)
+    if row is None or row["state"] != "saved":
+        return None
+    if row["save_payload_digest"] != digest:
+        raise PhotoStageError(
+            409,
+            "idempotency_conflict",
+            "This photo stage was already saved with different content.",
+        )
+    return json.loads(row["saved_result_json"])
+
+
+def save_look(
+    photo_id: str,
+    payload: dict,
+    create_look,
+    *,
+    expected_proposal_id: str | None = None,
+    digest_payload: dict | None = None,
+) -> dict:
+    """Create a reviewed look and terminal stage receipt in one transaction."""
+    digest = _payload_digest(payload if digest_payload is None else digest_payload)
     row = _recover_one(photo_id)
     opportunistic_sweep(exclude=photo_id)
     if row is None:
@@ -686,6 +775,7 @@ def save_look(photo_id: str, payload: dict, create_look) -> dict:
                 "UPDATE look_photo_stage SET state = 'expired', cleanup_state = 'pending', cleanup_warning = '', updated_at = ? WHERE photo_id = ?",
                 _iso(now), photo_id,
             )
+            db.run("DELETE FROM photo_look_proposal WHERE photo_id = ?", photo_id)
             _schedule_cleanup(photo_id)
             expired_during_save = True
         elif current["state"] == "publishing":
@@ -693,6 +783,26 @@ def save_look(photo_id: str, payload: dict, create_look) -> dict:
         elif current["state"] != "staged":
             raise PhotoStageError(410, "photo_stage_expired", "This photo stage has expired.")
         else:
+            proposals = db.q(
+                "SELECT proposal_id, state FROM photo_look_proposal WHERE photo_id = ?",
+                photo_id,
+            )
+            if expected_proposal_id is None:
+                if any(item["state"] == "ready" for item in proposals):
+                    raise PhotoStageError(
+                        409,
+                        "photo_extraction_review_required",
+                        "Review and save the extraction proposal before saving this photo stage.",
+                    )
+            elif not any(
+                item["proposal_id"] == expected_proposal_id and item["state"] == "ready"
+                for item in proposals
+            ):
+                raise PhotoStageError(
+                    409,
+                    "photo_proposal_stale",
+                    "The extraction proposal is stale or does not belong to this photo stage.",
+                )
             result = create_look(payload)
             db.run(
                 """UPDATE look_photo_stage
@@ -704,6 +814,7 @@ def save_look(photo_id: str, payload: dict, create_look) -> dict:
                 json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
                 _iso(_now()), photo_id,
             )
+            db.run("DELETE FROM photo_look_proposal WHERE photo_id = ?", photo_id)
             _schedule_cleanup(photo_id)
     if expired_during_save:
         raise PhotoStageError(410, "photo_stage_expired", "This photo stage has expired.")

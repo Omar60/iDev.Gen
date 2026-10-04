@@ -43,10 +43,12 @@ def _jpeg_of_exact_size(size: int) -> bytes:
 def _clear_photo_stages(client):
     for row in db.q("SELECT photo_id, staged_path FROM look_photo_stage"):
         photo_staging._safe_unlink(row["photo_id"], row["staged_path"])
+    db.run("DELETE FROM photo_look_proposal")
     db.run("DELETE FROM look_photo_stage")
     yield
     for row in db.q("SELECT photo_id, staged_path FROM look_photo_stage"):
         photo_staging._safe_unlink(row["photo_id"], row["staged_path"])
+    db.run("DELETE FROM photo_look_proposal")
     db.run("DELETE FROM look_photo_stage")
 
 

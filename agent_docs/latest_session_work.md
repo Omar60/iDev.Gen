@@ -2,53 +2,52 @@
 
 ## Current State
 
-OpenSpec Task 9.6 of `simplify-resource-session-workflow` passed independent
-acceptance under Heavy deployment `srsw_9_6_20261004`. Progress is 57 of 72 tasks.
-Internal Codex implemented from a clean baseline; no external handoff was
-created. No independent product review remains pending.
+OpenSpec Task 9.7 of `simplify-resource-session-workflow` passed independent
+acceptance under Heavy deployment `simplify-next-20261004`. Progress is 58 of 72
+tasks. Internal Codex implemented from a clean baseline. No external handoff
+was created, and no independent product review remains pending.
 
 ## Accepted Behavior
 
-Shared image requests require a configured text endpoint/model and an explicit
-non-empty `llm_vision_model`. Missing capability returns `409 vision_unavailable`
-before provider transmission with Setup/manual remediation. Images never fall
-back to the text model. Provider rejection, transport failure and unusable
-visual output return sanitized `502 vision_request_failed`; text requests and
-successful flattened/structured response contracts remain compatible.
+The photo-stage Extract API produces an editable appearance/visible-garment
+proposal with unresolved details. Save requires the server proposal ID, reviewed
+content, explicit removal-order confirmation and correction/omission decisions.
+Published extraction proposals cannot bypass review through manual stage save;
+failed extraction preserves preview and manual entry.
 
-Setup proposes only models with detected visual capability. When the chosen
-text model is visual, it records that ID explicitly for vision. Local operator
-declarations remain supported. Changing endpoints clears prior model choices;
-late discovery cannot replace new endpoint/model decisions.
+The exact textual request projection, selected vision model, final non-secret
+parameters, validated output and user corrections are stored locally. Each image
+part is replaced by its actual SHA-256, media type, bytes and dimensions. No image
+bytes, data URI, endpoint or secret headers persist. Look, evidence and stage
+receipt share one transaction before cleanup. Exact retries replay after cleanup,
+and saved evidence survives stage purge. Portable export includes only the photo
+origin annotation and digest. Photos never become generation references.
 
-The existing `/api/enhance` boundary is suggestion-only and saves no look.
-Independent tests prove failed requests leave a separately staged photo and
-its preview intact. This is lifecycle independence, not staged extraction
-integration: the staged-photo proposal/evidence flow remains Task 9.7 and
-browser photo actions remain Task 9.11.
+Cancellation, expiry, feature disablement and newer extraction starts fence
+late output. Failed newer attempts cannot revive older pending owners. Staged
+bytes are reverified before transmission; HTTP runs outside database transactions.
+The browser photo editor remains Task 9.11, and session preset/progression
+integration remains Tasks 9.8-9.10.
 
 ## Independent Verification
 
-- Final complete Python suite: 2,643 passed, one skipped, three warnings.
-- Frontend suite: 542 passed in 25 files; production build succeeded.
+- Complete Python suite: 2,666 passed, one skipped, three warnings (176.38 s).
+- Independent acceptance probes: 13 passed using fake HTTP and synthetic images.
+- Extraction/staging/saved-look/shared-transport focused suite passed.
 - Privacy and control-character checks: 46 passed.
-- Focused independent backend probes: 27 passed after repair.
-- Both Setup test files: six passed.
 - Strict noninteractive OpenSpec validation and diff checks passed.
 
-The native-symlink test was skipped because Windows denied link creation.
-Vite retains its warning for the JavaScript bundle exceeding 500 kB.
-Initial review found generic errors for invalid structured visual output and
-success with empty cleaned lines; production repair passed independent checks.
-The independent harness initially lacked its local HTTP fixture and was repaired
-without weakening assertions. An earlier implementation full run failed the
-unchanged concurrent plan-CAS test; its isolated run and final independent full
-suite passed. No unrelated production repair was introduced.
+No frontend files changed, so frontend gates were not applicable. The native
+symlink test was skipped because Windows denied link creation. An implementation
+full run passed 2,653 tests before a later run failed the unchanged concurrent
+plan-CAS test; its isolated run and the final independent complete run passed.
+No unrelated production repair or assertion weakening was introduced.
 
 ## Closure and Continuation
 
-Accepted surfaces are the shared assistant image transport, Setup, owned and
-independent tests, README/Setup/Looks/limitations guidance, the three deployment
-state documents and only the Task 9.6 checkbox. The user authorized the isolated
-local acceptance commit. Archivist owns the closing Git receipt and Heavy token
-report. No push is authorized; Task 9.7 and subsequent tasks remain unstarted.
+Accepted changes are the backend photo proposal/evidence services and routes,
+additive schema, owned and independent tests, README/Looks/limitations guidance,
+the three deployment-state documents and only the Task 9.7 checkbox. The user
+authorized the isolated local acceptance commit. Archivist owns the closing
+read-only Git receipt and Heavy token report. Task 9.8 remains unstarted; no
+push is authorized.

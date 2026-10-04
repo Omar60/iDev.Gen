@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 57 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 58 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -569,3 +569,21 @@ and diff checks. One native-symlink test was skipped for Windows permissions;
 the build retains its bundle-size warning. No independent review remains
 pending. The authorized isolated acceptance commit closes Task 9.6; Task 9.7
 remains unstarted and will connect staged photos to reviewed extraction.
+
+Task 9.7 passed independent acceptance under Heavy deployment
+`simplify-next-20261004`. Explicit photo extraction produces editable appearance,
+visible garment candidates and unresolved details. Reviewed saving requires
+content and removal-order confirmation plus a correction or omission for every
+unresolved detail. A stage-bound proposal cannot bypass review through manual
+save. Look, durable redacted evidence and stage receipt commit atomically before
+cleanup; exact save retries work after cleanup. Image metadata replaces binary
+request content, and portable export retains only the safe photo annotation.
+
+Final independent verification passed 2,666 Python tests with one native-symlink
+test skipped and three warnings, 13 independent acceptance probes, 46 privacy
+and control-character checks, strict OpenSpec validation and diff checks. No
+frontend files changed. An implementation rerun failed the existing concurrent
+plan-CAS test after an earlier full green run; isolated and final independent
+full runs passed without modifying that module or weakening assertions. No
+independent review remains pending. The authorized isolated local commit closes
+only Task 9.7; Task 9.8 remains unstarted and no push is authorized.

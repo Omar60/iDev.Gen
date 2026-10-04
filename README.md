@@ -62,8 +62,10 @@ as self-contained `portable-look-v1` JSON envelopes and accepts both those
 envelopes and legacy garment/outfit-only JSON through reviewed preview/commit
 imports. A legacy catalogue import does not create a named look; that conversion
 is explicit. The API also offers temporary photo staging for a manually reviewed
-look save; it does not infer appearance or garments. The browser has no JSON or
-photo controls yet, and session authoring is not connected. See
+look save or an assistant-generated, editable appearance and garment proposal.
+Photo proposals require an explicitly configured vision model and must be
+reviewed before saving. The browser has no JSON or photo controls yet, and
+session authoring is not connected. See
 [Saved looks](docs/looks.md).
 
 ## Composing from the catalogue

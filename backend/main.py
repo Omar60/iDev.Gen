@@ -60,6 +60,7 @@ from backend import guided_sessions
 from backend import authoring_operations
 from backend import saved_looks
 from backend import photo_staging
+from backend import photo_extraction
 from backend.request_limits import RequestLimitRoute
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -1412,6 +1413,37 @@ class SavedLookVersionIn(SavedLookWriteIn):
     expected_version: int = Field(strict=True, ge=1)
 
 
+class PhotoLookExtractIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class PhotoLookGarmentReviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    wording: str = Field(strict=True, min_length=1, max_length=1000)
+    aside: str = Field(default="", strict=True, max_length=1000)
+
+
+class PhotoLookUnresolvedDecisionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(strict=True, min_length=2, max_length=4, pattern=r"^u[1-9][0-9]{0,2}$")
+    action: Literal["correct", "omit"]
+    correction: str | None = Field(default=None, strict=True, max_length=1000)
+
+
+class PhotoLookReviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposal_id: str = Field(strict=True, min_length=32, max_length=32, pattern=r"^[0-9a-f]{32}$")
+    name: str = Field(strict=True, min_length=1, max_length=128)
+    appearance: str = Field(strict=True, max_length=4000)
+    garments: list[PhotoLookGarmentReviewIn] = Field(max_length=64)
+    unresolved_decisions: list[PhotoLookUnresolvedDecisionIn] = Field(max_length=32)
+    review_confirmed: bool = Field(strict=True)
+    removal_order_confirmed: bool = Field(strict=True)
+
+
 @app.get("/api/looks")
 def list_saved_looks():
     return saved_looks.list_latest()
@@ -1425,6 +1457,11 @@ def get_saved_look_version(look_key: str, version: int = PathParam(ge=1)):
 @app.get("/api/looks/{look_key:path}/versions/{version}/export")
 def export_saved_look_version(look_key: str, version: int = PathParam(ge=1)):
     return saved_looks.export_version(look_key, version)
+
+
+@app.get("/api/looks/{look_key:path}/versions/{version}/photo-evidence")
+def get_saved_look_photo_evidence(look_key: str, version: int = PathParam(ge=1)):
+    return saved_looks.get_photo_evidence(look_key, version)
 
 
 def _require_saved_look_writes():
@@ -1484,6 +1521,22 @@ def cancel_look_photo_stage(photo_id: str):
         return _stable_error(exc.status_code, exc.code, exc.message)
 
 
+@_request_limited_post("/api/looks/photo-stages/{photo_id}/extract")
+async def extract_look_from_photo_stage(photo_id: str, payload: PhotoLookExtractIn):
+    """Create an editable proposal without saving a look or accepting garment order."""
+    _require_saved_look_writes()
+    try:
+        result = await photo_extraction.extract(
+            photo_id,
+            CONFIG,
+            enhance.run_structured,
+            is_resource_planning_enabled,
+        )
+        return JSONResponse(content=result, status_code=200)
+    except photo_staging.PhotoStageError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message)
+
+
 @_request_limited_post("/api/looks/photo-stages/{photo_id}/save")
 def save_look_from_photo_stage(photo_id: str, payload: SavedLookWriteIn):
     """Save reviewed manual fields; the staged image is not assistant evidence."""
@@ -1493,6 +1546,22 @@ def save_look_from_photo_stage(photo_id: str, payload: SavedLookWriteIn):
             photo_id,
             payload.model_dump(exclude_unset=True),
             saved_looks.create,
+        )
+    except photo_staging.PhotoStageError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message)
+
+
+@_request_limited_post("/api/looks/photo-stages/{photo_id}/save-extracted")
+def save_extracted_look_from_photo_stage(photo_id: str, payload: PhotoLookReviewIn):
+    """Save only the user's reviewed fields for the stage-bound proposal."""
+    _require_saved_look_writes()
+    try:
+        return photo_extraction.save_review(
+            photo_id,
+            payload.model_dump(exclude_unset=True),
+            CONFIG,
+            saved_looks.create,
+            photo_staging.save_look,
         )
     except photo_staging.PhotoStageError as exc:
         return _stable_error(exc.status_code, exc.code, exc.message)

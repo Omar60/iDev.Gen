@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -656,6 +657,13 @@ def _verify_import_receipt(row: dict) -> dict:
 
 
 def _portable_annotation_for_destination(look_key: str, version: int) -> dict | None:
+    photo = db.one(
+        "SELECT image_sha256 FROM saved_look_photo_evidence WHERE look_key = ? AND version = ?",
+        look_key,
+        version,
+    )
+    if photo is not None:
+        return {"source": "photo", "image_sha256": photo["image_sha256"]}
     verified = _import_receipts_for_destination(look_key, version)
     if not verified:
         return None
@@ -663,6 +671,85 @@ def _portable_annotation_for_destination(look_key: str, version: int) -> dict | 
     if any(value != annotations[0] for value in annotations[1:]):
         _stored_data_invalid()
     return annotations[0]
+
+
+def save_photo_evidence(
+    saved: dict,
+    *,
+    metadata: dict,
+    request_projection: dict,
+    output: dict,
+    corrections: dict,
+) -> None:
+    """Persist safe local evidence inside the saved-look transaction."""
+    if not getattr(db, "_tx_depth", 0):
+        raise RuntimeError("photo evidence must share the saved-look transaction")
+    if set(metadata) != {"sha256", "media_type", "byte_count", "width", "height"}:
+        raise SavedLookError(422, "photo_evidence_invalid", "Photo extraction evidence is invalid.")
+    digest = metadata["sha256"]
+    if (
+        not isinstance(digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        or metadata["media_type"] not in {"image/jpeg", "image/png", "image/webp"}
+        or type(metadata["byte_count"]) is not int
+        or not 0 < metadata["byte_count"] <= 10 * 1024 * 1024
+        or type(metadata["width"]) is not int
+        or type(metadata["height"]) is not int
+        or metadata["width"] < 1
+        or metadata["height"] < 1
+        or metadata["width"] * metadata["height"] > 25_000_000
+        or not isinstance(request_projection, dict)
+        or set(request_projection) != {"messages", "model", "parameters"}
+        or not isinstance(output, dict)
+        or set(output) != {"appearance", "garments", "unresolved"}
+        or not isinstance(corrections, dict)
+    ):
+        raise SavedLookError(422, "photo_evidence_invalid", "Photo extraction evidence is invalid.")
+    try:
+        values = [
+            json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            for value in (request_projection, output, corrections)
+        ]
+    except (TypeError, ValueError):
+        raise SavedLookError(422, "photo_evidence_invalid", "Photo extraction evidence is invalid.") from None
+    serialized = "\n".join(values).casefold()
+    if any(marker in serialized for marker in ("data:", "https://", "http://", "authorization:", "bearer ")):
+        raise SavedLookError(422, "photo_evidence_invalid", "Photo extraction evidence is invalid.")
+    db.run(
+        """INSERT INTO saved_look_photo_evidence
+           (look_key, version, image_sha256, media_type, byte_count, width, height,
+            request_projection_json, output_json, corrections_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        saved["key"], saved["version"], digest, metadata["media_type"],
+        metadata["byte_count"], metadata["width"], metadata["height"],
+        *values, db.now(),
+    )
+
+
+def get_photo_evidence(look_key: str, version: int) -> dict:
+    saved = get_version(look_key, version)
+    row = db.one(
+        "SELECT * FROM saved_look_photo_evidence WHERE look_key = ? AND version = ?",
+        saved["key"],
+        saved["version"],
+    )
+    if row is None:
+        raise SavedLookError(404, "photo_evidence_not_found", "This saved look has no photo extraction evidence.")
+    try:
+        return {
+            "source": {
+                "sha256": row["image_sha256"],
+                "media_type": row["media_type"],
+                "byte_count": row["byte_count"],
+                "width": row["width"],
+                "height": row["height"],
+            },
+            "request": json.loads(row["request_projection_json"]),
+            "output": json.loads(row["output_json"]),
+            "corrections": json.loads(row["corrections_json"]),
+        }
+    except (TypeError, ValueError):
+        raise SavedLookError(500, "photo_evidence_invalid", "Saved photo evidence is invalid.") from None
 
 
 def _import_receipts_for_destination(look_key: str, version: int) -> list[dict]:
