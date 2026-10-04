@@ -63,8 +63,9 @@ discover them mid-shoot.
   hosted endpoint, which leaves the card to ComfyUI entirely.
 - **A photo picked from disk is scaled to 1024px before it is sent**, which is
   what small vision models read anyway. A photo already in the app — the anchor
-  — is sent at full size. A model with no vision answers with an error on the
-  photo buttons and works normally on the text ones.
+  — is sent at full size. Photo requests need an explicit `llm_vision_model`;
+  they do not fall back to the text model. Setup describes capability detection
+  and the errors for missing or unsupported vision models.
 - **Words are not a photograph.** A look written in detail holds the attributes
   it names — colour, fabric, neckline, hem — and nothing else: button count,
   exact drape and the seams no sentence mentions still drift between frames. For

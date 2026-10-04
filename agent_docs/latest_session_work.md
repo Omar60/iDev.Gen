@@ -2,59 +2,53 @@
 
 ## Current State
 
-OpenSpec Task 9.5 of `simplify-resource-session-workflow` passed independent
-acceptance under Heavy deployment `srsw_9_5_20261004`. Progress is 56 of 72 tasks.
+OpenSpec Task 9.6 of `simplify-resource-session-workflow` passed independent
+acceptance under Heavy deployment `srsw_9_6_20261004`. Progress is 57 of 72 tasks.
 Internal Codex implemented from a clean baseline; no external handoff was
 created. No independent product review remains pending.
 
 ## Accepted Behavior
 
-The backend privately stages one JPEG, PNG or WebP using opaque identifiers.
-Actual file bytes are limited to 10 MiB and decoded dimensions to 25 MP;
-Pillow verification and full decoding are combined with exact container ends
-and PNG CRC checks. Animated/multiple-frame and invalid images are refused.
-Selection performs no assistant call or saved-look write. Public metadata
-omits original filenames, physical paths, binary content and source digests.
+Shared image requests require a configured text endpoint/model and an explicit
+non-empty `llm_vision_model`. Missing capability returns `409 vision_unavailable`
+before provider transmission with Setup/manual remediation. Images never fall
+back to the text model. Provider rejection, transport failure and unusable
+visual output return sanitized `502 vision_request_failed`; text requests and
+successful flattened/structured response contracts remain compatible.
 
-The API provides upload, status, preview, cancel and reviewed manual save.
-Preview uses the verified media type with no-store and nosniff headers and
-rejects symlinks and escaped resolved paths. Staging/save writes honor the
-feature flag; status, preview and cancellation remain available while disabled.
-Manual save reuses the existing saved-look contract without vision evidence,
-persists the look and terminal stage together, and replays identical content.
-Changed replay content conflicts without additional look allocation.
+Setup proposes only models with detected visual capability. When the chosen
+text model is visual, it records that ID explicitly for vision. Local operator
+declarations remain supported. Changing endpoints clears prior model choices;
+late discovery cannot replace new endpoint/model decisions.
 
-A durable hidden publishing owner precedes temporary/final byte publication.
-Fixed 24-hour expiry includes interrupted publication; recovery cleans both
-owned names and retains terminal status for an additional 24 hours. Startup,
-record-local and bounded opportunistic recovery retry cleanup, with a rotating
-cursor preventing persistent failures from starving later eligible rows.
-Save/cancel deletion runs after the outermost commit. Cleanup failure leaves
-saved looks intact and exposes a readable retryable warning.
+The existing `/api/enhance` boundary is suggestion-only and saves no look.
+Independent tests prove failed requests leave a separately staged photo and
+its preview intact. This is lifecycle independence, not staged extraction
+integration: the staged-photo proposal/evidence flow remains Task 9.7 and
+browser photo actions remain Task 9.11.
 
 ## Independent Verification
 
-- Final complete Python suite: 2,599 passed, one skipped, five warnings.
+- Final complete Python suite: 2,643 passed, one skipped, three warnings.
+- Frontend suite: 542 passed in 25 files; production build succeeded.
 - Privacy and control-character checks: 46 passed.
-- Critical independent repair probes: seven passed, one skipped.
+- Focused independent backend probes: 27 passed after repair.
+- Both Setup test files: six passed.
 - Strict noninteractive OpenSpec validation and diff checks passed.
-- No frontend files changed; conditional frontend test/build gates do not apply.
 
-The native symlink probe was skipped because Windows denied link creation.
-Portable symlink and escaped-resolution probes passed; native behavior remains
-unobserved in this environment. The first full review found a process-loss
-orphan and an existing concurrent plan-CAS failure; the latter passed alone.
-After production repair, a concurrent probe harness needed a client per thread.
-Assertions were retained and the final complete suite passed. No unrelated
-production repair or weaker coverage was introduced.
+The native-symlink test was skipped because Windows denied link creation.
+Vite retains its warning for the JavaScript bundle exceeding 500 kB.
+Initial review found generic errors for invalid structured visual output and
+success with empty cleaned lines; production repair passed independent checks.
+The independent harness initially lacked its local HTTP fixture and was repaired
+without weakening assertions. An earlier implementation full run failed the
+unchanged concurrent plan-CAS test; its isolated run and final independent full
+suite passed. No unrelated production repair was introduced.
 
 ## Closure and Continuation
 
-Accepted surfaces are the photo staging service, additive schema/startup/API,
-owned and independent tests, README/Looks guidance, project structure, these
-three deployment-state documents and only the Task 9.5 checkbox. The user
-authorized the isolated local acceptance commit; the closing Git receipt and
-Heavy token report accompany the final handoff. No push is authorized.
-
-Task 9.6 and subsequent tasks remain unstarted. Vision capability/extraction,
-redacted assistant evidence and browser photo controls remain later tasks.
+Accepted surfaces are the shared assistant image transport, Setup, owned and
+independent tests, README/Setup/Looks/limitations guidance, the three deployment
+state documents and only the Task 9.6 checkbox. The user authorized the isolated
+local acceptance commit. Archivist owns the closing Git receipt and Heavy token
+report. No push is authorized; Task 9.7 and subsequent tasks remain unstarted.

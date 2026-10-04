@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 
 const FIELDS = [
@@ -25,8 +25,8 @@ const PROVIDERS = [
   { id: 'openai', label: 'OpenAI', url: 'https://api.openai.com/v1',
     hint: 'Needs an API key and bills per token. Leaves the GPU to ComfyUI.' },
   { id: 'minimax', label: 'MiniMax', url: 'https://api.minimax.io/v1',
-    hint: 'Needs an API key. Of its models only MiniMax-M3 reads a photo, so that is the one '
-        + 'for the vision box.' },
+    hint: 'Needs an API key and bills per token. Configure a vision model explicitly for photo input; '
+        + 'the provider may reject unsupported models.' },
 ]
 
 const providerOf = (url) => {
@@ -41,18 +41,19 @@ const providerOf = (url) => {
  *  already in the box, so a field with a model picked shows a list of one. It
  *  falls back to a text box when the endpoint told us nothing — a hosted one
  *  that does not list its models still has to be typeable. */
-function ModelSelect({ value, onChange, models, empty, hint }) {
+function ModelSelect({ value, onChange, models, empty, hint, ariaLabel, unlistedLabel }) {
   if (!models.length) {
-    return <input value={value ?? ''} placeholder={hint} onChange={(e) => onChange(e.target.value)} />
+    return <input aria-label={ariaLabel} value={value ?? ''} placeholder={hint}
+                  onChange={(e) => onChange(e.target.value)} />
   }
   return (
-    <select value={value ?? ''} onChange={(e) => onChange(e.target.value)}>
+    <select aria-label={ariaLabel} value={value ?? ''} onChange={(e) => onChange(e.target.value)}>
       <option value="">{empty}</option>
       {/* A name the endpoint does not report — renamed, removed, or saved
           against another endpoint — reads as "nothing picked" if it is not
           shown, which is the one thing it is not. */}
       {!!value && !models.some((m) => m.id === value) && (
-        <option value={value}>{value} — not on this endpoint</option>
+        <option value={value}>{value} — {unlistedLabel || 'not on this endpoint'}</option>
       )}
       {models.map((m) => (
         <option key={m.id} value={m.id}>{m.id}{m.params ? ` · ${m.params}B` : ''}</option>
@@ -68,6 +69,7 @@ export default function Setup() {
   const [probing, setProbing] = useState(false)
   const [msg, setMsg] = useState('')
   const [error, setError] = useState('')
+  const discoveryRequest = useRef(0)
 
   /** Ask an endpoint what it can run — or, with no URL, find one. Quiet on the
    *  page load, loud when the button asked for it.
@@ -75,25 +77,44 @@ export default function Setup() {
    *  Declared above the early return on purpose: the effect below runs after a
    *  render that returned at `if (!cfg)`, and a `const` after that line has not
    *  been initialised in that render's scope by the time the effect calls it. */
-  const findAssistant = async (url = '', quiet = false, key = '') => {
+  const findAssistant = async (url = '', quiet = false, key = '', expected = {}) => {
+    const request = ++discoveryRequest.current
+    const expectedEndpoint = expected.endpoint ?? cfg?.llm_url ?? url
+    const expectedModel = expected.model ?? cfg?.llm_model ?? ''
+    const expectedVisionModel = expected.visionModel ?? cfg?.llm_vision_model ?? ''
+    const expectedKey = expected.key ?? key ?? ''
     setProbing(true)
     if (!quiet) { setError(''); setMsg('') }
     try {
       // POST: a hosted endpoint lists nothing without its key, and a key does
       // not belong in a query string.
       const found = await api.post('/api/llm/models', { url, key })
+      if (request !== discoveryRequest.current) return
       setLlm(found)
-      setCfg((cur) => ({
+      setCfg((cur) => {
+        if (cur.llm_url !== expectedEndpoint
+            || (cur.llm_model ?? '') !== expectedModel
+            || (cur.llm_vision_model ?? '') !== expectedVisionModel
+            || (cur.llm_key ?? '') !== expectedKey) return cur
+        const textModel = cur.llm_model || found.models[0]?.id || ''
+        const visualTextModel = found.models.find((m) => m.id === textModel && m.vision)
+        const explicitVision = typeof cur.llm_vision_model === 'string'
+          && cur.llm_vision_model.trim() ? cur.llm_vision_model : ''
+        // A model already picked is a decision, so detection only fills blanks.
+        // If that text model is reported as visual, save it explicitly first.
+        return {
         ...cur,
         llm_url: found.url,
-        // Only proposals: a model already picked is a decision, and a decision
-        // is not overwritten by a detection. The list arrives biggest first, so
-        // both of these are "the biggest one that can do the job" — a starting
-        // point, and the dropdown is right there.
-        llm_model: cur.llm_model || found.models[0]?.id || '',
-        llm_vision_model: cur.llm_vision_model || found.models.find((m) => m.vision)?.id || '',
-      }))
-    } catch (e) { if (!quiet) setError(e.message) } finally { setProbing(false) }
+        llm_model: textModel,
+        llm_vision_model: explicitVision || visualTextModel?.id
+          || found.models.find((m) => m.vision)?.id || '',
+        }
+      })
+    } catch (e) {
+      if (request === discoveryRequest.current && !quiet) setError(e.message)
+    } finally {
+      if (request === discoveryRequest.current) setProbing(false)
+    }
   }
 
   useEffect(() => {
@@ -101,23 +122,43 @@ export default function Setup() {
       setCfg(c)
       // Already configured: fill the dropdowns without being asked. Nothing is
       // written, and an endpoint that is off right now is not an error to show.
-      if (c.llm_url) findAssistant(c.llm_url, true, c.llm_key)
+      if (c.llm_url) findAssistant(c.llm_url, true, c.llm_key, {
+        endpoint: c.llm_url, model: c.llm_model ?? '',
+        visionModel: c.llm_vision_model ?? '', key: c.llm_key ?? '',
+      })
     }).catch((e) => setError(e.message))
   }, [])
   if (!cfg) return <p className="muted">{error || 'Loading…'}</p>
 
-  const set = (k, v) => setCfg({ ...cfg, [k]: v })
   const provider = providerOf(cfg.llm_url)
   const found = llm?.models || []
-  // Ollama says which of its models read photos. A hosted endpoint says nothing,
-  // and then every model is a candidate: offering an empty box would hide the
-  // very model that can do it.
-  const visionModels = found.some((m) => m.vision) ? found.filter((m) => m.vision) : found
+  const visionModels = found.filter((m) => m.vision)
+  const set = (k, v) => {
+    if (['llm_url', 'llm_model', 'llm_vision_model', 'llm_key'].includes(k)) {
+      discoveryRequest.current += 1
+      setProbing(false)
+      if (k === 'llm_url') setLlm(null)
+    }
+    setCfg((cur) => {
+      const next = { ...cur, [k]: v }
+      if (k === 'llm_url' && cur.llm_url !== v) {
+        next.llm_model = ''
+        next.llm_vision_model = ''
+      }
+      if (k === 'llm_model' && !(typeof cur.llm_vision_model === 'string'
+          && cur.llm_vision_model.trim()) && visionModels.some((model) => model.id === v)) {
+        next.llm_vision_model = v
+      }
+      return next
+    })
+  }
 
   /** Switching where the assistant runs. The model names do not travel — they
    *  belong to the endpoint that had them — so they are cleared with it, and the
    *  new one is asked what it has straight away. */
   const pickProvider = (p) => {
+    discoveryRequest.current += 1
+    setProbing(false)
     setLlm(null)
     setError('')
     setCfg((cur) => ({ ...cur, llm_url: p.url, llm_model: '', llm_vision_model: '' }))
@@ -125,7 +166,9 @@ export default function Setup() {
     // not list its models" is the wrong thing to say about a key nobody typed
     // yet. The row below says what is missing instead.
     if (p.url && !cfg.llm_key) return
-    findAssistant(p.url, false, cfg.llm_key)
+    findAssistant(p.url, false, cfg.llm_key, {
+      endpoint: p.url, model: '', visionModel: '', key: cfg.llm_key ?? '',
+    })
   }
 
   const detect = async () => {
@@ -193,9 +236,9 @@ export default function Setup() {
 
         <h3 style={{ marginTop: 18 }}>Prompt assistant (optional)</h3>
         <p className="muted" style={{ margin: '0 0 8px' }}>
-          Writes the takes and the look, and reads the wardrobe off a photo. It suggests
-          text in a box — nothing is generated or queued by it. Leave the endpoint empty
-          and the app works exactly as before, with no ✨ buttons.
+          Writes takes and look text. Photo reading requires an explicit vision model and may be
+          refused by the provider. The assistant suggests text in a box — nothing is generated or queued
+          by it. Leave the endpoint empty and the app works exactly as before, with no ✨ buttons.
         </p>
         <div className="row" style={{ marginBottom: 10 }}>
           {PROVIDERS.map((p) => (
@@ -217,13 +260,13 @@ export default function Setup() {
         <div className="grid-form">
           <div style={{ gridColumn: 'span 2' }}>
             <label>Prompt assistant endpoint</label>
-            <input value={cfg.llm_url ?? ''} placeholder={LLM_URL_HINT}
+            <input aria-label="Prompt assistant endpoint" value={cfg.llm_url ?? ''} placeholder={LLM_URL_HINT}
                    onChange={(e) => set('llm_url', e.target.value)} />
             <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{LLM_URL_HINT}</div>
           </div>
           <div>
             <label>Model</label>
-            <ModelSelect value={cfg.llm_model} models={found} empty="— pick the model that writes —"
+            <ModelSelect ariaLabel="Text model" value={cfg.llm_model} models={found} empty="— pick the model that writes —"
                          hint="the model that writes the takes and the look"
                          onChange={(v) => set('llm_model', v)} />
             <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
@@ -232,13 +275,14 @@ export default function Setup() {
           </div>
           <div>
             <label>Vision model (optional)</label>
-            {/* Only the ones that can actually read a photo: the others answer
-                the photo buttons with an error and nothing else. */}
-            <ModelSelect value={cfg.llm_vision_model} models={visionModels}
-                         empty="— the model above —" hint="falls back to the model above"
+            <ModelSelect ariaLabel="Vision model" value={cfg.llm_vision_model} models={visionModels}
+                         empty="— choose a detected vision model —"
+                         hint="enter a provider-supported vision model ID"
+                         unlistedLabel="operator-declared"
                          onChange={(v) => set('llm_vision_model', v)} />
             <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-              reads a photo — the look from a photo, and the anchor. Falls back to the model above
+              Photo requests require this explicit model and never fall back to the text model. Choose a detected
+              vision model, or enter an ID as an operator declaration; the provider may still reject it.
             </div>
           </div>
           <div>
@@ -259,12 +303,13 @@ export default function Setup() {
           {llm && (
             <span className="muted">
               {llm.url} · {found.length
-                ? <>{found.length} model{found.length === 1 ? '' : 's'}, {visionModels.length} of
-                    them {visionModels.length === found.length ? '— as far as it says —' : ''} can
-                    read a photo</>
+                ? visionModels.length
+                  ? <>{found.length} model{found.length === 1 ? '' : 's'}; {visionModels.length} reported
+                      vision support</>
+                  : <>{found.length} model{found.length === 1 ? '' : 's'}; none reported vision support</>
                 // A hosted endpoint that only serves chat is perfectly usable;
                 // it just cannot be asked what it has.
-                : 'answers, but does not list its models — type the name in'}
+                : 'answers, but does not report model capabilities — enter a vision model ID only if it supports images'}
             </span>
           )}
         </div>

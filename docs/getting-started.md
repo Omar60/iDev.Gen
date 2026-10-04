@@ -37,7 +37,7 @@ running instance which path it was started from and proposes that install's
 | ComfyUI output folder | **Required.** Finished images are moved out of here into the session folder. Sessions refuse to run until it exists. |
 | LoRA folder | Optional. Only used to show the `<name>.preview.jpeg` thumbnail that model managers store next to each LoRA. |
 | Data folder | Database and sessions. Point it at a drive with room; changing it needs a restart. |
-| Prompt assistant | Optional, and off until it has an endpoint. **Find an assistant** probes the ports Ollama, LM Studio and llama.cpp listen on, fills the URL in and lists the models that endpoint has — biggest first, and the vision box lists only the ones that can actually read a photo. It writes the look and the takes; see [sessions](sessions.md#writing-the-prompts). |
+| Prompt assistant | Optional, and off until it has an endpoint. **Find an assistant** probes the ports Ollama, LM Studio and llama.cpp listen on, fills the URL in and lists the models that endpoint reports. It marks vision support only when the endpoint reports that capability; see below if it cannot report capabilities. It writes the look and the takes; see [sessions](sessions.md#writing-the-prompts). |
 
 Three buttons say where it runs — **On this machine**, **OpenAI**, **MiniMax** —
 and all three do the same thing: fill the URL in. On this machine probes the
@@ -46,12 +46,15 @@ and want an API key next to it. Then *List its models*. Any other
 OpenAI-compatible endpoint works too — type its base URL over the top and the
 buttons stop being lit, which is not an error.
 
-A hosted endpoint answers in a second or two and leaves the GPU to ComfyUI, which
-a local model shares with it. Of MiniMax's models only *MiniMax-M3* reads a
-photo, so that is the one for the vision box if you want
-*📷 Wardrobe from a photo…* or the anchor read.
-An endpoint that does not list its models at all is not a problem either: the
-boxes stay typeable.
+A hosted endpoint leaves the GPU to ComfyUI, which a local model shares with it.
+Some OpenAI-compatible endpoints list model IDs without reporting image
+capabilities. In that case, enter a provider-supported ID in **Vision model**;
+that is an operator declaration, not a verified capability, and the provider may
+reject it. Photo requests require this explicit model and never fall back to the
+text model. Without it, the app returns `409 vision_unavailable` before sending
+the image. If the configured provider refuses the image request, the app returns
+`502` and does not apply suggested text. You can configure the model in Setup or
+describe the image manually.
 
 Settings are written to `config.json`, which stays out of git because it holds
 paths specific to your machine. Advanced settings can also be edited there:

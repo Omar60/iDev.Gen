@@ -11,6 +11,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
+import db
 import enhance
 
 ANGLES = ["front view", "front-left quarter view", "left side view", "back view",
@@ -205,6 +206,81 @@ def test_a_picked_photo_travels_with_the_vision_model(configured, llm):
     parts = seen["body"]["messages"][-1]["content"]
     assert parts[-1]["image_url"]["url"] == PNG
     assert seen["body"]["model"] == "small-vl"
+
+
+def test_the_explicit_text_model_can_also_be_the_vision_model(configured, llm):
+    configured.patch("/api/config", json={"comfy_url": "http://127.0.0.1:8188",
+                                           "llm_url": "http://127.0.0.1:11434/v1",
+                                           "llm_model": "same-vision-model",
+                                           "llm_vision_model": "same-vision-model"})
+    seen = llm("a black dress")
+
+    response = configured.post("/api/enhance", json={"instruction": "read the wardrobe", "image": PNG})
+
+    assert response.status_code == 200
+    assert seen["body"]["model"] == "same-vision-model"
+
+
+def test_an_image_without_explicit_vision_is_refused_before_provider_call(configured, llm):
+    configured.patch("/api/config", json={"comfy_url": "http://127.0.0.1:8188",
+                                           "llm_url": "http://127.0.0.1:11434/v1",
+                                           "llm_model": "small"})
+    seen = llm("must not be called")
+
+    response = configured.post("/api/enhance", json={"instruction": "read the wardrobe", "image": PNG})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "vision_unavailable"
+    assert "Setup" in response.json()["detail"]["message"]
+    assert "manually" in response.json()["detail"]["message"]
+    assert "body" not in seen
+
+
+def test_image_provider_refusal_is_secret_safe_and_saves_no_look(configured, llm):
+    configured.patch("/api/config", json={
+        "comfy_url": "http://127.0.0.1:8188",
+        "llm_url": "https://assistant.invalid/path/v1?token=sentinel-query",
+        "llm_model": "text-model",
+        "llm_vision_model": "vision-model",
+        "llm_key": "sentinel-key-secret",
+    })
+    existing = db.q("SELECT * FROM saved_look_version ORDER BY look_key, version")
+    llm('provider body sentinel-provider-secret', status=403)
+
+    response = configured.post("/api/enhance", json={"instruction": "read this image", "image": PNG})
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["code"] == "vision_request_failed"
+    assert "Setup" in detail["message"] and "manually" in detail["message"]
+    assert all(secret not in str(detail) for secret in (
+        "assistant.invalid", "/path/v1", "sentinel-query", "sentinel-key-secret",
+        "sentinel-provider-secret", PNG,
+    ))
+    assert db.q("SELECT * FROM saved_look_version ORDER BY look_key, version") == existing
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("config", [
+    {},
+    {"llm_url": " ", "llm_model": "text", "llm_vision_model": "vision"},
+    {"llm_url": "http://assistant/v1", "llm_model": "\t", "llm_vision_model": "vision"},
+    {"llm_url": ["http://assistant/v1"], "llm_model": "text", "llm_vision_model": "vision"},
+    {"llm_url": "http://assistant/v1", "llm_model": {"id": "text"}, "llm_vision_model": "vision"},
+    {"llm_url": "http://assistant/v1", "llm_model": "text"},
+    {"llm_url": "http://assistant/v1", "llm_model": "text", "llm_vision_model": "  "},
+    {"llm_url": "http://assistant/v1", "llm_model": "text", "llm_vision_model": 7},
+])
+async def test_invalid_visual_configuration_never_opens_http(config, monkeypatch):
+    def unexpected_http(*args, **kwargs):
+        pytest.fail("an image request crossed the HTTP boundary without vision capability")
+
+    monkeypatch.setattr(enhance.httpx, "AsyncClient", unexpected_http)
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run(config, enhance.EnhanceIn(instruction="read the image", image=PNG))
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "vision_unavailable"
 
 
 def test_the_size_of_what_goes_out_is_logged_without_the_image_in_it(configured, llm, caplog):
@@ -744,6 +820,47 @@ async def test_structured_image_uses_vision_model_and_validates_image(llm):
     assert seen["body"]["model"] == "test-vision-model"
     parts = seen["body"]["messages"][-1]["content"]
     assert parts[-1]["image_url"]["url"] == PNG
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("content", ["", "not JSON", '["not", "an object"]'])
+async def test_structured_visual_output_must_be_a_nonempty_json_object(llm, content):
+    config = {
+        "llm_url": "http://assistant.local:1234/v1",
+        "llm_model": "test-model",
+        "llm_vision_model": "test-vision-model",
+    }
+    llm(content)
+
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run_structured(
+            config, enhance.EnhanceIn(instruction="read image", image=PNG),
+        )
+
+    assert exc.value.status_code == 502
+    assert exc.value.detail["code"] == "vision_request_failed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("content", [
+    "not JSON",
+    '{"photographs": [{"other": "value"}]}',
+    "Here are the photographs:",
+])
+async def test_flattened_visual_output_must_contain_usable_lines(llm, content):
+    config = {
+        "llm_url": "http://assistant.local:1234/v1",
+        "llm_model": "test-model",
+        "llm_vision_model": "test-vision-model",
+    }
+    llm(content)
+    p = enhance.EnhanceIn(instruction="read image", image=PNG, fields=["camera"])
+
+    with pytest.raises(HTTPException) as exc:
+        await enhance.run(config, p)
+
+    assert exc.value.status_code == 502
+    assert exc.value.detail["code"] == "vision_request_failed"
 
 
 @pytest.mark.anyio

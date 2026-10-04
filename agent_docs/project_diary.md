@@ -605,3 +605,11 @@
   harness, and rerun the complete suite before acceptance.
 - Check the staged diff before committing new files. An unstaged diff omits
   untracked additions and did not expose surplus blank lines at their EOF.
+- Shared image capability must require an explicit vision model before opening
+  HTTP, even when the text model itself supports images. Discovery can record
+  that same ID explicitly; an operator declaration is distinct from detected
+  capability. Fence late discovery when endpoint or model choices change.
+- Stable visual failure mapping must cover output parsing and empty cleaned
+  results as well as provider rejection. Keep text errors compatible and do
+  not claim staged-photo extraction integration from independent lifecycle
+  retention tests; that connection belongs to the proposal task.

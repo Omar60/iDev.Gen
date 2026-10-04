@@ -35,9 +35,11 @@ The browser editor remains manual and has no JSON or photo controls. The REST
 API supports `portable-look-v1` export/import and reviewed legacy outfit-only
 import through preview/commit. It also provides temporary photo staging for a
 manually reviewed look save. Staging does not infer appearance or garments, send
-the image to an assistant, or make it a generation reference. Photo extraction,
-applying a saved look in session authoring, and wardrobe progression remain
-future work.
+the image to an assistant, or make it a generation reference. This is separate
+from the session composer’s **Wardrobe from a photo** helper, which uses the
+configured vision model described in [Setup](getting-started.md#setup). Directly
+extracting a staged photo into a saved look, applying a saved look in session
+authoring, and wardrobe progression remain future work.
 
 ## Temporary photo staging API
 

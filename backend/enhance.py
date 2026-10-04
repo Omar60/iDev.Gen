@@ -184,7 +184,27 @@ def _object_pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def configured(config: dict) -> bool:
-    return bool(config.get("llm_url") and config.get("llm_model"))
+    return all(isinstance(config.get(key), str) and config[key].strip()
+               for key in ("llm_url", "llm_model"))
+
+
+def vision_configured(config: dict) -> bool:
+    if not configured(config):
+        return False
+    model = config.get("llm_vision_model")
+    return isinstance(model, str) and bool(model.strip())
+
+
+def _completion_failure(config: dict, safe_url: str, reason: str, *, image: bool) -> HTTPException:
+    if image:
+        return HTTPException(502, {
+            "code": "vision_request_failed",
+            "message": f"The vision provider could not process this image ({reason}). "
+                       "Check the vision model in Setup or describe it manually.",
+        })
+    return HTTPException(502, _sanitize_error_detail(
+        f"The prompt assistant at {safe_url} {reason}.", config,
+    ))
 
 
 async def _request_completion(
@@ -196,18 +216,25 @@ async def _request_completion(
     request_evidence: dict[str, object] | None = None,
 ) -> str:
     """Shared configured URL/model/body/auth/timeout/retry/error boundary."""
+    image = image or p.image
+    if image and not vision_configured(config):
+        raise HTTPException(409, {
+            "code": "vision_unavailable",
+            "message": "Photo reading needs a configured text assistant and an explicit vision model. "
+                       "Open Setup to choose a detected vision model or enter a provider-supported model ID; "
+                       "you can also describe the image manually.",
+        })
     if not configured(config):
         raise HTTPException(400, "No prompt assistant is configured. Open Setup and "
                                  "fill in the LLM endpoint and model.")
-    image = image or p.image
     if image:
         _check_image(image)
 
-    url = config["llm_url"].rstrip("/")
+    url = config["llm_url"].strip().rstrip("/")
     if not url.endswith("/chat/completions"):
         url += "/chat/completions"
     safe_url = _safe_endpoint(url)
-    model = (config.get("llm_vision_model") or config["llm_model"]) if image else config["llm_model"]
+    model = config["llm_vision_model"].strip() if image else config["llm_model"].strip()
 
     body = {"model": model, "messages": _messages(p, image, structured=structured), "temperature": 0.8,
             "stream": False,
@@ -232,7 +259,8 @@ async def _request_completion(
     asked = sum(size(m["content"]) for m in body["messages"] if m["role"] != "system")
     log.info("asking %s for %s: %s chars of system, %s of instruction%s",
              model, p.n, system, asked, f", {len(p.fields)} fields" if p.fields else "")
-    headers = {"Authorization": f"Bearer {config['llm_key']}"} if config.get("llm_key") else {}
+    key = config.get("llm_key")
+    headers = {"Authorization": f"Bearer {key}"} if isinstance(key, str) and key else {}
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as c:
             r = await c.post(url, json=body, headers=headers)
@@ -242,23 +270,15 @@ async def _request_completion(
     except httpx.HTTPError as exc:  # noqa: BLE001 - the safe URL and exception type are the useful half
         # A timeout stringifies to nothing at all, and "did not answer: " with
         # nothing after it is the least useful error this app could print.
-        raise HTTPException(
-            502,
-            _sanitize_error_detail(
-                f"The prompt assistant at {safe_url} did not answer: "
-                f"{type(exc).__name__} (gave up after {TIMEOUT}s)",
-                config,
-            ),
+        raise _completion_failure(
+            config, safe_url, f"did not answer: {type(exc).__name__} (gave up after {TIMEOUT}s)",
+            image=bool(image),
         )
     if r.status_code >= 400:
         # Same rule as a failed shot: the sentence that says what broke, not the
         # provider's whole error document.
-        raise HTTPException(
-            502,
-            _sanitize_error_detail(
-                f"The prompt assistant at {safe_url} answered {r.status_code}.",
-                config,
-            ),
+        raise _completion_failure(
+            config, safe_url, f"answered {r.status_code}", image=bool(image),
         )
     if request_evidence is not None:
         request_evidence.clear()
@@ -281,23 +301,26 @@ async def _request_completion(
         elif not isinstance(content, str):
             raise TypeError("completion content is not a string")
     except (KeyError, IndexError, TypeError, ValueError):
-        raise HTTPException(
-            502,
-            _sanitize_error_detail(
-                f"The prompt assistant at {safe_url} answered something "
-                f"that is not an OpenAI-compatible completion.",
-                config,
-            ),
+        raise _completion_failure(
+            config, safe_url, "answered something that is not an OpenAI-compatible completion",
+            image=bool(image),
         )
     return content
 
 
 async def run(config: dict, p: EnhanceIn, image: str = "") -> list[dict]:
     """Ask the model, and hand back at most `p.n` clean {label, prompt} lines."""
+    has_image = bool(image or p.image)
     answer = await _request_completion(config, p, image, structured=False)
-    if p.fields:
-        return clean_fields(answer, p.fields, p.n)
-    return clean(answer, p.n, p.allowed)
+    try:
+        rows = clean_fields(answer, p.fields, p.n) if p.fields else clean(answer, p.n, p.allowed)
+    except HTTPException:
+        if has_image:
+            raise _completion_failure(config, "", "returned unusable visual output", image=True)
+        raise
+    if has_image and not rows:
+        raise _completion_failure(config, "", "returned unusable visual output", image=True)
+    return rows
 
 
 async def run_structured(
@@ -308,6 +331,7 @@ async def run_structured(
     request_evidence: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """New JSON-object transport; preserve parsed structure exactly."""
+    has_image = bool(image or p.image)
     content = await _request_completion(
         config, p, image, structured=True, request_evidence=request_evidence,
     )
@@ -317,30 +341,21 @@ async def run_structured(
     safe_url = _safe_endpoint(raw_url)
 
     if not content or not content.strip():
-        raise HTTPException(
-            502,
-            _sanitize_error_detail(
-                f"The prompt assistant at {safe_url} answered with invalid structured JSON.",
-                config,
-            ),
+        raise _completion_failure(
+            config, safe_url, "answered with invalid structured JSON", image=has_image,
         )
     try:
         parsed = json.loads(content, object_pairs_hook=_object_pairs_hook)
     except (json.JSONDecodeError, ValueError):
-        raise HTTPException(
-            502,
-            _sanitize_error_detail(
-                f"The prompt assistant at {safe_url} answered with invalid structured JSON.",
-                config,
-            ),
+        raise _completion_failure(
+            config, safe_url, "answered with invalid structured JSON", image=has_image,
         )
     if not isinstance(parsed, dict):
-        raise HTTPException(
-            502,
-            _sanitize_error_detail(
-                f"The prompt assistant at {safe_url} answered with a structured response that is not a JSON object.",
-                config,
-            ),
+        raise _completion_failure(
+            config,
+            safe_url,
+            "answered with a structured response that is not a JSON object",
+            image=has_image,
         )
     return parsed
 
@@ -471,7 +486,7 @@ def _billions(size: str | None) -> float:
 
 
 def _check_image(image: str) -> None:
-    if not _DATA_URI.match(image.strip()):
+    if not isinstance(image, str) or not _DATA_URI.match(image.strip()):
         raise HTTPException(400, "that is not a PNG, JPEG or WebP data: URI")
     payload = image.split(",", 1)[1]
     if len(payload) * 3 // 4 > MAX_IMAGE_BYTES:

@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 56 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 57 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -554,3 +554,18 @@ test skipped for Windows permissions, plus 46 privacy/control checks, strict
 OpenSpec validation and diff checks. Portable confinement tests passed. No
 independent product review remains pending. The authorized isolated local
 commit closes this deployment; Task 9.6 and subsequent tasks remain unstarted.
+
+Task 9.6 passed independent acceptance under Heavy deployment
+`srsw_9_6_20261004`. Shared image requests require the configured text assistant
+and an explicit vision model, with no text-model fallback. Setup proposes only
+detected visual models, stores a visual text model explicitly, preserves local
+operator declarations and fences stale discovery. Missing capability returns
+`409 vision_unavailable`; provider refusal and unusable visual output return
+`502 vision_request_failed` without look writes. Text behavior remains compatible.
+
+Final independent gates passed 2,643 Python tests, 542 frontend tests in 25
+files, frontend build, 46 privacy/control checks, strict OpenSpec validation
+and diff checks. One native-symlink test was skipped for Windows permissions;
+the build retains its bundle-size warning. No independent review remains
+pending. The authorized isolated acceptance commit closes Task 9.6; Task 9.7
+remains unstarted and will connect staged photos to reviewed extraction.
