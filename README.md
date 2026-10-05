@@ -55,22 +55,17 @@ copied in as its reference. The photo never leaves the app.
 
 ## Saved looks
 
-The separate **Looks** view (`#/looks`) stores named, versioned appearance
-snapshots with optional ordered garment outfits. The snapshots remain readable
-if the live wardrobe catalogue changes. The REST API exports immutable versions
-as self-contained `portable-look-v1` JSON envelopes and accepts both those
-envelopes and legacy garment/outfit-only JSON through reviewed preview/commit
-imports. A legacy catalogue import does not create a named look; that conversion
-is explicit. The API also offers temporary photo staging for a manually reviewed
-look save or an assistant-generated, editable appearance and garment proposal.
-Photo proposals require an explicitly configured vision model and must be
-reviewed before saving. The session API can apply selected immutable versions
-through plan CAS and provides a two-step preview/apply API for saved-look
-wardrobe progression. The preview returns every take's resulting wardrobe;
-apply requires the signed, short-lived review and exact echoed result, then
-persists through plan CAS. The browser has no JSON, photo, or session
-look/progression controls yet. See [Saved looks](docs/looks.md) and
-[session progression details](docs/sessions.md#previewing-a-saved-look-outfit-progression).
+The **Looks** view (`#/looks`) stores named, versioned appearance snapshots
+with optional ordered garment outfits. It exports the selected immutable
+version as portable JSON and imports JSON through a reviewed preview and commit;
+legacy outfit imports remain catalogue-only until you explicitly start and save
+a named look from an imported outfit. Photo staging supports a manual
+description or a reviewed assistant proposal when a text assistant and explicit
+vision model are configured. Staged photos are look-description input, never
+generation references. In **Shared Choices** on a resource session, load an
+exact saved-look version and explicitly replace or keep its appearance and
+wardrobe, then review and apply a saved-outfit clothing progression. See
+[Saved looks](docs/looks.md) and [session progression details](docs/sessions.md#previewing-a-saved-look-outfit-progression).
 
 ## Composing from the catalogue
 

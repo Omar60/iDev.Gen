@@ -31,18 +31,33 @@ review it manually.
 
 ## Current scope
 
-The browser editor remains manual and has no JSON or photo controls. The REST
-API supports `portable-look-v1` export/import and reviewed legacy outfit-only
-import through preview/commit. It also provides temporary photo staging for a
-manual look save or an assistant-generated, editable proposal. Extraction sends
-the staged image to the explicitly configured vision model described in
-[Setup](getting-started.md#setup); the proposal is not saved until reviewed.
-This API remains separate from the session composer’s **Wardrobe from a photo**
-helper. Staged photos do not become generation references. The session API can
-apply a selected immutable look version through plan CAS and provides a
-two-step preview/apply API for a wardrobe progression derived from the
-session's saved outfit snapshot. Progression is API-only: the session screen
-does not yet provide a look selector or progression timeline. See
+The **Looks** view (`#/looks`) includes reviewed JSON import, selected-version
+export, and one-photo staging. Its history selector stays bounded to the first
+20 versions plus the latest and currently selected version; enter any positive
+exact version in **Version number** to load it directly. Export downloads the
+selected version's portable JSON bytes.
+
+JSON import previews local mappings and remaps before commit. When a conflict
+requires a choice, select an explicit import, new-version, or copy option first.
+A legacy outfit import adds catalogue garments and outfits only. Choose an
+imported outfit with **Start a look from this outfit**, review it in the editor,
+then save to create a named look.
+
+**From photo** stages one JPEG, PNG, or WebP for preview. Describe it manually,
+or extract an editable proposal when Setup confirms a configured text assistant
+and explicit vision model. Review the appearance and garment list, correct or
+omit every unresolved detail, and confirm garment removal order before saving.
+Manual save remains available when extraction is unavailable. Cancel the stage
+or refresh its status; if cleanup reports a warning, retry cleanup from the
+view. This photo input describes a saved look and never becomes a generation
+reference.
+
+In **Shared Choices** on an authoring-v1 session, load an exact saved-look
+version, explicitly choose which appearance and wardrobe fields to replace or
+keep, and apply it through the plan revision CAS. The selected version is copied
+into a session snapshot, so later edits to the saved look do not change that
+session. **Plan clothing changes** reviews a progression from that snapshot and
+applies it through a signed preview and plan CAS. See
 [applying a saved look](sessions.md#applying-a-saved-look) and
 [previewing a saved-look outfit progression](sessions.md#previewing-a-saved-look-outfit-progression).
 
@@ -160,8 +175,8 @@ credentials. Parsing validates the complete shape, orders garments by
 
 ## Portable JSON import
 
-Import is available through the API. It does not change the legacy
-`/api/wardrobe/import` behavior.
+Import is available in the **Looks** view and through the API. It does not
+change the legacy `/api/wardrobe/import` behavior.
 
 `POST /api/looks/import/preview` accepts the raw `portable-look-v1` envelope.
 Its response includes the import status, original identity, destination or
@@ -255,8 +270,10 @@ A legacy import writes catalogue garments and outfits only; it does not create
 a `saved_look_version`. To explicitly create a named look from an imported
 outfit, call `POST /api/looks` with the desired name and its outfit key, for
 example `{ "name": "Summer layers", "outfit_key": "summer-layers" }`. This
-path leaves the existing `/api/wardrobe/import` behavior unchanged. The browser
-still has no JSON controls, and session authoring remains separate.
+path leaves the existing `/api/wardrobe/import` behavior unchanged. The Looks
+view presents imported outfits for an explicit **Start a look from this outfit**
+action; saving that reviewed editor creates the named look. Session authoring
+remains a separate operation.
 
 ## HTTP API
 
@@ -269,7 +286,7 @@ still has no JSON controls, and session authoring remains separate.
 | `POST /api/looks/import/commit` | Commit the reviewed portable or legacy envelope with its preview token, digest, and explicit choice. |
 | `POST /api/looks` | Create version 1 with required `name`, optional `appearance`, and at most one of `garments` or `outfit_key`. |
 | `POST /api/looks/{key}/versions` | Append a version with the same content fields and required `expected_version`. |
-| `POST /api/looks/photo-stages` | Stage one validated JPEG, PNG, or WebP image for preview and a manually reviewed save. |
+| `POST /api/looks/photo-stages` | Stage one validated JPEG, PNG, or WebP image for preview, manual description, or extraction. |
 | `GET /api/looks/photo-stages/{photo_id}` | Read temporary photo-stage status and metadata. |
 | `GET /api/looks/photo-stages/{photo_id}/preview` | Read staged image bytes for preview. |
 | `POST /api/looks/photo-stages/{photo_id}/cancel` | Cancel photo staging. |

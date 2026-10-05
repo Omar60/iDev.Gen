@@ -1651,6 +1651,14 @@ separate gates.
 
 ### Applying a saved look
 
+In **Shared Choices** after creating a resource-planning session, choose a named
+saved look and load an exact version. Choose **Replace** or **Keep** for its
+appearance; when the version has an outfit, also choose whether to replace or
+keep the current wardrobe. An appearance-only version cannot replace clothing
+and keeps the current wardrobe. If that wardrobe came from an earlier saved
+look, choose **Keep** explicitly. Applying stores the selected immutable version as this
+session's snapshot, so later edits to the saved look do not change the session.
+
 `POST /api/sessions/{sid}/plan/apply-look` applies one existing authoring-v1
 session's selected saved-look version using compare-and-swap. The closed request
 contains only the current `expected_revision`, `look_key`, `version`, and
@@ -1694,17 +1702,29 @@ state are refused without advancing the plan. Successful application uses the
 ordinary plan revision behavior: it reports resource conflict markers, applies
 prepared-take invalidation or verified copy-forward, revokes prior review, and
 fences active authoring. The response contains `plan_revision` and `conflicts`.
-When resource planning is disabled, application returns `503`. This operation
-is currently API-only. It applies the selected look version; apply a wardrobe
-progression separately through the API below.
+When resource planning is disabled, application returns `503`. Apply a wardrobe
+progression separately in **Plan clothing changes** or through the API below.
+Applying a saved look does not prepare takes, approve the plan, submit takes, or
+run generation.
 
 ### Previewing a saved-look outfit progression
 
 Resource-planning sessions with an authoring-v1 plan and a saved-look snapshot
-containing an ordered outfit support an API-only, two-step progression. The
-server derives the stage arc from the snapshotted garment wording and order,
-including an optional aside only for the last remaining garment and ending at
-`She wears nothing at all.` It does not read the live wardrobe catalogue.
+containing an ordered outfit support a two-step progression in **Shared Choices**
+and through the API. The server derives the stage arc from the snapshotted
+garment wording and order, including an optional aside only for the last
+remaining garment and ending at `She wears nothing at all.` It does not read the
+live wardrobe catalogue.
+
+In the browser's **Plan clothing changes** panel, confirm the snapshot's garment
+order, choose a final stage and any intermediate stages, set the inclusive start
+and end takes in current plan order, and choose whether to merge or replace
+existing events. Preview shows the effective wardrobe for every take and the
+resulting event list, including retained events and this-take overrides. Review
+the complete timeline before applying it. Changing any input invalidates that
+preview. Keep is the default session-clothing outcome: the current wardrobe
+stays unchanged unless you explicitly choose to replace it with a saved outfit.
+Planning and applying a progression is a separate opt-in action.
 
 Preview a range of stable take IDs in their current plan order and select
 zero-based stage indices from that arc:
@@ -1760,9 +1780,12 @@ Apply returns the new `plan_revision`, resource `conflicts`, and progression
 provenance. A stale revision is refused; if the change would alter a continuity
 field after a take is generated, the normal generated-take freeze refuses it.
 Affected ungenerated preparation follows the regular invalidation and
-copy-forward rules, and prior review approval is revoked. Preview and apply do
-not call an assistant, prepare takes, approve the plan, submit takes, or run
-generation. Both endpoints return `503` when resource planning is disabled.
+copy-forward rules, and prior review approval is revoked. Dirty plan edits or
+pending shared-authoring work disable these controls. A known no-write `503`
+shows its remedy; when a write result is uncertain, the browser reads the saved
+plan and never resends that write. Preview and apply do not call an assistant,
+prepare takes, approve the plan, submit takes, or run generation. Both endpoints
+return `503` when resource planning is disabled.
 
 ### Refreshing resource dependencies
 

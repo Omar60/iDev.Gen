@@ -5,6 +5,7 @@ import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
 import ExpressionPicker from './ExpressionPicker.jsx'
 import { BaseModelSelect, SamplerSelect } from './Models.jsx'
+import SessionLookProgression from './SessionLookProgression.jsx'
 import { KINDS, forKind, sessionKind, checkpointProfile, profileSummary,
          RUN_SUBJECTS, missingSubjects } from '../kinds.js'
 import { candidatePool, defaultCount, extrasFor, fillCellDefaultCount } from '../compose.js'
@@ -346,6 +347,9 @@ export default function SessionView({
 
   const [plan, setPlan] = useState(initialPlan)
   const [savedPlan, setSavedPlan] = useState(initialPlan)
+  const [planSessionId, setPlanSessionId] = useState(() => (
+    initialPlan && String(initialSession?.id) === String(id) ? String(id) : ''
+  ))
   const [planRevision, setPlanRevision] = useState(initialRevision)
   const planRevisionRef = useRef(initialRevision)
   planRevisionRef.current = planRevision
@@ -365,6 +369,7 @@ export default function SessionView({
   const [preparationActionError, setPreparationActionError] = useState('')
   const [preparationActionCode, setPreparationActionCode] = useState('')
   const [manualDecisionBusy, setManualDecisionBusy] = useState(false)
+  const [lookProgressionBusy, setLookProgressionBusy] = useState(false)
   const [expandedTakeFields, setExpandedTakeFields] = useState({})
   const [planDirty, setPlanDirty] = useState(false)
   const planDirtyRef = useRef(false)
@@ -382,6 +387,7 @@ export default function SessionView({
   const sessionViewEpochRef = useRef(0)
   const sessionViewIdRef = useRef(id)
   sessionViewIdRef.current = id
+  const [sessionRequestEpoch, setSessionRequestEpoch] = useState(0)
   const [planNotice, setPlanNotice] = useState('')
   const [planSaveImpact, setPlanSaveImpact] = useState(null)
   const [planReviewFailure, setPlanReviewFailure] = useState(null)
@@ -415,8 +421,9 @@ export default function SessionView({
   }
 
   const isResource = isResourceSession(s)
+  const planSessionCurrent = planSessionId === String(id)
   const sharedAcceptancePending = sharedAcceptBusy || sharedAcceptUnknown
-  const planEditLocked = manualDecisionBusy || sharedAcceptancePending
+  const planEditLocked = manualDecisionBusy || sharedAcceptancePending || lookProgressionBusy || !planSessionCurrent
   const isCurrentSessionRequest = (sessionId, requestEpoch) => (
     sessionViewMountedRef.current
     && sessionViewEpochRef.current === requestEpoch
@@ -439,6 +446,7 @@ export default function SessionView({
         if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
         if (res.ok) {
           if (typeof res.planRevision !== 'number' || res.planRevision < 0) {
+            setPlanSessionId('')
             setPlan(null)
             setSavedPlan(null)
             setPlanRevision(null)
@@ -460,7 +468,10 @@ export default function SessionView({
           }
           setPlan((prev) => (planDirtyRef.current && prev ? prev : res.plan))
           setPlanRevision((prev) => (planDirtyRef.current && prev !== null ? prev : res.planRevision))
-          if (!planDirtyRef.current) setSavedPlan(res.plan)
+          if (!planDirtyRef.current) {
+            setSavedPlan(res.plan)
+            setPlanSessionId(String(sessionId))
+          }
           setPlanConflicts(res.conflicts)
           setPlanPreparation(res.preparation || null)
           if (!planDirtyRef.current) setSharedSummary(res.sharedSummary || null)
@@ -472,6 +483,7 @@ export default function SessionView({
             setReviewedRevision((prev) => (typeof res.reviewedRevision === 'number' ? res.reviewedRevision : (prev && prev === res.planRevision ? prev : null)))
           }
         } else {
+          setPlanSessionId('')
           setPlan(null)
           setSavedPlan(null)
           setPlanRevision(null)
@@ -486,6 +498,7 @@ export default function SessionView({
         }
       }).catch((e) => {
         if (!isCurrentSessionRequest(sessionId, requestEpoch)) return
+        setPlanSessionId('')
         setPlan(null)
         setSavedPlan(null)
         setPlanRevision(null)
@@ -498,9 +511,14 @@ export default function SessionView({
         setPlanReviewStatus('idle')
         setError(e?.message || 'Failed to load plan')
       })
+    } else {
+      setPlanSessionId('')
     }
     }).catch((e) => {
-      if (isCurrentSessionRequest(sessionId, requestEpoch)) setError(e.message)
+      if (isCurrentSessionRequest(sessionId, requestEpoch)) {
+        setPlanSessionId('')
+        setError(e.message)
+      }
     })
   }
 
@@ -526,6 +544,7 @@ export default function SessionView({
     }
     setPlan(loaded.plan)
     setSavedPlan(loaded.plan)
+    setPlanSessionId(String(id))
     setPlanRevision(loaded.planRevision)
     planRevisionRef.current = loaded.planRevision
     setPlanConflicts(loaded.conflicts || [])
@@ -563,7 +582,7 @@ export default function SessionView({
   }
 
   const refreshResourceDependencies = async () => {
-    if (!isResource || planDirtyRef.current || planRevisionRef.current === null || resourceRefreshBusy) return
+    if (!isResource || !planSessionCurrent || planDirtyRef.current || planRevisionRef.current === null || resourceRefreshBusy || lookProgressionBusy) return
     const sessionId = id
     const requestEpoch = sessionViewEpochRef.current
     setResourceRefreshBusy(true)
@@ -776,7 +795,7 @@ export default function SessionView({
     const retryUnknown = Boolean(sharedStartUnknown && current?.kind === 'shared_suggestions')
     const pendingPreparationRequest = preparationStartUnknown
       && preparationStartRequestRef.current?.kind === 'prepare_takes'
-    if (authoringActionInFlightRef.current || pendingPreparationRequest) return
+    if (!planSessionCurrent || authoringActionInFlightRef.current || pendingPreparationRequest || lookProgressionBusy) return
     if (!retryUnknown && (
       !plan?.authoring || planDirtyRef.current || typeof planRevisionRef.current !== 'number'
       || (sharedOperationRef.current && ['active', 'cancel_requested'].includes(sharedOperationRef.current.state))
@@ -860,6 +879,7 @@ export default function SessionView({
   }
 
   const acceptSharedSuggestions = async () => {
+    if (!planSessionCurrent || lookProgressionBusy) return
     let pending = sharedAcceptanceRequestRef.current
     if (!pending) {
       const operation = sharedOperationRef.current
@@ -955,7 +975,7 @@ export default function SessionView({
     const retryUnknown = Boolean(preparationStartUnknown && current?.kind === 'prepare_takes')
     const pendingSharedRequest = sharedStartUnknown
       && sharedStartRequestRef.current?.kind === 'shared_suggestions'
-    if (authoringActionInFlightRef.current || pendingSharedRequest) return
+    if (!planSessionCurrent || authoringActionInFlightRef.current || pendingSharedRequest || lookProgressionBusy) return
     if (!retryUnknown && (
       !plan?.authoring || plan.authoring.mode !== 'automatic'
       || planDirtyRef.current || typeof planRevisionRef.current !== 'number'
@@ -1170,6 +1190,7 @@ export default function SessionView({
 
   useEffect(() => {
     sessionViewEpochRef.current += 1
+    setSessionRequestEpoch(sessionViewEpochRef.current)
     sessionViewMountedRef.current = true
     setPlanSaveImpact(null)
     setPlanReviewFailure(null)
@@ -1180,6 +1201,7 @@ export default function SessionView({
     restoredOperationKeyRef.current = null
     resetSharedOperation()
     setManualDecisionBusy(false)
+    setLookProgressionBusy(false)
     setSharedActionError('')
     setSharedActionNotice('')
     setPreparationActionBusy(false)
@@ -1347,7 +1369,7 @@ export default function SessionView({
   }
 
   const handlePrepareTake = async (takeId) => {
-    if (planRevision === null || planDirty || reviewBlocksFinalization) return
+    if (planRevision === null || planDirty || planEditLocked || reviewBlocksFinalization) return
     setPreparingTakeId(takeId)
     setError('')
     try {
@@ -1368,7 +1390,7 @@ export default function SessionView({
   }
 
   const handlePrepareAllIncomplete = async () => {
-    if (planRevision === null || planDirty || reviewBlocksFinalization) return
+    if (planRevision === null || planDirty || planEditLocked || reviewBlocksFinalization) return
     const takeIds = incompletePlanTakeIds()
     if (!takeIds.length) return
     setPreparingAll(true)
@@ -1390,7 +1412,7 @@ export default function SessionView({
   }
 
   const handleRecordAdaptation = async (takeId, conflict) => {
-    if (planRevision === null || planDirty || reviewBlocksFinalization) return
+    if (planRevision === null || planDirty || planEditLocked || reviewBlocksFinalization) return
     const conflictKey = conflict.conflict_key || `${conflict.library_key || ''}:${conflict.source_id || ''}:${conflict.resource_field || ''}`
     const adaptedVal = (adaptationDrafts[takeId]?.[conflictKey] ?? '').trim()
     if (!adaptedVal) {
@@ -1423,7 +1445,7 @@ export default function SessionView({
   }
 
   const handleApproveReview = async () => {
-    if (planDirty || (planConflicts && planConflicts.length > 0) || planRevision === null || reviewBlocksFinalization) return
+    if (planDirty || planEditLocked || (planConflicts && planConflicts.length > 0) || planRevision === null || reviewBlocksFinalization) return
     setError('')
     try {
       const res = await approvePlanReview(id, planRevision, api)
@@ -1440,7 +1462,7 @@ export default function SessionView({
   }
 
   const handleSubmitSelectedTakes = async () => {
-    if (submittingTakes) return
+    if (submittingTakes || planEditLocked) return
     if (planDirty) {
       setError('Cannot submit: plan has unsaved changes')
       return
@@ -2529,6 +2551,29 @@ export default function SessionView({
                     <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
                       Edit the saved values directly, record an empty choice, or review an assistant proposal before accepting it.
                     </p>
+                    <SessionLookProgression
+                      key={`session-look-${id}`}
+                      sessionId={id}
+                      plan={plan}
+                      revision={planRevision}
+                      disabled={
+                        planDirty || planRevision === null || planEditLocked
+                        || sharedStartBusy || sharedStartUnknown
+                        || preparationActionBusy || preparationStartUnknown
+                        || resourceRefreshBusy
+                        || ['active', 'cancel_requested'].includes(sharedOperation?.state)
+                      }
+                      onBusyChange={(busy) => {
+                        if (
+                          sessionViewMountedRef.current
+                          && sessionViewEpochRef.current === sessionRequestEpoch
+                          && String(sessionViewIdRef.current) === String(id)
+                        ) setLookProgressionBusy(busy)
+                      }}
+                      onReload={(minimumRevision) => (
+                        reloadAuthoritativePlan(id, minimumRevision, sessionRequestEpoch)
+                      )}
+                    />
                     <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
                       {[
                         ['look', 'Choose no additional look constraint'],
@@ -2541,7 +2586,7 @@ export default function SessionView({
                           key={field}
                           type="button"
                           onClick={() => savePlan({ sharedDecisions: [field] })}
-                          disabled={planDirty || manualDecisionBusy || sharedAcceptancePending || planRevision === null}
+                          disabled={planDirty || planEditLocked || planRevision === null}
                           title={planDirty ? 'Save or discard unsaved plan edits first' : 'Record the empty choice through the plan revision CAS'}
                         >
                           {label}
@@ -2562,6 +2607,7 @@ export default function SessionView({
                             onClick={startSharedSuggestions}
                             disabled={
                               sharedStartBusy || sharedAcceptancePending || manualDecisionBusy
+                              || lookProgressionBusy || !planSessionCurrent
                               || preparationStartUnknown || preparationActionBusy
                               || (!sharedStartUnknown && (
                                 planDirty || planRevision === null
@@ -2600,7 +2646,7 @@ export default function SessionView({
                               className="primary"
                               onClick={acceptSharedSuggestions}
                               disabled={
-                                manualDecisionBusy || sharedAcceptBusy || planDirty
+                                manualDecisionBusy || sharedAcceptBusy || lookProgressionBusy || !planSessionCurrent || planDirty
                                 || sharedOperation.plan_revision !== planRevision
                                 || !Object.keys(sharedProposalDrafts).length
                               }

@@ -15,6 +15,7 @@ const jsonResponse = (status, body) => ({
   status,
   statusText: status === 409 ? 'Conflict' : status >= 400 ? 'Error' : 'OK',
   json: async () => structuredClone(body),
+  text: async () => JSON.stringify(body),
 })
 
 const body = (response) => response.body

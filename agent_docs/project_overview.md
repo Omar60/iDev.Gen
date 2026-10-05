@@ -40,10 +40,10 @@ continues to serve measured catalogue and room-seed use cases.
 - Add or compose shots, optionally use references, prepare/review resource takes,
   then explicitly run them through the serial queue.
 - Create named saved Looks as immutable appearance snapshots with optional
-  ordered outfits; an authoring-v1 session can apply a selected version through
-  the API and preview/apply a saved-look wardrobe progression through a signed,
-  reviewed plan-CAS API; the session screen has no look selector or progression
-  timeline yet.
+  ordered outfits; the Looks view supports reviewed JSON import/export and
+  reviewed photo descriptions. In an authoring-v1 session, **Shared Choices**
+  can apply an exact saved-look version with explicit replace/keep decisions and
+  preview/apply its wardrobe progression through signed plan-CAS operations.
 - Import and translate resources or legacy room libraries, inspect readiness,
   judge catalogue evidence, and use the Library and Slideshow views.
 

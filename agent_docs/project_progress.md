@@ -6,9 +6,22 @@ Implement the active OpenSpec change `simplify-resource-session-workflow` one
 independently reviewable task at a time while retaining architecture,
 integration, and acceptance in the main agent.
 
+## Current Deployment
+
+Task 9.11 passed independent acceptance under Heavy deployment
+`srsw-9-11-20261005` with internal Codex implementation and verification.
+Progress is 62 of 72 tasks complete. Looks JSON/photo actions, the optional
+saved-look selector, and signed progression review/application are available
+in the browser. Exact version identity and known-refusal recovery were repaired
+and independently verified. Python passed 2,729 tests with one skipped;
+frontend passed 581 tests, build passed, and privacy/control checks passed 46.
+README and matching guides are updated. No independent review remains pending.
+The user authorized the isolated local acceptance commit. Task 9.12 and later
+tasks remain unstarted; no external handoff or push is authorized.
+
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 61 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 62 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6

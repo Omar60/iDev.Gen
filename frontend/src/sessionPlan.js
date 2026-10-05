@@ -517,7 +517,8 @@ export function buildPlanSavePayload(plan, expectedRevision, sharedDecisions = n
  */
 export async function loadSessionPlan(sessionId, api) {
   try {
-    const data = await api.get(`/api/sessions/${sessionId}/plan`)
+    const getPlan = typeof api.getVersioned === 'function' ? api.getVersioned : api.get
+    const data = await getPlan(`/api/sessions/${sessionId}/plan`)
     const rawPlan = data.plan || data
     const planRevision = typeof data.plan_revision === 'number'
       ? data.plan_revision
@@ -581,7 +582,13 @@ export async function executeSavePlan(sessionId, plan, expectedRevision, api, sh
 
   try {
     const payload = buildPlanSavePayload(plan, expectedRevision, sharedDecisions)
-    const res = await api.post(`/api/sessions/${sessionId}/plan`, payload)
+    const savePlan = typeof api.postVersioned === 'function' ? api.postVersioned : api.post
+    const integerFields = payload.plan.authoring?.look_snapshot
+      ? ['plan.authoring.look_snapshot.version']
+      : []
+    const res = typeof api.postVersioned === 'function'
+      ? await savePlan(`/api/sessions/${sessionId}/plan`, payload, integerFields)
+      : await savePlan(`/api/sessions/${sessionId}/plan`, payload)
     if (!res || typeof res.plan_revision !== 'number' || res.plan_revision < 0) {
       return {
         ok: false,

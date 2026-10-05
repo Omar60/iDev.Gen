@@ -651,3 +651,17 @@
   a monotonic start authority until stage termination instead of deriving it
   from only surviving successful attempts. Photo recovery readback also needs
   the database lock when it races a save; cleanup remains post-commit work.
+
+## Task 9.11 UI Boundary Lessons
+
+- Portable look versions span the SQLite integer range. Keep their exact decimal
+  identity at the browser boundary, bound history controls, export raw response
+  bytes, and serialize declared version fields as JSON integers. A save at the
+  last JavaScript-safe version may return an unsafe successor; decode every
+  version-producing edit losslessly, not only unsafe inputs.
+- Standard response fixtures need `text()` when testing lossless parsing. Keep
+  production transport independent of mock detection and preserve assertions
+  when extending the test double's response interface.
+- Distinguish verified pre-write refusals from unknown write outcomes. A known
+  disabled-feature refusal must display its remedy and release the action lock;
+  an ambiguous failure retains authoritative readback without automatic replay.

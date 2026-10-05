@@ -100,7 +100,7 @@ describe('Looks manual editor', () => {
       if (path === '/api/looks') return savedLook({ ...body, version: 1 })
       if (/^\/api\/looks\/[^/]+\/versions$/.test(path)) {
         const key = decodeURIComponent(path.split('/')[3])
-        return savedLook({ ...body, key, version: (body.expected_version || 0) + 1 })
+        return savedLook({ ...body, key, version: Number(body.expected_version || 0) + 1 })
       }
       throw new Error(`Unexpected POST ${path}`)
     })
@@ -210,8 +210,8 @@ describe('Looks manual editor', () => {
       name: 'Studio look',
       appearance: 'corrected appearance',
       garments: [],
-      expected_version: 2,
-    })
+      expected_version: '2',
+    }, { losslessVersions: true, integerFields: ['expected_version'] })
     expect(container.textContent).toContain('Saved as version 3')
     expect(Array.from(field('Version history').options).map((option) => option.textContent))
       .toEqual(['Version 1', 'Version 2', 'Version 3 · latest'])
@@ -284,7 +284,7 @@ describe('Looks manual editor', () => {
     })
     vi.spyOn(api, 'post').mockImplementation(async (_path, body) => savedLook({
       key: 'look-race',
-      version: body.expected_version + 1,
+      version: Number(body.expected_version) + 1,
       name: body.name,
       appearance: body.appearance,
     }))
@@ -328,7 +328,7 @@ describe('Looks manual editor', () => {
       resolveAlpha(savedLook({ key: 'look-alpha', name: 'Alpha', appearance: 'stale alpha appearance' }))
       await alpha
     })
-    expect(get).toHaveBeenCalledWith('/api/looks/look-alpha/versions/1')
+    expect(get).toHaveBeenCalledWith('/api/looks/look-alpha/versions/1', { losslessVersions: true })
     expect(field('Constant appearance').value).toBe('beta appearance')
     expect(container.textContent).not.toContain('stale alpha appearance')
   })
