@@ -39,11 +39,12 @@ the staged image to the explicitly configured vision model described in
 [Setup](getting-started.md#setup); the proposal is not saved until reviewed.
 This API remains separate from the session composer’s **Wardrobe from a photo**
 helper. Staged photos do not become generation references. The session API can
-apply a selected immutable look version through plan CAS. Matching backend and
-frontend helpers derive optional wardrobe stages from the saved outfit snapshot,
-but do not apply them to a session plan. The session screen does not yet provide
-a look selector or progression timeline. See
-[applying a saved look](sessions.md#applying-a-saved-look).
+apply a selected immutable look version through plan CAS and provides a
+two-step preview/apply API for a wardrobe progression derived from the
+session's saved outfit snapshot. Progression is API-only: the session screen
+does not yet provide a look selector or progression timeline. See
+[applying a saved look](sessions.md#applying-a-saved-look) and
+[previewing a saved-look outfit progression](sessions.md#previewing-a-saved-look-outfit-progression).
 
 ## Temporary photo staging API
 

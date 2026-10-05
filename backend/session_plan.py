@@ -72,8 +72,12 @@ Task 3.3 adds three small pieces on top of the 3.1 surface:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import sys
+import time
 from typing import Any
 
 import db
@@ -106,6 +110,8 @@ WARDROBE_SCOPE_FROM_HERE = "from_here"
 VALID_WARDROBE_SCOPES: frozenset[str] = frozenset(
     {WARDROBE_SCOPE_THIS_TAKE, WARDROBE_SCOPE_FROM_HERE}
 )
+_WARDROBE_PROGRESSION_PREVIEW_PURPOSE = "session-wardrobe-progression-v1"
+_WARDROBE_PROGRESSION_PREVIEW_TTL_SECONDS = 600
 
 
 AUTHORING_MODE_AUTOMATIC = "automatic"
@@ -217,6 +223,10 @@ class PlanRevisionStale(Exception):
 
 class ResourcePlanningDisabled(Exception):
     """A resource-v1 write was attempted while its feature gate is disabled."""
+
+
+class WardrobeProgressionPreviewUnavailable(Exception):
+    """The server could not issue or verify a progression preview token."""
 
 
 class SessionNotInResourceMode(Exception):
@@ -471,6 +481,247 @@ def derive_saved_look_wardrobe_progression(
             )
             result.append(stages[selected[selected_position]])
     return result
+
+
+def _progression_canonical_json(value: Any) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _progression_digest(value: Any) -> str:
+    return hashlib.sha256(_progression_canonical_json(value)).hexdigest()
+
+
+def _wardrobe_progression_preview_key(*, create: bool) -> bytes:
+    from backend import resource_service
+
+    try:
+        return resource_service._attestation_key(create=create)
+    except (OSError, ValueError):
+        raise WardrobeProgressionPreviewUnavailable(
+            "Wardrobe progression preview is temporarily unavailable."
+        ) from None
+
+
+def _issue_wardrobe_progression_preview(payload: dict) -> str:
+    encoded = _progression_canonical_json(payload)
+    signature = hmac.new(
+        _wardrobe_progression_preview_key(create=True),
+        _WARDROBE_PROGRESSION_PREVIEW_PURPOSE.encode("ascii") + b"\0" + encoded,
+        hashlib.sha256,
+    ).hexdigest()
+    return (
+        base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+        + "." + signature
+    )
+
+
+def _read_wardrobe_progression_preview(token: Any) -> dict:
+    try:
+        if type(token) is not str or not token or len(token) > 65536:
+            raise ValueError("invalid token")
+        encoded_text, signature = token.split(".", 1)
+        if (
+            not encoded_text
+            or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-" for char in encoded_text)
+            or len(signature) != 64
+            or any(char not in "0123456789abcdef" for char in signature)
+        ):
+            raise ValueError("invalid token")
+        encoded = base64.urlsafe_b64decode(
+            encoded_text + "=" * ((4 - len(encoded_text) % 4) % 4)
+        )
+        if base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=") != encoded_text:
+            raise ValueError("invalid token")
+        expected = hmac.new(
+            _wardrobe_progression_preview_key(create=False),
+            _WARDROBE_PROGRESSION_PREVIEW_PURPOSE.encode("ascii") + b"\0" + encoded,
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("invalid token")
+        payload = json.loads(encoded)
+        expected_keys = {
+            "version", "purpose", "expires_at", "session_id",
+            "expected_revision", "plan_digest", "source_look_digest",
+            "start_take_id", "end_take_id", "stage_indices", "event_policy",
+            "review_digest",
+        }
+        if (
+            type(payload) is not dict
+            or set(payload) != expected_keys
+            or type(payload["version"]) is not int
+            or payload["version"] != 1
+            or payload["purpose"] != _WARDROBE_PROGRESSION_PREVIEW_PURPOSE
+            or type(payload["expires_at"]) is not int
+            or payload["expires_at"] <= int(time.time())
+            or type(payload["session_id"]) is not int
+            or payload["session_id"] <= 0
+            or type(payload["expected_revision"]) is not int
+            or payload["expected_revision"] <= 0
+            or any(
+                type(payload[field]) is not str
+                or len(payload[field]) != 64
+                or any(char not in "0123456789abcdef" for char in payload[field])
+                for field in ("plan_digest", "source_look_digest", "review_digest")
+            )
+            or any(
+                type(payload[field]) is not str or not payload[field]
+                for field in ("start_take_id", "end_take_id")
+            )
+            or type(payload["stage_indices"]) is not list
+            or any(type(index) is not int for index in payload["stage_indices"])
+            or payload["event_policy"] not in {"merge", "replace"}
+        ):
+            raise ValueError("invalid token")
+        return payload
+    except (AttributeError, KeyError, TypeError, ValueError, RecursionError, UnicodeError):
+        raise PlanOwnershipConflict(
+            "Wardrobe progression preview is invalid or expired; request a new preview."
+        ) from None
+
+
+def _derive_wardrobe_progression_application(
+    plan: dict,
+    current_revision: int,
+    *,
+    start_take_id: str,
+    end_take_id: str,
+    stage_indices: list[int],
+    event_policy: str,
+) -> dict:
+    takes = plan["takes"]
+    if not takes:
+        raise PlanValidationError("wardrobe progression requires at least one take")
+    look_snapshot = plan["authoring"]["look_snapshot"]
+    if look_snapshot is None or look_snapshot["outfit"] is None:
+        raise PlanValidationError(
+            "wardrobe progression requires a snapshotted look with ordered garments"
+        )
+    take_indices = {take["take_id"]: index for index, take in enumerate(takes)}
+    if start_take_id not in take_indices or end_take_id not in take_indices:
+        raise PlanValidationError("progression interval take IDs must exist in the current plan")
+    interval_start = take_indices[start_take_id]
+    interval_end = take_indices[end_take_id]
+    if interval_end < interval_start:
+        raise PlanValidationError("progression interval end must follow its start in current take order")
+    if event_policy not in {"merge", "replace"}:
+        raise PlanValidationError("event_policy must be 'merge' or 'replace'")
+
+    desired = derive_saved_look_wardrobe_progression(
+        look_snapshot["outfit"],
+        plan["initial_wardrobe"],
+        len(takes),
+        stage_indices=stage_indices,
+        interval_start=interval_start,
+        interval_end=interval_end,
+    )
+    existing_changes = plan["wardrobe_changes"]
+    this_take_by_id = {
+        change["take_id"]: change
+        for change in existing_changes
+        if change["scope"] == WARDROBE_SCOPE_THIS_TAKE
+    }
+    existing_from_here_by_id = {
+        change["take_id"]: change
+        for change in existing_changes
+        if change["scope"] == WARDROBE_SCOPE_FROM_HERE
+    }
+
+    # Take zero is represented by the plan default. Later changes are the
+    # smallest stable-ID event set that realizes the derived sequence while
+    # leaving every one-take override intact.
+    initial_wardrobe = desired[0]
+    inherited = initial_wardrobe
+    proposed_from_here: list[dict] = []
+    pending_transition: tuple[str, str] | None = None
+    for take, wardrobe in zip(takes[1:], desired[1:]):
+        take_id = take["take_id"]
+        if take_id in this_take_by_id:
+            if wardrobe != inherited:
+                if pending_transition is not None and pending_transition[0] != wardrobe:
+                    raise PlanOwnershipConflict(
+                        "saved this_take overrides cover consecutive progression "
+                        "stages; widen the interval or select fewer stages"
+                    )
+                pending_transition = (wardrobe, take_id)
+            continue
+        if pending_transition is not None and pending_transition[0] != wardrobe:
+            raise PlanOwnershipConflict(
+                "a saved this_take override covers a progression stage that has "
+                "no unoverridden take; widen the interval or select fewer stages"
+            )
+        if wardrobe != inherited:
+            proposed_from_here.append({
+                "take_id": take_id,
+                "scope": WARDROBE_SCOPE_FROM_HERE,
+                "wardrobe": wardrobe,
+            })
+            inherited = wardrobe
+        pending_transition = None
+    if pending_transition is not None:
+        raise PlanOwnershipConflict(
+            "the final progression stage is covered by a saved this_take override; "
+            "extend the interval or move that override"
+        )
+
+    if event_policy == "replace":
+        retained = [change for change in existing_changes if change["scope"] == WARDROBE_SCOPE_THIS_TAKE]
+        additions = proposed_from_here
+    else:
+        retained = list(existing_changes)
+        additions = []
+        collisions: list[str] = []
+        for change in proposed_from_here:
+            existing = existing_from_here_by_id.get(change["take_id"])
+            if existing is None:
+                additions.append(change)
+            elif existing["wardrobe"] == change["wardrobe"]:
+                # The already-saved event realizes the reviewed transition.
+                continue
+            else:
+                collisions.append(change["take_id"])
+        if collisions:
+            raise PlanOwnershipConflict(
+                "merge conflicts with saved from_here events for take IDs "
+                f"{sorted(collisions)}; choose replace and review a new preview"
+            )
+
+    candidate_changes = retained + additions
+    candidate = dict(plan)
+    candidate["initial_wardrobe"] = initial_wardrobe
+    candidate["wardrobe_changes"] = candidate_changes
+    authoring = dict(plan["authoring"])
+    if initial_wardrobe != plan["initial_wardrobe"]:
+        shared_state = {
+            field: dict(plan["authoring"]["shared_state"][field])
+            for field in ("look", "initial_wardrobe")
+        }
+        shared_state["initial_wardrobe"] = {"origin": "user", "evidence_id": None}
+        authoring["shared_state"] = shared_state
+    authoring["wardrobe_progression"] = {
+        "source_look_digest": look_snapshot["content_digest"],
+        "start_take_id": start_take_id,
+        "end_take_id": end_take_id,
+        "stage_indices": list(stage_indices),
+        "applied_revision": current_revision + 1,
+    }
+    candidate["authoring"] = authoring
+    candidate = validate_draft(candidate)
+    effective = resolve_effective_wardrobes(candidate)
+    reviewed_wardrobes = [
+        {"take_id": take["take_id"], "wardrobe": effective[take["take_id"]]}
+        for take in takes
+    ]
+    return {
+        "plan": candidate,
+        "initial_wardrobe": candidate["initial_wardrobe"],
+        "wardrobe_changes": candidate["wardrobe_changes"],
+        "wardrobe_progression": candidate["authoring"]["wardrobe_progression"],
+        "reviewed_wardrobes": reviewed_wardrobes,
+        "review_digest": _progression_digest(reviewed_wardrobes),
+    }
 
 
 def validate_authoring_count(value: Any) -> int:
@@ -3486,6 +3737,201 @@ def apply_saved_look(
         return _persist_plan_revision(
             session_id, current, old_plan, validated, conflicts,
         )
+
+
+def _load_progression_plan(session_id: int, expected_revision: int) -> tuple[dict, dict]:
+    session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
+    if session is None:
+        raise SessionNotFound(f"session {session_id} not found")
+    mode = read_composition_mode(session["settings"])
+    if mode != MODE_RESOURCE_V1:
+        raise SessionNotInResourceMode(
+            f"session {session_id} composition_mode is {mode!r}, "
+            f"expected {MODE_RESOURCE_V1!r}"
+        )
+    current = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    actual = 0 if current is None else int(current["plan_revision"])
+    if actual != expected_revision:
+        raise PlanRevisionStale(
+            f"session {session_id} plan revision is {actual}, "
+            f"expected {expected_revision}; request a new wardrobe progression preview"
+        )
+    if current is None:
+        raise PlanOwnershipConflict(
+            "wardrobe progression requires an existing authoring-v1 plan"
+        )
+    try:
+        raw_plan = json.loads(current["plan_json"])
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise PlanValidationError("the saved plan could not be read") from exc
+    plan = validate_draft(raw_plan)
+    if classify_plan_authoring(plan) not in (
+        PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC,
+    ):
+        raise PlanOwnershipConflict(
+            "wardrobe progression requires an authoring-v1 plan"
+        )
+    validate_selected_resources(plan["selected_resources"])
+    return current, plan
+
+
+def preview_wardrobe_progression(
+    session_id: int,
+    expected_revision: int,
+    start_take_id: str,
+    end_take_id: str,
+    stage_indices: Any,
+    event_policy: str,
+    *,
+    planning_enabled: bool,
+) -> dict:
+    """Issue a signed review of one fully resolved wardrobe schedule."""
+    if planning_enabled is not True:
+        raise ResourcePlanningDisabled("Resource planning is disabled by configuration.")
+    if type(session_id) is not int or session_id <= 0:
+        raise PlanValidationError("session_id must be a positive integer")
+    if type(expected_revision) is not int or expected_revision <= 0:
+        raise PlanValidationError("expected_revision must be a positive integer")
+    if type(start_take_id) is not str or not start_take_id:
+        raise PlanValidationError("start_take_id must be a non-empty string")
+    if type(end_take_id) is not str or not end_take_id:
+        raise PlanValidationError("end_take_id must be a non-empty string")
+    if type(stage_indices) is not list or any(type(index) is not int for index in stage_indices):
+        raise PlanValidationError("stage_indices must be a list of integers")
+    if type(event_policy) is not str or event_policy not in {"merge", "replace"}:
+        raise PlanValidationError("event_policy must be 'merge' or 'replace'")
+
+    with db.transaction():
+        if planning_enabled is not True:
+            raise ResourcePlanningDisabled(
+                "Resource planning is disabled by configuration."
+            )
+        current, plan = _load_progression_plan(session_id, expected_revision)
+        derived = _derive_wardrobe_progression_application(
+            plan,
+            expected_revision,
+            start_take_id=start_take_id,
+            end_take_id=end_take_id,
+            stage_indices=stage_indices,
+            event_policy=event_policy,
+        )
+        payload = {
+            "version": 1,
+            "purpose": _WARDROBE_PROGRESSION_PREVIEW_PURPOSE,
+            "expires_at": int(time.time()) + _WARDROBE_PROGRESSION_PREVIEW_TTL_SECONDS,
+            "session_id": session_id,
+            "expected_revision": expected_revision,
+            "plan_digest": _progression_digest(plan),
+            "source_look_digest": plan["authoring"]["look_snapshot"]["content_digest"],
+            "start_take_id": start_take_id,
+            "end_take_id": end_take_id,
+            "stage_indices": list(stage_indices),
+            "event_policy": event_policy,
+            "review_digest": derived["review_digest"],
+        }
+        token = _issue_wardrobe_progression_preview(payload)
+        return {
+            "expected_revision": expected_revision,
+            "event_policy": event_policy,
+            "initial_wardrobe": derived["initial_wardrobe"],
+            "wardrobe_changes": derived["wardrobe_changes"],
+            "wardrobe_progression": derived["wardrobe_progression"],
+            "reviewed_wardrobes": derived["reviewed_wardrobes"],
+            "review_digest": derived["review_digest"],
+            "preview_token": token,
+        }
+
+
+def apply_wardrobe_progression_preview(
+    session_id: int,
+    expected_revision: int,
+    preview_token: Any,
+    review_digest: Any,
+    reviewed_wardrobes: Any,
+    *,
+    planning_enabled: bool,
+) -> dict:
+    """Recompute and atomically apply an exact server-issued wardrobe review."""
+    if planning_enabled is not True:
+        raise ResourcePlanningDisabled("Resource planning is disabled by configuration.")
+    if type(session_id) is not int or session_id <= 0:
+        raise PlanValidationError("session_id must be a positive integer")
+    if type(expected_revision) is not int or expected_revision <= 0:
+        raise PlanValidationError("expected_revision must be a positive integer")
+    if type(review_digest) is not str or len(review_digest) != 64 or any(
+        char not in "0123456789abcdef" for char in review_digest
+    ):
+        raise PlanValidationError("review_digest must be a lowercase SHA-256 digest")
+    if type(reviewed_wardrobes) is not list or any(
+        type(item) is not dict
+        or set(item) != {"take_id", "wardrobe"}
+        or type(item["take_id"]) is not str
+        or not item["take_id"]
+        or type(item["wardrobe"]) is not str
+        for item in reviewed_wardrobes
+    ):
+        raise PlanValidationError(
+            "reviewed_wardrobes must contain exact take_id and wardrobe strings"
+        )
+
+    with db.transaction():
+        if planning_enabled is not True:
+            raise ResourcePlanningDisabled(
+                "Resource planning is disabled by configuration."
+            )
+        payload = _read_wardrobe_progression_preview(preview_token)
+        if (
+            payload["session_id"] != session_id
+            or payload["expected_revision"] != expected_revision
+            or not hmac.compare_digest(payload["review_digest"], review_digest)
+        ):
+            raise PlanOwnershipConflict(
+                "Wardrobe progression review does not match this session, revision, or reviewed result."
+            )
+        current, plan = _load_progression_plan(session_id, expected_revision)
+        if not hmac.compare_digest(payload["plan_digest"], _progression_digest(plan)):
+            raise PlanOwnershipConflict(
+                "The saved plan changed after preview; request a new wardrobe progression preview."
+            )
+        look_snapshot = plan["authoring"]["look_snapshot"]
+        if (
+            look_snapshot is None
+            or not hmac.compare_digest(
+                payload["source_look_digest"], look_snapshot["content_digest"],
+            )
+        ):
+            raise PlanOwnershipConflict(
+                "The snapshotted look changed after preview; request a new wardrobe progression preview."
+            )
+        derived = _derive_wardrobe_progression_application(
+            plan,
+            expected_revision,
+            start_take_id=payload["start_take_id"],
+            end_take_id=payload["end_take_id"],
+            stage_indices=payload["stage_indices"],
+            event_policy=payload["event_policy"],
+        )
+        supplied_digest = _progression_digest(reviewed_wardrobes)
+        if (
+            not hmac.compare_digest(supplied_digest, payload["review_digest"])
+            or reviewed_wardrobes != derived["reviewed_wardrobes"]
+            or not hmac.compare_digest(derived["review_digest"], payload["review_digest"])
+        ):
+            raise PlanOwnershipConflict(
+                "Reviewed wardrobe states do not match the server preview; request a new preview."
+            )
+        conflicts = detect_resource_constant_conflicts(derived["plan"])
+        result = _persist_plan_revision(
+            session_id, current, plan, derived["plan"], conflicts,
+        )
+        return {
+            "plan_revision": result["plan_revision"],
+            "conflicts": result["conflicts"],
+            "wardrobe_progression": derived["wardrobe_progression"],
+        }
 
 
 def refresh_resources(

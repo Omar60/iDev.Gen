@@ -29,10 +29,10 @@ Verified baseline from the repository layout and application entry points.
   `resource_*` modules.
 - `backend/saved_looks.py` stores self-contained saved-look versions, while
   `backend/photo_staging.py` validates temporary look photos and owns their
-  expiry and cleanup. `backend/session_plan.py` applies a selected version to
-  an authoring-v1 plan through compare-and-swap. `frontend/src/views/Looks.jsx`
-  provides the manual editor; the session selector and wardrobe progression
-  are not yet available in the UI.
+  expiry and cleanup. `backend/session_plan.py` applies a selected version and
+  a signed, reviewed wardrobe progression to an authoring-v1 plan through
+  compare-and-swap. `frontend/src/views/Looks.jsx` provides the manual editor;
+  the session selector and progression timeline are not yet available in the UI.
 - Legacy room imports and catalogue preparation use `importer.py`,
   `room_registry.py`, `extractor.py`, `cut_map.py`, `mining.py`, and
   `translation_map.py`. Catalogue composition, judging, wardrobe, and image

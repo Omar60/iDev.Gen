@@ -2,6 +2,14 @@
 
 ## Decisions and Lessons
 
+- A reviewed progression must bind the exact saved plan and every effective
+  wardrobe, including retained scoped events, before applying through the normal
+  plan CAS. Preserve local overrides and refuse selected stages that cannot be
+  represented with one event per take; never silently omit a requested stage.
+  Acceptance must retain selective invalidation and generated continuity rules:
+  unchanged verified ready work can copy forward, and event-only changes do not
+  alter frozen initial wardrobe or generated history.
+
 - Snapshot wording validation must use the same boundary whitespace set across
   Python and JavaScript: `str.strip()` and `String.trim()` differ for FEFF, NEL
   and four ASCII separator controls. Reject the union at the boundary while

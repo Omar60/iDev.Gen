@@ -65,11 +65,12 @@ is explicit. The API also offers temporary photo staging for a manually reviewed
 look save or an assistant-generated, editable appearance and garment proposal.
 Photo proposals require an explicitly configured vision model and must be
 reviewed before saving. The session API can apply selected immutable versions
-through plan CAS. Matching backend and frontend helpers derive outfit stages
-from the saved snapshot; leaving stages unspecified preserves the current
-wardrobe exactly. The browser has no JSON, photo, or session look/progression
-controls yet, and progression application remains pending. See
-[Saved looks](docs/looks.md).
+through plan CAS and provides a two-step preview/apply API for saved-look
+wardrobe progression. The preview returns every take's resulting wardrobe;
+apply requires the signed, short-lived review and exact echoed result, then
+persists through plan CAS. The browser has no JSON, photo, or session
+look/progression controls yet. See [Saved looks](docs/looks.md) and
+[session progression details](docs/sessions.md#previewing-a-saved-look-outfit-progression).
 
 ## Composing from the catalogue
 

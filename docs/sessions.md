@@ -1695,23 +1695,74 @@ ordinary plan revision behavior: it reports resource conflict markers, applies
 prepared-take invalidation or verified copy-forward, revokes prior review, and
 fences active authoring. The response contains `plan_revision` and `conflicts`.
 When resource planning is disabled, application returns `503`. This operation
-is currently API-only. It applies the selected look version, but does not apply
-an outfit progression.
+is currently API-only. It applies the selected look version; apply a wardrobe
+progression separately through the API below.
 
 ### Previewing a saved-look outfit progression
 
-Matching backend and frontend helpers derive a pure preview from the complete
-saved outfit snapshot. Omitting stage selections repeats the exact current
-`initial_wardrobe` for every take. An explicit progression validates unique
-garment keys and preserves snapshot wording; its stages remove garments in
-saved order, include an optional aside only for the last garment, and end with
-`She wears nothing at all.` Selected stage indices must increase, and an
-interval must have enough takes for the selected stages. Stages are distributed
-evenly across that interval; takes before it keep the initial wardrobe and
-takes after it keep the final selected stage. The preview reads no live
-catalogue and changes neither its input nor persisted state. Applying a reviewed
-preview through plan CAS and exposing selection in the session screen remain
-pending.
+Resource-planning sessions with an authoring-v1 plan and a saved-look snapshot
+containing an ordered outfit support an API-only, two-step progression. The
+server derives the stage arc from the snapshotted garment wording and order,
+including an optional aside only for the last remaining garment and ending at
+`She wears nothing at all.` It does not read the live wardrobe catalogue.
+
+Preview a range of stable take IDs in their current plan order and select
+zero-based stage indices from that arc:
+
+```json
+{
+  "expected_revision": 3,
+  "start_take_id": "take-002",
+  "end_take_id": "take-008",
+  "stage_indices": [0, 1, 2],
+  "event_policy": "merge"
+}
+```
+
+Send this to `POST /api/sessions/{sid}/plan/wardrobe-progression/preview`.
+The request is closed: all fields are required, stage indices must be valid and
+strictly increasing, and `event_policy` is `merge` or `replace`. The inclusive
+interval must be in current take order. For K stages across M takes, the server
+requires M >= K when K > 1 and assigns stage
+`floor(i * (K - 1) / (M - 1))` at zero-based interval offset i. A single stage
+stays constant in the interval. Before event-policy resolution, the progression
+target keeps the current initial wardrobe before the interval and the final
+selected stage after it. `reviewed_wardrobes` shows the resulting effective
+wardrobe for every take after applying the selected event policy and retained
+events and overrides; those states can differ from the target. The response
+also includes resulting `initial_wardrobe`,
+`wardrobe_changes`, and `wardrobe_progression`, plus a `review_digest` and a
+server-signed `preview_token` that expires after ten minutes. Preview does not
+write the plan.
+
+Review every `{take_id, wardrobe}` entry in `reviewed_wardrobes` and send the
+complete ordered list, digest, token, and same `expected_revision` in the
+closed apply body to
+`POST /api/sessions/{sid}/plan/wardrobe-progression/apply`. The server checks
+the token's session, revision, plan and source-look digests, interval, stages,
+policy, and expiry; it then recomputes the schedule and requires both echoed
+review fields to match exactly. A caller cannot submit a replacement schedule.
+
+`merge` retains existing wardrobe events and adds only missing progression
+transitions; a conflicting `from_here` event requires a new preview with
+`replace`. `replace` replaces existing `from_here` events with the reviewed
+transitions. Both policies preserve every `this_take` override. If an override
+makes the requested progression impossible to represent, the server refuses it
+instead of dropping or rewriting that override; widen the interval, select
+fewer stages, or move the override. The apply operation writes the minimal
+`from_here` events and `initial_wardrobe` through the normal plan CAS. The saved
+`authoring.wardrobe_progression` is provenance; the effective schedule remains
+the plan's `initial_wardrobe` and `wardrobe_changes`. Later take reordering or
+addition uses those stable-ID events and does not redistribute the accepted
+stages.
+
+Apply returns the new `plan_revision`, resource `conflicts`, and progression
+provenance. A stale revision is refused; if the change would alter a continuity
+field after a take is generated, the normal generated-take freeze refuses it.
+Affected ungenerated preparation follows the regular invalidation and
+copy-forward rules, and prior review approval is revoked. Preview and apply do
+not call an assistant, prepare takes, approve the plan, submit takes, or run
+generation. Both endpoints return `503` when resource planning is disabled.
 
 ### Refreshing resource dependencies
 

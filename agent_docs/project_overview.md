@@ -41,8 +41,9 @@ continues to serve measured catalogue and room-seed use cases.
   then explicitly run them through the serial queue.
 - Create named saved Looks as immutable appearance snapshots with optional
   ordered outfits; an authoring-v1 session can apply a selected version through
-  the API, while the session screen selector and wardrobe progression remain
-  unavailable.
+  the API and preview/apply a saved-look wardrobe progression through a signed,
+  reviewed plan-CAS API; the session screen has no look selector or progression
+  timeline yet.
 - Import and translate resources or legacy room libraries, inspect readiness,
   judge catalogue evidence, and use the Library and Slideshow views.
 

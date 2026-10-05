@@ -2,57 +2,54 @@
 
 ## Current State
 
-OpenSpec Task 9.9 of `simplify-resource-session-workflow` passed independent
-acceptance under Heavy deployment `srsw-9-9-20261004`. Progress is 60 of 72 tasks.
-Internal Codex implemented from a clean baseline; no external handoff was
-created. No independent product review remains pending.
+OpenSpec Task 9.10 of `simplify-resource-session-workflow` passed independent
+acceptance under Heavy deployment `srsw-9-10-20261004`. Progress is 61 of 72
+tasks. Internal Codex owns implementation and verification; no external handoff
+was created. No independent product review remains pending.
 
 ## Accepted Behavior
 
-Backend `derive_saved_look_wardrobe_progression` and frontend
-`deriveSavedLookWardrobeProgression` consume the complete snapshotted outfit.
-Omitted stage selections preserve the exact current wardrobe for all takes,
-including an absent outfit. Explicit progression rejects incomplete or duplicate
-garments, preserves authored removal order and exact wording, and adds an aside
-stage only for the final remaining garment. The canonical zero/one/many sentences
-agree byte-for-byte; an explicitly selected empty stage is
-`She wears nothing at all.` rather than an empty constraint.
+The server previews the snapshotted outfit through
+`POST /api/sessions/{sid}/plan/wardrobe-progression/preview`. A signed ten-minute
+token binds session, revision, saved plan, source look, interval, selected stages,
+event policy and the exact effective review. The matching `/apply` route requires
+the token, review digest and complete ordered reviewed wardrobes, recomputes
+inside the transaction and uses the existing plan CAS persistence effects.
 
-Selected stages must be strictly increasing and in the derived arc. For K stages
-across M consecutive takes, M must be at least K when K > 1; distribution uses
-`floor(i * (K - 1) / (M - 1))`. K = 1 is constant. Before the interval the current
-initial wardrobe remains; after it the final selected stage carries forward.
-The calculation performs no catalogue reads, persistence, assistant calls,
-preparation, approval, submission or generation and leaves inputs unchanged.
-Historical catalogue arc behavior remains unchanged. Task 9.10 will apply a
-reviewed preview through CAS; Task 9.11 will expose the selector and timeline.
+The schedule contains initial wardrobe and minimal stable-ID persistent changes.
+Merge retains saved events and refuses incompatible persistent collisions;
+replace removes existing persistent changes. Both preserve local `this_take`
+overrides. A delayed transition uses the next available take, while a requested
+stage with no representable unoverridden take is refused with visible remedies.
+The reviewed effective states include retained events and can differ from the
+pure derived target. Historical progression provenance never redistributes events
+after reorder, insertion or removal. The source snapshot stays immutable.
+
+Application retains selective invalidation, verified unaffected copy-forward,
+approval revocation, operation cancellation/fencing and generated continuity
+guards. It performs no assistant, preparation, approval, submission or generation.
+The session selector and timeline remain assigned to Task 9.11.
 
 ## Independent Verification
 
-- Complete Python suite: 2,708 passed, one skipped, five warnings.
-- Frontend suite: 546 passed in 25 files; frontend build succeeded.
-- Independent acceptance: three tests passed after the final test refinement.
+- Complete `python -m pytest`: 2,729 passed, one skipped.
 - Privacy and control-character checks: 46 passed.
 - Strict noninteractive OpenSpec validation and diff checks passed.
+- No frontend files changed; frontend test/build gates were not required.
 
-A real Python/Node probe found divergent boundary acceptance for FEFF, NEL and
-ASCII separator controls. The strict snapshot path was repaired to reject the
-union of both runtimes' whitespace sets at wording/aside boundaries while
-preserving internal bytes. Independent coverage checks the complete whitespace
-set, canonical sentences, pure previews and actual HTTP look application with
-constant clothing and no progression events. No production changes followed
-the complete suite. The later test-only strengthening and documentation updates
-received focused acceptance and privacy/control validation.
-
-Native symlink coverage was skipped because this Windows environment could not
-create the fixture symlink. Existing library deprecation warnings and the
-frontend bundle-size warning remain visible limitations.
+Initial acceptance assertions were corrected to exercise selective invalidation,
+event-only edits after generation and visible refusal of an unrepresentable final
+stage. The independent tests also demonstrate a fewer-stage remedy preserving
+the override. Production was unchanged during those corrections. The final
+complete suite passed after the independent test corrections. Native symlink
+coverage remains skipped for environment permissions; LF/CRLF conversion notices
+are informational.
 
 ## Closure and Continuation
 
-Accepted scope consists of backend/frontend wardrobe helpers, their implementation
-and independent tests, README/Looks/Sessions guidance, the three deployment-state
-documents and only the Task 9.9 checkbox. The user authorized an isolated local
-acceptance commit. Archivist owns final documentation/read-only Git reporting
-and the Heavy token report; the Executor performs the scoped commit after final
-content checks. Task 9.10 remains unstarted; no push is authorized.
+Accepted scope includes backend progression routes and logic, implementation and
+independent tests, README/Looks/Sessions documentation, five relevant agent
+documents and only the Task 9.10 checkbox. The user authorized an isolated local
+acceptance commit. Archivist owns closing documentation/read-only Git reporting
+and the Heavy token report; Executor owns scoped staging, final content checks
+and the acceptance commit. Task 9.11 remains unstarted. No push is authorized.

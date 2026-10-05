@@ -4563,6 +4563,32 @@ class ApplySavedLookIn(BaseModel):
     decisions: dict[str, Literal["replace", "keep"]]
 
 
+class WardrobeProgressionPreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_revision: int = Field(ge=1)
+    start_take_id: str = Field(min_length=1)
+    end_take_id: str = Field(min_length=1)
+    stage_indices: list[int] = Field(min_length=1)
+    event_policy: Literal["merge", "replace"]
+
+
+class WardrobeProgressionReviewState(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    take_id: str = Field(min_length=1)
+    wardrobe: str
+
+
+class ApplyWardrobeProgressionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_revision: int = Field(ge=1)
+    preview_token: str = Field(min_length=1, max_length=65536)
+    review_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reviewed_wardrobes: list[WardrobeProgressionReviewState] = Field(min_length=1)
+
+
 class RefreshResourcesIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -5254,6 +5280,67 @@ def apply_saved_look_to_plan(sid: int, p: ApplySavedLookIn):
         "plan_revision": result["plan_revision"],
         "conflicts": result["conflicts"],
     }
+
+
+@app.post("/api/sessions/{sid}/plan/wardrobe-progression/preview")
+def preview_plan_wardrobe_progression(sid: int, p: WardrobeProgressionPreviewIn):
+    enabled = is_resource_planning_enabled()
+    if not enabled:
+        raise HTTPException(503, "Resource planning is disabled by configuration")
+    try:
+        return session_plan.preview_wardrobe_progression(
+            sid,
+            p.expected_revision,
+            p.start_take_id,
+            p.end_take_id,
+            p.stage_indices,
+            p.event_policy,
+            planning_enabled=enabled,
+        )
+    except session_plan.ResourcePlanningDisabled as exc:
+        raise HTTPException(503, str(exc))
+    except session_plan.WardrobeProgressionPreviewUnavailable as exc:
+        raise HTTPException(503, str(exc))
+    except session_plan.PlanValidationError as exc:
+        raise HTTPException(422, str(exc))
+    except (session_plan.PlanRevisionStale, session_plan.PlanOwnershipConflict) as exc:
+        raise HTTPException(409, str(exc))
+    except session_plan.SessionNotInResourceMode as exc:
+        raise HTTPException(400, str(exc))
+    except session_plan.SessionNotFound as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/api/sessions/{sid}/plan/wardrobe-progression/apply")
+def apply_plan_wardrobe_progression(sid: int, p: ApplyWardrobeProgressionIn):
+    enabled = is_resource_planning_enabled()
+    if not enabled:
+        raise HTTPException(503, "Resource planning is disabled by configuration")
+    try:
+        return session_plan.apply_wardrobe_progression_preview(
+            sid,
+            p.expected_revision,
+            p.preview_token,
+            p.review_digest,
+            [state.model_dump() for state in p.reviewed_wardrobes],
+            planning_enabled=enabled,
+        )
+    except session_plan.ResourcePlanningDisabled as exc:
+        raise HTTPException(503, str(exc))
+    except session_plan.WardrobeProgressionPreviewUnavailable as exc:
+        raise HTTPException(503, str(exc))
+    except session_plan.PlanValidationError as exc:
+        raise HTTPException(422, str(exc))
+    except (session_plan.PlanRevisionStale, session_plan.PlanOwnershipConflict) as exc:
+        raise HTTPException(409, str(exc))
+    except session_plan.PreparedTakeConflict as exc:
+        raise _prepared_take_http_error(exc)
+    except session_plan.PlanConstantsFrozenAfterGenerated as exc:
+        raise HTTPException(409, str(exc))
+    except session_plan.SessionNotInResourceMode as exc:
+        raise HTTPException(400, str(exc))
+    except session_plan.SessionNotFound as exc:
+        raise HTTPException(404, str(exc))
 
 
 @app.post("/api/sessions/{sid}/plan/refresh-resources")
