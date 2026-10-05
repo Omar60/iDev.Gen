@@ -2,6 +2,14 @@
 
 ## Decisions and Lessons
 
+- Integration acceptance must connect each look creation route to explicit
+  session application, reviewed progression and persisted final prompts after
+  live catalogue changes. Separate resolver and compiler tests do not prove
+  that chain. Malformed-snapshot probes should recompute the content digest
+  after corruption so identity validation is tested independently of digest
+  mismatch. A provider-failure test must actually fail the provider; missing
+  vision configuration exercises a different boundary.
+
 - A reviewed progression must bind the exact saved plan and every effective
   wardrobe, including retained scoped events, before applying through the normal
   plan CAS. Preserve local overrides and refuse selected stages that cannot be
