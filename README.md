@@ -228,6 +228,17 @@ available from Review; it remains separate from approval, submission, and Run.
 See
 [sessions](docs/sessions.md#shared-session-summary).
 
+`POST /api/sessions/{sid}/plan/apply-look` applies one verified saved-look
+version through the plan revision CAS. Its closed request names `look_key`,
+`version`, and explicit `replace` or `keep` decisions for the effective fields;
+the server loads the immutable snapshot and never accepts browser-supplied
+appearance or garment content. Appearance-only looks preserve the wardrobe;
+when that wardrobe still has `saved_look` origin, the request must explicitly
+keep it and the server records it as a user override. The operation returns
+`409` for a stale revision or generated continuity freeze, and `503` when
+resource planning is disabled. See
+[applying a saved look](docs/sessions.md#applying-a-saved-look).
+
 `POST /api/sessions/{sid}/plan/refresh-resources` checks the current revision's
 ready, unlinked resource evidence and persisted adaptation sources. A no-drift
 retry leaves the revision and database rows untouched. Confirmed drift advances

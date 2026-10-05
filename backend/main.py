@@ -4551,6 +4551,18 @@ class PlanDraftIn(BaseModel):
         return value
 
 
+class ApplySavedLookIn(BaseModel):
+    """Closed request for applying one immutable saved-look version."""
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(strict=True, ge=1)
+    look_key: str = Field(strict=True, min_length=1, max_length=128)
+    version: int = Field(
+        strict=True, ge=1, le=saved_looks._SQLITE_INTEGER_MAX,
+    )
+    decisions: dict[str, Literal["replace", "keep"]]
+
+
 class RefreshResourcesIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -5179,6 +5191,51 @@ def save_plan_draft(sid: int, p: PlanDraftIn):
             sid, p.plan, p.expected_revision,
             shared_decisions=p.shared_decisions,
         )
+    except session_plan.PlanValidationError as exc:
+        raise HTTPException(422, str(exc))
+    except session_plan.PlanRevisionStale as exc:
+        raise HTTPException(409, str(exc))
+    except session_plan.PreparedTakeConflict as exc:
+        raise _prepared_take_http_error(exc)
+    except session_plan.PlanConstantsFrozenAfterGenerated as exc:
+        raise HTTPException(409, str(exc))
+    except session_plan.PlanOwnershipConflict as exc:
+        raise HTTPException(409, str(exc))
+    except session_plan.SessionNotInResourceMode as exc:
+        raise HTTPException(400, str(exc))
+    except session_plan.SessionNotFound as exc:
+        raise HTTPException(404, str(exc))
+    return {
+        "plan_revision": result["plan_revision"],
+        "conflicts": result["conflicts"],
+    }
+
+
+@app.post("/api/sessions/{sid}/plan/apply-look")
+def apply_saved_look_to_plan(sid: int, p: ApplySavedLookIn):
+    """Apply a server-loaded look version through an explicit plan CAS.
+
+    Decisions name the effective fields to replace or keep. Both fields are
+    required for a preset with an outfit. An appearance-only preset requires
+    only ``look`` unless the current wardrobe origin is ``saved_look``; in
+    that case an explicit ``initial_wardrobe: keep`` preserves its text and
+    records it as a user override. Responses match plan save with the new
+    revision and resource conflict markers.
+    """
+    enabled = is_resource_planning_enabled()
+    if not enabled:
+        raise HTTPException(503, "Resource planning is disabled by configuration")
+    try:
+        result = session_plan.apply_saved_look(
+            sid,
+            p.expected_revision,
+            p.look_key,
+            p.version,
+            p.decisions,
+            planning_enabled=enabled,
+        )
+    except session_plan.ResourcePlanningDisabled as exc:
+        raise HTTPException(503, str(exc))
     except session_plan.PlanValidationError as exc:
         raise HTTPException(422, str(exc))
     except session_plan.PlanRevisionStale as exc:

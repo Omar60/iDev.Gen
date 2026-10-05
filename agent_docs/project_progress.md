@@ -8,7 +8,7 @@ integration, and acceptance in the main agent.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 58 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 59 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -233,6 +233,20 @@ revision/epoch fencing, Task 1.4's browser compatibility adapter, and Task
 remain intact.
 
 ## Current Position
+
+Task 9.8 passed independent acceptance under deployment `srsw-9-8-20261004`.
+The dedicated saved-look application CAS loads immutable versions server-side,
+records complete snapshots and explicit Replace/Keep origins, and preserves
+normal preparation invalidation, review revocation and operation fencing.
+Appearance-only application preserves wardrobe text; a prior saved-look wardrobe
+requires explicit Keep to become a user override. The complete snapshot remains
+frozen after queued/generated history. An oversized SQLite version binding was
+repaired and independently rechecked. Final gates passed 2,683 Python tests,
+46 privacy/control tests, strict OpenSpec validation and diff checks; one test
+was skipped and native symlink runtime coverage remains unverified on Windows.
+No frontend files changed. Only Task 9.8 is closed;
+Task 9.9 remains unstarted. The user authorized the isolated local acceptance
+commit; no push or further implementation is authorized.
 
 Tasks 1.1 through 6.5 and Tasks 7.1-7.10 are complete.
 Task 5.2 adds atomic start and read-only status for the shared authoring claim.

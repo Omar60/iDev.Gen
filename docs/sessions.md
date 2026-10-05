@@ -1649,6 +1649,55 @@ plan, submit takes, or run generation. Automatic preparation is available in
 Review as a separate explicit action; approval, test submission, and Run remain
 separate gates.
 
+### Applying a saved look
+
+`POST /api/sessions/{sid}/plan/apply-look` applies one existing authoring-v1
+session's selected saved-look version using compare-and-swap. The closed request
+contains only the current `expected_revision`, `look_key`, `version`, and
+`decisions`; it does not accept a client-provided `look_snapshot`:
+
+```json
+{
+  "expected_revision": 3,
+  "look_key": "look-1",
+  "version": 2,
+  "decisions": {
+    "look": "replace",
+    "initial_wardrobe": "keep"
+  }
+}
+```
+
+The server loads the exact immutable version and copies its verified identity,
+version, content digest, appearance, and complete ordered outfit wording into
+`authoring.look_snapshot`. A later saved-look version does not alter this
+session snapshot. `replace` sets the effective field from that snapshot and
+records origin `saved_look`. `keep` retains the current effective value and
+records origin `user` with no evidence ID. Historical suggestion evidence stays
+available but is no longer active for fields explicitly kept or replaced.
+
+When the selected version has an outfit, `decisions` must contain exactly
+`look` and `initial_wardrobe`, each set to `replace` or `keep`. Appearance is
+stored only in `plan.look`; the outfit is separately composed into
+`plan.initial_wardrobe`, so clothing is not appended to constant appearance. An
+appearance-only version requires only the `look` decision and leaves wardrobe
+text and metadata unchanged when that metadata is independent of the prior
+snapshot. If the current wardrobe origin is `saved_look`, the request must also
+include `initial_wardrobe: "keep"`; this preserves its text and changes its
+origin to `user` because the newly selected snapshot has no outfit. Replacing
+wardrobe from an appearance-only version is refused. An absent outfit never
+means a garment-free instruction.
+
+A stale revision returns `409`; changing a continuity field after a generated
+take also returns `409` without writes. Invalid decisions or unavailable plan
+state are refused without advancing the plan. Successful application uses the
+ordinary plan revision behavior: it reports resource conflict markers, applies
+prepared-take invalidation or verified copy-forward, revokes prior review, and
+fences active authoring. The response contains `plan_revision` and `conflicts`.
+When resource planning is disabled, application returns `503`. This operation
+is currently API-only; the session screen selector and wardrobe progression
+remain later work.
+
 ### Refreshing resource dependencies
 
 `POST /api/sessions/{sid}/plan/refresh-resources` accepts a closed JSON body

@@ -38,8 +38,10 @@ manual look save or an assistant-generated, editable proposal. Extraction sends
 the staged image to the explicitly configured vision model described in
 [Setup](getting-started.md#setup); the proposal is not saved until reviewed.
 This API remains separate from the session composer’s **Wardrobe from a photo**
-helper. Staged photos do not become generation references, and session authoring
-does not yet apply saved looks or provide wardrobe progression.
+helper. Staged photos do not become generation references. The session API can
+apply a selected immutable look version through plan CAS; the session screen
+does not yet provide the selector or wardrobe progression. See
+[applying a saved look](sessions.md#applying-a-saved-look).
 
 ## Temporary photo staging API
 

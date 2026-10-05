@@ -2,6 +2,14 @@
 
 ## Decisions and Lessons
 
+- Saved-look application must load and verify one immutable server version and
+  share the normal plan CAS effects without weakening generic-save ownership.
+  When an appearance-only snapshot replaces an outfit snapshot, a kept wardrobe
+  cannot retain `saved_look` origin against the absent outfit: require explicit
+  Keep, preserve its exact text and record `user` origin. Reject unrepresentable
+  SQLite version identities before binding parameters; strict integer typing
+  alone does not prevent overflow at the persistence boundary.
+
 - Repository-authored code, comments, UI, and documentation are English-only
   and must not contain personal or machine-specific data.
 - `AGENTS.md`, the README/docs, source code, tests, and OpenSpec artifacts are

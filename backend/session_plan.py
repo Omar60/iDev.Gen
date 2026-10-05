@@ -2902,6 +2902,106 @@ def _copy_forward_ready_takes(
     return copied_take_ids
 
 
+def _persist_plan_revision(
+    session_id: int,
+    current: dict | None,
+    old_plan: dict,
+    validated: dict,
+    conflicts: list[dict],
+) -> dict:
+    """Persist one already-CAS-checked plan change inside its transaction."""
+    actual = 0 if current is None else int(current["plan_revision"])
+    now = db.now()
+    plan_with_conflicts = dict(validated)
+    plan_with_conflicts["conflicts"] = conflicts
+    encoded = json.dumps(
+        plan_with_conflicts, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    )
+
+    old_compare = {
+        key: value for key, value in old_plan.items()
+        if key != "conflicts"
+    }
+    new_compare = {
+        key: value for key, value in validated.items()
+        if key != "conflicts"
+    }
+    continuity_changed = current is not None and _plan_continuity_changed(
+        old_compare, new_compare,
+    )
+    constants_changed = current is not None and _plan_constants_changed(
+        old_compare, new_compare,
+    )
+    if continuity_changed and has_generated_take(session_id):
+        raise PlanConstantsFrozenAfterGenerated(
+            f"session {session_id} has at least one generated "
+            "prepared_take; continuity fields (look, "
+            "initial_wardrobe, selected_resources, "
+            "authoring.scene_anchor, authoring.variation_policy, "
+            "authoring.workflow_binding, authoring.look_snapshot) "
+            "cannot be changed. Start a new session to change them."
+        )
+
+    # Keep the generated-state continuity refusal authoritative when a
+    # candidate also has a fixed-value conflict.
+    validate_fixed_variation_choices(validated)
+    new_revision = actual + 1
+    copy_sources = []
+    if current is not None and classify_plan_authoring(old_plan) in (
+        PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC,
+    ):
+        copy_sources, _ = _verified_ready_copy_sources(
+            session_id, actual, _take_id_set(validated),
+        )
+    if current is None:
+        db.run(
+            "INSERT INTO session_plan "
+            "(session_id, mode, plan_revision, plan_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            session_id, MODE_RESOURCE_V1, new_revision, encoded, now, now,
+        )
+    else:
+        db.run(
+            "UPDATE session_plan SET plan_revision = ?, plan_json = ?, "
+            "updated_at = ? WHERE session_id = ?",
+            new_revision, encoded, now, session_id,
+        )
+    _copy_forward_ready_takes(
+        session_id, actual, new_revision, copy_sources, now,
+    )
+
+    # Global creative changes invalidate all prior ungenerated rows.
+    # Automatic take edits also invalidate downstream rows because their
+    # writer context includes preceding takes and the ordinal.
+    if (
+        current is None
+        or constants_changed
+        or _automatic_authoring_inputs_changed(old_plan, validated)
+    ):
+        affected_for_invalidation: set[str] | None = None
+        new_take_ids_for_invalidation: set[str] | None = None
+    else:
+        affected_for_invalidation = _compute_affected_take_ids_for_plan_change(
+            old_plan,
+            validated,
+            invalidate_automatic_downstream=(
+                _uses_automatic_authoring(old_plan)
+                or _uses_automatic_authoring(validated)
+            ),
+        )
+        new_take_ids_for_invalidation = _take_id_set(validated)
+    invalidate_ungenerated_prepared_takes(
+        session_id, new_revision,
+        affected_take_ids=affected_for_invalidation,
+        new_take_ids=new_take_ids_for_invalidation,
+    )
+    invalidate_plan_approval(session_id)
+    from backend import authoring_operations
+
+    authoring_operations.cancel_for_plan_change(session_id, new_revision)
+    return {"plan_revision": new_revision, "conflicts": conflicts}
+
+
 def save_draft(
     session_id: int,
     plan: Any,
@@ -3014,10 +3114,6 @@ def save_draft(
     # The list is empty when the plan has no selected resources
     # or when every selected resource is auxiliary.
     conflicts = detect_resource_constant_conflicts(validated)
-    plan_with_conflicts = dict(validated)
-    plan_with_conflicts["conflicts"] = conflicts
-
-    now = db.now()
 
     with db.transaction():
         current = db.one(
@@ -3120,122 +3216,159 @@ def save_draft(
             reconciled_auth["evidence"] = list(old_auth["evidence"])
             reconciled_auth = validate_authoring_block(reconciled_auth, validated)
             validated["authoring"] = reconciled_auth
-            plan_with_conflicts["authoring"] = reconciled_auth
 
             if len(validated["takes"]) > len(old_plan["takes"]):
                 validate_authoring_count(len(validated["takes"]))
 
-        encoded = json.dumps(
-            plan_with_conflicts, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+        result = _persist_plan_revision(
+            session_id, current, old_plan, validated, conflicts,
+        )
+    return result
+
+
+def apply_saved_look(
+    session_id: int,
+    expected_revision: int,
+    look_key: str,
+    version: int,
+    decisions: Any,
+    *,
+    planning_enabled: bool,
+) -> dict:
+    """Apply an immutable saved look through an explicit, server-owned CAS."""
+    if planning_enabled is not True:
+        raise ResourcePlanningDisabled("Resource planning is disabled by configuration.")
+    if type(expected_revision) is not int or expected_revision <= 0:
+        raise PlanValidationError("expected_revision must be a positive integer")
+    if not isinstance(look_key, str) or not look_key:
+        raise PlanValidationError("look_key must be a non-empty string")
+    from backend import saved_looks
+
+    if (
+        type(version) is not int
+        or not 1 <= version <= saved_looks._SQLITE_INTEGER_MAX
+    ):
+        raise PlanValidationError(
+            "version must be a positive integer within SQLite's signed integer range"
+        )
+    if (
+        type(decisions) is not dict
+        or any(type(field) is not str for field in decisions)
+        or any(type(choice) is not str or choice not in {"replace", "keep"}
+               for choice in decisions.values())
+    ):
+        raise PlanValidationError(
+            "decisions must map shared fields to 'replace' or 'keep'"
         )
 
-        # Step 4: continuity guard. The comparison strips the
-        # ``conflicts`` key the prior save may have written so a
-        # re-save of the same draft (which is a legal CAS bump)
-        # does not read as a continuity change.
-        continuity_changed = False
-        constants_changed = False
-        if current is not None:
-            old_compare = {
-                key: value for key, value in old_plan.items()
-                if key != "conflicts"
-            }
-            new_compare = {
-                key: value for key, value in validated.items()
-                if key != "conflicts"
-            }
-            continuity_changed = _plan_continuity_changed(
-                old_compare, new_compare,
+    with db.transaction():
+        session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
+        if session is None:
+            raise SessionNotFound(f"session {session_id} not found")
+        mode = read_composition_mode(session["settings"])
+        if mode != MODE_RESOURCE_V1:
+            raise SessionNotInResourceMode(
+                f"session {session_id} composition_mode is {mode!r}, "
+                f"expected {MODE_RESOURCE_V1!r}"
             )
-            constants_changed = _plan_constants_changed(
-                old_compare, new_compare,
-            )
-            if continuity_changed and has_generated_take(session_id):
-                raise PlanConstantsFrozenAfterGenerated(
-                    f"session {session_id} has at least one generated "
-                    "prepared_take; continuity fields (look, "
-                    "initial_wardrobe, selected_resources, "
-                    "authoring.scene_anchor, authoring.variation_policy, "
-                    "authoring.workflow_binding, authoring.look_snapshot) "
-                    "cannot be changed. Start a new session to change them."
-                )
 
-        # Keep the generated-state continuity refusal authoritative when a
-        # candidate also has a fixed-value conflict; otherwise check choices
-        # before any revision or prepared-take write.
-        validate_fixed_variation_choices(validated)
-        new_revision = actual + 1
-        copy_sources = []
-        if current is not None and classify_plan_authoring(old_plan) in (
+        current = db.one(
+            "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+            session_id,
+        )
+        actual = 0 if current is None else int(current["plan_revision"])
+        if actual != expected_revision:
+            raise PlanRevisionStale(
+                f"session {session_id} plan revision is {actual}, "
+                f"expected {expected_revision}; refusing to overwrite newer draft"
+            )
+        if current is None:
+            raise PlanOwnershipConflict(
+                "saved look application requires an existing authoring-v1 plan"
+            )
+        # Preset versions are immutable and this read verifies their stored
+        # digest; no browser-supplied appearance or garment data is accepted.
+        saved = saved_looks.get_version(look_key, version)
+        look_snapshot = {
+            "look_id": saved["key"],
+            "version": saved["version"],
+            "content_digest": saved["content_digest"],
+            "appearance": saved["appearance"],
+            "outfit": saved["outfit"],
+        }
+        try:
+            old_plan_raw = json.loads(current["plan_json"])
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise PlanValidationError("the saved plan could not be read") from exc
+        old_plan = validate_draft(old_plan_raw)
+        if classify_plan_authoring(old_plan) not in (
             PLAN_AUTHORING_KIND_MANUAL, PLAN_AUTHORING_KIND_AUTOMATIC,
         ):
-            copy_sources, _ = _verified_ready_copy_sources(
-                session_id, actual, _take_id_set(validated),
+            raise PlanOwnershipConflict(
+                "saved look application requires an authoring-v1 plan"
             )
-        if actual == 0:
-            db.run(
-                "INSERT INTO session_plan "
-                "(session_id, mode, plan_revision, plan_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                session_id, MODE_RESOURCE_V1, new_revision, encoded, now, now,
-            )
-        else:
-            db.run(
-                "UPDATE session_plan SET plan_revision = ?, plan_json = ?, "
-                "updated_at = ? WHERE session_id = ?",
-                new_revision, encoded, now, session_id,
-            )
-        _copy_forward_ready_takes(
-            session_id, actual, new_revision, copy_sources, now,
-        )
-        # Step 5: explicit invalidation. The pass is the single
-        # implementation ``invalidate_ungenerated_prepared_takes``
-        # owns; calling it from here keeps the invalidation SQL
-        # in one place and the test for "ungenerated rows were
-        # invalidated" reads against the same function the
-        # production save calls. Generated and already-
-        # invalidated rows are history; the WHERE clause in the
-        # pass leaves them alone. Running the pass inside the
-        # same transaction as the plan write means a refused
-        # save is the only path that could leave the table in
-        # an inconsistent state, and a refused save never
-        # reaches this call.
-        #
-        # Global creative inputs invalidate all prior ungenerated rows.
-        # Automatic take edits also invalidate downstream rows because their
-        # writer context includes preceding takes and the ordinal.
-        if current is None:
-            affected_for_invalidation: set[str] | None = None
-            new_take_ids_for_invalidation: set[str] | None = None
-        else:
-            if (
-                constants_changed
-                or _automatic_authoring_inputs_changed(old_plan, validated)
-            ):
-                affected_for_invalidation = None
-                new_take_ids_for_invalidation = None
-            else:
-                affected_for_invalidation = (
-                    _compute_affected_take_ids_for_plan_change(
-                        old_plan,
-                        validated,
-                        invalidate_automatic_downstream=(
-                            _uses_automatic_authoring(old_plan)
-                            or _uses_automatic_authoring(validated)
-                        ),
-                    )
-                )
-                new_take_ids_for_invalidation = _take_id_set(validated)
-        invalidate_ungenerated_prepared_takes(
-            session_id, new_revision,
-            affected_take_ids=affected_for_invalidation,
-            new_take_ids=new_take_ids_for_invalidation,
-        )
-        invalidate_plan_approval(session_id)
-        from backend import authoring_operations
+        validate_selected_resources(old_plan["selected_resources"])
 
-        authoring_operations.cancel_for_plan_change(session_id, new_revision)
-    return {"plan_revision": new_revision, "conflicts": conflicts}
+        old_authoring = old_plan["authoring"]
+        old_shared_state = old_authoring["shared_state"]
+        outfit = look_snapshot["outfit"]
+        prior_wardrobe_origin = old_shared_state["initial_wardrobe"]["origin"]
+        wardrobe_decision_required = (
+            outfit is not None or prior_wardrobe_origin == "saved_look"
+        )
+        required_decisions = {"look"}
+        if wardrobe_decision_required:
+            required_decisions.add("initial_wardrobe")
+        if set(decisions) != required_decisions:
+            if (
+                outfit is None
+                and prior_wardrobe_origin == "saved_look"
+                and "initial_wardrobe" not in decisions
+            ):
+                raise PlanValidationError(
+                    "initial_wardrobe decision must be 'keep' when applying "
+                    "an appearance-only look over a saved-look wardrobe"
+                )
+            raise PlanValidationError(
+                f"decisions must contain exactly {sorted(required_decisions)}"
+            )
+        if outfit is None and decisions.get("initial_wardrobe") == "replace":
+            raise PlanValidationError(
+                "initial_wardrobe cannot be replaced by an appearance-only look"
+            )
+
+        candidate = dict(old_plan)
+        authoring = dict(old_authoring)
+        shared_state = {
+            field: dict(old_shared_state[field])
+            for field in ("look", "initial_wardrobe")
+        }
+        candidate["authoring"] = authoring
+        authoring["look_snapshot"] = look_snapshot
+        candidate["look"] = old_plan["look"]
+        candidate["initial_wardrobe"] = old_plan["initial_wardrobe"]
+
+        for field in ("look", "initial_wardrobe"):
+            decision = decisions.get(field)
+            if decision is None:
+                continue
+            if decision == "replace":
+                candidate[field] = (
+                    look_snapshot["appearance"]
+                    if field == "look"
+                    else compose_saved_look_wardrobe(outfit)
+                )
+                shared_state[field] = {"origin": "saved_look", "evidence_id": None}
+            else:
+                shared_state[field] = {"origin": "user", "evidence_id": None}
+
+        authoring["shared_state"] = shared_state
+        validated = validate_draft(candidate)
+        validate_selected_resources(validated["selected_resources"])
+        conflicts = detect_resource_constant_conflicts(validated)
+        return _persist_plan_revision(
+            session_id, current, old_plan, validated, conflicts,
+        )
 
 
 def refresh_resources(
