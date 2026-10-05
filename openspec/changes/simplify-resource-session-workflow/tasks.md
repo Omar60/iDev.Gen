@@ -89,7 +89,7 @@ This group depends on the shared body limiter, field-preserving transport, close
 - [x] 9.10 Apply a reviewed progression preview as initial wardrobe plus minimal stable-ID `from_here` events in one CAS with explicit merge/replace and preserved `this_take`; keep approved events authoritative after reorder without implicit redistribution.
 - [x] 9.11 Build the Looks editor, JSON/photo actions, optional shared-summary selector and progression timeline while keeping appearance separate from removable clothing and photo extraction separate from generation references.
 - [x] 9.12 Test manual/JSON/photo creation, unavailable/text-only vision, provider failure, evidence redaction, cleanup lifecycle, concurrent imports, user corrections, snapshot independence from live catalogue, malformed snapshot refusal and final prompts containing only current garments. Use invented text and temporary generated images only.
-- [ ] 9.13 Demonstrate one look reused in two sessions, immutable library edits, full-to-partial-to-garment-free reviewed progression, too-short interval, scope overrides, reorder, source-clothing conflict, repeatable prompts, full snapshot freeze and no implicit generation.
+- [x] 9.13 Demonstrate one look reused in two sessions, immutable library edits, full-to-partial-to-garment-free reviewed progression, too-short interval, scope overrides, reorder, source-clothing conflict, repeatable prompts, full snapshot freeze and no implicit generation.
 
 ## 10. Feature-flag rollback, compatibility, documentation and final acceptance
 

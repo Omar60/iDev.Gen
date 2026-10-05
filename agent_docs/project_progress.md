@@ -8,23 +8,23 @@ integration, and acceptance in the main agent.
 
 ## Current Deployment
 
-Task 9.12 passed independent acceptance under Heavy deployment
-`srsw-9-8-20261005` with internal Codex implementation and verification.
-Progress is 63 of 72 tasks complete. Five new integrated cases connect manual,
-portable JSON and reviewed photo creation to session snapshots, reviewed
-progression and persisted final prompts. Live catalogue edits/removal and photo
-cleanup do not alter accepted session content. Provider exceptions preserve
-manual recovery; malformed snapshots fail without writes. No production code
-changed and no independent review remains pending. The complete Python gate
-passed 2,734 tests with one skipped and five warnings; frontend passed 581 tests
-in 30 files and build passed with its existing bundle-size warning. The focused
-matrix, privacy/control checks, strict OpenSpec validation and diff checks
-passed. The user authorized the isolated local acceptance commit. Task 9.13
-and later tasks remain unstarted; no external handoff or push is authorized.
+Task 9.13 passed independent acceptance under Heavy deployment
+`srsw-9-13-20261005` with internal Codex implementation and verification.
+Progress is 64 of 72 tasks complete. Two integrated HTTP journeys demonstrate
+independent reuse across characters/scenes, immutable library versions,
+reviewed progression, scoped overrides and stable-ID reorder, repeatable
+prepared prompts, source-clothing adaptation and complete snapshot freeze
+after real approval/submission. No production code changed and no independent
+review remains pending. The full Python gate and focused/privacy/control
+checks passed; the full run showed one skip without a reason in its quiet
+output. Frontend passed 581 tests in 30 files and build passed with its existing
+bundle-size warning. Strict OpenSpec validation and diff checks passed.
+The user authorized the isolated local acceptance commit. Task 10.1 and later
+tasks remain unstarted; no external handoff or push is authorized.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 63 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 64 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6
@@ -250,8 +250,8 @@ remain intact.
 
 ## Current Position
 
-Tasks 9.1-9.12 have passed independent acceptance. The current test-only
-deployment is described above and in `latest_session_work.md`. Task 9.13 is
+Tasks 9.1-9.13 have passed independent acceptance. The current test-only
+deployment is described above and in `latest_session_work.md`. Task 10.1 is
 the next milestone and remains unstarted. No push or further implementation
 is authorized.
 

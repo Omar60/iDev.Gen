@@ -2,6 +2,13 @@
 
 ## Decisions and Lessons
 
+- Snapshot freeze acceptance should use an actual approved/submitted shot,
+  then try valid server-created look alternatives while keeping effective
+  shared strings unchanged. Compare complete persisted rows after refusals
+  and preserve linked history after a permitted future scoped edit. Reorder
+  tests must retain the original stable-ID events and historical progression
+  evidence; recomputing a new distribution would test a different contract.
+
 - Integration acceptance must connect each look creation route to explicit
   session application, reviewed progression and persisted final prompts after
   live catalogue changes. Separate resolver and compiler tests do not prove

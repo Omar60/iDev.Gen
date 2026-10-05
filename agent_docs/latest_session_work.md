@@ -2,52 +2,54 @@
 
 ## Current State
 
-OpenSpec Task 9.12 of `simplify-resource-session-workflow` passed independent
-acceptance under Heavy deployment `srsw-9-8-20261005`. Internal Codex workers
-implemented and independently verified the scope. Only Task 9.12 is newly
-marked complete: progress is 63 of 72 tasks. No independent review remains
+OpenSpec Task 9.13 of `simplify-resource-session-workflow` passed independent
+acceptance under Heavy deployment `srsw-9-13-20261005`. Internal Codex workers
+implemented and independently verified the scope. Only Task 9.13 is newly
+marked complete: progress is 64 of 72 tasks. No independent review remains
 pending. The user authorized the isolated local acceptance commit and no push.
 
 ## Verified Behavior
 
-`tests/test_task9_12_looks_integration.py` adds five integrated cases. Manual,
-portable JSON and reviewed photo creation flow through real HTTP guided
-creation, explicit saved-look application, reviewed wardrobe progression,
-preparation and persisted prompt readback. Changed and removed live catalogue
-definitions cannot alter the accepted session snapshot or reintroduce removed
-garments. Photo corrections reach the applied look; saved redacted evidence
-survives stage cleanup and purge. Preparing text creates no shots.
+`tests/test_task9_13_looks_demonstration.py` adds two real HTTP journeys. One
+look supplies independent snapshots to two characters and scenes. Immutable
+library edits preserve existing snapshots and prepared prompts. Reviewed
+full/partial/garment-free progression rejects a short interval without writes,
+preserves one-take overrides, and keeps stable-ID events authoritative after
+reorder. Repeated current preparation returns identical saved prompt bytes.
 
-A real simulated provider exception returns `502 vision_request_failed`,
-retains the photo preview and permits manual recovery without photo evidence.
-A duplicate garment identity with a recomputed, coherent digest returns 422
-and leaves the plan and prepared rows unchanged. Existing tests supply the
-complementary coverage for concurrent imports, unavailable/text-only vision,
-binary/credential redaction, expiry and retryable cleanup warnings. The new
-file contains a coverage map to those tests. No production code changed.
+Explicit approval and submission create a pending shot linked to its generated
+snapshot without running generation. Eight valid look alternatives fail the
+continuity guard without changing persisted session rows, even with Keep
+preserving shared text. Canonical snapshot echoes and a future scoped wardrobe
+edit preserve linked history. Complementary existing tests cover null state
+and complete canonical snapshot comparison independently of ownership checks.
+
+A fused source-clothing conflict refuses preparation until a separate reviewed
+HTTP adaptation is saved; resulting prompts use current clothing and preserve
+the original resource revision. Structural conflict checks do not promise
+exhaustive semantic detection. Test hooks refuse implicit assistant, suggestion,
+runner or ComfyUI work. No production code changed.
 
 ## Independent Verification
 
-- Complete `python -m pytest`: 2,734 passed, one skipped, five warnings.
-- Focused Looks/photo/progression matrix: 178 passed, one skipped.
+- Full `.venv/Scripts/python.exe -m pytest -q --tb=no`: exit 0; quiet output
+  showed one skip without its reason or an aggregate test count.
+- Focused Looks/progression/freeze/privacy/control matrix: exit 0.
 - Frontend suite: 581 passed in 30 files; frontend build passed.
-- Privacy/control checks, strict noninteractive OpenSpec validation and diff
+- Strict noninteractive OpenSpec validation and instructions intake passed
+  using the installed CLI; diff and explicit new-file whitespace/control
   checks passed.
 
-The skip is the native-symlink test unavailable under Windows permissions.
-Warnings include Pydantic/dependency deprecations and the existing Vite bundle
-size warning (680.35 kB). Tests use invented text, temporary generated images
-and fake providers; no live vision provider, GPU or ComfyUI was required.
-Independent review requested one test-strengthening repair: recompute the
-malformed snapshot digest to isolate duplicate identity refusal. The final
-complete Python gate ran after that repair.
+Initial npm/network and Node/esbuild sandbox failures were tooling limitations.
+The installed OpenSpec CLI and authorized reruns resolved the affected gates.
+The build retains its existing bundle-size warning. Tests use invented data
+and local fakes; no live provider, GPU or ComfyUI was required.
 
 ## Closure and Continuation
 
-Main owns this handoff, progress and diary. Executor owns scoped staging and
-the authorized acceptance commit after final documentation checks; Archivist
-owns the closing read-only Git receipt and deployment token report. The only
-product/test change is the new integration test file, alongside the task
-checkbox and three deployment-state documents. No README or public guide
-change is needed for this test-only task. Task 9.13 is next and remains
-unstarted; no external handoff, push or next-task work is authorized.
+Main owns this handoff, progress, diary, task acceptance and the authorized
+isolated staging/commit after final documentation checks; Archivist
+owns the closing read-only Git receipt and deployment token report. The scope
+is the new demonstration file, Task 9.13 checkbox and three deployment-state
+documents. No public guide update is needed for this test-only task. Task 10.1
+remains unstarted; no external handoff, push or next-task work is authorized.
