@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { setWardrobe, arcFor, statesFor, wearing, garmentKeys } from './wardrobe.js'
+import {
+  setWardrobe,
+  arcFor,
+  statesFor,
+  wearing,
+  garmentKeys,
+  deriveSavedLookWardrobeProgression,
+} from './wardrobe.js'
 
 const STORE = {
   garments: [
@@ -80,6 +87,79 @@ describe('the arc derived from an outfit', () => {
       'She wears black leggings.',
       'She wears nothing at all.',
     ])
+  })
+})
+
+describe('snapshot wardrobe progression', () => {
+  const snapshot = {
+    outfit_key: 'snapshot-outfit',
+    garments: [
+      { key: 'jacket', wording: 'A wool jacket (buttoned!)', aside: 'A wool jacket, unbuttoned' },
+      { key: 'skirt', wording: 'a Pleated skirt; navy', aside: 'Folded aside' },
+      { key: 'shoes', wording: 'shoes', aside: 'Shoes, moved aside' },
+    ],
+  }
+
+  it('uses the complete snapshot, exact canonical sentences, and only the final garment aside', () => {
+    const states = deriveSavedLookWardrobeProgression(snapshot, 'Current clothing.', 5, {
+      stageIndices: [0, 1, 2, 3, 4],
+    })
+    expect(states).toEqual([
+      'She wears A wool jacket (buttoned!), a Pleated skirt; navy, and shoes.',
+      'She wears a Pleated skirt; navy, and shoes.',
+      'She wears shoes.',
+      'She wears Shoes, moved aside.',
+      'She wears nothing at all.',
+    ])
+  })
+
+  it('spreads selected stages across the interval and carries the endpoints', () => {
+    expect(deriveSavedLookWardrobeProgression(snapshot, 'Current clothing.', 7, {
+      stageIndices: [0, 2, 4],
+      intervalStart: 1,
+      intervalEnd: 5,
+    })).toEqual([
+      'Current clothing.',
+      'She wears A wool jacket (buttoned!), a Pleated skirt; navy, and shoes.',
+      'She wears A wool jacket (buttoned!), a Pleated skirt; navy, and shoes.',
+      'She wears shoes.',
+      'She wears shoes.',
+      'She wears nothing at all.',
+      'She wears nothing at all.',
+    ])
+  })
+
+  it('keeps one selected stage constant and preserves the default wardrobe without an outfit', () => {
+    expect(deriveSavedLookWardrobeProgression(snapshot, 'Current clothing.', 4, {
+      stageIndices: [3],
+      intervalStart: 1,
+      intervalEnd: 2,
+    })).toEqual([
+      'Current clothing.',
+      'She wears Shoes, moved aside.',
+      'She wears Shoes, moved aside.',
+      'She wears Shoes, moved aside.',
+    ])
+    expect(deriveSavedLookWardrobeProgression(null, '', 3)).toEqual(['', '', ''])
+  })
+
+  it('rejects an incomplete or inconsistent snapshot and an interval that skips stages', () => {
+    expect(() => deriveSavedLookWardrobeProgression({
+      outfit_key: 'bad', garments: [{ key: 'same', wording: 'a jacket', aside: '' },
+        { key: 'same', wording: 'a shirt', aside: '' }],
+    }, '', 2, { stageIndices: [0, 1] })).toThrow(/duplicate garment key/)
+    expect(() => deriveSavedLookWardrobeProgression({
+      outfit_key: 'bad', garments: [{ key: 'jacket', wording: 'a jacket' }],
+    }, '', 2, { stageIndices: [0] })).toThrow(/exactly 'key', 'wording', and 'aside'/)
+    expect(() => deriveSavedLookWardrobeProgression({
+      outfit_key: 'bad', garments: [{ key: 'jacket', wording: 'a jacket', aside: ' open' }],
+    }, '', 2, { stageIndices: [0] })).toThrow(/aside/)
+    expect(() => deriveSavedLookWardrobeProgression(snapshot, '', 2, {
+      stageIndices: [0, 1, 2],
+    })).toThrow(/interval has 2 takes for 3 selected stages/)
+    expect(() => deriveSavedLookWardrobeProgression(snapshot, '', 3, {
+      stageIndices: [1, 0],
+    })).toThrow(/strictly increasing/)
   })
 })
 

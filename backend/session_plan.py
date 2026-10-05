@@ -333,6 +333,20 @@ def validate_authoring_prepared_evidence(
 # -- Validation -------------------------------------------------------------
 
 
+def _compose_wardrobe_wordings(wordings: list[str]) -> str:
+    """Render the canonical wardrobe sentence without changing wording bytes."""
+    if not wordings:
+        return "She wears nothing at all."
+    if len(wordings) == 1:
+        return f"She wears {wordings[0]}."
+    return f"She wears {', '.join(wordings[:-1])}, and {wordings[-1]}."
+
+
+def _has_snapshot_boundary_whitespace(value: str) -> bool:
+    """Use the union of Python strip and JavaScript trim boundary characters."""
+    return any(char.isspace() or char == "\ufeff" for char in (value[0], value[-1]))
+
+
 def compose_saved_look_wardrobe(outfit: dict) -> str:
     """Compose canonical fully-worn wardrobe string from look_snapshot outfit."""
     if not isinstance(outfit, dict):
@@ -350,10 +364,113 @@ def compose_saved_look_wardrobe(outfit: dict) -> str:
                 f"garment[{idx}].wording must be a non-empty string with no leading or trailing whitespace, got {w!r}"
             )
         wordings.append(w)
-    if len(wordings) == 1:
-        return f"She wears {wordings[0]}."
-    all_but_last = ", ".join(wordings[:-1])
-    return f"She wears {all_but_last}, and {wordings[-1]}."
+    return _compose_wardrobe_wordings(wordings)
+
+
+def _saved_look_wardrobe_stages(outfit: dict) -> list[str]:
+    """Build ordered sentences from a complete snapshot outfit, without catalogue reads."""
+    if not isinstance(outfit, dict):
+        raise PlanValidationError("outfit must be a complete snapshot object")
+    if set(outfit) != {"outfit_key", "garments"}:
+        raise PlanValidationError("outfit must contain exactly 'outfit_key' and 'garments'")
+    outfit_key = outfit["outfit_key"]
+    if not isinstance(outfit_key, str) or not outfit_key:
+        raise PlanValidationError("outfit.outfit_key must be a non-empty string")
+    garments = outfit["garments"]
+    if not isinstance(garments, list) or not garments:
+        raise PlanValidationError("outfit.garments must be a non-empty list")
+
+    seen_keys: set[str] = set()
+    complete: list[dict[str, str]] = []
+    for idx, garment in enumerate(garments):
+        if not isinstance(garment, dict) or set(garment) != {"key", "wording", "aside"}:
+            raise PlanValidationError(
+                f"outfit.garments[{idx}] must contain exactly 'key', 'wording', and 'aside'"
+            )
+        key = garment["key"]
+        if not isinstance(key, str) or not key:
+            raise PlanValidationError(f"outfit.garments[{idx}].key must be a non-empty string")
+        if key in seen_keys:
+            raise PlanValidationError(f"duplicate garment key {key!r}")
+        seen_keys.add(key)
+
+        wording = garment["wording"]
+        if not isinstance(wording, str) or not wording or _has_snapshot_boundary_whitespace(wording):
+            raise PlanValidationError(
+                f"outfit.garments[{idx}].wording must be a non-empty string with no leading or trailing whitespace, got {wording!r}"
+            )
+        aside = garment["aside"]
+        if not isinstance(aside, str) or (aside != "" and _has_snapshot_boundary_whitespace(aside)):
+            raise PlanValidationError(
+                f"outfit.garments[{idx}].aside must be empty or a non-empty string with no leading or trailing whitespace, got {aside!r}"
+            )
+        complete.append({"key": key, "wording": wording, "aside": aside})
+
+    states: list[str] = []
+    for removed_count in range(len(complete) + 1):
+        remaining = complete[removed_count:]
+        states.append(_compose_wardrobe_wordings([garment["wording"] for garment in remaining]))
+        if len(remaining) == 1 and remaining[0]["aside"]:
+            states.append(_compose_wardrobe_wordings([remaining[0]["aside"]]))
+    return states
+
+
+def derive_saved_look_wardrobe_progression(
+    outfit: dict | None,
+    initial_wardrobe: str,
+    take_count: int,
+    *,
+    stage_indices: list[int] | None = None,
+    interval_start: int = 0,
+    interval_end: int | None = None,
+) -> list[str]:
+    """Return one wardrobe sentence per take from an optional snapshot progression."""
+    if not isinstance(initial_wardrobe, str):
+        raise PlanValidationError("initial_wardrobe must be a string")
+    if type(take_count) is not int or take_count < 0:
+        raise PlanValidationError("take_count must be a non-negative integer")
+    if stage_indices is None:
+        return [initial_wardrobe for _ in range(take_count)]
+
+    stages = _saved_look_wardrobe_stages(outfit)
+    if not isinstance(stage_indices, list) or not stage_indices:
+        raise PlanValidationError("stage_indices must be a non-empty list when progression is requested")
+    selected: list[int] = []
+    for idx, stage_index in enumerate(stage_indices):
+        if type(stage_index) is not int or stage_index < 0 or stage_index >= len(stages):
+            raise PlanValidationError(
+                f"stage_indices[{idx}] must be an integer within the snapshot arc, got {stage_index!r}"
+            )
+        if selected and stage_index <= selected[-1]:
+            raise PlanValidationError("stage_indices must be strictly increasing")
+        selected.append(stage_index)
+
+    if type(interval_start) is not int or interval_start < 0:
+        raise PlanValidationError("interval_start must be a non-negative integer")
+    if interval_end is None:
+        interval_end = take_count - 1
+    if type(interval_end) is not int or interval_end < interval_start or interval_end >= take_count:
+        raise PlanValidationError("progression interval must be within the take sequence")
+    interval_count = interval_end - interval_start + 1
+    if len(selected) > 1 and interval_count < len(selected):
+        raise PlanValidationError(
+            f"progression interval has {interval_count} takes for {len(selected)} selected stages"
+        )
+
+    result: list[str] = []
+    for take_index in range(take_count):
+        if take_index < interval_start:
+            result.append(initial_wardrobe)
+        elif take_index > interval_end:
+            result.append(stages[selected[-1]])
+        else:
+            offset = take_index - interval_start
+            selected_position = (
+                0 if len(selected) == 1
+                else (offset * (len(selected) - 1)) // (interval_count - 1)
+            )
+            result.append(stages[selected[selected_position]])
+    return result
 
 
 def validate_authoring_count(value: Any) -> int:

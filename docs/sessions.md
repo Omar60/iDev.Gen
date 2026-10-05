@@ -1695,8 +1695,23 @@ ordinary plan revision behavior: it reports resource conflict markers, applies
 prepared-take invalidation or verified copy-forward, revokes prior review, and
 fences active authoring. The response contains `plan_revision` and `conflicts`.
 When resource planning is disabled, application returns `503`. This operation
-is currently API-only; the session screen selector and wardrobe progression
-remain later work.
+is currently API-only. It applies the selected look version, but does not apply
+an outfit progression.
+
+### Previewing a saved-look outfit progression
+
+Matching backend and frontend helpers derive a pure preview from the complete
+saved outfit snapshot. Omitting stage selections repeats the exact current
+`initial_wardrobe` for every take. An explicit progression validates unique
+garment keys and preserves snapshot wording; its stages remove garments in
+saved order, include an optional aside only for the last garment, and end with
+`She wears nothing at all.` Selected stage indices must increase, and an
+interval must have enough takes for the selected stages. Stages are distributed
+evenly across that interval; takes before it keep the initial wardrobe and
+takes after it keep the final selected stage. The preview reads no live
+catalogue and changes neither its input nor persisted state. Applying a reviewed
+preview through plan CAS and exposing selection in the session screen remain
+pending.
 
 ### Refreshing resource dependencies
 

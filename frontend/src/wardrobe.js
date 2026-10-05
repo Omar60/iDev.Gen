@@ -99,3 +99,103 @@ export const arcFor = (outfitKey) => {
 
 /** The arc as the plain sentences, which is what a composed line carries. */
 export const statesFor = (outfitKey) => arcFor(outfitKey).map((s) => s.text)
+
+const hasExactKeys = (value, expected) => {
+  const actual = Object.keys(value).sort()
+  const keys = [...expected].sort()
+  return actual.length === keys.length && actual.every((key, index) => key === keys[index])
+}
+
+const hasSnapshotBoundaryWhitespace = (value) => /^[\s\u001c-\u001f\u0085]|[\s\u001c-\u001f\u0085]$/u.test(value)
+
+const savedLookWardrobeStages = (outfit) => {
+  if (!outfit || typeof outfit !== 'object' || Array.isArray(outfit)) {
+    throw new TypeError('outfit must be a complete snapshot object')
+  }
+  if (!hasExactKeys(outfit, ['outfit_key', 'garments'])) {
+    throw new TypeError("outfit must contain exactly 'outfit_key' and 'garments'")
+  }
+  if (typeof outfit.outfit_key !== 'string' || !outfit.outfit_key) {
+    throw new TypeError('outfit.outfit_key must be a non-empty string')
+  }
+  if (!Array.isArray(outfit.garments) || outfit.garments.length === 0) {
+    throw new TypeError('outfit.garments must be a non-empty array')
+  }
+
+  const seen = new Set()
+  const complete = outfit.garments.map((garment, index) => {
+    if (!garment || typeof garment !== 'object' || Array.isArray(garment) ||
+        !hasExactKeys(garment, ['key', 'wording', 'aside'])) {
+      throw new TypeError(`outfit.garments[${index}] must contain exactly 'key', 'wording', and 'aside'`)
+    }
+    if (typeof garment.key !== 'string' || !garment.key) {
+      throw new TypeError(`outfit.garments[${index}].key must be a non-empty string`)
+    }
+    if (seen.has(garment.key)) throw new TypeError(`duplicate garment key ${JSON.stringify(garment.key)}`)
+    seen.add(garment.key)
+    if (typeof garment.wording !== 'string' || !garment.wording || hasSnapshotBoundaryWhitespace(garment.wording)) {
+      throw new TypeError(`outfit.garments[${index}].wording must be a non-empty string with no leading or trailing whitespace`)
+    }
+    if (typeof garment.aside !== 'string' || (garment.aside !== '' && hasSnapshotBoundaryWhitespace(garment.aside))) {
+      throw new TypeError(`outfit.garments[${index}].aside must be empty or a non-empty string with no leading or trailing whitespace`)
+    }
+    return garment
+  })
+
+  const stages = []
+  for (let removedCount = 0; removedCount <= complete.length; removedCount += 1) {
+    const remaining = complete.slice(removedCount)
+    stages.push(wearing(remaining.map((garment) => garment.wording)))
+    if (remaining.length === 1 && remaining[0].aside) stages.push(wearing([remaining[0].aside]))
+  }
+  return stages
+}
+
+/** Pure progression preview from a complete snapshotted outfit.
+ *  Omitting stageIndices keeps the current wardrobe unchanged for every take.
+ */
+export const deriveSavedLookWardrobeProgression = (
+  outfit,
+  initialWardrobe,
+  takeCount,
+  { stageIndices = null, intervalStart = 0, intervalEnd = null } = {},
+) => {
+  if (typeof initialWardrobe !== 'string') throw new TypeError('initialWardrobe must be a string')
+  if (!Number.isSafeInteger(takeCount) || takeCount < 0) {
+    throw new TypeError('takeCount must be a non-negative safe integer')
+  }
+  if (stageIndices === null) return Array.from({ length: takeCount }, () => initialWardrobe)
+
+  const stages = savedLookWardrobeStages(outfit)
+  if (!Array.isArray(stageIndices) || stageIndices.length === 0) {
+    throw new TypeError('stageIndices must be a non-empty array when progression is requested')
+  }
+  let previous = -1
+  for (const [index, stageIndex] of stageIndices.entries()) {
+    if (!Number.isSafeInteger(stageIndex) || stageIndex < 0 || stageIndex >= stages.length) {
+      throw new TypeError(`stageIndices[${index}] must be an integer within the snapshot arc`)
+    }
+    if (stageIndex <= previous) throw new TypeError('stageIndices must be strictly increasing')
+    previous = stageIndex
+  }
+
+  const end = intervalEnd === null ? takeCount - 1 : intervalEnd
+  if (!Number.isSafeInteger(intervalStart) || intervalStart < 0 ||
+      !Number.isSafeInteger(end) || end < intervalStart || end >= takeCount) {
+    throw new RangeError('progression interval must be within the take sequence')
+  }
+  const intervalCount = end - intervalStart + 1
+  if (stageIndices.length > 1 && intervalCount < stageIndices.length) {
+    throw new RangeError(`progression interval has ${intervalCount} takes for ${stageIndices.length} selected stages`)
+  }
+
+  return Array.from({ length: takeCount }, (_, takeIndex) => {
+    if (takeIndex < intervalStart) return initialWardrobe
+    if (takeIndex > end) return stages[stageIndices[stageIndices.length - 1]]
+    const offset = takeIndex - intervalStart
+    const selectedPosition = stageIndices.length === 1
+      ? 0
+      : Math.floor(offset * (stageIndices.length - 1) / (intervalCount - 1))
+    return stages[stageIndices[selectedPosition]]
+  })
+}

@@ -2,6 +2,14 @@
 
 ## Decisions and Lessons
 
+- Snapshot wording validation must use the same boundary whitespace set across
+  Python and JavaScript: `str.strip()` and `String.trim()` differ for FEFF, NEL
+  and four ASCII separator controls. Reject the union at the boundary while
+  retaining internal bytes, and verify parity through the real JavaScript
+  module. Keep historical catalogue helpers separate from strict snapshot
+  derivation; a missing outfit preserves clothing rather than implying a
+  garment-free state.
+
 - Saved-look application must load and verify one immutable server version and
   share the normal plan CAS effects without weakening generic-save ownership.
   When an appearance-only snapshot replaces an outfit snapshot, a kept wardrobe

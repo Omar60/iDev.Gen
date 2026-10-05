@@ -64,8 +64,11 @@ imports. A legacy catalogue import does not create a named look; that conversion
 is explicit. The API also offers temporary photo staging for a manually reviewed
 look save or an assistant-generated, editable appearance and garment proposal.
 Photo proposals require an explicitly configured vision model and must be
-reviewed before saving. The browser has no JSON or photo controls yet, and
-session authoring is not connected. See
+reviewed before saving. The session API can apply selected immutable versions
+through plan CAS. Matching backend and frontend helpers derive outfit stages
+from the saved snapshot; leaving stages unspecified preserves the current
+wardrobe exactly. The browser has no JSON, photo, or session look/progression
+controls yet, and progression application remains pending. See
 [Saved looks](docs/looks.md).
 
 ## Composing from the catalogue
