@@ -19,6 +19,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, ValidationError, field_validator
 
 import db
+from backend import resource_planning
 import resource_selection
 import resource_store
 from backend import session_plan
@@ -233,12 +234,7 @@ _SAFE_OPERATION_DIAGNOSTICS = frozenset(_OPERATION_DIAGNOSTICS.values())
 
 def _resource_planning_enabled() -> bool:
     """Read the live app gate when a backend worker calls this module directly."""
-    for module_name in ("main", "backend.main"):
-        app_module = sys.modules.get(module_name)
-        gate = getattr(app_module, "is_resource_planning_enabled", None)
-        if callable(gate):
-            return bool(gate())
-    return True
+    return resource_planning.is_enabled()
 
 
 def _resolve_planning_enabled(requested: bool | None) -> bool:
@@ -1510,6 +1506,12 @@ def start_operation(
         )
 
     with db.transaction():
+        if not _resolve_planning_enabled(None):
+            raise AuthoringOperationError(
+                503,
+                "resource_planning_disabled",
+                "Resource planning is disabled by configuration.",
+            )
         session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
         if session is None:
             raise AuthoringOperationError(404, "session_not_found", "Session not found.")
@@ -1763,6 +1765,12 @@ def fail_operation_item(
                 planning_enabled=enabled,
                 assistant_available=True,
             )
+        if not _resolve_planning_enabled(None):
+            raise AuthoringOperationError(
+                503,
+                "resource_planning_disabled",
+                "Resource planning is disabled by configuration.",
+            )
         _require_live_claim(row, claim, now=now)
         if ticket.claim != claim or row["lease_expires_at"] != ticket.lease_expires_at:
             raise AuthoringOperationError(409, "authoring_owner_stale", "This worker no longer owns the operation.")
@@ -1778,6 +1786,12 @@ def fail_operation_item(
                 409,
                 "authoring_inputs_stale",
                 "The failure does not match the next ordered operation target.",
+            )
+        if not _resolve_planning_enabled(None):
+            raise AuthoringOperationError(
+                503,
+                "resource_planning_disabled",
+                "Resource planning is disabled by configuration.",
             )
         updated = db.conn().execute(
             """UPDATE authoring_operation
@@ -1905,6 +1919,12 @@ def resume_operation(
     now = _utc_datetime(now_text, field="current time")
     missing = False
     with db.transaction():
+        if not _resolve_planning_enabled(None):
+            raise AuthoringOperationError(
+                503,
+                "resource_planning_disabled",
+                "Resource planning is disabled by configuration.",
+            )
         row = db.one(
             "SELECT * FROM authoring_operation WHERE session_id = ? AND operation_id = ?",
             session_id,
@@ -1984,6 +2004,12 @@ def resume_operation(
                             planning_enabled=True,
                             assistant_available=assistant_available,
                         ),
+                    )
+                if not _resolve_planning_enabled(None):
+                    raise AuthoringOperationError(
+                        503,
+                        "resource_planning_disabled",
+                        "Resource planning is disabled by configuration.",
                     )
                 deadline = db.authoring_operation_lease_deadline(now)
                 updated = db.conn().execute(
@@ -2205,6 +2231,12 @@ def accept_shared_suggestion(
                 evidence=evidence,
                 accepted=accepted,
             )
+        except session_plan.ResourcePlanningDisabled as exc:
+            raise AuthoringOperationError(
+                503,
+                "resource_planning_disabled",
+                "Resource planning is disabled by configuration.",
+            ) from exc
         except session_plan.PlanRevisionStale as exc:
             raise AuthoringOperationError(
                 409,

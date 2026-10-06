@@ -199,6 +199,7 @@ import importer
 import resource_prompts
 import resource_readiness
 import resource_store
+from backend import resource_planning
 import sys
 
 if __name__ == "backend.resource_preparation" and "resource_preparation" not in sys.modules:
@@ -319,6 +320,10 @@ class PreparationError(ValueError):
     structure-returning code path, so the exception class
     documents the rule the layer enforced.
     """
+
+
+class ResourcePlanningDisabled(PreparationError):
+    """An adaptation write was attempted while resource planning is disabled."""
 
 
 class PreparationFieldError(PreparationError):
@@ -2453,6 +2458,8 @@ def record_take_adaptation(
     adaptation. The schema trigger protects the seven
     identity columns and ``created_at``.
     """
+    if not resource_planning.is_enabled():
+        raise ResourcePlanningDisabled("Resource planning is disabled by configuration.")
     if not isinstance(session_id, int) or isinstance(session_id, bool):
         raise PreparationArgumentError(
             f"session_id must be an int, got {type(session_id).__name__}"
@@ -2509,6 +2516,10 @@ def record_take_adaptation(
     now = db.now()
     try:
         with db.transaction():
+            if not resource_planning.is_enabled():
+                raise ResourcePlanningDisabled(
+                    "Resource planning is disabled by configuration."
+                )
             existing = db.one(
                 "SELECT id, source_value, updated_at FROM take_resource_adaptation "
                 "WHERE session_id = ? AND plan_revision = ? AND take_id = ? "
@@ -4525,6 +4536,8 @@ def synthesize_unlocked_fields(
     ``id`` columns, which the layer deliberately
     returns verbatim.
     """
+    if not resource_planning.is_enabled():
+        raise ResourcePlanningDisabled("Resource planning is disabled by configuration.")
     if not isinstance(session_id, int) or isinstance(session_id, bool):
         raise PreparationArgumentError(
             f"session_id must be an int, got {type(session_id).__name__}"
@@ -4649,6 +4662,8 @@ def synthesize_unlocked_fields(
         session_plan.begin_preparation(
             session_id, plan_revision, take_id,
         )
+    if not resource_planning.is_enabled():
+        raise ResourcePlanningDisabled("Resource planning is disabled by configuration.")
     try:
         response = writer(request)
     except Exception as exc:
@@ -4664,6 +4679,8 @@ def synthesize_unlocked_fields(
             f"{plan_revision} raised before answering: "
             f"{exc}"
         ) from exc
+    if not resource_planning.is_enabled():
+        raise ResourcePlanningDisabled("Resource planning is disabled by configuration.")
     validated = validate_writer_output(
         response, preparation, unlocked=unlocked,
     )
@@ -4761,6 +4778,7 @@ def _persist_synthesis_after_pending(
         session_plan.SessionNotInResourceMode,
         session_plan.SessionNotFound,
         session_plan.PreparedTakePersistenceError,
+        session_plan.ResourcePlanningDisabled,
     ):
         raise
     except Exception as exc:
@@ -4829,6 +4847,7 @@ def _persist_synthesis(
         session_plan.SessionNotInResourceMode,
         session_plan.SessionNotFound,
         session_plan.PreparedTakePersistenceError,
+        session_plan.ResourcePlanningDisabled,
     ):
         raise
     except Exception as exc:
@@ -6595,6 +6614,8 @@ def finalize_take_preparation(
       7. Persists the snapshot atomically via complete_preparation.
       8. Returns the decoded ready snapshot.
     """
+    if not resource_planning.is_enabled():
+        raise ResourcePlanningDisabled("Resource planning is disabled by configuration.")
     if not isinstance(session_id, int) or isinstance(session_id, bool):
         raise PreparationArgumentError(
             f"session_id must be an int, got {type(session_id).__name__}"

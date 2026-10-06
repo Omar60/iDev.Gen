@@ -961,7 +961,8 @@ def test_resource_planning_disabled_blocks_writes_with_503_and_keeps_reads(
     read = client.get(f"/api/resources/import-selections/{sel['selection_id']}")
     assert read.status_code == 200
 
-    # Writes return 503 with the stable envelope.
+    # Workflow writes return 503 with the stable envelope; cancel remains
+    # available so disabled selections can still be cleaned up safely.
     write = client.post(
         "/api/resources/import-selections", json={"request_id": _unique_request_id()}
     )
@@ -1000,9 +1001,9 @@ def test_resource_planning_disabled_blocks_writes_with_503_and_keeps_reads(
         f"/api/resources/import-selections/{sel['selection_id']}/cancel",
         json={"expected_revision": 0},
     )
-    assert cancel.status_code == 503
-    detail = _stable_detail(cancel)
-    assert detail["code"] == "resource_planning_disabled"
+    assert cancel.status_code == 200, cancel.text
+    assert cancel.json()["state"] == "cancelled"
+    assert client.get(f"/api/resources/import-selections/{sel['selection_id']}").json()["state"] == "cancelled"
 
 
 # ---------------------------------------------------------------------------

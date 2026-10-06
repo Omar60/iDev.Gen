@@ -918,6 +918,13 @@ def test_rollback_keeps_reads_and_queue_actions_functional(
                 "framing": "waist up",
                 "pose": "standing square to the camera",
                 "expression": "a slight smile",
+            }, {
+                "take_id": "take_beta",
+                "wardrobe": None,
+                "camera": "a 50mm prime at eye level",
+                "framing": "head and shoulders",
+                "pose": "seated beside a window",
+                "expression": "a calm expression",
             }],
         },
     })
@@ -929,6 +936,11 @@ def test_rollback_keeps_reads_and_queue_actions_functional(
     })
     assert prep_res.status_code == 200
     assert prep_res.json()["status"] == "ready"
+    prep_beta = client.post(f"/api/sessions/{sid}/plan/takes/take_beta/prepare", json={
+        "plan_revision": 1,
+    })
+    assert prep_beta.status_code == 200
+    assert prep_beta.json()["status"] == "ready"
 
     # Approve the review
     appr_res = client.post(f"/api/sessions/{sid}/plan/review/approve", json={
@@ -945,8 +957,9 @@ def test_rollback_keeps_reads_and_queue_actions_functional(
     assert plan_read.status_code == 200
     plan_data = plan_read.json()
     assert plan_data["plan"]["look"] == "studio softbox"
-    assert len(plan_data["preparation"]["completed"]) == 1
-    assert plan_data["preparation"]["completed"][0]["take_id"] == "take_alpha"
+    assert [item["take_id"] for item in plan_data["preparation"]["completed"]] == [
+        "take_alpha", "take_beta",
+    ]
 
     review_read = client.get(f"/api/sessions/{sid}/plan/takes/take_alpha/review")
     assert review_read.status_code == 200
@@ -973,7 +986,31 @@ def test_rollback_keeps_reads_and_queue_actions_functional(
     assert retry_res.json()["linked_shot_id"] == shot_id
     assert db.one("SELECT COUNT(*) AS c FROM shot WHERE session_id=?", sid)["c"] == 1
 
-    # 5. Serial queue execution via FakeComfy completes the shot
+    # A ready and approved batch remains submitable while resource planning is disabled.
+    batch_res = client.post(f"/api/sessions/{sid}/plan/preparations/submit-selected", json={
+        "plan_revision": 1,
+        "take_ids": ["take_beta"],
+    })
+    assert batch_res.status_code == 200, batch_res.text
+    beta_shot_id = batch_res.json()["submitted"][0]["linked_shot_id"]
+    assert beta_shot_id is not None
+    assert db.one("SELECT COUNT(*) AS c FROM shot WHERE session_id=?", sid)["c"] == 2
+
+    # Ordinary Run still reaches the queue for approved work with the flag off.
+    class StartRecorder:
+        started = []
+
+        def start(self, session_id):
+            self.started.append(session_id)
+
+    recorder = StartRecorder()
+    monkeypatch.setattr(main, "runner", recorder)
+    monkeypatch.setattr(main, "output_dir_ok", lambda: True)
+    run_res = client.post(f"/api/sessions/{sid}/run")
+    assert run_res.status_code == 200, run_res.text
+    assert recorder.started == [sid]
+
+    # 5. Serial queue execution via FakeComfy completes both submitted shots.
     runner, fake = make_runner()
     asyncio.run(runner._run_session(sid))
 
@@ -982,6 +1019,9 @@ def test_rollback_keeps_reads_and_queue_actions_functional(
     assert shot_row["filename"] != ""
     dest_file = runner.sessions_dir / str(sid) / shot_row["filename"]
     assert dest_file.exists()
+    beta_row = db.one("SELECT status, filename FROM shot WHERE id=?", beta_shot_id)
+    assert beta_row["status"] == "done"
+    assert (runner.sessions_dir / str(sid) / beta_row["filename"]).exists()
 
     # 6. Verify cancellation of active/pending work through existing queue action
     shot2_id = db.run(

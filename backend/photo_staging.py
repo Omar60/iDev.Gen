@@ -19,6 +19,7 @@ from python_multipart import MultipartParser
 from starlette.formparsers import parse_options_header
 
 import db
+from backend import resource_planning
 
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
 MAX_PHOTO_PIXELS = 25_000_000
@@ -44,6 +45,15 @@ class PhotoStageError(Exception):
         self.status_code = status_code
         self.code = code
         self.message = message
+
+
+def _require_resource_planning_enabled() -> None:
+    if not resource_planning.is_enabled():
+        raise PhotoStageError(
+            503,
+            "resource_planning_disabled",
+            "Saved-look writing is disabled.",
+        )
 
 
 def _now() -> datetime:
@@ -520,6 +530,7 @@ def opportunistic_sweep(limit: int = OPPORTUNISTIC_BATCH, now: datetime | None =
 
 
 def create_stage(data: bytes) -> dict:
+    _require_resource_planning_enabled()
     with db._tx_lock:
         if getattr(db, "_tx_depth", 0):
             raise PhotoStageError(
@@ -537,6 +548,7 @@ def create_stage(data: bytes) -> dict:
     # A durable owner exists before any byte reaches disk. If this process is
     # lost during publication, expiry recovery knows both owned filenames.
     with db.transaction():
+        _require_resource_planning_enabled()
         db.run(
             """INSERT INTO look_photo_stage
                (photo_id, state, created_at, updated_at, expires_at, staged_path,
@@ -548,6 +560,7 @@ def create_stage(data: bytes) -> dict:
         )
 
     try:
+        _require_resource_planning_enabled()
         target.parent.mkdir(parents=True, exist_ok=True)
         with temporary.open("xb") as stream:
             stream.write(data)
@@ -556,6 +569,7 @@ def create_stage(data: bytes) -> dict:
         os.replace(temporary, target)
         expired = False
         with db.transaction():
+            _require_resource_planning_enabled()
             current = db.one("SELECT state, expires_at FROM look_photo_stage WHERE photo_id = ?", photo_id)
             if current is None:
                 raise PhotoStageError(404, "photo_stage_not_found", "Photo stage was not found.")
@@ -579,7 +593,12 @@ def create_stage(data: bytes) -> dict:
                 expired = True
         if expired:
             raise PhotoStageError(410, "photo_stage_expired", "This photo stage has expired.")
-    except PhotoStageError:
+    except PhotoStageError as exc:
+        if exc.code == "resource_planning_disabled":
+            try:
+                _fail_publication(photo_id)
+            except Exception:
+                pass
         raise
     except Exception:
         try:
@@ -743,6 +762,7 @@ def save_look(
     digest_payload: dict | None = None,
 ) -> dict:
     """Create a reviewed look and terminal stage receipt in one transaction."""
+    _require_resource_planning_enabled()
     digest = _payload_digest(payload if digest_payload is None else digest_payload)
     row = _recover_one(photo_id)
     opportunistic_sweep(exclude=photo_id)
@@ -762,6 +782,7 @@ def save_look(
     expired_during_save = False
     result = None
     with db.transaction():
+        _require_resource_planning_enabled()
         current = db.one("SELECT * FROM look_photo_stage WHERE photo_id = ?", photo_id)
         if current is None:
             raise PhotoStageError(404, "photo_stage_not_found", "Photo stage was not found.")
@@ -804,6 +825,7 @@ def save_look(
                     "The extraction proposal is stale or does not belong to this photo stage.",
                 )
             result = create_look(payload)
+            _require_resource_planning_enabled()
             db.run(
                 """UPDATE look_photo_stage
                    SET state = 'saved', cleanup_state = 'pending', cleanup_warning = '',

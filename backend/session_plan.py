@@ -81,6 +81,7 @@ import time
 from typing import Any
 
 import db
+from backend import resource_planning
 
 try:
     from backend import workflow_binding
@@ -223,6 +224,13 @@ class PlanRevisionStale(Exception):
 
 class ResourcePlanningDisabled(Exception):
     """A resource-v1 write was attempted while its feature gate is disabled."""
+
+
+def _require_resource_planning_enabled(planning_enabled: bool = True) -> None:
+    if planning_enabled is not True or not resource_planning.is_enabled():
+        raise ResourcePlanningDisabled(
+            "Resource planning is disabled by configuration."
+        )
 
 
 class WardrobeProgressionPreviewUnavailable(Exception):
@@ -2375,9 +2383,11 @@ def begin_preparation(
     transaction is never entered, the existing pending / ready rows are
     not touched.
     """
+    _require_resource_planning_enabled()
     _safe_validate_workflow_binding(session_id)
     try:
         with db.transaction():
+            _require_resource_planning_enabled()
             _safe_validate_workflow_binding(session_id)
             _validate_preparation_target(session_id, plan_revision, take_id)
             existing = _prepared_take_row(session_id, plan_revision, take_id)
@@ -2409,6 +2419,7 @@ def begin_preparation(
         PlanValidationError,
         PreparedTakeConflict,
         PreparedTakePersistenceError,
+        ResourcePlanningDisabled,
         workflow_binding.WorkflowChanged,
     ):
         raise
@@ -2448,6 +2459,7 @@ def complete_preparation(
     provenance: Any,
 ) -> dict:
     """Complete a raw historical snapshot; authoring-v1 requires sealed persistence."""
+    _require_resource_planning_enabled()
     plan = _validate_preparation_target(session_id, plan_revision, take_id)
     if classify_plan_authoring(plan) != PLAN_AUTHORING_KIND_PRE_AUTHORING_EXPERT:
         raise AuthoringEvidenceInvalid(
@@ -2468,6 +2480,7 @@ def complete_preparation(
     encoded_state = _encode_snapshot_json(effective_state, "effective_state")
     try:
         with db.transaction():
+            _require_resource_planning_enabled()
             # Task 4.3 re-check: the binding validator runs inside the
             # same transactional write boundary that persists the
             # ready snapshot. A drift that lands between an external
@@ -2562,6 +2575,7 @@ def complete_preparation(
         PlanValidationError,
         PreparedTakeConflict,
         PreparedTakePersistenceError,
+        ResourcePlanningDisabled,
         workflow_binding.WorkflowChanged,
     ):
         raise
@@ -2573,6 +2587,7 @@ def complete_preparation(
 
 def complete_authoring_preparation(result: Any) -> dict:
     """Persist only an opaque snapshot produced by the authoring server builder."""
+    _require_resource_planning_enabled()
     import resource_preparation
 
     if not resource_preparation._is_sealed_authoring_result(result):
@@ -2594,6 +2609,7 @@ def complete_authoring_preparation(result: Any) -> dict:
     )
     try:
         with db.transaction():
+            _require_resource_planning_enabled()
             # Task 4.3 re-check: the binding validator runs inside the
             # same transactional write boundary that seals the authoring
             # snapshot. A drift that lands between the early preflight
@@ -2774,6 +2790,7 @@ def complete_authoring_preparation(result: Any) -> dict:
         PlanValidationError,
         PreparedTakeConflict,
         PreparedTakePersistenceError,
+        ResourcePlanningDisabled,
         workflow_binding.WorkflowChanged,
     ):
         raise
@@ -2931,6 +2948,7 @@ def record_writer_synthesis(
     block back, byte-for-byte, the same way the
     orchestrator task 4.3 owns reads it.
     """
+    _require_resource_planning_enabled()
     if not isinstance(mapping_version, str):
         raise PlanValidationError("mapping_version must be a string")
     if not mapping_version.strip():
@@ -2943,6 +2961,7 @@ def record_writer_synthesis(
     encoded_provenance = _encode_snapshot_json(provenance, "provenance")
     try:
         with db.transaction():
+            _require_resource_planning_enabled()
             _validate_preparation_target(session_id, plan_revision, take_id)
             existing = _prepared_take_row(session_id, plan_revision, take_id)
             if existing is None:
@@ -2984,6 +3003,7 @@ def record_writer_synthesis(
         PlanValidationError,
         PreparedTakeConflict,
         PreparedTakePersistenceError,
+        ResourcePlanningDisabled,
         workflow_binding.WorkflowChanged,
     ):
         raise
@@ -3007,6 +3027,7 @@ def apply_shared_suggestion_acceptance(
     wraps this helper with the operation's acceptance record so both writes
     commit atomically.
     """
+    _require_resource_planning_enabled()
     if type(expected_revision) is not int or expected_revision <= 0:
         raise PlanValidationError("expected_revision must be a positive integer")
     if (
@@ -3023,6 +3044,7 @@ def apply_shared_suggestion_acceptance(
         raise PlanValidationError("shared suggestion acceptance does not match its operation targets")
 
     with db.transaction():
+        _require_resource_planning_enabled()
         session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
         if session is None:
             raise SessionNotFound(f"session {session_id} not found")
@@ -3443,6 +3465,7 @@ def save_draft(
     plan row, every prepared_take row, and every linked shot
     byte-for-byte unchanged.
     """
+    _require_resource_planning_enabled()
     if shared_decisions is None:
         explicit_empty_fields: set[str] = set()
     elif (
@@ -3484,6 +3507,7 @@ def save_draft(
     conflicts = detect_resource_constant_conflicts(validated)
 
     with db.transaction():
+        _require_resource_planning_enabled()
         current = db.one(
             "SELECT plan_revision, plan_json FROM session_plan "
             "WHERE session_id = ?",
@@ -3604,8 +3628,7 @@ def apply_saved_look(
     planning_enabled: bool,
 ) -> dict:
     """Apply an immutable saved look through an explicit, server-owned CAS."""
-    if planning_enabled is not True:
-        raise ResourcePlanningDisabled("Resource planning is disabled by configuration.")
+    _require_resource_planning_enabled(planning_enabled)
     if type(expected_revision) is not int or expected_revision <= 0:
         raise PlanValidationError("expected_revision must be a positive integer")
     if not isinstance(look_key, str) or not look_key:
@@ -3630,6 +3653,7 @@ def apply_saved_look(
         )
 
     with db.transaction():
+        _require_resource_planning_enabled(planning_enabled)
         session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
         if session is None:
             raise SessionNotFound(f"session {session_id} not found")
@@ -3789,8 +3813,7 @@ def preview_wardrobe_progression(
     planning_enabled: bool,
 ) -> dict:
     """Issue a signed review of one fully resolved wardrobe schedule."""
-    if planning_enabled is not True:
-        raise ResourcePlanningDisabled("Resource planning is disabled by configuration.")
+    _require_resource_planning_enabled(planning_enabled)
     if type(session_id) is not int or session_id <= 0:
         raise PlanValidationError("session_id must be a positive integer")
     if type(expected_revision) is not int or expected_revision <= 0:
@@ -3805,10 +3828,7 @@ def preview_wardrobe_progression(
         raise PlanValidationError("event_policy must be 'merge' or 'replace'")
 
     with db.transaction():
-        if planning_enabled is not True:
-            raise ResourcePlanningDisabled(
-                "Resource planning is disabled by configuration."
-            )
+        _require_resource_planning_enabled(planning_enabled)
         current, plan = _load_progression_plan(session_id, expected_revision)
         derived = _derive_wardrobe_progression_application(
             plan,
@@ -3855,8 +3875,7 @@ def apply_wardrobe_progression_preview(
     planning_enabled: bool,
 ) -> dict:
     """Recompute and atomically apply an exact server-issued wardrobe review."""
-    if planning_enabled is not True:
-        raise ResourcePlanningDisabled("Resource planning is disabled by configuration.")
+    _require_resource_planning_enabled(planning_enabled)
     if type(session_id) is not int or session_id <= 0:
         raise PlanValidationError("session_id must be a positive integer")
     if type(expected_revision) is not int or expected_revision <= 0:
@@ -3878,10 +3897,7 @@ def apply_wardrobe_progression_preview(
         )
 
     with db.transaction():
-        if planning_enabled is not True:
-            raise ResourcePlanningDisabled(
-                "Resource planning is disabled by configuration."
-            )
+        _require_resource_planning_enabled(planning_enabled)
         payload = _read_wardrobe_progression_preview(preview_token)
         if (
             payload["session_id"] != session_id
@@ -3941,11 +3957,9 @@ def refresh_resources(
     planning_enabled: bool,
 ) -> dict:
     """CAS-refresh only when current resource evidence proves dependency drift."""
+    _require_resource_planning_enabled(planning_enabled)
     with db.transaction():
-        if planning_enabled is not True:
-            raise ResourcePlanningDisabled(
-                "Resource planning is disabled by configuration."
-            )
+        _require_resource_planning_enabled(planning_enabled)
         if type(expected_revision) is not int or expected_revision <= 0:
             raise PlanValidationError(
                 "expected_revision must be a positive integer"
@@ -4487,10 +4501,12 @@ def approve_plan_review(session_id: int, plan_revision: int) -> dict:
     3. The frozen workflow binding and every unlinked ready snapshot still
        match current dependencies, inside the serialized approval transaction.
     """
+    _require_resource_planning_enabled()
     if not isinstance(plan_revision, int) or plan_revision <= 0:
         raise PlanValidationError("plan_revision must be a positive integer")
 
     with db.transaction():
+        _require_resource_planning_enabled()
         session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
         if session is None:
             raise SessionNotFound(f"session {session_id} not found")

@@ -21,12 +21,27 @@ import resource_prompts
 import resource_readiness
 import resource_store
 import translation_map
+from backend import resource_planning
 
 _ATTESTATION_KEY_NAME: str = ".resource-translation-preview-key"
 
 
 class TranslationConflictError(Exception):
     """Raised when library state or translation map drifted between preview and apply."""
+
+
+class ResourcePlanningDisabledError(Exception):
+    """A translation write was attempted while resource planning is disabled."""
+
+    status_code = 503
+    code = "resource_planning_disabled"
+
+
+def _require_resource_planning_enabled() -> None:
+    if not resource_planning.is_enabled():
+        raise ResourcePlanningDisabledError(
+            "Resource planning is disabled by configuration."
+        )
 
 
 def _database_directory() -> Path:
@@ -369,6 +384,7 @@ def preview_translation_map(
     Strictly read-only. Validates translation map, matches against revisions,
     computes candidate readiness, and issues an HMAC attestation token.
     """
+    _require_resource_planning_enabled()
     library = db.one(
         "SELECT id, library_key, kind, created_at FROM resource_library WHERE library_key = ?",
         library_key,
@@ -387,6 +403,7 @@ def preview_translation_map(
     map_digest = compute_map_digest(validated_map)
     library_fingerprint = compute_library_fingerprint(library_id)
 
+    _require_resource_planning_enabled()
     attestation_token, expires_at = _create_attestation_token(
         library_key=library_key,
         library_id=library_id,
@@ -449,6 +466,7 @@ def apply_translation_map(
     attestation_token: str,
 ) -> dict[str, Any]:
     """Atomically apply a translation map to a library with TOCTOU verification."""
+    _require_resource_planning_enabled()
     token_payload = _verify_attestation_token(attestation_token, library_key)
     validated_map = normalize_translation_map_input(translation_map_input)
 
@@ -458,6 +476,7 @@ def apply_translation_map(
     pending = 0
 
     with db.transaction():
+        _require_resource_planning_enabled()
         library = db.one(
             "SELECT id, library_key, kind, created_at FROM resource_library WHERE library_key = ?",
             library_key,
@@ -542,10 +561,12 @@ def apply_revision_translation(
     translation_updates: dict[str, Any],
 ) -> dict[str, Any]:
     """Update the translation sidecar for a single revision with validated merge."""
+    _require_resource_planning_enabled()
     if not isinstance(translation_updates, dict):
         raise TypeError(f"translation_updates must be a dict, got {type(translation_updates).__name__}")
 
     with db.transaction():
+        _require_resource_planning_enabled()
         library = db.one("SELECT id, kind FROM resource_library WHERE library_key = ?", library_key)
         if library is None:
             raise ValueError(f"Resource library {library_key!r} not found")

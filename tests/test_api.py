@@ -5089,6 +5089,25 @@ def test_a_folder_that_cannot_be_deleted_is_reported_not_swallowed(client, seede
 PNG = b"\x89PNG\r\n\x1a\n" + b"fake pixels"
 
 
+def test_legacy_import_tools_keep_prior_behavior_when_resource_planning_is_disabled(
+    client, seeded, monkeypatch,
+):
+    import main
+
+    monkeypatch.setenv("IDEVGEN_RESOURCE_PLANNING_ENABLED", "false")
+    wardrobe = client.post("/api/wardrobe/import", json=WARDROBE)
+    assert wardrobe.status_code == 200, wardrobe.text
+    assert wardrobe.json() == {"added": 3, "skipped": 0}
+
+    sid = client.post("/api/sessions", json={
+        "model_id": seeded["model_id"], "name": "legacy photo import", "shots": [],
+    }).json()["id"]
+    imported = client.post(f"/api/sessions/{sid}/import?label=legacy", content=PNG)
+    assert imported.status_code == 200, imported.text
+    photo = imported.json()
+    assert (main.SESSIONS_DIR / str(sid) / photo["filename"]).read_bytes() == PNG
+
+
 def test_an_imported_photo_lands_as_a_shot_and_can_be_a_reference(client, seeded):
     """It arrives as an ordinary shot so the gallery, the rating and above all
     marking it as a reference work on it with no separate path."""

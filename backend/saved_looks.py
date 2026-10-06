@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import db
 from backend import resource_store
+from backend import resource_planning
 
 
 class SavedLookError(Exception):
@@ -38,6 +39,15 @@ def _stored_data_invalid() -> None:
 
 def _receipt_invalid() -> None:
     raise SavedLookError(500, "look_import_receipt_invalid", "Portable import receipt is inconsistent.")
+
+
+def _require_resource_planning_enabled() -> None:
+    if not resource_planning.is_enabled():
+        raise SavedLookError(
+            503,
+            "resource_planning_disabled",
+            "Saved-look writing is disabled.",
+        )
 
 
 _PORTABLE_JSON_INTEGER_DIGITS = 4300
@@ -682,6 +692,7 @@ def save_photo_evidence(
     corrections: dict,
 ) -> None:
     """Persist safe local evidence inside the saved-look transaction."""
+    _require_resource_planning_enabled()
     if not getattr(db, "_tx_depth", 0):
         raise RuntimeError("photo evidence must share the saved-look transaction")
     if set(metadata) != {"sha256", "media_type", "byte_count", "width", "height"}:
@@ -1157,9 +1168,11 @@ def _build_portable_import_plan(envelope: dict, content_digest: str, state_diges
 
 
 def preview_portable_import(value: object) -> dict:
+    _require_resource_planning_enabled()
     envelope, content_digest = _canonicalize_portable_look(value)
     _validate_import_storage_version(envelope)
     with db.transaction():
+        _require_resource_planning_enabled()
         state_digest = _portable_store_state_digest()
         key = _portable_preview_key(create=True)
         plan = _build_portable_import_plan(envelope, content_digest, state_digest, key)
@@ -1282,6 +1295,7 @@ def _commit_portable_rows(envelope: dict, plan: dict, destination: dict, content
 
 
 def commit_portable_import(value: object, preview_token: str, review_digest: str, choice: str) -> dict:
+    _require_resource_planning_enabled()
     envelope, content_digest = _canonicalize_portable_look(value)
     _validate_import_storage_version(envelope)
     payload = _read_preview_token(preview_token)
@@ -1292,6 +1306,7 @@ def commit_portable_import(value: object, preview_token: str, review_digest: str
         raise SavedLookError(409, "look_import_preview_mismatch", "Import content or review changed; preview the import again.")
     try:
         with db.transaction():
+            _require_resource_planning_enabled()
             reviewed_plan = {
                 "mode": payload["mode"],
                 "destination": payload["destination"],
@@ -1758,9 +1773,11 @@ def _build_legacy_import_plan(
 
 
 def preview_legacy_import(value: object) -> dict:
+    _require_resource_planning_enabled()
     document = _canonicalize_legacy_wardrobe(value)
     content_digest = _portable_digest(document)
     with db.transaction():
+        _require_resource_planning_enabled()
         state_digest = _legacy_store_state_digest()
         key = _portable_preview_key(create=True)
         plan = _build_legacy_import_plan(document, content_digest, state_digest, key)
@@ -1815,6 +1832,7 @@ def _legacy_import_result(plan: dict, *, no_op: bool) -> dict:
 def commit_legacy_import(
     value: object, preview_token: str, review_digest: str, choice: str,
 ) -> dict:
+    _require_resource_planning_enabled()
     document = _canonicalize_legacy_wardrobe(value)
     content_digest = _portable_digest(document)
     payload = _read_legacy_preview_token(preview_token)
@@ -1825,6 +1843,7 @@ def commit_legacy_import(
         raise SavedLookError(409, "look_import_preview_mismatch", "Import content or review changed; preview the import again.")
     try:
         with db.transaction():
+            _require_resource_planning_enabled()
             receipt_pair = _find_legacy_import_receipt(content_digest, document)
             if receipt_pair is not None:
                 receipt, verified = receipt_pair
@@ -2081,14 +2100,17 @@ def _save(
 
 
 def create(payload: dict) -> dict:
+    _require_resource_planning_enabled()
     try:
         with db.transaction():
+            _require_resource_planning_enabled()
             return _save(payload, look_key=None, version=1, history=[], prior=None)
     except sqlite3.IntegrityError:
         _write_conflict()
 
 
 def create_version(look_key: str, expected_version: int, payload: dict) -> dict:
+    _require_resource_planning_enabled()
     if (
         not _valid_key(look_key)
         or type(expected_version) is not int
@@ -2097,6 +2119,7 @@ def create_version(look_key: str, expected_version: int, payload: dict) -> dict:
         _invalid()
     try:
         with db.transaction():
+            _require_resource_planning_enabled()
             history = _history(look_key)
             if not history:
                 raise SavedLookError(404, "look_not_found", "Saved look was not found.")

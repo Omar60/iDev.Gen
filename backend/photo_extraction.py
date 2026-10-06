@@ -15,6 +15,7 @@ import db
 import enhance
 from backend import photo_staging
 from backend import saved_looks
+from backend import resource_planning
 
 _PROPOSAL_ID = re.compile(r"^[0-9a-f]{32}$")
 _UNRESOLVED_ID = re.compile(r"^u[1-9][0-9]{0,2}$")
@@ -36,6 +37,12 @@ Describe only clearly visible, general appearance that belongs in a constant loo
 
 class PhotoExtractionError(photo_staging.PhotoStageError):
     pass
+
+
+def _writes_enabled(config: dict | None = None) -> bool:
+    return resource_planning.is_enabled() and (
+        config is None or resource_planning.is_enabled(config)
+    )
 
 
 def _fail(status: int, code: str, message: str) -> None:
@@ -209,8 +216,14 @@ def _stage_error(row: dict | None) -> PhotoExtractionError:
     return PhotoExtractionError(409, "photo_stage_saved", "This photo stage has already been saved.")
 
 
-def _start_attempt(photo_id: str, proposal_id: str, image: dict) -> int:
+def _start_attempt(photo_id: str, proposal_id: str, image: dict, writes_enabled=None) -> int:
     with db.transaction():
+        if writes_enabled is not None and not writes_enabled():
+            raise PhotoExtractionError(
+                503,
+                "resource_planning_disabled",
+                "Saved-look writing is disabled.",
+            )
         row = db.one("SELECT * FROM look_photo_stage WHERE photo_id = ?", photo_id)
         if row is None or row["state"] != "staged":
             raise _stage_error(row)
@@ -322,7 +335,10 @@ def _publish_attempt(
 
 async def extract(photo_id: str, config: dict, run_structured, writes_enabled) -> dict:
     """Ask for a proposal without holding a database transaction over HTTP."""
-    if not writes_enabled():
+    def live_writes_enabled() -> bool:
+        return _writes_enabled(config) and bool(writes_enabled())
+
+    if not live_writes_enabled():
         raise PhotoExtractionError(503, "resource_planning_disabled", "Saved-look writing is disabled.")
     if not enhance.vision_configured(config):
         raise PhotoExtractionError(
@@ -333,16 +349,30 @@ async def extract(photo_id: str, config: dict, run_structured, writes_enabled) -
     data, image = photo_staging.read_staged_photo(photo_id)
     image_uri = f"data:{image['media_type']};base64,{base64.b64encode(data).decode('ascii')}"
     proposal_id = uuid4().hex
-    generation = _start_attempt(photo_id, proposal_id, image)
+    if not live_writes_enabled():
+        raise PhotoExtractionError(503, "resource_planning_disabled", "Saved-look writing is disabled.")
+    generation = _start_attempt(photo_id, proposal_id, image, live_writes_enabled)
     request_evidence: dict[str, object] = {}
     instruction = enhance.EnhanceIn(instruction=_EXTRACTION_INSTRUCTION, image=image_uri)
     try:
+        if not live_writes_enabled():
+            raise PhotoExtractionError(
+                503,
+                "resource_planning_disabled",
+                "Saved-look writing is disabled.",
+            )
         output = await run_structured(
             config,
             instruction,
             image_uri,
             request_evidence=request_evidence,
         )
+        if not live_writes_enabled():
+            raise PhotoExtractionError(
+                503,
+                "resource_planning_disabled",
+                "Saved-look writing is disabled.",
+            )
         proposal = _validate_output(output, config, image_uri)
         request_projection = _redact_request_evidence(
             request_evidence,
@@ -371,13 +401,15 @@ async def extract(photo_id: str, config: dict, run_structured, writes_enabled) -
             image,
             request_projection,
             proposal,
-            writes_enabled,
+            live_writes_enabled,
         )
     finally:
         _discard_attempt(photo_id, proposal_id)
 
 
 def save_review(photo_id: str, review: dict, config: dict, create_look, save_stage) -> dict:
+    if not _writes_enabled(config):
+        _fail(503, "resource_planning_disabled", "Saved-look writing is disabled.")
     proposal_id = review["proposal_id"]
     if not _PROPOSAL_ID.fullmatch(proposal_id):
         _fail(409, "photo_proposal_stale", "The extraction proposal is stale or does not belong to this photo stage.")

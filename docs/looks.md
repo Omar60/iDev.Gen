@@ -307,7 +307,9 @@ content; use `key` and `version` to identify a specific version.
 Writes are transactional and use the shared 10 MiB actual-request-body limit,
 measured from the streamed request body. Import preview and commit enforce this
 limit even when `Content-Length` is missing or inaccurate. When resource
-planning is disabled, saved-look mutations including import commit return
-`503`; reads and import preview remain available. A stale `expected_version`
-returns `409`; invalid input returns `422`, and a missing look version returns
-`404`.
+planning is disabled, saved-look writes and both `/api/looks/import/preview` and
+`/api/looks/import/commit` return `503`, including for portable and legacy-format
+Looks JSON. The gate also applies to direct domain callers. Photo-stage status,
+preview, and cancel remain available, as does the existing `/api/wardrobe/import`
+behavior. A stale `expected_version` returns `409`; invalid input returns `422`,
+and a missing look version returns `404`.

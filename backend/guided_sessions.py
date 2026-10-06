@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError, field_validator
 
 import db
+from backend import resource_planning
 import resource_readiness
 import resource_store
 from backend import resource_selection, session_plan, workflow_binding
@@ -220,7 +221,19 @@ def _initial_plan(body: dict[str, Any], binding: dict[str, Any]) -> dict[str, An
 
 def create_or_replay(request: NormalizedGuidedRequest) -> tuple[str, bool]:
     """Persist a new guided session or return the stored response for a retry."""
+    if not resource_planning.is_enabled():
+        raise GuidedSessionError(
+            503,
+            "resource_planning_disabled",
+            "Guided session creation is disabled by configuration.",
+        )
     with db.transaction():
+        if not resource_planning.is_enabled():
+            raise GuidedSessionError(
+                503,
+                "resource_planning_disabled",
+                "Guided session creation is disabled by configuration.",
+            )
         existing = db.one(
             "SELECT request_digest, response_json FROM guided_session_request WHERE request_id = ?",
             request.request_id,

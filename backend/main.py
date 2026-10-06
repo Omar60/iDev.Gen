@@ -61,6 +61,7 @@ from backend import authoring_operations
 from backend import saved_looks
 from backend import photo_staging
 from backend import photo_extraction
+from backend import resource_planning
 from backend.request_limits import RequestLimitRoute
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -709,10 +710,7 @@ def is_resource_planning_enabled() -> bool:
     new resource-v1 session creation, cloning into resource-v1, mode transition,
     plan saving, and take preparations are refused with HTTP 503 before any write.
     """
-    env_override = os.environ.get("IDEVGEN_RESOURCE_PLANNING_ENABLED")
-    if env_override is not None:
-        return env_override.strip().lower() not in ("0", "false", "no", "off")
-    return bool(CONFIG.get("resource_planning_enabled", True))
+    return resource_planning.is_enabled(CONFIG)
 
 
 def is_session_resource_mode(session_or_sid: int | dict) -> bool:
@@ -1585,6 +1583,7 @@ def create_saved_look_version(look_key: str, payload: SavedLookVersionIn):
 
 @_request_limited_post("/api/looks/import/preview")
 async def preview_saved_look_import(request: Request):
+    _require_saved_look_writes()
     kind, document = saved_looks.parse_look_import_preview_json(await request.body())
     if kind == "legacy":
         return saved_looks.preview_legacy_import(document)
@@ -2258,6 +2257,12 @@ def _map_resource_selection_exception(
     selection_id: str,
 ) -> JSONResponse:
     """Translate a domain exception into a stable error envelope."""
+    if isinstance(exc, resource_selection.ResourcePlanningDisabledError):
+        return _stable_error(
+            503,
+            "resource_planning_disabled",
+            "Resource planning is disabled by configuration",
+        )
     if isinstance(exc, resource_selection.SelectionStateInvalidError):
         return _stable_error(500, "selection_state_invalid", "Persisted selection state is invalid")
     try:
@@ -2646,6 +2651,8 @@ async def upload_import_selection_file(
                 file_id,
                 reason="upload_failed",
             )
+            if isinstance(stream_err, resource_selection.ResourcePlanningDisabledError):
+                return _map_resource_selection_exception(stream_err, selection_id)
             current_or_err = _authoritative_selection_view_or_error(selection_id)
             if isinstance(current_or_err, JSONResponse):
                 return current_or_err
@@ -2869,10 +2876,6 @@ def cancel_import_selection(selection_id: str, p: ResourceSelectionCancelIn):
     so cancel always participates in the optimistic concurrency
     contract. Missing or empty body returns the stable envelope.
     """
-    gate = _resource_planning_gate()
-    if gate is not None:
-        return gate
-
     try:
         view = resource_selection.build_selection_view(selection_id)
     except resource_selection.SelectionStateInvalidError:
@@ -3180,6 +3183,11 @@ def preview_resource_library_translations(library_key: str, p: ResourceTranslati
             expected_revision=p.expected_revision,
         )
         return resource_translation.preview_translation_map(library_key, map_input)
+    except resource_translation.ResourcePlanningDisabledError as exc:
+        raise HTTPException(
+            exc.status_code,
+            {"code": exc.code, "message": str(exc)},
+        ) from exc
     except ValueError as exc:
         msg = str(exc).lower()
         if ("library" in msg or "revision" in msg) and "not found" in msg:
@@ -3210,6 +3218,11 @@ def apply_resource_library_translations(library_key: str, p: ResourceTranslation
         )
     except resource_translation.TranslationConflictError as exc:
         raise HTTPException(409, str(exc)) from exc
+    except resource_translation.ResourcePlanningDisabledError as exc:
+        raise HTTPException(
+            exc.status_code,
+            {"code": exc.code, "message": str(exc)},
+        ) from exc
     except ValueError as exc:
         msg = str(exc).lower()
         if ("library" in msg or "revision" in msg) and "not found" in msg:
@@ -3343,7 +3356,11 @@ async def propose_resource_library_translations(
     prompt_text = resource_service.build_translation_proposal_prompt(resolved_entries)
     proposal_prompt = enhance.EnhanceIn(instruction=prompt_text)
 
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
     raw_output = await enhance.run_structured(CONFIG, proposal_prompt)
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
 
     expected_keys = [entry["key"] for entry in resolved_entries]
     try:
@@ -3392,6 +3409,11 @@ def update_resource_revision_translation(
         return resource_translation.apply_revision_translation(
             library_key, source_id, content_digest, p.translation,
         )
+    except resource_translation.ResourcePlanningDisabledError as exc:
+        raise HTTPException(
+            exc.status_code,
+            {"code": exc.code, "message": str(exc)},
+        ) from exc
     except ValueError as exc:
         msg = str(exc).lower()
         if ("library" in msg or "revision" in msg) and "not found" in msg:
@@ -4618,6 +4640,10 @@ class PreparedTakeCompleteIn(BaseModel):
 
 
 def _prepared_take_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, resource_preparation.ResourcePlanningDisabled):
+        return HTTPException(503, "Resource planning is disabled by configuration")
+    if isinstance(exc, session_plan.ResourcePlanningDisabled):
+        return HTTPException(503, "Resource planning is disabled by configuration")
     if isinstance(exc, session_plan.AuthoringEvidenceInvalid):
         return HTTPException(
             409,
@@ -5217,6 +5243,8 @@ def save_plan_draft(sid: int, p: PlanDraftIn):
             sid, p.plan, p.expected_revision,
             shared_decisions=p.shared_decisions,
         )
+    except session_plan.ResourcePlanningDisabled as exc:
+        raise HTTPException(503, str(exc))
     except session_plan.PlanValidationError as exc:
         raise HTTPException(422, str(exc))
     except session_plan.PlanRevisionStale as exc:

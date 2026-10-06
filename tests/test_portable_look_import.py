@@ -69,6 +69,27 @@ def _commit(client, envelope: dict, preview: dict, choice: str = "import"):
     })
 
 
+def test_disabled_new_look_import_blocks_portable_preview_before_parsing(client, monkeypatch):
+    monkeypatch.setattr(main, "is_resource_planning_enabled", lambda: False)
+    monkeypatch.setattr(
+        saved_looks,
+        "parse_look_import_preview_json",
+        lambda *_: pytest.fail("disabled import reached JSON parsing"),
+    )
+    monkeypatch.setattr(
+        saved_looks,
+        "_portable_preview_key",
+        lambda **_: pytest.fail("disabled import created preview signing material"),
+    )
+    before = _counts()
+
+    response = _preview(client, _portable_look())
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "resource_planning_disabled"
+    assert _counts() == before
+
+
 def _insert_look(key: str, version: int, name: str, appearance: str) -> None:
     snapshot = {
         "look_id": key,

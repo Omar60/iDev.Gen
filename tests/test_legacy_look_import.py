@@ -59,6 +59,27 @@ def _commit(client, value: dict, preview: dict, choice: str = "import"):
     })
 
 
+def test_disabled_new_look_import_blocks_legacy_format_before_parsing(client, monkeypatch):
+    monkeypatch.setattr(main, "is_resource_planning_enabled", lambda: False)
+    monkeypatch.setattr(
+        saved_looks,
+        "parse_look_import_preview_json",
+        lambda *_: pytest.fail("disabled import reached JSON parsing"),
+    )
+    monkeypatch.setattr(
+        saved_looks,
+        "_portable_preview_key",
+        lambda **_: pytest.fail("disabled import created preview signing material"),
+    )
+    before = _counts()
+
+    response = _preview(client, _wardrobe())
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "resource_planning_disabled"
+    assert _counts() == before
+
+
 def _send_asgi_post(path: str, body: bytes, *, content_length: bytes | None) -> tuple[int, bytes]:
     headers = [(b"content-type", b"application/json")]
     if content_length is not None:

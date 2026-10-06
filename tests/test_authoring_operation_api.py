@@ -3327,6 +3327,43 @@ def test_suggestion_acceptance_is_blocked_by_disabled_gate_before_body_parsing(
     }
 
 
+def test_suggestion_acceptance_maps_domain_disable_race_to_503(
+    client, seeded, monkeypatch,
+):
+    session_id, operation_id, revision, output = _complete_shared_suggestions(
+        client, seeded, monkeypatch,
+    )
+    before_plan = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id=?",
+        session_id,
+    )
+    enabled_checks = iter((True, True, True, True, False))
+    monkeypatch.setattr(
+        main, "is_resource_planning_enabled", lambda: next(enabled_checks),
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/plan/authoring/operations/{operation_id}/accept",
+        json={
+            "expected_revision": revision,
+            "accepted": {
+                "look": output["look"],
+                "initial_wardrobe": output["initial_wardrobe"],
+            },
+        },
+    )
+
+    _error(response, 503, "resource_planning_disabled")
+    assert db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id=?",
+        session_id,
+    ) == before_plan
+    assert _acceptance_snapshot(operation_id) == {
+        "acceptance_digest": None,
+        "acceptance_result_json": None,
+    }
+
+
 def test_suggestion_acceptance_respects_generated_continuity_freeze(client, seeded, monkeypatch):
     session_id, operation_id, revision, _ = _complete_shared_suggestions(client, seeded, monkeypatch)
     now = db.now()
@@ -3842,12 +3879,23 @@ def test_startup_expires_prior_active_owners_and_finalizes_cancel_requests(
     assert "preserved for resuming" in second["error"]
 
 
+@pytest.mark.parametrize("kind", ["prepare_takes", "shared_suggestions"])
 def test_feature_disable_cancels_before_renewal_or_late_response_persistence(
-    client, seeded, monkeypatch,
+    client, seeded, monkeypatch, kind,
 ):
-    session_id, operation_id, claim = _start_worker(
-        client, seeded, monkeypatch, take_ids=["take-001"],
-    )
+    if kind == "prepare_takes":
+        session_id, operation_id, claim = _start_worker(
+            client, seeded, monkeypatch, take_ids=["take-001"],
+        )
+        late_items = [{"target": "take-001", "result": {"pose": "late output"}}]
+    else:
+        session_id, operation_id, claim = _start_shared_worker(
+            client, seeded, monkeypatch,
+        )
+        late_items = [
+            {"target": "look", "result": "late look"},
+            {"target": "initial_wardrobe", "result": "late wardrobe"},
+        ]
     ticket = authoring_operations.renew_operation_lease(claim)
     monkeypatch.setitem(main.CONFIG, "resource_planning_enabled", False)
     monkeypatch.delenv("IDEVGEN_RESOURCE_PLANNING_ENABLED", raising=False)
@@ -3856,7 +3904,7 @@ def test_feature_disable_cancels_before_renewal_or_late_response_persistence(
         _persist_response_for_state_test(
             claim,
             ticket,
-            [{"target": "take-001", "result": {"pose": "late output"}}],
+            late_items,
         )
     assert exc_info.value.code == "resource_planning_disabled"
     row = _operation_snapshot(operation_id)

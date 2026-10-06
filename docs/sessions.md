@@ -1959,7 +1959,21 @@ To disable resource-based session planning without running a destructive databas
 - When disabled:
   - All existing legacy sessions, resource libraries, immutable revisions, session plans, and finished photographs remain intact and fully inspectable.
   - Read-only endpoints (`GET /api/sessions/{sid}/plan`, revision queries, and draft inspections) continue serving historical state.
-  - Creating new `resource-v1` sessions, cloning into `resource-v1`, saving plan drafts, or preparing new takes returns HTTP 503 (`Resource planning is disabled by configuration`).
+  - Creating or cloning `resource-v1` sessions (including guided creation),
+    selection creation/upload/preview/commit, translation, plan edits,
+    preparation, approval, saved-look writes, and look-photo staging,
+    extraction, and saving return HTTP 503. Portable and
+    legacy-format Look import preview/commit are gated too. HTTP routes and
+    direct domain callers check the live config/environment value, so direct
+    calls cannot bypass the flag.
+  - Selection and authoring-operation status/cancel remain available;
+    photo-stage status, preview, and cancel remain available. New preparation
+    and approval stay blocked, while already-ready and approved takes can still
+    be submitted and run.
+  - If the flag is disabled during a remote authoring call, no next call is
+    scheduled and its late output is discarded. The existing path-backed
+    resource import API and `scripts/import_resources.py` CLI, plus
+    `/api/wardrobe/import`, retain their prior behavior.
   - No destructive downgrade or schema dropping runs automatically. The schema additions remain purely additive.
   - Setting `"resource_planning_enabled": true` (or removing the override) re-enables resource planning immediately with all prior work preserved.
 

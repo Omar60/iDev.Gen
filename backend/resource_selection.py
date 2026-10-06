@@ -31,6 +31,7 @@ import resource_import
 import resource_parser
 import resource_service
 import resource_store
+from backend import resource_planning
 import sys
 
 if __name__ == "backend.resource_selection" and "resource_selection" not in sys.modules:
@@ -75,6 +76,17 @@ MAX_SAFE_INTEGER: int = 9007199254740991
 
 class ResourceSelectionError(Exception):
     """Base exception for resource selection domain errors."""
+
+
+class ResourcePlanningDisabledError(ResourceSelectionError):
+    """A browser-selection write was attempted while resource planning is disabled."""
+
+
+def _require_resource_planning_enabled() -> None:
+    if not resource_planning.is_enabled():
+        raise ResourcePlanningDisabledError(
+            "Resource planning is disabled by configuration."
+        )
 
 
 class InvalidTargetError(ResourceSelectionError, ValueError):
@@ -488,6 +500,7 @@ def create_or_replay_selection(
     the authoritative, canonical ``SelectionView`` projected directly
     from durable state.
     """
+    _require_resource_planning_enabled()
     if not request_id or not str(request_id).strip():
         raise ResourceSelectionError("request_id cannot be empty")
 
@@ -502,6 +515,7 @@ def create_or_replay_selection(
 
     with db._tx_lock:
         with db.transaction():
+            _require_resource_planning_enabled()
             existing = db.one(
                 "SELECT * FROM resource_selection WHERE request_id = ?",
                 canonical_request_id,
@@ -634,10 +648,12 @@ def reserve_file_slot(
     that performs the reservation, so concurrent calls with the same
     ``upload_id`` cannot race past it.
     """
+    _require_resource_planning_enabled()
     now = _now_iso(now_iso)
     now_dt = _parse_iso(now)
 
     with db.transaction():
+        _require_resource_planning_enabled()
         sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
         if not sel:
             raise SelectionNotFoundError(f"Selection {selection_id} not found")
@@ -723,6 +739,7 @@ def reserve_file_bytes(
     now_iso: str | None = None,
 ) -> None:
     """Atomically reserve streamed bytes against file and selection limits."""
+    _require_resource_planning_enabled()
     if chunk_size < 0:
         raise ResourceSelectionError("chunk_size cannot be negative")
     if chunk_size == 0:
@@ -732,6 +749,7 @@ def reserve_file_bytes(
     now_dt = _parse_iso(now)
 
     with db.transaction():
+        _require_resource_planning_enabled()
         sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
         if not sel:
             raise SelectionNotFoundError(f"Selection {selection_id} not found")
@@ -783,6 +801,14 @@ def stage_file_chunk(
 ) -> None:
     """Reserve and append a byte chunk to the staged file."""
     reserve_file_bytes(selection_id, file_id, len(chunk), now_iso=now_iso)
+
+    try:
+        _require_resource_planning_enabled()
+    except ResourcePlanningDisabledError:
+        abort_file_reservation(
+            selection_id, file_id, reason="resource_planning_disabled", now_iso=now_iso,
+        )
+        raise
 
     file_row = db.one("SELECT staged_path FROM resource_selection_file WHERE file_id = ?", file_id)
     if not file_row:
@@ -847,10 +873,12 @@ def finalize_staged_file(
     now_iso: str | None = None,
 ) -> dict:
     """Finalize an uploaded file, record fingerprint, bump revision, and invalidate preview."""
+    _require_resource_planning_enabled()
     now = _now_iso(now_iso)
     now_dt = _parse_iso(now)
 
     with db.transaction():
+        _require_resource_planning_enabled()
         sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
         if not sel:
             raise SelectionNotFoundError(f"Selection {selection_id} not found")
@@ -1078,10 +1106,12 @@ def remove_staged_file(
     now_iso: str | None = None,
 ) -> dict:
     """Remove a staged file, decrement counters, bump revision, and invalidate preview."""
+    _require_resource_planning_enabled()
     now = _now_iso(now_iso)
     now_dt = _parse_iso(now)
 
     with db.transaction():
+        _require_resource_planning_enabled()
         sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
         if not sel:
             raise SelectionNotFoundError(f"Selection {selection_id} not found")
@@ -1163,6 +1193,7 @@ def update_file_targets(
     Validates targets and expected_revision before entering the transaction.
     If validation fails, zero mutation occurs.
     """
+    _require_resource_planning_enabled()
     try:
         expected_revision = validate_json_revision(expected_revision)
     except ValueError as exc:
@@ -1183,6 +1214,7 @@ def update_file_targets(
     now_dt = _parse_iso(now)
 
     with db.transaction():
+        _require_resource_planning_enabled()
         sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
         if not sel:
             raise SelectionNotFoundError(f"Selection {selection_id} not found")
@@ -1231,6 +1263,7 @@ def save_preview(
     now_iso: str | None = None,
 ) -> bool:
     """Bind preview token, manifest digest, committable status, and report to an open selection."""
+    _require_resource_planning_enabled()
     if type(selection_id) is not str or not selection_id or not _is_safe_public_string(selection_id):
         raise ValueError("selection_id is invalid")
     validate_json_revision(expected_revision)
@@ -1257,6 +1290,7 @@ def save_preview(
     now = _now_iso(now_iso)
 
     with db.transaction():
+        _require_resource_planning_enabled()
         cur = db.conn().execute(
             "UPDATE resource_selection "
             "SET preview_token = ?, "
@@ -1293,10 +1327,12 @@ def acquire_commit_claim(
     now_iso: str | None = None,
 ) -> CommitClaimResult:
     """Atomically acquire the single commit claim on the selection."""
+    _require_resource_planning_enabled()
     now = _now_iso(now_iso)
     now_dt = _parse_iso(now)
 
     with db.transaction():
+        _require_resource_planning_enabled()
         sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
         if not sel:
             raise SelectionNotFoundError(f"Selection {selection_id} not found")
@@ -1475,6 +1511,7 @@ def record_commit_result(
     now_iso: str | None = None,
 ) -> bool:
     """Record final committed result atomically, mark terminal committed, and clean staged files."""
+    _require_resource_planning_enabled()
     if type(selection_id) is not str or not selection_id or not _is_safe_public_string(selection_id):
         raise ValueError("selection_id is invalid")
     if type(commit_token) is not str or not commit_token or not _is_safe_public_string(commit_token):
@@ -1492,6 +1529,7 @@ def record_commit_result(
     now = _now_iso(now_iso)
 
     with db.transaction():
+        _require_resource_planning_enabled()
         sel = db.one("SELECT * FROM resource_selection WHERE selection_id = ?", selection_id)
         if not sel or sel["state"] != "committing" or sel.get("claim_commit_token") != commit_token:
             return False
@@ -2630,6 +2668,7 @@ def preview_selection(
     runs canonical preview_import, computes committable status, saves preview evidence,
     and returns the authoritative updated SelectionView.
     """
+    _require_resource_planning_enabled()
     if type(selection_id) is not str or not selection_id or not _is_safe_public_string(selection_id):
         raise ValueError("selection_id is invalid")
     validate_json_revision(expected_revision)
@@ -2733,6 +2772,7 @@ def commit_selection(
       - "replay": idempotent replay of already committed tuple (HTTP 200)
       - "active_same_tuple": another owner is actively committing (HTTP 202)
     """
+    _require_resource_planning_enabled()
     if type(selection_id) is not str or not selection_id or not _is_safe_public_string(selection_id):
         raise ValueError("selection_id is invalid")
     validate_json_revision(expected_revision)
@@ -2939,6 +2979,7 @@ def commit_selection(
     # Execute atomic SQLite transaction: commit_selection_import + coverage + record_commit_result
     try:
         with db.transaction():
+            _require_resource_planning_enabled()
             # Verify claim ownership inside transaction before resource writes
             sel_in_tx = db.one(
                 "SELECT claim_commit_token, claim_revision, claim_preview_token, claim_manifest_digest, state FROM resource_selection WHERE selection_id = ?",

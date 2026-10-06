@@ -2,6 +2,13 @@
 
 ## Decisions and Lessons
 
+- Feature-disable safety exceptions belong at domain boundaries as well as
+  HTTP routes. Share live config/environment resolution, retain cancellation
+  and cleanup, and reject caller-provided enablement that contradicts the live
+  flag. A preview that creates signing material is a write. Keep new Looks
+  legacy-format import separate from the existing wardrobe compatibility API.
+  Map a disablement detected after HTTP preflight to 503 without durable writes.
+
 - Snapshot freeze acceptance should use an actual approved/submitted shot,
   then try valid server-created look alternatives while keeping effective
   shared strings unchanged. Compare complete persisted rows after refusals

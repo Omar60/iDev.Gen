@@ -331,7 +331,20 @@ The backup utility uses SQLite's online backup API, validates schema integrity (
 To operationally disable the resource planning feature without destructive schema rollbacks:
 - Set `"resource_planning_enabled": false` in `config.json`, or export `IDEVGEN_RESOURCE_PLANNING_ENABLED=0`.
 - All legacy sessions, resource revisions, plan history, and finished shots remain fully readable and intact.
-- Persistent writes and draft preparations in `resource-v1` mode are cleanly refused with HTTP 503.
+- Creating or cloning `resource-v1` sessions (including guided creation),
+  resource selection, translation, plan edits, preparation, approval,
+  saved-look writes, and look-photo staging, extraction, and saving return
+  HTTP 503. Portable and legacy-format Look import
+  preview/commit are gated too. HTTP routes and direct domain callers check the
+  live config/environment value, so direct calls cannot bypass the flag.
+- Selection and authoring-operation status/cancel remain available; photo-stage
+  status, preview, and cancel remain available. New preparation and approval
+  stay blocked, while already-ready and approved takes can still be submitted
+  and run.
+- If the flag is disabled during a remote authoring call, no next call is
+  scheduled and its late output is discarded. The existing path-backed resource
+  import API and `scripts/import_resources.py` CLI, plus `/api/wardrobe/import`,
+  retain their prior behavior.
 - Re-enabling the flag (`true` or `1`) restores write capabilities immediately without data loss.
 
 ## Library
