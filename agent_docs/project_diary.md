@@ -1,5 +1,19 @@
 # Project Diary
 
+## Task 10.6 Compatibility Evidence
+
+- Separate tests for raw completion and multiresource projection do not prove
+  their integration. Connect the real expert begin/complete API to reviewed,
+  explicitly submitted work while preserving caller-owned prompt/provenance
+  and independently checking server-derived dependencies.
+- A generated prepared marker is not proof of a generated image. Capture an
+  actual pending linked shot and compare complete rows across retry and a
+  permitted future edit; preserve stale-revision refusal rather than extending
+  old submission authority.
+- Run available opt-in historical rollback tests explicitly. Their extracted
+  source-process evidence complements the default suite without establishing
+  packaged-binary or real-service behavior.
+
 ## Task 10.5 Compatibility Evidence
 
 - Demonstrate compatibility at commit, not only preview: choose the existing

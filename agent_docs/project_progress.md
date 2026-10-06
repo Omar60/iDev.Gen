@@ -7,23 +7,25 @@ at a time, preserving unrelated work and explicit generation gates.
 
 ## Current Position
 
-Heavy internal Codex deployment `srsw-10-5-20261006` completed only Task 10.5
-on 2026-10-06. Main accepted independent Tester evidence and marked the task;
-OpenSpec now records 69 of 72 tasks complete. The tree was clean at intake.
+Heavy internal Codex deployment `srsw-10-6-20261006` completed only Task 10.6
+on 2026-10-06. Main accepted independent Tester evidence and the corrected
+compatibility report. Task 10.6 is checked; 70 of 72 tasks are complete.
+The tree was clean at intake. No production behavior changed.
 
-The compatibility journey demonstrates explicit historical targeting,
-collection-only import, immutable revision accounting, committed-result replay
-before and after staged-byte cleanup, and a separately reviewed fused
-adaptation. No backend or frontend production changes were required.
-Evidence and limits are canonical in `latest_session_work.md`.
+The added raw-expert API regression connects two selected resources to
+completion, server-derived dependency evidence, review, approval and explicit
+submission. It preserves the caller snapshot and the actual pending shot
+through retry and a future-take edit. The compatibility matrix and final
+evidence are canonical in `latest_session_work.md`.
 
-Independent gates passed: 2,761 Python tests (one environment-dependent symlink
-skip), 587 frontend tests, frontend build, 46 privacy/control checks, strict
-OpenSpec validation and diff checks. The build retains its existing size advisory.
+Independent gates passed: 2,762 Python tests, one environment-dependent symlink
+skip, 587 frontend tests, build, 46 privacy/control checks, two historical-source
+rollback tests, strict OpenSpec validation and diff checks. The build retains
+its existing chunk-size advisory.
 
 ## Next Milestone
 
-Task 10.5 is accepted for the user-authorized isolated local commit and Heavy
-closure handoff. Task 10.6 remains unchecked and unstarted; starting it requires
-a new user instruction. Do not push or create external handoffs. No independent
-acceptance review remains pending for 10.5.
+Task 10.6 is accepted for its authorized isolated local commit and Heavy
+closure. No independent behavior review remains pending. Tasks 10.7 and 10.8
+remain unchecked and unstarted; another task requires a new user instruction.
+Do not push or create external handoffs.

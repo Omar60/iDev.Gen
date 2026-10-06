@@ -2039,6 +2039,223 @@ class TestTask24AuthoringEvidenceContract:
         assert dict(db.one("SELECT * FROM prepared_take WHERE id = ?", row["id"])) == before
         assert before["provenance"] == missing_evidence
 
+    def test_task_106_pre_authoring_expert_raw_complete_preserves_multiresource_snapshot_and_queue_flow(
+        self, client, seeded, monkeypatch,
+    ):
+        first = _setup_resource_revision(source_id="inv_room_task106_multi_01")
+        second_id = resource_store.record_revision(
+            first["library_id"],
+            "inv_room_task106_multi_02",
+            {
+                "label": "invented second room",
+                "scene_theme": "a bright reading corner",
+                "tags": ["north window", "wooden chair"],
+            },
+            translation={
+                "label": "invented second room",
+                "scene_theme": "a bright reading corner",
+                "tags": ["north window", "wooden chair"],
+            },
+        )
+        second_revision = resource_store.get_revision(revision_id=second_id)
+        assert second_revision is not None
+        second = {
+            "library_key": first["library_key"],
+            "source_id": second_revision["source_id"],
+            "content_digest": second_revision["content_digest"],
+        }
+
+        sid = _create_resource_session(client, seeded)
+        _seed_plan(sid, seeded, first, authoring_mode=None)
+        _, plan = backend_session_plan._load_current_resource_plan(sid)
+        first_triple = {
+            "library_key": first["library_key"],
+            "source_id": first["source_id"],
+            "content_digest": first["content_digest"],
+        }
+        plan["selected_resources"] = [second, first_triple]
+        saved_draft = backend_session_plan.save_draft(sid, plan, expected_revision=1)
+        assert saved_draft["plan_revision"] == 2
+
+        assistant_spy = MagicMock(side_effect=AssertionError("raw expert completion must not invoke the assistant"))
+        monkeypatch.setattr(main.enhance, "run_structured", assistant_spy)
+        begun = client.post(
+            f"/api/sessions/{sid}/plan/preparations/begin",
+            json={"plan_revision": 2, "take_id": "take-001"},
+        )
+        assert begun.status_code == 200, begun.text
+        assert begun.json()["status"] == "pending"
+        assert db.q("SELECT * FROM shot WHERE session_id = ?", sid) == []
+
+        effective_state = {
+            "look": "caller-owned expert look",
+            "take_choices": {"camera": "over-shoulder", "pose": "seated"},
+            "custom_values": ["preserve", "as supplied"],
+        }
+        caller_provenance = {
+            "source": "expert",
+            "custom_field": "preserved caller provenance",
+            "selected_resource_revisions": [
+                {**first_triple, "kind": "rooms"},
+                {**second, "kind": "rooms"},
+            ],
+        }
+        final_prompt = "caller-owned multi-resource expert prompt"
+        completed = client.post(
+            f"/api/sessions/{sid}/plan/preparations/complete",
+            json={
+                "plan_revision": 2,
+                "take_id": "take-001",
+                "final_prompt": final_prompt,
+                "effective_state": effective_state,
+                "mapping_version": "expert-map-v1",
+                "compiler_version": "expert-compiler-v1",
+                "provenance": caller_provenance,
+            },
+        )
+        assert completed.status_code == 200, completed.text
+        snapshot = completed.json()
+        assert snapshot["status"] == "ready"
+        assert snapshot["final_prompt"] == final_prompt
+        assert snapshot["effective_state"] == effective_state
+        saved_provenance = snapshot["provenance"]
+        assert {key: value for key, value in saved_provenance.items() if key != "resource_input_evidence"} == (
+            caller_provenance
+        )
+
+        evidence = saved_provenance["resource_input_evidence"]
+        assert evidence["version"] == 1
+        assert evidence["effective_resource_input_digest"]["version"] == 1
+        expected_triples = [
+            first_triple,
+            second,
+        ]
+        assert evidence["selected_resource_revisions"] == [
+            {**triple, "kind": "rooms"} for triple in expected_triples
+        ]
+        projection = evidence["resource_projection"]
+        assert projection["version"] == 1
+        assert projection["selected_resource_triples"] == expected_triples
+        expected_effective_inputs = [
+            (first_triple, "label", "invented studio room"),
+            (first_triple, "scene_theme", "minimalist studio lighting"),
+            (second, "label", "invented second room"),
+            (second, "scene_theme", "a bright reading corner"),
+            (second, "tags", ["north window", "wooden chair"]),
+        ]
+        assert [
+            (
+                {key: item[key] for key in ("library_key", "source_id", "content_digest")},
+                item["resource_field"],
+                item["value"],
+            )
+            for item in projection["effective_descriptive_inputs"]
+        ] == expected_effective_inputs
+        assert projection["consumed_adaptations"] == []
+        assert evidence["effective_resource_input_digest"]["digest"] == resource_store.canonical_digest({
+            "selected_resource_triples": expected_triples,
+            "effective_descriptive_inputs": projection["effective_descriptive_inputs"],
+            "consumed_adaptations": [],
+        })
+
+        persisted = db.one(
+            "SELECT status, final_prompt, effective_state, mapping_version, compiler_version, "
+            "provenance, linked_shot_id "
+            "FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+            sid, 2, "take-001",
+        )
+        assert persisted["status"] == "ready"
+        assert persisted["final_prompt"] == final_prompt
+        assert json.loads(persisted["effective_state"]) == effective_state
+        assert persisted["mapping_version"] == "expert-map-v1"
+        assert persisted["compiler_version"] == "expert-compiler-v1"
+        assert json.loads(persisted["provenance"]) == saved_provenance
+        assert persisted["linked_shot_id"] is None
+        assert db.q("SELECT * FROM shot WHERE session_id = ?", sid) == []
+
+        reviewed = client.get(f"/api/sessions/{sid}/plan/takes/take-001/review")
+        assert reviewed.status_code == 200, reviewed.text
+        assert reviewed.json()["snapshot"]["final_prompt"] == final_prompt
+        assert reviewed.json()["snapshot"]["provenance"] == saved_provenance
+        approved = client.post(
+            f"/api/sessions/{sid}/plan/review/approve",
+            json={"plan_revision": 2},
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["approved"] is True
+        assert db.q("SELECT * FROM shot WHERE session_id = ?", sid) == []
+
+        submitted = client.post(
+            f"/api/sessions/{sid}/plan/preparations/submit",
+            json={"plan_revision": 2, "take_id": "take-001"},
+        )
+        assert submitted.status_code == 200, submitted.text
+        shot_id = submitted.json()["shot_id"]
+        assert shot_id is not None
+        assert submitted.json()["status"] == "generated"
+        shot = db.one("SELECT id, prompt, status FROM shot WHERE id = ?", shot_id)
+        assert shot["prompt"] == final_prompt
+        assert shot["status"] == "pending"
+        submitted_snapshot = dict(db.one(
+            "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+            sid, 2, "take-001",
+        ))
+        submitted_shot = dict(db.one("SELECT * FROM shot WHERE id = ?", shot_id))
+
+        retried = client.post(
+            f"/api/sessions/{sid}/plan/preparations/submit",
+            json={"plan_revision": 2, "take_id": "take-001"},
+        )
+        assert retried.status_code == 200, retried.text
+        assert retried.json()["shot_id"] == shot_id
+        shots = db.q("SELECT * FROM shot WHERE session_id = ?", sid)
+        assert len(shots) == 1
+        assert shots[0]["id"] == shot_id
+        assert shots[0]["prompt"] == final_prompt
+        assert shots[0]["status"] == "pending"
+        assert dict(db.one(
+            "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+            sid, 2, "take-001",
+        )) == submitted_snapshot
+        assert dict(db.one("SELECT * FROM shot WHERE id = ?", shot_id)) == submitted_shot
+
+        current_plan = client.get(f"/api/sessions/{sid}/plan")
+        assert current_plan.status_code == 200, current_plan.text
+        future_plan = current_plan.json()["plan"]
+        future_take = dict(future_plan["takes"][0])
+        future_take.update({
+            "take_id": "take-002",
+            "label": "take 2",
+            "camera": "eye level",
+        })
+        future_plan["takes"].append(future_take)
+        future_edit = client.post(
+            f"/api/sessions/{sid}/plan",
+            json={"plan": future_plan, "expected_revision": 2},
+        )
+        assert future_edit.status_code == 200, future_edit.text
+        assert future_edit.json()["plan_revision"] == 3
+        assert dict(db.one(
+            "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+            sid, 2, "take-001",
+        )) == submitted_snapshot
+        assert dict(db.one("SELECT * FROM shot WHERE id = ?", shot_id)) == submitted_shot
+
+        changes_before_stale_retry = db.conn().total_changes
+        stale_retry = client.post(
+            f"/api/sessions/{sid}/plan/preparations/submit",
+            json={"plan_revision": 2, "take_id": "take-001"},
+        )
+        assert stale_retry.status_code == 409
+        assert db.conn().total_changes == changes_before_stale_retry
+        assert dict(db.one(
+            "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+            sid, 2, "take-001",
+        )) == submitted_snapshot
+        assert dict(db.one("SELECT * FROM shot WHERE id = ?", shot_id)) == submitted_shot
+        assert len(db.q("SELECT * FROM shot WHERE session_id = ?", sid)) == 1
+        assistant_spy.assert_not_called()
+
     def test_task_74_pre_authoring_expert_empty_resource_projection_is_versioned(
         self, client, seeded,
     ):
