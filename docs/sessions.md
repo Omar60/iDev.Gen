@@ -1954,28 +1954,40 @@ pre-authoring expert preparation retain their existing flows.
 
 ### Operational rollback and disabling resource mode
 
-To disable resource-based session planning without running a destructive database downgrade:
-- Set `"resource_planning_enabled": false` in `config.json` (or set environment variable `IDEVGEN_RESOURCE_PLANNING_ENABLED=0`).
-- When disabled:
-  - All existing legacy sessions, resource libraries, immutable revisions, session plans, and finished photographs remain intact and fully inspectable.
-  - Read-only endpoints (`GET /api/sessions/{sid}/plan`, revision queries, and draft inspections) continue serving historical state.
-  - Creating or cloning `resource-v1` sessions (including guided creation),
-    selection creation/upload/preview/commit, translation, plan edits,
-    preparation, approval, saved-look writes, and look-photo staging,
-    extraction, and saving return HTTP 503. Portable and
-    legacy-format Look import preview/commit are gated too. HTTP routes and
-    direct domain callers check the live config/environment value, so direct
-    calls cannot bypass the flag.
-  - Selection and authoring-operation status/cancel remain available;
-    photo-stage status, preview, and cancel remain available. New preparation
-    and approval stay blocked, while already-ready and approved takes can still
-    be submitted and run.
-  - If the flag is disabled during a remote authoring call, no next call is
-    scheduled and its late output is discarded. The existing path-backed
-    resource import API and `scripts/import_resources.py` CLI, plus
-    `/api/wardrobe/import`, retain their prior behavior.
-  - No destructive downgrade or schema dropping runs automatically. The schema additions remain purely additive.
-  - Setting `"resource_planning_enabled": true` (or removing the override) re-enables resource planning immediately with all prior work preserved.
+With `resource_planning_enabled=false`, resource-planning writes return HTTP 503 while existing resource, session, plan, review, operation, look, and photo-preview reads remain available. Operation status and cancellation remain available, and already-ready, authoritatively approved snapshots may still be submitted and run. Disabling during an assistant call fences the response, discards late output, and prevents another call. The existing path-backed resource import API and CLI, plus legacy garment/outfit import, keep their prior behavior. No destructive downgrade or automatic table drop runs.
+
+Follow this order before starting a rollback-compatible older binary:
+
+1. **Back up the upgraded database.** While the current version is running, run `python scripts/backup_db.py --json`. Continue only when its report says `"status": "ok"`; record the target path. This snapshot includes the current upgraded database and is a safety copy if the downgrade has to be reversed.
+2. **Disable the current process and persist the flag.** Use the existing `PATCH /api/config` endpoint with the complete current `ConfigIn` values and `"resource_planning_enabled": false`. The endpoint replaces the full config file and applies the new config to the running process, so preserve every writable field. `GET /api/config` reports the persisted value, not the effective value when an environment override is present. If the running process inherited an enabled `IDEVGEN_RESOURCE_PLANNING_ENABLED` override, a separate shell cannot change that process's environment and the PATCH cannot override it. Stop the current schema-capable process normally, start that same version with the override set to `0` and the persisted flag still false, then restart this procedure at step 1 and take a fresh backup before continuing.
+3. **Cancel or observe every active authoring operation.** There is no collection endpoint for listing operations across sessions. Use a local read-only SQLite connection to the current `<data_dir>/idevgen.db` and enumerate all nonterminal operations:
+
+   ```sql
+   SELECT session_id, operation_id, plan_revision, state
+   FROM authoring_operation
+   WHERE state IN ('active', 'cancel_requested')
+   ORDER BY session_id, created_at;
+   ```
+
+   For each `active` row, send `POST /api/sessions/{sid}/plan/authoring/operations/{operation_id}/cancel` with this JSON body, replacing `N` with the row's `plan_revision`:
+
+   ```json
+   {"expected_revision": N}
+   ```
+
+   Poll `GET /api/sessions/{sid}/plan/authoring/operations/{operation_id}` until the state is terminal: `succeeded`, `failed`, `cancelled`, or `expired`. `cancel_requested` is not terminal. If cancellation wins while the assistant call is in flight, its late response is discarded without changing the plan or saving an operation result; wait for that terminal cancellation before stopping.
+4. **Verify the gate.** Confirm `GET /api/config` reports the persisted flag as false, then send this request to an existing resource session using its current revision:
+
+   ```http
+   POST /api/sessions/<sid>/plan
+   Content-Type: application/json
+
+   {"expected_revision": N, "plan": {}}
+   ```
+
+   The expected result is HTTP 503, which verifies the live process gate before normal plan validation and does not write a plan. HTTP 422 means the effective gate is still enabled; stop and apply step 2's process-restart instruction. Confirm the read-only query returns no `active` or `cancel_requested` rows.
+5. **Stop cleanly.** Use the current app's normal shutdown path and wait for the process to exit, then start the rollback-compatible binary with the persisted flag still false. Inspect existing plans and snapshots read-only. Generic plan saves must remain blocked so an older normalizer cannot drop unknown authoring metadata.
+6. **Respect the pre-flag boundary.** A binary that predates `resource_planning_enabled` cannot honor this guard and must not open the upgraded database for writes. Restore the verified **pre-upgrade** backup before launching it. The snapshot made in step 1 is from the upgraded database and is not a substitute for that pre-upgrade restore point. Re-enable writes only after restoring a binary that understands the closed authoring schema.
 
 ### Database backups
 
@@ -1990,7 +2002,7 @@ The script accepts optional arguments:
 - `--force` or `-f`: overwrite an existing destination file.
 - `--config <path>`: path to `config.json`.
 - `--data-dir <path>`: path to database directory.
-- `--json`: emit JSON summary with source, target, size in bytes, and timestamp.
+- `--json`: emit JSON status, source, target, size in bytes, and the database-only backup note.
 
 The backup utility uses SQLite's online backup API (`sqlite3.Connection.backup()`), ensuring WAL transactions are safely flushed into a consistent, verified snapshot (`PRAGMA integrity_check`).
 

@@ -16,6 +16,7 @@ import main
 import resource_store
 import pytest
 from backend import authoring_operations
+from backup import backup_database
 
 
 _REAL_SCHEDULE_SHARED_SUGGESTION_OPERATION = main._schedule_shared_suggestion_operation
@@ -2785,6 +2786,115 @@ def test_shared_suggestion_cancellation_discards_late_provider_response(
     current = client.get(f"/api/sessions/{session_id}/plan").json()
     assert current["plan_revision"] == revision
     assert current["plan"]["authoring"]["evidence"] == []
+    assert db.one(
+        "SELECT result_json FROM authoring_operation WHERE operation_id = ?",
+        operation_id,
+    )["result_json"] is None
+
+
+def test_downgrade_disable_cancels_operations_before_clean_shutdown(
+    client, seeded, monkeypatch, tmp_path, request,
+):
+    """The live persisted flag is checked before active work is cancelled and stopped."""
+    monkeypatch.setattr(main, "CONFIG", dict(main.CONFIG))
+    _configure_assistant(monkeypatch)
+    _enable_background_suggestion_dispatch(monkeypatch)
+    session_id, revision = _create_guided_session(client, seeded)
+
+    entered = threading.Event()
+    release = threading.Event()
+    calls = _install_fake_structured_assistant(
+        monkeypatch,
+        [{"look": "A late suggested look.", "initial_wardrobe": "A late outfit."}],
+        entered=entered,
+        release=release,
+    )
+    operations_url = f"/api/sessions/{session_id}/plan/authoring/operations"
+    started = client.post(
+        operations_url,
+        json=_start_body("shared_suggestions", revision=revision),
+    )
+    assert started.status_code == 202, started.text
+    operation_id = started.json()["operation_id"]
+    assert entered.wait(timeout=2), "the suggestion worker did not reach the fake assistant"
+
+    backup_path = tmp_path / "pre-downgrade.db"
+    backup_database(main.DATA_DIR / "idevgen.db", backup_path)
+    backup_conn = sqlite3.connect(backup_path)
+    assert backup_conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert backup_conn.execute(
+        "SELECT state FROM authoring_operation WHERE operation_id = ?",
+        (operation_id,),
+    ).fetchone()[0] == "active"
+    backup_conn.close()
+
+    config_path = main.CONFIG_PATH
+    saved_config = config_path.read_bytes() if config_path.exists() else None
+
+    def restore_config_file():
+        if saved_config is None:
+            config_path.unlink(missing_ok=True)
+        else:
+            config_path.write_bytes(saved_config)
+
+    request.addfinalizer(restore_config_file)
+
+    # The override wins over persisted config and must be removed from this process.
+    monkeypatch.setenv("IDEVGEN_RESOURCE_PLANNING_ENABLED", "1")
+    payload = main.ConfigIn(**main.CONFIG).model_dump()
+    preserved_config_fields = (
+        "comfy_url", "comfy_output_dir", "lora_dir", "data_dir",
+        "llm_url", "llm_model", "llm_vision_model", "llm_key",
+    )
+    preserved_config = {key: payload[key] for key in preserved_config_fields}
+    payload["resource_planning_enabled"] = False
+    saved = client.patch("/api/config", json=payload)
+    assert saved.status_code == 200, saved.text
+    assert client.get("/api/config").json()["resource_planning_enabled"] is False
+    assert main.is_resource_planning_enabled() is True
+    persisted_config = json.loads(config_path.read_text(encoding="utf-8"))
+    for key, value in preserved_config.items():
+        assert main.CONFIG[key] == value
+        assert persisted_config[key] == value
+
+    monkeypatch.delenv("IDEVGEN_RESOURCE_PLANNING_ENABLED")
+    assert main.is_resource_planning_enabled() is False
+    operation_url = f"{operations_url}/{operation_id}"
+    cancelled = client.post(
+        f"{operation_url}/cancel",
+        json={"expected_revision": revision},
+    )
+    assert cancelled.status_code in (200, 202), cancelled.text
+    expected_cancel_state = "cancel_requested" if cancelled.status_code == 202 else "cancelled"
+    assert cancelled.json()["state"] == expected_cancel_state
+    assert db.one(
+        "SELECT state FROM authoring_operation WHERE operation_id = ?", operation_id,
+    )["state"] == expected_cancel_state
+
+    plan_before = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    refused = client.post(
+        f"/api/sessions/{session_id}/plan",
+        json={"expected_revision": revision, "plan": {}},
+    )
+    assert refused.status_code == 503, refused.text
+    assert db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    ) == plan_before
+
+    release.set()
+    terminal = _wait_for_operation_state(
+        client, session_id, operation_id, "cancelled",
+    )
+    assert terminal["result"] is None
+    assert len(calls) == 1
+    assert db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    ) == plan_before
     assert db.one(
         "SELECT result_json FROM authoring_operation WHERE operation_id = ?",
         operation_id,

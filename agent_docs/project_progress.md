@@ -8,27 +8,28 @@ integration, and acceptance in the main agent.
 
 ## Current Deployment
 
-Task 10.1 passed independent acceptance under Heavy deployment
-`srsw-10-1-20261005` with internal Codex implementation and verification.
-Progress is 65 of 72 tasks complete. A shared live flag resolver protects new
-HTTP and direct-domain writes, including standalone config/environment reads.
-Selection cancellation and cleanup remain available; new Looks import previews
-are blocked before signing-key creation. Approved ready Submit/runner work and
-existing path/wardrobe imports retain compatibility. Late remote output is
-discarded after disablement. README and the session/Looks guides reflect these
-boundaries. No independent review remains pending.
+Task 10.2 passed independent technical acceptance under Heavy deployment
+`srsw-10-2-20261005` with internal Codex implementation and verification.
+Progress is 66 of 72 tasks complete. Existing backup, configuration and
+cancellation primitives support the documented ordered downgrade procedure;
+no production or frontend changes were needed. Historical source checks prove
+disabled generic saves preserve a valid authoring plan, snapshot and approval
+for both persisted-config and environment disablement. The pre-flag source
+opens only a restored verified pre-upgrade backup in the demonstration.
 
-Independent verification passed 2,755 Python tests with one Windows symlink
-permission skip, ten adversarial probes, 581 frontend tests in 30 files, build,
-46 privacy/control checks, strict OpenSpec validation and whitespace checks.
-One concurrent look-save test failed in a focused run, then passed alone and
-in the full suite; the cause remains unexplained. The build retains its bundle
-size warning. The user authorized the isolated local acceptance commit.
-Task 10.2 remains unstarted; no external handoff or push is authorized.
+Final verification passed 2,756 Python tests with one skip, 121 focused tests,
+two explicit historical tests, 46 privacy/control checks, strict OpenSpec
+validation and diff checks. An earlier full run hit the known concurrent
+look-save 404/200 intermittence; its isolated retry and final full run passed.
+The cause remains unexplained. Historical tests require local Git objects and
+run outside default collection; packaged binaries and a real process shutdown
+on the same database were not exercised. Latest Session Work owns commands and
+evidence limits. The user authorized the isolated local acceptance commit.
+Task 10.3 remains unstarted; no external handoff or push is authorized.
 
 ## Overall Progress
 
-OpenSpec is a valid `spec-driven` change with 65 of 72 tasks complete. Task 1.1
+OpenSpec is a valid `spec-driven` change with 66 of 72 tasks complete. Task 1.1
 was accepted in `616a6d54d1ddbb2ec97444b0d2dea2a0e16fe8fd`, Task 1.2 was
 accepted in `a51abc3f2feca82d8cc2fcbfa332f0cd8777f059`, and Task 1.3 passed
 independent review and its aggregate final gate. Tasks 1.4, 1.5, and 1.6

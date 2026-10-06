@@ -2,6 +2,17 @@
 
 ## Decisions and Lessons
 
+- Downgrade safety requires a verified current backup, live disablement,
+  terminal authoring ownership, a demonstrated write gate and clean shutdown.
+  Config readback alone does not prove effective disablement: an inherited
+  enabled environment override wins over persisted false. Restart the current
+  schema-capable version disabled and repeat the procedure before downgrading.
+  A pre-flag version requires a distinct verified pre-upgrade restore point.
+  Demonstrate unknown-metadata loss with the actual old normalizer and a valid
+  new plan; keep local-history integration opt-in so shallow checkouts retain
+  a runnable default suite. Source-process tests do not prove packaged binaries
+  or a real shutdown/restart of the same application database.
+
 - Feature-disable safety exceptions belong at domain boundaries as well as
   HTTP routes. Share live config/environment resolution, retain cancellation
   and cleanup, and reject caller-provided enablement that contradicts the live

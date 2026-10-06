@@ -2,53 +2,60 @@
 
 ## Current State
 
-OpenSpec Task 10.1 of `simplify-resource-session-workflow` passed independent
-acceptance under Heavy deployment `srsw-10-1-20261005`. Internal Codex workers
-implemented and independently verified the scope. Only Task 10.1 is newly
-marked complete: progress is 65 of 72 tasks. No independent review remains
-pending. The user authorized the isolated local acceptance commit and no push.
+OpenSpec Task 10.2 of `simplify-resource-session-workflow` passed independent
+technical acceptance under Heavy deployment `srsw-10-2-20261005`. Only Task 10.2
+is newly complete: progress is 66 of 72 tasks. Codex implemented and verified
+internally; no external handoff or production-code change was needed. The user
+authorized the isolated local acceptance commit and no push.
 
 ## Verified Behavior
 
-`backend/resource_planning.py` resolves live app configuration and environment
-overrides, including standalone domain callers without an app module. New
-selection, translation, guided, plan, preparation, adaptation, approval, Looks,
-photo, preset and progression writes reject disablement before creative work.
-Domain and transaction checks cannot be overridden by `planning_enabled=True`.
-HTTP errors remain 503 when disablement follows the initial route check.
+README and `docs/sessions.md` document verified backup -> live persisted
+disablement -> cancel/observe terminal operations -> verify -> clean stop.
+They preserve full configuration, distinguish persisted readback from an
+effective environment override, give exact cancellation and write-gate JSON,
+and distinguish the upgraded safety snapshot from the pre-upgrade restore point
+required by a pre-flag target. Writes may be re-enabled only by code that
+understands the closed authoring schema.
 
-Selection cancellation remains available and removes actual staged files;
-status, resource/session/plan/look/review/recovery reads and photo preview/cancel
-remain available. New Looks import preview and commit, including legacy-format
-input, are blocked before signing material is created. Existing path-backed
-resource imports and `/api/wardrobe/import` keep their previous behavior.
-Legacy session photo import remains compatible. Already-ready approved
-snapshots retain idempotent individual/batch Submit and actual FakeComfy runner
-execution. New approval and preparation remain blocked. Both operation kinds
-discard late remote output and prevent another call after disablement.
+The current-process regression captures a WAL-consistent backup during a fake
+assistant call, applies full configuration while preserving paths/assistant
+fields, checks override precedence, cancels authoring and discards late output
+without changing the saved plan or operation result.
+
+The historical integration creates a valid guided authoring-v1 plan. Source
+revision `45f3005188d59d0c508df55479d19156834627b4` actually drops authoring in
+normalization; its disabled HTTP guard refuses the same valid payload before
+normalization. Persisted false and persisted true plus environment zero both
+preserve complete plan, representative snapshot and approval rows, readable
+authoring content, foreign-key consistency and SQLite integrity. Pre-flag
+revision `89ef945c380a76ec85045a49f90671b8d7763366` opens only a verified restored
+backup produced from its own pre-upgrade schema.
 
 ## Independent Verification
 
-- `.venv/Scripts/python.exe -m pytest -q`: exit 0; 2,755 passed, one skipped
-  from 2,756 collected. Windows refused creation of the external symlink in
-  `test_preview_refuses_a_staged_path_replaced_with_external_symlink`.
-- `tests/test_task10_1_independent.py`: ten independent probes passed.
-- `npm --prefix frontend test`: 581 passed in 30 files; production build passed
-  with the existing bundle-size warning.
-- Privacy/control matrix: 46 passed, including after public documentation.
-- Strict noninteractive OpenSpec validation, diff and explicit new-file
-  whitespace/control checks passed.
+- `.venv/Scripts/python.exe -m pytest -q`: 2,756 passed, one skipped.
+- Focused operation and backup suites: 121 passed.
+- `.venv/Scripts/python.exe -m pytest tests/historical_rollback.py -q`: two passed.
+  This explicit opt-in command requires the two local Git revision objects;
+  default collection has no historical-object dependency. It uses temporary
+  archive trees, configuration and database copies, without network or GPU.
+- Privacy/control-character checks: 46 passed.
+- Strict noninteractive OpenSpec validation and diff checks passed.
+- Frontend was unchanged; frontend tests/build were not rerun for this task.
 
-A focused run failed `test_concurrent_same_payload_saves_replay_one_persisted_look`
-with concurrent 404/200 responses. The isolated retry and complete suite passed;
-the cause remains unexplained and no unrelated concurrency repair was made.
-Tests use invented fixtures, temporary files, fake assistants and FakeComfy;
-no live provider, GPU or ComfyUI was required.
+An initial full run failed the existing concurrent saved-look replay test with
+404/200 responses. The isolated retry and final full run passed; the cause
+remains unconfirmed and no unrelated repair or weaker assertion was introduced.
+Historical coverage uses source and TestClient processes, not packaged binaries
+or arbitrary older releases. It does not execute real current-process shutdown
+followed by opening that same database in an older binary. Representative stored
+snapshot preservation is not new submission/runner acceptance evidence.
 
 ## Closure and Continuation
 
-Main owns acceptance, the checkbox and deployment-state documents. README,
-`docs/sessions.md` and `docs/looks.md` describe the corrected flag boundaries.
-Final text checks precede the authorized isolated local commit. Archivist owns
-the closing read-only Git receipt and deployment token report. Task 10.2 remains
-unstarted; no external handoff, push or next-task work is authorized.
+Main owns acceptance, the checkbox and deployment-state documents. Final text
+checks and the authorized isolated local commit close only Task 10.2. Archivist
+owns the read-only Git receipt and closing deployment token report. No independent
+product review remains pending after the final documentation check. Task 10.3
+remains unstarted; no push or next-task work is authorized.

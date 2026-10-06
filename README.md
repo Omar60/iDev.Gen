@@ -318,34 +318,32 @@ session; existing legacy sessions are not migrated, and disabling
 
 ### Database backup and operational rollback
 
-Before migrations or schema upgrades, create a verified WAL-consistent snapshot of the SQLite database:
+Before starting a rollback-compatible older binary, create a verified, WAL-consistent snapshot of the current SQLite database:
 
 ```bash
-python scripts/backup_db.py
-# or specify an explicit target:
-python scripts/backup_db.py -o data/backups/manual-backup.db
+python scripts/backup_db.py --json
 ```
 
-The backup utility uses SQLite's online backup API, validates schema integrity (`PRAGMA integrity_check`), and writes atomically. Note that database backups store database records and metadata; session images live in `<data folder>/sessions/`.
+The report must contain `"status": "ok"`; record the reported target. The utility uses SQLite's online backup API, checks `PRAGMA integrity_check`, and publishes the backup atomically. It copies database records only; rendered images under `<data folder>/sessions/` are outside the database.
 
-To operationally disable the resource planning feature without destructive schema rollbacks:
-- Set `"resource_planning_enabled": false` in `config.json`, or export `IDEVGEN_RESOURCE_PLANNING_ENABLED=0`.
-- All legacy sessions, resource revisions, plan history, and finished shots remain fully readable and intact.
-- Creating or cloning `resource-v1` sessions (including guided creation),
-  resource selection, translation, plan edits, preparation, approval,
-  saved-look writes, and look-photo staging, extraction, and saving return
-  HTTP 503. Portable and legacy-format Look import
-  preview/commit are gated too. HTTP routes and direct domain callers check the
-  live config/environment value, so direct calls cannot bypass the flag.
-- Selection and authoring-operation status/cancel remain available; photo-stage
-  status, preview, and cancel remain available. New preparation and approval
-  stay blocked, while already-ready and approved takes can still be submitted
-  and run.
-- If the flag is disabled during a remote authoring call, no next call is
-  scheduled and its late output is discarded. The existing path-backed resource
-  import API and `scripts/import_resources.py` CLI, plus `/api/wardrobe/import`,
-  retain their prior behavior.
-- Re-enabling the flag (`true` or `1`) restores write capabilities immediately without data loss.
+With the flag off, resource-planning writes return HTTP 503. Existing reads, operation status/cancel, and submission or execution of already approved snapshots remain available. The existing path-backed import and legacy garment/outfit import keep their prior behavior. See [session rollback procedure](docs/sessions.md#operational-rollback-and-disabling-resource-mode) for the required order and compatibility boundary.
+
+Disable the current process with `PATCH /api/config`, sending the complete current `ConfigIn` configuration plus `"resource_planning_enabled": false`. The endpoint replaces the configuration file, so preserve every current writable field. `GET /api/config` reports the persisted value; it does not prove the effective flag is off when the process has an environment override. An enabled `IDEVGEN_RESOURCE_PLANNING_ENABLED` override takes precedence, and exporting a variable in a different shell does not change an already-running process. If the running process inherited an enabled override, stop the current schema-capable process normally, start that version with the override set to `0`, and repeat the rollback procedure from the backup step.
+
+While disabled, enumerate active authoring operations across sessions through a local read-only SQLite connection to `<current data_dir>/idevgen.db`:
+
+```sql
+SELECT session_id, operation_id, plan_revision, state
+FROM authoring_operation
+WHERE state IN ('active', 'cancel_requested')
+ORDER BY session_id, created_at;
+```
+
+For each `active` operation, send `POST /api/sessions/{sid}/plan/authoring/operations/{operation_id}/cancel` with JSON `{"expected_revision": N}`, replacing `N` with the row's `plan_revision`. Then poll `GET /api/sessions/{sid}/plan/authoring/operations/{operation_id}` until it is terminal (`succeeded`, `failed`, `cancelled`, or `expired`). `cancel_requested` is still active work; wait for a terminal state before stopping. A cancelled in-flight response must be discarded without a plan or result write.
+
+Verify the guarded route on the live process with `POST /api/sessions/{sid}/plan` and JSON `{"expected_revision": N, "plan": {}}`, using the current plan revision. It must return HTTP 503 before plan validation; HTTP 422 means the effective gate is still on and the downgrade must stop. Also confirm `GET /api/config` reports the persisted flag as false and the read-only query returns no `active` or `cancel_requested` rows. Then stop the current process through its normal shutdown path and wait for it to exit before starting the rollback-compatible binary. Keep the flag disabled while inspecting plans and snapshots. Re-enable writes only with a binary that understands the closed authoring schema.
+
+A binary that predates this flag cannot be protected by it and must not write to the upgraded database. Restore the separately verified **pre-upgrade** backup before starting such a binary; the backup created immediately before downgrade contains the upgraded database and serves as a safety snapshot, not as that pre-upgrade restore point.
 
 ## Library
 
