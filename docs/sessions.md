@@ -1271,11 +1271,30 @@ exactly `(session_id, plan_revision, take_id)`: the session must exist, use
 resource mode, the revision must still be current, and the take id must exist in
 that revision.
 
+### Preparation authority by plan mode
+
+| Plan | Path to `ready` | Authority boundary |
+| --- | --- | --- |
+| `authoring-v1`, Automatic | A fenced `prepare_takes` authoring operation | The client selects takes. The server validates assistant output and derives the prompt, effective state, versions, provenance, and dependency evidence. The client cannot provide those results. `manual_completion` and raw `preparations/begin` or `preparations/complete` calls are rejected. |
+| `authoring-v1`, Manual | `POST /api/sessions/{sid}/plan/takes/{take_id}/prepare` or the `POST /api/sessions/{sid}/plan/preparations/prepare` batch route | `manual_completion` may fill only currently unset, unlocked creative fields and is recorded as manual input; adaptation choices must be reviewed. The server derives the ready snapshot; the client cannot provide its final prompt or evidence. |
+| `resource-v1` without an `authoring` block | Existing expert begin/complete and direct prepare routes | The pre-authoring compatibility contract remains available. These plans are not treated as Automatic and receive no automatic-authoring evidence claim. |
+| Legacy session | Existing legacy composition and generation routes | Resource-plan preparation is not used; legacy behavior remains unchanged. |
+
+For both authoring-v1 modes, workflow binding, shared-state evidence, look
+snapshots, and wardrobe progression are server-owned plan data. Generic plan
+saves may echo those blocks unchanged but cannot create or alter their evidence.
+Only server preparation code may derive or persist final prompts, effective
+state, compiler/mapping versions, request/output evidence, resource projections,
+provenance, duplicate flags, and dependency digests.
+Review, recovery, approval, and submission validate saved evidence; they do not
+backfill current values to legitimize an unverifiable snapshot.
+
 For a reproducible browser check of Resources, guided-session creation, and
 preparation recovery against an isolated backend, see the [Task 8.6 browser
 walkthrough](task-8-6-browser-walkthrough.md).
 
-Preparation lifecycle:
+The raw compatibility lifecycle below is limited to `resource-v1` plans without
+an `authoring` block:
 
 - `POST /api/sessions/{sid}/plan/preparations/begin` records the take as
   `pending` before preparation work starts.
@@ -1306,6 +1325,11 @@ Preparation lifecycle:
     - **Guided paint** (`reference: true`, `kind == 'guide'`): paints from
       noise, retaining the full composed prompt, session checkpoint, and
       character LoRA while using the reference photo for conditioning.
+
+Submitting is a separate user action after Review and approval of the current
+plan revision. The selected-submit route can queue several approved ready takes
+in one action. Neither a ready snapshot nor an approved plan starts ComfyUI;
+**Run** remains the explicit generation gate.
 
 `GET /api/sessions/{sid}/plan` includes a `preparation` object. Its `completed`
 list contains current-revision `ready` and `generated` snapshots. Its

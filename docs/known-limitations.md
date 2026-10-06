@@ -16,15 +16,21 @@ discover them mid-shoot.
 - **One LoRA per model.** A session drives a single LoRA loader. Character +
   style combos need a workflow that already stacks them, and the extra loaders
   keep their own fixed values.
-- **One look per session.** The look — hair, makeup, the place, the light — is
-  fixed once and that constraint is the point. Saved looks preserve reusable
-  appearance and outfit snapshots, but session authoring does not yet load or
-  apply them. Copy the text, or use **⟳ More like this**.
-- **A long shoot is written in rounds, and it takes minutes.** Asked for forty
+- **Appearance is constant across a session's takes.** The Looks view stores
+  reusable immutable versions, and authoring-v1 resource sessions can snapshot
+  one with an explicit Replace/Keep decision. The appearance applies to every
+  take. Clothing should stay in separate wardrobe fields for removable pieces;
+  the editor reminds you but does not detect or move clothing text
+  automatically. Wardrobe changes require explicit overrides or a reviewed
+  progression.
+- **The legacy long-shoot writer uses rounds and takes minutes.** Asked for forty
   lines at once an assistant answers about thirty, shorter than asked, with the
   middle of the shoot missing — so forty takes with their wardrobes is ten calls
-  and several minutes. The button counts up while it works. Nothing resumes: a
-  browser closed halfway has written nothing.
+  and several minutes. The button counts up while it works. This path has no
+  resume record; closing the browser loses the in-progress request. Automatic
+  authoring-v1 preparation instead persists operation progress and completed
+  snapshots for explicit resume; see [authoring operation claims, cancellation,
+  and resume](sessions.md#authoring-operation-claims-cancellation-and-resume).
 - **A written shoot still needs reading, and the app says where.** Measured over
   forty takes: three of them named a garment the wardrobe of that same take had
   already put down, always at the seam where it comes off. Those rows are

@@ -2,7 +2,7 @@
 
 - [Getting started](getting-started.md) — install, Setup screen, first session.
 - [Workflows](workflows.md) — importing a ComfyUI workflow and mapping its nodes.
-- [Sessions](sessions.md) — looks, seeds, running, rating, reshooting.
+- [Sessions](sessions.md) — legacy and resource plans, operation recovery, review, submission, and generation.
 - [Saved looks](looks.md) — manually create and revise reusable appearance
   and outfit snapshots.
 - [Slideshow](slideshow.md) — full-screen, cross-session playback; settings, order, look-ahead.

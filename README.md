@@ -156,6 +156,71 @@ secret stays in the configured data directory and is never serialized. It
 expires after one day and is consumed by a successful commit, so do not move
 or edit the preview between preview and commit.
 
+The browser UI uses the server-owned `/api/resources/import-selections`
+protocol; the path-backed import routes and CLI above keep their existing
+contract. `SelectionView` reports `open`, `committing`, `committed`, `cancelled`,
+or `expired`, with `selection_revision`, expiry, display-only file names and
+byte counts, effective targets, preview or committed result, and a sanitized
+cleanup warning when needed. Only `open` accepts ordinary mutations;
+`committing` reports active work. The view never exposes physical paths,
+device/inode values, nanosecond timestamps, raw fingerprints, attestation
+secrets, staged bytes, or `cleanup_state`.
+Selections expire after 24 hours; failed temporary cleanup is reported and can
+be retried from the Resources view.
+
+The browser protocol routes and essential requests are:
+
+- `POST /api/resources/import-selections` with JSON `{"request_id":"<UUID>"}`
+  returns `201` with a new selection; replaying that ID returns `200` with the
+  same selection's current authoritative view, preserving its `selection_id`
+  and `expires_at`.
+- `POST /api/resources/import-selections/{selection_id}/files` accepts
+  multipart form data with exactly one `file` and one client `upload_id`, and
+  stages the selected bytes unchanged. It returns `201` with the updated view,
+  allocated `file_id`, and revision. Retrying a completed upload with the same
+  `upload_id`, filename, and bytes returns `200`. Reusing an active `upload_id`
+  returns `409 idempotency_conflict`; reusing a completed ID with a different
+  filename or bytes returns the same `409` conflict.
+- `PATCH /api/resources/import-selections/{selection_id}/files/{file_id}` sends
+  JSON with `expected_revision` and at least one of `effective_library_key` or
+  `effective_auxiliary_kind`; it returns `200` with the updated view.
+- `DELETE /api/resources/import-selections/{selection_id}/files/{file_id}?expected_revision=N`
+  removes that staged file and returns `200` with the updated view.
+- `POST /api/resources/import-selections/{selection_id}/preview` sends JSON
+  `{"expected_revision":N}` and returns `200` with a fresh preview and its
+  diagnostics, including non-committable results.
+- `POST /api/resources/import-selections/{selection_id}/commit` sends JSON
+  `{"expected_revision":N,"preview_token":"..."}` for that exact preview.
+  It returns `200` with the committed view and canonical result; replaying the
+  same commit returns that result without importing again. If another owner is
+  completing the same valid commit, it returns `202` with state `committing`.
+- `POST /api/resources/import-selections/{selection_id}/cancel` sends JSON
+  `{"expected_revision":N}` and returns `200` with the cancelled view.
+- `GET /api/resources/import-selections/{selection_id}` returns `200` with the
+  current view; status reads also perform lazy expiry and recovery.
+
+Revision-bound mutations must send `expected_revision` equal to the current
+`selection_revision`; stale requests return `409 selection_revision_stale`
+with the current view. A `file_id` from another selection returns `404`
+`file_not_found` without exposing that selection. Invalid targets or auxiliary
+kinds, and attempts to commit an unresolved preview, return `422`. Upload file
+count (20), per-file (10 MiB), and selection-total (50 MiB) limits return `413`.
+Mutations against cancelled, expired, or committed selections return `410`,
+except that an exact committed-commit replay returns its recorded result and
+status reads remain available. When resource planning is disabled, gated writes
+return `503 resource_planning_disabled`; status reads and cancellation remain
+available. Cancelling while a commit is active returns `409 commit_active`.
+Uploads return their resulting revision, and the browser keeps the highest
+received revision while ignoring lower late responses.
+
+Resource readiness is separate from import. The backend revision projection is
+`ready` or `pending`; the Resources view turns its safe reasons into next
+actions such as **Translate** or **Re-import** and may show an **Imported**
+badge beside either state. Missing or invalid required English translations
+keep an accepted revision inspectable but pending. Unmapped or malformed source
+fields require source correction; importing never starts a translation
+request. Only a ready revision can be selected for preparation.
+
 ### Resource translations
 
 Foreign-language resource revisions are imported into SQLite with an initial
@@ -200,12 +265,16 @@ The web UI provides a dedicated **Resources** view (`#/resources`):
   `unused data`).
 - **Import Preview & Commit**: Input source file selections, run a preview to
   verify all outcomes (`new`, `unchanged`, `updated`, `unresolved`, auxiliary,
-  duplicates, missing), and commit verified sets into SQLite. A temporary
-  cleanup warning belongs to the import selection; **Retry cleanup status**
-  reloads that selection and triggers its existing lazy cleanup retry.
+  duplicates, missing), and commit verified sets into SQLite. The separate
+  **Imported** badge records that a revision was just imported; readiness still
+  determines whether it can be used. A temporary cleanup warning belongs to the
+  import selection; **Retry cleanup status** reloads that selection and retries
+  its existing lazy cleanup.
 - **Translations & Readiness**: Preview and apply translation maps directly from
-  the UI, and inspect real-time readiness status and diagnostic sidecar error banners.
-  (Single-revision translation updates are available via the HTTP API, not in the Resources UI).
+  the UI, inspect readiness and diagnostic sidecar errors, and follow the
+  displayed next action: translate missing required fields or correct malformed
+  source data. (Single-revision translation updates are available via the HTTP
+  API, not in the Resources UI.)
 - **Start Session**: A ready room's **Create session** opens a guided form to
   create a `resource-v1` draft using the selected character and exact revision.
   Fused scenes retain **Use advanced editor** and **Choose a structured scene**;
@@ -529,17 +598,37 @@ setup keeps working untouched.
 
 ## Resource session plan preparation
 
-`resource-v1` session plans persist preparation one take at a time. A caller
-first records a take as `pending`, then finalizes that same
-`(session_id, plan_revision, take_id)` as `ready` with its complete prompt,
-effective state, mapping/compiler versions, and provenance snapshot. Reopening
-the plan reports `ready` and `generated` takes as completed and `pending` or
-missing takes as resumable; it does not regenerate anything during the read.
+`resource-v1` plans store a versioned preparation snapshot for each
+`(session_id, plan_revision, take_id)`. The path to `ready` depends on the plan
+mode:
 
-Completed or invalidated snapshots are history. Repeating the exact completed
-snapshot is idempotent, while an attempt to replace it with different data is
-refused. Persistence failures are returned as errors and leave interrupted work
-pending without discarding already completed snapshots.
+- **Automatic `authoring-v1`** reaches `ready` only through a fenced
+  `prepare_takes` authoring operation. The client chooses takes; the server
+  validates the assistant response and derives the prompt, effective state,
+  versions, provenance, and dependency evidence. It rejects
+  `manual_completion` and public raw `preparations/begin` or
+  `preparations/complete` calls.
+- **Manual `authoring-v1`** uses the validated single-take prepare route or its
+  batch equivalent. `manual_completion` can fill only currently unset,
+  unlocked creative fields. The server still derives and records the final
+  snapshot; client-supplied prompts or evidence cannot create a ready take.
+- **Pre-authoring expert plans** are `resource-v1` plans without an `authoring`
+  block. Their existing begin/complete and direct prepare compatibility routes
+  remain available under their established contract; they do not claim
+  automatic-authoring provenance. Legacy sessions keep their existing
+  composition and generation routes.
+
+Authoring-v1 plans keep workflow binding, accepted shared choices, look
+snapshots, and wardrobe progression under server-owned plan revisions. Generic
+plan saves can edit allowed creative fields but cannot forge those evidence
+blocks. Ready and generated snapshots are immutable: an identical retry reuses
+the saved result, while a different replacement is refused. Invalidated
+snapshots also remain immutable history. Reading or reopening a plan reports
+completed, incomplete, and historical work without starting preparation or
+regeneration.
+
+Persistence failures are returned as errors and leave interrupted work pending
+without discarding already completed snapshots.
 
 `POST /api/sessions/{sid}/plan/preparations/submit` submits a `ready` snapshot
 to existing shot creation and the serial queue, transitioning the take to
@@ -548,6 +637,11 @@ prepared revision: retries return the existing shot without creating duplicates.
 The shot carries the frozen prompt directly without re-composition. Queue
 execution in ComfyUI still requires launching the session with
 `POST /api/sessions/{sid}/run`.
+
+Preparation is separate from review and generation. Review the current plan,
+explicitly approve its revision, submit the selected ready takes, and then press
+**Run** to start ComfyUI work. A ready snapshot alone does not approve, submit,
+or generate a photo.
 
 Graph-kind rules govern reference takes and generation submission:
 - **Text-to-image** (`reference: false`): submits the full frozen prompt
@@ -696,6 +790,7 @@ MIT — see [LICENSE](LICENSE).
 [Getting started](docs/getting-started.md) ·
 [Workflows](docs/workflows.md) ·
 [Sessions](docs/sessions.md) ·
+[Saved looks](docs/looks.md) ·
 [Judging](docs/judging.md) ·
 [Catalogue measurements](docs/catalogue-measurements.md) ·
 [Asking for candidates](docs/catalogue-candidate-prompt.md) ·
@@ -708,6 +803,8 @@ for humans and AI agents alike: [AGENTS.md](AGENTS.md).
 
 ## Status
 
-MVP. Out of scope for now: multi-LoRA combos and a look library reusable across
-sessions — see [known limitations](docs/known-limitations.md).
+MVP. Multi-LoRA combinations remain out of scope. Reusable saved looks are
+available in the [Looks view](docs/looks.md) and can be snapshotted explicitly
+into an authoring-v1 resource session. See [known limitations](docs/known-limitations.md)
+for the remaining deliberate gaps.
 

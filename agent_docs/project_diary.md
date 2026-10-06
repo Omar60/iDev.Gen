@@ -1,5 +1,18 @@
 # Project Diary
 
+## Task 10.7 Documentation Contracts
+
+- Distinguish replay identity from the returned representation: selection
+  creation replay returns current durable state, while guided creation replays
+  its stored response. Upload replay also depends on completed versus active
+  state and the actual compared filename/bytes.
+- A test docstring can promise more than its assertions prove. Trace the HTTP
+  body boundary before describing transport guarantees; active-upload refusal
+  does not bypass the earlier multipart parsing step.
+- Keep preparation authority explicit by mode and separate resumable server
+  authoring from the legacy browser writer. Existing verified detail can remain
+  canonical behind links; remove obsolete contradictory summaries.
+
 ## Task 10.6 Compatibility Evidence
 
 - Separate tests for raw completion and multiresource projection do not prove
