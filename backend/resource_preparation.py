@@ -761,7 +761,11 @@ def _placeholder_names_in(value: Any) -> list[str]:
 # -- Manual completion validation -----------------------------------------
 
 
-def _take_choices_from_take(take: dict) -> dict[str, str]:
+def _take_choices_from_take(
+    take: dict,
+    *,
+    empty_is_unset: bool = False,
+) -> dict[str, str]:
     """Extract the take's own descriptive choices from ``take``.
 
     Only the four names in ``TAKE_DESCRIPTIVE_CHOICES`` are
@@ -769,9 +773,11 @@ def _take_choices_from_take(take: dict) -> dict[str, str]:
     function: ``session_plan`` already preserves the take's
     full payload verbatim in the plan, and a future task can
     add new take fields without breaking this layer. Values
-    must be non-empty strings; a value of any other shape is
-    reported with a field-specific refusal so a caller knows
-    which take field to fix.
+    must be non-empty strings; only an exact empty string may
+    be skipped when ``empty_is_unset`` is enabled for a manual
+    authoring-v1 plan. A value of any other shape is reported
+    with a field-specific refusal so a caller knows which take
+    field to fix.
 
     The function returns a fresh dict; mutating the result
     does not change the plan. The four keys are returned in
@@ -788,12 +794,29 @@ def _take_choices_from_take(take: dict) -> dict[str, str]:
                 f"take choice {name!r} must be a string, got "
                 f"{type(value).__name__}"
             )
+        if value == "" and empty_is_unset:
+            continue
         if not value:
             raise PreparationArgumentError(
                 f"take choice {name!r} must be a non-empty string"
             )
         out[name] = value
     return out
+
+
+def _take_choices_for_authoring_plan(plan: dict, take: dict) -> dict[str, str]:
+    """Read take choices using only the manual authoring empty-field rule.
+
+    The browser normalizes absent creative fields to ``""`` in an
+    authoring-v1 manual draft. Those exact values remain unset and may be
+    filled by ``manual_completion``. Automatic and pre-authoring plans keep
+    the historical non-empty validation.
+    """
+    empty_is_unset = (
+        session_plan.classify_plan_authoring(plan)
+        == session_plan.PLAN_AUTHORING_KIND_MANUAL
+    )
+    return _take_choices_from_take(take, empty_is_unset=empty_is_unset)
 
 
 def _validate_manual_completion(
@@ -1443,7 +1466,7 @@ def prepare_take_inputs(
     # manual completion is validated against the choices the
     # take already established so a fixed state is never
     # overridden silently.
-    take_choices = _take_choices_from_take(take)
+    take_choices = _take_choices_for_authoring_plan(plan, take)
     manual = _validate_manual_completion(manual_completion, take_choices)
 
     # The plan's selected resources are loaded by their exact

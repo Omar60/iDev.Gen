@@ -58,6 +58,53 @@ const plan = {
 }
 
 describe('Task 8.5 resource review presentation', () => {
+  it.each([
+    { mode: 'manual', initiallyOpen: true },
+    { mode: 'automatic', initiallyOpen: false },
+  ])('keeps $mode advanced take fields toggle controlled', async ({ mode, initiallyOpen }) => {
+    const modePlan = {
+      ...plan,
+      authoring: { mode },
+      takes: [
+        ...plan.takes,
+        { ...plan.takes[0], take_id: 'take-002', label: 'Second take' },
+      ],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (path) => {
+      if (path === `/api/sessions/${session.id}`) return session
+      if (path === `/api/sessions/${session.id}/plan`) return { plan_revision: 3, plan: modePlan }
+      if (path === '/api/config' || path === '/api/comfy/models') return {}
+      return []
+    })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () => {
+      root.render(React.createElement(SessionView, {
+        id: session.id,
+        initialSession: session,
+        initialPlan: modePlan,
+        initialRevision: 3,
+        initialActiveStep: 'takes',
+      }))
+      await Promise.resolve()
+    })
+
+    const details = [...container.querySelectorAll('details')]
+    expect(details).toHaveLength(2)
+    expect(details.map((element) => element.open)).toEqual([initiallyOpen, initiallyOpen])
+
+    await act(async () => {
+      for (const element of details) {
+        element.open = !initiallyOpen
+        element.dispatchEvent(new Event('toggle'))
+      }
+      await Promise.resolve()
+    })
+
+    expect(details.map((element) => element.open)).toEqual([!initiallyOpen, !initiallyOpen])
+  })
+
   it('uses prepared snapshot choices and preserves intentional empty snapshot strings', () => {
     const html = renderToStaticMarkup(
       React.createElement(SessionView, {

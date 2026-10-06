@@ -1,5 +1,17 @@
 # Project Diary
 
+## Task 10.4 Manual Completion Boundary
+
+- Guided takes start sparse, but frontend normalization and manual save persist
+  empty creative strings. Check completion against that actual saved payload,
+  not only an untouched API draft or a fully filled take. Empty user choices
+  must not become established values that prevent manual completion; preserve
+  mode-specific authority and existing malformed-value refusal.
+- Capture DOM event values synchronously before a functional React state
+  updater. The real manual browser journey exposed `currentTarget` becoming
+  null inside the advanced-take toggle updater and blanking the rendered app;
+  helper/API tests alone did not exercise that browser event lifecycle.
+
 ## Task 10.3 Continuation Lessons
 
 - A complete green API regression did not establish a rendered browser journey.

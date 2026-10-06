@@ -2889,10 +2889,13 @@ export default function SessionView({
                         </div>
                         <details
                           open={takeFieldsOpen}
-                          onToggle={(event) => setExpandedTakeFields((previous) => ({
-                            ...previous,
-                            [take.take_id]: event.currentTarget.open,
-                          }))}
+                          onToggle={(event) => {
+                            const isOpen = event.currentTarget.open
+                            setExpandedTakeFields((previous) => ({
+                              ...previous,
+                              [take.take_id]: isOpen,
+                            }))
+                          }}
                           style={{ marginBottom: 8 }}
                         >
                           <summary>Advanced take fields (camera, framing, pose, expression)</summary>

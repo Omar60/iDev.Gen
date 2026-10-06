@@ -5102,7 +5102,9 @@ def prepare_plan_takes_endpoint(sid: int, p: PlanPreparationsPrepareIn):
         for manual_tid, manual_val in p.manual_completions.items():
             take = take_map[manual_tid]
             try:
-                take_choices = resource_preparation._take_choices_from_take(take)
+                take_choices = resource_preparation._take_choices_for_authoring_plan(
+                    plan, take,
+                )
                 resource_preparation._validate_manual_completion(manual_val, take_choices)
             except resource_preparation.PreparationError as exc:
                 raise _prepared_take_http_error(exc)
