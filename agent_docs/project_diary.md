@@ -1,5 +1,17 @@
 # Project Diary
 
+## Task 10.5 Compatibility Evidence
+
+- Demonstrate compatibility at commit, not only preview: choose the existing
+  historical target explicitly, retain the declared identity, and compare
+  unchanged/updated/new accounting with the durable immutable revisions.
+- Replay after staged bytes disappear is a distinct acceptance boundary.
+  Guard canonical import during replay and compare complete library, revision
+  and auxiliary rows across cleanup failure, retry and result replay.
+- A resolved take adaptation and a remaining plan conflict counter are distinct
+  UI facts. Preserve the complete authorized source and separately reviewed
+  adaptation; do not call preparation semantic approval or implicit review.
+
 ## Task 10.4 Manual Completion Boundary
 
 - Guided takes start sparse, but frontend normalization and manual save persist
