@@ -18,6 +18,7 @@ import {
   removeWardrobeChange,
   resolveEffectiveWardrobes,
   resolveEffectiveWardrobeDetails,
+  computePlanChangeImpact,
   buildPlanSavePayload,
   loadSessionPlan,
   executeSavePlan,
@@ -227,6 +228,125 @@ describe('sessionPlan pure helpers (Task 5.2)', () => {
       expect(payload.plan.authoring).toBeUndefined()
       expect(() => buildPlanSavePayload(plan, 4, ['look', 'look'])).toThrow(/duplicate-free/)
       expect(() => buildPlanSavePayload(plan, 4, ['wardrobe'])).toThrow(/duplicate-free/)
+    })
+  })
+
+  describe('automatic plan save payload preserves unfilled choices', () => {
+    const automaticPlan = (takes) => ({
+      version: MODE_RESOURCE_V1,
+      look: '',
+      initial_wardrobe: '',
+      takes,
+      selected_resources: [],
+      wardrobe_changes: [],
+      authoring: { mode: 'automatic' },
+    })
+
+    const loadedAutomaticPlan = async (plan) => loadSessionPlan(901, {
+      get: async () => ({ plan_revision: 2, plan }),
+    })
+
+    it('keeps a sparse automatic plan sparse on a no-edit load and save round-trip', async () => {
+      const sourceTakes = Array.from({ length: 12 }, (_, index) => ({
+        take_id: `take-${String(index + 1).padStart(3, '0')}`,
+      }))
+      const loaded = await loadedAutomaticPlan(automaticPlan(sourceTakes))
+      expect(loaded.ok).toBe(true)
+      let sentPayload = null
+      const result = await executeSavePlan(901, loaded.plan, loaded.planRevision, {
+        post: async (_path, payload) => {
+          sentPayload = payload
+          return { plan_revision: 3, conflicts: [] }
+        },
+      })
+
+      expect(result.ok).toBe(true)
+      expect(sentPayload.plan.takes).toEqual(sourceTakes)
+    })
+
+    it('saves only the edited take and previews the same automatic downstream boundary', async () => {
+      const takeIds = Array.from({ length: 12 }, (_, index) =>
+        `take-${String(index + 1).padStart(3, '0')}`)
+      const loaded = await loadedAutomaticPlan(automaticPlan(
+        takeIds.map((take_id) => ({ take_id })),
+      ))
+      const editedTakes = updateTake(loaded.plan.takes, 'take-004', {
+        expression: 'a quiet smile, eyes turned toward the window',
+      })
+      const draft = { ...loaded.plan, takes: editedTakes }
+      const impact = computePlanChangeImpact(loaded.plan, draft)
+      let sentPayload = null
+      const result = await executeSavePlan(901, draft, loaded.planRevision, {
+        post: async (_path, payload) => {
+          sentPayload = payload
+          return { plan_revision: 3, conflicts: [] }
+        },
+      })
+
+      expect(result.ok).toBe(true)
+      expect(impact.reason).toBe('automatic-downstream')
+      expect(impact.affectedTakeIds).toEqual(takeIds.slice(3))
+      expect(sentPayload.plan.takes.slice(0, 3)).toEqual(takeIds.slice(0, 3).map((take_id) => ({ take_id })))
+      expect(sentPayload.plan.takes[3]).toEqual({
+        take_id: 'take-004',
+        expression: 'a quiet smile, eyes turned toward the window',
+      })
+      expect(sentPayload.plan.takes.slice(4)).toEqual(takeIds.slice(4).map((take_id) => ({ take_id })))
+    })
+
+    it('omits a cleared automatic choice while retaining non-empty choices exactly', async () => {
+      const source = automaticPlan([
+        { take_id: 'take-001', camera: '  35mm framing  ' },
+      ])
+      const loaded = await loadedAutomaticPlan(source)
+      const draft = {
+        ...loaded.plan,
+        takes: updateTake(loaded.plan.takes, 'take-001', { camera: '' }),
+      }
+      let sentPayload = null
+      await executeSavePlan(901, draft, loaded.planRevision, {
+        post: async (_path, payload) => {
+          sentPayload = payload
+          return { plan_revision: 3, conflicts: [] }
+        },
+      })
+      expect(Object.hasOwn(sentPayload.plan.takes[0], 'camera')).toBe(false)
+
+      const explicit = automaticPlan([
+        { take_id: 'take-001', camera: '  35mm framing  ' },
+      ])
+      const explicitLoaded = await loadedAutomaticPlan(explicit)
+      let explicitPayload = null
+      await executeSavePlan(901, explicitLoaded.plan, explicitLoaded.planRevision, {
+        post: async (_path, payload) => {
+          explicitPayload = payload
+          return { plan_revision: 3, conflicts: [] }
+        },
+      })
+      expect(explicitPayload.plan.takes[0].camera).toBe('  35mm framing  ')
+    })
+
+    it('preserves normalized empty fields for manual plans', async () => {
+      const loaded = await loadSessionPlan(901, {
+        get: async () => ({
+          plan_revision: 2,
+          plan: {
+            ...automaticPlan([{ take_id: 'take-001' }]),
+            authoring: { mode: 'manual' },
+          },
+        }),
+      })
+      let sentPayload = null
+      await executeSavePlan(901, loaded.plan, loaded.planRevision, {
+        post: async (_path, payload) => {
+          sentPayload = payload
+          return { plan_revision: 3, conflicts: [] }
+        },
+      })
+
+      expect(sentPayload.plan.takes[0]).toEqual({
+        take_id: 'take-001', camera: '', framing: '', pose: '', expression: '',
+      })
     })
   })
 

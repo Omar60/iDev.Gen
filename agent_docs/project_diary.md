@@ -1,5 +1,20 @@
 # Project Diary
 
+## Task 10.3 Continuation Lessons
+
+- A complete green API regression did not establish a rendered browser journey.
+  The first regression fabricated structured request evidence; the demo's real
+  provider socket path failed before the required generation gates. Keep those
+  evidence boundaries explicit and retain final browser acceptance.
+- An immediate HTTP ReadError with a static "gave up after 300s" message is not
+  evidence of a measured timeout. Cloned-state success also rejected a proposed
+  deterministic predecessor failure; the original transport cause is unconfirmed.
+- Use a shared deterministic HTTPX MockTransport for this fake-provider demo
+  and regression while preserving production parsing and evidence capture.
+  Explicit edited-empty shared decisions preserve the authorized room text;
+  do not weaken conservative conflict gates to make the walkthrough pass.
+
+
 ## Decisions and Lessons
 
 - Downgrade safety requires a verified current backup, live disablement,
@@ -698,3 +713,14 @@
 - Distinguish verified pre-write refusals from unknown write outcomes. A known
   disabled-feature refusal must display its remedy and release the action lock;
   an ambiguous failure retains authoritative readback without automatic replay.
+
+## Task 10.3 Automatic Plan Save Boundary
+
+- UI display defaults must not become persisted automatic choices. Normalizing
+  missing camera/framing/pose/expression fields to empty strings made a one-take
+  edit change every backend signature and invalidate earlier prepared takes.
+  Compare the actual frontend save payload with persisted preparation evidence;
+  a direct API test using an untouched sparse plan does not cover this boundary.
+- Keep the conservative backend signature and copy validation. Correct the
+  automatic serialization boundary rather than accepting invalid empty choices
+  or weakening the preparation and review gates.

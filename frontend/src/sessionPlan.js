@@ -476,11 +476,21 @@ export function buildPlanSavePayload(plan, expectedRevision, sharedDecisions = n
   }
 
   const normalized = normalizePlan(plan)
+  // Automatic authoring treats an absent choice as assistant-owned, not as an empty value.
+  const takes = normalized.authoring?.mode === 'automatic'
+    ? normalized.takes.map((take) => {
+      const savedTake = { ...take }
+      for (const field of ['camera', 'framing', 'pose', 'expression']) {
+        if (savedTake[field] === '') delete savedTake[field]
+      }
+      return savedTake
+    })
+    : normalized.takes
   const payloadPlan = {
     version: MODE_RESOURCE_V1,
     look: normalized.look,
     initial_wardrobe: normalized.initial_wardrobe,
-    takes: normalized.takes,
+    takes,
     selected_resources: normalized.selected_resources,
     wardrobe_changes: normalized.wardrobe_changes,
   }
