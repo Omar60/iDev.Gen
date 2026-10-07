@@ -4181,6 +4181,90 @@ describe('Resources Component - Task 1.5 Specification & Contract Tests', () => 
     expect(postCalls[0][1].request_id).toBeTruthy()
   })
 
+  it('8.1 keeps the character canvas by default and sends a session-only custom canvas when enabled', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{
+        revision_id: 3,
+        library_key: 'guided_rooms',
+        source_id: 'room-3',
+        content_digest: 'a'.repeat(64),
+        readiness: { status: 'ready', pending_fields: {} },
+      }],
+      auxiliary: [],
+    }
+    const postCalls = []
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+    vi.spyOn(api, 'postWithStatus').mockImplementation(async (url, body) => {
+      postCalls.push([url, body])
+      if (url === '/api/sessions/guided') return guidedResponseFor(body, 95)
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    await renderComponent({ requestedModelId: '4' })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    const form = container.querySelector('[aria-label="Guided session setup"]')
+    expect(form.querySelector('#guided-canvas-override').checked).toBe(false)
+    await act(async () => { form.querySelector('summary').click() })
+    await act(async () => { form.querySelector('#guided-canvas-override').click() })
+
+    const canvas = form.querySelector('[aria-label="Canvas override size"]')
+    expect(Array.from(canvas.querySelectorAll('input[type="number"]')).map((input) => input.value))
+      .toEqual(['768', '1360'])
+    expect(canvas.textContent).toContain('Character defaults are unchanged.')
+    await act(async () => {
+      Array.from(form.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+    })
+
+    expect(postCalls).toHaveLength(1)
+    expect(postCalls[0][1]).toMatchObject({ width: 768, height: 1360 })
+  })
+
+  it('8.1 refuses an invalid custom canvas before making a request', async () => {
+    const library = {
+      id: 1,
+      library_key: 'guided_rooms',
+      display_name: 'Guided Rooms',
+      kind: 'rooms',
+      revisions: [{ revision_id: 3, source_id: 'room-3', content_digest: 'a'.repeat(64), readiness: { status: 'ready' } }],
+      auxiliary: [],
+    }
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
+      if (url === '/api/resources/libraries') return [library]
+      if (url === '/api/models') return [{ id: 4, name: 'Character A', workflow_id: 12 }]
+      if (url === '/api/config') return { llm_ok: false }
+      return []
+    })
+
+    await renderComponent({ requestedModelId: '4' })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Create session').click()
+    })
+    const form = container.querySelector('[aria-label="Guided session setup"]')
+    await act(async () => { form.querySelector('summary').click() })
+    await act(async () => { form.querySelector('#guided-canvas-override').click() })
+    const canvas = form.querySelector('[aria-label="Canvas override size"]')
+    await act(async () => {
+      setInputValue(canvas.querySelectorAll('input[type="number"]')[1], '1356')
+    })
+    await act(async () => {
+      Array.from(form.querySelectorAll('button')).find((button) => button.textContent === 'Create guided session').click()
+    })
+
+    expect(api.postWithStatus).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('Canvas width and height must be positive multiples of 8.')
+  })
+
   it.each(['0', '501', '1.5'])('8.1 refuses photo count %s before making a request', async (count) => {
     const library = {
       id: 1,

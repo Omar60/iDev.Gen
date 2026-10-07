@@ -481,6 +481,14 @@ export function buildPlanSavePayload(plan, expectedRevision, sharedDecisions = n
   }
 
   const normalized = normalizePlan(plan)
+  for (const take of normalized.takes) {
+    if (Object.prototype.hasOwnProperty.call(take, 'wardrobe_coverage')) {
+      const coverage = take.wardrobe_coverage
+      if (typeof coverage !== 'string' || Array.from(coverage).length > 2000 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(coverage)) {
+        throw new Error('Wardrobe coverage must be a string of at most 2,000 characters without control characters except tabs and line breaks')
+      }
+    }
+  }
   // Automatic authoring treats an absent choice as assistant-owned, not as an empty value.
   const takes = normalized.authoring?.mode === 'automatic'
     ? normalized.takes.map((take) => {

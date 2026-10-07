@@ -12,7 +12,7 @@ import pytest
 import db
 import main
 import resource_store
-from backend import session_plan, workflow_binding
+from backend import guided_sessions, session_plan, workflow_binding
 
 
 def _room_anchor(*, kind: str = "rooms", ready: bool = True) -> dict[str, str]:
@@ -122,6 +122,8 @@ def test_guided_creation_returns_closed_plan_and_persists_one_of_each(client, se
     assert session["name"] == session["look"] == session["wardrobe"] == ""
     assert session["workflow_id"] == seeded["workflow_id"]
     assert json.loads(session["settings"])["composition_mode"] == "resource-v1"
+    assert json.loads(session["settings"])["width"] == 832
+    assert json.loads(session["settings"])["height"] == 1216
     stored_plan = db.one("SELECT * FROM session_plan WHERE session_id = ?", result["session_id"])
     assert stored_plan is not None and stored_plan["plan_revision"] == 1
     assert json.loads(stored_plan["plan_json"]) == plan
@@ -191,10 +193,87 @@ def test_guided_retry_replays_exact_stored_response_after_response_loss(client, 
     assert _counts() == (1, 1, 1)
 
 
+def test_guided_canvas_override_is_session_scoped_and_bound_to_idempotency(client, seeded):
+    payload = _body(seeded, _room_anchor(), width=768, height=1360)
+    model_before = dict(db.one("SELECT settings FROM model WHERE id = ?", seeded["model_id"]))
+
+    created = client.post("/api/sessions/guided", json=payload)
+
+    assert created.status_code == 201, created.text
+    session_id = created.json()["session_id"]
+    session_settings = json.loads(db.one(
+        "SELECT settings FROM session WHERE id = ?", session_id,
+    )["settings"])
+    assert (session_settings["width"], session_settings["height"]) == (768, 1360)
+    assert dict(db.one("SELECT settings FROM model WHERE id = ?", seeded["model_id"])) == model_before
+
+    replay = client.post("/api/sessions/guided", json=payload)
+    assert replay.status_code == 200, replay.text
+    assert replay.content == created.content
+    before = _counts()
+
+    changed = {**payload, "width": 832, "height": 1216}
+    _error(client.post("/api/sessions/guided", json=changed), 409, "idempotency_conflict")
+    assert _counts() == before
+
+
+def test_guided_canvas_accepts_custom_dimensions_on_existing_eight_pixel_step(client, seeded):
+    response = client.post(
+        "/api/sessions/guided",
+        json=_body(seeded, _room_anchor(), width=776, height=1360),
+    )
+    assert response.status_code == 201, response.text
+    settings = json.loads(db.one(
+        "SELECT settings FROM session WHERE id = ?", response.json()["session_id"],
+    )["settings"])
+    assert (settings["width"], settings["height"]) == (776, 1360)
+
+
+@pytest.mark.parametrize("canvas", [
+    {"width": 768},
+    {"height": 1360},
+    {"width": None, "height": None},
+    {"width": "768", "height": 1360},
+    {"width": 768.0, "height": 1360},
+    {"width": True, "height": 1360},
+    {"width": 768, "height": 1356},
+    {"width": 0, "height": 1360},
+    {"width": 7, "height": 1360},
+])
+def test_guided_rejects_invalid_or_incomplete_canvas_without_writes(client, seeded, canvas):
+    before = _counts()
+    response = client.post(
+        "/api/sessions/guided",
+        json=_body(seeded, _room_anchor(), **canvas),
+    )
+    _error(response, 422, "invalid_request")
+    assert _counts() == before
+
+
 def test_guided_request_normalization_replays_defaults_key_order_and_uuid_form(client, seeded):
     request_id = str(uuid.uuid4())
     anchor = _room_anchor()
     first_body = _body(seeded, anchor, request_id=request_id)
+    normalized = guided_sessions.normalize_request(first_body)
+    legacy_body = {
+        "character_id": seeded["model_id"],
+        "workflow_id": None,
+        "scene_anchor": anchor,
+        "photo_count": 2,
+        "brief": "",
+        "mode": "automatic",
+        "variation_policy": {
+            "camera": {"mode": "vary"},
+            "framing": {"mode": "vary"},
+            "pose": {"mode": "vary"},
+            "expression": {"mode": "vary"},
+        },
+        "look": "",
+        "initial_wardrobe": "",
+    }
+    assert normalized.body == legacy_body
+    assert normalized.body_digest == resource_store.canonical_digest(legacy_body)
+
     first = client.post("/api/sessions/guided", json=first_body)
     assert first.status_code == 201, first.text
 

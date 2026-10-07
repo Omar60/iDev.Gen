@@ -1563,9 +1563,14 @@ with the character and exact room revision selected. It accepts a photo count
 (default 12, integer 1–500) and optional brief (up to 2,000 characters);
 **Advanced** exposes authoring mode, workflow override, variation locks for
 camera, framing, pose, and expression, plus look and initial-wardrobe
-overrides. Direct navigation to `#/resources` remains available and selects an
-existing model when possible. This guided path is for ready rooms; fused scenes
-and other resource kinds retain their existing expert paths.
+overrides. **Session canvas** is also session-only: with its override off, the
+new session inherits the character's current dimensions; when enabled, the
+custom starting size is 768×1360. Both width and height must be positive integer
+multiples of 8. The override does not edit the character, and usable dimensions
+still depend on the selected ComfyUI graph and available GPU memory. Direct
+navigation to `#/resources` remains available and selects an existing model
+when possible. This guided path is for ready rooms; fused scenes and other
+resource kinds retain their existing expert paths.
 
 Authoring mode defaults to Automatic when a text assistant is configured and
 Manual otherwise. Without an assistant, the form links to **Configure assistant**;
@@ -1628,6 +1633,23 @@ on the measured component catalogue, a `resource-v1` session draft:
   recomposition.
 - Preserves legacy sessions untouched: existing sessions continue using their
   catalogue-dependent immediate-expansion and prompt composition behavior.
+
+### Per-take wardrobe coverage
+
+Each resource take may have optional user-authored **Wardrobe coverage / detail**
+(up to 2,000 characters). The application does not infer body areas from the
+wardrobe, take, or selected resources. A non-empty value is added once after
+the effective wardrobe in text-to-image and guided positive prompts. Reference
+edits omit it along with the look and wardrobe; absent or blank values leave the existing prompt
+unchanged. In automatic authoring, the writer does not generate or replace this
+user-owned text.
+
+Saving coverage uses the plan revision check. A change invalidates preparation
+for the affected take and, where automatic preparation depends on it, downstream
+work; unaffected snapshots can retain their verified copy-forward. Generated
+snapshots and linked shots remain frozen. Coverage is an instruction, not a
+rendering guarantee: image generation is stochastic and may not show every
+requested area.
 
 ### Shared session summary
 

@@ -382,7 +382,13 @@ from the validated response. A decoded stable 4xx error unlocks correction;
 request ID. Network or 5xx errors and malformed or unreadable responses leave the
 outcome unknown. The retry snapshot lives only in the open form and is lost on
 browser reload. Creating a draft does not approve prompts, submit takes, or run
-generation. **Legacy session** still opens the measured-catalogue composer.
+generation. **Advanced → Session canvas** can override the canvas for this
+session; leaving the override off inherits the character's current dimensions.
+The custom starting size is 768×1360. An override requires both dimensions as
+positive integer multiples of 8, participates in request replay identity, and
+does not change the character. The selected ComfyUI graph and available GPU
+memory can impose practical size limits. **Legacy session** still opens the
+measured-catalogue composer.
 Omitting `composition_mode` remains backward compatible and creates a legacy
 session; existing legacy sessions are not migrated, and disabling
 `resource_planning_enabled` leaves the legacy entry available. See
@@ -663,6 +669,18 @@ Graph-kind rules govern reference takes and generation submission:
 - **Guided paint** (`kind == 'guide'`): paints from noise, retaining the full
   composed prompt, session checkpoint, and character LoRA while using the
   reference photo for conditioning.
+
+Each resource take may include optional user-authored **Wardrobe coverage /
+detail**.
+The text is not inferred from the wardrobe, take, or selected resources. A
+non-empty value is added once after that take's effective wardrobe in
+text-to-image and guided positive prompts; reference edits omit it with the
+other session context. Leaving the field absent or blank preserves the existing
+prompt. Saving it uses the plan's
+revision check, affects preparation for that take (and dependent automatic
+work), and leaves already generated snapshots unchanged. The instruction can
+describe intended visibility, but generated pixels remain stochastic and are
+not guaranteed to show every requested area.
 
 **Instructional continuity is not pixel-level continuity.** Persisting exact
 source revisions, deterministic effective wardrobes, and frozen final prompts

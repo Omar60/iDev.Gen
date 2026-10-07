@@ -2102,8 +2102,9 @@ export default function SessionView({
             <div className="anchor">
               {anchors.map((a) => <img key={a} src={shotImage(a)} alt="" title={`Reference — shot ${a}`} />)}
               <span className="muted">
-                Reference · takes marked <b>ref</b> edit this photo, so their prompt is an
-                instruction and carries no look.
+                Reference · takes marked <b>ref</b> use this photo. Edit workflows use a bare
+                instruction without look or wardrobe. Guide workflows compose the full prompt,
+                including look, wardrobe and any coverage detail.
               </span>
             </div>
           ) : refTakes > 0 && (
@@ -2990,6 +2991,28 @@ export default function SessionView({
 
                         {/* Wardrobe Display and Scope Controls */}
                         <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
+                          <label htmlFor={`coverage-${take.take_id}`}>Wardrobe coverage / detail (optional, this take only)</label>
+                          <textarea
+                            id={`coverage-${take.take_id}`}
+                            rows={2}
+                            maxLength={2000}
+                            value={take.wardrobe_coverage || ''}
+                            disabled={planEditLocked}
+                            placeholder="e.g. Her chest is bare; her hips are covered by the skirt; her feet are bare."
+                            onChange={(e) => {
+                              setPlan({
+                                ...plan,
+                                takes: updateTake(plan.takes, take.take_id, { wardrobe_coverage: e.target.value }),
+                              })
+                              setPlanDirty(true)
+                              setReviewedRevision(null)
+                            }}
+                          />
+                          <p className="muted" style={{ fontSize: 12, margin: '4px 0 10px' }}>
+                            Explicit positive detail added beside the effective wardrobe for text-to-image and guide workflows.
+                            Describe covered or bare regions and absent garments. No detail is inferred; the wardrobe sentence stays unchanged.
+                            Reference edit instructions omit this detail. Images still require visual review.
+                          </p>
                           <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                             <div className="row" style={{ gap: 8, alignItems: 'center' }}>
                               <span style={{ fontSize: 12, fontWeight: 600 }}>Effective Wardrobe:</span>
@@ -3754,6 +3777,8 @@ export default function SessionView({
                                         <div style={{ background: 'var(--panel-2)', padding: 8, borderRadius: 6 }}>
                                           <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>Effective Wardrobe</div>
                                           <div style={{ fontSize: 12 }}>{displaySnapshotField('wardrobe', d.wardrobe, 'no wardrobe description')}</div>
+                                          <div style={{ fontWeight: 600, fontSize: 12, marginTop: 8 }}>Wardrobe coverage / detail</div>
+                                          <div style={{ fontSize: 12 }}>{displaySnapshotField('wardrobe_coverage', t.wardrobe_coverage, 'no additional coverage detail')}</div>
                                           <div style={{ marginTop: 4 }}>
                                             <span className="badge" style={{ fontSize: 10 }}>
                                               {hasOwn(snap?.effective_state, 'scope')

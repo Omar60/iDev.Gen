@@ -784,6 +784,20 @@
   disabled-feature refusal must display its remedy and release the action lock;
   an ambiguous failure retains authoritative readback without automatic replay.
 
+## Guided Canvas and Wardrobe Coverage, 2026-10-07
+
+- Controlled render probes showed explicit positive coverage descriptions
+  improved garment-state adherence; a generic sentence and CFG=1 negative
+  exclusions did not. Prompt text still cannot guarantee a visual result.
+- A portrait canvas improved full-feet framing in direct probes, but live UI
+  renders still varied. Keep canvas dimensions session-scoped and review images.
+- Preserve saved-look progression as garment authority. Optional per-take
+  coverage supplements it once in text-to-image and guide prompts; reference
+  edits remain bare instructions.
+- Live UI session 426 generated five stages at 768×1360. Guide session 427
+  used its own 928×1664 workflow dimensions and generated one reference-guided
+  image. Frozen and queued prompts matched in session 426.
+
 ## Task 10.3 Automatic Plan Save Boundary
 
 - UI display defaults must not become persisted automatic choices. Normalizing

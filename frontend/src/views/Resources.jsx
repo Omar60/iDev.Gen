@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { api } from '../api'
 import { go } from '../App.jsx'
+import CanvasSize from './CanvasSize.jsx'
 import {
   normalizeFieldRole,
   extractCategories,
@@ -75,6 +76,8 @@ export default function Resources({ requestedModelId = '' }) {
   const [guidedVariationPolicy, setGuidedVariationPolicy] = useState(defaultGuidedPolicy)
   const [guidedLook, setGuidedLook] = useState('')
   const [guidedInitialWardrobe, setGuidedInitialWardrobe] = useState('')
+  const [guidedCanvasOverride, setGuidedCanvasOverride] = useState(false)
+  const [guidedCanvasSize, setGuidedCanvasSize] = useState({ width: 768, height: 1360 })
   const [guidedAdvancedOpen, setGuidedAdvancedOpen] = useState(false)
   const [guidedRequestId, setGuidedRequestId] = useState('')
   const [guidedOutcomeUnknown, setGuidedOutcomeUnknown] = useState(false)
@@ -601,6 +604,8 @@ export default function Resources({ requestedModelId = '' }) {
     setGuidedVariationPolicy(defaultGuidedPolicy())
     setGuidedLook('')
     setGuidedInitialWardrobe('')
+    setGuidedCanvasOverride(false)
+    setGuidedCanvasSize({ width: 768, height: 1360 })
     setGuidedAdvancedOpen(false)
     setGuidedRequestId(crypto.randomUUID())
     guidedRequestSnapshotRef.current = null
@@ -693,6 +698,15 @@ export default function Resources({ requestedModelId = '' }) {
       setError('This character needs a default workflow or an Advanced workflow override.')
       return
     }
+    if (guidedCanvasOverride) {
+      const { width, height } = guidedCanvasSize
+      if (!Number.isInteger(width) || !Number.isInteger(height)
+        || width < 8 || height < 8 || width % 8 !== 0 || height % 8 !== 0) {
+        setGuidedAdvancedOpen(true)
+        setError('Canvas width and height must be positive multiples of 8.')
+        return
+      }
+    }
 
     const request = freezeGuidedRequest({
       request_id: guidedRequestId,
@@ -705,6 +719,7 @@ export default function Resources({ requestedModelId = '' }) {
       variation_policy: variationPolicy,
       look: guidedLook,
       initial_wardrobe: guidedInitialWardrobe,
+      ...(guidedCanvasOverride ? guidedCanvasSize : {}),
     })
     guidedRequestSnapshotRef.current = request
     await sendGuidedRequest(request)
@@ -1354,6 +1369,38 @@ export default function Resources({ requestedModelId = '' }) {
                 )
               })}
             </div>
+            <h3 style={{ margin: '14px 0 6px' }}>Session canvas</h3>
+            <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
+              By default, the session inherits the character's current canvas. A canvas override applies only to this session.
+            </p>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                id="guided-canvas-override"
+                type="checkbox"
+                checked={guidedCanvasOverride}
+                onChange={(event) => setGuidedCanvasOverride(event.target.checked)}
+                disabled={guidedLocked}
+              />
+              Override the canvas for this session
+            </label>
+            {guidedCanvasOverride && (
+              <fieldset
+                aria-label="Canvas override size"
+                disabled={guidedLocked}
+                style={{ border: 0, padding: 0, margin: '10px 0 0' }}
+              >
+                <div className="grid-form">
+                  <CanvasSize
+                    width={guidedCanvasSize.width}
+                    height={guidedCanvasSize.height}
+                    onChange={(width, height) => setGuidedCanvasSize({ width, height })}
+                  />
+                </div>
+                <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
+                  The custom starting size is 768×1360. Character defaults are unchanged.
+                </p>
+              </fieldset>
+            )}
             <h3 style={{ margin: '14px 0 6px' }}>Shared overrides</h3>
             <div className="grid-form">
               <div>

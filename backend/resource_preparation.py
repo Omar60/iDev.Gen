@@ -656,6 +656,7 @@ ADAPTATION_FORBIDDEN_FIELDS: frozenset[str] = frozenset({
     "look",
     "initial_wardrobe",
     "wardrobe",
+    "wardrobe_coverage",
     "identity",
     "id",
     "library",
@@ -1343,12 +1344,17 @@ def _resolve_take_effective_state(plan: dict, take: dict) -> dict:
             scope = change.get("scope", "")
             break
 
-    return {
+    state = {
         "look": plan.get("look", ""),
         "initial_wardrobe": plan.get("initial_wardrobe", ""),
         "wardrobe": effective_wardrobe,
         "scope": scope,
     }
+    # Omit empty coverage so existing snapshots keep their exact state shape.
+    coverage = take.get("wardrobe_coverage", "")
+    if coverage.strip():
+        state["wardrobe_coverage"] = coverage
+    return state
 
 
 # -- The main entry point --------------------------------------------------
@@ -4961,7 +4967,8 @@ def compose_final_prompt(
       2. base_positive (from the session's bound model)
       3. look (from the plan's effective state)
       4. wardrobe (from the take's effective wardrobe)
-      5. adapted take clauses (from assemble_adapted_clauses)
+      5. optional user-authored wardrobe coverage for this take
+      6. adapted take clauses (from assemble_adapted_clauses)
 
     If {trigger} is present in the take clauses, it is substituted in-place
     and not prepended at the start. Clauses are joined with full stops.
@@ -4969,9 +4976,9 @@ def compose_final_prompt(
     Canonical reference rules:
       - Text-to-image (reference=False): full composed prompt.
       - Reference + workflow kind 'edit' (or empty/no kind): bare instruction only;
-        trigger, base_positive, look and wardrobe are omitted.
+        trigger, base_positive, look, wardrobe and coverage are omitted.
       - Reference + workflow kind 'guide': full composed prompt with trigger,
-        base_positive, look and wardrobe exactly once.
+        base_positive, look, wardrobe and optional coverage exactly once.
     """
     if not isinstance(session_id, int) or isinstance(session_id, bool):
         raise PreparationArgumentError(
@@ -5021,12 +5028,13 @@ def compose_final_prompt(
     effective_state = preparation.get("effective_state") or {}
     look = str(effective_state.get("look") or "").strip()
     wardrobe = str(effective_state.get("wardrobe") or "").strip()
+    coverage = str(effective_state.get("wardrobe_coverage") or "").strip()
 
     if "{trigger}" in take_clauses:
         take_clauses = take_clauses.replace("{trigger}", trigger)
-        parts = [base_positive, look, wardrobe, take_clauses]
+        parts = [base_positive, look, wardrobe, coverage, take_clauses]
     else:
-        parts = [trigger, base_positive, look, wardrobe, take_clauses]
+        parts = [trigger, base_positive, look, wardrobe, coverage, take_clauses]
 
     final_prompt = _join_prompt_sentences(*parts)
     if not final_prompt:

@@ -5,7 +5,10 @@ from dataclasses import dataclass
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError, field_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError,
+    field_validator, model_validator,
+)
 
 import db
 from backend import resource_planning
@@ -15,6 +18,8 @@ from backend import resource_selection, session_plan, workflow_binding
 
 
 _POLICY_FIELDS = ("camera", "framing", "pose", "expression")
+_CANVAS_FIELDS = frozenset({"width", "height"})
+_CANVAS_STEP = 8
 
 
 def _all_vary_policy() -> dict[str, dict[str, str]]:
@@ -29,6 +34,8 @@ class GuidedSessionIn(BaseModel):
     workflow_id: StrictInt | None = None
     scene_anchor: dict[str, Any]
     photo_count: StrictInt
+    width: StrictInt | None = None
+    height: StrictInt | None = None
     brief: StrictStr = ""
     mode: Literal["automatic", "manual"] = "automatic"
     variation_policy: dict[str, Any] = Field(default_factory=_all_vary_policy)
@@ -60,6 +67,20 @@ class GuidedSessionIn(BaseModel):
     @classmethod
     def validate_photo_count(cls, value: Any) -> int:
         return session_plan.validate_authoring_count(value)
+
+    @field_validator("width", "height", mode="before")
+    @classmethod
+    def validate_canvas_dimension(cls, value: Any) -> int:
+        if type(value) is not int or value < _CANVAS_STEP or value % _CANVAS_STEP:
+            raise ValueError("canvas dimensions must be positive multiples of 8")
+        return value
+
+    @model_validator(mode="after")
+    def validate_canvas_override(self) -> GuidedSessionIn:
+        provided = self.model_fields_set & _CANVAS_FIELDS
+        if provided and provided != _CANVAS_FIELDS:
+            raise ValueError("width and height must be provided together")
+        return self
 
     @field_validator("brief", mode="before")
     @classmethod
@@ -138,6 +159,11 @@ def normalize_request(payload: Any) -> NormalizedGuidedRequest:
 
     values = parsed.model_dump()
     request_id = values.pop("request_id")
+    # Keep the pre-override digest shape stable for clients retrying a request
+    # created before width/height became optional guided fields.
+    if not (parsed.model_fields_set & _CANVAS_FIELDS):
+        values.pop("width")
+        values.pop("height")
     return NormalizedGuidedRequest(
         request_id=request_id,
         body=values,
@@ -255,6 +281,9 @@ def create_or_replay(request: NormalizedGuidedRequest) -> tuple[str, bool]:
         _validate_ready_room(body["scene_anchor"])
         try:
             settings = workflow_binding.effective_session_settings(model)
+            if "width" in body:
+                settings["width"] = body["width"]
+                settings["height"] = body["height"]
             binding = workflow_binding.resolve_effective_workflow(
                 body["character_id"],
                 body["workflow_id"],

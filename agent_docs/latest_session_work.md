@@ -80,3 +80,26 @@ checks the final documentation/task-state delta before authorized Executor Git
 closure; Archivist seals the single Heavy handoff and token report afterward.
 No independent implementation review remains pending. No additional task,
 specification sync, archive or push is authorized by this deployment.
+## Wardrobe Progression and Canvas, 2026-10-07
+
+Heavy deployment `wardrobe-progression-20261007` implements optional,
+user-authored per-take `wardrobe_coverage`, composed once after effective
+wardrobe for text-to-image and guide prompts, and an optional paired guided
+canvas override. Omitted dimensions inherit model settings; supplied values
+are session-scoped. UI and documentation describe both controls. New OpenSpec
+change: `guided-canvas-and-wardrobe-coverage`.
+
+Live UI session 426 used a saved look and five-stage progression at 768×1360;
+all five shots completed, with frozen prompts equal to queued prompts. Clothing
+progression was visually observed, while feet were not reliably complete.
+Session 427 exercised the guide graph and generated one reference-guided shot
+at the graph's 928×1664 size. Session 425 remains an ungenerated draft with
+inherited 832×1216 dimensions. Backend was restarted by the user before these
+final runs. No model default changed.
+
+Independent final gates passed: 2,797 Python tests, one skipped; 605 frontend
+tests; frontend build; diff check; and strict validation of the new and prior
+OpenSpec changes. An initial full Python run had one concurrent CAS test failure
+that passed alone and in a repeated full run; its cause is undetermined.
+The local acceptance commit contains only the 20 reviewed task files. Heavy
+closure reporting remains pending; no push was made.

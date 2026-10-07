@@ -1211,6 +1211,8 @@ def validate_draft(
         ``take_id`` (the stable identifier the spec requires). Extra
         fields on a take are passed through verbatim, so a future task
         can add ``camera``/``pose``/``expression`` without breaking 3.1;
+      * optional per-take ``wardrobe_coverage`` is user-authored text
+        of at most 2,000 characters without unsafe control characters;
       * ``selected_resources`` is a list of dicts, each carrying exactly
         the three keys the spec names: ``library_key``,
         ``source_id`` and ``content_digest``. All three must be
@@ -1271,6 +1273,21 @@ def validate_draft(
                 f"plan.takes contains duplicate take_id {take_id!r}"
             )
         seen_take_ids.add(take_id)
+        if "wardrobe_coverage" in take:
+            coverage = take["wardrobe_coverage"]
+            if not isinstance(coverage, str):
+                raise PlanValidationError(
+                    f"plan.takes[{index}].wardrobe_coverage must be a string"
+                )
+            if len(coverage) > 2000 or any(
+                (ord(char) < 32 and char not in "\t\n\r")
+                or 127 <= ord(char) <= 159
+                for char in coverage
+            ):
+                raise PlanValidationError(
+                    f"plan.takes[{index}].wardrobe_coverage must be at most "
+                    "2,000 characters without control characters except tabs and line breaks"
+                )
 
     selected = plan.get("selected_resources", [])
     if not isinstance(selected, list):
