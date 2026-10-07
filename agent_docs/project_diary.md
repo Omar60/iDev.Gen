@@ -1,5 +1,14 @@
 # Project Diary
 
+## Task 10.8 Final Gate Evidence
+
+- Record the interpreter actually used by a gate: `python -m pytest` ran on
+  Python 3.11.9, while the available virtualenv uses Python 3.12.14. Earlier
+  virtualenv counts are not a substitute for this completed run.
+- A default suite pass does not execute opt-in historical rollback tests.
+  Preserve that collection boundary and the exact symlink skip reason rather
+  than claiming broader environment or packaged-binary coverage.
+
 ## Task 10.7 Documentation Contracts
 
 - Distinguish replay identity from the returned representation: selection

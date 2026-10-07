@@ -2,58 +2,53 @@
 
 ## Accepted Scope
 
-Heavy internal Codex deployment `srsw-10-7-20261006` addresses only OpenSpec
-Task 10.7 of `simplify-resource-session-workflow` on 2026-10-06. Main accepted
-Tester `verify_107`'s independent review after focused documentary repairs.
-Task 10.7 is checked; 71 of 72 tasks are complete. The user authorized an
-isolated local Conventional Commit. Task 10.8 remains unchecked and unstarted.
-No push, external executor or external handoff belongs to this deployment.
+Heavy internal Codex deployment `srsw-10-8-20261006` addresses only OpenSpec
+Task 10.8 of `simplify-resource-session-workflow` on 2026-10-06. Main accepted
+independent Tester `verify_108` evidence and inspected completed raw command
+logs. Task 10.8 is checked; all 72 tasks are complete. Initial HEAD was
+`1a7dddb` and the working tree was clean.
 
-## Deliverables and Acceptance
-
-- `README.md` documents the browser selection routes, essential requests,
-  safe status projection, revisions, expiry, replay and key errors separately
-  from the retained path API/CLI. Import and readiness remain distinct.
-- Upload replay distinguishes completed matching filename/bytes from an active
-  reservation or mismatched content. Creation replay returns the same selection's
-  current authoritative view, retaining identity and fixed expiry.
-- `docs/sessions.md` distinguishes Automatic and Manual authoring-v1 authority
-  from expert pre-authoring begin/complete and legacy composition. Server-owned
-  evidence and explicit Review, Approve, Submit and Run remain visible.
-- `docs/known-limitations.md` corrects saved-look application and limits the
-  non-resumable long-shoot writer to the legacy path. `docs/README.md` updates
-  the session index, and README links Looks and corrects its obsolete status.
-- Existing linked guided workflow/idempotency, shared constants, operations,
-  photo extraction, progression and operational downgrade sections were checked
-  against current source and tests. No backend, frontend or test edits were needed.
+No production or test changes were required. Deliverables are the task marker
+and the three main-owned deployment-state documents. The user authorized an
+isolated local Conventional Commit, with no push or external handoff.
 
 ## Independent Verification
 
-Tester reviewed the actual diff, OpenSpec, backend/UI and relevant tests.
-Main inspected decision-critical source and the completed verification logs.
+Tester read repository instructions, OpenSpec and relevant checks, executed
+the required gates on the actual tree, and returned an approval for Task 10.8.
+All commands below returned exit code zero:
 
-- `.venv/Scripts/python.exe -m pytest`: 2,762 passed, one skipped, five warnings.
-- `npm --prefix frontend test`: 587 passed in 30 files.
-- `npm --prefix frontend run build`: passed; existing large-chunk advisory.
-- `.venv/Scripts/python.exe -m pytest tests/test_no_personal_data.py tests/test_shoot_checks.py`:
-  46 passed. These checks were repeated after documentation corrections.
-- `openspec validate simplify-resource-session-workflow --strict --no-interactive`:
-  passed.
-- `git diff --check`: passed; local documentation link destinations resolve.
+| Actual command | Outcome |
+| --- | --- |
+| `python -m pytest` | 2,762 passed, one skipped, three warnings; 195.07 seconds |
+| `npm --prefix frontend test` | 587 passed in 30 files |
+| `npm --prefix frontend run build` | Passed; 62 modules transformed |
+| `git diff --check` | Passed with no output |
+| `python -m pytest tests/test_no_personal_data.py tests/test_shoot_checks.py` | 46 passed; one warning |
+| `openspec validate simplify-resource-session-workflow --strict --no-interactive` | Change valid |
 
-Full suites preceded the final wording repairs; subsequent checks were
-proportionate to the documentation-only delta. Final closure also checks
-Main's task marker and three deployment-state documents before commit.
+The Python gate used Python 3.11.9, not the available Python 3.12.14 virtualenv.
+Privacy/control checks include tracked and new nonignored files, unauthorized
+images, source-prose guards, invisible controls and trailing whitespace.
+Generated `frontend/dist/` remains ignored and outside the commit.
 
 ## Limits and Continuation
 
-The one symlink skip and existing dependency/localStorage/build warnings remain
-visible. Tests use temporary data and fakes, without GPU, live ComfyUI or real
-assistant verification. Multipart parsing precedes active-upload refusal;
-README does not promise that an active replay avoids receiving its HTTP body.
+The skipped test was
+`test_preview_refuses_a_staged_path_replaced_with_external_symlink`.
+A separate `python -m pytest` invocation selecting that test with `-rs`
+confirmed `filesystem symlinks unavailable: OSError`; it did not pass that
+environment-dependent scenario. `tests/historical_rollback.py` is opt-in and
+outside default collection; it was not executed by this final-gate task.
 
-Only Task 10.7 is accepted. No independent documentary review remains pending.
-The authorized Git closure is limited to the eight documentation and task-state
-files. Main owns the checkbox and three deployment-state documents;
-Executor owns authorized Git closure; Archivist owns the single sealed Heavy
-handoff and token report. Task 10.8 requires a new user instruction.
+Non-failing warnings concern the Pydantic `register` field, deprecated HTTPX
+raw-content upload, unavailable Vitest localStorage, and a 680.52 kB JavaScript
+chunk exceeding the build's 500 kB advisory threshold. Tests use temporary
+data and fakes; these results do not establish GPU, live ComfyUI, real provider
+or packaged rollback-binary behavior.
+
+Main owns acceptance, the checkbox and these three state documents. Tester
+checks the final documentation/task-state delta before authorized Executor Git
+closure; Archivist seals the single Heavy handoff and token report afterward.
+No independent implementation review remains pending. No additional task,
+specification sync, archive or push is authorized by this deployment.

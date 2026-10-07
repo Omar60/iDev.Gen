@@ -7,20 +7,18 @@ at a time, preserving unrelated work and explicit generation gates.
 
 ## Current Position
 
-Heavy internal Codex deployment `srsw-10-7-20261006` completed only Task 10.7
-on 2026-10-06. Main accepted independent Tester `verify_107` evidence after
-focused documentation corrections. Task 10.7 is checked; 71 of 72 tasks are
-complete. The tree was clean at intake. No production code or test changes
-were needed for this documentation task.
+Heavy internal Codex deployment `srsw-10-8-20261006` completed only Task 10.8
+on 2026-10-06. Main accepted independent Tester `verify_108` evidence after
+inspecting the completed command logs. All 72 tasks are checked. The tree was
+clean at intake at `1a7dddb`; no production or test corrections were required.
 
-README and matching Sessions, Known limitations and documentation-index pages
-now describe browser selections and status, distinguish preparation authority
-by plan mode, and retain linked guided, operation, Looks, progression and
-rollback guidance. Verified evidence is canonical in `latest_session_work.md`.
+Full backend and frontend suites, frontend build, repository privacy/control
+checks, strict OpenSpec validation and diff checks passed. The environment's
+symlink skip and non-failing warnings remain explicit in `latest_session_work.md`.
 
 ## Continuation
 
-Only the user-authorized isolated local Task 10.7 commit and Heavy closure
-belong to this deployment. No independent documentation review remains
-pending. Task 10.8 remains unchecked and must not start automatically;
-another task requires a new user instruction. No push or external handoff.
+Only the authorized isolated local Task 10.8 commit and Heavy closure belong
+to this deployment. Independent verification is complete. Specification sync
+and archive require a separate user instruction; neither starts automatically.
+No push, external executor or external handoff.
