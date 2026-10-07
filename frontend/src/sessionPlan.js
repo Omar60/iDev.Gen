@@ -348,6 +348,11 @@ export function hasGeneratedTakeHistory(takeId, preparation) {
     .some((item) => item?.take_id === takeId && isGeneratedTakeRecord(item))
 }
 
+function hasPlanConflictMarkers(planState = {}) {
+  return [planState.conflicts, planState.plan?.conflicts]
+    .some((markers) => Array.isArray(markers) && markers.length > 0)
+}
+
 /** Preview which ungenerated take work the backend's plan-save rules affect. */
 export function computePlanChangeImpact(savedPlan, draftPlan, preparation = null) {
   const oldPlan = normalizePlan(savedPlan)
@@ -880,7 +885,7 @@ export function canPreparePlan(planState) {
  *  Requires:
  *  1. A valid draft loaded with a non-negative integer planRevision (canPreparePlan).
  *  2. No unsaved local changes (planDirty must be false).
- *  3. Zero unresolved resource/constant conflicts.
+ *  3. Any resource conflict markers are covered by approval of this exact plan revision.
  *  4. At least one planned take.
  *  5. A valid workflow assigned (on the session, model, or settings).
  */
@@ -889,8 +894,7 @@ export function canProceedToGeneration(session, planState = {}) {
   if (!canPreparePlan(planState)) return false
   if (planState.planDirty) return false
 
-  const conflicts = planState.conflicts || planState.plan?.conflicts || []
-  if (conflicts.length > 0) return false
+  if (hasPlanConflictMarkers(planState) && planState.reviewedRevision !== planState.planRevision) return false
 
   if (!planState.plan?.takes || planState.plan.takes.length === 0) return false
 
@@ -916,7 +920,8 @@ export function canProceedToGeneration(session, planState = {}) {
  *  Requires:
  *  1. Session is not running (session.status !== 'running').
  *  2. Real materialized pending shots exist (pending > 0).
- *  3. canProceedToGeneration is satisfied (!planDirty, 0 conflicts, takes > 0, workflow assigned).
+ *  3. canProceedToGeneration is satisfied (markers require approval for the current revision;
+ *     takes and workflow are valid).
  *  4. Review step was completed for the current revision (reviewedRevision === planRevision).
  *  5. Active in generation step (activeStep === 'generation').
  */
@@ -1160,24 +1165,22 @@ export function createSessionViewController(
           notify()
           return false
         }
-        const conflicts = (planConflicts && planConflicts.length > 0) || (plan?.conflicts && plan.conflicts.length > 0)
-        if (conflicts) {
-          error = 'Cannot proceed to generation: unresolved resource conflicts require review'
+        const planState = { plan, planRevision, planDirty, conflicts: planConflicts, reviewedRevision }
+        const hasMarkers = hasPlanConflictMarkers(planState)
+        if (!canProceedToGeneration(session, planState)) {
+          if (hasMarkers && reviewedRevision !== planRevision) {
+            error = 'Cannot proceed to generation: approve the current plan revision to continue while resource markers remain'
+          } else if (!plan?.takes || plan.takes.length === 0) {
+            error = 'Cannot proceed to generation: plan must contain at least one take'
+          } else if (!Boolean(session?.workflow_id || session?.model?.workflow_id || session?.settings?.workflow_id)) {
+            error = 'Cannot proceed to generation: session has no workflow assigned'
+          } else {
+            error = 'Cannot proceed to generation: plan is incomplete or has unsaved changes'
+          }
           notify()
           return false
         }
-        if (!plan?.takes || plan.takes.length === 0) {
-          error = 'Cannot proceed to generation: plan must contain at least one take'
-          notify()
-          return false
-        }
-        const hasWorkflow = Boolean(session?.workflow_id || session?.model?.workflow_id || session?.settings?.workflow_id)
-        if (!hasWorkflow) {
-          error = 'Cannot proceed to generation: session has no workflow assigned'
-          notify()
-          return false
-        }
-        reviewedRevision = planRevision
+        if (!hasMarkers) reviewedRevision = planRevision
       }
     }
     activeStep = step

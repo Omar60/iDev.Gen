@@ -224,6 +224,8 @@ function makeSharedSummary(plan) {
 function createHarness({
   plan = makePlan(),
   preparation = makePreparation(plan),
+  conflicts = null,
+  reviewedRevision = null,
   session = resourceSession,
   planError = null,
   reviewError = null,
@@ -231,7 +233,8 @@ function createHarness({
   refreshGate = null,
   llmOkay = false,
 } = {}) {
-  const state = { revision, planGets: 0, reviewGets: 0, requests: [] }
+  const state = { revision, reviewedRevision, planGets: 0, reviewGets: 0, requests: [] }
+  const planConflicts = conflicts ?? plan.conflicts ?? []
   const historicalIds = new Set((preparation.history || []).map((item) => item.take_id))
   const completedById = new Map((preparation.completed || []).map((item) => [item.take_id, item]))
   const reviewTakes = plan.takes.map((take) => {
@@ -251,16 +254,16 @@ function createHarness({
       return {
         plan_revision: state.revision,
         plan: structuredClone(plan),
-        conflicts: [],
+        conflicts: structuredClone(planConflicts),
         preparation: structuredClone(preparation),
         shared_summary: makeSharedSummary(plan),
-        reviewed_revision: null,
+        reviewed_revision: state.reviewedRevision,
       }
     }
     if (url === `/api/sessions/${sessionId}/plan/review?plan_revision=${state.revision}`) {
       state.reviewGets += 1
       if (reviewError) throw reviewError
-      return { session_id: sessionId, plan_revision: state.revision, reviewed_revision: null, takes: structuredClone(reviewTakes) }
+      return { session_id: sessionId, plan_revision: state.revision, reviewed_revision: state.reviewedRevision, takes: structuredClone(reviewTakes) }
     }
     if (url.startsWith(`/api/sessions/${sessionId}/plan/takes/`) && url.includes('/review')) {
       const id = url.split(`/api/sessions/${sessionId}/plan/takes/`)[1].split('/review')[0]
@@ -285,7 +288,10 @@ function createHarness({
       }
       return { plan_revision: state.revision, refreshed: false, affected_takes: [], required_preparation: [], copied_forward_takes: [], diagnostics: [] }
     }
-    if (url.endsWith('/plan/review/approve')) return { plan_revision: body.plan_revision, reviewed: true }
+    if (url.endsWith('/plan/review/approve')) {
+      state.reviewedRevision = body.plan_revision
+      return { plan_revision: body.plan_revision, reviewed: true }
+    }
     if (url.endsWith('/plan/preparations/submit-selected')) return { submitted: body.take_ids }
     if (url.endsWith('/plan/authoring/operations')) {
       return {
@@ -306,6 +312,7 @@ function createHarness({
     }
     if (url === `/api/sessions/${sessionId}/plan`) {
       state.revision += 1
+      state.reviewedRevision = null
       return { plan_revision: state.revision, conflicts: [] }
     }
     throw new Error(`Unexpected POST ${url}`)
@@ -491,6 +498,40 @@ describe('Task 8.5 independent acceptance probes', () => {
     ])
     expect(state.requests[1][1]).toEqual({ plan_revision: revision, take_ids: [takeId(1)] })
     expect(state.requests.some(([url]) => url === `/api/sessions/${sessionId}/run`)).toBe(false)
+  })
+
+  it('keeps neutral plan markers visible and requires persisted current-revision approval before generation', async () => {
+    const markers = [{ resource_field: 'scene_theme', source_id: 'scene-001', message: 'Descriptive input marker.' }]
+    const state = createHarness({ conflicts: markers })
+    await renderSession('review')
+
+    expect(state.reviewGets).toBe(1)
+    expect(container.textContent).toContain('Resource Field Markers (1)')
+    expect(container.textContent).toContain('they do not establish a semantic conflict')
+    const approveButton = buttonMatching(/Approve Review/)
+    const proceedButton = buttonMatching(/Proceed to Generation/)
+    expect(approveButton?.disabled).toBe(false)
+    expect(proceedButton?.disabled).toBe(true)
+
+    await click(approveButton)
+    expect(state.requests).toEqual([[
+      `/api/sessions/${sessionId}/plan/review/approve`,
+      { plan_revision: revision },
+    ]])
+    expect(container.textContent).toContain(`Review Approved (Rev ${revision})`)
+    expect(container.textContent).toContain('Resource Field Markers (1)')
+
+    await act(async () => { root.unmount() })
+    root = createRoot(container)
+    await renderSession('review')
+
+    expect(container.textContent).toContain(`Review Approved (Rev ${revision})`)
+    const reloadedProceedButton = buttonMatching(/Proceed to Generation/)
+    expect(reloadedProceedButton?.disabled).toBe(false)
+    await click(reloadedProceedButton)
+    expect(buttonMatching(/5\. Generation/)?.className).toContain('on')
+    expect(state.requests).toHaveLength(1)
+    expect(state.requests.some(([url]) => url.endsWith('/run') || url.includes('/submit-selected'))).toBe(false)
   })
 
   it('does not claim drift from a failed review read; explicit CAS refresh reports affected work without starting downstream actions', async () => {

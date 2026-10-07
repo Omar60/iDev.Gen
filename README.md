@@ -646,6 +646,13 @@ explicitly approve its revision, submit the selected ready takes, and then press
 **Run** to start ComfyUI work. A ready snapshot alone does not approve, submit,
 or generate a photo.
 
+Plan-level resource field markers identify descriptive inputs used during
+preparation; they are informational and do not establish a semantic conflict.
+They remain visible after approval. When markers are present, **Proceed to
+Generation** requires explicit approval of the current plan revision after all
+take reviews load. Stale adaptations or failed review loads still block approval,
+and take-level conflicts keep their existing adaptation and finalization checks.
+
 Graph-kind rules govern reference takes and generation submission:
 - **Text-to-image** (`reference: false`): submits the full frozen prompt
   without re-composing trigger, base prompt, look, or wardrobe, preserving the

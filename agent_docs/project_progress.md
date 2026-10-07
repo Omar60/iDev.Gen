@@ -2,23 +2,22 @@
 
 ## Goal
 
-Implement `simplify-resource-session-workflow` one independently accepted task
-at a time, preserving unrelated work and explicit generation gates.
+Keep the completed `simplify-resource-session-workflow` usable while preserving
+explicit review, submission, and generation gates.
 
 ## Current Position
 
-Heavy internal Codex deployment `srsw-10-8-20261006` completed only Task 10.8
-on 2026-10-06. Main accepted independent Tester `verify_108` evidence after
-inspecting the completed command logs. All 72 tasks are checked. The tree was
-clean at intake at `1a7dddb`; no production or test corrections were required.
-
-Full backend and frontend suites, frontend build, repository privacy/control
-checks, strict OpenSpec validation and diff checks passed. The environment's
-symlink skip and non-failing warnings remain explicit in `latest_session_work.md`.
+Heavy deployment `resource_conflict_review_20261007` corrected a resource-v1
+review dead end: neutral plan-level field markers remain visible, while explicit
+approval of the current revision permits navigation to Generation. Take-level
+conflict adaptation, stale-evidence gates, submission, and Run remain separate.
+The user also authorized inclusion of the pre-existing `backend/photo_staging.py`
+lock change in the final commit. Independent verification passed: 2,767 Python
+tests, 591 frontend tests, frontend build, strict OpenSpec validation, and diff
+checks. One environment-dependent symlink test was skipped.
 
 ## Continuation
 
-Only the authorized isolated local Task 10.8 commit and Heavy closure belong
-to this deployment. Independent verification is complete. Specification sync
-and archive require a separate user instruction; neither starts automatically.
-No push, external executor or external handoff.
+The authorized local commit includes the seven reviewed files and these three
+deployment-state documents. No OpenSpec task checkbox changes were needed;
+all 72 tasks were already complete. Do not push or start another task.

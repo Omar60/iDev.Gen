@@ -761,6 +761,28 @@ def save_look(
     expected_proposal_id: str | None = None,
     digest_payload: dict | None = None,
 ) -> dict:
+    """Serialize save preflight and commit against concurrent save requests."""
+    # The SQLite connection is shared across request threads. Keep stage
+    # recovery, idempotency checks, and the durable save under one lock so a
+    # duplicate waits for and replays the completed save receipt.
+    with db._tx_lock:
+        return _save_look(
+            photo_id,
+            payload,
+            create_look,
+            expected_proposal_id=expected_proposal_id,
+            digest_payload=digest_payload,
+        )
+
+
+def _save_look(
+    photo_id: str,
+    payload: dict,
+    create_look,
+    *,
+    expected_proposal_id: str | None = None,
+    digest_payload: dict | None = None,
+) -> dict:
     """Create a reviewed look and terminal stage receipt in one transaction."""
     _require_resource_planning_enabled()
     digest = _payload_digest(payload if digest_payload is None else digest_payload)

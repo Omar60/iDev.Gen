@@ -1,6 +1,6 @@
 # Task 10.5 browser walkthrough
 
-This isolated walkthrough uses the built React app and a temporary FastAPI/SQLite instance. It demonstrates compatibility targeting, collection-only import, same-library duplicate accounting, and saving a fused-scene adaptation in the advanced editor. The integrated acceptance test fails staging cleanup on both accesses while staged bytes remain, retries cleanup, and replays the committed result both before and after those bytes are removed while canonical import stays guarded.
+This isolated walkthrough uses the built React app and a temporary FastAPI/SQLite instance. It demonstrates compatibility targeting, collection-only import, same-library duplicate accounting, saving a fused-scene adaptation in the advanced editor, and approving the current plan revision while neutral resource markers remain visible. The integrated acceptance test fails staging cleanup on both accesses while staged bytes remain, retries cleanup, and replays the committed result both before and after those bytes are removed while canonical import stays guarded.
 
 ## Start the rendered app
 
@@ -11,7 +11,7 @@ npm --prefix frontend run build
 .\.venv\Scripts\python.exe scripts\task10_5_browser_demo.py
 ```
 
-Open the printed `127.0.0.1` URL. The terminal lists six invented source files. The demo uses a temporary config, database, staging directory and output folder. Assistant requests are rejected, and a fake ComfyUI client is installed. The walkthrough stops before review approval, submission or generation.
+Open the printed `127.0.0.1` URL. The terminal lists six invented source files. The demo uses a temporary config, database, staging directory and output folder. Assistant requests are rejected, and a fake ComfyUI client is installed. The walkthrough stops at the Generation step before submitting a take or starting Run.
 
 ## Import historical and collection-only sources
 
@@ -29,7 +29,7 @@ The demo can be repeated from a clean temporary database by stopping it with Ctr
 2. In **2. Scene / Constants**, set **Initial Wardrobe** to `A blue denim jacket.` and save the plan. In **3. Takes**, open **Advanced take fields (camera, framing, pose, expression)** for `take-001`, enter values for all four fields, and save the plan.
 3. Open **4. Review**, expand `take-001`, and inspect **Authorized Fused Scene Descriptions**. The original says the subject wears a red dress, so the blue-jacket take has an open structural conflict.
 4. Enter `A woman wearing a blue denim jacket stands beside the tall studio window.` in the adapted prompt field and click **Adapt**. Confirm the take conflict moves to **Resolved Adaptations** and the full authorized source description remains displayed unchanged.
-5. Click **Prepare Take**. Confirm the take preparation is ready, then inspect **Authoritative Final Prompt** and confirm it uses the saved adaptation. The plan-level conflict counter still shows `1`, Plan Review remains pending, and **Approve Review** and **Proceed to Generation** are disabled. The take-level resolution does not approve the plan. Stop there; approval and generation are outside this walkthrough.
+5. Click **Prepare Take**. Confirm the take preparation is ready, then inspect **Authoritative Final Prompt** and confirm it uses the saved adaptation. The plan-level marker count remains `1`; the marker does not classify the source description as a semantic conflict. Wait for the complete take-review load to finish, then click **Approve Review** for the current revision. Confirm the approved badge appears and the marker remains visible. **Proceed to Generation** is now enabled; click it and confirm the Generation step opens without submitting a take or starting Run. Take-level structural conflicts and adaptations remain part of each take's review and finalization.
 
 ## Automated API and persistence proof
 
@@ -39,4 +39,4 @@ Run the focused integration acceptance:
 .\.venv\Scripts\python.exe -m pytest tests\test_task10_5_compatibility_journey.py
 ```
 
-It exercises the same selection routes and adaptation route used by the UI. It checks exact selected bytes, declared-versus-effective identity, unchanged/new/updated/duplicate accounting against persisted revisions, replay while staged bytes exist and after cleanup removes them with canonical import guarded, and complete equality of canonical library, asset-revision (including coverage), and auxiliary-resource rows. Before adaptation, Prepare Take returns 422 and writes no prepared-take, approval, or shot row. After adaptation, the prepared prompt uses the saved value; no plan approval or shot is created. The test does not use Delete/Restore, network access, an assistant, GPU or ComfyUI.
+It exercises the same selection routes and adaptation route used by the UI. It checks exact selected bytes, declared-versus-effective identity, unchanged/new/updated/duplicate accounting against persisted revisions, replay while staged bytes exist and after cleanup removes them with canonical import guarded, and complete equality of canonical library, asset-revision (including coverage), and auxiliary-resource rows. Before adaptation, Prepare Take returns 422 and writes no prepared-take, approval, or shot row. After adaptation, the prepared prompt uses the saved value; the API test does not approve the plan or create a shot. The test does not use Delete/Restore, network access, an assistant, GPU or ComfyUI.

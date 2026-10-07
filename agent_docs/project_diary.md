@@ -1,5 +1,15 @@
 # Project Diary
 
+## Resource Conflict Review, 2026-10-07
+
+- A plan-level structural marker records that a resource has prompt-eligible
+  descriptive input beside fixed look or wardrobe. It does not prove a semantic
+  contradiction. A blanket frontend block made ordinary room-plus-look plans
+  impossible to approve because the detector cannot clear markers by content.
+- Keep these markers visible through explicit current-revision approval. Retain
+  take-level conflict/adaptation and stale-evidence checks; entering Generation
+  is distinct from submitting prepared takes or starting Run.
+
 ## Task 10.8 Final Gate Evidence
 
 - Record the interpreter actually used by a gate: `python -m pytest` ran on

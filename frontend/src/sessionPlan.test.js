@@ -529,12 +529,37 @@ describe('sessionPlan pure helpers (Task 5.2)', () => {
       })).toBe(false)
     })
 
-    it('denies proceeding to generation when unresolved conflicts are present', () => {
+    it('requires approval of the current revision before proceeding while neutral resource markers remain', () => {
+      const marker = { resource_field: 'scene_theme', source_id: 'src1' }
+      const markedPlan = { ...validPlan, conflicts: [marker] }
+      expect(canProceedToGeneration(validResourceSession, {
+        plan: markedPlan,
+        planRevision: 2,
+        planDirty: false,
+      })).toBe(false)
+
       expect(canProceedToGeneration(validResourceSession, {
         plan: validPlan,
         planRevision: 2,
         planDirty: false,
-        conflicts: [{ type: 'mismatch', source_id: 'src1' }],
+        conflicts: [marker],
+        reviewedRevision: 1,
+      })).toBe(false)
+
+      expect(canProceedToGeneration(validResourceSession, {
+        plan: validPlan,
+        planRevision: 2,
+        planDirty: false,
+        conflicts: [marker],
+        reviewedRevision: 2,
+      })).toBe(true)
+
+      expect(canProceedToGeneration(validResourceSession, {
+        plan: validPlan,
+        planRevision: 2,
+        planDirty: true,
+        conflicts: [marker],
+        reviewedRevision: 2,
       })).toBe(false)
     })
 
@@ -685,6 +710,23 @@ describe('sessionPlan pure helpers (Task 5.2)', () => {
         reviewedRevision: 2,
         pending: 1,
       })).toBe(true)
+    })
+
+    it('requires authoritative current-revision approval to execute while resource markers remain', () => {
+      const marker = { resource_field: 'label', source_id: 'src1' }
+      const markedPlan = { ...validPlan, conflicts: [marker] }
+      const state = {
+        plan: markedPlan,
+        planRevision: 2,
+        planDirty: false,
+        activeStep: 'generation',
+        reviewedRevision: null,
+        pending: 1,
+      }
+
+      expect(canGenerateSession(validResourceSession, state)).toBe(false)
+      expect(canGenerateSession(validResourceSession, { ...state, reviewedRevision: 2 })).toBe(true)
+      expect(canGenerateSession(validResourceSession, { ...state, reviewedRevision: 2, planDirty: true })).toBe(false)
     })
   })
 })
@@ -1289,7 +1331,7 @@ describe('SessionView screen controller contract (createSessionViewController)',
     expect(controller.isControlVisible('run_button')).toBe(true)
   })
 
-  it('blocks generation when unresolved resource conflicts are present', async () => {
+  it('requires current-revision approval before proceeding while resource markers remain', async () => {
     const mockApi = {
       get: async (path) => {
         if (path === '/api/sessions/204') {
@@ -1326,9 +1368,15 @@ describe('SessionView screen controller contract (createSessionViewController)',
     // Try navigating to generation from review
     controller.navigateStep('review')
     expect(controller.navigateStep('generation')).toBe(false)
-    expect(controller.getState().error).toContain('unresolved resource conflicts')
+    expect(controller.getState().error).toContain('approve the current plan revision')
     expect(controller.getState().canGenerate).toBe(false)
     expect(controller.isControlVisible('run_button')).toBe(false)
+
+    expect((await controller.approveReviewAction()).ok).toBe(true)
+    expect(controller.getState().reviewedRevision).toBe(2)
+    expect(controller.navigateStep('generation')).toBe(true)
+    expect(controller.getState().canProceedToGeneration).toBe(true)
+    expect(controller.isControlVisible('proceed_to_generation_button')).toBe(true)
   })
 
   it('blocks generation when session lacks workflow assignment in all scopes', async () => {
@@ -1721,7 +1769,7 @@ describe('SessionView React component rendering integration (renderToStaticMarku
     expect(html).toContain('Run (1)')
   })
 
-  it('disables Proceed to Generation button and shows warning in Review step when unresolved conflicts exist', () => {
+  it('shows neutral resource markers and keeps approval gated until take reviews load', () => {
     const html = renderToStaticMarkup(
       React.createElement(SessionView, {
         id: 501,
@@ -1733,7 +1781,9 @@ describe('SessionView React component rendering integration (renderToStaticMarku
       })
     )
 
-    expect(html).toContain('Unresolved conflicts block proceeding to generation')
+    expect(html).toContain('Resource Field Markers (1)')
+    expect(html).toContain('they do not establish a semantic conflict')
+    expect(html).not.toContain('Unresolved conflicts block proceeding to generation')
     expect(html).toContain('disabled=""')
   })
 })

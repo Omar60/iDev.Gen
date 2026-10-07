@@ -1,5 +1,33 @@
 # Latest Session Work
 
+## Resource Conflict Review, 2026-10-07
+
+Heavy deployment `resource_conflict_review_20261007` addressed a resource-v1
+session with a custom look and room resource. The plan detector emits neutral
+markers for mapped nonempty descriptive fields, including `label`,
+`scene_theme`, and `tags`, without deciding whether they contradict the look.
+The UI previously treated every marker as an unresolvable block.
+
+The frontend now displays the markers as review notices. With markers present,
+the current plan revision requires explicit persisted approval after take
+reviews load before proceeding to Generation. Failed review loading, stale
+adaptations, dirty plans, and take-level conflicts retain their separate gates.
+Navigation does not submit takes or start Run. README and the Task 10.5 browser
+walkthrough describe this behavior. No OpenSpec tasks were reopened or changed.
+
+The user explicitly authorized including the pre-existing
+`backend/photo_staging.py` lock change in the final commit. Independent focused
+photo-staging tests passed; the change remains limited to serializing save
+preflight and commit under the existing reentrant database lock.
+
+Independent verification on the final functional tree passed: `python -m pytest`
+(2,767 passed, one skipped), `npm --prefix frontend test` (591 passed),
+`npm --prefix frontend run build`, `git diff --check`, and strict OpenSpec
+validation. The only repair was one contradictory walkthrough sentence; the
+Tester rechecked that docs-only correction. A live ComfyUI run was not part of
+this verification. The local commit includes the reviewed fix and authorized
+photo-staging change. Heavy closure records the final Git handoff separately.
+
 ## Accepted Scope
 
 Heavy internal Codex deployment `srsw-10-8-20261006` addresses only OpenSpec

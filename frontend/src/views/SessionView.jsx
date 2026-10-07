@@ -402,6 +402,10 @@ export default function SessionView({
   const hasKnownStaleAdaptations = Object.values(takeReviewData || {}).some(
     (review) => (review?.stale_adaptations || []).length > 0,
   )
+  const planConflictMarkers = Array.isArray(planConflicts) && planConflicts.length > 0
+    ? planConflicts
+    : (Array.isArray(plan?.conflicts) ? plan.conflicts : [])
+  const hasPlanConflictMarkers = planConflictMarkers.length > 0
   const staleAdaptationCount = Object.values(takeReviewData || {}).reduce(
     (count, review) => count + (review?.stale_adaptations || []).length,
     0,
@@ -480,7 +484,13 @@ export default function SessionView({
           setPlanReviewStatus('idle')
           setReviewRefreshCounter((count) => count + 1)
           if (!planDirtyRef.current) {
-            setReviewedRevision((prev) => (typeof res.reviewedRevision === 'number' ? res.reviewedRevision : (prev && prev === res.planRevision ? prev : null)))
+            const hasResourceMarkers = [res.conflicts, res.plan?.conflicts]
+              .some((markers) => Array.isArray(markers) && markers.length > 0)
+            setReviewedRevision((prev) => {
+              if (typeof res.reviewedRevision === 'number') return res.reviewedRevision
+              if (hasResourceMarkers) return null
+              return prev && prev === res.planRevision ? prev : null
+            })
           }
         } else {
           setPlanSessionId('')
@@ -1445,7 +1455,7 @@ export default function SessionView({
   }
 
   const handleApproveReview = async () => {
-    if (planDirty || planEditLocked || (planConflicts && planConflicts.length > 0) || planRevision === null || reviewBlocksFinalization) return
+    if (planDirty || planEditLocked || planRevision === null || reviewBlocksFinalization) return
     setError('')
     try {
       const res = await approvePlanReview(id, planRevision, api)
@@ -1511,11 +1521,6 @@ export default function SessionView({
           setError('Cannot proceed to generation: plan has unsaved changes. Save the draft first.')
           return false
         }
-        const hasConflicts = (planConflicts && planConflicts.length > 0) || (plan?.conflicts && plan.conflicts.length > 0)
-        if (hasConflicts) {
-          setError('Cannot proceed to generation: unresolved resource conflicts require review.')
-          return false
-        }
         if (hasKnownStaleAdaptations) {
           setError('Cannot proceed to generation: a reviewed adaptation no longer matches the authorized resource description. Save a new plan revision and review it.')
           return false
@@ -1524,16 +1529,25 @@ export default function SessionView({
           setError('Cannot proceed to generation: take reviews must load successfully before proceeding.')
           return false
         }
-        if (!plan?.takes || plan.takes.length === 0) {
-          setError('Cannot proceed to generation: plan must contain at least one take.')
+        if (!canProceedToGeneration(s, {
+          plan,
+          planRevision,
+          planDirty,
+          conflicts: planConflictMarkers,
+          reviewedRevision,
+        })) {
+          if (hasPlanConflictMarkers && reviewedRevision !== planRevision) {
+            setError('Cannot proceed to generation: approve the current plan revision to continue while resource markers remain.')
+          } else if (!plan?.takes?.length) {
+            setError('Cannot proceed to generation: plan must contain at least one take.')
+          } else if (!Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)) {
+            setError('Cannot proceed to generation: session has no workflow assigned.')
+          } else {
+            setError('Cannot proceed to generation: plan is incomplete or has unsaved changes.')
+          }
           return false
         }
-        const hasWorkflow = Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)
-        if (!hasWorkflow) {
-          setError('Cannot proceed to generation: session has no workflow assigned.')
-          return false
-        }
-        setReviewedRevision(planRevision)
+        if (!hasPlanConflictMarkers) setReviewedRevision(planRevision)
       }
     }
     setActiveStep(step)
@@ -2111,7 +2125,7 @@ export default function SessionView({
             plan,
             planRevision,
             planDirty,
-            conflicts: planConflicts,
+            conflicts: planConflictMarkers,
             activeStep,
             reviewedRevision,
             pending,
@@ -2469,19 +2483,26 @@ export default function SessionView({
                 onClick={() => navigateStep('generation')}
                 disabled={activeStep !== 'generation' && (
                   activeStep !== 'review' ||
-                  !canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflicts })
+                  reviewBlocksFinalization ||
+                  !canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflictMarkers, reviewedRevision })
                 )}
                 title={
                   activeStep !== 'generation' && activeStep !== 'review'
                     ? 'Review step must be completed before generation'
                     : planDirty
                       ? 'Plan has unsaved changes'
-                      : (planConflicts && planConflicts.length > 0)
-                        ? 'Unresolved conflicts block generation'
+                      : hasKnownStaleAdaptations
+                        ? 'A reviewed adaptation is stale; save a new plan revision before proceeding'
+                        : (activeStep === 'review' && planReviewStatus !== 'ready')
+                          ? 'All take reviews must load successfully before proceeding'
+                        : (hasPlanConflictMarkers && reviewedRevision !== planRevision)
+                          ? 'Approve Review for the current plan revision before proceeding with resource markers'
                         : !plan?.takes?.length
                           ? 'Plan must contain at least one take'
                           : !Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)
                             ? 'Session has no workflow assigned'
+                          : hasPlanConflictMarkers
+                            ? 'Resource markers remain visible; this plan revision is approved'
                             : ''
                 }
               >
@@ -3145,17 +3166,17 @@ export default function SessionView({
                       <button
                         className="secondary"
                         onClick={handleApproveReview}
-                        disabled={planDirty || planEditLocked || (planConflicts && planConflicts.length > 0) || planRevision === null || reviewBlocksFinalization}
+                        disabled={planDirty || planEditLocked || planRevision === null || reviewBlocksFinalization}
                         title={
                           planDirty
                             ? 'Save plan changes before approving review'
-                            : (planConflicts && planConflicts.length > 0)
-                              ? 'Unresolved conflicts require attention before approving review'
-                              : hasKnownStaleAdaptations
+                            : hasKnownStaleAdaptations
                                 ? 'Save a new plan revision and review the authorized resource description before approving'
                                 : planReviewStatus !== 'ready'
                                   ? 'All take reviews must load successfully before approval'
-                              : 'Approve review for the current plan revision'
+                                  : hasPlanConflictMarkers
+                                    ? 'Approve the current plan revision while keeping these neutral resource markers visible'
+                                    : 'Approve review for the current plan revision'
                         }
                       >
                         Approve Review (Rev {planRevision ?? '—'})
@@ -3198,8 +3219,8 @@ export default function SessionView({
                   </div>
                 )}
 
-                {planConflicts && planConflicts.length > 0 && (
-                  <div style={{
+                {hasPlanConflictMarkers && (
+                  <div role="note" style={{
                     background: '#2a2214',
                     border: '1px solid #785a28',
                     borderRadius: 8,
@@ -3207,15 +3228,15 @@ export default function SessionView({
                     marginBottom: 14,
                   }}>
                     <div style={{ fontWeight: 600, color: 'var(--warn)', marginBottom: 4 }}>
-                      Resource Conflicts Requiring Review ({planConflicts.length})
+                      Resource Field Markers ({planConflictMarkers.length})
                     </div>
                     <p className="muted" style={{ margin: '0 0 8px', fontSize: 13 }}>
-                      Unresolved conflicts block proceeding to generation. Review or resolve conflicting constants to continue.
+                      These neutral markers identify descriptive resource inputs used during preparation; they do not establish a semantic conflict. Review take-level conflicts and prompts below. Approve the current plan revision after take reviews load to continue while these markers remain visible.
                     </p>
                     <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                      {planConflicts.map((c, i) => (
+                      {planConflictMarkers.map((c, i) => (
                         <li key={i} style={{ margin: '2px 0' }}>
-                          <b>{c.resource_field || c.source_id || 'Resource'}</b>: {c.message || 'Descriptive input competes with plan constants.'}
+                          <b>{c.resource_field || c.source_id || 'Resource'}</b>: {c.message || 'Descriptive input is mapped for preparation.'}
                         </li>
                       ))}
                     </ul>
@@ -4004,21 +4025,23 @@ export default function SessionView({
                   <button
                     className="primary"
                     onClick={() => navigateStep('generation')}
-                    disabled={planEditLocked || reviewBlocksFinalization || !canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflicts })}
+                    disabled={planEditLocked || reviewBlocksFinalization || !canProceedToGeneration(s, { plan, planRevision, planDirty, conflicts: planConflictMarkers, reviewedRevision })}
                     title={
                       planDirty
                         ? 'Save plan before proceeding to generation'
-                        : (planConflicts && planConflicts.length > 0)
-                          ? 'Unresolved conflicts block proceeding to generation'
-                          : hasKnownStaleAdaptations
+                        : hasKnownStaleAdaptations
                             ? 'A reviewed adaptation is stale; save a new plan revision before proceeding'
                             : reviewBlocksFinalization
                               ? 'All take reviews must load successfully before proceeding'
+                              : (hasPlanConflictMarkers && reviewedRevision !== planRevision)
+                                ? 'Approve Review for the current plan revision before proceeding with resource markers'
                           : !plan?.takes?.length
                             ? 'Plan must contain at least one take'
                             : !Boolean(s?.workflow_id || s?.model?.workflow_id || s?.settings?.workflow_id)
                               ? 'Session has no workflow assigned'
-                              : 'Proceed to Generation'
+                              : hasPlanConflictMarkers
+                                ? 'Resource markers remain visible; this plan revision is approved'
+                                : 'Proceed to Generation'
                     }
                   >
                     Proceed to Generation →
