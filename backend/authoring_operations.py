@@ -386,7 +386,7 @@ def _normalize_shared_suggestion_input(value: Any, *, plan_revision: int) -> dic
             "The saved suggestion request evidence is invalid.",
         )
     # Match the transport's non-secret JSON controls; credentials stay in headers.
-    if set(parameters) - {"temperature", "stream", "response_format", "reasoning_effort"}:
+    if set(parameters) - {"temperature", "stream", "response_format", "reasoning_effort", "reasoning_split"}:
         raise AuthoringOperationError(
             409,
             "operation_result_invalid",
@@ -425,13 +425,21 @@ def _normalize_shared_suggestion_input(value: Any, *, plan_revision: int) -> dic
             )
         normalized_parameters["response_format"] = {"type": "json_object"}
     if "reasoning_effort" in parameters:
-        if type(parameters["reasoning_effort"]) is not str or parameters["reasoning_effort"] != "none":
+        if type(parameters["reasoning_effort"]) is not str or parameters["reasoning_effort"] not in {"none", "low"}:
             raise AuthoringOperationError(
                 409,
                 "operation_result_invalid",
                 "The saved suggestion request evidence is invalid.",
             )
-        normalized_parameters["reasoning_effort"] = "none"
+        normalized_parameters["reasoning_effort"] = parameters["reasoning_effort"]
+    if "reasoning_split" in parameters:
+        if parameters["reasoning_split"] is not True:
+            raise AuthoringOperationError(
+                409,
+                "operation_result_invalid",
+                "The saved suggestion request evidence is invalid.",
+            )
+        normalized_parameters["reasoning_split"] = True
     normalized = {
         "messages": normalized_messages,
         "model": model,

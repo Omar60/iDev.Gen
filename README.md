@@ -62,7 +62,10 @@ legacy outfit imports remain catalogue-only until you explicitly start and save
 a named look from an imported outfit. Photo staging supports a manual
 description or a reviewed assistant proposal when a text assistant and explicit
 vision model are configured. Staged photos are look-description input, never
-generation references. In **Shared Choices** on a resource session, load an
+generation references. MiniMax users can select `MiniMax-M3.1-Flash-Preview`
+for text and explicitly enter the same ID for vision, subject to provider access;
+see [assistant setup](docs/getting-started.md#setup). In **Shared Choices** on a
+resource session, load an
 exact saved-look version and explicitly replace or keep its appearance and
 wardrobe, then review and apply a saved-outfit clothing progression. See
 [Saved looks](docs/looks.md) and [session progression details](docs/sessions.md#previewing-a-saved-look-outfit-progression).

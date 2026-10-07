@@ -28,7 +28,7 @@ _SECRET_HEADER = re.compile(
 )
 _LONG_BASE64 = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{64,}={0,2}(?![A-Za-z0-9+/=])")
 _PROPOSAL_KEYS = {"appearance", "garments", "unresolved"}
-_REQUEST_PARAMETER_KEYS = {"temperature", "stream", "response_format", "reasoning_effort"}
+_REQUEST_PARAMETER_KEYS = {"temperature", "stream", "response_format", "reasoning_effort", "reasoning_split"}
 _EXTRACTION_INSTRUCTION = """Propose a reusable personal look from the supplied photograph.
 Write in English and return exactly one JSON object with exactly these keys:
 {"appearance":"string","garments":["visible garment wording",...],"unresolved":[{"id":"u1","detail":"uncertain visible detail"},...]}

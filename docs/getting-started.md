@@ -56,6 +56,19 @@ the image. If the configured provider refuses the image request, the app returns
 `502` and does not apply suggested text. You can configure the model in Setup or
 describe the image manually.
 
+MiniMax's selector also offers `MiniMax-M3.1-Flash-Preview`, even when
+`/v1/models` omits it. This is a documented model option, not an access check:
+the key must have provider access (currently M Plan or MiniMax Code). To use
+it for both jobs, select it as **Model** and explicitly enter the same ID in
+**Vision model**, then Save. Other model IDs and saved selections remain intact.
+See [MiniMax's model guide](https://platform.minimax.io/docs/guides/text-generation).
+
+For MiniMax endpoints, the app requests `reasoning_split: true` so reasoning
+stays outside completion content. Flash Preview uses `reasoning_effort: "low"`
+because it cannot disable thinking. This also prevents M3's `<think>` prefix
+from breaking strict look-proposal JSON parsing. Invalid or incomplete JSON
+still fails without applying or saving a look.
+
 Settings are written to `config.json`, which stays out of git because it holds
 paths specific to your machine. Advanced settings can also be edited there:
 

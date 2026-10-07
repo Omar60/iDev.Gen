@@ -4876,7 +4876,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _run_child_worker(code: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env["PYTHONPATH"] = f"{ROOT};{ROOT / 'backend'}"
+    env["PYTHONPATH"] = os.pathsep.join((str(ROOT), str(ROOT / "backend")))
     return subprocess.run(
         [sys.executable, "-c", code],
         env=env,

@@ -52,6 +52,11 @@ or refresh its status; if cleanup reports a warning, retry cleanup from the
 view. This photo input describes a saved look and never becomes a generation
 reference.
 
+With MiniMax, `MiniMax-M3.1-Flash-Preview` can be used as both the text and
+explicit vision model when the key has access. The transport separates provider
+reasoning from JSON output; it does not extract JSON from prose or accept
+partial objects. See [Setup](getting-started.md#setup) for model selection.
+
 In **Shared Choices** on an authoring-v1 session, load an exact saved-look
 version, explicitly choose which appearance and wardrobe fields to replace or
 keep, and apply it through the plan revision CAS. The selected version is copied

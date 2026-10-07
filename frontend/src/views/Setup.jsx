@@ -132,6 +132,11 @@ export default function Setup() {
 
   const provider = providerOf(cfg.llm_url)
   const found = llm?.models || []
+  // MiniMax documents Flash but may omit it from /models for subscription keys.
+  // Offer its ID without presenting documented support as detected capability.
+  const textModels = provider === 'minimax' && found.length && !found.some((m) => m.id === 'MiniMax-M3.1-Flash-Preview')
+    ? [...found, { id: 'MiniMax-M3.1-Flash-Preview', vision: false }]
+    : found
   const visionModels = found.filter((m) => m.vision)
   const set = (k, v) => {
     if (['llm_url', 'llm_model', 'llm_vision_model', 'llm_key'].includes(k)) {
@@ -266,11 +271,12 @@ export default function Setup() {
           </div>
           <div>
             <label>Model</label>
-            <ModelSelect ariaLabel="Text model" value={cfg.llm_model} models={found} empty="— pick the model that writes —"
+            <ModelSelect ariaLabel="Text model" value={cfg.llm_model} models={textModels} empty="— pick the model that writes —"
                          hint="the model that writes the takes and the look"
                          onChange={(v) => set('llm_model', v)} />
             <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
               writes the takes and the look. The biggest one is proposed; a smaller one answers faster
+              {provider === 'minimax' && ' · Flash Preview requires provider access; enter the same ID below to use it for photos.'}
             </div>
           </div>
           <div>

@@ -649,6 +649,41 @@ def test_the_json_skeleton_leaves_technique_out_on_purpose():
 
 # ---------------------------------------------------------------- structured transport (Task 2.2)
 
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("model,effort", [
+    ("MiniMax-M3", "none"),
+    ("MiniMax-M3.1-Flash-Preview", "low"),
+])
+async def test_minimax_separates_reasoning_before_strict_visual_json(llm, model, effort):
+    config = {"llm_url": "https://api.minimax.io/v1", "llm_model": "writer",
+              "llm_vision_model": model}
+    seen = llm(payload={"choices": [{"message": {
+        "content": '{"appearance":"short hair","garments":[],"unresolved":[]}',
+        "reasoning_content": "Separate provider reasoning, never proposal data.",
+    }}]})
+    evidence = {}
+    result = await enhance.run_structured(
+        config, enhance.EnhanceIn(instruction="read image", image=PNG), request_evidence=evidence,
+    )
+    assert result == {"appearance": "short hair", "garments": [], "unresolved": []}
+    assert len(seen["bodies"]) == 1
+    assert seen["body"]["reasoning_split"] is True
+    assert seen["body"]["reasoning_effort"] == effort
+    assert evidence["parameters"]["reasoning_split"] is True
+    assert evidence["parameters"]["reasoning_effort"] == effort
+
+
+@pytest.mark.anyio
+async def test_minimax_reasoning_options_do_not_leak_to_other_providers(llm):
+    seen = llm('{"ok":true}')
+    await enhance.run_structured(
+        {"llm_url": "https://api.minimax.io.example/v1", "llm_model": "MiniMax-M3.1-Flash-Preview"},
+        enhance.EnhanceIn(instruction="write JSON"),
+    )
+    assert "reasoning_split" not in seen["body"]
+    assert seen["body"]["reasoning_effort"] == "none"
+
 @pytest.mark.anyio
 async def test_structured_returns_keys_in_provider_order(llm):
     config = {"llm_url": "http://assistant.local:1234/v1", "llm_model": "m"}

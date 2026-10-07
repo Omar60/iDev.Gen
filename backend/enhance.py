@@ -244,6 +244,12 @@ async def _request_completion(
             # for a task with nothing to reason about. An endpoint that does not
             # know the parameter is retried without it below.
             "reasoning_effort": "none"}
+    if urlsplit(url).hostname in {"api.minimax.io", "api.minimaxi.com"}:
+        # MiniMax otherwise embeds <think> blocks in content, before the JSON.
+        body["reasoning_split"] = True
+        if model == "MiniMax-M3.1-Flash-Preview":
+            # Flash always thinks and rejects "none"; low avoids the max default.
+            body["reasoning_effort"] = "low"
     # What goes out, before it goes out. A round of eight photographs carries the
     # writer's instruction, the manner block, the register and the chunk note, and
     # nothing on either side of the call says how big that got: a slow round reads
@@ -287,7 +293,7 @@ async def _request_completion(
             "model": body["model"],
             "parameters": {
                 key: json.loads(json.dumps(body[key], ensure_ascii=False))
-                for key in ("temperature", "stream", "response_format", "reasoning_effort")
+                for key in ("temperature", "stream", "response_format", "reasoning_effort", "reasoning_split")
                 if key in body
             },
         })

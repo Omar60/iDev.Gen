@@ -2475,10 +2475,15 @@ def _complete_shared_suggestions(client, seeded, monkeypatch, *, output=None):
     return session_id, operation_id, revision, suggestions
 
 
+@pytest.mark.parametrize("minimax", [False, True])
 def test_shared_suggestions_run_once_in_background_with_authorized_context_and_exact_evidence(
-    client, seeded, monkeypatch,
+    client, seeded, monkeypatch, minimax,
 ):
     _configure_assistant(monkeypatch)
+    model = "MiniMax-M3.1-Flash-Preview" if minimax else "test-model"
+    if minimax:
+        monkeypatch.setitem(main.CONFIG, "llm_url", "https://api.minimax.io/v1")
+        monkeypatch.setitem(main.CONFIG, "llm_model", model)
     _enable_background_suggestion_dispatch(monkeypatch)
     secret = "synthetic-assistant-secret"
     monkeypatch.setitem(main.CONFIG, "llm_key", secret)
@@ -2523,7 +2528,7 @@ def test_shared_suggestions_run_once_in_background_with_authorized_context_and_e
     assert "photo, 35mm" in user_message
     assert "Soft light enters an empty studio from a high window." in user_message
     assert json.dumps(["look", "initial_wardrobe"]) in user_message
-    assert request["body"]["model"] == "test-model"
+    assert request["body"]["model"] == model
     assert request["headers"]["Authorization"] == f"Bearer {secret}"
 
     release.set()
@@ -2560,6 +2565,7 @@ def test_shared_suggestions_run_once_in_background_with_authorized_context_and_e
             "stream": request["body"]["stream"],
             "response_format": request["body"]["response_format"],
             "reasoning_effort": request["body"]["reasoning_effort"],
+            **({"reasoning_split": True} if minimax else {}),
         },
         "plan_revision": revision,
     }

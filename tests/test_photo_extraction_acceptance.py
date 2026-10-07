@@ -107,8 +107,11 @@ def _review(proposal_id: str) -> dict:
     }
 
 
-def test_http_wire_projection_is_exact_redacted_and_survives_stage_purge(client, monkeypatch):
+@pytest.mark.parametrize("minimax", [False, True])
+def test_http_wire_projection_is_exact_redacted_and_survives_stage_purge(client, monkeypatch, minimax):
     config = _config(monkeypatch)
+    if minimax:
+        config.update(llm_url="https://api.minimax.io/v1", llm_vision_model="MiniMax-M3.1-Flash-Preview")
     actual_async_client = httpx.AsyncClient
     wire_requests: list[dict] = []
     output = _output()
@@ -122,15 +125,20 @@ def test_http_wire_projection_is_exact_redacted_and_survives_stage_purge(client,
             "headers": dict(request.headers),
             "body": body,
         })
-        if "reasoning_effort" in body:
+        if not minimax and "reasoning_effort" in body:
             return httpx.Response(
                 400,
                 text="Unsupported reasoning_effort",
                 request=request,
             )
+        if minimax:
+            assert body["reasoning_split"] is True
+            assert body["reasoning_effort"] == "low"
         return httpx.Response(
             200,
-            json={"choices": [{"message": {"content": json.dumps(output)}}]},
+            json={"choices": [{"message": {
+                "content": json.dumps(output), "reasoning_content": "Separate provider reasoning.",
+            }}]},
             request=request,
         )
 
@@ -149,11 +157,12 @@ def test_http_wire_projection_is_exact_redacted_and_survives_stage_purge(client,
     proposal = response.json()
     assert set(proposal) == {"proposal_id", "appearance", "garments", "unresolved"}
     assert proposal["appearance"] == output["appearance"]
-    assert len(wire_requests) == 2
+    assert len(wire_requests) == (1 if minimax else 2)
     assert "reasoning_effort" in wire_requests[0]["body"]
-    successful_request = wire_requests[1]
+    successful_request = wire_requests[-1]
     body = successful_request["body"]
-    assert "reasoning_effort" not in body
+    if not minimax:
+        assert "reasoning_effort" not in body
     assert successful_request["url"] == f"{config['llm_url']}/chat/completions"
     assert body["model"] == config["llm_vision_model"]
     assert successful_request["headers"]["authorization"] == f"Bearer {config['llm_key']}"
@@ -183,7 +192,7 @@ def test_http_wire_projection_is_exact_redacted_and_survives_stage_purge(client,
         "model": body["model"],
         "parameters": {
             key: body[key]
-            for key in ("temperature", "stream", "response_format", "reasoning_effort")
+            for key in ("temperature", "stream", "response_format", "reasoning_effort", "reasoning_split")
             if key in body
         },
     }

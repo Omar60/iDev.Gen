@@ -132,6 +132,39 @@ describe('Setup vision model capability', () => {
     }))
   })
 
+  it('offers unlisted MiniMax Flash without inventing detected vision support', async () => {
+    config = baseConfig({ llm_url: 'https://api.minimax.io/v1', llm_model: 'MiniMax-M3' })
+    models = [{ id: 'MiniMax-M3', vision: false, params: 0 }]
+    await render()
+    const text = field('Text model')
+    expect(Array.from(text.options).map((option) => option.value))
+      .toEqual(['', 'MiniMax-M3', 'MiniMax-M3.1-Flash-Preview'])
+    expect(field('Vision model').tagName).toBe('INPUT')
+    expect(container.textContent).toContain('none reported vision support')
+    await act(async () => {
+      text.value = 'MiniMax-M3.1-Flash-Preview'
+      text.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await setValue(field('Vision model'), 'MiniMax-M3.1-Flash-Preview')
+    await save()
+    expect(api.patch).toHaveBeenCalledWith('/api/config', expect.objectContaining({
+      llm_model: 'MiniMax-M3.1-Flash-Preview',
+      llm_vision_model: 'MiniMax-M3.1-Flash-Preview',
+    }))
+  })
+
+  it('keeps manual MiniMax text entry when discovery returns no models', async () => {
+    config = baseConfig({ llm_url: 'https://api.minimax.io/v1', llm_model: 'operator-model' })
+    models = []
+    await render()
+    expect(field('Text model').tagName).toBe('INPUT')
+    await setValue(field('Text model'), 'another-provider-supported-model')
+    await save()
+    expect(api.patch).toHaveBeenCalledWith('/api/config', expect.objectContaining({
+      llm_model: 'another-provider-supported-model',
+    }))
+  })
+
   it('ignores late discovery after the endpoint and text model change', async () => {
     const pending = deferred()
     vi.spyOn(api, 'post').mockReturnValueOnce(pending.promise)
