@@ -318,6 +318,25 @@ BEGIN
     SELECT RAISE(ABORT, 'saved look versions are immutable');
 END;
 
+-- Automation facts are a separate, versioned profile. Keeping the snapshot
+-- digest here binds each immutable profile revision to one exact saved look.
+CREATE TABLE IF NOT EXISTS saved_look_automation_profile (
+    look_key             TEXT NOT NULL,
+    look_version         INTEGER NOT NULL CHECK (look_version > 0),
+    profile_revision     INTEGER NOT NULL CHECK (profile_revision > 0),
+    look_content_digest  TEXT NOT NULL CHECK (length(look_content_digest) = 64),
+    profile_digest       TEXT NOT NULL CHECK (length(profile_digest) = 64),
+    profile_json         TEXT NOT NULL,
+    created_at           TEXT NOT NULL,
+    PRIMARY KEY (look_key, look_version, profile_revision)
+);
+
+CREATE TRIGGER IF NOT EXISTS saved_look_automation_profile_immutable
+BEFORE UPDATE ON saved_look_automation_profile
+BEGIN
+    SELECT RAISE(ABORT, 'saved look automation profiles are immutable');
+END;
+
 -- Full photo-extraction evidence belongs to the saved version, not its
 -- purgeable upload stage or portable JSON envelope.
 CREATE TABLE IF NOT EXISTS saved_look_photo_evidence (

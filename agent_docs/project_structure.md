@@ -27,7 +27,8 @@ Verified baseline from the repository layout and application entry points.
   `resource_preparation.py`, and prompt/resource modules. Resource import,
   immutable storage, readiness, and translations are handled by the
   `resource_*` modules.
-- `backend/saved_looks.py` stores self-contained saved-look versions, while
+- `backend/saved_looks.py` stores self-contained saved-look versions and
+  separate immutable, digest-bound automation-profile revisions, while
   `backend/photo_staging.py` validates temporary look photos and owns their
   expiry and cleanup. `backend/session_plan.py` applies a selected version and
   a signed, reviewed wardrobe progression to an authoring-v1 plan through

@@ -56,6 +56,12 @@ _SQLITE_INTEGER_MAX = (1 << 63) - 1
 _PORTABLE_IMPORT_PREVIEW_TTL_SECONDS = 15 * 60
 _PORTABLE_IMPORT_PREVIEW_PURPOSE = "portable-look-import-v1"
 _LEGACY_IMPORT_PREVIEW_PURPOSE = "legacy-wardrobe-import-v1"
+_AUTOMATION_PROFILE_REGIONS = ("chest", "hips", "legs", "feet")
+_AUTOMATION_PROFILE_COVERAGE = {"full", "partial", "none", "unknown"}
+_AUTOMATION_PROFILE_ORIGINS = {"user", "reviewed_structured"}
+_AUTOMATION_PROFILE_PROVENANCE_FIELDS = {
+    "origin", "source_identity", "source_digest", "accepted_revision",
+}
 
 
 def _portable_digest(value: object) -> str:
@@ -382,6 +388,16 @@ def _valid_key(value: object) -> bool:
     )
 
 
+def _valid_profile_key(value: object) -> bool:
+    if not _valid_key(value):
+        return False
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _valid_name(value: object) -> bool:
     return _valid_key(value)
 
@@ -494,6 +510,318 @@ def get_version(look_key: str, version: int) -> dict:
     if row is None:
         raise SavedLookError(404, "look_not_found", "Saved look was not found.")
     return _read_row(row)
+
+
+def _canonicalize_automation_profile_provenance(value: object, revision: int) -> dict:
+    if type(value) is not dict or set(value) != _AUTOMATION_PROFILE_PROVENANCE_FIELDS:
+        _invalid()
+    if (
+        not isinstance(value["origin"], str)
+        or value["origin"] not in _AUTOMATION_PROFILE_ORIGINS
+        or not _valid_profile_key(value["source_identity"])
+        or not _valid_sha256(value["source_digest"])
+        or type(value["accepted_revision"]) is not int
+        or value["accepted_revision"] != revision
+    ):
+        _invalid()
+    return {
+        "origin": value["origin"],
+        "source_identity": value["source_identity"],
+        "source_digest": value["source_digest"],
+        "accepted_revision": revision,
+    }
+
+
+def _canonicalize_automation_profile_state(value: object, revision: int) -> dict:
+    if type(value) is not dict or set(value) != {"regions", "provenance"}:
+        _invalid()
+    regions = value["regions"]
+    if type(regions) is not dict or set(regions) != set(_AUTOMATION_PROFILE_REGIONS):
+        _invalid()
+    if any(type(regions[region]) is not str or regions[region] not in _AUTOMATION_PROFILE_COVERAGE
+           for region in _AUTOMATION_PROFILE_REGIONS):
+        _invalid()
+    return {
+        "regions": {region: regions[region] for region in _AUTOMATION_PROFILE_REGIONS},
+        "provenance": _canonicalize_automation_profile_provenance(value["provenance"], revision),
+    }
+
+
+def _canonicalize_automation_profile(value: object, saved: dict, revision: int) -> dict:
+    fields = {
+        "schema_version", "look", "appearance_segments", "garment_coverage",
+        "baseline_coverage", "inventory_complete", "authored_provenance",
+    }
+    if type(value) is not dict or set(value) != fields:
+        _invalid()
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        _invalid()
+
+    look = value["look"]
+    if type(look) is not dict or set(look) != {"key", "version", "content_digest"}:
+        _invalid()
+    expected_look = {
+        "key": saved["key"],
+        "version": saved["version"],
+        "content_digest": saved["content_digest"],
+    }
+    if (
+            not _valid_profile_key(look["key"])
+        or type(look["version"]) is not int
+        or not _valid_sha256(look["content_digest"])
+        or look != expected_look
+    ):
+        _invalid()
+
+    appearance = saved["appearance"]
+    try:
+        appearance.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        _invalid()
+    if type(value["appearance_segments"]) is not list:
+        _invalid()
+    garment_keys = {
+        garment["key"] for garment in saved["outfit"]["garments"]
+    } if saved["outfit"] is not None else set()
+    segments = []
+    segment_ids: set[str] = set()
+    offset = 0
+    for segment in value["appearance_segments"]:
+        if type(segment) is not dict or set(segment) != {
+            "segment_id", "start", "end", "text", "owner", "provenance",
+        }:
+            _invalid()
+        start, end = segment["start"], segment["end"]
+        segment_id = segment["segment_id"]
+        owner = segment["owner"]
+        if (
+            not _valid_profile_key(segment_id)
+            or segment_id in segment_ids
+            or type(start) is not int
+            or type(end) is not int
+            or start != offset
+            or not start < end <= len(appearance)
+            or not isinstance(segment["text"], str)
+            or segment["text"] != appearance[start:end]
+            or not isinstance(owner, str)
+        ):
+            _invalid()
+        if owner != "permanent":
+            prefix = "garment:"
+            owner_key = owner[len(prefix):] if owner.startswith(prefix) else ""
+            if not _valid_profile_key(owner_key) or owner_key not in garment_keys:
+                _invalid()
+        segments.append({
+            "segment_id": segment_id,
+            "start": start,
+            "end": end,
+            "text": segment["text"],
+            "owner": owner,
+            "provenance": _canonicalize_automation_profile_provenance(
+                segment["provenance"], revision,
+            ),
+        })
+        segment_ids.add(segment_id)
+        offset = end
+    if offset != len(appearance):
+        _invalid()
+
+    garment_coverage = value["garment_coverage"]
+    if type(garment_coverage) is not dict or set(garment_coverage) - garment_keys:
+        _invalid()
+    canonical_garment_coverage = {}
+    for garment_key in sorted(garment_coverage):
+        states = garment_coverage[garment_key]
+        if type(states) is not dict or not states or set(states) - {"worn", "aside"}:
+            _invalid()
+        canonical_garment_coverage[garment_key] = {
+            state: _canonicalize_automation_profile_state(states[state], revision)
+            for state in ("worn", "aside") if state in states
+        }
+
+    baseline = value["baseline_coverage"]
+    canonical_baseline = (
+        None if baseline is None
+        else _canonicalize_automation_profile_state(baseline, revision)
+    )
+    inventory = value["inventory_complete"]
+    if type(inventory) is not dict or set(inventory) != {"value", "provenance"}:
+        _invalid()
+    if inventory["value"] is not None and type(inventory["value"]) is not bool:
+        _invalid()
+
+    canonical = {
+        "schema_version": 1,
+        "look": expected_look,
+        "appearance_segments": segments,
+        "garment_coverage": canonical_garment_coverage,
+        "baseline_coverage": canonical_baseline,
+        "inventory_complete": {
+            "value": inventory["value"],
+            "provenance": _canonicalize_automation_profile_provenance(
+                inventory["provenance"], revision,
+            ),
+        },
+        "authored_provenance": _canonicalize_automation_profile_provenance(
+            value["authored_provenance"], revision,
+        ),
+    }
+    return canonical
+
+
+def _read_automation_profile(row: dict, saved: dict) -> dict:
+    if (
+        type(row.get("profile_revision")) is not int
+        or row["profile_revision"] < 1
+        or row.get("look_key") != saved["key"]
+        or row.get("look_version") != saved["version"]
+        or row.get("look_content_digest") != saved["content_digest"]
+        or not _valid_sha256(row.get("profile_digest"))
+    ):
+        _stored_data_invalid()
+    try:
+        value = json.loads(
+            row["profile_json"],
+            object_pairs_hook=_portable_json_object,
+            parse_int=_portable_json_integer,
+            parse_constant=_reject_json_constant,
+        )
+        profile = _canonicalize_automation_profile(value, saved, row["profile_revision"])
+        digest = resource_store.canonical_digest(profile)
+    except SavedLookError:
+        _stored_data_invalid()
+    except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
+        _stored_data_invalid()
+    if digest != row["profile_digest"]:
+        _stored_data_invalid()
+    return {
+        **profile,
+        "profile_revision": row["profile_revision"],
+        "profile_digest": digest,
+    }
+
+
+def _automation_profile_stale() -> None:
+    raise SavedLookError(
+        409,
+        "automation_profile_stale",
+        "Saved look or automation profile changed; reload it and try again.",
+    )
+
+
+def publish_automation_profile(
+    look_key: str,
+    version: int,
+    expected_content_digest: str,
+    expected_profile_revision: int,
+    profile: object,
+) -> dict:
+    """Publish one closed profile revision against an exact immutable look."""
+    _require_resource_planning_enabled()
+    if (
+        not _valid_profile_key(look_key)
+        or type(version) is not int
+        or not 1 <= version <= _SQLITE_INTEGER_MAX
+        or not _valid_sha256(expected_content_digest)
+        or type(expected_profile_revision) is not int
+        or not 0 <= expected_profile_revision < _SQLITE_INTEGER_MAX
+    ):
+        _invalid()
+    try:
+        with db.transaction():
+            _require_resource_planning_enabled()
+            saved = get_version(look_key, version)
+            if expected_content_digest != saved["content_digest"]:
+                _automation_profile_stale()
+            current = db.one(
+                """SELECT * FROM saved_look_automation_profile
+                   WHERE look_key = ? AND look_version = ?
+                   ORDER BY profile_revision DESC LIMIT 1""",
+                look_key, version,
+            )
+            current_revision = 0 if current is None else current["profile_revision"]
+            if current_revision != expected_profile_revision:
+                _automation_profile_stale()
+            if current is not None:
+                _read_automation_profile(current, saved)
+            revision = expected_profile_revision + 1
+            canonical = _canonicalize_automation_profile(profile, saved, revision)
+            try:
+                profile_digest = resource_store.canonical_digest(canonical)
+            except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
+                _invalid()
+            db.run(
+                """INSERT INTO saved_look_automation_profile
+                   (look_key, look_version, profile_revision, look_content_digest,
+                    profile_digest, profile_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                look_key, version, revision, saved["content_digest"], profile_digest,
+                json.dumps(canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                db.now(),
+            )
+            return {
+                **canonical,
+                "profile_revision": revision,
+                "profile_digest": profile_digest,
+            }
+    except sqlite3.IntegrityError:
+        _write_conflict()
+
+
+def get_automation_profile(
+    look_key: str,
+    version: int,
+    profile_revision: int,
+    content_digest: str,
+    profile_digest: str,
+) -> dict:
+    """Read and verify one exact profile revision and saved-look binding."""
+    if (
+        not _valid_profile_key(look_key)
+        or type(version) is not int
+        or not 1 <= version <= _SQLITE_INTEGER_MAX
+        or type(profile_revision) is not int
+        or not 1 <= profile_revision <= _SQLITE_INTEGER_MAX
+        or not _valid_sha256(content_digest)
+        or not _valid_sha256(profile_digest)
+    ):
+        _invalid()
+    saved = get_version(look_key, version)
+    if content_digest != saved["content_digest"]:
+        _automation_profile_stale()
+    row = db.one(
+        """SELECT * FROM saved_look_automation_profile
+           WHERE look_key = ? AND look_version = ? AND profile_revision = ?""",
+        look_key, version, profile_revision,
+    )
+    if row is None:
+        raise SavedLookError(404, "automation_profile_not_found", "Automation profile was not found.")
+    verified = _read_automation_profile(row, saved)
+    if profile_digest != verified["profile_digest"]:
+        _automation_profile_stale()
+    return verified
+
+
+def get_latest_automation_profile(look_key: str, version: int) -> dict | None:
+    if (
+        not _valid_profile_key(look_key)
+        or type(version) is not int
+        or not 1 <= version <= _SQLITE_INTEGER_MAX
+    ):
+        _invalid()
+    saved = get_version(look_key, version)
+    row = db.one(
+        """SELECT profile_revision, profile_digest FROM saved_look_automation_profile
+           WHERE look_key = ? AND look_version = ?
+           ORDER BY profile_revision DESC LIMIT 1""",
+        look_key, version,
+    )
+    if row is None:
+        return None
+    return get_automation_profile(
+        look_key, version, row["profile_revision"],
+        saved["content_digest"], row["profile_digest"],
+    )
 
 
 def export_version(look_key: str, version: int) -> dict:

@@ -66,6 +66,35 @@ applies it through a signed preview and plan CAS. See
 [applying a saved look](sessions.md#applying-a-saved-look) and
 [previewing a saved-look outfit progression](sessions.md#previewing-a-saved-look-outfit-progression).
 
+### Automation profile storage
+
+The backend can store a separate immutable v1 automation profile for an exact
+saved-look version. Its closed object contains `schema_version`, `look`
+(`key`, `version`, `content_digest`), `appearance_segments`,
+`garment_coverage`, `baseline_coverage`, `inventory_complete`, and
+`authored_provenance`. `content_digest` binds the profile to the saved version's
+canonical `{appearance, outfit}` content. Publishing adds a `profile_revision`
+and canonical `profile_digest`; it requires the expected look digest and prior
+profile revision, so stale or competing writes fail.
+
+Each appearance segment records `segment_id`, `start`, `end`, `text`, `owner`
+(`permanent` or `garment:<key>`), and provenance. Offsets are zero-based,
+half-open Unicode scalar indices; `text` must match that exact slice, with no
+normalization. Segments partition the saved appearance without gaps or rewriting
+its text. Coverage is keyed by an outfit garment and optional `worn`/`aside`
+state; each state has `regions` (`chest`, `hips`, `legs`, and `feet`, each
+`full`, `partial`, `none`, or `unknown`) and `provenance`.
+`baseline_coverage` has the same shape or is `null`. `inventory_complete` has
+`value` (`true`, `false`, or `null`) and `provenance`. Every provenance object
+records `origin` (`user` or `reviewed_structured`), `source_identity`,
+`source_digest`, and the profile's `accepted_revision`.
+
+Missing states and explicit `unknown` values are valid stored facts; profile
+storage does not determine Full Auto readiness. This backend-only capability has
+no profile editor or API and does not execute Full Auto. Portable-v1 JSON
+continues to exclude profiles, so automation readiness does not transfer on
+import or export.
+
 ## Temporary photo staging API
 
 `POST /api/looks/photo-stages` accepts exactly one `multipart/form-data` file

@@ -1,5 +1,18 @@
 # Project Diary
 
+## Full Auto Profile Persistence, Task 1.1
+
+- Keep automation profiles separate from immutable look snapshots and
+  portable-v1. Bind every profile revision to the verified snapshot digest;
+  unknown stored facts do not certify automation readiness.
+- Bound new version and revision inputs to SQLite integers before queries.
+  Independent oversized-integer probes caught an OverflowError and now require
+  a controlled 422 refusal without writes.
+- Two full-suite runs failed an existing concurrent plan-resource lookup;
+  isolated checks and the final uninstrumented full suite passed. Diagnostic
+  timing changes and a baseline with different skips do not establish a cause.
+  Retain this limitation rather than claiming the race was repaired.
+
 ## Resource Conflict Review, 2026-10-07
 
 - A plan-level structural marker records that a resource has prompt-eligible
