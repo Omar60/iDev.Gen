@@ -186,15 +186,25 @@ _STABLE_ENVELOPE_PATH_PREFIX: str = "/api/resources/import-selections"
 def _is_stable_envelope_path(path: str) -> bool:
     """Return whether a route opts into a stable ``detail`` error envelope.
 
-    The import-selection routes, guided-session creation and authoring-operation
-    boundary use stable domain errors; legacy routes retain their established
-    error shapes.
+    Import selections, saved looks, guided creation, authoring operations and
+    the explicit profile-application route use stable errors; legacy routes
+    retain their established error shapes.
     """
     return (
         path.startswith(_STABLE_ENVELOPE_PATH_PREFIX)
         or path.startswith("/api/looks")
         or path == "/api/sessions/guided"
+        or _is_profile_application_path(path)
         or "/plan/authoring/operations" in path
+    )
+
+
+def _is_profile_application_path(path: str) -> bool:
+    parts = path.strip("/").split("/")
+    return (
+        len(parts) == 5
+        and parts[:2] == ["api", "sessions"]
+        and parts[3:] == ["plan", "apply-automation-profile"]
     )
 
 
@@ -252,34 +262,31 @@ def _format_validation_messages(exc: RequestValidationError) -> str:
 
 @app.exception_handler(RequestValidationError)
 async def _validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Convert Pydantic validation errors on the import-selections boundary.
+    """Convert Pydantic failures on routes with a stable error contract.
 
-    The handler only wraps requests whose path lives under
-    ``/api/resources/import-selections``. Other routes fall back to
-    FastAPI's default ``RequestValidationError`` handler so the
-    existing tests for those routes stay green. The handler never
-    includes the raw Pydantic ``errors()`` list in the body; the
-    contract pins ``code`` and ``message`` to a deterministic shape.
+    Other routes fall back to FastAPI's default handler. The stable
+    contract never includes the raw Pydantic ``errors()`` list.
     """
     if not _is_stable_envelope_path(request.url.path):
         # Defer to FastAPI's default validation handler.
         from fastapi.exception_handlers import request_validation_exception_handler
         return await request_validation_exception_handler(request, exc)
     code = _validation_error_code(exc)
-    message = _format_validation_messages(exc)
+    message = (
+        "Profile application request is invalid."
+        if _is_profile_application_path(request.url.path)
+        else _format_validation_messages(exc)
+    )
     current = _safe_get_current_view(request.url.path)
     return _stable_error(422, code, message, current=current)
 
 
 @app.exception_handler(StarletteHTTPException)
 async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
-    """Wrap ``HTTPException`` through the stable envelope on the boundary.
+    """Wrap ``HTTPException`` through the stable envelope on opted-in routes.
 
-    On the import-selections boundary, every ``HTTPException`` is
-    converted to the stable envelope. Outside that prefix, the
-    framework's default handler is reused (delegated back through
-    FastAPI's ``http_exception_handler``) so the rest of the API keeps
-    its existing detail string contract.
+    Other routes use the framework default so their established detail
+    string contracts remain unchanged.
 
     Routes that already raised a structured ``detail`` (``code`` +
     ``message``) keep that shape verbatim; plain string details are
@@ -324,10 +331,10 @@ async def _saved_look_error_handler(request: Request, exc: saved_looks.SavedLook
 
 @app.exception_handler(Exception)
 async def _unhandled_exception_handler(request: Request, exc: Exception):
-    """Last-resort guard for the import-selections boundary only.
+    """Last-resort guard for routes with a stable error contract.
 
     Other routes fall back to Starlette's default 500 page so the
-    existing tests are not silently changed.
+    existing API error contracts are not silently changed.
     """
     if not _is_stable_envelope_path(request.url.path):
         from starlette.responses import PlainTextResponse
@@ -1411,6 +1418,47 @@ class SavedLookVersionIn(SavedLookWriteIn):
     expected_version: int = Field(strict=True, ge=1)
 
 
+class AutomationProfilePublishIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    look_key: str = Field(min_length=1, max_length=128)
+    version: int = Field(ge=1, le=saved_looks._SQLITE_INTEGER_MAX)
+    content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_profile_revision: int = Field(
+        ge=0, le=saved_looks._SQLITE_INTEGER_MAX - 1,
+    )
+    profile: dict[str, Any]
+
+
+class ApplySavedLookProfileIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_revision: int = Field(ge=1, le=saved_looks._SQLITE_INTEGER_MAX)
+    look_key: str = Field(min_length=1, max_length=128)
+    version: int = Field(ge=1, le=saved_looks._SQLITE_INTEGER_MAX)
+    content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    profile_revision: int = Field(ge=1, le=saved_looks._SQLITE_INTEGER_MAX)
+    profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    decisions: dict[str, Literal["replace", "keep"]]
+
+
+def _automation_profile_error(exc: saved_looks.SavedLookError) -> JSONResponse:
+    messages = {
+        "invalid_look": "Automation profile request is invalid.",
+        "look_not_found": "Saved look was not found.",
+        "look_data_invalid": "Saved look data is invalid.",
+        "look_write_conflict": "Automation profile could not be saved.",
+        "resource_planning_disabled": "Saved-look writing is disabled.",
+        "automation_profile_not_found": "Automation profile was not found.",
+        "automation_profile_stale": "Saved look or automation profile changed; reload it and try again.",
+        "appearance_ownership_unaccepted": "Appearance ownership has not been accepted.",
+    }
+    return _stable_error(
+        exc.status_code, exc.code,
+        messages.get(exc.code, "Automation profile operation failed."),
+    )
+
+
 class PhotoLookExtractIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1445,6 +1493,62 @@ class PhotoLookReviewIn(BaseModel):
 @app.get("/api/looks")
 def list_saved_looks():
     return saved_looks.list_latest()
+
+
+@app.get("/api/looks/automation-profiles")
+def get_saved_look_automation_profile(request: Request):
+    """Read one profile revision by its complete immutable identity."""
+    fields = {
+        "look_key", "version", "content_digest", "profile_revision",
+        "profile_digest",
+    }
+    items = request.query_params.multi_items()
+    query = request.query_params
+    if len(items) != len(fields) or set(query.keys()) != fields:
+        return _stable_error(
+            422, "invalid_request",
+            "Query must contain exactly the saved-look and profile identity fields.",
+        )
+    integer_values = (query["version"], query["profile_revision"])
+    if any(
+        len(value) > 19 or re.fullmatch(r"[1-9][0-9]*", value) is None
+        for value in integer_values
+    ):
+        return _stable_error(422, "invalid_request", "Profile identity is invalid.")
+    version, profile_revision = (int(value) for value in integer_values)
+    look_key = query["look_key"]
+    content_digest = query["content_digest"]
+    profile_digest = query["profile_digest"]
+    if (
+        not saved_looks._valid_profile_key(look_key)
+        or version > saved_looks._SQLITE_INTEGER_MAX
+        or profile_revision > saved_looks._SQLITE_INTEGER_MAX
+        or not saved_looks._valid_sha256(content_digest)
+        or not saved_looks._valid_sha256(profile_digest)
+    ):
+        return _stable_error(422, "invalid_request", "Profile identity is invalid.")
+    try:
+        return saved_looks.get_automation_profile(
+            look_key, version, profile_revision, content_digest, profile_digest,
+        )
+    except saved_looks.SavedLookError as exc:
+        return _automation_profile_error(exc)
+    except Exception:
+        return _stable_error(500, "internal_error", "Unexpected server error.")
+
+
+@app.post("/api/looks/automation-profiles")
+def publish_saved_look_automation_profile(p: AutomationProfilePublishIn):
+    """Create the next immutable profile revision using revision CAS."""
+    try:
+        return saved_looks.publish_automation_profile(
+            p.look_key, p.version, p.content_digest,
+            p.expected_profile_revision, p.profile,
+        )
+    except saved_looks.SavedLookError as exc:
+        return _automation_profile_error(exc)
+    except Exception:
+        return _stable_error(500, "internal_error", "Unexpected server error.")
 
 
 @app.get("/api/looks/{look_key}/versions/{version}")
@@ -5306,6 +5410,70 @@ def apply_saved_look_to_plan(sid: int, p: ApplySavedLookIn):
         raise HTTPException(400, str(exc))
     except session_plan.SessionNotFound as exc:
         raise HTTPException(404, str(exc))
+    return {
+        "plan_revision": result["plan_revision"],
+        "conflicts": result["conflicts"],
+    }
+
+
+@app.post("/api/sessions/{sid}/plan/apply-automation-profile")
+def apply_saved_look_profile_to_plan(
+    p: ApplySavedLookProfileIn,
+    sid: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
+):
+    """Apply an exact accepted look profile through the existing plan CAS."""
+    enabled = is_resource_planning_enabled()
+    if not enabled:
+        return _stable_error(
+            503, "resource_planning_disabled", "Resource planning is disabled.",
+        )
+    try:
+        saved = saved_looks.get_version(p.look_key, p.version)
+        if saved["content_digest"] != p.content_digest:
+            return _stable_error(
+                409, "automation_profile_stale",
+                "Saved look or automation profile changed; reload it and try again.",
+            )
+        result = session_plan.apply_saved_look(
+            sid, p.expected_revision, p.look_key, p.version, p.decisions,
+            planning_enabled=enabled,
+            profile_revision=p.profile_revision,
+            profile_digest=p.profile_digest,
+        )
+    except saved_looks.SavedLookError as exc:
+        return _automation_profile_error(exc)
+    except session_plan.ResourcePlanningDisabled:
+        return _stable_error(
+            503, "resource_planning_disabled", "Resource planning is disabled.",
+        )
+    except session_plan.PlanValidationError:
+        return _stable_error(
+            422, "invalid_request", "The automation profile application request is invalid.",
+        )
+    except session_plan.PlanRevisionStale:
+        return _stable_error(
+            409, "plan_revision_stale", "Session plan changed; reload it before applying the profile.",
+        )
+    except session_plan.PreparedTakeConflict:
+        return _stable_error(
+            409, "prepared_take_conflict", "Prepared work prevents applying this profile.",
+        )
+    except session_plan.PlanConstantsFrozenAfterGenerated:
+        return _stable_error(
+            409, "profile_frozen", "A session with a linked shot cannot switch profile identity.",
+        )
+    except session_plan.PlanOwnershipConflict:
+        return _stable_error(
+            409, "plan_ownership_conflict", "The profile cannot be applied to this session state.",
+        )
+    except session_plan.SessionNotInResourceMode:
+        return _stable_error(
+            400, "session_not_in_resource_mode", "Session is not a resource-planning session.",
+        )
+    except session_plan.SessionNotFound:
+        return _stable_error(404, "session_not_found", "Session was not found.")
+    except Exception:
+        return _stable_error(500, "internal_error", "Unexpected server error.")
     return {
         "plan_revision": result["plan_revision"],
         "conflicts": result["conflicts"],

@@ -2,61 +2,59 @@
 
 ## Scope and State
 
-Internal Heavy deployment `full-auto-13-20261008` completes only Task 1.3 of
-`automate-resource-session-full-auto`, starting from clean HEAD `5e0a9f5`.
-Main completed project-document intake and read the change artifacts before
-implementation. Explorer mapped supporting contracts; Executor `implement_13`
-owned production/repair; Tester `verify_13` independently verified the real diff.
-Main accepted the final tree and marked only Task 1.3; 3 of 41 tasks are complete.
+Internal Heavy deployment `full-auto-14-20261009` completes only Task 1.4 of
+`automate-resource-session-full-auto`, starting from a clean tree. Main completed
+project-document intake and inspected the change artifacts and decisive code.
+Explorer mapped supporting specifications/tests; Executor `implement_14` owned
+production and repair; Testers `verify_14` and `verify_14_recovery` independently
+verified the actual diff. Main accepted the result and marked only Task 1.4;
+4 of 41 tasks are complete. Task 2.1 remains unstarted.
 
-## Implementation and Review
+## Implementation and Independent Review
 
-Permanent appearance is joined from exact accepted ownership spans; the complete
-look snapshot stays immutable. A changed projection has user origin, while an
-identical projection retains saved_look origin. Separate immutable
-`session_profile_evidence` rows bind exact look/profile identity and projection
-outside the closed authoring-v1 schema. Manual domain application retains CAS,
-invalidation and linked-shot freeze. Unchanged revisions can retain the binding;
-an unlinked manual appearance change leaves previous evidence historical.
+`GET /api/looks/automation-profiles` reads one exact profile using look key,
+version, snapshot content digest, profile revision and profile digest query
+fields. `POST` to the same route publishes a closed immutable profile revision
+with expected-profile-revision CAS. Query/body identity supports slash-containing
+look keys without changing the legacy look routes.
 
-The JavaScript helper converts visual UTF-16 selection boundaries to Unicode
-scalar spans without normalization, rejects split pairs and unpaired surrogates,
-and has direct Python/JavaScript parity fixtures. Profile assertions cover
-whole-appearance-permanent and explicitly selected no-coverage state facts;
-visual shortcut preview/confirmation remains Task 6.1.
+`POST /api/sessions/{sid}/plan/apply-automation-profile` validates exact identity
+and explicit Keep/Replace decisions, then reuses the existing reviewed permanent
+projection, session evidence, plan CAS, invalidation and linked-shot freeze.
+Legacy profile-free `apply-look` and portable-v1 remain unchanged. Reads remain
+available when planning is disabled; writes retain the existing feature gate.
 
-Independent probes reproduced two defects before acceptance: profile-free
-reapplication could lose the binding after a shot linked, and an oversized
-version could raise raw SQLite OverflowError. Executor repaired both; Tester
-retained and reran the adversarial regressions. The bracelet integration uses
-actual manual preparation/progression: only the worn stage retains its wording.
+Independent HTTP tests verify historical reads, concurrent publication with one
+winner, portable-digest refusal, malformed/duplicate/oversized input, complete-row
+zero-write refusals, preparation invalidation and freeze after actual submission.
+Tester found two required corrections: malformed session IDs bypassed stable
+errors, and a validation location reflected arbitrary decision keys. Executor
+repaired both; retained independent regressions pass.
 
 ## Completed Verification
 
-- `python -m pytest`: 2,862 passed, one skipped, three warnings, 226.99 seconds
-  on Python 3.11.9.
-- Focused independent/task/legacy acceptance: 56 passed.
-- `python -m pytest -ra tests/test_no_personal_data.py tests/test_shoot_checks.py`:
-  46 passed.
-- `npm --prefix frontend test`: 607 passed across 32 files.
-- `npm --prefix frontend run build`: passed, with a chunk-size warning.
+- `python -m pytest`: 2,875 passed, one skipped, three warnings in 263.11 seconds
+  on Python 3.11.9, independently rerun after a power interruption.
+- Both Task 1.4 API modules: 13 passed.
+- Privacy and shoot/control checks: 46 passed.
 - `openspec validate automate-resource-session-full-auto --strict --no-interactive`:
   passed.
 - `git diff --check`: passed, with LF/CRLF conversion notices only.
 
-The skipped symlink case was independently rerun with `-rs` and skipped because
-filesystem symlink creation raised OSError. Raw gate evidence remains outside
-the repository; the retained full-suite file is explicitly its captured final
-output chunk rather than a full raw log. An earlier Executor full-suite run was
-interrupted and is not acceptance evidence. Main inspected completed gate output.
+The symlink test was skipped because the environment could not create a symlink
+and raised OSError. Warnings concern existing Pydantic and HTTPX usage. Raw gate
+logs remain in temporary storage outside the repository. The earlier full run
+with two failures is retained as repair evidence, not final acceptance.
 
 ## Closure and Limits
 
-Archivist owns concise public README/Looks and structure documentation, compact
-closure checks, read-only Git reporting and the exact Deployment Token Report.
-The acceptance commit includes only Task 1.3 and closure documentation.
-No public profile API, full profile editor, deterministic coverage compiler or
-Full Auto coordinator is delivered by this task. Permanent/removal conflict
-signals match canonical wording lexically; they do not certify arbitrary prose
-or visual fidelity. No real generation, archive or push is authorized. Stop at
-this task; Task 1.4 is the next pending task and has not started.
+Archivist owns concise README/Looks API documentation, compact closure checks,
+read-only Git handoff and the exact Deployment Token Report. The acceptance
+commit includes only Task 1.4 and its closure documentation. No frontend changed,
+so frontend tests/build were not required or run in this deployment.
+
+Coverage compilation/provenance, profile editor and Full Auto coordinator/run
+fencing remain later tasks. Manual profile application does not authorize
+progression, approval, submission or generation. Normal immutable API writers
+preserve exact binding; concurrent out-of-band SQL tampering was not tested.
+No real generation, visual certification, archive or push occurred.

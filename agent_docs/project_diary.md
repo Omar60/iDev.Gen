@@ -1,5 +1,16 @@
 # Project Diary
 
+## Full Auto Profile APIs, Task 1.4
+
+- Recognize the explicit operation's route before validating its numeric ID;
+  malformed IDs still need the same stable error envelope.
+- Validation locations can contain arbitrary client dictionary keys. Use a
+  fixed safe message for profile application rather than exposing those keys.
+- Keep exact profile identity in query/body fields to support legal slash keys
+  without changing legacy look routes. Reuse immutable domain reads and plan CAS.
+- After an interrupted gate, rerun the full suite on the final tree; an earlier
+  focused pass or incomplete log is not acceptance evidence.
+
 ## Full Auto Appearance Ownership, Task 1.3
 
 - Keep the complete immutable appearance as source evidence and project only

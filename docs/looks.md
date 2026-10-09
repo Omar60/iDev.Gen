@@ -125,12 +125,46 @@ permanent spans when that garment is removed. This is limited lexical evidence,
 not exhaustive prose-semantic detection, and it does not rewrite or silently
 delete appearance text.
 
-This remains a backend capability: there is no profile editor,
-profile-management API, or profile-aware session-application API, and Full Auto
-does not execute yet. The existing manual saved-look workflow remains
-available; profile-aware manual application retains progression preview,
-review, submission, and Run controls. Portable-v1 JSON continues to exclude
-profiles, so automation readiness does not transfer on import or export.
+### Automation profile API
+
+`GET /api/looks/automation-profiles` reads one immutable revision. Its query
+must contain exactly one each of `look_key`, `version`, `content_digest`,
+`profile_revision`, and `profile_digest`; it returns that exact profile, including
+historical revisions. There is no implicit latest-profile lookup.
+
+`POST /api/looks/automation-profiles` creates the next immutable revision. Its
+closed JSON object contains exactly `look_key`, `version`, `content_digest`,
+`expected_profile_revision`, and `profile`. The look identity must match the
+saved version; use `expected_profile_revision: 0` for the first revision and the
+current revision for an update. The response returns the canonical profile with
+its assigned `profile_revision` and `profile_digest`. The revision check is
+compare-and-swap: one concurrent writer can succeed, and stale writers must
+reload before retrying.
+
+`POST /api/sessions/{sid}/plan/apply-automation-profile` explicitly applies an
+exact saved-look and profile identity to an existing authoring-v1 plan. Its
+closed body contains `expected_revision`, `look_key`, `version`,
+`content_digest`, `profile_revision`, `profile_digest`, and `decisions`.
+`decisions` explicitly chooses `replace` or `keep` for `look` and, when the
+outfit or existing plan requires it, `initial_wardrobe`; profile application
+requires `look: "replace"`. The route checks both the exact look/profile
+identity and plan revision before writing. Success returns the new
+`plan_revision` and `conflicts`. A stale plan, changed profile, linked-shot
+identity freeze, or other plan conflict is refused without applying the request.
+This operation only updates the plan; it does not authorize preparation
+or generation.
+
+These routes return errors in the stable
+`{"detail":{"code":"...","message":"..."}}` envelope. Codes identify
+invalid requests, stale identities/revisions, missing records, disabled
+resource planning, and plan conflicts; messages do not expose private source
+values, filesystem paths, or internal exception text.
+
+The API is a backend capability: there is no profile editor or guided Full Auto
+creation/execution flow yet. The existing manual saved-look workflow remains
+available, including progression preview, review, submission, and Run controls.
+Portable-v1 JSON continues to exclude profiles, so automation readiness does
+not transfer on import or export.
 
 ## Temporary photo staging API
 
@@ -357,6 +391,9 @@ remains a separate operation.
 | `POST /api/looks/import/commit` | Commit the reviewed portable or legacy envelope with its preview token, digest, and explicit choice. |
 | `POST /api/looks` | Create version 1 with required `name`, optional `appearance`, and at most one of `garments` or `outfit_key`. |
 | `POST /api/looks/{key}/versions` | Append a version with the same content fields and required `expected_version`. |
+| `GET /api/looks/automation-profiles` | Read one automation-profile revision using its complete saved-look and profile identity. |
+| `POST /api/looks/automation-profiles` | Create an immutable automation-profile revision with `expected_profile_revision` compare-and-swap. |
+| `POST /api/sessions/{sid}/plan/apply-automation-profile` | Apply an exact profile to an existing authoring-v1 plan using `expected_revision` compare-and-swap. |
 | `POST /api/looks/photo-stages` | Stage one validated JPEG, PNG, or WebP image for preview, manual description, or extraction. |
 | `GET /api/looks/photo-stages/{photo_id}` | Read temporary photo-stage status and metadata. |
 | `GET /api/looks/photo-stages/{photo_id}/preview` | Read staged image bytes for preview. |
