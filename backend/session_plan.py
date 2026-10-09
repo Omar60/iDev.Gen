@@ -3465,6 +3465,373 @@ def _validate_profile_progression(application: dict, plan: dict) -> None:
         )
 
 
+def _profile_coverage_stage_index(application: dict, wardrobe: str) -> int | None:
+    saved = application["saved_look"]
+    outfit = saved["outfit"]
+    if outfit is None:
+        return 0 if wardrobe == "" else None
+    stages = _saved_look_wardrobe_stages(outfit)
+    matches = [index for index, stage in enumerate(stages) if stage == wardrobe]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _profile_coverage_is_ready(application: dict) -> bool:
+    from backend import saved_looks
+
+    saved = application["saved_look"]
+    profile = application["profile"]
+    readiness = saved_looks.get_automation_profile_readiness(
+        saved["key"], saved["version"], saved["content_digest"],
+        profile["profile_revision"], profile["profile_digest"],
+    )
+    return readiness["profile_ready"] is True
+
+
+def _profile_ownership_digest(profile: dict) -> str:
+    encoded = json.dumps(
+        profile["appearance_segments"], ensure_ascii=False,
+        separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8", errors="strict")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _profile_coverage_record(
+    application: dict,
+    stage_index: int,
+    wardrobe: str,
+    text: str,
+) -> dict:
+    from backend import saved_looks
+
+    saved = application["saved_look"]
+    profile = application["profile"]
+    ownership_digest = _profile_ownership_digest(profile)
+    stage_states = saved_looks._automation_profile_coverage_stage_states(saved)
+    if type(stage_index) is not int or not 0 <= stage_index < len(stage_states):
+        raise PlanValidationError("profile coverage stage does not match its saved look")
+    stage_identity = {
+        "stage_index": stage_index,
+        "stage_state": stage_states[stage_index],
+        "wardrobe": wardrobe,
+    }
+    encoded_stage = json.dumps(
+        stage_identity, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8", errors="strict")
+    return {
+        "look_key": saved["key"],
+        "look_version": saved["version"],
+        "look_content_digest": saved["content_digest"],
+        "profile_revision": profile["profile_revision"],
+        "profile_digest": profile["profile_digest"],
+        "ownership_digest": ownership_digest,
+        "stage_index": stage_index,
+        "stage_digest": hashlib.sha256(encoded_stage).hexdigest(),
+        "compiler_version": saved_looks.AUTOMATION_COVERAGE_COMPILER_VERSION,
+        "text_digest": hashlib.sha256(text.encode("utf-8", errors="strict")).hexdigest(),
+    }
+
+
+def _compile_profile_coverage(application: dict, plan: dict) -> dict[str, dict]:
+    from backend import saved_looks
+
+    if not _profile_coverage_is_ready(application):
+        return {}
+    effective = resolve_effective_wardrobes(plan)
+    saved = application["saved_look"]
+    profile = application["profile"]
+    compiled = {}
+    for take in plan["takes"]:
+        take_id = take["take_id"]
+        stage_index = _profile_coverage_stage_index(
+            application, effective[take_id],
+        )
+        if stage_index is None:
+            continue
+        text = saved_looks.compile_automation_profile_coverage(
+            saved["key"], saved["version"], saved["content_digest"],
+            profile["profile_revision"], profile["profile_digest"], stage_index,
+        )
+        compiled[take_id] = {
+            "text": text,
+            "evidence": _profile_coverage_record(
+                application, stage_index, effective[take_id], text,
+            ),
+        }
+    return compiled
+
+
+def _copy_plan_takes(plan: dict) -> dict:
+    copied = dict(plan)
+    copied["takes"] = [dict(take) for take in plan["takes"]]
+    return copied
+
+
+def _old_derived_coverage(
+    session_id: int,
+    revision: int,
+    old_plan: dict,
+) -> dict[str, tuple[str, dict]]:
+    bound_take_ids = _profile_coverage_revision_derived_take_ids(
+        session_id, revision, old_plan,
+    )
+    application = _load_session_profile_application(session_id, revision, old_plan)
+    if application is None:
+        if bound_take_ids is not None:
+            raise PlanValidationError("profile coverage contract has no session profile")
+        return {}
+    old_takes = _take_by_id(old_plan)
+    old_wardrobes = resolve_effective_wardrobes(old_plan)
+    derived = {}
+    for row in db.q(
+        "SELECT * FROM session_take_coverage_evidence "
+        "WHERE session_id = ? AND plan_revision = ?",
+        session_id, revision,
+    ):
+        take = old_takes.get(row["take_id"])
+        if take is None:
+            raise PlanValidationError("stored profile coverage evidence references a missing take")
+        coverage = take.get("wardrobe_coverage", "")
+        if not isinstance(coverage, str):
+            raise PlanValidationError("stored profile coverage text must be a string")
+        evidence = _session_take_profile_coverage_evidence(
+            session_id, revision, row["take_id"], old_plan,
+        )
+        if evidence is not None and evidence["derived_coverage"] is not None:
+            derived[row["take_id"]] = (
+                coverage,
+                _profile_coverage_record(
+                    application, row["stage_index"],
+                    old_wardrobes[row["take_id"]], coverage,
+                ),
+            )
+    return derived
+
+
+def _derive_profile_coverage_for_application(
+    session_id: int,
+    source_revision: int,
+    old_plan: dict,
+    application: dict,
+    plan: dict,
+) -> tuple[dict, dict[str, dict]]:
+    candidate = _copy_plan_takes(plan)
+    old_derived = _old_derived_coverage(session_id, source_revision, old_plan)
+    compiled = _compile_profile_coverage(application, candidate)
+    records = {}
+    for take in candidate["takes"]:
+        take_id = take["take_id"]
+        value = compiled.get(take_id)
+        if value is not None:
+            take["wardrobe_coverage"] = value["text"]
+            records[take_id] = value["evidence"]
+        elif take_id in old_derived and take.get("wardrobe_coverage", "") == old_derived[take_id][0]:
+            take.pop("wardrobe_coverage", None)
+    return validate_draft(candidate), records
+
+
+def _refresh_profile_coverage_for_plan_change(
+    session_id: int,
+    source_revision: int,
+    old_plan: dict,
+    application: dict,
+    plan: dict,
+) -> tuple[dict, dict[str, dict]]:
+    candidate = _copy_plan_takes(plan)
+    old_derived = _old_derived_coverage(session_id, source_revision, old_plan)
+    compiled = _compile_profile_coverage(application, candidate)
+    records = {}
+    for take in candidate["takes"]:
+        prior = old_derived.get(take["take_id"])
+        if prior is None:
+            continue
+        old_text, _old_evidence = prior
+        if take.get("wardrobe_coverage", "") != old_text:
+            continue
+        current = compiled.get(take["take_id"])
+        if current is None:
+            take.pop("wardrobe_coverage", None)
+            continue
+        take["wardrobe_coverage"] = current["text"]
+        records[take["take_id"]] = current["evidence"]
+    return validate_draft(candidate), records
+
+
+def _strip_derived_coverage_for_plan_change(
+    session_id: int,
+    source_revision: int,
+    old_plan: dict,
+    plan: dict,
+) -> dict:
+    candidate = _copy_plan_takes(plan)
+    old_derived = _old_derived_coverage(session_id, source_revision, old_plan)
+    for take in candidate["takes"]:
+        prior = old_derived.get(take["take_id"])
+        if prior is not None and take.get("wardrobe_coverage", "") == prior[0]:
+            take.pop("wardrobe_coverage", None)
+    return validate_draft(candidate)
+
+
+def _insert_profile_coverage_evidence(
+    session_id: int,
+    revision: int,
+    evidence_by_take: dict[str, dict],
+    now: str,
+) -> None:
+    for take_id, evidence in evidence_by_take.items():
+        db.run(
+            """INSERT INTO session_take_coverage_evidence (
+                   session_id, plan_revision, take_id, look_key, look_version,
+                   look_content_digest, profile_revision, profile_digest,
+                   ownership_digest, stage_index, stage_digest, compiler_version,
+                   text_digest, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            session_id, revision, take_id, evidence["look_key"],
+            evidence["look_version"], evidence["look_content_digest"],
+            evidence["profile_revision"], evidence["profile_digest"],
+            evidence["ownership_digest"], evidence["stage_index"],
+            evidence["stage_digest"], evidence["compiler_version"],
+            evidence["text_digest"], now,
+        )
+
+
+def _session_take_profile_coverage_evidence(
+    session_id: int,
+    plan_revision: int,
+    take_id: str,
+    plan: dict,
+) -> dict | None:
+    application = _load_session_profile_application(session_id, plan_revision, plan)
+    bound_take_ids = _profile_coverage_revision_derived_take_ids(
+        session_id, plan_revision, plan,
+    )
+    row = db.one(
+        "SELECT * FROM session_take_coverage_evidence "
+        "WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+        session_id, plan_revision, take_id,
+    )
+    if application is None:
+        if row is not None or bound_take_ids is not None:
+            raise PlanValidationError("stored coverage evidence has no session profile")
+        return None
+    take = _take_by_id(plan).get(take_id)
+    if take is None:
+        raise PlanValidationError("profile coverage take is missing from the current plan")
+    coverage = take.get("wardrobe_coverage", "")
+    if not isinstance(coverage, str):
+        raise PlanValidationError("profile coverage text must be a string")
+    text_digest = hashlib.sha256(coverage.encode("utf-8", errors="strict")).hexdigest()
+    derived = None
+    if row is not None:
+        effective = resolve_effective_wardrobes(plan)
+        expected = _profile_coverage_record(
+            application, row["stage_index"], effective[take_id], coverage,
+        )
+        if (
+            any(row[key] != value for key, value in expected.items())
+            or _profile_coverage_stage_index(application, effective[take_id]) != row["stage_index"]
+        ):
+            raise PlanValidationError("stored coverage evidence does not match the current take")
+        from backend import saved_looks
+
+        try:
+            compiled = saved_looks.compile_automation_profile_coverage(
+                application["saved_look"]["key"], application["saved_look"]["version"],
+                application["saved_look"]["content_digest"],
+                application["profile"]["profile_revision"],
+                application["profile"]["profile_digest"], row["stage_index"],
+            )
+        except saved_looks.SavedLookError as exc:
+            raise PlanValidationError("stored coverage profile is no longer compilable") from exc
+        if compiled != coverage:
+            raise PlanValidationError("stored coverage text does not match its profile stage")
+        derived = {
+            "stage_index": row["stage_index"],
+            "stage_digest": row["stage_digest"],
+            "compiler_version": row["compiler_version"],
+            "text_digest": row["text_digest"],
+        }
+    return {
+        "look_key": application["saved_look"]["key"],
+        "look_version": application["saved_look"]["version"],
+        "look_content_digest": application["saved_look"]["content_digest"],
+        "profile_revision": application["profile"]["profile_revision"],
+        "profile_digest": application["profile"]["profile_digest"],
+        "ownership_digest": _profile_ownership_digest(application["profile"]),
+        "coverage_text_digest": text_digest,
+        "derived_coverage": derived,
+    }
+
+
+def _profile_coverage_records_match_revision(
+    session_id: int,
+    revision: int,
+    expected: dict[str, dict],
+    plan: dict,
+) -> bool:
+    bound_take_ids = _profile_coverage_revision_derived_take_ids(
+        session_id, revision, plan,
+    )
+    if bound_take_ids is None or bound_take_ids != set(expected):
+        return False
+    rows = db.q(
+        "SELECT * FROM session_take_coverage_evidence "
+        "WHERE session_id = ? AND plan_revision = ? ORDER BY take_id",
+        session_id, revision,
+    )
+    if {row["take_id"] for row in rows} != set(expected):
+        return False
+    return all(
+        all(row[key] == value for key, value in expected[row["take_id"]].items())
+        for row in rows
+    )
+
+
+def _profile_coverage_revision_derived_take_ids(
+    session_id: int,
+    revision: int,
+    plan: dict,
+) -> set[str] | None:
+    marker = db.one(
+        "SELECT evidence_version, derived_take_ids_json "
+        "FROM session_profile_coverage_revision "
+        "WHERE session_id = ? AND plan_revision = ?",
+        session_id, revision,
+    )
+    stored_take_ids = {
+        row["take_id"] for row in db.q(
+            "SELECT take_id FROM session_take_coverage_evidence "
+            "WHERE session_id = ? AND plan_revision = ?",
+            session_id, revision,
+        )
+    }
+    if marker is None:
+        if stored_take_ids:
+            raise PlanValidationError("profile coverage rows have no revision evidence contract")
+        return None
+    if marker["evidence_version"] != 1:
+        raise PlanValidationError("profile coverage evidence version is unsupported")
+    try:
+        raw_ids = marker["derived_take_ids_json"]
+        take_ids = json.loads(raw_ids)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise PlanValidationError("profile coverage derived take IDs are malformed") from exc
+    if (
+        type(take_ids) is not list
+        or any(type(take_id) is not str or not take_id for take_id in take_ids)
+        or take_ids != sorted(set(take_ids))
+        or raw_ids != json.dumps(take_ids, ensure_ascii=False, separators=(",", ":"))
+    ):
+        raise PlanValidationError("profile coverage derived take IDs are not canonical")
+    expected_take_ids = set(take_ids)
+    if not expected_take_ids.issubset(_take_id_set(plan)):
+        raise PlanValidationError(
+            "profile coverage rows do not match their revision evidence contract"
+        )
+    if stored_take_ids != expected_take_ids:
+        raise PlanValidationError("profile coverage rows do not match their revision evidence contract")
+    return expected_take_ids
+
+
 def _persist_plan_revision(
     session_id: int,
     current: dict | None,
@@ -3473,10 +3840,59 @@ def _persist_plan_revision(
     conflicts: list[dict],
     *,
     carry_profile_evidence: bool = True,
+    profile_application: dict | None = None,
+    profile_coverage_evidence: dict[str, dict] | None = None,
 ) -> dict:
     """Persist one already-CAS-checked plan change inside its transaction."""
     actual = 0 if current is None else int(current["plan_revision"])
     now = db.now()
+    profile_evidence_to_carry = None
+    prior_profile_application = None
+    prior_profile_evidence = None
+    if current is not None:
+        prior_profile_evidence = db.one(
+            "SELECT * FROM session_profile_evidence WHERE session_id = ? AND plan_revision = ?",
+            session_id, actual,
+        )
+        if prior_profile_evidence is not None:
+            prior_profile_application = _load_session_profile_application(
+                session_id, actual, old_plan,
+            )
+        if carry_profile_evidence and prior_profile_evidence is not None:
+            profile_evidence_to_carry = prior_profile_evidence
+            if _session_profile_evidence_matches_plan(profile_evidence_to_carry, validated):
+                if profile_coverage_evidence is None:
+                    validated, profile_coverage_evidence = (
+                        _refresh_profile_coverage_for_plan_change(
+                            session_id, actual, old_plan,
+                            prior_profile_application, validated,
+                        )
+                    )
+            else:
+                validated = _strip_derived_coverage_for_plan_change(
+                    session_id, actual, old_plan, validated,
+                )
+                profile_evidence_to_carry = None
+    if profile_application is not None and profile_coverage_evidence is None:
+        validated, profile_coverage_evidence = _derive_profile_coverage_for_application(
+            session_id, actual, old_plan, profile_application, validated,
+        )
+    if profile_coverage_evidence is None:
+        profile_coverage_evidence = {}
+    profile_binding_changed = (
+        profile_application is not None
+        and (
+            prior_profile_application is None
+            or not _same_session_profile_application(
+                profile_application, prior_profile_application,
+            )
+        )
+    ) or (
+        prior_profile_application is not None
+        and profile_application is None
+        and profile_evidence_to_carry is None
+    )
+    validated = validate_draft(validated)
     plan_with_conflicts = dict(validated)
     plan_with_conflicts["conflicts"] = conflicts
     encoded = json.dumps(
@@ -3494,8 +3910,9 @@ def _persist_plan_revision(
     continuity_changed = current is not None and _plan_continuity_changed(
         old_compare, new_compare,
     )
-    constants_changed = current is not None and _plan_constants_changed(
-        old_compare, new_compare,
+    constants_changed = current is not None and (
+        _plan_constants_changed(old_compare, new_compare)
+        or profile_binding_changed
     )
     if continuity_changed and has_generated_take(session_id):
         raise PlanConstantsFrozenAfterGenerated(
@@ -3531,12 +3948,13 @@ def _persist_plan_revision(
             "updated_at = ? WHERE session_id = ?",
             new_revision, encoded, now, session_id,
         )
-    if carry_profile_evidence and current is not None:
-        evidence = db.one(
-            "SELECT * FROM session_profile_evidence WHERE session_id = ? AND plan_revision = ?",
-            session_id, actual,
+    if profile_application is not None:
+        _record_session_profile_application(
+            session_id, new_revision, profile_application,
         )
-        if evidence is not None and _session_profile_evidence_matches_plan(evidence, validated):
+    elif profile_evidence_to_carry is not None:
+        evidence = profile_evidence_to_carry
+        if _session_profile_evidence_matches_plan(evidence, validated):
             db.run(
                 """INSERT INTO session_profile_evidence (
                        session_id, plan_revision, look_key, look_version,
@@ -3548,6 +3966,18 @@ def _persist_plan_revision(
                 evidence["profile_digest"], evidence["appearance_projection"],
                 evidence["projection_digest"], now,
             )
+    if profile_application is not None or profile_evidence_to_carry is not None:
+        db.run(
+            "INSERT INTO session_profile_coverage_revision "
+            "(session_id, plan_revision, evidence_version, derived_take_ids_json, created_at) "
+            "VALUES (?, ?, 1, ?, ?)",
+            session_id, new_revision,
+            json.dumps(sorted(profile_coverage_evidence), ensure_ascii=False, separators=(",", ":")),
+            now,
+        )
+    _insert_profile_coverage_evidence(
+        session_id, new_revision, profile_coverage_evidence, now,
+    )
     _copy_forward_ready_takes(
         session_id, actual, new_revision, copy_sources, now,
     )
@@ -4004,6 +4434,11 @@ def apply_saved_look(
         validate_selected_resources(validated["selected_resources"])
         if profile_application is not None:
             _validate_profile_progression(profile_application, validated)
+            validated, coverage_evidence = _derive_profile_coverage_for_application(
+                session_id, actual, old_plan, profile_application, validated,
+            )
+        else:
+            coverage_evidence = None
         conflicts = detect_resource_constant_conflicts(validated)
         if (
             profile_application is not None
@@ -4014,6 +4449,9 @@ def apply_saved_look(
             ) == json.dumps(
                 old_plan, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
             )
+            and _profile_coverage_records_match_revision(
+                session_id, actual, coverage_evidence or {}, validated,
+            )
         ):
             return {"plan_revision": actual, "conflicts": conflicts}
         result = _persist_plan_revision(
@@ -4021,11 +4459,9 @@ def apply_saved_look(
             # Profile-free application retains an existing binding only when
             # the snapshot and effective projection still match exactly.
             carry_profile_evidence=profile_application is None,
+            profile_application=profile_application,
+            profile_coverage_evidence=coverage_evidence,
         )
-        if profile_application is not None:
-            _record_session_profile_application(
-                session_id, result["plan_revision"], profile_application,
-            )
         return result
 
 

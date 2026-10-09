@@ -120,6 +120,15 @@ revisions. The browser selection helper maps UTF-16 selection offsets to the
 same Unicode-scalar spans used by the backend, including emoji and combining
 marks, without normalizing the source text.
 
+When the applied profile is ready, session application derives each take's
+coverage from its matching progression stage and records immutable evidence for
+the exact look, profile, ownership, stage, and compiled text. Prepared evidence
+consumes that record. Editing derived coverage clears the claim for that take in
+the new plan revision and invalidates dependent preparation; unchanged takes
+retain eligible copy-forward, and earlier revision and linked-shot history stay
+unchanged. An incomplete profile does not replace or certify manual coverage;
+the existing manual coverage and workflow remain usable.
+
 The current conflict check catches canonical garment wording found within
 permanent spans when that garment is removed. This is limited lexical evidence,
 not exhaustive prose-semantic detection, and it does not rewrite or silently

@@ -1,5 +1,20 @@
 # Project Diary
 
+## Full Auto Coverage Provenance, Task 2.3
+
+- Bind the expected derived stable-ID set as immutable revision evidence.
+  Matching marker/row sets alone are insufficient: every ID must also exist
+  in the authoritative plan. Missing rows must not silently become manual text.
+- Hash accepted ownership spans and exact materialized stage identity, not
+  only visible projection or compiled wording. Identical text does not make
+  different accepted profile identities interchangeable for copy-forward.
+- Version new consumption outside authoring-v1 while preserving historical
+  unmarked validation and profile-free digest shapes. Incomplete manual
+  profiles remain usable without fabricating derived coverage.
+- Persist profile and coverage evidence before copy-forward validation. Manual
+  edits revoke new claims and fence active authoring while linked history stays
+  immutable. Future Full Auto ownership integrates these boundaries separately.
+
 ## Full Auto Coverage Compiler, Task 2.2
 
 - Resolve exact immutable profile identity and accepted readiness before

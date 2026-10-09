@@ -662,6 +662,54 @@ BEGIN
     SELECT RAISE(ABORT, 'session profile evidence is immutable');
 END;
 
+-- Marks profile-bound plan revisions whose prepared snapshots use the 2.3
+-- coverage provenance contract. Historical revisions remain unmarked.
+CREATE TABLE IF NOT EXISTS session_profile_coverage_revision (
+    session_id      INTEGER NOT NULL,
+    plan_revision   INTEGER NOT NULL CHECK (plan_revision > 0),
+    evidence_version INTEGER NOT NULL CHECK (evidence_version = 1),
+    derived_take_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_at      TEXT NOT NULL,
+    PRIMARY KEY (session_id, plan_revision),
+    FOREIGN KEY (session_id, plan_revision)
+        REFERENCES session_profile_evidence(session_id, plan_revision) ON DELETE CASCADE
+);
+
+CREATE TRIGGER IF NOT EXISTS session_profile_coverage_revision_immutable
+BEFORE UPDATE ON session_profile_coverage_revision
+BEGIN
+    SELECT RAISE(ABORT, 'session profile coverage revision is immutable');
+END;
+
+-- Per-take coverage claims are separate from the closed authoring-v1 plan.
+CREATE TABLE IF NOT EXISTS session_take_coverage_evidence (
+    session_id          INTEGER NOT NULL,
+    plan_revision       INTEGER NOT NULL CHECK (plan_revision > 0),
+    take_id             TEXT NOT NULL CHECK (take_id <> ''),
+    look_key            TEXT NOT NULL,
+    look_version        INTEGER NOT NULL CHECK (look_version > 0),
+    look_content_digest TEXT NOT NULL CHECK (length(look_content_digest) = 64),
+    profile_revision    INTEGER NOT NULL CHECK (profile_revision > 0),
+    profile_digest      TEXT NOT NULL CHECK (length(profile_digest) = 64),
+    ownership_digest    TEXT NOT NULL CHECK (length(ownership_digest) = 64),
+    stage_index         INTEGER NOT NULL CHECK (stage_index >= 0),
+    stage_digest        TEXT NOT NULL CHECK (length(stage_digest) = 64),
+    compiler_version    TEXT NOT NULL,
+    text_digest         TEXT NOT NULL CHECK (length(text_digest) = 64),
+    created_at          TEXT NOT NULL,
+    PRIMARY KEY (session_id, plan_revision, take_id),
+    FOREIGN KEY (session_id, plan_revision)
+        REFERENCES session_profile_evidence(session_id, plan_revision) ON DELETE CASCADE,
+    FOREIGN KEY (look_key, look_version, profile_revision)
+        REFERENCES saved_look_automation_profile(look_key, look_version, profile_revision)
+);
+
+CREATE TRIGGER IF NOT EXISTS session_take_coverage_evidence_immutable
+BEFORE UPDATE ON session_take_coverage_evidence
+BEGIN
+    SELECT RAISE(ABORT, 'session take coverage evidence is immutable');
+END;
+
 -- One replayable authoring claim per client request. Progress is JSON so the
 -- requested, completed and remaining references retain their plan order.
 CREATE TABLE IF NOT EXISTS authoring_operation (
@@ -1146,6 +1194,11 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
                SELECT RAISE(ABORT, 'authoring operation input digest is immutable');
            END"""
     )
+    if "derived_take_ids_json" not in columns("session_profile_coverage_revision"):
+        conn.execute(
+            "ALTER TABLE session_profile_coverage_revision "
+            "ADD COLUMN derived_take_ids_json TEXT NOT NULL DEFAULT '[]'"
+        )
     conn.execute(
         """CREATE TRIGGER IF NOT EXISTS authoring_operation_acceptance_immutable
            BEFORE UPDATE OF acceptance_digest, acceptance_result_json ON authoring_operation

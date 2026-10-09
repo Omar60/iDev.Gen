@@ -1484,6 +1484,9 @@ def prepare_take_inputs(
     resource_entries = _prepare_selected_resource_inputs(plan)
 
     effective_state = _resolve_take_effective_state(plan, take)
+    profile_coverage_evidence = session_plan._session_take_profile_coverage_evidence(
+        session_id, plan_revision, take_id, plan,
+    )
 
     # The merged view the assembly step reads: take choices
     # take precedence, the manual completion fills the
@@ -1514,6 +1517,7 @@ def prepare_take_inputs(
         "effective_take_choices": effective_take_choices,
         "manual_completion": {"descriptive_inputs": dict(sorted(manual.items()))},
         "effective_state": effective_state,
+        "profile_coverage_evidence": profile_coverage_evidence,
         "resource_inputs": resource_entries,
         "writer_guidance": _collect_writer_guidance(resource_entries),
         "provenance": provenance,
@@ -3736,7 +3740,7 @@ def _copy_content_digest(row: Mapping[str, Any]) -> str:
 
 def _copy_input_digest(row: Mapping[str, Any], provenance: dict) -> str:
     evidence = provenance.get("authoring_evidence") or {}
-    return resource_store.canonical_digest({
+    inputs = {
         "effective_state": row.get("effective_state"),
         "mapping_version": row.get("mapping_version"),
         "compiler_version": row.get("compiler_version"),
@@ -3744,7 +3748,11 @@ def _copy_input_digest(row: Mapping[str, Any], provenance: dict) -> str:
         "resource_projection": evidence.get("resource_projection"),
         "writer_context": evidence.get("writer_context"),
         "predecessor_projection": evidence.get("predecessor_projection"),
-    })
+    }
+    profile_coverage_evidence = provenance.get(PROFILE_COVERAGE_PROVENANCE_KEY)
+    if profile_coverage_evidence is not None:
+        inputs[PROFILE_COVERAGE_PROVENANCE_KEY] = profile_coverage_evidence
+    return resource_store.canonical_digest(inputs)
 
 
 def _copy_adaptation_digest(adaptation: Mapping[str, Any]) -> str:
@@ -5060,6 +5068,7 @@ PROVENANCE_AUTHORING_KEYS: frozenset[str] = frozenset({
     "writer_synthesis",
     "authoring_evidence",
 })
+PROFILE_COVERAGE_PROVENANCE_KEY = "profile_coverage_evidence"
 
 
 def build_canonical_resource_projection(
@@ -6107,8 +6116,12 @@ def _validate_authoring_prepared_evidence(
         source_revision = copy["origin_plan_revision"]
         origin_id = copy["origin_prepared_id"]
     prov_keys = set(provenance.keys()) - {"copy_forward"}
-    if prov_keys != PROVENANCE_AUTHORING_KEYS:
-        extra = sorted(prov_keys - PROVENANCE_AUTHORING_KEYS)
+    allowed_provenance_keys = (
+        PROVENANCE_AUTHORING_KEYS,
+        PROVENANCE_AUTHORING_KEYS | {PROFILE_COVERAGE_PROVENANCE_KEY},
+    )
+    if prov_keys not in allowed_provenance_keys:
+        extra = sorted(prov_keys - PROVENANCE_AUTHORING_KEYS - {PROFILE_COVERAGE_PROVENANCE_KEY})
         missing = sorted(PROVENANCE_AUTHORING_KEYS - prov_keys)
         raise session_plan.AuthoringEvidenceInvalid(
             f"provenance keys mismatch: extra={extra}, missing={missing}"
@@ -6413,6 +6426,32 @@ def _validate_authoring_prepared_evidence(
         fresh_prep = _prepare_authoring_evidence_inputs(
             session_id, plan_revision, take_id,
             manual_completion=manual_descriptive,
+        )
+
+    expected_profile_evidence = fresh_prep.get(PROFILE_COVERAGE_PROVENANCE_KEY)
+    profile_coverage_revision = db.one(
+        "SELECT evidence_version FROM session_profile_coverage_revision "
+        "WHERE session_id = ? AND plan_revision = ?",
+        session_id, plan_revision,
+    )
+    if profile_coverage_revision is not None and profile_coverage_revision["evidence_version"] != 1:
+        raise session_plan.AuthoringEvidenceInvalid(
+            "profile coverage evidence version is unsupported"
+        )
+    if PROFILE_COVERAGE_PROVENANCE_KEY in provenance:
+        if not _same_json_value(
+            provenance[PROFILE_COVERAGE_PROVENANCE_KEY], expected_profile_evidence,
+        ):
+            raise session_plan.AuthoringEvidenceInvalid(
+                "profile coverage evidence does not match server derivation"
+            )
+    elif expected_profile_evidence is not None and (
+        expected_profile_evidence.get("derived_coverage") is not None
+        or copy is not None
+        or profile_coverage_revision is not None
+    ):
+        raise session_plan.AuthoringEvidenceInvalid(
+            "profile coverage evidence is missing from a profile-bound snapshot"
         )
 
     fresh_manual = fresh_prep.get("manual_completion", {}).get("descriptive_inputs") or {}
@@ -6976,6 +7015,10 @@ def finalize_take_preparation(
         "adaptations": validated_adaptations,
         "writer_synthesis": writer_block,
     }
+
+    profile_coverage_evidence = preparation.get("profile_coverage_evidence")
+    if profile_coverage_evidence is not None:
+        provenance["profile_coverage_evidence"] = profile_coverage_evidence
 
     if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
         provenance["authoring_evidence"] = build_authoring_evidence(

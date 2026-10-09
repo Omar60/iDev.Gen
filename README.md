@@ -74,9 +74,14 @@ look content. Accepted ownership spans can keep progressive clauses out of the
 constant appearance used by explicit profile-aware session application, which
 retains the complete look as source evidence; Unicode spans are validated
 against the unchanged source text. Readiness requires accepted source-verified
-facts and confirmed inventory. The conflict check uses canonical wording in
-permanent spans and is not exhaustive prose-semantic detection. Exact profile
-read/create-revision and manual session-application APIs are documented in
+facts and confirmed inventory. A ready profile supplies per-take coverage from
+the matching progression stage with immutable profile and stage provenance;
+incomplete profiles preserve manual coverage without claiming derived facts.
+Editing derived coverage clears that take's claim and invalidates dependent
+preparation, while linked history remains unchanged. The conflict check uses
+canonical wording in permanent spans and is not exhaustive prose-semantic
+detection. Exact profile read/create-revision and manual session-application
+APIs are documented in
 [Saved looks](docs/looks.md#automation-profile-api). There is no profile editor
 or Full Auto creation/execution flow yet. The existing manual saved-look
 workflow retains progression, review, submission, and Run controls;

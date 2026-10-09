@@ -1,114 +1,62 @@
 # Latest Session Work
 
-## Task 2.2 Accepted Closure
+## Task 2.3 Accepted Closure
 
-Internal Heavy deployment `full_auto_first_pending_20261009` implements only
-Task 2.2 of `automate-resource-session-full-auto`. Initial Git changes were
-the three deployment-state documents recording an earlier blocked Task 2.2
-attempt; that history is preserved below. Executor `implement_22` owns the
-compiler and focused tests; Tester `verify_22` inspected the real diff and
-added independent multi-garment, missing-fact and zero-write acceptance cases.
-Main accepts the result and marks only Task 2.2; 6 of 41 tasks are complete.
+Internal Heavy deployment `full-auto-first-task-20261009` implements only
+Task 2.3 of `automate-resource-session-full-auto`, starting from a clean tree.
+Main completed project-framework and OpenSpec intake, defined acceptance,
+inspected decision-critical code and the real diff, and retained architecture
+and acceptance authority. Explorer `explore_23` mapped supporting contracts;
+Executor `implement_23` implemented and repaired production; Tester `verify_23`
+independently reviewed and verified it. Main accepts only Task 2.3; 7 of 41
+tasks are complete.
 
-`saved_looks.compile_automation_profile_coverage` resolves exact saved-look
-and profile identities, requires accepted readiness, derives canonical stage
-states and aggregates baseline plus worn/aside facts. Compiler-v1 emits four
-exact English sentences. Full wins over partial and none; partial layers do
-not imply full coverage. Unknown, missing, unaccepted and incomplete inventory
-facts refuse compilation. Appearance-only uses the accepted baseline alone.
-The compiler neither writes evidence nor invokes an assistant.
+## Implementation and Repair Evidence
 
-Final independent verification: `python -m pytest` completed with 2,896 passed,
-one skipped and three existing warnings in 326.29 seconds. Privacy checks had
-10 passed; strict OpenSpec and `git diff --check` passed. The full log does not
-identify the skipped test. Warnings concern Pydantic and HTTPX. Raw logs are in
-temporary storage outside the repository. Frontend was unchanged and its
-tests/build were not required or run. No production repair was required.
+The existing immutable session profile binding is reused. Separate immutable
+`session_profile_coverage_revision` and `session_take_coverage_evidence` rows
+bind each new profile revision to the authoritative derived stable-ID set,
+exact profile, accepted ownership spans, materialized stage state/wording,
+compiler version and coverage text digest. Evidence is persisted before ready
+copy-forward validation and consumed in preparation provenance. The
+resource/adaptation-only digest and closed authoring-v1 schema are unchanged.
 
-Archivist receives verified documentation and closure reporting ownership;
-main creates the isolated acceptance commit. Coverage persistence, provenance
-and prompt integration remain pending in Tasks 2.3 and 2.4. No real generation,
-visual certification, archive, push or subsequent-task work occurred.
+Explicit ready-profile application compiles matching effective stages; unknown
+or incomplete manual profiles remain usable without fabricated derived facts.
+Manual coverage changes revoke the affected claim in the new revision, preserve
+old evidence and linked prepared/shot rows, invalidate dependent automatic work
+and cancel/fence an active authoring operation. Reorder uses existing stable-ID
+events rather than redistributing them. A changed exact profile invalidates
+ready work even when projection and compiled text are identical. Profile-free
+historical copy digests keep their original shape. Unmarked historical profile
+revisions retain the old validation contract; explicit reapplication establishes
+the new version rather than silently certifying history.
 
-## Previous Intake History
-
-## Task 2.2 Blocked Intake
-
-Deployment `full_auto_first_pending_20261009` targets only Task 2.2 of
-`automate-resource-session-full-auto`. Initial Git state was clean. Main read
-the project framework, change artifacts and decision-critical profile,
-progression and coverage contracts. Acceptance requires compiler-v1 exact
-English sentences, known accepted applicable facts, explicit baseline and
-inventory, full/partial/none precedence without partial-layer union, authored
-aside facts, no accessory inference, and existing text limits without an
-assistant call. Persistence and prompt integration belong to later tasks.
-
-Internal Executor `implement_22` and independent Tester `verify_22` both failed
-with the Codex usage-limit error before returning implementation or verification.
-A subsequent `git status --short` and `git diff --stat` found no changes.
-Only the three main-owned deployment-state documents were then updated to
-record this blocker. Task 2.2 remains pending, with 5 of 41 complete. No tests,
-build, acceptance commit, generation, archive or push ran in this deployment.
-Resume with available internal workers and independently verify the final diff
-and required gates before marking only Task 2.2 or committing.
-
-## Previous Accepted Session
-
-## Scope and State
-
-Internal Heavy deployment `full-auto-21-20261009` completes only Task 2.1 of
-`automate-resource-session-full-auto`, starting from a clean tree. Main read
-all six project documents and the change artifacts, mapped decision-critical
-context and inspected the existing progression contracts. Explorer `explore_21`
-mapped supporting callers/tests; Executor `implement_21` owned production;
-Tester `verify_21` independently reviewed the diff and executed acceptance.
-Main accepted the result and marked only Task 2.1; 5 of 41 tasks are complete.
-Task 2.2 remains unstarted.
-
-## Implementation and Independent Review
-
-`build_full_auto_wardrobe_progression_candidate` is a pure initial-plan
-constructor in `backend/session_plan.py`. It shares the existing stage arc,
-integer endpoint distribution and minimal `from_here` event application.
-All authored stages include the final-item aside when present. N<K refuses
-with the minimum required count; competing events require explicit review.
-An appearance-only snapshot keeps empty wardrobe and no progression/events.
-Existing all-stage revision-one materialization is reused after replay,
-reorder, add or removal rather than distributed again.
-
-Independent tests verify N=K, N>K, N=1/K=1, insufficient count without input
-mutation, endpoint inclusion and minimal events. Existing directed acceptance
-also proves persisted stable-ID events, manual preview, plan CAS, invalidation
-and creation replay. The HTTP server-owned mutation refusal was run separately.
-
-A synthetic internal partial-interval materialization with all stage indices
-and applied revision one is also reused. This helper does not authenticate
-Full Auto authorization. Main accepted the trusted server-owned boundary:
-current generic HTTP writes cannot forge those blocks and manual application
-cannot create applied revision one. Later atomic creation must call it on a
-trusted initial plan; continuation must reuse historical events. Comparing
-current first/last IDs would break the required reorder/removal semantics.
+Tester exposed two defects: a missing derived row became manual provenance,
+and matching forged marker/row IDs absent from the plan passed preparation.
+Executor repaired both. The final acceptance cases reject missing/extra/forged
+sets before writes and cover tampered prepared evidence, ownership/stage
+identity, stable-ID changes, profile identity drift, manual revocation, frozen
+history, copy-forward and worker fencing.
 
 ## Completed Verification
 
-- `python -m pytest`: 2,884 passed, one skipped, three warnings in 171.27 seconds.
-- Directed progression/manual-CAS/creation-replay acceptance: 19 passed.
-- HTTP server-owned mutation rejection: one passed.
+- `python -m pytest`: 2,913 passed, one skipped, three warnings in 245.15 seconds,
+  exit zero. The interpreter was Python 3.11. The log omits the skip reason.
+- Independent Task 2.3 acceptance: 11 passed.
 - Privacy and shoot/control checks: 46 passed.
-- `openspec validate automate-resource-session-full-auto --strict --no-interactive`:
-  passed.
-- `git diff --check`: passed, with LF/CRLF conversion notices only.
+- Strict OpenSpec validation and `git diff --check`: passed.
 
-Warnings concern existing Pydantic and HTTPX usage. Raw gate logs remain in
-temporary storage outside the repository. Frontend was unchanged, so frontend
-tests/build were not required or run.
+Warnings concern Pydantic and deprecated HTTPX behavior. Raw final logs are in
+temporary storage outside the repository. A full run interrupted after a
+defect was found is not acceptance evidence. Frontend was unchanged, so its
+tests and build were not required or run.
 
 ## Closure and Limits
 
-Archivist owns concise architecture/structure documentation if needed,
-compact closure checks, read-only Git handoff and the exact Deployment Token
-Report. Main owns the acceptance commit including only Task 2.1 and closure
-documentation. No endpoint, new setting, screen, dependency or schema was added.
-Coverage and atomic guided creation remain later tasks; this domain constructor
-does not start preparation, approval, submission or generation.
-No real generation, visual certification, archive or push occurred.
+Main marks only Task 2.3 and owns the acceptance commit. Archivist owns verified
+README/session/look and structure documentation, compact closing checks,
+read-only Git handoff and the exact Deployment Token Report after closure is
+sealed. Task 2.4 remains unstarted. Atomic guided creation and Full Auto run
+suspension/renewed scope belong to later tasks; existing authoring fencing is
+verified here. No real generation, visual certification, archive or push ran.

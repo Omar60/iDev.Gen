@@ -1651,6 +1651,13 @@ snapshots and linked shots remain frozen. Coverage is an instruction, not a
 rendering guarantee: image generation is stochastic and may not show every
 requested area.
 
+Applying a ready automation profile can derive this text from the matching
+progression stage and records its exact source evidence. Editing derived text
+clears that take's derived claim in the new plan revision and invalidates
+dependent preparation. An incomplete profile leaves manual coverage usable and
+does not certify it; earlier revisions and linked shots retain their history.
+See [automation profiles](looks.md#automation-profile-storage).
+
 ### Shared session summary
 
 For authoring-v1 plans, `GET /api/sessions/{sid}/plan` includes a
