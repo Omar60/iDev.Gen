@@ -58,6 +58,7 @@ _PORTABLE_IMPORT_PREVIEW_PURPOSE = "portable-look-import-v1"
 _LEGACY_IMPORT_PREVIEW_PURPOSE = "legacy-wardrobe-import-v1"
 _AUTOMATION_PROFILE_REGIONS = ("chest", "hips", "legs", "feet")
 _AUTOMATION_PROFILE_COVERAGE = {"full", "partial", "none", "unknown"}
+AUTOMATION_COVERAGE_COMPILER_VERSION = "compiler-v1"
 _AUTOMATION_PROFILE_ORIGINS = {"user", "reviewed_structured"}
 _AUTOMATION_PROFILE_SOURCE_PREFIX = "automation-profile:"
 _AUTOMATION_PROFILE_SOURCE_MAX_DEPTH = 32
@@ -1217,6 +1218,83 @@ def get_automation_profile_readiness(
         "manual_available": True,
         "diagnostics": diagnostics,
     }
+
+
+def _automation_profile_coverage_stage_states(saved: dict) -> list[dict[str, str]]:
+    outfit = saved["outfit"]
+    if outfit is None:
+        return [{}]
+
+    garments = outfit["garments"]
+    stages = []
+    for removed_count in range(len(garments) + 1):
+        remaining = garments[removed_count:]
+        stages.append({garment["key"]: "worn" for garment in remaining})
+        if len(remaining) == 1 and remaining[0]["aside"]:
+            stages.append({remaining[0]["key"]: "aside"})
+    return stages
+
+
+def compile_automation_profile_coverage(
+    look_key: str,
+    version: int,
+    content_digest: str,
+    profile_revision: int,
+    profile_digest: str,
+    stage_index: int,
+) -> str:
+    """Compile exact accepted profile facts for one saved-look stage."""
+    saved = get_version(look_key, version)
+    profile = get_automation_profile(
+        look_key, version, profile_revision, content_digest, profile_digest,
+    )
+    stages = _automation_profile_coverage_stage_states(saved)
+    if type(stage_index) is not int or not 0 <= stage_index < len(stages):
+        raise SavedLookError(422, "coverage_stage_invalid", "Coverage stage is invalid.")
+
+    readiness = get_automation_profile_readiness(
+        look_key, version, content_digest, profile_revision, profile_digest,
+    )
+    if not readiness["profile_ready"]:
+        codes = {item["code"] for item in readiness["diagnostics"]}
+        if codes & {"coverage_unknown", "coverage_state_missing", "baseline_missing"}:
+            code = "coverage_unknown"
+        elif "inventory_unconfirmed" in codes:
+            code = "inventory_unconfirmed"
+        elif "inventory_incomplete" in codes:
+            code = "inventory_incomplete"
+        else:
+            code = "automation_profile_not_ready"
+        raise SavedLookError(
+            422, code, "Accepted coverage facts are not ready for compilation.",
+        )
+
+    facts = [profile["baseline_coverage"]]
+    for garment_key, state in stages[stage_index].items():
+        facts.append(profile["garment_coverage"][garment_key][state])
+
+    result = []
+    for region in _AUTOMATION_PROFILE_REGIONS:
+        values = [fact["regions"][region] for fact in facts]
+        if "unknown" in values:
+            raise SavedLookError(
+                422, "coverage_unknown", "Coverage facts are incomplete.",
+            )
+        coverage = (
+            "full" if "full" in values
+            else "partial" if "partial" in values
+            else "none"
+        )
+        wording = {
+            "full": "fully covered",
+            "partial": "partially covered",
+            "none": "uncovered",
+        }[coverage]
+        result.append(
+            f"The chest is {wording}." if region == "chest"
+            else f"The {region} are {wording}."
+        )
+    return " ".join(result)
 
 
 def copy_reviewed_automation_profile_facts(

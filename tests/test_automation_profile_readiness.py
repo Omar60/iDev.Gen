@@ -6,7 +6,7 @@ from copy import deepcopy
 import pytest
 
 import db
-from backend import resource_planning, resource_store, saved_looks
+from backend import enhance, resource_planning, resource_store, saved_looks, session_plan
 
 
 def _open(path, monkeypatch):
@@ -37,6 +37,16 @@ def _provenance(saved, revision=1, identity="profile-editor"):
 def _state(saved, revision=1, value="none"):
     return {
         "regions": {region: value for region in ("chest", "hips", "legs", "feet")},
+        "provenance": _provenance(saved, revision),
+    }
+
+
+def _state_for_regions(saved, regions, revision=1):
+    return {
+        "regions": {
+            region: regions.get(region, "none")
+            for region in ("chest", "hips", "legs", "feet")
+        },
         "provenance": _provenance(saved, revision),
     }
 
@@ -86,6 +96,278 @@ def _readiness(saved, published):
         saved["key"], saved["version"], saved["content_digest"],
         published["profile_revision"], published["profile_digest"],
     )
+
+
+def _compile_coverage(saved, published, stage_index):
+    return saved_looks.compile_automation_profile_coverage(
+        saved["key"], saved["version"], saved["content_digest"],
+        published["profile_revision"], published["profile_digest"], stage_index,
+    )
+
+
+def test_coverage_compiler_uses_layer_precedence_and_exact_v1_text(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = _saved_look()
+    profile = _profile(saved)
+    shirt, trousers = saved["outfit"]["garments"]
+    profile["garment_coverage"][shirt["key"]]["worn"] = _state_for_regions(
+        saved, {"chest": "partial", "hips": "partial"},
+    )
+    profile["garment_coverage"][trousers["key"]]["worn"] = _state_for_regions(
+        saved, {"chest": "partial", "hips": "full", "legs": "partial"},
+    )
+    published = _publish(saved, profile)
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("coverage compilation must not call an assistant")
+
+    monkeypatch.setattr(enhance, "run", unexpected)
+    monkeypatch.setattr(enhance, "run_structured", unexpected)
+    coverage = _compile_coverage(saved, published, 0)
+
+    assert saved_looks.AUTOMATION_COVERAGE_COMPILER_VERSION == "compiler-v1"
+    assert coverage == (
+        "The chest is partially covered. The hips are fully covered. "
+        "The legs are partially covered. The feet are uncovered."
+    )
+    assert len(coverage) <= 2000
+    assert not any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in coverage)
+    normalized = session_plan.validate_draft({
+        "version": "resource-v1",
+        "takes": [{"take_id": "take-001", "wardrobe_coverage": coverage}],
+    })
+    assert normalized["takes"][0]["wardrobe_coverage"] == coverage
+
+
+def test_coverage_compiler_uses_authored_aside_and_baseline_stages(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = saved_looks.create({
+        "name": "Single garment stages",
+        "appearance": "A model in a studio.",
+        "garments": [{"wording": "a coat", "aside": "the coat set aside"}],
+    })
+    profile = _profile(saved)
+    garment = saved["outfit"]["garments"][0]
+    profile["garment_coverage"][garment["key"]]["worn"] = _state_for_regions(
+        saved, {"chest": "full"},
+    )
+    profile["garment_coverage"][garment["key"]]["aside"] = _state_for_regions(
+        saved, {"chest": "partial"},
+    )
+    published = _publish(saved, profile)
+
+    assert "The chest is fully covered." in _compile_coverage(saved, published, 0)
+    assert "The chest is partially covered." in _compile_coverage(saved, published, 1)
+    assert "The chest is uncovered." in _compile_coverage(saved, published, 2)
+
+
+def test_coverage_compiler_tracks_each_multi_garment_stage_without_mutating_evidence(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = _saved_look()
+    profile = _profile(saved)
+    shirt, trousers = saved["outfit"]["garments"]
+    profile["garment_coverage"][shirt["key"]]["worn"] = _state_for_regions(
+        saved, {"chest": "full"},
+    )
+    profile["garment_coverage"][trousers["key"]]["worn"] = _state_for_regions(
+        saved, {"chest": "partial", "hips": "full", "legs": "partial"},
+    )
+    profile["garment_coverage"][trousers["key"]]["aside"] = _state_for_regions(
+        saved, {"chest": "partial", "legs": "partial"},
+    )
+    expected_input = deepcopy(profile)
+    published = _publish(saved, profile)
+    assert profile == expected_input
+
+    look_before = saved_looks.get_version(saved["key"], saved["version"])
+    profile_before = saved_looks.get_automation_profile(
+        saved["key"], saved["version"], published["profile_revision"],
+        saved["content_digest"], published["profile_digest"],
+    )
+    row_before = dict(db.one(
+        """SELECT * FROM saved_look_automation_profile
+           WHERE look_key = ? AND look_version = ? AND profile_revision = ?""",
+        saved["key"], saved["version"], published["profile_revision"],
+    ))
+
+    assert [
+        _compile_coverage(saved, published, stage_index)
+        for stage_index in range(4)
+    ] == [
+        "The chest is fully covered. The hips are fully covered. "
+        "The legs are partially covered. The feet are uncovered.",
+        "The chest is partially covered. The hips are fully covered. "
+        "The legs are partially covered. The feet are uncovered.",
+        "The chest is partially covered. The hips are uncovered. "
+        "The legs are partially covered. The feet are uncovered.",
+        "The chest is uncovered. The hips are uncovered. "
+        "The legs are uncovered. The feet are uncovered.",
+    ]
+    assert profile == expected_input
+    assert saved_looks.get_version(saved["key"], saved["version"]) == look_before
+    assert saved_looks.get_automation_profile(
+        saved["key"], saved["version"], published["profile_revision"],
+        saved["content_digest"], published["profile_digest"],
+    ) == profile_before
+    assert dict(db.one(
+        """SELECT * FROM saved_look_automation_profile
+           WHERE look_key = ? AND look_version = ? AND profile_revision = ?""",
+        saved["key"], saved["version"], published["profile_revision"],
+    )) == row_before
+
+
+@pytest.mark.parametrize(
+    ("missing_fact", "stage_index"),
+    [("final_aside", 2), ("baseline", 3)],
+)
+def test_coverage_compiler_refuses_missing_stage_facts_without_writes(
+    tmp_path, monkeypatch, missing_fact, stage_index,
+):
+    _open(tmp_path / f"missing-{missing_fact}.db", monkeypatch)
+    saved = _saved_look()
+    profile = _profile(saved)
+    if missing_fact == "final_aside":
+        final_key = saved["outfit"]["garments"][-1]["key"]
+        profile["garment_coverage"][final_key].pop("aside")
+    else:
+        profile["baseline_coverage"] = None
+    expected_input = deepcopy(profile)
+    published = _publish(saved, profile)
+    row_before = dict(db.one(
+        """SELECT * FROM saved_look_automation_profile
+           WHERE look_key = ? AND look_version = ? AND profile_revision = ?""",
+        saved["key"], saved["version"], published["profile_revision"],
+    ))
+
+    with pytest.raises(saved_looks.SavedLookError) as raised:
+        _compile_coverage(saved, published, stage_index)
+
+    assert raised.value.code == "coverage_unknown"
+    assert profile == expected_input
+    assert dict(db.one(
+        """SELECT * FROM saved_look_automation_profile
+           WHERE look_key = ? AND look_version = ? AND profile_revision = ?""",
+        saved["key"], saved["version"], published["profile_revision"],
+    )) == row_before
+
+
+def test_coverage_compiler_refuses_a_fact_that_is_not_accepted(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = _saved_look()
+    published = _publish(saved, _profile(saved))
+
+    monkeypatch.setattr(
+        saved_looks, "_profile_fact_provenance_accepted", lambda *_args, **_kwargs: False,
+    )
+    with pytest.raises(saved_looks.SavedLookError) as raised:
+        _compile_coverage(saved, published, 0)
+
+    assert raised.value.code == "automation_profile_not_ready"
+
+
+def test_coverage_compiler_uses_appearance_only_baseline(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = saved_looks.create({
+        "name": "Appearance-only baseline",
+        "appearance": "A model in a studio.",
+    })
+    profile = _profile(saved)
+    profile["baseline_coverage"] = _state_for_regions(
+        saved, {"chest": "partial", "hips": "full"},
+    )
+    published = _publish(saved, profile)
+
+    assert _compile_coverage(saved, published, 0) == (
+        "The chest is partially covered. The hips are fully covered. "
+        "The legs are uncovered. The feet are uncovered."
+    )
+
+
+def test_coverage_compiler_does_not_infer_body_coverage_from_accessories(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = saved_looks.create({
+        "name": "Accessory stages",
+        "appearance": "A model in a studio.",
+        "garments": [{"wording": "a beaded bracelet", "aside": "the bracelet removed"}],
+    })
+    published = _publish(saved, _profile(saved))
+
+    coverage = _compile_coverage(saved, published, 0)
+    assert coverage == (
+        "The chest is uncovered. The hips are uncovered. "
+        "The legs are uncovered. The feet are uncovered."
+    )
+    assert "bracelet" not in coverage
+
+
+def test_coverage_compiler_refuses_unknown_even_when_a_layer_is_full(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = _saved_look()
+    profile = _profile(saved)
+    shirt, trousers = saved["outfit"]["garments"]
+    profile["garment_coverage"][shirt["key"]]["worn"] = _state_for_regions(
+        saved, {"chest": "full"},
+    )
+    profile["garment_coverage"][trousers["key"]]["worn"] = _state_for_regions(
+        saved, {"chest": "unknown"},
+    )
+    published = _publish(saved, profile)
+
+    with pytest.raises(saved_looks.SavedLookError) as raised:
+        _compile_coverage(saved, published, 0)
+    assert raised.value.code == "coverage_unknown"
+    assert saved["key"] not in raised.value.message
+
+
+@pytest.mark.parametrize(
+    ("inventory", "error_code"),
+    [(None, "inventory_unconfirmed"), (False, "inventory_incomplete")],
+)
+def test_coverage_compiler_requires_confirmed_complete_inventory(
+    tmp_path, monkeypatch, inventory, error_code,
+):
+    _open(tmp_path / f"profiles-{inventory}.db", monkeypatch)
+    saved = _saved_look()
+    profile = _profile(saved)
+    profile["inventory_complete"]["value"] = inventory
+    published = _publish(saved, profile)
+
+    with pytest.raises(saved_looks.SavedLookError) as raised:
+        _compile_coverage(saved, published, 0)
+    assert raised.value.code == error_code
+
+
+def test_coverage_compiler_requires_exact_profile_and_materialized_stage(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = _saved_look()
+    published = _publish(saved, _profile(saved))
+
+    with pytest.raises(saved_looks.SavedLookError) as raised:
+        saved_looks.compile_automation_profile_coverage(
+            saved["key"], saved["version"], saved["content_digest"],
+            published["profile_revision"], "0" * 64, 0,
+        )
+    assert raised.value.code == "automation_profile_stale"
+
+    with pytest.raises(saved_looks.SavedLookError) as raised:
+        _compile_coverage(saved, published, True)
+    assert raised.value.code == "coverage_stage_invalid"
 
 
 def test_missing_profile_never_falls_back_to_latest_and_manual_stays_available(

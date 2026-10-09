@@ -29,9 +29,13 @@ Verified baseline from the repository layout and application entry points.
   `resource_*` modules.
 - `backend/saved_looks.py` stores self-contained saved-look versions and
   separate immutable, digest-bound automation-profile revisions and permanent
-  appearance projections, while `backend/photo_staging.py` validates temporary
-  look photos and owns their expiry and cleanup. `backend/session_plan.py`
-  applies a selected version and a signed, reviewed wardrobe progression to an
+  appearance projections. Its coverage compiler binds the exact saved-look and
+  profile revisions, emits four deterministic English sentences for chest,
+  hips, legs, and feet, and blocks unknown or incomplete accepted facts; partial
+  layers never add up to full coverage. It does not certify rendered pixels or
+  unsupported body regions. `backend/photo_staging.py` validates temporary look
+  photos and owns their expiry and cleanup. `backend/session_plan.py` applies a
+  selected version and a signed, reviewed wardrobe progression to an
   authoring-v1 plan through compare-and-swap, recording exact profile evidence
   when used. `frontend/src/appearanceOwnership.js` maps browser UTF-16 selection
   offsets to exact Unicode-scalar spans; `frontend/src/views/Looks.jsx` provides

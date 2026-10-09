@@ -1,5 +1,23 @@
 # Project Diary
 
+## Full Auto Coverage Compiler, Task 2.2
+
+- Resolve exact immutable profile identity and accepted readiness before
+  compiling stage facts; a client-provided provenance-shaped object is not proof.
+- Preserve partial coverage when combining partial layers. Unknown evidence
+  remains a refusal even when another layer would fully cover the region.
+- The stage-state arc follows canonical removal order and final-item aside.
+  Independent multi-garment golden cases protect that alignment; persistence
+  and preparation integration remain separate tasks.
+
+## Task 2.2 Intake Blocker
+
+- Both assigned internal implementation and verification workers stopped at
+  the Codex usage limit before returning work. Heavy role separation remains
+  required; the main must not replace missing Executor or Tester capacity.
+- Keep Task 2.2 unchecked and preserve its deterministic compiler acceptance
+  scope. A usage-limit failure supplies no implementation or passing evidence.
+
 ## Full Auto Progression Candidate, Task 2.1
 
 - Reuse the existing stage arc and event constructor for the initial all-stage
