@@ -2,59 +2,59 @@
 
 ## Scope and State
 
-Internal Heavy deployment `full-auto-14-20261009` completes only Task 1.4 of
-`automate-resource-session-full-auto`, starting from a clean tree. Main completed
-project-document intake and inspected the change artifacts and decisive code.
-Explorer mapped supporting specifications/tests; Executor `implement_14` owned
-production and repair; Testers `verify_14` and `verify_14_recovery` independently
-verified the actual diff. Main accepted the result and marked only Task 1.4;
-4 of 41 tasks are complete. Task 2.1 remains unstarted.
+Internal Heavy deployment `full-auto-21-20261009` completes only Task 2.1 of
+`automate-resource-session-full-auto`, starting from a clean tree. Main read
+all six project documents and the change artifacts, mapped decision-critical
+context and inspected the existing progression contracts. Explorer `explore_21`
+mapped supporting callers/tests; Executor `implement_21` owned production;
+Tester `verify_21` independently reviewed the diff and executed acceptance.
+Main accepted the result and marked only Task 2.1; 5 of 41 tasks are complete.
+Task 2.2 remains unstarted.
 
 ## Implementation and Independent Review
 
-`GET /api/looks/automation-profiles` reads one exact profile using look key,
-version, snapshot content digest, profile revision and profile digest query
-fields. `POST` to the same route publishes a closed immutable profile revision
-with expected-profile-revision CAS. Query/body identity supports slash-containing
-look keys without changing the legacy look routes.
+`build_full_auto_wardrobe_progression_candidate` is a pure initial-plan
+constructor in `backend/session_plan.py`. It shares the existing stage arc,
+integer endpoint distribution and minimal `from_here` event application.
+All authored stages include the final-item aside when present. N<K refuses
+with the minimum required count; competing events require explicit review.
+An appearance-only snapshot keeps empty wardrobe and no progression/events.
+Existing all-stage revision-one materialization is reused after replay,
+reorder, add or removal rather than distributed again.
 
-`POST /api/sessions/{sid}/plan/apply-automation-profile` validates exact identity
-and explicit Keep/Replace decisions, then reuses the existing reviewed permanent
-projection, session evidence, plan CAS, invalidation and linked-shot freeze.
-Legacy profile-free `apply-look` and portable-v1 remain unchanged. Reads remain
-available when planning is disabled; writes retain the existing feature gate.
+Independent tests verify N=K, N>K, N=1/K=1, insufficient count without input
+mutation, endpoint inclusion and minimal events. Existing directed acceptance
+also proves persisted stable-ID events, manual preview, plan CAS, invalidation
+and creation replay. The HTTP server-owned mutation refusal was run separately.
 
-Independent HTTP tests verify historical reads, concurrent publication with one
-winner, portable-digest refusal, malformed/duplicate/oversized input, complete-row
-zero-write refusals, preparation invalidation and freeze after actual submission.
-Tester found two required corrections: malformed session IDs bypassed stable
-errors, and a validation location reflected arbitrary decision keys. Executor
-repaired both; retained independent regressions pass.
+A synthetic internal partial-interval materialization with all stage indices
+and applied revision one is also reused. This helper does not authenticate
+Full Auto authorization. Main accepted the trusted server-owned boundary:
+current generic HTTP writes cannot forge those blocks and manual application
+cannot create applied revision one. Later atomic creation must call it on a
+trusted initial plan; continuation must reuse historical events. Comparing
+current first/last IDs would break the required reorder/removal semantics.
 
 ## Completed Verification
 
-- `python -m pytest`: 2,875 passed, one skipped, three warnings in 263.11 seconds
-  on Python 3.11.9, independently rerun after a power interruption.
-- Both Task 1.4 API modules: 13 passed.
+- `python -m pytest`: 2,884 passed, one skipped, three warnings in 171.27 seconds.
+- Directed progression/manual-CAS/creation-replay acceptance: 19 passed.
+- HTTP server-owned mutation rejection: one passed.
 - Privacy and shoot/control checks: 46 passed.
 - `openspec validate automate-resource-session-full-auto --strict --no-interactive`:
   passed.
 - `git diff --check`: passed, with LF/CRLF conversion notices only.
 
-The symlink test was skipped because the environment could not create a symlink
-and raised OSError. Warnings concern existing Pydantic and HTTPX usage. Raw gate
-logs remain in temporary storage outside the repository. The earlier full run
-with two failures is retained as repair evidence, not final acceptance.
+Warnings concern existing Pydantic and HTTPX usage. Raw gate logs remain in
+temporary storage outside the repository. Frontend was unchanged, so frontend
+tests/build were not required or run.
 
 ## Closure and Limits
 
-Archivist owns concise README/Looks API documentation, compact closure checks,
-read-only Git handoff and the exact Deployment Token Report. The acceptance
-commit includes only Task 1.4 and its closure documentation. No frontend changed,
-so frontend tests/build were not required or run in this deployment.
-
-Coverage compilation/provenance, profile editor and Full Auto coordinator/run
-fencing remain later tasks. Manual profile application does not authorize
-progression, approval, submission or generation. Normal immutable API writers
-preserve exact binding; concurrent out-of-band SQL tampering was not tested.
+Archivist owns concise architecture/structure documentation if needed,
+compact closure checks, read-only Git handoff and the exact Deployment Token
+Report. Main owns the acceptance commit including only Task 2.1 and closure
+documentation. No endpoint, new setting, screen, dependency or schema was added.
+Coverage and atomic guided creation remain later tasks; this domain constructor
+does not start preparation, approval, submission or generation.
 No real generation, visual certification, archive or push occurred.

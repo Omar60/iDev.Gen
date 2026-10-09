@@ -1,5 +1,16 @@
 # Project Diary
 
+## Full Auto Progression Candidate, Task 2.1
+
+- Reuse the existing stage arc and event constructor for the initial all-stage
+  full-interval candidate; retain manual preview and CAS as separate authority.
+- Preserve historical stable-ID events on replay and edits. Comparing stored
+  interval endpoints with current first/last IDs would silently invalidate
+  legitimate reorder/removal history.
+- The pure candidate helper trusts server-owned materialization and is not an
+  authorization verifier. Later atomic creation must supply a trusted initial
+  plan; internal synthetic metadata alone does not prove Full Auto consent.
+
 ## Full Auto Profile APIs, Task 1.4
 
 - Recognize the explicit operation's route before validating its numeric ID;

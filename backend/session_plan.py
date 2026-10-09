@@ -732,6 +732,51 @@ def _derive_wardrobe_progression_application(
     }
 
 
+def build_full_auto_wardrobe_progression_candidate(plan: dict) -> dict:
+    """Build the initial all-stage, full-interval candidate for Full Auto."""
+    candidate = validate_draft(plan)
+    authoring = candidate.get("authoring")
+    if authoring is None or authoring["look_snapshot"] is None:
+        raise PlanValidationError("Full Auto progression requires an exact saved-look snapshot")
+
+    snapshot = authoring["look_snapshot"]
+    outfit = snapshot["outfit"]
+    progression = authoring["wardrobe_progression"]
+    if progression is not None:
+        if outfit is not None and (
+            progression["source_look_digest"] == snapshot["content_digest"]
+            and progression["stage_indices"] == list(range(len(_saved_look_wardrobe_stages(outfit))))
+            and progression["applied_revision"] == 1
+        ):
+            return candidate
+        raise PlanOwnershipConflict("Full Auto cannot replace an existing wardrobe progression")
+
+    take_count = validate_authoring_count(len(candidate["takes"]))
+    if outfit is None:
+        if candidate["initial_wardrobe"] or candidate["wardrobe_changes"]:
+            raise PlanOwnershipConflict(
+                "appearance-only Full Auto sessions require empty wardrobe state"
+            )
+        return candidate
+
+    stages = _saved_look_wardrobe_stages(outfit)
+    if candidate["wardrobe_changes"]:
+        raise PlanOwnershipConflict("Full Auto cannot replace existing wardrobe changes")
+    if take_count < len(stages):
+        raise PlanValidationError(
+            f"Full Auto requires at least {len(stages)} takes for all wardrobe stages"
+        )
+
+    return _derive_wardrobe_progression_application(
+        candidate,
+        0,
+        start_take_id=candidate["takes"][0]["take_id"],
+        end_take_id=candidate["takes"][-1]["take_id"],
+        stage_indices=list(range(len(stages))),
+        event_policy="replace",
+    )["plan"]
+
+
 def validate_authoring_count(value: Any) -> int:
     """Validate the count for guided allocation or authoring plan growth."""
     if type(value) is not int or not 1 <= value <= 500:
