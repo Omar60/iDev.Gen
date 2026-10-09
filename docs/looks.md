@@ -90,10 +90,32 @@ records `origin` (`user` or `reviewed_structured`), `source_identity`,
 `source_digest`, and the profile's `accepted_revision`.
 
 Missing states and explicit `unknown` values are valid stored facts; profile
-storage does not determine Full Auto readiness. This backend-only capability has
-no profile editor or API and does not execute Full Auto. Portable-v1 JSON
-continues to exclude profiles, so automation readiness does not transfer on
-import or export.
+storage alone does not establish readiness. The internal exact-version check
+keeps manual look use available, but reports a profile ready only when its
+applicable facts have accepted provenance, every required region is known, and
+inventory is confirmed complete. Reviewed facts must resolve an immutable
+source profile and match the same fact; missing, changed, or unverifiable source
+evidence is not accepted.
+
+For looks with an outfit, baseline coverage that says any supported region is
+fully or partially covered conflicts with the garment-free end of the
+progression. An appearance-only look has no such progression conflict, but it
+still needs explicit accepted baseline and inventory facts. Readiness is limited
+to chest, hips, legs, and feet; `partial` does not identify a subregion.
+
+Reviewed reuse requires an explicit selection. A garment state copies only
+when its key, canonical wording, and selected `worn` or `aside` wording are
+unchanged. Baseline copies only when the complete appearance and outfit are
+unchanged. The copy contains coverage regions and source provenance; it does
+not copy inventory confirmation or appearance ownership spans. Missing,
+changed, or unaccepted facts must be asserted again for the target profile.
+Source-profile validation follows at most 32 provenance levels; deeper or
+unverifiable chains require a fresh explicit user assertion.
+
+This remains a backend-only capability: there is no profile editor or API, it
+does not project appearance text, and it does not execute Full Auto. Portable-v1
+JSON continues to exclude profiles, so automation readiness does not transfer
+on import or export.
 
 ## Temporary photo staging API
 

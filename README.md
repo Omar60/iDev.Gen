@@ -70,8 +70,10 @@ exact saved-look version and explicitly replace or keep its appearance and
 wardrobe, then review and apply a saved-outfit clothing progression. See
 [Saved looks](docs/looks.md) and [session progression details](docs/sessions.md#previewing-a-saved-look-outfit-progression).
 The backend also stores immutable automation-profile revisions bound to exact
-look content; no profile editor, profile API, or Full Auto execution is
-available, and portable-v1 JSON excludes profiles so readiness does not transfer.
+look content. Its internal readiness check requires accepted source-verified
+facts and confirmed inventory while keeping manual look use available. There is
+no profile editor, profile API, or Full Auto execution, and portable-v1 JSON
+excludes profiles so readiness does not transfer.
 
 ## Composing from the catalogue
 

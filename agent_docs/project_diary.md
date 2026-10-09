@@ -1,5 +1,20 @@
 # Project Diary
 
+## Full Auto Profile Readiness, Task 1.2
+
+- A provenance label is not evidence. Reviewed coverage must resolve an exact
+  immutable source profile and match the selected fact; direct user assertions
+  bind the destination snapshot and acceptance revision.
+- Reusing an aside fact requires unchanged canonical garment wording as well
+  as unchanged aside wording. A matching aside phrase alone can conceal a
+  changed garment.
+- An outfit's all-stage arc ends garment-free, so a covering baseline conflicts
+  with that final stage. Appearance-only looks have a distinct constant stage
+  and may retain explicitly accepted known baseline coverage.
+- The first full gate and a reduced sequence failed the existing concurrent
+  plan-resource lookup; the next uninstrumented full gate passed unchanged.
+  One isolated clean-HEAD pass cannot establish a cause or prove the race absent.
+
 ## Full Auto Profile Persistence, Task 1.1
 
 - Keep automation profiles separate from immutable look snapshots and

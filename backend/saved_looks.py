@@ -59,6 +59,8 @@ _LEGACY_IMPORT_PREVIEW_PURPOSE = "legacy-wardrobe-import-v1"
 _AUTOMATION_PROFILE_REGIONS = ("chest", "hips", "legs", "feet")
 _AUTOMATION_PROFILE_COVERAGE = {"full", "partial", "none", "unknown"}
 _AUTOMATION_PROFILE_ORIGINS = {"user", "reviewed_structured"}
+_AUTOMATION_PROFILE_SOURCE_PREFIX = "automation-profile:"
+_AUTOMATION_PROFILE_SOURCE_MAX_DEPTH = 32
 _AUTOMATION_PROFILE_PROVENANCE_FIELDS = {
     "origin", "source_identity", "source_digest", "accepted_revision",
 }
@@ -701,6 +703,178 @@ def _read_automation_profile(row: dict, saved: dict) -> dict:
     }
 
 
+def _automation_profile_by_digest(profile_digest: str) -> tuple[dict, dict] | None:
+    rows = db.q(
+        "SELECT * FROM saved_look_automation_profile WHERE profile_digest = ?",
+        profile_digest,
+    )
+    if not rows:
+        return None
+    if len(rows) != 1:
+        _stored_data_invalid()
+    row = rows[0]
+    saved = get_version(row["look_key"], row["look_version"])
+    return saved, _read_automation_profile(row, saved)
+
+
+def _saved_garment(saved: dict, garment_key: str) -> dict | None:
+    if saved["outfit"] is None:
+        return None
+    return next(
+        (item for item in saved["outfit"]["garments"] if item["key"] == garment_key),
+        None,
+    )
+
+
+def _same_garment_state_wording(
+    source_garment: dict | None,
+    target_garment: dict | None,
+    state: str,
+) -> bool:
+    if source_garment is None or target_garment is None:
+        return False
+    source_wording = source_garment["wording"] if state == "worn" else source_garment["aside"]
+    target_wording = target_garment["wording"] if state == "worn" else target_garment["aside"]
+    return (
+        source_garment["key"] == target_garment["key"]
+        and source_garment["wording"] == target_garment["wording"]
+        and bool(source_wording)
+        and source_wording == target_wording
+    )
+
+
+def _profile_fact(profile: dict, selector: dict) -> dict | None:
+    if selector["kind"] == "garment_state":
+        return profile["garment_coverage"].get(selector["garment_key"], {}).get(
+            selector["state"],
+        )
+    if selector["kind"] == "baseline":
+        return profile["baseline_coverage"]
+    if selector["kind"] == "inventory":
+        return profile["inventory_complete"]
+    if selector["kind"] == "appearance_segment":
+        return next(
+            (item for item in profile["appearance_segments"]
+             if item["segment_id"] == selector["segment_id"]),
+            None,
+        )
+    return None
+
+
+def _equivalent_profile_fact(
+    source_saved: dict,
+    target_saved: dict,
+    source_fact: dict | None,
+    target_fact: dict,
+    selector: dict,
+) -> bool:
+    if source_fact is None:
+        return False
+    kind = selector["kind"]
+    if kind == "garment_state":
+        source_garment = _saved_garment(source_saved, selector["garment_key"])
+        target_garment = _saved_garment(target_saved, selector["garment_key"])
+        return (
+            _same_garment_state_wording(source_garment, target_garment, selector["state"])
+            and source_fact["regions"] == target_fact["regions"]
+        )
+    if kind == "baseline":
+        return (
+            source_saved["appearance"] == target_saved["appearance"]
+            and source_saved["outfit"] == target_saved["outfit"]
+            and source_fact["regions"] == target_fact["regions"]
+        )
+    if kind == "inventory":
+        return (
+            source_saved["content_digest"] == target_saved["content_digest"]
+            and source_fact["value"] == target_fact["value"]
+        )
+    if kind == "appearance_segment":
+        fields = ("segment_id", "start", "end", "text", "owner")
+        return (
+            source_saved["appearance"] == target_saved["appearance"]
+            and all(source_fact[field] == target_fact[field] for field in fields)
+        )
+    return False
+
+
+def _profile_fact_provenance_accepted(
+    provenance: dict,
+    saved: dict,
+    profile: dict,
+    fact: dict,
+    selector: dict,
+    *,
+    visited: frozenset[str] = frozenset(),
+    depth: int = 0,
+) -> bool:
+    if depth >= _AUTOMATION_PROFILE_SOURCE_MAX_DEPTH:
+        return False
+    origin = provenance["origin"]
+    if origin == "user":
+        return provenance["source_digest"] == saved["content_digest"]
+    if origin != "reviewed_structured":
+        return False
+
+    source_digest = provenance["source_digest"]
+    if (
+        provenance["source_identity"] != _AUTOMATION_PROFILE_SOURCE_PREFIX + source_digest
+        or source_digest in visited
+    ):
+        return False
+    try:
+        source = _automation_profile_by_digest(source_digest)
+    except SavedLookError:
+        return False
+    if source is None:
+        return False
+    source_saved, source_profile = source
+    source_fact = _profile_fact(source_profile, selector)
+    if not _equivalent_profile_fact(
+        source_saved, saved, source_fact, fact, selector,
+    ):
+        return False
+    return _profile_fact_provenance_accepted(
+        source_fact["provenance"],
+        source_saved,
+        source_profile,
+        source_fact,
+        selector,
+        visited=visited | {source_digest},
+        depth=depth + 1,
+    )
+
+
+def _automation_profile_provenance_is_accepted(profile: dict, saved: dict) -> bool:
+    authored = profile["authored_provenance"]
+    if authored["origin"] != "user" or authored["source_digest"] != saved["content_digest"]:
+        return False
+    for segment in profile["appearance_segments"]:
+        selector = {"kind": "appearance_segment", "segment_id": segment["segment_id"]}
+        if not _profile_fact_provenance_accepted(
+            segment["provenance"], saved, profile, segment, selector,
+        ):
+            return False
+    for garment_key, states in profile["garment_coverage"].items():
+        for state, fact in states.items():
+            selector = {
+                "kind": "garment_state", "garment_key": garment_key, "state": state,
+            }
+            if not _profile_fact_provenance_accepted(
+                fact["provenance"], saved, profile, fact, selector,
+            ):
+                return False
+    baseline = profile["baseline_coverage"]
+    if baseline is not None and not _profile_fact_provenance_accepted(
+        baseline["provenance"], saved, profile, baseline, {"kind": "baseline"},
+    ):
+        return False
+    inventory = profile["inventory_complete"]
+    return _profile_fact_provenance_accepted(
+        inventory["provenance"], saved, profile, inventory, {"kind": "inventory"},
+    )
+
+
 def _automation_profile_stale() -> None:
     raise SavedLookError(
         409,
@@ -746,6 +920,8 @@ def publish_automation_profile(
                 _read_automation_profile(current, saved)
             revision = expected_profile_revision + 1
             canonical = _canonicalize_automation_profile(profile, saved, revision)
+            if not _automation_profile_provenance_is_accepted(canonical, saved):
+                _invalid()
             try:
                 profile_digest = resource_store.canonical_digest(canonical)
             except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
@@ -822,6 +998,247 @@ def get_latest_automation_profile(look_key: str, version: int) -> dict | None:
         look_key, version, row["profile_revision"],
         saved["content_digest"], row["profile_digest"],
     )
+
+
+def _readiness_diagnostic(code: str, **fields) -> dict:
+    return {"code": code, **fields}
+
+
+def _readiness_for_state(
+    profile: dict,
+    saved: dict,
+    fact: dict | None,
+    selector: dict,
+    **fields,
+) -> list[dict]:
+    diagnostics = []
+    if fact is None:
+        return [_readiness_diagnostic("coverage_state_missing", **fields)]
+    if not _profile_fact_provenance_accepted(
+        fact["provenance"], saved, profile, fact, selector,
+    ):
+        diagnostics.append(_readiness_diagnostic("coverage_provenance_unaccepted", **fields))
+    for region in _AUTOMATION_PROFILE_REGIONS:
+        if fact["regions"][region] == "unknown":
+            diagnostics.append(_readiness_diagnostic(
+                "coverage_unknown", **fields, region=region,
+            ))
+    return diagnostics
+
+
+def get_automation_profile_readiness(
+    look_key: str,
+    version: int,
+    content_digest: str,
+    profile_revision: int | None = None,
+    profile_digest: str | None = None,
+) -> dict:
+    """Check profile prerequisites for an exact look without choosing latest."""
+    if (
+        not _valid_profile_key(look_key)
+        or type(version) is not int
+        or not 1 <= version <= _SQLITE_INTEGER_MAX
+        or not _valid_sha256(content_digest)
+        or ((profile_revision is None) != (profile_digest is None))
+        or (profile_revision is not None and (
+            type(profile_revision) is not int
+            or not 1 <= profile_revision <= _SQLITE_INTEGER_MAX
+            or not _valid_sha256(profile_digest)
+        ))
+    ):
+        _invalid()
+    saved = get_version(look_key, version)
+    if content_digest != saved["content_digest"]:
+        _automation_profile_stale()
+    if profile_revision is None:
+        existing = db.one(
+            "SELECT 1 FROM saved_look_automation_profile WHERE look_key = ? AND look_version = ? LIMIT 1",
+            look_key, version,
+        )
+        code = "automation_profile_identity_required" if existing else "automation_profile_missing"
+        return {
+            "profile_ready": False,
+            "manual_available": True,
+            "diagnostics": [_readiness_diagnostic(code)],
+        }
+
+    profile = get_automation_profile(
+        look_key, version, profile_revision, content_digest, profile_digest,
+    )
+    diagnostics = []
+    if profile["authored_provenance"]["origin"] != "user" or (
+        profile["authored_provenance"]["source_digest"] != saved["content_digest"]
+    ):
+        diagnostics.append(_readiness_diagnostic("profile_provenance_unaccepted"))
+    for segment in profile["appearance_segments"]:
+        selector = {"kind": "appearance_segment", "segment_id": segment["segment_id"]}
+        if not _profile_fact_provenance_accepted(
+            segment["provenance"], saved, profile, segment, selector,
+        ):
+            diagnostics.append(_readiness_diagnostic(
+                "appearance_provenance_unaccepted", segment_id=segment["segment_id"],
+            ))
+
+    inventory = profile["inventory_complete"]
+    if not _profile_fact_provenance_accepted(
+        inventory["provenance"], saved, profile, inventory, {"kind": "inventory"},
+    ):
+        diagnostics.append(_readiness_diagnostic("inventory_provenance_unaccepted"))
+    if inventory["value"] is None:
+        diagnostics.append(_readiness_diagnostic("inventory_unconfirmed"))
+    elif inventory["value"] is False:
+        diagnostics.append(_readiness_diagnostic("inventory_incomplete"))
+
+    baseline = profile["baseline_coverage"]
+    garments = [] if saved["outfit"] is None else saved["outfit"]["garments"]
+    if baseline is None:
+        diagnostics.append(_readiness_diagnostic("baseline_missing"))
+    else:
+        diagnostics.extend(_readiness_for_state(
+            profile, saved, baseline, {"kind": "baseline"}, field="baseline_coverage",
+        ))
+        if garments:
+            for region in _AUTOMATION_PROFILE_REGIONS:
+                if baseline["regions"][region] in {"full", "partial"}:
+                    diagnostics.append(_readiness_diagnostic(
+                        "baseline_progression_conflict",
+                        field="baseline_coverage", region=region,
+                    ))
+
+    for garment in garments:
+        key = garment["key"]
+        for state in ("worn",):
+            fact = profile["garment_coverage"].get(key, {}).get(state)
+            diagnostics.extend(_readiness_for_state(
+                profile, saved, fact,
+                {"kind": "garment_state", "garment_key": key, "state": state},
+                garment_key=key, state=state,
+            ))
+    if garments and garments[-1]["aside"]:
+        key = garments[-1]["key"]
+        state = "aside"
+        fact = profile["garment_coverage"].get(key, {}).get(state)
+        diagnostics.extend(_readiness_for_state(
+            profile, saved, fact,
+            {"kind": "garment_state", "garment_key": key, "state": state},
+            garment_key=key, state=state,
+        ))
+
+    return {
+        "profile_ready": not diagnostics,
+        "manual_available": True,
+        "diagnostics": diagnostics,
+    }
+
+
+def copy_reviewed_automation_profile_facts(
+    target_look_key: str,
+    target_version: int,
+    source_profile_digest: str,
+    accepted_revision: int,
+    selections: list[dict],
+    *,
+    copy_baseline: bool = False,
+) -> dict:
+    """Return explicitly selected exact-match facts from an immutable profile."""
+    if (
+        not _valid_profile_key(target_look_key)
+        or type(target_version) is not int
+        or not 1 <= target_version <= _SQLITE_INTEGER_MAX
+        or not _valid_sha256(source_profile_digest)
+        or type(accepted_revision) is not int
+        or not 1 <= accepted_revision <= _SQLITE_INTEGER_MAX
+        or type(selections) is not list
+        or type(copy_baseline) is not bool
+    ):
+        _invalid()
+    normalized = []
+    seen = set()
+    for selection in selections:
+        if type(selection) is not dict or set(selection) != {"garment_key", "state"}:
+            _invalid()
+        key, state = selection["garment_key"], selection["state"]
+        if (
+            not _valid_profile_key(key)
+            or type(state) is not str
+            or state not in {"worn", "aside"}
+            or (key, state) in seen
+        ):
+            _invalid()
+        seen.add((key, state))
+        normalized.append({"garment_key": key, "state": state})
+
+    target_saved = get_version(target_look_key, target_version)
+    source = _automation_profile_by_digest(source_profile_digest)
+    if source is None:
+        raise SavedLookError(
+            404, "automation_profile_source_not_found", "Reviewed source profile was not found.",
+        )
+    source_saved, source_profile = source
+    provenance = {
+        "origin": "reviewed_structured",
+        "source_identity": _AUTOMATION_PROFILE_SOURCE_PREFIX + source_profile_digest,
+        "source_digest": source_profile_digest,
+        "accepted_revision": accepted_revision,
+    }
+    copied = {}
+    skipped = []
+    for selection in normalized:
+        key, state = selection["garment_key"], selection["state"]
+        target_garment = _saved_garment(target_saved, key)
+        source_garment = _saved_garment(source_saved, key)
+        if target_garment is None or source_garment is None:
+            skipped.append({"garment_key": key, "state": state, "code": "state_changed"})
+            continue
+        source_fact = _profile_fact(source_profile, {
+            "kind": "garment_state", "garment_key": key, "state": state,
+        })
+        if not _same_garment_state_wording(source_garment, target_garment, state):
+            skipped.append({"garment_key": key, "state": state, "code": "state_changed"})
+            continue
+        if source_fact is None:
+            skipped.append({"garment_key": key, "state": state, "code": "source_state_missing"})
+            continue
+        selector = {"kind": "garment_state", "garment_key": key, "state": state}
+        if not _profile_fact_provenance_accepted(
+            source_fact["provenance"], source_saved, source_profile, source_fact, selector,
+        ):
+            skipped.append({"garment_key": key, "state": state, "code": "source_fact_unaccepted"})
+            continue
+        copied.setdefault(key, {})[state] = {
+            "regions": dict(source_fact["regions"]),
+            "provenance": dict(provenance),
+        }
+
+    baseline = None
+    if copy_baseline:
+        source_baseline = source_profile["baseline_coverage"]
+        selector = {"kind": "baseline"}
+        if source_baseline is None:
+            skipped.append({"state": "baseline", "code": "source_state_missing"})
+        elif (
+            source_saved["appearance"] != target_saved["appearance"]
+            or source_saved["outfit"] != target_saved["outfit"]
+        ):
+            skipped.append({"state": "baseline", "code": "state_changed"})
+        elif not _profile_fact_provenance_accepted(
+            source_baseline["provenance"], source_saved, source_profile,
+            source_baseline, selector,
+        ):
+            skipped.append({"state": "baseline", "code": "source_fact_unaccepted"})
+        else:
+            baseline = {
+                "regions": dict(source_baseline["regions"]),
+                "provenance": dict(provenance),
+            }
+
+    return {
+        "source_profile_digest": source_profile_digest,
+        "accepted_revision": accepted_revision,
+        "garment_coverage": copied,
+        "baseline_coverage": baseline,
+        "skipped": skipped,
+    }
 
 
 def export_version(look_key: str, version: int) -> dict:
