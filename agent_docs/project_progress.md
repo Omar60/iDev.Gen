@@ -7,21 +7,25 @@ through the internal Heavy route, retaining legacy and manual contracts.
 
 ## Current Position
 
-Deployment `full-auto-task12-20261008` addresses Task 1.2 only, starting from
-clean HEAD `8eff959`. Task 1.1 remains accepted.
-Internal Executor implementation and independent Tester verification are
-accepted. Only Tasks 1.1 and 1.2 are checked; 2 of 41 tasks are complete.
-Readiness verifies exact accepted profile facts; reviewed reuse rejects changed
-canonical/state wording without changing manual or portable-v1 contracts.
+Deployment `full-auto-13-20261008` completes Task 1.3 from clean HEAD `5e0a9f5`.
+Main accepted the production diff and independent Tester evidence after Executor
+repaired loss of linked profile evidence and an oversized-version SQLite error.
+Only Tasks 1.1, 1.2 and 1.3 are checked; 3 of 41 tasks are complete.
 
-The final full gate passed: 2,845 Python tests, one symlink-environment skip and
-five warnings on Python 3.12.14. Privacy/control, strict OpenSpec and diff gates
-passed. An earlier full suite and reduced sequence failed an existing concurrent
-plan-resource lookup; its cause remains unconfirmed and was not repaired here.
+Reviewed ownership projects permanent spans without changing the historical
+snapshot. Explicit manual domain application binds separate profile evidence,
+retains plan CAS/invalidation and freezes exact identity after shot linking.
+Profile-free behavior and closed authoring/portable schemas remain compatible.
+
+Final gates passed: 2,862 Python tests, one unavailable-symlink skip and three
+warnings on Python 3.11.9; 607 frontend tests and production build; 46 focused
+privacy/control tests; strict OpenSpec validation and diff checks.
 
 ## Continuation
 
-Task 1.2 and its verified closure documentation form one isolated acceptance
-commit. Task 1.3 remains pending and has not started. Appearance projection,
-APIs, orchestration and UI remain later work. Do not
-start another task, generate real images, archive the change or push.
+Task 1.3 and its verified closure documentation form one isolated acceptance
+commit. Task 1.4 remains pending. Public profile APIs, visual profile editor,
+coverage compilation and Full Auto orchestration remain later work.
+Canonical-wording conflict signals are limited lexical checks, not exhaustive
+semantic validation. No real generation was performed. Do not start another
+task, archive the change or push.

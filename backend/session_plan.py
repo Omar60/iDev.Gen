@@ -3309,12 +3309,125 @@ def _copy_forward_ready_takes(
     return copied_take_ids
 
 
+def _session_profile_evidence_matches_plan(evidence: dict, plan: dict) -> bool:
+    snapshot = plan.get("authoring", {}).get("look_snapshot")
+    appearance = plan.get("look")
+    if not isinstance(appearance, str):
+        return False
+    try:
+        projection_digest = hashlib.sha256(
+            appearance.encode("utf-8", errors="strict")
+        ).hexdigest()
+    except UnicodeEncodeError:
+        return False
+    return bool(
+        isinstance(snapshot, dict)
+        and evidence["look_key"] == snapshot["look_id"]
+        and evidence["look_version"] == snapshot["version"]
+        and evidence["look_content_digest"] == snapshot["content_digest"]
+        and evidence["appearance_projection"] == appearance
+        and evidence["projection_digest"] == projection_digest
+    )
+
+
+def _load_session_profile_application(session_id: int, revision: int, plan: dict) -> dict | None:
+    evidence = db.one(
+        "SELECT * FROM session_profile_evidence WHERE session_id = ? AND plan_revision = ?",
+        session_id, revision,
+    )
+    if evidence is None:
+        return None
+    if not _session_profile_evidence_matches_plan(evidence, plan):
+        raise PlanValidationError("stored session profile evidence does not match the current plan")
+    from backend import saved_looks
+
+    application = saved_looks.get_reviewed_appearance_projection(
+        evidence["look_key"], evidence["look_version"], evidence["profile_revision"],
+        evidence["look_content_digest"], evidence["profile_digest"],
+    )
+    if application["appearance"] != evidence["appearance_projection"]:
+        raise PlanValidationError("stored session profile projection does not match its profile")
+    return application
+
+
+def _same_session_profile_application(left: dict, right: dict) -> bool:
+    return (
+        left["saved_look"]["key"] == right["saved_look"]["key"]
+        and left["saved_look"]["version"] == right["saved_look"]["version"]
+        and left["saved_look"]["content_digest"] == right["saved_look"]["content_digest"]
+        and left["profile"]["profile_revision"] == right["profile"]["profile_revision"]
+        and left["profile"]["profile_digest"] == right["profile"]["profile_digest"]
+        and left["appearance"] == right["appearance"]
+    )
+
+
+def _record_session_profile_application(
+    session_id: int,
+    plan_revision: int,
+    application: dict,
+) -> None:
+    saved = application["saved_look"]
+    profile = application["profile"]
+    projection = application["appearance"]
+    db.run(
+        """INSERT INTO session_profile_evidence (
+               session_id, plan_revision, look_key, look_version,
+               look_content_digest, profile_revision, profile_digest,
+               appearance_projection, projection_digest, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        session_id, plan_revision, saved["key"], saved["version"],
+        saved["content_digest"], profile["profile_revision"],
+        profile["profile_digest"], projection,
+        hashlib.sha256(projection.encode("utf-8", errors="strict")).hexdigest(),
+        db.now(),
+    )
+
+
+def _selected_removed_garment_keys(plan: dict) -> set[str]:
+    progression = plan.get("authoring", {}).get("wardrobe_progression")
+    snapshot = plan.get("authoring", {}).get("look_snapshot")
+    if not isinstance(progression, dict) or not isinstance(snapshot, dict):
+        return set()
+    outfit = snapshot["outfit"]
+    if outfit is None:
+        return set()
+    garments = outfit["garments"]
+    stages: list[set[str]] = []
+    for removed_count in range(len(garments) + 1):
+        remaining = garments[removed_count:]
+        stages.append({garment["key"] for garment in remaining})
+        if len(remaining) == 1 and remaining[0]["aside"]:
+            stages.append(set())
+    all_keys = {garment["key"] for garment in garments}
+    removed = set()
+    for stage_index in progression["stage_indices"]:
+        if stage_index < len(stages):
+            removed.update(all_keys - stages[stage_index])
+    return removed
+
+
+def _validate_profile_progression(application: dict, plan: dict) -> None:
+    from backend import saved_looks
+
+    conflicts = saved_looks.permanent_progression_conflicts(
+        application["saved_look"], application["profile"],
+        _selected_removed_garment_keys(plan),
+    )
+    if conflicts:
+        raise PlanOwnershipConflict(
+            "Permanent appearance ownership conflicts with removed wardrobe item(s): "
+            f"{conflicts}"
+        )
+
+
 def _persist_plan_revision(
     session_id: int,
     current: dict | None,
     old_plan: dict,
     validated: dict,
     conflicts: list[dict],
+    *,
+    carry_profile_evidence: bool = True,
 ) -> dict:
     """Persist one already-CAS-checked plan change inside its transaction."""
     actual = 0 if current is None else int(current["plan_revision"])
@@ -3373,6 +3486,23 @@ def _persist_plan_revision(
             "updated_at = ? WHERE session_id = ?",
             new_revision, encoded, now, session_id,
         )
+    if carry_profile_evidence and current is not None:
+        evidence = db.one(
+            "SELECT * FROM session_profile_evidence WHERE session_id = ? AND plan_revision = ?",
+            session_id, actual,
+        )
+        if evidence is not None and _session_profile_evidence_matches_plan(evidence, validated):
+            db.run(
+                """INSERT INTO session_profile_evidence (
+                       session_id, plan_revision, look_key, look_version,
+                       look_content_digest, profile_revision, profile_digest,
+                       appearance_projection, projection_digest, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                session_id, new_revision, evidence["look_key"], evidence["look_version"],
+                evidence["look_content_digest"], evidence["profile_revision"],
+                evidence["profile_digest"], evidence["appearance_projection"],
+                evidence["projection_digest"], now,
+            )
     _copy_forward_ready_takes(
         session_id, actual, new_revision, copy_sources, now,
     )
@@ -3643,6 +3773,8 @@ def apply_saved_look(
     decisions: Any,
     *,
     planning_enabled: bool,
+    profile_revision: int | None = None,
+    profile_digest: str | None = None,
 ) -> dict:
     """Apply an immutable saved look through an explicit, server-owned CAS."""
     _require_resource_planning_enabled(planning_enabled)
@@ -3668,6 +3800,14 @@ def apply_saved_look(
         raise PlanValidationError(
             "decisions must map shared fields to 'replace' or 'keep'"
         )
+    if (profile_revision is None) != (profile_digest is None):
+        raise PlanValidationError("profile_revision and profile_digest must be supplied together")
+    if profile_revision is not None and (
+        type(profile_revision) is not int
+        or profile_revision <= 0
+        or not saved_looks._valid_sha256(profile_digest)
+    ):
+        raise PlanValidationError("profile identity must contain an exact revision and digest")
 
     with db.transaction():
         _require_resource_planning_enabled(planning_enabled)
@@ -3698,6 +3838,37 @@ def apply_saved_look(
         # Preset versions are immutable and this read verifies their stored
         # digest; no browser-supplied appearance or garment data is accepted.
         saved = saved_looks.get_version(look_key, version)
+        profile_application = None
+        if profile_revision is not None:
+            profile_application = saved_looks.get_reviewed_appearance_projection(
+                look_key, version, profile_revision, saved["content_digest"], profile_digest,
+            )
+            if decisions.get("look") != "replace":
+                raise PlanValidationError(
+                    "explicit profile application requires replacing the effective appearance"
+                )
+            if db.one(
+                "SELECT 1 AS x FROM prepared_take WHERE session_id = ? "
+                "AND linked_shot_id IS NOT NULL LIMIT 1",
+                session_id,
+            ) is not None:
+                bound = db.one(
+                    "SELECT * FROM session_profile_evidence WHERE session_id = ? "
+                    "ORDER BY plan_revision DESC LIMIT 1",
+                    session_id,
+                )
+                if bound is None or (
+                    bound["look_key"] != look_key
+                    or bound["look_version"] != version
+                    or bound["look_content_digest"] != saved["content_digest"]
+                    or bound["profile_revision"] != profile_revision
+                    or bound["profile_digest"] != profile_digest
+                    or bound["appearance_projection"] != profile_application["appearance"]
+                ):
+                    raise PlanConstantsFrozenAfterGenerated(
+                        f"session {session_id} has linked shots; applying a different "
+                        "look profile requires a new session"
+                    )
         look_snapshot = {
             "look_id": saved["key"],
             "version": saved["version"],
@@ -3717,6 +3888,9 @@ def apply_saved_look(
                 "saved look application requires an authoring-v1 plan"
             )
         validate_selected_resources(old_plan["selected_resources"])
+        prior_profile_application = _load_session_profile_application(
+            session_id, actual, old_plan,
+        )
 
         old_authoring = old_plan["authoring"]
         old_shared_state = old_authoring["shared_state"]
@@ -3763,21 +3937,51 @@ def apply_saved_look(
                 continue
             if decision == "replace":
                 candidate[field] = (
-                    look_snapshot["appearance"]
-                    if field == "look"
-                    else compose_saved_look_wardrobe(outfit)
+                    (
+                        profile_application["appearance"]
+                        if profile_application is not None
+                        else look_snapshot["appearance"]
+                    ) if field == "look" else compose_saved_look_wardrobe(outfit)
                 )
-                shared_state[field] = {"origin": "saved_look", "evidence_id": None}
+                shared_state[field] = {
+                    "origin": "user" if (
+                        field == "look"
+                        and profile_application is not None
+                        and profile_application["appearance"] != look_snapshot["appearance"]
+                    ) else "saved_look",
+                    "evidence_id": None,
+                }
             else:
                 shared_state[field] = {"origin": "user", "evidence_id": None}
 
         authoring["shared_state"] = shared_state
         validated = validate_draft(candidate)
         validate_selected_resources(validated["selected_resources"])
+        if profile_application is not None:
+            _validate_profile_progression(profile_application, validated)
         conflicts = detect_resource_constant_conflicts(validated)
-        return _persist_plan_revision(
+        if (
+            profile_application is not None
+            and prior_profile_application is not None
+            and _same_session_profile_application(profile_application, prior_profile_application)
+            and json.dumps(
+                validated, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+            ) == json.dumps(
+                old_plan, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+            )
+        ):
+            return {"plan_revision": actual, "conflicts": conflicts}
+        result = _persist_plan_revision(
             session_id, current, old_plan, validated, conflicts,
+            # Profile-free application retains an existing binding only when
+            # the snapshot and effective projection still match exactly.
+            carry_profile_evidence=profile_application is None,
         )
+        if profile_application is not None:
+            _record_session_profile_application(
+                session_id, result["plan_revision"], profile_application,
+            )
+        return result
 
 
 def _load_progression_plan(session_id: int, expected_revision: int) -> tuple[dict, dict]:
@@ -3947,6 +4151,11 @@ def apply_wardrobe_progression_preview(
             stage_indices=payload["stage_indices"],
             event_policy=payload["event_policy"],
         )
+        profile_application = _load_session_profile_application(
+            session_id, expected_revision, plan,
+        )
+        if profile_application is not None:
+            _validate_profile_progression(profile_application, derived["plan"])
         supplied_digest = _progression_digest(reviewed_wardrobes)
         if (
             not hmac.compare_digest(supplied_digest, payload["review_digest"])

@@ -2,62 +2,61 @@
 
 ## Scope and State
 
-Internal Heavy deployment `full-auto-task12-20261008` addresses only Task 1.2 of
-`automate-resource-session-full-auto`, starting from clean HEAD `8eff959`.
-The complete project-document intake and change artifacts were read before
-implementation. Main owns architecture, integration and acceptance; internal
-Executor `implement_12` owns production and Tester `verify_12` owns independent
-verification. Main accepted the independent evidence and marked only Task 1.2;
-2 of 41 change tasks are complete.
+Internal Heavy deployment `full-auto-13-20261008` completes only Task 1.3 of
+`automate-resource-session-full-auto`, starting from clean HEAD `5e0a9f5`.
+Main completed project-document intake and read the change artifacts before
+implementation. Explorer mapped supporting contracts; Executor `implement_13`
+owned production/repair; Tester `verify_13` independently verified the real diff.
+Main accepted the final tree and marked only Task 1.3; 3 of 41 tasks are complete.
 
-## Implementation Boundary
+## Implementation and Review
 
-The saved-look domain adds read-only exact-profile readiness and explicitly
-selected reviewed coverage copying. Missing or unknown facts, unconfirmed
-inventory and unaccepted provenance prevent profile readiness while manual look
-use remains available. Reviewed facts resolve an immutable source-profile digest
-and verify source meaning. Reuse requires unchanged garment keys, canonical
-wording and state wording; baseline reuse requires unchanged appearance and the
-complete outfit. Copying transfers neither inventory confirmation nor ownership
-spans. Publication still creates immutable revisions through existing CAS.
+Permanent appearance is joined from exact accepted ownership spans; the complete
+look snapshot stays immutable. A changed projection has user origin, while an
+identical projection retains saved_look origin. Separate immutable
+`session_profile_evidence` rows bind exact look/profile identity and projection
+outside the closed authoring-v1 schema. Manual domain application retains CAS,
+invalidation and linked-shot freeze. Unchanged revisions can retain the binding;
+an unlinked manual appearance change leaves previous evidence historical.
 
-Main inspected the production diff and required two corrections: canonical
-wording must also match when copying aside facts, and full/partial baseline
-coverage must conflict with an outfit's garment-free final stage. Executor
-implemented both with focused regressions. Tester added seven independent
-adversarial checks and inspected the actual specification and diff.
+The JavaScript helper converts visual UTF-16 selection boundaries to Unicode
+scalar spans without normalization, rejects split pairs and unpaired surrogates,
+and has direct Python/JavaScript parity fixtures. Profile assertions cover
+whole-appearance-permanent and explicitly selected no-coverage state facts;
+visual shortcut preview/confirmation remains Task 6.1.
 
-## Independent Verification
+Independent probes reproduced two defects before acceptance: profile-free
+reapplication could lose the binding after a shot linked, and an oversized
+version could raise raw SQLite OverflowError. Executor repaired both; Tester
+retained and reran the adversarial regressions. The bracelet integration uses
+actual manual preparation/progression: only the worn stage retains its wording.
 
-Completed commands passed on the final production tree:
+## Completed Verification
 
-- `.venv/Scripts/python.exe -m pytest -rs`: 2,845 passed, one skipped,
-  five warnings, 317.70 seconds on Python 3.12.14.
-- Independent tests: seven passed; combined task-specific checks: 19 passed.
-- Privacy and control-character suites: 46 passed.
-- `openspec validate automate-resource-session-full-auto --strict --no-interactive`.
-- `git diff --check`.
+- `python -m pytest`: 2,862 passed, one skipped, three warnings, 226.99 seconds
+  on Python 3.11.9.
+- Focused independent/task/legacy acceptance: 56 passed.
+- `python -m pytest -ra tests/test_no_personal_data.py tests/test_shoot_checks.py`:
+  46 passed.
+- `npm --prefix frontend test`: 607 passed across 32 files.
+- `npm --prefix frontend run build`: passed, with a chunk-size warning.
+- `openspec validate automate-resource-session-full-auto --strict --no-interactive`:
+  passed.
+- `git diff --check`: passed, with LF/CRLF conversion notices only.
 
-Frontend was unchanged, so its tests and build were not required or run.
-Archivist also verified closure documentation and the single checkbox change
-with compact privacy/control, strict OpenSpec and diff checks.
-Raw verification logs remain outside the repository.
+The skipped symlink case was independently rerun with `-rs` and skipped because
+filesystem symlink creation raised OSError. Raw gate evidence remains outside
+the repository; the retained full-suite file is explicitly its captured final
+output chunk rather than a full raw log. An earlier Executor full-suite run was
+interrupted and is not acceptance evidence. Main inspected completed gate output.
 
-The symlink case was skipped because filesystem symlink creation raised OSError.
-The first full suite reported 2,844 passes, one failure and one skip in the
-existing concurrent session-plan CAS test. A reduced sequence also failed with
-SQLite InterfaceError. The fresh full suite passed unchanged. An isolated clean
-HEAD control passed once, but does not establish causality or exclude an
-intermittent failure. No SQLite race repair was made by this task.
+## Closure and Limits
 
-## Continuation and Limits
-
-Archivist owns concise public README/Looks documentation, a read-only Git
-handoff and the exact Deployment Token Report after closure checks. The isolated
-acceptance commit contains only Task 1.2 and its closure documentation; the
-handoff is sealed after commit. Source-provenance chains are limited to 32
-validation levels; deeper or
-unverifiable evidence requires fresh explicit user assertions.
-Do not start Task 1.3, archive the change or push. No real generation is
-permitted. Profile readiness does not certify Full Auto execution; appearance
-projection, APIs, coverage compilation, coordinator and UI are later tasks.
+Archivist owns concise public README/Looks and structure documentation, compact
+closure checks, read-only Git reporting and the exact Deployment Token Report.
+The acceptance commit includes only Task 1.3 and closure documentation.
+No public profile API, full profile editor, deterministic coverage compiler or
+Full Auto coordinator is delivered by this task. Permanent/removal conflict
+signals match canonical wording lexically; they do not certify arbitrary prose
+or visual fidelity. No real generation, archive or push is authorized. Stop at
+this task; Task 1.4 is the next pending task and has not started.

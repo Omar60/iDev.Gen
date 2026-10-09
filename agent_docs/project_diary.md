@@ -1,5 +1,18 @@
 # Project Diary
 
+## Full Auto Appearance Ownership, Task 1.3
+
+- Keep the complete immutable appearance as source evidence and project only
+  explicitly accepted permanent spans. Exact scalar offsets preserve emoji and
+  decomposed marks; browser UTF-16 selections must not split surrogate pairs.
+- Identical visible projection does not imply identical accepted ownership.
+  Freeze exact profile identity after linking a shot, and retain its evidence
+  when a profile-free reapplication leaves the source/projection unchanged.
+- Validate new exact-profile identity ranges before SQLite binding. A strict
+  integer can still overflow the storage boundary.
+- Canonical-wording conflict signals are limited lexical evidence. Do not claim
+  exhaustive prose understanding, silently delete source text or certify pixels.
+
 ## Full Auto Profile Readiness, Task 1.2
 
 - A provenance label is not evidence. Reviewed coverage must resolve an exact

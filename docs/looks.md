@@ -112,10 +112,25 @@ changed, or unaccepted facts must be asserted again for the target profile.
 Source-profile validation follows at most 32 provenance levels; deeper or
 unverifiable chains require a fresh explicit user assertion.
 
-This remains a backend-only capability: there is no profile editor or API, it
-does not project appearance text, and it does not execute Full Auto. Portable-v1
-JSON continues to exclude profiles, so automation readiness does not transfer
-on import or export.
+Accepted ownership spans can project only explicitly permanent clauses into a
+profile-aware session's constant appearance; progressive clauses remain owned
+by wardrobe stages, while the complete saved-look version stays as source
+evidence. Session evidence binds the projection to the exact look and profile
+revisions. The browser selection helper maps UTF-16 selection offsets to the
+same Unicode-scalar spans used by the backend, including emoji and combining
+marks, without normalizing the source text.
+
+The current conflict check catches canonical garment wording found within
+permanent spans when that garment is removed. This is limited lexical evidence,
+not exhaustive prose-semantic detection, and it does not rewrite or silently
+delete appearance text.
+
+This remains a backend capability: there is no profile editor,
+profile-management API, or profile-aware session-application API, and Full Auto
+does not execute yet. The existing manual saved-look workflow remains
+available; profile-aware manual application retains progression preview,
+review, submission, and Run controls. Portable-v1 JSON continues to exclude
+profiles, so automation readiness does not transfer on import or export.
 
 ## Temporary photo staging API
 

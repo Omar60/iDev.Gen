@@ -70,10 +70,16 @@ exact saved-look version and explicitly replace or keep its appearance and
 wardrobe, then review and apply a saved-outfit clothing progression. See
 [Saved looks](docs/looks.md) and [session progression details](docs/sessions.md#previewing-a-saved-look-outfit-progression).
 The backend also stores immutable automation-profile revisions bound to exact
-look content. Its internal readiness check requires accepted source-verified
-facts and confirmed inventory while keeping manual look use available. There is
-no profile editor, profile API, or Full Auto execution, and portable-v1 JSON
-excludes profiles so readiness does not transfer.
+look content. Accepted ownership spans can keep progressive clauses out of the
+constant appearance used by profile-aware session application, which retains
+the complete look as source evidence; Unicode spans are validated against the
+unchanged source text. Readiness requires accepted source-verified facts and
+confirmed inventory. The conflict check uses canonical wording in permanent
+spans and is not exhaustive prose-semantic detection. There is no profile
+editor, profile-management API, or profile-aware application API; the existing
+manual saved-look workflow remains available. Full Auto does not execute yet.
+Manual use keeps its progression, review, submission, and Run controls;
+portable-v1 JSON excludes profiles.
 
 ## Composing from the catalogue
 

@@ -4,8 +4,11 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import copy
 import json
+import shutil
 import sqlite3
+import subprocess
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -238,6 +241,43 @@ def test_stale_look_digests_versions_and_portable_digest_write_nothing(
         )["count"] == 0
 
 
+@pytest.mark.parametrize("partition", ["gap", "overlap", "omission"])
+def test_appearance_segments_must_partition_the_exact_source(
+    tmp_path, monkeypatch, partition,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = _saved_look()
+    profile = _profile(saved)
+    appearance = saved["appearance"]
+    split = max(1, len(appearance) // 2)
+    if partition == "gap":
+        profile["appearance_segments"] = [{
+            **profile["appearance_segments"][0],
+            "start": 1,
+            "text": appearance[1:],
+        }]
+    elif partition == "overlap":
+        profile["appearance_segments"] = [
+            {"segment_id": "first", "start": 0, "end": split,
+             "text": appearance[:split], "owner": "permanent",
+             "provenance": _provenance(saved)},
+            {"segment_id": "second", "start": split - 1, "end": len(appearance),
+             "text": appearance[split - 1:], "owner": "permanent",
+             "provenance": _provenance(saved)},
+        ]
+    else:
+        profile["appearance_segments"] = [{
+            **profile["appearance_segments"][0],
+            "end": len(appearance) - 1,
+            "text": appearance[:-1],
+        }]
+    with pytest.raises(saved_looks.SavedLookError):
+        _publish(saved, profile)
+    assert db.one(
+        "SELECT COUNT(*) AS count FROM saved_look_automation_profile",
+    )["count"] == 0
+
+
 def test_appearance_spans_use_unicode_scalar_indices(tmp_path, monkeypatch):
     _open(tmp_path / "profiles.db", monkeypatch)
     saved = _saved_look()
@@ -263,6 +303,31 @@ def test_appearance_spans_use_unicode_scalar_indices(tmp_path, monkeypatch):
     assert segments[combining_index]["text"] == "\u0301"
     assert segments[combining_index]["end"] == combining_index + 1
 
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Python/JavaScript scalar-span parity requires Node.js")
+    script = """
+import { scalarSpanFromUtf16Selection } from './frontend/src/appearanceOwnership.js';
+const appearance = process.argv[1];
+const spans = [];
+let offset = 0;
+for (const character of appearance) {
+  const end = offset + character.length;
+  spans.push(scalarSpanFromUtf16Selection(appearance, offset, end));
+  offset = end;
+}
+process.stdout.write(JSON.stringify(spans));
+"""
+    js = subprocess.run(
+        [node, "--input-type=module", "--eval", script, saved["appearance"]],
+        capture_output=True, text=True, encoding="utf-8", check=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    assert json.loads(js.stdout) == [
+        {"start": segment["start"], "end": segment["end"], "text": segment["text"]}
+        for segment in segments
+    ]
+
 
 def test_unpaired_surrogate_in_profile_source_is_rejected_without_writes(
     tmp_path, monkeypatch,
@@ -278,6 +343,70 @@ def test_unpaired_surrogate_in_profile_source_is_rejected_without_writes(
     assert db.one(
         "SELECT COUNT(*) AS count FROM saved_look_automation_profile",
     )["count"] == 0
+
+
+def test_all_appearance_permanent_shortcut_projects_the_exact_source(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = _saved_look()
+    published = _publish(saved, _profile(saved))
+    projection = saved_looks.get_reviewed_appearance_projection(
+        saved["key"], saved["version"], published["profile_revision"],
+        saved["content_digest"], published["profile_digest"],
+    )
+    assert projection["appearance"] == saved["appearance"]
+    assert projection["saved_look"]["appearance"] == saved["appearance"]
+
+
+def test_explicit_no_coverage_assertion_is_preserved_for_only_its_selected_state(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = _saved_look()
+    profile = _profile(saved)
+    garment_key = saved["outfit"]["garments"][0]["key"]
+    profile["garment_coverage"][garment_key]["worn"]["regions"] = {
+        region: "none" for region in ("chest", "hips", "legs", "feet")
+    }
+    published = _publish(saved, profile)
+
+    stored = saved_looks.get_automation_profile(
+        saved["key"], saved["version"], published["profile_revision"],
+        saved["content_digest"], published["profile_digest"],
+    )
+    assert stored["garment_coverage"][garment_key]["worn"]["regions"] == {
+        region: "none" for region in ("chest", "hips", "legs", "feet")
+    }
+    assert stored["garment_coverage"][garment_key]["worn"]["provenance"] == _provenance(saved)
+    assert stored["garment_coverage"][garment_key].get("aside") is None
+
+
+def test_profile_readiness_blocks_exact_permanent_removed_garment_clause(
+    tmp_path, monkeypatch,
+):
+    _open(tmp_path / "profiles.db", monkeypatch)
+    saved = saved_looks.create({
+        "name": "Invented bracelet ownership fixture",
+        "appearance": "A portrait includes a brass bracelet.",
+        "garments": [{"wording": "a brass bracelet", "aside": ""}],
+    })
+    profile = _profile(saved)
+    profile["appearance_segments"][0].update(
+        end=len(saved["appearance"]),
+        text=saved["appearance"],
+        owner="permanent",
+    )
+    published = _publish(saved, profile)
+    readiness = saved_looks.get_automation_profile_readiness(
+        saved["key"], saved["version"], saved["content_digest"],
+        published["profile_revision"], published["profile_digest"],
+    )
+    assert {
+        "code": "appearance_progression_conflict",
+        "appearance_segment_ids": ["appearance-1"],
+        "garment_key": saved["outfit"]["garments"][0]["key"],
+    } in readiness["diagnostics"]
 
 
 def test_concurrent_profile_edits_have_one_cas_winner(tmp_path, monkeypatch):

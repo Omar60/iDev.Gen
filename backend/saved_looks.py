@@ -846,15 +846,8 @@ def _profile_fact_provenance_accepted(
 
 
 def _automation_profile_provenance_is_accepted(profile: dict, saved: dict) -> bool:
-    authored = profile["authored_provenance"]
-    if authored["origin"] != "user" or authored["source_digest"] != saved["content_digest"]:
+    if not _appearance_profile_provenance_is_accepted(profile, saved):
         return False
-    for segment in profile["appearance_segments"]:
-        selector = {"kind": "appearance_segment", "segment_id": segment["segment_id"]}
-        if not _profile_fact_provenance_accepted(
-            segment["provenance"], saved, profile, segment, selector,
-        ):
-            return False
     for garment_key, states in profile["garment_coverage"].items():
         for state, fact in states.items():
             selector = {
@@ -873,6 +866,97 @@ def _automation_profile_provenance_is_accepted(profile: dict, saved: dict) -> bo
     return _profile_fact_provenance_accepted(
         inventory["provenance"], saved, profile, inventory, {"kind": "inventory"},
     )
+
+
+def _appearance_profile_provenance_is_accepted(profile: dict, saved: dict) -> bool:
+    authored = profile["authored_provenance"]
+    if authored["origin"] != "user" or authored["source_digest"] != saved["content_digest"]:
+        return False
+    for segment in profile["appearance_segments"]:
+        selector = {"kind": "appearance_segment", "segment_id": segment["segment_id"]}
+        if not _profile_fact_provenance_accepted(
+            segment["provenance"], saved, profile, segment, selector,
+        ):
+            return False
+    return True
+
+
+def permanent_appearance_projection(profile: dict) -> str:
+    """Join only explicitly permanent source spans, preserving their exact text."""
+    return "".join(
+        segment["text"] for segment in profile["appearance_segments"]
+        if segment["owner"] == "permanent"
+    )
+
+
+def get_reviewed_appearance_projection(
+    look_key: str,
+    version: int,
+    profile_revision: int,
+    content_digest: str,
+    profile_digest: str,
+) -> dict:
+    """Load an exact profile and return its accepted permanent projection."""
+    if (
+        not _valid_profile_key(look_key)
+        or type(version) is not int
+        or not 1 <= version <= _SQLITE_INTEGER_MAX
+        or type(profile_revision) is not int
+        or not 1 <= profile_revision <= _SQLITE_INTEGER_MAX
+        or not _valid_sha256(content_digest)
+        or not _valid_sha256(profile_digest)
+    ):
+        _invalid()
+    saved = get_version(look_key, version)
+    profile = get_automation_profile(
+        look_key, version, profile_revision, content_digest, profile_digest,
+    )
+    if not _appearance_profile_provenance_is_accepted(profile, saved):
+        raise SavedLookError(
+            422,
+            "appearance_ownership_unaccepted",
+            "Appearance ownership must have accepted source-bound provenance.",
+        )
+    return {
+        "saved_look": saved,
+        "profile": profile,
+        "appearance": permanent_appearance_projection(profile),
+    }
+
+
+def permanent_progression_conflicts(
+    saved: dict,
+    profile: dict,
+    removed_garment_keys: set[str],
+) -> list[dict]:
+    """Find exact canonical garment wording left in explicitly permanent spans.
+
+    This is a deterministic conflict signal only; it does not classify arbitrary prose.
+    """
+    garments = [] if saved["outfit"] is None else saved["outfit"]["garments"]
+    runs: list[list[dict]] = []
+    for segment in profile["appearance_segments"]:
+        if segment["owner"] != "permanent":
+            continue
+        if runs and runs[-1][-1]["end"] == segment["start"]:
+            runs[-1].append(segment)
+        else:
+            runs.append([segment])
+
+    conflicts = []
+    for run in runs:
+        text = "".join(segment["text"] for segment in run).casefold()
+        for garment in garments:
+            if (
+                garment["key"] in removed_garment_keys
+                and garment["wording"].casefold() in text
+            ):
+                conflicts.append({
+                    "code": "appearance_progression_conflict",
+                    "appearance_segment_ids": [segment["segment_id"] for segment in run],
+                    "garment_key": garment["key"],
+                })
+    return conflicts
 
 
 def _automation_profile_stale() -> None:
@@ -1066,9 +1150,7 @@ def get_automation_profile_readiness(
         look_key, version, profile_revision, content_digest, profile_digest,
     )
     diagnostics = []
-    if profile["authored_provenance"]["origin"] != "user" or (
-        profile["authored_provenance"]["source_digest"] != saved["content_digest"]
-    ):
+    if not _appearance_profile_provenance_is_accepted(profile, saved):
         diagnostics.append(_readiness_diagnostic("profile_provenance_unaccepted"))
     for segment in profile["appearance_segments"]:
         selector = {"kind": "appearance_segment", "segment_id": segment["segment_id"]}
@@ -1078,6 +1160,12 @@ def get_automation_profile_readiness(
             diagnostics.append(_readiness_diagnostic(
                 "appearance_provenance_unaccepted", segment_id=segment["segment_id"],
             ))
+    diagnostics.extend(permanent_progression_conflicts(
+        saved, profile,
+        {garment["key"] for garment in (
+            [] if saved["outfit"] is None else saved["outfit"]["garments"]
+        )},
+    ))
 
     inventory = profile["inventory_complete"]
     if not _profile_fact_provenance_accepted(

@@ -639,6 +639,29 @@ CREATE TABLE IF NOT EXISTS session_plan (
     CHECK (plan_revision > 0)
 );
 
+-- Exact profile application evidence stays outside the closed authoring-v1 plan.
+CREATE TABLE IF NOT EXISTS session_profile_evidence (
+    session_id                 INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    plan_revision              INTEGER NOT NULL CHECK (plan_revision > 0),
+    look_key                   TEXT NOT NULL,
+    look_version               INTEGER NOT NULL CHECK (look_version > 0),
+    look_content_digest        TEXT NOT NULL CHECK (length(look_content_digest) = 64),
+    profile_revision           INTEGER NOT NULL CHECK (profile_revision > 0),
+    profile_digest             TEXT NOT NULL CHECK (length(profile_digest) = 64),
+    appearance_projection      TEXT NOT NULL,
+    projection_digest          TEXT NOT NULL CHECK (length(projection_digest) = 64),
+    created_at                 TEXT NOT NULL,
+    PRIMARY KEY (session_id, plan_revision),
+    FOREIGN KEY (look_key, look_version, profile_revision)
+        REFERENCES saved_look_automation_profile(look_key, look_version, profile_revision)
+);
+
+CREATE TRIGGER IF NOT EXISTS session_profile_evidence_immutable
+BEFORE UPDATE ON session_profile_evidence
+BEGIN
+    SELECT RAISE(ABORT, 'session profile evidence is immutable');
+END;
+
 -- One replayable authoring claim per client request. Progress is JSON so the
 -- requested, completed and remaining references retain their plan order.
 CREATE TABLE IF NOT EXISTS authoring_operation (
