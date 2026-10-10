@@ -4240,6 +4240,92 @@ def save_draft(
     return result
 
 
+def build_saved_look_application_candidate(
+    old_plan: dict,
+    saved: dict,
+    decisions: dict[str, str],
+    *,
+    profile_application: dict | None = None,
+) -> dict:
+    """Build a saved-look plan candidate without persistence or CAS writes."""
+    old_plan = validate_draft(old_plan)
+    if type(decisions) is not dict or any(
+        field not in {"look", "initial_wardrobe"}
+        or choice not in {"replace", "keep"}
+        for field, choice in decisions.items()
+    ):
+        raise PlanValidationError("decisions must map shared fields to 'replace' or 'keep'")
+    if profile_application is not None and decisions.get("look") != "replace":
+        raise PlanValidationError(
+            "explicit profile application requires replacing the effective appearance"
+        )
+
+    old_authoring = old_plan["authoring"]
+    old_shared_state = old_authoring["shared_state"]
+    outfit = saved["outfit"]
+    prior_wardrobe_origin = old_shared_state["initial_wardrobe"]["origin"]
+    required_decisions = {"look"}
+    if outfit is not None or prior_wardrobe_origin == "saved_look":
+        required_decisions.add("initial_wardrobe")
+    if set(decisions) != required_decisions:
+        if (
+            outfit is None
+            and prior_wardrobe_origin == "saved_look"
+            and "initial_wardrobe" not in decisions
+        ):
+            raise PlanValidationError(
+                "initial_wardrobe decision must be 'keep' when applying "
+                "an appearance-only look over a saved-look wardrobe"
+            )
+        raise PlanValidationError(
+            f"decisions must contain exactly {sorted(required_decisions)}"
+        )
+    if outfit is None and decisions.get("initial_wardrobe") == "replace":
+        raise PlanValidationError(
+            "initial_wardrobe cannot be replaced by an appearance-only look"
+        )
+
+    look_snapshot = {
+        "look_id": saved["key"],
+        "version": saved["version"],
+        "content_digest": saved["content_digest"],
+        "appearance": saved["appearance"],
+        "outfit": outfit,
+    }
+    candidate = dict(old_plan)
+    authoring = dict(old_authoring)
+    shared_state = {
+        field: dict(old_shared_state[field])
+        for field in ("look", "initial_wardrobe")
+    }
+    candidate["authoring"] = authoring
+    authoring["look_snapshot"] = look_snapshot
+    for field in ("look", "initial_wardrobe"):
+        decision = decisions.get(field)
+        if decision is None:
+            continue
+        if decision == "replace":
+            candidate[field] = (
+                (
+                    profile_application["appearance"]
+                    if profile_application is not None
+                    else look_snapshot["appearance"]
+                ) if field == "look" else compose_saved_look_wardrobe(outfit)
+            )
+            shared_state[field] = {
+                "origin": "user" if (
+                    field == "look"
+                    and profile_application is not None
+                    and profile_application["appearance"] != look_snapshot["appearance"]
+                ) else "saved_look",
+                "evidence_id": None,
+            }
+        else:
+            shared_state[field] = {"origin": "user", "evidence_id": None}
+    authoring["shared_state"] = shared_state
+    return validate_draft(candidate)
+
+
 def apply_saved_look(
     session_id: int,
     expected_revision: int,
@@ -4344,13 +4430,6 @@ def apply_saved_look(
                         f"session {session_id} has linked shots; applying a different "
                         "look profile requires a new session"
                     )
-        look_snapshot = {
-            "look_id": saved["key"],
-            "version": saved["version"],
-            "content_digest": saved["content_digest"],
-            "appearance": saved["appearance"],
-            "outfit": saved["outfit"],
-        }
         try:
             old_plan_raw = json.loads(current["plan_json"])
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -4367,70 +4446,9 @@ def apply_saved_look(
             session_id, actual, old_plan,
         )
 
-        old_authoring = old_plan["authoring"]
-        old_shared_state = old_authoring["shared_state"]
-        outfit = look_snapshot["outfit"]
-        prior_wardrobe_origin = old_shared_state["initial_wardrobe"]["origin"]
-        wardrobe_decision_required = (
-            outfit is not None or prior_wardrobe_origin == "saved_look"
+        validated = build_saved_look_application_candidate(
+            old_plan, saved, decisions, profile_application=profile_application,
         )
-        required_decisions = {"look"}
-        if wardrobe_decision_required:
-            required_decisions.add("initial_wardrobe")
-        if set(decisions) != required_decisions:
-            if (
-                outfit is None
-                and prior_wardrobe_origin == "saved_look"
-                and "initial_wardrobe" not in decisions
-            ):
-                raise PlanValidationError(
-                    "initial_wardrobe decision must be 'keep' when applying "
-                    "an appearance-only look over a saved-look wardrobe"
-                )
-            raise PlanValidationError(
-                f"decisions must contain exactly {sorted(required_decisions)}"
-            )
-        if outfit is None and decisions.get("initial_wardrobe") == "replace":
-            raise PlanValidationError(
-                "initial_wardrobe cannot be replaced by an appearance-only look"
-            )
-
-        candidate = dict(old_plan)
-        authoring = dict(old_authoring)
-        shared_state = {
-            field: dict(old_shared_state[field])
-            for field in ("look", "initial_wardrobe")
-        }
-        candidate["authoring"] = authoring
-        authoring["look_snapshot"] = look_snapshot
-        candidate["look"] = old_plan["look"]
-        candidate["initial_wardrobe"] = old_plan["initial_wardrobe"]
-
-        for field in ("look", "initial_wardrobe"):
-            decision = decisions.get(field)
-            if decision is None:
-                continue
-            if decision == "replace":
-                candidate[field] = (
-                    (
-                        profile_application["appearance"]
-                        if profile_application is not None
-                        else look_snapshot["appearance"]
-                    ) if field == "look" else compose_saved_look_wardrobe(outfit)
-                )
-                shared_state[field] = {
-                    "origin": "user" if (
-                        field == "look"
-                        and profile_application is not None
-                        and profile_application["appearance"] != look_snapshot["appearance"]
-                    ) else "saved_look",
-                    "evidence_id": None,
-                }
-            else:
-                shared_state[field] = {"origin": "user", "evidence_id": None}
-
-        authoring["shared_state"] = shared_state
-        validated = validate_draft(candidate)
         validate_selected_resources(validated["selected_resources"])
         if profile_application is not None:
             _validate_profile_progression(profile_application, validated)

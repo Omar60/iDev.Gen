@@ -178,9 +178,15 @@ invalid requests, stale identities/revisions, missing records, disabled
 resource planning, and plan conflicts; messages do not expose private source
 values, filesystem paths, or internal exception text.
 
-The API is a backend capability: there is no profile editor or guided Full Auto
-creation/execution flow yet. The existing manual saved-look workflow remains
-available, including progression preview, review, submission, and Run controls.
+These profile routes remain backend capabilities; there is no profile editor.
+Guided creation can apply an exact saved-look snapshot through
+`POST /api/sessions/guided`, without applying a profile or starting progression.
+The guided-creation API also provides Full Auto preflight and atomic initial
+authorization. A runtime coordinator, unattended execution, status and
+Cancel/Resume controls, and Full Auto selection/consent UI are not implemented.
+The manual saved-look workflow remains available, including progression
+preview, review, submission, and Run controls. See the
+[guided creation API](sessions.md#saved-look-and-full-auto-creation-api).
 Portable-v1 JSON continues to exclude profiles, so automation readiness does
 not transfer on import or export.
 

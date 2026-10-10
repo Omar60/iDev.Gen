@@ -1585,6 +1585,68 @@ its validated stored response: HTTP 201 is a new creation and HTTP 200 replays
 the saved result. Neither path prepares or approves prompts, submits takes, or
 starts generation.
 
+### Saved-look and Full Auto creation API
+
+`POST /api/sessions/guided` retains its existing request and replay shape when
+the new fields are omitted. Its `saved_look` object may be omitted; when
+supplied, it is closed and must contain exactly
+`{look_key, version, content_digest}`; explicit `null` is invalid. The key is a
+valid string identifier, the version is a positive integer, and the digest is
+64 lowercase hexadecimal SHA-256 characters. It identifies the immutable
+snapshot's canonical `{appearance, outfit}` content, not a portable export
+digest. Supplying this object applies that exact snapshot to the new plan.
+Manual saved-look creation does not load an automation profile, derive
+progression or coverage, or create a Full Auto authorization. `look` and
+`initial_wardrobe` must be omitted or empty when
+`saved_look` is supplied.
+
+A Full Auto preflight request requires `mode: "automatic"` and a closed
+six-field `full_auto` object:
+
+```json
+{
+  "authorization_version": 1,
+  "generate_without_pauses": true,
+  "profile_revision": 1,
+  "profile_digest": "<lowercase SHA-256>",
+  "progression": "all_stages_full_interval",
+  "framing_intent": "vary"
+}
+```
+
+`authorization_version` is fixed at `1`; `generate_without_pauses` must be
+`true`; `progression` is fixed at `all_stages_full_interval`; and
+`framing_intent` is `vary` or `full_body`. Full Auto requires `saved_look`, and
+the profile revision and digest must belong to that exact saved version.
+The saved-look version and profile revision must be strict positive integers
+within SQLite's signed-integer range. Digests are 64 lowercase hexadecimal
+characters.
+Unknown fields, coercions, and competing raw look or wardrobe values are
+refused before writes.
+
+Before creation, `POST /api/sessions/guided/full-auto/preflight` accepts the
+same guided inputs and the six-field `full_auto` object above, but no
+`request_id`, `scope_digest`, or `scope_issued_at`. It returns a safe resolved
+summary, canonical `scope_digest`, and server-issued UTC `scope_issued_at`
+without allocating records or calling an assistant or image generator. The
+summary binds the exact saved look/profile, room and translation, model inputs,
+workflow and mappings, effective canvas and framing, provider, schedule,
+coverage, policy, and limits using safe values and digests.
+
+Creation adds the preflight's canonical `scope_digest` and UTC
+`scope_issued_at` to those six fields, making the closed eight-field
+`full_auto` object, and supplies the required top-level `request_id`. The quote
+must be no more than 300 seconds old and cannot be from the future; creation
+recomputes the scope and returns `409 authorization_scope_changed` if a bound input or
+eligibility changed. The authorization expires seven days after the preflight
+timestamp, and creation does not extend it. A successful creation atomically
+stores the populated plan, applied profile and coverage evidence, initial
+authorization receipt, and idempotent response. It returns `full_auto_run_id`
+for that receipt but does not call an assistant or start ComfyUI. A runtime
+coordinator, unattended execution, run status, Cancel/Resume, and Full Auto
+selection/consent UI are not implemented; use the manual workflow for
+preparation, review, submission, and Run.
+
 If a network or 5xx error occurs, an error response is unreadable or malformed,
 or a success response is unreadable, malformed, or incomplete, the outcome stays
 unknown. The form locks its inputs and **Retry creation** resends the exact same

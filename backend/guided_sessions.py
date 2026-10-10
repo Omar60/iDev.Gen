@@ -2,11 +2,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
 import json
+import math
+import uuid
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
-    BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError,
+    BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, ValidationError,
     field_validator, model_validator,
 )
 
@@ -14,22 +20,136 @@ import db
 from backend import resource_planning
 import resource_readiness
 import resource_store
-from backend import resource_selection, session_plan, workflow_binding
+from backend import resource_selection, saved_looks, session_plan, workflow_binding
 
 
 _POLICY_FIELDS = ("camera", "framing", "pose", "expression")
 _CANVAS_FIELDS = frozenset({"width", "height"})
 _CANVAS_STEP = 8
+_FULL_BODY_FRAMING = "Full body, head to toe, both feet visible, with space above the head and below the feet."
+_FULL_AUTO_AUTHORIZATION_VERSION = 1
+_FULL_AUTO_SCOPE_MAX_AGE = timedelta(seconds=300)
+_FULL_AUTO_AUTHORIZATION_LIFETIME = timedelta(days=7)
+_FULL_AUTO_ASSISTANT_CALLS_PER_TAKE = 2
+_FULL_AUTO_IMAGE_ATTEMPTS_PER_TAKE = 1
+_FULL_AUTO_POLICY_VERSION = "resource-full-auto-v1"
+_SQLITE_INTEGER_MAX = saved_looks._SQLITE_INTEGER_MAX
 
 
 def _all_vary_policy() -> dict[str, dict[str, str]]:
     return {field: {"mode": "vary"} for field in _POLICY_FIELDS}
 
 
-class GuidedSessionIn(BaseModel):
+def _positive_sqlite_integer(value: Any, field: str) -> int:
+    if type(value) is not int or not 1 <= value <= _SQLITE_INTEGER_MAX:
+        raise ValueError(f"{field} must be a positive SQLite-range integer")
+    return value
+
+
+def _validate_sha256(value: Any, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(char not in "0123456789abcdef" for char in value)
+    ):
+        raise ValueError(f"{field} must be a canonical SHA-256 digest")
+    return value
+
+
+def _validate_utc_timestamp(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("scope_issued_at must be a canonical UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("scope_issued_at must be a canonical UTC timestamp") from exc
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() != timedelta(0)
+        or parsed.isoformat(timespec="seconds") != value
+    ):
+        raise ValueError("scope_issued_at must be a canonical UTC timestamp")
+    return value
+
+
+class SavedLookSelectionIn(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    request_id: StrictStr
+    look_key: StrictStr
+    version: StrictInt
+    content_digest: StrictStr
+
+    @field_validator("look_key", mode="before")
+    @classmethod
+    def validate_look_key(cls, value: Any) -> str:
+        if not saved_looks._valid_key(value):
+            raise ValueError("look_key must be a valid saved-look key")
+        return value
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def validate_version(cls, value: Any) -> int:
+        return _positive_sqlite_integer(value, "version")
+
+    @field_validator("content_digest", mode="before")
+    @classmethod
+    def validate_content_digest(cls, value: Any) -> str:
+        return _validate_sha256(value, "content_digest")
+
+
+class FullAutoPreflightIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    authorization_version: StrictInt
+    generate_without_pauses: StrictBool
+    profile_revision: StrictInt
+    profile_digest: StrictStr
+    progression: Literal["all_stages_full_interval"]
+    framing_intent: Literal["vary", "full_body"]
+
+    @field_validator("authorization_version", mode="before")
+    @classmethod
+    def validate_authorization_version(cls, value: Any) -> int:
+        if type(value) is not int or value != _FULL_AUTO_AUTHORIZATION_VERSION:
+            raise ValueError("authorization_version must equal 1")
+        return value
+
+    @field_validator("generate_without_pauses", mode="before")
+    @classmethod
+    def validate_generate_consent(cls, value: Any) -> bool:
+        if value is not True:
+            raise ValueError("generate_without_pauses must be true")
+        return value
+
+    @field_validator("profile_revision", mode="before")
+    @classmethod
+    def validate_profile_revision(cls, value: Any) -> int:
+        return _positive_sqlite_integer(value, "profile_revision")
+
+    @field_validator("profile_digest", mode="before")
+    @classmethod
+    def validate_profile_digest(cls, value: Any) -> str:
+        return _validate_sha256(value, "profile_digest")
+
+
+class FullAutoCreationIn(FullAutoPreflightIn):
+    scope_digest: StrictStr
+    scope_issued_at: StrictStr
+
+    @field_validator("scope_digest", mode="before")
+    @classmethod
+    def validate_scope_digest(cls, value: Any) -> str:
+        return _validate_sha256(value, "scope_digest")
+
+    @field_validator("scope_issued_at", mode="before")
+    @classmethod
+    def validate_scope_issued_at(cls, value: Any) -> str:
+        return _validate_utc_timestamp(value)
+
+
+class _GuidedSessionFields(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     character_id: StrictInt
     workflow_id: StrictInt | None = None
     scene_anchor: dict[str, Any]
@@ -41,27 +161,26 @@ class GuidedSessionIn(BaseModel):
     variation_policy: dict[str, Any] = Field(default_factory=_all_vary_policy)
     look: StrictStr = ""
     initial_wardrobe: StrictStr = ""
+    saved_look: SavedLookSelectionIn | None = None
 
-    @field_validator("request_id", mode="before")
+    @field_validator("saved_look", mode="before")
     @classmethod
-    def normalize_request_id(cls, value: Any) -> str:
-        return resource_selection.normalize_client_uuid(value)
+    def reject_explicit_null_saved_look(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("saved_look must be omitted or an object")
+        return value
 
     @field_validator("character_id", mode="before")
     @classmethod
     def validate_character_id(cls, value: Any) -> int:
-        if type(value) is not int or value <= 0:
-            raise ValueError("character_id must be a positive integer")
-        return value
+        return _positive_sqlite_integer(value, "character_id")
 
     @field_validator("workflow_id", mode="before")
     @classmethod
     def validate_workflow_id(cls, value: Any) -> int | None:
         if value is None:
             return None
-        if type(value) is not int or value <= 0:
-            raise ValueError("workflow_id must be null or a positive integer")
-        return value
+        return _positive_sqlite_integer(value, "workflow_id")
 
     @field_validator("photo_count", mode="before")
     @classmethod
@@ -71,12 +190,13 @@ class GuidedSessionIn(BaseModel):
     @field_validator("width", "height", mode="before")
     @classmethod
     def validate_canvas_dimension(cls, value: Any) -> int:
-        if type(value) is not int or value < _CANVAS_STEP or value % _CANVAS_STEP:
+        value = _positive_sqlite_integer(value, "canvas dimension")
+        if value < _CANVAS_STEP or value % _CANVAS_STEP:
             raise ValueError("canvas dimensions must be positive multiples of 8")
         return value
 
     @model_validator(mode="after")
-    def validate_canvas_override(self) -> GuidedSessionIn:
+    def validate_canvas_override(self) -> _GuidedSessionFields:
         provided = self.model_fields_set & _CANVAS_FIELDS
         if provided and provided != _CANVAS_FIELDS:
             raise ValueError("width and height must be provided together")
@@ -129,6 +249,55 @@ class GuidedSessionIn(BaseModel):
         return normalized
 
 
+class GuidedSessionIn(_GuidedSessionFields):
+    request_id: StrictStr
+    full_auto: FullAutoCreationIn | None = None
+
+    @field_validator("request_id", mode="before")
+    @classmethod
+    def normalize_request_id(cls, value: Any) -> str:
+        return resource_selection.normalize_client_uuid(value)
+
+    @field_validator("full_auto", mode="before")
+    @classmethod
+    def reject_explicit_null_full_auto(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("full_auto must be omitted or an object")
+        return value
+
+    @model_validator(mode="after")
+    def validate_saved_look_and_full_auto(self) -> GuidedSessionIn:
+        if self.saved_look is not None and (self.look != "" or self.initial_wardrobe != ""):
+            raise ValueError("saved_look cannot compete with look or initial_wardrobe overrides")
+        if self.full_auto is not None:
+            if self.saved_look is None:
+                raise ValueError("Full Auto requires an exact saved_look selection")
+            if self.mode != "automatic":
+                raise ValueError("Full Auto requires automatic authoring mode")
+        return self
+
+
+class GuidedFullAutoPreflightIn(_GuidedSessionFields):
+    full_auto: FullAutoPreflightIn
+
+    @field_validator("full_auto", mode="before")
+    @classmethod
+    def reject_explicit_null_full_auto(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("full_auto must be an object")
+        return value
+
+    @model_validator(mode="after")
+    def validate_preflight_inputs(self) -> GuidedFullAutoPreflightIn:
+        if self.saved_look is None:
+            raise ValueError("Full Auto requires an exact saved_look selection")
+        if self.mode != "automatic":
+            raise ValueError("Full Auto requires automatic authoring mode")
+        if self.look != "" or self.initial_wardrobe != "":
+            raise ValueError("saved_look cannot compete with look or initial_wardrobe overrides")
+        return self
+
+
 @dataclass(frozen=True)
 class NormalizedGuidedRequest:
     request_id: str
@@ -137,25 +306,33 @@ class NormalizedGuidedRequest:
 
 
 class GuidedSessionError(Exception):
-    def __init__(self, status_code: int, code: str, message: str) -> None:
+    def __init__(
+        self, status_code: int, code: str, message: str,
+        current: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
+        self.current = current
+
+
+def _request_validation_error(exc: ValidationError) -> GuidedSessionError:
+    errors = exc.errors()
+    if any(error.get("type") == "extra_forbidden" for error in errors):
+        code, message = "extra_field_forbidden", "Unknown guided creation fields are not permitted."
+    elif any(error.get("type") == "missing" for error in errors):
+        code, message = "missing_field", "A required guided creation field is missing."
+    else:
+        code, message = "invalid_request", "The guided creation request does not match its contract."
+    return GuidedSessionError(422, code, message)
 
 
 def normalize_request(payload: Any) -> NormalizedGuidedRequest:
     try:
         parsed = GuidedSessionIn.model_validate(payload)
     except ValidationError as exc:
-        errors = exc.errors()
-        if any(error.get("type") == "extra_forbidden" for error in errors):
-            code, message = "extra_field_forbidden", "Unknown guided creation fields are not permitted."
-        elif any(error.get("type") == "missing" for error in errors):
-            code, message = "missing_field", "A required guided creation field is missing."
-        else:
-            code, message = "invalid_request", "The guided creation request does not match its contract."
-        raise GuidedSessionError(422, code, message) from exc
+        raise _request_validation_error(exc) from exc
 
     values = parsed.model_dump()
     request_id = values.pop("request_id")
@@ -164,6 +341,10 @@ def normalize_request(payload: Any) -> NormalizedGuidedRequest:
     if not (parsed.model_fields_set & _CANVAS_FIELDS):
         values.pop("width")
         values.pop("height")
+    if values.get("saved_look") is None:
+        values.pop("saved_look")
+    if values.get("full_auto") is None:
+        values.pop("full_auto")
     return NormalizedGuidedRequest(
         request_id=request_id,
         body=values,
@@ -171,9 +352,21 @@ def normalize_request(payload: Any) -> NormalizedGuidedRequest:
     )
 
 
-def _validate_ready_room(anchor: dict[str, str]) -> None:
+def normalize_preflight_request(payload: Any) -> dict[str, Any]:
+    try:
+        parsed = GuidedFullAutoPreflightIn.model_validate(payload)
+    except ValidationError as exc:
+        raise _request_validation_error(exc) from exc
+    values = parsed.model_dump()
+    if not (parsed.model_fields_set & _CANVAS_FIELDS):
+        values.pop("width")
+        values.pop("height")
+    return values
+
+
+def _validate_ready_room(anchor: dict[str, str]) -> tuple[dict, dict]:
     library = db.one(
-        "SELECT id, kind FROM resource_library WHERE library_key = ?",
+        "SELECT * FROM resource_library WHERE library_key = ?",
         anchor["library_key"],
     )
     if library is None or library["kind"] != "rooms":
@@ -208,6 +401,7 @@ def _validate_ready_room(anchor: dict[str, str]) -> None:
             "scene_anchor_not_ready",
             "The selected rooms revision is not ready; resolve its required translations first.",
         )
+    return library, revision
 
 
 def _initial_plan(body: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any]:
@@ -245,7 +439,701 @@ def _initial_plan(body: dict[str, Any], binding: dict[str, Any]) -> dict[str, An
     })
 
 
-def create_or_replay(request: NormalizedGuidedRequest) -> tuple[str, bool]:
+def _safe_full_auto_error(exc: Exception) -> GuidedSessionError:
+    code = getattr(exc, "code", "workflow_compatibility_invalid")
+    allowed = {"workflow_required", "workflow_compatibility_invalid"}
+    if code not in allowed:
+        code = "workflow_compatibility_invalid"
+    message = (
+        "Choose a compatible text-to-image workflow for Full Auto."
+        if code == "workflow_required"
+        else "The selected workflow is not compatible with Full Auto."
+    )
+    return GuidedSessionError(422, code, message)
+
+
+def _selected_saved_look(selection: dict[str, Any]) -> dict:
+    try:
+        saved = saved_looks.get_version(selection["look_key"], selection["version"])
+    except saved_looks.SavedLookError as exc:
+        if exc.code == "look_not_found":
+            raise GuidedSessionError(404, "look_not_found", "Saved look was not found.") from exc
+        raise GuidedSessionError(500, "saved_look_invalid", "The selected saved look could not be read.") from exc
+    if saved["content_digest"] != selection["content_digest"]:
+        raise GuidedSessionError(
+            409, "saved_look_changed",
+            "The selected saved-look version or snapshot digest cannot be verified.",
+        )
+    return saved
+
+
+def _safe_profile_identifier(value: Any) -> str | None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 80
+        or value != value.strip()
+        or not resource_selection._is_safe_public_string(value)
+        or any(not (char.isalnum() or char in "._-") for char in value)
+    ):
+        return None
+    return value
+
+
+def _profile_error_current(
+    diagnostics: list[dict] | None,
+    saved: dict | None,
+) -> dict[str, Any]:
+    """Project readiness diagnostics to safe identifiers and enum values."""
+    diagnostic_codes = {
+        "baseline_missing", "baseline_progression_conflict",
+        "coverage_provenance_unaccepted", "coverage_state_missing",
+        "coverage_unknown", "inventory_incomplete", "inventory_unconfirmed",
+        "inventory_provenance_unaccepted", "appearance_progression_conflict",
+        "appearance_provenance_unaccepted", "profile_provenance_unaccepted",
+    }
+    allowed_fields = {
+        "appearance_segments", "authored_provenance", "baseline_coverage",
+        "garment_coverage", "inventory_complete",
+    }
+    regions = {"chest", "hips", "legs", "feet"}
+    stages = (
+        saved_looks._automation_profile_coverage_stage_states(saved)
+        if saved is not None else []
+    )
+    garments = {
+        garment["key"]
+        for garment in (
+            [] if saved is None or saved["outfit"] is None
+            else saved["outfit"]["garments"]
+        )
+    }
+    projected: list[dict[str, Any]] = []
+    for diagnostic in diagnostics or []:
+        if not isinstance(diagnostic, dict):
+            continue
+        code = diagnostic.get("code")
+        if code not in diagnostic_codes:
+            continue
+        item: dict[str, Any] = {"code": code}
+        field = diagnostic.get("field")
+        if field in allowed_fields:
+            item["field"] = field
+        elif code.startswith("baseline_"):
+            item["field"] = "baseline_coverage"
+        elif code.startswith("inventory_"):
+            item["field"] = "inventory_complete"
+        elif code.startswith("appearance_"):
+            item["field"] = "appearance_segments"
+        elif code.startswith("coverage_"):
+            item["field"] = (
+                "garment_coverage"
+                if diagnostic.get("garment_key") in garments
+                else "baseline_coverage"
+            )
+        elif code == "profile_provenance_unaccepted":
+            item["field"] = "authored_provenance"
+
+        region = diagnostic.get("region")
+        if region in regions:
+            item["region"] = region
+        state = diagnostic.get("state")
+        if state in {"worn", "aside"}:
+            item["state"] = state
+
+        garment_key = diagnostic.get("garment_key")
+        if garment_key in garments:
+            safe_key = _safe_profile_identifier(garment_key)
+            if safe_key is not None:
+                item["garment_key"] = safe_key
+                if state in {"worn", "aside"}:
+                    indices = [
+                        index for index, stage in enumerate(stages)
+                        if stage.get(garment_key) == state
+                    ]
+                elif code == "appearance_progression_conflict":
+                    indices = [
+                        index for index, stage in enumerate(stages)
+                        if stage.get(garment_key) != "worn"
+                    ]
+                else:
+                    indices = []
+                if indices:
+                    item["stage_indices"] = indices
+
+        segment_id = _safe_profile_identifier(diagnostic.get("segment_id"))
+        if segment_id is not None:
+            item["segment_id"] = segment_id
+        segment_ids = diagnostic.get("appearance_segment_ids")
+        if isinstance(segment_ids, list):
+            safe_ids = [
+                identifier for value in segment_ids
+                if (identifier := _safe_profile_identifier(value)) is not None
+            ]
+            if safe_ids:
+                item["segment_ids"] = safe_ids
+
+        if item.get("field") == "baseline_coverage" and stages:
+            if code == "baseline_progression_conflict":
+                item["stage_indices"] = [len(stages) - 1]
+            elif code == "baseline_missing":
+                item["stage_indices"] = list(range(len(stages)))
+        projected.append(item)
+
+    if not projected:
+        projected = [{"code": "automation_profile_not_ready"}]
+    return {
+        "remedy": "update_automation_profile_in_looks",
+        "manual_available": True,
+        "affected": projected,
+    }
+
+
+def _profile_not_ready(
+    diagnostics: list[dict] | None = None,
+    *,
+    saved: dict | None = None,
+) -> GuidedSessionError:
+    codes = {item.get("code") for item in diagnostics or []}
+    if codes & {"coverage_unknown", "coverage_state_missing", "baseline_missing"}:
+        code = "coverage_unknown"
+        message = "The selected automation profile has unknown or missing coverage facts."
+    elif "inventory_unconfirmed" in codes:
+        code = "inventory_unconfirmed"
+        message = "Confirm that the saved-look inventory is complete before using Full Auto."
+    elif "appearance_progression_conflict" in codes:
+        code = "appearance_progression_conflict"
+        message = "Permanent appearance text conflicts with a wardrobe stage."
+    elif "baseline_progression_conflict" in codes:
+        code = "baseline_progression_conflict"
+        message = "Baseline coverage conflicts with the selected wardrobe progression."
+    else:
+        code = "automation_profile_not_ready"
+        message = "The exact automation profile is not ready for Full Auto."
+    return GuidedSessionError(
+        422, code, message,
+        current=_profile_error_current(diagnostics, saved),
+    )
+
+
+def _insufficient_stage_count(required_count: int, available_count: int) -> GuidedSessionError:
+    return GuidedSessionError(
+        422,
+        "insufficient_stage_count",
+        f"Full Auto requires at least {required_count} takes to cover every saved-look stage; increase the count or continue manually.",
+        current={
+            "required_count": required_count,
+            "available_count": available_count,
+            "manual_available": True,
+            "remedy": "increase_photo_count_or_use_manual_flow",
+        },
+    )
+
+
+def _profile_application(
+    saved: dict,
+    full_auto: dict[str, Any],
+) -> tuple[dict, dict]:
+    try:
+        application = saved_looks.get_reviewed_appearance_projection(
+            saved["key"], saved["version"], full_auto["profile_revision"],
+            saved["content_digest"], full_auto["profile_digest"],
+        )
+    except saved_looks.SavedLookError as exc:
+        if exc.code == "automation_profile_stale":
+            raise GuidedSessionError(
+                409, "automation_profile_changed",
+                "The selected automation-profile revision or digest cannot be verified.",
+            ) from exc
+        if exc.code == "look_not_found":
+            raise GuidedSessionError(
+                409, "saved_look_changed",
+                "The selected saved-look version can no longer be verified.",
+            ) from exc
+        raise _profile_not_ready(saved=saved) from exc
+    try:
+        readiness = saved_looks.get_automation_profile_readiness(
+            saved["key"], saved["version"], saved["content_digest"],
+            full_auto["profile_revision"], full_auto["profile_digest"],
+        )
+    except saved_looks.SavedLookError as exc:
+        if exc.code == "automation_profile_stale":
+            raise GuidedSessionError(
+                409, "automation_profile_changed",
+                "The selected automation-profile revision or digest cannot be verified.",
+            ) from exc
+        raise _profile_not_ready(saved=saved) from exc
+    if readiness["profile_ready"] is not True:
+        raise _profile_not_ready(readiness.get("diagnostics"), saved=saved)
+    return application, readiness
+
+
+def _provider_identity(config: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
+    raw_url = config.get("llm_url", "")
+    raw_model = config.get("llm_model", "")
+    url = raw_url if isinstance(raw_url, str) else ""
+    model = raw_model if isinstance(raw_model, str) else ""
+    try:
+        parsed = urlsplit(url)
+        endpoint = {
+            "scheme": parsed.scheme.lower(),
+            "host": (parsed.hostname or "").lower(),
+            "port": parsed.port,
+            "path": parsed.path,
+        }
+    except ValueError:
+        endpoint = {"configured": bool(url)}
+    endpoint_identity = resource_store.canonical_digest(endpoint)
+    model_identity = resource_store.canonical_digest({"model": model})
+    safe_model = (
+        model if model and len(model) <= 120
+        and all(char.isalnum() or char in "._:-" for char in model)
+        else "configured" if model else "unconfigured"
+    )
+    public = {
+        "model": safe_model,
+        "endpoint_identity": endpoint_identity,
+    }
+    if safe_model == "configured":
+        public["model_identity"] = model_identity
+    internal = {
+        "endpoint_identity": endpoint_identity,
+        "model": model,
+    }
+    return public, internal
+
+
+def _validate_full_auto_canvas(
+    body: dict[str, Any],
+    settings: dict[str, Any],
+    graph: dict,
+    node_map: dict,
+) -> dict[str, int]:
+    explicit = "width" in body and "height" in body
+    dimensions = {}
+    for field in ("width", "height"):
+        value = settings.get(field)
+        if (
+            type(value) is not int
+            or not _CANVAS_STEP <= value <= _SQLITE_INTEGER_MAX
+            or value % _CANVAS_STEP
+        ):
+            raise GuidedSessionError(
+                422, "workflow_compatibility_invalid",
+                "The effective canvas must use positive dimensions in multiples of 8.",
+            )
+        path = node_map.get(field)
+        if path is None:
+            if explicit:
+                raise GuidedSessionError(
+                    422, "workflow_compatibility_invalid",
+                    "The selected workflow cannot apply the explicit canvas dimensions.",
+                )
+            dimensions[field] = value
+            continue
+        parts = path.split(".")
+        if len(parts) != 3 or parts[1] != "inputs" or parts[2] != field:
+            raise GuidedSessionError(
+                422, "workflow_compatibility_invalid",
+                "The selected workflow has an invalid canvas mapping.",
+            )
+        inputs = (graph.get(parts[0]) or {}).get("inputs")
+        if not isinstance(inputs, dict) or parts[2] not in inputs:
+            raise GuidedSessionError(
+                422, "workflow_compatibility_invalid",
+                "The selected workflow has an invalid canvas mapping.",
+            )
+        current = inputs[parts[2]]
+        if isinstance(current, list):
+            raise GuidedSessionError(
+                422, "workflow_compatibility_invalid",
+                "Connected workflow inputs cannot be replaced with canvas dimensions.",
+            )
+        if not (
+            type(current) is int
+            or (type(current) is float and math.isfinite(current))
+        ):
+            raise GuidedSessionError(
+                422, "workflow_compatibility_invalid",
+                "The selected workflow does not expose usable canvas dimensions.",
+            )
+        dimensions[field] = value
+    return dimensions
+
+
+def _full_auto_stage_assignments(plan: dict, saved: dict) -> tuple[list[int], list[dict]]:
+    stage_states = saved_looks._automation_profile_coverage_stage_states(saved)
+    if len(plan["takes"]) < len(stage_states):
+        raise _insufficient_stage_count(len(stage_states), len(plan["takes"]))
+    progression = plan["authoring"]["wardrobe_progression"]
+    selected = progression["stage_indices"] if progression is not None else [0]
+    take_count = len(plan["takes"])
+    assignments = [
+        0 if len(selected) == 1 else (index * (len(selected) - 1)) // (take_count - 1)
+        for index in range(take_count)
+    ]
+    return assignments, stage_states
+
+
+def _compile_full_auto_coverage(
+    plan: dict,
+    saved: dict,
+    application: dict,
+) -> tuple[dict, dict[str, dict], list[dict]]:
+    assignments, _stage_states = _full_auto_stage_assignments(plan, saved)
+    profile = application["profile"]
+    stage_text = {}
+    for stage_index in set(assignments):
+        try:
+            stage_text[stage_index] = saved_looks.compile_automation_profile_coverage(
+                saved["key"], saved["version"], saved["content_digest"],
+                profile["profile_revision"], profile["profile_digest"], stage_index,
+            )
+        except saved_looks.SavedLookError as exc:
+            if exc.code == "automation_profile_stale":
+                raise GuidedSessionError(
+                    409, "automation_profile_changed",
+                    "The selected automation-profile revision or digest cannot be verified.",
+                ) from exc
+            raise _profile_not_ready(saved=saved) from exc
+    effective = session_plan.resolve_effective_wardrobes(plan)
+    evidence: dict[str, dict] = {}
+    grouped: dict[int, list[str]] = {index: [] for index in set(assignments)}
+    for take, stage_index in zip(plan["takes"], assignments):
+        take_id = take["take_id"]
+        text = stage_text[stage_index]
+        take["wardrobe_coverage"] = text
+        evidence[take_id] = session_plan._profile_coverage_record(
+            application, stage_index, effective[take_id], text,
+        )
+        grouped[stage_index].append(take_id)
+    plan = session_plan.validate_draft(plan)
+    stages = [
+        {
+            "stage_index": stage_index,
+            "first_take_id": take_ids[0],
+            "last_take_id": take_ids[-1],
+            "take_count": len(take_ids),
+            "coverage": stage_text[stage_index],
+        }
+        for stage_index, take_ids in sorted(grouped.items())
+    ]
+    return plan, evidence, stages
+
+
+def _scope_request_body(body: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(body)
+    authorization = dict(body["full_auto"])
+    authorization.pop("scope_digest", None)
+    authorization.pop("scope_issued_at", None)
+    normalized["full_auto"] = authorization
+    return normalized
+
+
+def _resolve_request(
+    body: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+    scope_issued_at: str | None = None,
+) -> dict[str, Any]:
+    full_auto = body.get("full_auto")
+    is_full_auto = full_auto is not None
+    provider, provider_input = _provider_identity(config or {})
+    model = db.one("SELECT * FROM model WHERE id = ?", body["character_id"])
+    if model is None:
+        raise GuidedSessionError(422, "character_not_found", "Choose an existing character.")
+
+    try:
+        room_library, room_revision = _validate_ready_room(body["scene_anchor"])
+        settings = workflow_binding.effective_session_settings(model)
+        if "width" in body:
+            settings["width"] = body["width"]
+            settings["height"] = body["height"]
+        if is_full_auto:
+            requested_workflow_id = body["workflow_id"] or model["workflow_id"]
+            requested_workflow = (
+                db.one("SELECT kind FROM workflow WHERE id = ?", requested_workflow_id)
+                if requested_workflow_id is not None else None
+            )
+            if requested_workflow is not None and requested_workflow["kind"] != "t2i":
+                raise GuidedSessionError(
+                    422, "full_auto_workflow_unsupported",
+                    "Full Auto requires a text-to-image (t2i) workflow; choose a compatible workflow or continue manually.",
+                )
+        binding = workflow_binding.resolve_effective_workflow(
+            body["character_id"], body["workflow_id"], plan=None, settings=settings,
+        )
+    except workflow_binding.WorkflowRequired as exc:
+        if is_full_auto:
+            raise _safe_full_auto_error(exc) from exc
+        raise GuidedSessionError(422, exc.code, exc.message) from exc
+    except workflow_binding.WorkflowCompatibilityError as exc:
+        if is_full_auto:
+            raise _safe_full_auto_error(exc) from exc
+        raise GuidedSessionError(422, exc.code, exc.message) from exc
+
+    workflow_row = db.one("SELECT * FROM workflow WHERE id = ?", binding["workflow_id"])
+    if workflow_row is None:
+        raise GuidedSessionError(
+            422, "workflow_compatibility_invalid", "The selected workflow is unavailable.",
+        )
+    if is_full_auto and workflow_row["kind"] != "t2i":
+        raise GuidedSessionError(
+            422, "full_auto_workflow_unsupported",
+            "Full Auto requires a text-to-image (t2i) workflow; choose a compatible workflow or continue manually.",
+        )
+
+    try:
+        graph = workflow_binding._parse_required_graph(workflow_row["graph"])
+        node_map = workflow_binding._parse_optional_node_map(workflow_row["node_map"])
+    except workflow_binding.WorkflowCompatibilityError as exc:
+        if is_full_auto:
+            raise GuidedSessionError(
+                422, "workflow_compatibility_invalid",
+                "The selected workflow is not compatible with Full Auto.",
+            ) from exc
+        raise GuidedSessionError(422, exc.code, exc.message) from exc
+
+    effective_body = dict(body)
+    if is_full_auto:
+        settings.update(_validate_full_auto_canvas(body, settings, graph, node_map))
+        policy = {field: dict(value) for field, value in body["variation_policy"].items()}
+        if full_auto["framing_intent"] == "full_body":
+            fixed = policy["framing"]
+            if fixed["mode"] == "fixed" and fixed["value"] != _FULL_BODY_FRAMING:
+                raise GuidedSessionError(
+                    422, "framing_conflict",
+                    "Full-body intent conflicts with the selected fixed framing; clear or change that choice.",
+                    current={
+                        "field": "variation_policy.framing",
+                        "framing_intent": "full_body",
+                        "remedy": "clear_fixed_framing_or_choose_compatible_intent",
+                    },
+                )
+            policy["framing"] = {
+                "mode": "fixed", "value": _FULL_BODY_FRAMING, "value_origin": "user",
+            }
+        effective_body["variation_policy"] = policy
+
+    initial_plan = _initial_plan(effective_body, binding)
+    plan = initial_plan
+    application = None
+    coverage_evidence = None
+    stages = []
+    saved = None
+    if body.get("saved_look") is not None:
+        saved = _selected_saved_look(body["saved_look"])
+        if is_full_auto:
+            application, _readiness = _profile_application(saved, full_auto)
+        decisions = {"look": "replace"}
+        if saved["outfit"] is not None:
+            decisions["initial_wardrobe"] = "replace"
+        plan = session_plan.build_saved_look_application_candidate(
+            plan, saved, decisions, profile_application=application,
+        )
+    elif is_full_auto:
+        raise GuidedSessionError(
+            422, "automation_profile_not_ready",
+            "Full Auto requires an exact saved-look version.",
+        )
+
+    if is_full_auto:
+        stage_count = len(saved_looks._automation_profile_coverage_stage_states(saved))
+        if body["photo_count"] < stage_count:
+            raise _insufficient_stage_count(stage_count, body["photo_count"])
+        try:
+            plan = session_plan.build_full_auto_wardrobe_progression_candidate(plan)
+            session_plan._validate_profile_progression(application, plan)
+        except session_plan.PlanValidationError as exc:
+            if "requires at least" in str(exc):
+                raise _insufficient_stage_count(
+                    len(saved_looks._automation_profile_coverage_stage_states(saved)),
+                    body["photo_count"],
+                ) from exc
+            raise _profile_not_ready(saved=saved) from exc
+        except session_plan.PlanOwnershipConflict as exc:
+            raise GuidedSessionError(
+                422, "appearance_progression_conflict",
+                "Permanent appearance text conflicts with a wardrobe stage.",
+                current=_profile_error_current(
+                    [{"code": "appearance_progression_conflict"}], saved,
+                ),
+            ) from exc
+        plan, coverage_evidence, stages = _compile_full_auto_coverage(plan, saved, application)
+
+    conflicts = session_plan.detect_resource_constant_conflicts(plan)
+    if is_full_auto:
+        plan["conflicts"] = conflicts
+    effective_settings_digest = resource_store.canonical_digest(settings)
+    settings["composition_mode"] = session_plan.MODE_RESOURCE_V1
+    result = {
+        "model": model,
+        "room_library": room_library,
+        "room_revision": room_revision,
+        "settings": settings,
+        "binding": binding,
+        "workflow_row": workflow_row,
+        "initial_plan": initial_plan,
+        "plan": plan,
+        "conflicts": conflicts,
+        "profile_application": application,
+        "coverage_evidence": coverage_evidence,
+        "stages": stages,
+        "provider": provider,
+        "provider_input": provider_input,
+    }
+    if not is_full_auto:
+        return result
+
+    if scope_issued_at is None:
+        raise ValueError("Full Auto scope_issued_at is required to resolve a quote")
+    issued = _validate_utc_timestamp(scope_issued_at)
+    expires = (datetime.fromisoformat(issued) + _FULL_AUTO_AUTHORIZATION_LIFETIME).isoformat(timespec="seconds")
+    profile = application["profile"]
+    safe_generation_settings: dict[str, Any] = {}
+    steps = settings.get("steps")
+    if type(steps) is int and 1 <= steps <= _SQLITE_INTEGER_MAX:
+        safe_generation_settings["steps"] = steps
+    cfg = settings.get("cfg")
+    if type(cfg) in (int, float) and math.isfinite(cfg):
+        safe_generation_settings["cfg"] = cfg
+    for field in ("sampler", "scheduler"):
+        value = settings.get(field)
+        if isinstance(value, str) and len(value) <= 80 and all(
+            char.isalnum() or char in " ._-+" for char in value
+        ):
+            safe_generation_settings[field] = value
+    raw_model_name = model.get("name")
+    safe_model_name = (
+        raw_model_name
+        if isinstance(raw_model_name, str)
+        and len(raw_model_name) <= 120
+        and resource_selection._is_safe_public_string(raw_model_name)
+        and all(char.isalnum() or char in " ._-" for char in raw_model_name)
+        else "Selected model"
+    )
+    summary = {
+        "saved_look": {
+            "look_key": saved["key"],
+            "version": saved["version"],
+            "content_digest": saved["content_digest"],
+        },
+        "automation_profile": {
+            "revision": profile["profile_revision"],
+            "digest": profile["profile_digest"],
+            "ready": True,
+        },
+        "room": {
+            "library_key": body["scene_anchor"]["library_key"],
+            "source_id": body["scene_anchor"]["source_id"],
+            "content_digest": body["scene_anchor"]["content_digest"],
+            "translation_digest": resource_store.canonical_digest(
+                room_revision.get("translation"),
+            ),
+        },
+        "character_id": body["character_id"],
+        "model_binding": {
+            "model_id": model["id"],
+            "name": safe_model_name,
+            "trigger_digest": resource_store.canonical_digest(model["trigger"]),
+            "base_positive_digest": resource_store.canonical_digest(model["base_positive"]),
+            "base_negative_digest": resource_store.canonical_digest(model["base_negative"]),
+            "lora_selection_digest": resource_store.canonical_digest({
+                "name": model["lora_name"],
+                "strength": model["lora_strength"],
+            }),
+            "effective_settings_digest": effective_settings_digest,
+        },
+        "workflow": {
+            "workflow_id": binding["workflow_id"],
+            "kind": binding["kind"],
+            "graph_digest": binding["graph_digest"],
+            "node_map_digest": binding["node_map_digest"],
+        },
+        "provider": provider,
+        "generation_settings": safe_generation_settings,
+        "canvas": {
+            "width": settings["width"],
+            "height": settings["height"],
+        },
+        "framing_intent": full_auto["framing_intent"],
+        "effective_framing": effective_body["variation_policy"]["framing"],
+        "variation_policy": effective_body["variation_policy"],
+        "photo_count": body["photo_count"],
+        "progression": {
+            "policy": full_auto["progression"],
+            "stages": stages,
+        },
+        "coverage_compiler_version": saved_looks.AUTOMATION_COVERAGE_COMPILER_VERSION,
+        "policy_version": _FULL_AUTO_POLICY_VERSION,
+        "limits": {
+            "assistant_calls_per_take": _FULL_AUTO_ASSISTANT_CALLS_PER_TAKE,
+            "assistant_calls_total": body["photo_count"] * _FULL_AUTO_ASSISTANT_CALLS_PER_TAKE,
+            "image_attempts_per_take": _FULL_AUTO_IMAGE_ATTEMPTS_PER_TAKE,
+            "image_attempts_total": body["photo_count"] * _FULL_AUTO_IMAGE_ATTEMPTS_PER_TAKE,
+        },
+        "scope_issued_at": issued,
+        "authorization_expires_at": expires,
+    }
+    dependencies_digest = resource_store.canonical_digest({
+        "model": model,
+        "effective_settings": settings,
+        "room_library": room_library,
+        "room_revision": room_revision,
+        "workflow": workflow_row,
+        "workflow_binding": binding,
+        "saved_look": saved,
+        "profile_application": application,
+        "provider": provider_input,
+    })
+    request_digest = resource_store.canonical_digest(_scope_request_body(body))
+    summary["request_digest"] = request_digest
+    summary["dependencies_digest"] = dependencies_digest
+    scope_digest = resource_store.canonical_digest(summary)
+    result.update({
+        "summary": summary,
+        "scope_digest": scope_digest,
+        "scope_issued_at": issued,
+        "expires_at": expires,
+        "dependencies_digest": dependencies_digest,
+        "request_digest": request_digest,
+    })
+    return result
+
+
+def preflight_full_auto(body: dict[str, Any], *, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolve a read-only Full Auto quote without creating session state."""
+    if not resource_planning.is_enabled():
+        raise GuidedSessionError(
+            503, "resource_planning_disabled",
+            "Guided session creation is disabled by configuration.",
+        )
+    issued = datetime.now(timezone.utc).replace(microsecond=0).isoformat(timespec="seconds")
+    resolution = _resolve_request(body, config=config, scope_issued_at=issued)
+    return {
+        "summary": resolution["summary"],
+        "scope_digest": resolution["scope_digest"],
+        "scope_issued_at": issued,
+    }
+
+
+def _refreshed_scope(body: dict[str, Any], config: dict[str, Any], issued: str) -> dict[str, Any]:
+    try:
+        resolution = _resolve_request(body, config=config, scope_issued_at=issued)
+    except GuidedSessionError as exc:
+        return {"eligibility": {"code": exc.code}}
+    return {
+        "summary": resolution["summary"],
+        "scope_digest": resolution["scope_digest"],
+        "scope_issued_at": issued,
+    }
+
+
+def create_or_replay(
+    request: NormalizedGuidedRequest,
+    *,
+    config: dict[str, Any] | None = None,
+) -> tuple[str, bool]:
     """Persist a new guided session or return the stored response for a retry."""
     if not resource_planning.is_enabled():
         raise GuidedSessionError(
@@ -274,29 +1162,57 @@ def create_or_replay(request: NormalizedGuidedRequest) -> tuple[str, bool]:
             return existing["response_json"], False
 
         body = request.body
-        model = db.one("SELECT * FROM model WHERE id = ?", body["character_id"])
-        if model is None:
-            raise GuidedSessionError(422, "character_not_found", "Choose an existing character.")
+        full_auto = body.get("full_auto")
+        active_config = config or {}
+        resolution = None
+        if full_auto is not None:
+            now_utc = datetime.now(timezone.utc).replace(microsecond=0)
+            issued_text = full_auto["scope_issued_at"]
+            issued = datetime.fromisoformat(issued_text)
+            age = now_utc - issued
+            if age < timedelta(0) or age > _FULL_AUTO_SCOPE_MAX_AGE:
+                refreshed = _refreshed_scope(
+                    body,
+                    active_config,
+                    now_utc.isoformat(timespec="seconds"),
+                )
+                raise GuidedSessionError(
+                    409, "authorization_scope_changed",
+                    "The Full Auto quote expired or was issued in the future; review the refreshed summary and authorize again.",
+                    current=refreshed,
+                )
+            try:
+                resolution = _resolve_request(
+                    body, config=active_config, scope_issued_at=issued_text,
+                )
+            except GuidedSessionError as exc:
+                raise GuidedSessionError(
+                    409, "authorization_scope_changed",
+                    "Full Auto eligibility or an authorized input changed; review a refreshed summary and authorize again.",
+                    current=_refreshed_scope(
+                        body,
+                        active_config,
+                        now_utc.isoformat(timespec="seconds"),
+                    ),
+                ) from exc
+            if not hmac.compare_digest(full_auto["scope_digest"], resolution["scope_digest"]):
+                raise GuidedSessionError(
+                    409, "authorization_scope_changed",
+                    "An authorized Full Auto input changed; review the refreshed summary and authorize again.",
+                    current={
+                        "summary": resolution["summary"],
+                        "scope_digest": resolution["scope_digest"],
+                        "scope_issued_at": issued_text,
+                    },
+                )
+        else:
+            resolution = _resolve_request(body, config=active_config)
 
-        _validate_ready_room(body["scene_anchor"])
-        try:
-            settings = workflow_binding.effective_session_settings(model)
-            if "width" in body:
-                settings["width"] = body["width"]
-                settings["height"] = body["height"]
-            binding = workflow_binding.resolve_effective_workflow(
-                body["character_id"],
-                body["workflow_id"],
-                plan=None,
-                settings=settings,
-            )
-        except workflow_binding.WorkflowRequired as exc:
-            raise GuidedSessionError(422, exc.code, exc.message) from exc
-        except workflow_binding.WorkflowCompatibilityError as exc:
-            raise GuidedSessionError(422, exc.code, exc.message) from exc
-
-        plan = _initial_plan(body, binding)
-        plan["conflicts"] = session_plan.detect_resource_constant_conflicts(plan)
+        model = resolution["model"]
+        settings = resolution["settings"]
+        binding = resolution["binding"]
+        plan = resolution["plan"]
+        conflicts = resolution["conflicts"]
         settings["composition_mode"] = session_plan.MODE_RESOURCE_V1
         now = db.now()
         session_id = db.run(
@@ -309,18 +1225,50 @@ def create_or_replay(request: NormalizedGuidedRequest) -> tuple[str, bool]:
             json.dumps(settings, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
             now,
         )
-        plan_json = json.dumps(plan, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        db.run(
-            """INSERT INTO session_plan
-               (session_id, mode, plan_revision, plan_json, created_at, updated_at)
-               VALUES (?, ?, 1, ?, ?, ?)""",
-            session_id, session_plan.MODE_RESOURCE_V1, plan_json, now, now,
+        session_plan._persist_plan_revision(
+            session_id,
+            None,
+            resolution["initial_plan"],
+            plan,
+            conflicts,
+            carry_profile_evidence=False,
+            profile_application=resolution["profile_application"],
+            profile_coverage_evidence=resolution["coverage_evidence"],
         )
+        stored_plan_row = db.one(
+            "SELECT plan_json FROM session_plan WHERE session_id = ?", session_id,
+        )
+        stored_plan = json.loads(stored_plan_row["plan_json"])
+        response = {"session_id": session_id, "plan_revision": 1, "plan": stored_plan}
+        if full_auto is not None:
+            run_id = str(uuid.uuid4())
+            authorization = {
+                "authorization_version": full_auto["authorization_version"],
+                "generate_without_pauses": full_auto["generate_without_pauses"],
+                "profile_revision": full_auto["profile_revision"],
+                "profile_digest": full_auto["profile_digest"],
+                "progression": full_auto["progression"],
+                "framing_intent": full_auto["framing_intent"],
+                "scope_digest": resolution["scope_digest"],
+                "scope_issued_at": resolution["scope_issued_at"],
+                "authorization_expires_at": resolution["expires_at"],
+                "summary": resolution["summary"],
+            }
+            plan_digest = resource_store.canonical_digest(stored_plan)
+            db.run(
+                """INSERT INTO full_auto_run_receipt (
+                       run_id, session_id, authorization_json, scope_digest,
+                       dependencies_digest, plan_digest, scope_issued_at,
+                       authorization_expires_at, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                run_id, session_id,
+                json.dumps(authorization, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                resolution["scope_digest"], resolution["dependencies_digest"],
+                plan_digest, resolution["scope_issued_at"], resolution["expires_at"], now,
+            )
+            response["full_auto_run_id"] = run_id
         response_json = json.dumps(
-            {"session_id": session_id, "plan_revision": 1, "plan": plan},
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
+            response, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
         )
         db.run(
             """INSERT INTO guided_session_request

@@ -86,10 +86,13 @@ and the creative writer cannot replace it. Matching is literal: it can flag a
 negation or an object mention and miss a paraphrase, so it is not semantic or
 pixel verification. Exact profile read/create-revision and manual
 session-application APIs are documented in
-[Saved looks](docs/looks.md#automation-profile-api). There is no profile editor
-or Full Auto creation/execution flow yet. The existing manual saved-look
-workflow retains progression, review, submission, and Run controls;
-portable-v1 JSON excludes profiles.
+[Saved looks](docs/looks.md#automation-profile-api). Guided creation also has a
+backend API for selecting an exact saved-look snapshot and for read-only Full
+Auto preflight plus atomic initial authorization. There is no profile editor or
+Full Auto coordinator, unattended execution, status/cancel/resume controls, or
+selection/consent UI; the manual workflow retains progression, review,
+submission, and Run controls. Portable-v1 JSON excludes profiles. See the
+[guided creation API](docs/sessions.md#saved-look-and-full-auto-creation-api).
 
 ## Composing from the catalogue
 

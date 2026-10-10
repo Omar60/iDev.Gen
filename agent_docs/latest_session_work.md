@@ -1,58 +1,65 @@
 # Latest Session Work
 
-## Task 2.4 Accepted Closure
+## Task 3.1 Accepted Closure
 
-Internal Heavy deployment `full-auto-first-20261009` implements only Task 2.4
-of `automate-resource-session-full-auto`, from an initially clean tree. Main
-completed framework/OpenSpec intake, defined scope and acceptance, inspected
-the actual production diff and accepted the independently verified repair.
-Only Task 2.4 is newly marked complete; 8 of 41 tasks are complete.
+Internal Heavy deployment `full-auto-31-20261009` implements only Task 3.1
+of `automate-resource-session-full-auto`, from a clean tree. Main completed
+framework/OpenSpec intake and inspected decisive contracts and the real diff.
+Explorer and Tester identified overlap with Tasks 3.2-3.4; the user explicitly
+authorized the necessary preflight, consent and atomic-creation prerequisites
+within 3.1. Only 3.1 is newly checked; 9 of 41 tasks are complete.
 
 ## Delivered Contract
 
-The shared resource-preparation compositor and review gate consume an actually
-applied immutable profile and current materialized wardrobe evidence. Exact
-canonical worn/owned clauses in effective model trigger/base, resource,
-adaptation and creative sources cannot reintroduce incompatible garments.
-Corrected adaptations replace originals; canonical aside wording remains
-legal. Ambiguous canonical stage wording is checked against candidate states
-without claiming a unique stage or redistributing stable-ID progression.
+Guided requests accept strict exact saved-look and Full Auto objects. Omitted
+objects retain old normalized digest and response shapes; explicit null and
+coercions fail. Manual saved-look creation copies the exact immutable snapshot
+without profile application, progression, coverage or a Full Auto receipt.
+Snapshot identity never substitutes the portable export digest.
 
-Coverage remains fixed manual or derived context, placed once after wardrobe
-and before take clauses. Positive composition rejects repetition of the whole
-coverage block or an individual exact sentence. Applied-profile reference mode
-comes from the authoritative plan; reference-edit remains a bare instruction
-and guide retains session context. Profile-free legacy behavior and linked
-history remain protected; no schema, dependency or frontend change was needed.
+Read-only Full Auto preflight resolves the exact profile, stages, coverage,
+compatible t2i workflow and effective framing/canvas. Its safe summary binds
+request, model, translation, dependency and provider identities through values
+and digests. The scope digest hashes that canonical summary. Creation compares
+it inside the serialized allocation transaction, requires a non-future quote
+at most 300 seconds old, and preserves the original seven-day deadline.
+Identical committed replay returns stored bytes before quote/dependency checks.
+
+Successful Full Auto creation atomically stores the first populated plan,
+profile/coverage evidence, immutable initial full_auto_run_receipt and guided
+response. It does not dispatch assistants or generation. A pure saved-look
+candidate is shared with existing manual application; existing CAS/freeze
+contracts remain protected. Errors identify safe fields/states and remedies.
 
 ## Independent Evidence and Repairs
 
-Explorer mapped the bounded contract. Internal Executors implemented and
-repaired production; independent Testers owned `tests/test_task24_acceptance.py`.
-Initial probes exposed coverage-block repetition, aside worn assertions and
-ambiguous-stage bypass; Main also required profiled reference consistency.
-A later independent probe exposed single-sentence coverage repetition. Two
-repair cycles addressed these cases without weakening the independent tests.
-Two machine interruptions required worker recovery, not a scope change.
+Executor implement_31 owned production and ordinary repairs. Tester
+verify_scope_31 owned tests/test_task31_acceptance.py. Main required canonical
+summary hashing, explicit input bindings, the exact policy version, safe
+readiness remedies and rejection of explicitly null objects. Tester preserved
+binding/drift assertions while correcting raw-value display expectations and
+fixtures for canonical aside and same-second quote behavior.
 
-Final Tester `verify_24_resume2` ran Python 3.11.9 on the repaired tree:
+Final independent checks on production and public documentation:
 
-- `python -m pytest`: 2,932 passed, one skipped, three warnings, exit zero.
-- Independent acceptance: nine passed; privacy/control checks: 46 passed.
-- Strict OpenSpec validation and `git diff --check`: passed.
+- 57 independent acceptance tests passed.
+- python -m pytest on Python 3.11.9: 2,996 passed, one skipped, three warnings.
+- Strict OpenSpec validation and git diff --check passed.
 
-The skip is symlink replacement: this environment raises `OSError` when
-creating symlinks. Warnings concern Pydantic and deprecated HTTPX behavior.
-Final raw logs remain in temporary storage outside the repository. Earlier
-failed full runs are not acceptance evidence. Frontend tests/build were not
-required or run because frontend is unchanged.
+Raw logs are outside the repository in temporary storage. Warnings concern
+Pydantic and HTTPX deprecations. Frontend is unchanged, so its tests/build were
+not required or run. Compact privacy/control and OpenSpec/diff checks cover
+subsequent main-owned closure documentation and the single task checkbox.
 
 ## Closure and Limits
 
-Main marks only Task 2.4 and creates the scoped acceptance commit. Archivist
-owns README and matching look/session documentation, compact closing checks,
-read-only Git handoff and the exact Deployment Token Report after sealing.
-Task 3.1 remains unstarted. Coordinated Full Auto creation/execution is later
-work. Exact canonical matching can flag negations or object mentions and miss
-paraphrases; it is not exhaustive semantic detection or pixel certification.
-No real generation, archive or push occurred.
+Main accepts 3.1 and owns its scoped acceptance commit. Archivist completed
+README and matching session/look documentation and owns the sealed read-only
+Git handoff and exact Deployment Token Report. No unrelated changes were
+present at intake. Tasks 3.2-3.4 retain their own acceptance and remain unchecked.
+Task 3.2 is the continuation point, not started in this deployment.
+
+The initial receipt has no runtime state, worker dispatch or coordinator.
+Unattended preparation/execution, status/cancel/resume and Full Auto UI remain
+unimplemented. Prompt instructions do not certify visual fidelity. No real
+generation, external handoff, archive or push occurred.

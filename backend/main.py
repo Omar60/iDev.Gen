@@ -194,6 +194,7 @@ def _is_stable_envelope_path(path: str) -> bool:
         path.startswith(_STABLE_ENVELOPE_PATH_PREFIX)
         or path.startswith("/api/looks")
         or path == "/api/sessions/guided"
+        or path == "/api/sessions/guided/full-auto/preflight"
         or _is_profile_application_path(path)
         or "/plan/authoring/operations" in path
     )
@@ -3956,14 +3957,37 @@ async def create_guided_session(request: Request):
 
     try:
         normalized = guided_sessions.normalize_request(payload)
-        response_json, was_new = guided_sessions.create_or_replay(normalized)
+        response_json, was_new = guided_sessions.create_or_replay(
+            normalized, config=CONFIG,
+        )
     except guided_sessions.GuidedSessionError as exc:
-        return _stable_error(exc.status_code, exc.code, exc.message)
+        return _stable_error(exc.status_code, exc.code, exc.message, current=exc.current)
     return Response(
         content=response_json,
         status_code=201 if was_new else 200,
         media_type="application/json",
     )
+
+
+@app.post("/api/sessions/guided/full-auto/preflight")
+async def preflight_guided_full_auto(request: Request):
+    """Resolve a safe, read-only Full Auto authorization summary."""
+    if not is_resource_planning_enabled():
+        return _stable_error(
+            503,
+            "resource_planning_disabled",
+            "Guided session creation is disabled by configuration.",
+        )
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _stable_error(422, "invalid_json", "Request body must be valid JSON.")
+    try:
+        normalized = guided_sessions.normalize_preflight_request(payload)
+        result = guided_sessions.preflight_full_auto(normalized, config=CONFIG)
+    except guided_sessions.GuidedSessionError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message, current=exc.current)
+    return JSONResponse(content=result, status_code=200)
 
 
 def _authoring_operation_error_response(exc: authoring_operations.AuthoringOperationError) -> JSONResponse:

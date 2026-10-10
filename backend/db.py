@@ -778,6 +778,20 @@ CREATE TABLE IF NOT EXISTS guided_session_request (
     created_at     TEXT NOT NULL
 );
 
+-- Immutable initial authorization intent for a Full Auto session. Runtime
+-- ownership, phase changes and dispatch state belong to the later coordinator.
+CREATE TABLE IF NOT EXISTS full_auto_run_receipt (
+    run_id                  TEXT PRIMARY KEY NOT NULL CHECK (length(run_id) > 0),
+    session_id              INTEGER NOT NULL UNIQUE REFERENCES session(id) ON DELETE CASCADE,
+    authorization_json      TEXT NOT NULL,
+    scope_digest            TEXT NOT NULL CHECK (length(scope_digest) = 64),
+    dependencies_digest     TEXT NOT NULL CHECK (length(dependencies_digest) = 64),
+    plan_digest             TEXT NOT NULL CHECK (length(plan_digest) = 64),
+    scope_issued_at         TEXT NOT NULL,
+    authorization_expires_at TEXT NOT NULL,
+    created_at              TEXT NOT NULL
+);
+
 -- Authoritative review approval for resource-v1 plan revisions (task 5.4).
 -- One row per session; creating or saving a new plan revision invalidates
 -- the approval, and submission routes reject unapproved revisions with

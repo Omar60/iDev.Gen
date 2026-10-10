@@ -2,30 +2,30 @@
 
 ## Goal
 
-Implement only Task 2.4 of `automate-resource-session-full-auto` through the
+Implement only Task 3.1 of `automate-resource-session-full-auto` through the
 internal Heavy route, preserving manual and legacy contracts.
 
 ## Current Position
 
-Main independently accepts Task 2.4 in deployment `full-auto-first-20261009`;
-8 of 41 tasks are complete. Applied profiles now gate effective positive
-sources against evidenced worn/aside/removed state. Coverage and each exact
-coverage sentence cannot be repeated by creative values. Reference-edit
-context omission and guide composition remain distinct; profile-free behavior
-and linked history remain protected.
+Deployment `full-auto-31-20261009` started from a clean tree; 8 of 41 tasks
+were complete. Main accepts Task 3.1 after independent verification; 9 of 41
+tasks are now complete. The user explicitly authorized its
+necessary preflight, consent-binding and atomic initial-creation prerequisites
+after independent scope inspection identified overlap with Tasks 3.2-3.4.
 
-Tester verified the final repaired tree with Python 3.11.9: 2,932 passed,
-one symlink-related skip and three warnings. Nine independent acceptance
-probes and 46 privacy/control tests passed. Strict OpenSpec validation and
-`git diff --check` passed. Frontend is unchanged.
+Executor implemented and repaired the contract. Tester independently passed
+57 acceptance tests and the full Python 3.11.9 suite: 2,996 passed, one skipped
+and three warnings. Strict OpenSpec validation and `git diff --check` passed.
+Frontend is unchanged. Main inspected the actual diff and verification logs.
 
 ## Closure and Continuation
 
-Only Task 2.4 and its verified closure documentation belong to the acceptance
-commit. Main owns the commit; Archivist completes public documentation,
-compact closing checks, read-only Git handoff and the Deployment Token Report.
-Task 3.1 remains pending and unstarted. Full Auto coordinated creation and
-execution are not yet available.
+Only Task 3.1 and its verified closure documentation belong to the acceptance
+commit. Main owns the commit; Archivist completed README and matching session
+and look documentation, and owns the sealed closing Git handoff and token report.
+Tasks 3.2-3.4 retain their own acceptance and remain unchecked. Coordinator,
+runtime recovery and execution are outside this deployment.
 
-Canonical matching can flag negations or object mentions and miss paraphrases.
-No real generation, visual certification, OpenSpec archive or push occurred.
+Full Auto creation persists an initial immutable receipt and dispatches no
+assistant or GPU work. No real generation, visual certification, OpenSpec
+archive or push occurred.

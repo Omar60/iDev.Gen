@@ -47,6 +47,21 @@ def _body(seeded, anchor, **overrides):
     return payload
 
 
+def _saved_look(
+    client, *, name: str = "guided-saved-look", aside: str = "",
+) -> dict:
+    response = client.post("/api/looks", json={
+        "name": name,
+        "appearance": "A soft, natural studio appearance.",
+        "garments": [{
+            "wording": "A charcoal jacket.",
+            "aside": aside,
+        }],
+    })
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def _counts() -> tuple[int, int, int]:
     return tuple(
         int(db.one(f"SELECT COUNT(*) AS n FROM {table}")["n"])
@@ -134,6 +149,48 @@ def test_guided_creation_returns_closed_plan_and_persists_one_of_each(client, se
     assert stored_request["request_id"] == payload["request_id"]
     assert stored_request["response_json"].encode("utf-8") == response.content
     assert _counts() == tuple(value + 1 for value in before)
+
+
+@pytest.mark.parametrize("field", ["saved_look", "full_auto"])
+def test_guided_creation_rejects_explicit_null_optional_contract_objects(
+    client, seeded, field,
+):
+    payload = _body(seeded, _room_anchor())
+    payload[field] = None
+    before = _counts()
+
+    response = client.post("/api/sessions/guided", json=payload)
+
+    _error(response, 422, "invalid_request")
+    assert _counts() == before
+
+
+def test_profile_readiness_error_identifies_safe_aside_region_and_stage(client):
+    saved = _saved_look(client, aside="The charcoal jacket rests on a chair.")
+    garment_key = saved["outfit"]["garments"][0]["key"]
+
+    current = guided_sessions._profile_error_current(
+        [{
+            "code": "coverage_unknown",
+            "garment_key": garment_key,
+            "state": "aside",
+            "region": "feet",
+        }],
+        saved,
+    )
+
+    assert current == {
+        "remedy": "update_automation_profile_in_looks",
+        "manual_available": True,
+        "affected": [{
+            "code": "coverage_unknown",
+            "field": "garment_coverage",
+            "region": "feet",
+            "state": "aside",
+            "garment_key": garment_key,
+            "stage_indices": [1],
+        }],
+    }
 
 
 def test_guided_creation_persists_canonical_room_conflicts(client, seeded):
@@ -236,6 +293,7 @@ def test_guided_canvas_accepts_custom_dimensions_on_existing_eight_pixel_step(cl
     {"width": "768", "height": 1360},
     {"width": 768.0, "height": 1360},
     {"width": True, "height": 1360},
+    {"width": 2**63, "height": 1360},
     {"width": 768, "height": 1356},
     {"width": 0, "height": 1360},
     {"width": 7, "height": 1360},
@@ -297,6 +355,133 @@ def test_guided_request_normalization_replays_defaults_key_order_and_uuid_form(c
     assert replay.status_code == 200, replay.text
     assert replay.content == first.content
     assert _counts() == (1, 1, 1)
+
+
+def test_guided_manual_saved_look_uses_exact_version_without_profile_or_run(client, seeded):
+    saved = _saved_look(client)
+    newer = client.post(
+        f"/api/looks/{saved['key']}/versions",
+        json={
+            "expected_version": saved["version"],
+            "name": "later look version",
+            "appearance": "A newer appearance that was not selected.",
+        },
+    )
+    assert newer.status_code == 200, newer.text
+    assert newer.json()["version"] == saved["version"] + 1
+    payload = _body(
+        seeded,
+        _room_anchor(),
+        mode="manual",
+        saved_look={
+            "look_key": saved["key"],
+            "version": saved["version"],
+            "content_digest": saved["content_digest"],
+        },
+    )
+
+    response = client.post("/api/sessions/guided", json=payload)
+
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert "full_auto_run_id" not in result
+    plan = result["plan"]
+    assert plan["look"] == saved["appearance"]
+    assert plan["initial_wardrobe"] == session_plan.compose_saved_look_wardrobe(saved["outfit"])
+    assert plan["authoring"]["look_snapshot"] == {
+        "look_id": saved["key"],
+        "version": saved["version"],
+        "content_digest": saved["content_digest"],
+        "appearance": saved["appearance"],
+        "outfit": saved["outfit"],
+    }
+    assert plan["authoring"]["wardrobe_progression"] is None
+    assert plan["wardrobe_changes"] == []
+    assert db.one(
+        "SELECT 1 FROM session_profile_evidence WHERE session_id = ?",
+        result["session_id"],
+    ) is None
+    assert db.one(
+        "SELECT 1 FROM full_auto_run_receipt WHERE session_id = ?",
+        result["session_id"],
+    ) is None
+
+
+def test_preflight_and_creation_have_separate_closed_full_auto_shapes(seeded):
+    common = {
+        "character_id": seeded["model_id"],
+        "scene_anchor": _room_anchor(),
+        "photo_count": 2,
+        "saved_look": {
+            "look_key": "invented-look",
+            "version": 1,
+            "content_digest": "a" * 64,
+        },
+        "full_auto": {
+            "authorization_version": 1,
+            "generate_without_pauses": True,
+            "profile_revision": 1,
+            "profile_digest": "b" * 64,
+            "progression": "all_stages_full_interval",
+            "framing_intent": "vary",
+        },
+    }
+
+    preflight = guided_sessions.normalize_preflight_request(common)
+    assert "request_id" not in preflight
+    assert "scope_digest" not in preflight["full_auto"]
+    assert "scope_issued_at" not in preflight["full_auto"]
+
+    with pytest.raises(guided_sessions.GuidedSessionError):
+        guided_sessions.normalize_preflight_request({**common, "request_id": str(uuid.uuid4())})
+    with pytest.raises(guided_sessions.GuidedSessionError):
+        guided_sessions.normalize_preflight_request({
+            **common,
+            "full_auto": {**common["full_auto"], "scope_digest": "c" * 64},
+        })
+    with pytest.raises(guided_sessions.GuidedSessionError):
+        guided_sessions.normalize_request({
+            **common,
+            "request_id": str(uuid.uuid4()),
+        })
+
+    creation = guided_sessions.normalize_request({
+        **common,
+        "request_id": str(uuid.uuid4()),
+        "full_auto": {
+            **common["full_auto"],
+            "scope_digest": "c" * 64,
+            "scope_issued_at": "2026-10-09T00:00:00+00:00",
+        },
+    })
+    assert creation.body["full_auto"]["scope_digest"] == "c" * 64
+
+
+def test_full_auto_canvas_refuses_connected_and_misbound_dimension_inputs():
+    settings = {"width": 832, "height": 1216}
+    graph = {
+        "5": {"inputs": {"width": ["4", 0], "height": 512}},
+    }
+    node_map = {
+        "width": "5.inputs.width",
+        "height": "5.inputs.height",
+    }
+    original = json.loads(json.dumps(graph))
+
+    with pytest.raises(guided_sessions.GuidedSessionError) as connected:
+        guided_sessions._validate_full_auto_canvas(
+            {"width": 832, "height": 1216}, settings, graph, node_map,
+        )
+    assert connected.value.code == "workflow_compatibility_invalid"
+    assert graph == original
+
+    graph["5"]["inputs"]["width"] = 512
+    with pytest.raises(guided_sessions.GuidedSessionError) as misbound:
+        guided_sessions._validate_full_auto_canvas(
+            {"width": 832, "height": 1216}, settings, graph,
+            {"width": "5.inputs.height", "height": "5.inputs.height"},
+        )
+    assert misbound.value.code == "workflow_compatibility_invalid"
 
 
 def test_guided_manual_mode_fixed_policy_and_user_overrides_persist_without_assistant(client, seeded):

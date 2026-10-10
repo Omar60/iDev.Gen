@@ -1,5 +1,22 @@
 # Project Diary
 
+## Full Auto Guided Creation Scope, Task 3.1
+
+- Strict request extensions alone would let valid Full Auto requests enter
+  the old empty-plan allocator. Resolve the initial snapshot, profile,
+  progression, coverage and authorization atomically before allocation.
+- Task 3.1 requests every new preflight error although scope comparison and
+  eligibility bindings are assigned later. The user explicitly authorized
+  those necessary prerequisites within 3.1; later task acceptance remains
+  separate. Do not invent a temporary success or unsupported error contract.
+- Hash the canonical public consent summary exactly. Put safe request and
+  dependency digests inside that summary rather than silently hashing a
+  different hidden envelope. Bind model inputs and translations without
+  disclosing arbitrary private values.
+- Acceptance fixtures must follow the canonical last-garment aside stage.
+  A same-second refreshed quote can equal the original current summary; test
+  actual quote age and zero allocation rather than incidental inequality.
+
 ## Full Auto Prompt Finalization, Task 2.4
 
 - A closed writer field list does not prevent creative values from repeating
