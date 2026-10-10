@@ -13,8 +13,7 @@ import main
 import resource_preparation
 import session_plan
 from conftest import EDIT_GRAPH
-from backend import saved_looks
-from backend import authoring_operations
+from backend import authoring_operations, resource_store, saved_looks
 from test_authoring_operation_api import (
     _configure_assistant, _create_guided_session, _persist_response_for_state_test, _start_body,
 )
@@ -73,18 +72,24 @@ def _state(session_id):
     }
 
 
-def _ready_profile(saved):
-    profile = _profile(saved, bracelet_owner="garment")
+def _ready_profile(saved, profile=None):
+    profile = copy.deepcopy(profile or _profile(saved, bracelet_owner="garment"))
     provenance = profile["authored_provenance"]
     regions = ("chest", "hips", "legs", "feet")
     profile["baseline_coverage"] = {
         "regions": {region: "none" for region in regions},
         "provenance": provenance,
     }
-    garment = saved["outfit"]["garments"][0]
-    profile["garment_coverage"][garment["key"]]["worn"]["regions"] = {
-        region: "full" for region in regions
-    }
+    first_key = saved["outfit"]["garments"][0]["key"]
+    for garment in saved["outfit"]["garments"]:
+        key = garment["key"]
+        if key not in profile["garment_coverage"]:
+            profile["garment_coverage"][key] = copy.deepcopy(
+                profile["garment_coverage"][first_key]
+            )
+        profile["garment_coverage"][key]["worn"]["regions"] = {
+            region: "full" for region in regions
+        }
     profile["inventory_complete"]["value"] = True
     return profile
 
@@ -124,9 +129,22 @@ def _establish_profile_look(client, session_id, view, *, ready=True):
     return saved, published, _view(client, session_id)
 
 
-def _profiled_progressive_session(client, seeded):
-    session_id, view = _session(client, seeded, count=2)
-    saved, published, view = _establish_profile_look(client, session_id, view)
+def _profiled_progressive_session(
+    client, seeded, *, scene="Soft window light falls across an empty studio.",
+    saved=None, profile=None,
+):
+    session_id, view = _session(client, seeded, count=2, scene=scene)
+    if saved is None:
+        saved = _saved_bracelet_look()
+    ordinary = session_plan.apply_saved_look(
+        session_id, view["plan_revision"], saved["key"], saved["version"],
+        {"look": "replace", "initial_wardrobe": "replace"}, planning_enabled=True,
+    )
+    published = _publish(saved, _ready_profile(saved, profile))
+    applied = _apply_profile(
+        client, session_id, ordinary["plan_revision"], saved, published,
+    )
+    view = _view(client, session_id)
     preview = client.post(
         f"/api/sessions/{session_id}/plan/wardrobe-progression/preview",
         json={
@@ -135,6 +153,101 @@ def _profiled_progressive_session(client, seeded):
             "end_take_id": "take-002",
             "stage_indices": [0, 1],
             "event_policy": "replace",
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    view = _apply_progression(client, session_id, preview.json())
+    return session_id, saved, published, view
+
+
+def _saved_shirt_look(*, aside=""):
+    return saved_looks.create({
+        "name": "Invented progressive shirt look",
+        "appearance": "A portrait in a quiet room. She wears a cotton shirt.",
+        "garments": [{"wording": "a cotton shirt", "aside": aside}],
+    })
+
+
+def _saved_shirt_and_skirt_look():
+    saved = saved_looks.create({
+        "name": "Invented progressive shirt and skirt look",
+        "appearance": (
+            "A portrait in a quiet room. She wears a cotton shirt. "
+            "She wears a navy skirt."
+        ),
+        "garments": [
+            {"wording": "a cotton shirt", "aside": ""},
+            {"wording": "a navy skirt", "aside": ""},
+        ],
+    })
+    profile = _profile(saved, bracelet_owner="garment")
+    appearance = saved["appearance"]
+    first_clause = appearance.index(" She wears")
+    second_clause = appearance.index(" She wears", first_clause + 1)
+    provenance = profile["authored_provenance"]
+    profile["appearance_segments"] = [
+        {
+            "segment_id": "appearance-1", "start": 0, "end": first_clause,
+            "text": appearance[:first_clause], "owner": "permanent",
+            "provenance": provenance,
+        },
+        {
+            "segment_id": "appearance-2", "start": first_clause,
+            "end": second_clause, "text": appearance[first_clause:second_clause],
+            "owner": f"garment:{saved['outfit']['garments'][0]['key']}",
+            "provenance": provenance,
+        },
+        {
+            "segment_id": "appearance-3", "start": second_clause,
+            "end": len(appearance), "text": appearance[second_clause:],
+            "owner": f"garment:{saved['outfit']['garments'][1]['key']}",
+            "provenance": provenance,
+        },
+    ]
+    profile["garment_coverage"][saved["outfit"]["garments"][1]["key"]] = copy.deepcopy(
+        profile["garment_coverage"][saved["outfit"]["garments"][0]["key"]]
+    )
+    return saved, profile
+
+
+def _add_fused_prompt(client, session_id, view, prompt):
+    library_key = f"profile-safety-fused-{session_id}"
+    library_id = resource_store.ensure_library(library_key, kind="fused_scenes")
+    revision_id = resource_store.record_revision(
+        library_id, "scene-01", {"id": "scene-01", "prompt": prompt},
+        translation={"prompt": prompt},
+    )
+    revision = resource_store.get_revision(revision_id=revision_id)
+    selection = {
+        "library_key": library_key,
+        "source_id": "scene-01",
+        "content_digest": revision["content_digest"],
+    }
+    view["plan"]["selected_resources"].append(selection)
+    return _save(client, session_id, view), selection
+
+
+def _automatic_profiled_progressive_session(client, seeded):
+    session_id, revision = _create_guided_session(
+        client, seeded, mode="automatic", photo_count=2,
+    )
+    view = _view(client, session_id)
+    saved = _saved_bracelet_look()
+    ordinary = session_plan.apply_saved_look(
+        session_id, revision, saved["key"], saved["version"],
+        {"look": "replace", "initial_wardrobe": "replace"}, planning_enabled=True,
+    )
+    published = _publish(saved, _ready_profile(saved))
+    applied = _apply_profile(
+        client, session_id, ordinary["plan_revision"], saved, published,
+    )
+    view = _view(client, session_id)
+    preview = client.post(
+        f"/api/sessions/{session_id}/plan/wardrobe-progression/preview",
+        json={
+            "expected_revision": applied["plan_revision"],
+            "start_take_id": "take-001", "end_take_id": "take-002",
+            "stage_indices": [0, 1], "event_policy": "replace",
         },
     )
     assert preview.status_code == 200, preview.text
@@ -596,3 +709,273 @@ def test_omitted_or_blank_coverage_keeps_default_prompt_and_state(client, seeded
     prep = resource_preparation.prepare_take_inputs(sid, baseline["plan_revision"], "take-001")
     assert prep["effective_state"] == baseline_prep["effective_state"]
     assert resource_preparation.compose_final_prompt(sid, prep) == baseline_prompt
+
+
+@pytest.mark.parametrize(
+    "source", ["trigger", "base_positive", "trigger_substitution", "room", "pose"],
+)
+def test_removed_profile_garment_in_consumed_positive_source_blocks_finalization(
+    client, seeded, source,
+):
+    scene = (
+        "A quiet room with a brass bracelet on the table."
+        if source == "room" else "Soft window light falls across an empty studio."
+    )
+    sid, _, _, view = _profiled_progressive_session(client, seeded, scene=scene)
+    if source in {"trigger", "base_positive", "trigger_substitution"}:
+        model_id = db.one("SELECT model_id FROM session WHERE id = ?", sid)["model_id"]
+        model_field = "trigger" if source in {"trigger", "trigger_substitution"} else source
+        db.run(
+            f"UPDATE model SET {model_field} = ? WHERE id = ?",
+            "a brass bracelet", model_id,
+        )
+    if source in {"pose", "trigger_substitution"}:
+        view["plan"]["takes"][1]["pose"] = (
+            "portrait of {trigger}"
+            if source == "trigger_substitution"
+            else "A brass bracelet rests on her wrist."
+        )
+        view = _save(client, sid, view)
+
+    preparation = resource_preparation.prepare_take_inputs(
+        sid, view["plan_revision"], "take-002",
+    )
+    review = resource_preparation.build_review_state(preparation)
+    conflict = next(
+        item for item in review["conflicts"]
+        if item["kind"] == resource_preparation.CONFLICT_KIND_PROFILED_GARMENT_REINTRODUCED
+    )
+    expected_source = {
+        "trigger": "model.trigger",
+        "base_positive": "model.base_positive",
+        "trigger_substitution": "model.trigger",
+        "room": "resource profile-safety-fused-unused field scene_theme",
+        "pose": "take choice pose",
+    }[source]
+    if source == "room":
+        assert conflict["source"].endswith("field scene_theme")
+    else:
+        assert conflict["source"] == expected_source
+    assert conflict["garment_wording"] == "a brass bracelet"
+    if source == "trigger_substitution":
+        assert any(
+            item["source"] == "take choice pose"
+            and item["source_value"] == "portrait of a brass bracelet"
+            for item in review["conflicts"]
+        )
+    if source == "pose":
+        unmarked = dict(preparation)
+        unmarked.pop("profile_coverage_evidence")
+        with pytest.raises(resource_preparation.ConflictUnresolvedError):
+            resource_preparation.compose_final_prompt(sid, unmarked)
+    before = _state(sid)
+
+    with pytest.raises(resource_preparation.ConflictUnresolvedError):
+        resource_preparation.finalize_take_preparation(
+            sid, view["plan_revision"], "take-002",
+        )
+
+    assert _state(sid) == before
+    assert db.q("SELECT * FROM shot WHERE session_id = ?", sid) == []
+    assert db.q("SELECT * FROM session_plan_approval WHERE session_id = ?", sid) == []
+
+
+@pytest.mark.parametrize(
+    ("adapted_value", "blocked"),
+    [
+        ("She wears a cotton shirt beside the studio wall.", True),
+        ("The studio wall is plain.", False),
+    ],
+)
+def test_profile_garment_conflict_checks_effective_adaptation_not_original(
+    client, seeded, adapted_value, blocked,
+):
+    saved, profile = _saved_shirt_and_skirt_look()
+    sid, _, _, view = _profiled_progressive_session(
+        client, seeded, saved=saved, profile=profile,
+    )
+    view, selection = _add_fused_prompt(
+        client, sid, view, "She wears a cotton shirt beside the studio wall.",
+    )
+    resource_preparation.record_take_adaptation(
+        sid, view["plan_revision"], "take-002", {
+            **selection,
+            "resource_field": "prompt",
+            "adapted_value": adapted_value,
+        },
+    )
+    preparation = resource_preparation.prepare_take_inputs(
+        sid, view["plan_revision"], "take-002",
+    )
+    assert "cotton shirt" in saved["appearance"]
+    assert "cotton shirt" not in preparation["effective_state"]["look"].casefold()
+    review = resource_preparation.build_review_state(preparation)
+    assert any(
+        item["kind"] == resource_preparation.CONFLICT_KIND_FUSED_VS_EFFECTIVE_WARDROBE
+        for item in review["resolved_conflicts"]
+    )
+    profile_conflicts = [
+        item for item in review["conflicts"]
+        if item["kind"] == resource_preparation.CONFLICT_KIND_PROFILED_GARMENT_REINTRODUCED
+    ]
+    assert bool(profile_conflicts) is blocked
+    before = _state(sid)
+
+    if blocked:
+        assert profile_conflicts[0]["source"].startswith("adaptation ")
+        with pytest.raises(resource_preparation.ConflictUnresolvedError):
+            resource_preparation.finalize_take_preparation(
+                sid, view["plan_revision"], "take-002",
+            )
+        assert _state(sid) == before
+    else:
+        prepared = resource_preparation.finalize_take_preparation(
+            sid, view["plan_revision"], "take-002",
+        )
+        assert prepared["status"] == "ready"
+        assert adapted_value in prepared["final_prompt"]
+        assert "cotton shirt" not in prepared["final_prompt"]
+
+
+def test_profile_owned_writer_choice_conflict_refuses_without_ready_or_shot(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    sid, _, _, view = _automatic_profiled_progressive_session(client, seeded)
+    started = client.post(f"/api/sessions/{sid}/plan/authoring/operations", json=_start_body(
+        revision=view["plan_revision"], take_ids=["take-002"],
+    ))
+    assert started.status_code == 202, started.text
+    claim = authoring_operations.load_worker_claim(sid, started.json()["operation_id"])
+    ticket = authoring_operations.renew_operation_lease(claim)
+    preparation = resource_preparation.prepare_take_inputs(
+        sid, view["plan_revision"], "take-002",
+    )
+    unlocked = resource_preparation.compute_unlocked_fields(preparation)
+    request = resource_preparation.assemble_writer_request(preparation, unlocked)
+    context, predecessors = resource_preparation.build_automatic_writer_context(
+        sid, view["plan_revision"], "take-002", preparation, request,
+    )
+    writer_request = {
+        "request": request,
+        "assistant_request": {
+            "messages": [
+                {"role": "system", "content": "Invented test system."},
+                {
+                    "role": "user",
+                    "content": resource_preparation.automatic_writer_instruction(context),
+                },
+            ],
+            "model": "test-model",
+            "parameters": {"response_format": {"type": "json_object"}},
+        },
+    }
+    before = _state(sid)
+    operation_result = (ticket, writer_request, {
+        "camera": "50mm",
+        "framing": "full body",
+        "pose": "A brass bracelet rests on her wrist.",
+        "expression": "calm",
+    }, context, predecessors)
+
+    with pytest.raises(resource_preparation.ConflictUnresolvedError):
+        resource_preparation.finalize_take_preparation(
+            sid, view["plan_revision"], "take-002",
+            _operation_result=operation_result,
+        )
+    assert _state(sid) == before
+    assert db.q(
+        "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? "
+        "AND take_id = 'take-002' AND status = 'ready'",
+        sid, view["plan_revision"],
+    ) == []
+    assert db.q("SELECT * FROM shot WHERE session_id = ?", sid) == []
+    assert db.q("SELECT * FROM session_plan_approval WHERE session_id = ?", sid) == []
+
+    invalid_writer_result = {
+        "camera": "50mm",
+        "framing": "full body",
+        "pose": "beside a window",
+        "expression": "calm",
+        "wardrobe_coverage": "fabricated coverage",
+    }
+    with pytest.raises(resource_preparation.WriterOutputInvalid):
+        resource_preparation.finalize_take_preparation(
+            sid, view["plan_revision"], "take-002",
+            _operation_result=(
+                ticket, writer_request, invalid_writer_result, context, predecessors,
+            ),
+        )
+    assert _state(sid) == before
+
+    valid_writer_result = {
+        "camera": "50mm",
+        "framing": "full body",
+        "pose": "standing beside a window",
+        "expression": "calm",
+    }
+    prepared = resource_preparation.finalize_take_preparation(
+        sid, view["plan_revision"], "take-002",
+        _operation_result=(
+            ticket, writer_request, valid_writer_result, context, predecessors,
+        ),
+    )
+    assert prepared["status"] == "ready"
+    assert prepared["final_prompt"].count(prepared["effective_state"]["wardrobe_coverage"]) == 1
+    assert "brass bracelet" not in prepared["effective_state"]["look"].casefold()
+    assert "brass bracelet" not in prepared["final_prompt"].casefold()
+
+
+def test_profile_aside_stage_retains_its_canonical_wardrobe_clause(client, seeded):
+    saved = saved_looks.create({
+        "name": "Invented bracelet aside look",
+        "appearance": "A portrait in a quiet room. She wears a brass bracelet.",
+        "garments": [{
+            "wording": "a brass bracelet",
+            "aside": "a brass bracelet resting on the table",
+        }],
+    })
+    sid, _, _, view = _profiled_progressive_session(client, seeded, saved=saved)
+    model_id = db.one("SELECT model_id FROM session WHERE id = ?", sid)["model_id"]
+    db.run(
+        "UPDATE model SET base_positive = ? WHERE id = ?",
+        "a brass bracelet resting on the table", model_id,
+    )
+    prepared = resource_preparation.finalize_take_preparation(
+        sid, view["plan_revision"], "take-002",
+    )
+    assert prepared["effective_state"]["wardrobe"] == "She wears a brass bracelet resting on the table."
+    assert "She wears a brass bracelet resting on the table." in prepared["final_prompt"]
+
+
+def test_reference_edit_omits_profile_context_when_checking_consumed_text(client, seeded):
+    sid, _, _, view = _profiled_progressive_session(client, seeded)
+    workflow = client.post("/api/workflows", json={
+        "name": "invented profile edit workflow", "graph": EDIT_GRAPH, "kind": "edit",
+    })
+    assert workflow.status_code == 200, workflow.text
+    db.run(
+        "UPDATE session SET reference_workflow_id = ? WHERE id = ?",
+        workflow.json()["id"], sid,
+    )
+    view["plan"]["takes"][1]["reference"] = True
+    view["plan"]["takes"][1]["pose"] = (
+        "Remove the brass bracelet from the reference image."
+    )
+    view = _save(client, sid, view)
+    model_id = db.one("SELECT model_id FROM session WHERE id = ?", sid)["model_id"]
+    db.run("UPDATE model SET base_positive = ? WHERE id = ?", "a brass bracelet", model_id)
+
+    preparation = resource_preparation.prepare_take_inputs(
+        sid, view["plan_revision"], "take-002",
+    )
+    expected_bare_instruction = resource_preparation.assemble_adapted_clauses(
+        preparation,
+    )
+    prepared = resource_preparation.finalize_take_preparation(
+        sid, view["plan_revision"], "take-002",
+    )
+
+    assert prepared["status"] == "ready"
+    assert prepared["final_prompt"] == expected_bare_instruction
+    assert "remove the brass bracelet" in prepared["final_prompt"].casefold()

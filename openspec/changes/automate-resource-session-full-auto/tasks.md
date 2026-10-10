@@ -10,7 +10,7 @@
 - [x] 2.1 Reuse current progression derivation/candidate application for the all-stage full-interval policy; verify N=1/K=1, N=K, N>K, N<K rejection, final-item aside, no outfit, endpoint inclusion, minimal stable-ID events and no redistribution on replay/reorder.
 - [x] 2.2 Compile coverage from explicit profile facts and stage states using deterministic English templates; verify layers, partial coverage, accessories with no coverage, aside states, baseline, inventory completeness, unknown refusal and existing text limits without calling an assistant; assert byte-exact compiler-v1 sentences and no full-coverage inference from partial layers.
 - [x] 2.3 Persist session profile and per-take coverage provenance outside authoring-v1; integrate it with effective state, evidence, invalidation and copy-forward; extend `tests/test_wardrobe_coverage.py` to prove manual edits revoke derived claims, downstream invalidation is correct and linked history stays unchanged.
-- [ ] 2.4 Preserve canonical prompt composition and graph-kind exclusions; extend resource-preparation tests to prove coverage appears exactly once, the creative writer cannot overwrite it, removed accessory clauses never remain in the accepted constant projection and detected contradictory sources block finalization.
+- [x] 2.4 Preserve canonical prompt composition and graph-kind exclusions; extend resource-preparation tests to prove coverage appears exactly once, the creative writer cannot overwrite it, removed accessory clauses never remain in the accepted constant projection and detected contradictory sources block finalization.
 
 ## 3. Atomic guided creation and authorization
 

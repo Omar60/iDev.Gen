@@ -1,5 +1,20 @@
 # Project Diary
 
+## Full Auto Prompt Finalization, Task 2.4
+
+- A closed writer field list does not prevent creative values from repeating
+  locked coverage. Check the consumed positive composition and each exact
+  coverage sentence, not only response keys or the complete coverage block.
+- An aside state retains an item's identity without authorizing worn assertions
+  in competing sources. Preserve its canonical aside wording separately.
+- Revoking derived coverage does not remove wardrobe progression. Identical
+  stage wording must not silently bypass source checks or trigger redistribution.
+- Independent acceptance exposed these three defects in the first implementation;
+  focused green suites alone did not prove the finalization contract.
+- Keep the compositor and profile gate on the same authoritative reference mode.
+  Literal canonical matching remains limited evidence: it can flag negations or
+  object mentions and miss paraphrases; never claim semantic or visual proof.
+
 ## Full Auto Coverage Provenance, Task 2.3
 
 - Bind the expected derived stable-ID set as immutable revision evidence.

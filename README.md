@@ -78,10 +78,14 @@ facts and confirmed inventory. A ready profile supplies per-take coverage from
 the matching progression stage with immutable profile and stage provenance;
 incomplete profiles preserve manual coverage without claiming derived facts.
 Editing derived coverage clears that take's claim and invalidates dependent
-preparation, while linked history remains unchanged. The conflict check uses
-canonical wording in permanent spans and is not exhaustive prose-semantic
-detection. Exact profile read/create-revision and manual session-application
-APIs are documented in
+preparation, while linked history remains unchanged. At finalization, the
+applied profile checks effective positive prompt inputs for canonical garment
+wording that conflicts with the applicable worn, aside, or removed stage; the
+exact accepted aside phrase remains valid. Derived coverage is composed once,
+and the creative writer cannot replace it. Matching is literal: it can flag a
+negation or an object mention and miss a paraphrase, so it is not semantic or
+pixel verification. Exact profile read/create-revision and manual
+session-application APIs are documented in
 [Saved looks](docs/looks.md#automation-profile-api). There is no profile editor
 or Full Auto creation/execution flow yet. The existing manual saved-look
 workflow retains progression, review, submission, and Run controls;

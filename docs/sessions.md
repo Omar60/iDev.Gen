@@ -1656,6 +1656,15 @@ progression stage and records its exact source evidence. Editing derived text
 clears that take's derived claim in the new plan revision and invalidates
 dependent preparation. An incomplete profile leaves manual coverage usable and
 does not certify it; earlier revisions and linked shots retain their history.
+During finalization, derived coverage is composed once after the effective
+wardrobe and before take-specific positive clauses. A take or writer clause
+that repeats the full coverage block or any exact compiled coverage sentence
+blocks the whole take, and the creative writer cannot provide or replace this
+profile-owned text. The take's reference flag and graph kind govern context:
+non-reference and `guide` takes retain the composed positive prompt, while
+non-guide reference edits use bare instructions and omit this applied-profile
+context check. These checks concern prompt wording and do not guarantee
+rendered pixels.
 See [automation profiles](looks.md#automation-profile-storage).
 
 ### Shared session summary

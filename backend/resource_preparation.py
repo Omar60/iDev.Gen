@@ -728,6 +728,9 @@ CLOTHING_TOKEN_PATTERN: re.Pattern = re.compile(
 CONFLICT_KIND_FUSED_VS_EFFECTIVE_WARDROBE: str = (
     "fused_scene_prompt_vs_effective_wardrobe"
 )
+CONFLICT_KIND_PROFILED_GARMENT_REINTRODUCED: str = (
+    "profiled_progressive_garment_reintroduced"
+)
 
 
 # -- Placeholder vocabulary -----------------------------------------------
@@ -2389,6 +2392,12 @@ def assert_no_open_conflicts(
     if not open_conflicts:
         return
     first = open_conflicts[0]
+    if first.get("kind") == CONFLICT_KIND_PROFILED_GARMENT_REINTRODUCED:
+        raise ConflictUnresolvedError(
+            f"take {preparation.get('take_id')!r} carries an unresolved "
+            f"profiled garment conflict: {first.get('message')}; "
+            f"total open conflicts: {len(open_conflicts)}"
+        )
     raise ConflictUnresolvedError(
         f"take {preparation.get('take_id')!r} carries unresolved conflict on "
         f"resource {first.get('library_key')!r}/{first.get('source_id')!r} "
@@ -3048,6 +3057,10 @@ def build_review_state(
         else:
             open_conflicts.append(dict(marker))
 
+    open_conflicts.extend(_detect_profiled_garment_conflicts(
+        preparation, validated_adaptations,
+    ))
+
     selected_resource_revisions: list[dict] = []
     fused_descriptions: list[dict] = []
     for entry in preparation.get("resource_inputs", []):
@@ -3347,6 +3360,83 @@ def _adapted_value_for_field(
     return None
 
 
+def _validated_assembly_adaptations(
+    preparation: dict,
+    adaptations: list[dict] | None,
+) -> list[dict]:
+    validated_adaptations: list[dict] = []
+    if adaptations is None:
+        if all(
+            key in preparation
+            for key in ("session_id", "plan_revision", "take_id")
+        ):
+            persisted = load_take_adaptations(
+                int(preparation["session_id"]),
+                int(preparation["plan_revision"]),
+                str(preparation["take_id"]),
+            )
+            validated_adaptations = _applicable_adaptations(
+                preparation, persisted,
+            )
+    else:
+        if not isinstance(adaptations, list):
+            raise PreparationArgumentError(
+                f"adaptations must be a list or None, got {type(adaptations).__name__}"
+            )
+        for index, raw in enumerate(adaptations):
+            try:
+                validated = validate_adaptation(raw, preparation)
+            except AdaptationError as exc:
+                raise AdaptationError(
+                    f"adaptations[{index}] is not acceptable: {exc}"
+                ) from exc
+            except PlaceholderUnresolvedError as exc:
+                raise PlaceholderUnresolvedError(
+                    f"adaptations[{index}] is not acceptable: {exc}"
+                ) from exc
+            validated_adaptations.append(validated)
+    return validated_adaptations
+
+
+def _effective_take_clause_sources(
+    preparation: dict,
+    validated_adaptations: list[dict],
+) -> list[dict]:
+    """Return the exact attributed text clauses assembled for a take."""
+    sources: list[dict] = []
+    for name in sorted(TAKE_DESCRIPTIVE_CHOICES):
+        value = preparation.get("effective_take_choices", {}).get(name)
+        if isinstance(value, str) and value:
+            sources.append({"source": "take_choice", "field": name, "value": value})
+
+    for entry in preparation.get("resource_inputs", []):
+        descriptive = entry.get("descriptive_inputs", {})
+        for field_name in sorted(descriptive.keys()):
+            original = descriptive[field_name]
+            adapted = _adapted_value_for_field(
+                entry, field_name, validated_adaptations,
+            )
+            effective = adapted if isinstance(adapted, str) and adapted else original
+            for text in _stringify_value(effective, field_name, entry):
+                if text:
+                    sources.append({
+                        "source": "adaptation" if adapted else "resource",
+                        "library_key": entry.get("library_key", ""),
+                        "source_id": entry.get("source_id", ""),
+                        "content_digest": entry.get("content_digest", ""),
+                        "field": field_name,
+                        "value": text,
+                    })
+
+    prompt = str(preparation.get("prompt") or "").strip()
+    clauses = [source["value"] for source in sources]
+    if not clauses and prompt:
+        return [{"source": "take_prompt", "value": prompt}]
+    if prompt and prompt not in clauses:
+        sources.append({"source": "take_prompt", "value": prompt})
+    return sources
+
+
 def assemble_adapted_clauses(
     preparation: dict,
     *,
@@ -3387,62 +3477,9 @@ def assemble_adapted_clauses(
             f"preparation must be a dict, got "
             f"{type(preparation).__name__}"
         )
-    validated_adaptations: list[dict] = []
-    if adaptations is None:
-        if all(
-            key in preparation
-            for key in ("session_id", "plan_revision", "take_id")
-        ):
-            persisted = load_take_adaptations(
-                int(preparation["session_id"]),
-                int(preparation["plan_revision"]),
-                str(preparation["take_id"]),
-            )
-            validated_adaptations = _applicable_adaptations(
-                preparation, persisted,
-            )
-    else:
-        if not isinstance(adaptations, list):
-            raise PreparationArgumentError(
-                f"adaptations must be a list or None, got "
-                f"{type(adaptations).__name__}"
-            )
-        for index, raw in enumerate(adaptations):
-            try:
-                validated = validate_adaptation(raw, preparation)
-            except AdaptationError as exc:
-                raise AdaptationError(
-                    f"adaptations[{index}] is not acceptable: {exc}"
-                ) from exc
-            except PlaceholderUnresolvedError as exc:
-                raise PlaceholderUnresolvedError(
-                    f"adaptations[{index}] is not acceptable: {exc}"
-                ) from exc
-            validated_adaptations.append(validated)
-
-    clauses: list[str] = []
-
-    for name in sorted(TAKE_DESCRIPTIVE_CHOICES):
-        value = preparation.get("effective_take_choices", {}).get(name)
-        if isinstance(value, str) and value:
-            clauses.append(value)
-
-    for entry in preparation.get("resource_inputs", []):
-        descriptive = entry.get("descriptive_inputs", {})
-        for field_name in sorted(descriptive.keys()):
-            original = descriptive[field_name]
-            adapted = _adapted_value_for_field(entry, field_name, validated_adaptations)
-            effective = adapted if isinstance(adapted, str) and adapted else original
-            for text in _stringify_value(effective, field_name, entry):
-                if text:
-                    clauses.append(text)
-
-    if not clauses and preparation.get("prompt"):
-        return str(preparation["prompt"]).strip()
-    if preparation.get("prompt") and str(preparation["prompt"]).strip() not in clauses:
-        clauses.append(str(preparation["prompt"]).strip())
-
-    return ". ".join(clauses)
+    validated_adaptations = _validated_assembly_adaptations(preparation, adaptations)
+    sources = _effective_take_clause_sources(preparation, validated_adaptations)
+    return ". ".join(source["value"] for source in sources)
 
 
 # -- Task 4.3: optional assistant synthesis -------------------------------
@@ -4962,6 +4999,278 @@ def _load_model_for_session(session_id: int) -> dict[str, str]:
     }
 
 
+def _detect_profiled_garment_conflicts(
+    preparation: dict,
+    validated_adaptations: list[dict],
+    *,
+    trigger: str | None = None,
+    base_positive: str | None = None,
+) -> list[dict]:
+    """Find exact profile-owned garment wording reintroduced after removal."""
+    session_id = preparation.get("session_id")
+    plan_revision = preparation.get("plan_revision")
+    take_id = preparation.get("take_id")
+    if (
+        type(session_id) is not int
+        or type(plan_revision) is not int
+        or not isinstance(take_id, str)
+        or not take_id
+    ):
+        return []
+    if db.one(
+        "SELECT 1 FROM session_profile_evidence "
+        "WHERE session_id = ? AND plan_revision = ?",
+        session_id, plan_revision,
+    ) is None:
+        return []
+
+    actual_revision, plan = session_plan._load_current_resource_plan(session_id)
+    if actual_revision != plan_revision:
+        raise session_plan.PlanRevisionStale(
+            f"session {session_id} plan revision is {actual_revision}, "
+            f"requested preparation revision is {plan_revision}"
+        )
+    application = session_plan._load_session_profile_application(
+        session_id, plan_revision, plan,
+    )
+    if application is None:
+        return []
+
+    take = next(
+        (item for item in plan.get("takes", [])
+         if isinstance(item, dict) and item.get("take_id") == take_id),
+        None,
+    )
+    if take is None:
+        raise session_plan.PlanValidationError(
+            f"take_id {take_id!r} is not present in the applied profile plan"
+        )
+    is_reference = bool(take.get("reference"))
+    full_context = True
+    if is_reference:
+        ref_kind = (db.one(
+            "SELECT w.kind AS kind FROM session s "
+            "LEFT JOIN workflow w ON w.id = s.reference_workflow_id "
+            "WHERE s.id = ?",
+            session_id,
+        ) or {}).get("kind") or ""
+        full_context = ref_kind == "guide"
+    if not full_context:
+        # Edit instructions are bare operations on the supplied image, not
+        # positive composition clauses with the session's profile context.
+        return []
+
+    wardrobes = session_plan.resolve_effective_wardrobes(plan)
+    wardrobe = wardrobes.get(take_id)
+    effective_state = preparation.get("effective_state")
+    if (
+        not isinstance(wardrobe, str)
+        or not isinstance(effective_state, dict)
+        or effective_state.get("wardrobe", "") != wardrobe
+    ):
+        raise PreparationError(
+            "profile conflict checks require the authoritative effective wardrobe"
+        )
+
+    coverage_evidence = session_plan._session_take_profile_coverage_evidence(
+        session_id, plan_revision, take_id, plan,
+    )
+    if coverage_evidence is None:
+        raise session_plan.PlanValidationError(
+            "applied session profile has no current take coverage evidence"
+        )
+    supplied_evidence = preparation.get("profile_coverage_evidence")
+    if supplied_evidence is not None and supplied_evidence != coverage_evidence:
+        raise session_plan.PlanValidationError(
+            "preparation profile coverage evidence does not match the current take"
+        )
+    derived = (
+        coverage_evidence.get("derived_coverage")
+        if isinstance(coverage_evidence, dict) else None
+    )
+    evidenced_stage_index = (
+        derived.get("stage_index") if isinstance(derived, dict) else None
+    )
+    outfit = application["saved_look"]["outfit"]
+    wardrobe_stages = (
+        [""] if outfit is None
+        else session_plan._saved_look_wardrobe_stages(outfit)
+    )
+    if evidenced_stage_index is not None:
+        if (
+            type(evidenced_stage_index) is not int
+            or not 0 <= evidenced_stage_index < len(wardrobe_stages)
+            or wardrobe_stages[evidenced_stage_index] != wardrobe
+        ):
+            raise session_plan.PlanValidationError(
+                "applied profile stage does not match the current wardrobe"
+            )
+        candidate_stage_indices = [evidenced_stage_index]
+    else:
+        candidate_stage_indices = [
+            index for index, stage in enumerate(wardrobe_stages)
+            if stage == wardrobe
+        ]
+    if not candidate_stage_indices:
+        # A custom wardrobe is not enough evidence to infer a saved-look stage.
+        return []
+
+    from backend import saved_looks
+
+    stage_states = saved_looks._automation_profile_coverage_stage_states(
+        application["saved_look"],
+    )
+    if any(index >= len(stage_states) for index in candidate_stage_indices):
+        raise session_plan.PlanValidationError(
+            "applied profile stage does not match the current wardrobe"
+        )
+    stage_index = (
+        candidate_stage_indices[0] if len(candidate_stage_indices) == 1 else None
+    )
+    garments = [] if outfit is None else outfit["garments"]
+    if not garments:
+        return []
+
+    if trigger is None or base_positive is None:
+        model = _load_model_for_session(session_id)
+        trigger = model["trigger"]
+        base_positive = model["base_positive"]
+    trigger = trigger or ""
+    base_positive = base_positive or ""
+
+    clause_sources = _effective_take_clause_sources(
+        preparation, validated_adaptations,
+    )
+    clause_sources = [
+        {**source, "value": source["value"].replace("{trigger}", trigger)}
+        if "{trigger}" in source["value"] else source
+        for source in clause_sources
+    ]
+    positive_sources = [
+        {"source": "model.trigger", "value": trigger},
+        {"source": "model.base_positive", "value": base_positive},
+        {"source": "plan.look", "value": str(effective_state.get("look") or "").strip()},
+        {
+            "source": "plan.wardrobe_coverage",
+            "value": str(effective_state.get("wardrobe_coverage") or "").strip(),
+        },
+        *clause_sources,
+    ]
+
+    conflicts = []
+    for garment in garments:
+        garment_key = garment["key"]
+        worn_phrases = [garment["wording"]]
+        worn_phrases.extend(
+            segment["text"]
+            for segment in application["profile"]["appearance_segments"]
+            if segment["owner"] == f"garment:{garment_key}"
+        )
+        aside = garment["aside"]
+        for source in positive_sources:
+            value = source.get("value")
+            if not isinstance(value, str) or not value:
+                continue
+            value_folded = value.casefold()
+            exact_aside = bool(
+                aside and value.strip().rstrip(".").casefold() == aside.casefold()
+            )
+            incompatible_stages = []
+            matched = None
+            for candidate_index in candidate_stage_indices:
+                state = stage_states[candidate_index].get(garment_key)
+                if state == "worn" or (state == "aside" and exact_aside):
+                    continue
+                if state not in {None, "aside"}:
+                    raise session_plan.PlanValidationError(
+                        "applied profile stage has an unknown garment state"
+                    )
+                matched = next(
+                    (
+                        phrase for phrase in worn_phrases
+                        if phrase and phrase.casefold() in value_folded
+                    ),
+                    None,
+                )
+                if matched is not None:
+                    incompatible_stages.append(candidate_index)
+            if not incompatible_stages:
+                continue
+            source_label = source.get("source", "take clause")
+            if source_label in {"resource", "adaptation"}:
+                source_label = (
+                    f"{source_label} {source.get('library_key')}/"
+                    f"{source.get('source_id')} field {source.get('field')}"
+                )
+            elif source_label == "take_choice":
+                source_label = f"take choice {source.get('field')}"
+            conflicts.append({
+                "kind": CONFLICT_KIND_PROFILED_GARMENT_REINTRODUCED,
+                "garment_key": garment_key,
+                "garment_wording": matched,
+                "stage_index": stage_index,
+                "candidate_stage_indices": candidate_stage_indices,
+                "incompatible_stage_indices": incompatible_stages,
+                "source": source_label,
+                "source_value": value,
+                "message": (
+                    f"positive source {source_label!r} contains exact accepted "
+                    f"worn wording {matched!r} for profile garment {garment_key!r} "
+                    f"in incompatible stage(s) {incompatible_stages!r}; "
+                    "the detector checks canonical wording only"
+                ),
+            })
+    return conflicts
+
+
+def _profiled_take_reference(
+    session_id: int,
+    preparation: dict,
+) -> bool | None:
+    """Resolve reference mode from an actually applied profile's bound plan."""
+    plan_revision = preparation.get("plan_revision")
+    take_id = preparation.get("take_id")
+    if (
+        type(plan_revision) is not int
+        or not isinstance(take_id, str)
+        or not take_id
+        or db.one(
+            "SELECT 1 FROM session_profile_evidence "
+            "WHERE session_id = ? AND plan_revision = ?",
+            session_id, plan_revision,
+        ) is None
+    ):
+        return None
+
+    actual_revision, plan = session_plan._load_current_resource_plan(session_id)
+    if actual_revision != plan_revision:
+        raise session_plan.PlanRevisionStale(
+            f"session {session_id} plan revision is {actual_revision}, "
+            f"requested preparation revision is {plan_revision}"
+        )
+    if session_plan._load_session_profile_application(
+        session_id, plan_revision, plan,
+    ) is None:
+        return None
+    take = next(
+        (item for item in plan.get("takes", [])
+         if isinstance(item, dict) and item.get("take_id") == take_id),
+        None,
+    )
+    if take is None:
+        raise session_plan.PlanValidationError(
+            f"take_id {take_id!r} is not present in the applied profile plan"
+        )
+    reference = bool(take.get("reference", False))
+    if "reference" in preparation:
+        supplied = preparation["reference"]
+        if type(supplied) is not bool or supplied != reference:
+            raise PreparationArgumentError(
+                "preparation reference flag does not match the applied profile plan"
+            )
+    return reference
+
+
 def compose_final_prompt(
     session_id: int,
     preparation: dict,
@@ -4997,12 +5306,20 @@ def compose_final_prompt(
             f"preparation must be a dict, got {type(preparation).__name__}"
         )
 
-    take_clauses = assemble_adapted_clauses(
-        preparation, adaptations=adaptations,
-    ).strip()
+    validated_adaptations = _validated_assembly_adaptations(
+        preparation, adaptations,
+    )
+    clause_sources = _effective_take_clause_sources(
+        preparation, validated_adaptations,
+    )
+    take_clauses = ". ".join(source["value"] for source in clause_sources).strip()
 
-    is_reference = bool(preparation.get("reference", False))
-    if not is_reference and "take_id" in preparation:
+    profiled_reference = _profiled_take_reference(session_id, preparation)
+    if profiled_reference is None:
+        is_reference = bool(preparation.get("reference", False))
+    else:
+        is_reference = profiled_reference
+    if profiled_reference is None and not is_reference and "take_id" in preparation:
         take_id = preparation.get("take_id")
         try:
             _, plan = session_plan._load_current_resource_plan(session_id)
@@ -5038,6 +5355,18 @@ def compose_final_prompt(
     wardrobe = str(effective_state.get("wardrobe") or "").strip()
     coverage = str(effective_state.get("wardrobe_coverage") or "").strip()
 
+    profiled_conflicts = _detect_profiled_garment_conflicts(
+        preparation, validated_adaptations,
+        trigger=trigger, base_positive=base_positive,
+    )
+    if profiled_conflicts:
+        first = profiled_conflicts[0]
+        raise ConflictUnresolvedError(
+            f"take {preparation.get('take_id')!r} carries an unresolved "
+            f"profiled garment conflict: {first['message']}; "
+            f"total open conflicts: {len(profiled_conflicts)}"
+        )
+
     if "{trigger}" in take_clauses:
         take_clauses = take_clauses.replace("{trigger}", trigger)
         parts = [base_positive, look, wardrobe, coverage, take_clauses]
@@ -5050,6 +5379,22 @@ def compose_final_prompt(
             f"final prompt composed for take {preparation.get('take_id')!r} "
             f"is empty"
         )
+    if coverage:
+        coverage_folded = coverage.casefold()
+        prompt_folded = final_prompt.casefold()
+        coverage_sentences = re.split(r"(?<=[.!?])\s+", coverage)
+        if (
+            prompt_folded.count(coverage_folded) > 1
+            or any(
+                prompt_folded.count(sentence.casefold())
+                > coverage_folded.count(sentence.casefold())
+                for sentence in coverage_sentences
+            )
+        ):
+            raise ConflictUnresolvedError(
+                f"take {preparation.get('take_id')!r} repeats compiled wardrobe "
+                "coverage in its positive prompt; coverage must appear exactly once"
+            )
     return final_prompt
 
 

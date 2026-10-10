@@ -129,10 +129,19 @@ retain eligible copy-forward, and earlier revision and linked-shot history stay
 unchanged. An incomplete profile does not replace or certify manual coverage;
 the existing manual coverage and workflow remain usable.
 
-The current conflict check catches canonical garment wording found within
-permanent spans when that garment is removed. This is limited lexical evidence,
-not exhaustive prose-semantic detection, and it does not rewrite or silently
-delete appearance text.
+During finalization of a session with an applied profile, the server checks
+effective positive inputs—including the model trigger and base prompt, projected
+look and coverage, resolved resource/adaptation text, and take or writer
+clauses—for exact accepted worn wording or garment-owned appearance clauses
+that conflict with a candidate stage for the materialized wardrobe. A corrected
+adaptation replaces its source text; the exact accepted aside phrase remains
+valid. When identical wardrobe text maps to multiple stages, the check evaluates
+each candidate without guessing an index or redistributing progression. A
+detected conflict blocks finalization.
+
+This is a literal wording check: negations and object mentions can match, while
+paraphrases can be missed. It is limited text evidence, not semantic or pixel
+verification, and it never silently rewrites or deletes source text.
 
 ### Automation profile API
 
