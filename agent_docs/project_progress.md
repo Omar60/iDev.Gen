@@ -2,26 +2,23 @@
 
 ## Goal and Current Position
 
-Accept only Task 3.4 of `automate-resource-session-full-auto` through internal
-Heavy deployment `full-auto-first-20261010`. Intake started clean at 11 of 41
-tasks complete. Main accepts the independently verified consent contract;
-only 3.4 is newly complete, reaching 12 of 41.
+Accept only Task 4.1 of `automate-resource-session-full-auto` through internal
+Heavy deployment `full-auto-4-1-20261010`. Intake started clean at 12 of 41
+tasks complete. Main accepts the independently verified run-state persistence;
+only 4.1 is newly complete, reaching 13 of 41.
 
-Preflight resolves a consistent configuration/source view without writes.
-Creation resolves live configuration after receipt replay inside the allocation
-transaction; configuration and model/workflow update writers share that
-serialization boundary. Quotes remain valid through 300 seconds and retain
-their original seven-day deadline.
+The durable domain separates immutable initial consent from mutable run state
+and control receipts. Guided creation commits both atomically. Epochs, leases,
+fences, current plan/authorization checks and cancellation-observation freshness
+protect continuation and settlement. Historical controls replay stored results.
 
 ## Verification and Continuation
 
-Tester passed 41 combined consent tests and the complete Python suite:
-3,079 passed, one skipped (filesystem symlinks unavailable), three existing
-warnings, Python 3.11.9. Strict OpenSpec validation and diff checks passed.
-Main inspected the actual diff and logs. The final complete gate took 238.41
-seconds; 46 focused privacy/invisible-character closure checks also passed.
-Fresh closure checks cover the final documents and single task checkbox.
+Tester passed 47 independent probes and the complete Python suite:
+3,147 passed, one skipped (filesystem symlinks unavailable), three warnings,
+in 191.63 seconds. Strict OpenSpec validation and diff checks passed.
+Main inspected the actual source, diff and final verification logs.
 
-Task 4.1 remains pending and is not started. The receipt remains initial
-authorization, without a runtime coordinator or unattended execution. Frontend
-is unchanged. No real generation, external handoff, archive or push occurred.
+Task 4.2 remains pending and is not started. HTTP controls, runtime workers,
+heartbeats, assistant/runner coordination and live generation remain future
+integration. Frontend is unchanged. No external handoff, archive or push occurred.

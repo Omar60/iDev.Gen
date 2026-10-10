@@ -83,6 +83,8 @@ _FULL_AUTO_CREATION_TABLES = (
     "session_profile_coverage_revision",
     "session_take_coverage_evidence",
     "full_auto_run_receipt",
+    "full_auto_run",
+    "full_auto_run_action_receipt",
     "guided_session_request",
     "authoring_operation",
     "shot",
@@ -168,6 +170,8 @@ def _assert_complete_full_auto_creation(
         "session_profile_coverage_revision": 1,
         "session_take_coverage_evidence": 4,
         "full_auto_run_receipt": 1,
+        "full_auto_run": 1,
+        "full_auto_run_action_receipt": 0,
         "guided_session_request": 1,
         "authoring_operation": 0,
         "shot": 0,
@@ -229,6 +233,15 @@ def _assert_complete_full_auto_creation(
     assert receipt["session_id"] == sid
     assert receipt["scope_digest"] == payload["full_auto"]["scope_digest"]
     assert receipt["plan_digest"] == resource_store.canonical_digest(plan)
+    run = db.one("SELECT * FROM full_auto_run WHERE run_id = ?", result["full_auto_run_id"])
+    assert run["session_id"] == sid
+    assert run["state"] == "active"
+    assert run["phase"] == "prepare"
+    assert run["revision"] == 1
+    assert run["epoch"] == 1
+    assert run["plan_revision"] == 1
+    assert run["fencing_token"] == 1
+    assert run["lease_expires_at"] is None
     request = db.one(
         "SELECT * FROM guided_session_request WHERE request_id = ?",
         payload["request_id"],
@@ -1051,11 +1064,12 @@ def test_guided_transaction_failure_rolls_back_claim_session_and_plan(client, se
     ("session_profile_coverage_revision", 1),
     *(('session_take_coverage_evidence', index) for index in range(1, 5)),
     ("full_auto_run_receipt", 1),
+    ("full_auto_run", 1),
     ("guided_session_request", 1),
 ], ids=[
     "session", "plan", "profile-evidence", "coverage-revision",
     "coverage-take-1", "coverage-take-2", "coverage-take-3", "coverage-take-4",
-    "authorization-receipt", "guided-response",
+    "authorization-receipt", "run-state", "guided-response",
 ])
 def test_full_auto_failure_after_each_creation_write_rolls_back_all_rows(
     client, seeded, monkeypatch, table, occurrence,

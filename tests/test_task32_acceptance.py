@@ -320,6 +320,7 @@ def test_each_post_write_failure_rolls_back_full_creation_and_same_request_retri
             "session_profile_coverage_revision": 1,
             "session_take_coverage_evidence": base["photo_count"],
             "full_auto_run_receipt": 1,
+                "full_auto_run": 1,
             "guided_session_request": 1,
         })
         assert {

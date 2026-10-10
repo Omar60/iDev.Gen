@@ -778,8 +778,8 @@ CREATE TABLE IF NOT EXISTS guided_session_request (
     created_at     TEXT NOT NULL
 );
 
--- Immutable initial authorization intent for a Full Auto session. Runtime
--- ownership, phase changes and dispatch state belong to the later coordinator.
+-- Immutable initial authorization grant for a Full Auto run. Mutable ownership
+-- and phase state stay separate in the coordinator row below.
 CREATE TABLE IF NOT EXISTS full_auto_run_receipt (
     run_id                  TEXT PRIMARY KEY NOT NULL CHECK (length(run_id) > 0),
     session_id              INTEGER NOT NULL UNIQUE REFERENCES session(id) ON DELETE CASCADE,
@@ -791,6 +791,115 @@ CREATE TABLE IF NOT EXISTS full_auto_run_receipt (
     authorization_expires_at TEXT NOT NULL,
     created_at              TEXT NOT NULL
 );
+
+CREATE TRIGGER IF NOT EXISTS full_auto_run_receipt_immutable
+BEFORE UPDATE ON full_auto_run_receipt
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto creation receipt is immutable');
+END;
+
+-- Mutable coordinator state is kept separate from the immutable creation
+-- authorization so action replay and runtime progress cannot rewrite consent.
+CREATE TABLE IF NOT EXISTS full_auto_run (
+    run_id           TEXT PRIMARY KEY NOT NULL
+                     REFERENCES full_auto_run_receipt(run_id) ON DELETE CASCADE,
+    session_id       INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    state            TEXT NOT NULL,
+    phase            TEXT NOT NULL,
+    revision         INTEGER NOT NULL CHECK (revision > 0),
+    epoch            INTEGER NOT NULL CHECK (epoch > 0),
+    plan_revision    INTEGER NOT NULL CHECK (plan_revision > 0),
+    fencing_token    INTEGER NOT NULL CHECK (fencing_token > 0),
+    lease_expires_at TEXT,
+    lease_started_at TEXT,
+    cancel_intent    INTEGER NOT NULL DEFAULT 0 CHECK (cancel_intent IN (0, 1)),
+    cancel_intent_at TEXT,
+    blocker_code     TEXT,
+    resume_phase     TEXT,
+    evidence_json    TEXT NOT NULL DEFAULT '{}',
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    CHECK (state IN (
+        'active', 'waiting_authoring', 'waiting_runner', 'blocked',
+        'cancel_requested', 'cancelled', 'failed', 'succeeded',
+        'completed_with_errors'
+    )),
+    CHECK (phase IN (
+        'prepare', 'validate', 'approve', 'submit', 'execute', 'reconcile'
+    )),
+    CHECK (resume_phase IS NULL OR resume_phase IN (
+        'prepare', 'validate', 'approve', 'submit', 'execute'
+    )),
+    CHECK (state != 'blocked' OR blocker_code IS NOT NULL),
+    CHECK (state = 'blocked' OR blocker_code IS NULL),
+    CHECK (cancel_intent = 0 OR state IN ('cancel_requested', 'blocked', 'cancelled')),
+    CHECK (resume_phase IS NULL OR state IN ('cancel_requested', 'blocked', 'cancelled')
+           OR phase = 'reconcile'),
+    CHECK (state NOT IN ('cancelled', 'failed', 'succeeded', 'completed_with_errors')
+           OR lease_expires_at IS NULL)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_full_auto_run_nonterminal_session
+    ON full_auto_run(session_id)
+    WHERE state IN (
+        'active', 'waiting_authoring', 'waiting_runner', 'blocked', 'cancel_requested'
+    );
+CREATE TRIGGER IF NOT EXISTS full_auto_run_identity_immutable
+BEFORE UPDATE OF run_id, session_id, created_at ON full_auto_run
+WHEN NEW.run_id IS NOT OLD.run_id
+  OR NEW.session_id IS NOT OLD.session_id
+  OR NEW.created_at IS NOT OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto run identity is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS full_auto_run_receipt_session_match
+BEFORE INSERT ON full_auto_run
+WHEN EXISTS (
+    SELECT 1 FROM full_auto_run_receipt
+    WHERE run_id = NEW.run_id AND session_id <> NEW.session_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto run session does not match its authorization receipt');
+END;
+CREATE TRIGGER IF NOT EXISTS full_auto_run_revision_monotonic
+BEFORE UPDATE OF revision ON full_auto_run
+WHEN NEW.revision < OLD.revision
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto run revision cannot decrease');
+END;
+CREATE TRIGGER IF NOT EXISTS full_auto_run_epoch_monotonic
+BEFORE UPDATE OF epoch ON full_auto_run
+WHEN NEW.epoch < OLD.epoch
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto run epoch cannot decrease');
+END;
+CREATE TRIGGER IF NOT EXISTS full_auto_run_plan_revision_monotonic
+BEFORE UPDATE OF plan_revision ON full_auto_run
+WHEN NEW.plan_revision < OLD.plan_revision
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto run plan revision cannot decrease');
+END;
+CREATE TRIGGER IF NOT EXISTS full_auto_run_fence_monotonic
+BEFORE UPDATE OF fencing_token ON full_auto_run
+WHEN NEW.fencing_token < OLD.fencing_token
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto run fencing token cannot decrease');
+END;
+
+CREATE TABLE IF NOT EXISTS full_auto_run_action_receipt (
+    run_id         TEXT NOT NULL REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    request_id     TEXT NOT NULL CHECK (length(request_id) > 0),
+    action         TEXT NOT NULL CHECK (action IN ('cancel', 'resume')),
+    request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+    epoch          INTEGER NOT NULL CHECK (epoch > 0),
+    response_json  TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    PRIMARY KEY (run_id, request_id)
+);
+CREATE TRIGGER IF NOT EXISTS full_auto_run_action_receipt_immutable
+BEFORE UPDATE ON full_auto_run_action_receipt
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto action receipt is immutable');
+END;
 
 -- Authoritative review approval for resource-v1 plan revisions (task 5.4).
 -- One row per session; creating or saving a new plan revision invalidates
@@ -1183,13 +1292,40 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
-    """Bring an older database up to the current schema.
-
-    Only renames and added columns so far, so `ALTER TABLE` covers it and the
-    rows survive: a session already shot is someone's afternoon of GPU time.
-    """
+    """Apply additive schema and data migrations while preserving saved work."""
     def columns(table: str) -> set[str]:
         return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+    # Keep a durable boundary for each active owner and cancellation intent.
+    # Existing leases/intent rows predate these timestamps; their last persisted
+    # update is the safest available lower bound for accepting new observations.
+    run_columns = columns("full_auto_run")
+    if "lease_started_at" not in run_columns:
+        conn.execute("ALTER TABLE full_auto_run ADD COLUMN lease_started_at TEXT")
+    if "cancel_intent_at" not in run_columns:
+        conn.execute("ALTER TABLE full_auto_run ADD COLUMN cancel_intent_at TEXT")
+    conn.execute(
+        """UPDATE full_auto_run SET lease_started_at = updated_at
+           WHERE lease_expires_at IS NOT NULL AND lease_started_at IS NULL"""
+    )
+    conn.execute(
+        """UPDATE full_auto_run SET cancel_intent_at = updated_at
+           WHERE cancel_intent = 1 AND cancel_intent_at IS NULL"""
+    )
+
+    # Receipts predating the coordinator tables are still durable authorized
+    # work. Materialize their initial run row without changing the receipt.
+    conn.execute(
+        """INSERT OR IGNORE INTO full_auto_run (
+               run_id, session_id, state, phase, revision, epoch, plan_revision,
+               fencing_token, lease_expires_at, lease_started_at, cancel_intent,
+               cancel_intent_at, blocker_code, resume_phase, evidence_json,
+               created_at, updated_at
+           )
+           SELECT run_id, session_id, 'active', 'prepare', 1, 1, 1,
+                  1, NULL, NULL, 0, NULL, NULL, NULL, '{}', created_at, created_at
+           FROM full_auto_run_receipt"""
+    )
 
     if "input_digest" not in columns("authoring_operation"):
         conn.execute(

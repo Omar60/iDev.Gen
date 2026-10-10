@@ -1,5 +1,18 @@
 # Project Diary
 
+## Full Auto Run-State Acceptance, Task 4.1
+
+- Separate immutable consent and control receipts from mutable run epochs;
+  historical control replay must precede current CAS and never affect a later epoch.
+- Check persisted plan and receipt authority at new-work boundaries. A valid
+  fenced owner must still be able to block and release on drift or expiry;
+  cancellation reconciliation and safe settlement are not new dispatch.
+- Bind cancellation observations to the current durable intent and claim start,
+  not just a non-future timestamp. Old-epoch settlement cannot close new work.
+- Test SQL authority binding with otherwise valid rows. An unrelated CHECK or
+  live-session index can mask a missing receipt/session constraint and create
+  a false pass. Preserve full-row refusals and actual transactional races.
+
 ## Full Auto Consent Serialization, Task 3.4
 
 - Resolve live configuration after acquiring the allocation transaction;

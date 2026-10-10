@@ -26,7 +26,9 @@ Verified baseline from the repository layout and application entry points.
 - Session authoring is split across `session_plan.py`,
   `resource_preparation.py`, and prompt/resource modules. Resource import,
   immutable storage, readiness, and translations are handled by the
-  `resource_*` modules.
+  `resource_*` modules. `backend/resource_full_auto.py` persists Full Auto run
+  state, fenced claims, cancellation/resume transitions, and immutable control
+  receipts; it is not yet connected to HTTP controls or an execution runtime.
 - `backend/saved_looks.py` stores self-contained saved-look versions and
   separate immutable, digest-bound automation-profile revisions and permanent
   appearance projections. Its coverage compiler binds the exact saved-look and

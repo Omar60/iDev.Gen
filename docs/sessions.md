@@ -1668,10 +1668,19 @@ allocation transaction and returns `409 authorization_scope_changed` if a
 bound input or eligibility changed. The authorization expires seven days after
 the original preflight timestamp, and creation does not extend that deadline.
 A successful creation atomically stores the populated plan, applied profile and
-coverage evidence, initial authorization receipt, and idempotent response. It
-returns `full_auto_run_id` without calling an assistant or starting ComfyUI.
-Runtime coordination, unattended execution, run status, Cancel/Resume, and Full
-Auto selection/consent UI remain unimplemented; use the manual workflow for
+coverage evidence, initial authorization receipt, persisted run state, and
+idempotent response. Existing authorization receipts are backfilled into run
+records. The run domain stores state and phase, monotonic revision and execution
+epoch, signed private owner claims, 60-second fenced leases, and immutable
+control-action receipts. Historical control retries replay their stored result;
+eligible terminal Resume opens a new epoch. Cancellation-intent reconciliation
+uses observed backend evidence without remote I/O.
+
+This is a persistence/domain base only: no HTTP run-status or control endpoints,
+runtime coordinator, worker, scheduler, heartbeat, provider, or runner
+integration is implemented. Creation returns `full_auto_run_id` without calling
+an assistant or starting ComfyUI; unattended execution and Full Auto
+selection/consent UI remain unavailable. Use the manual workflow for
 preparation, review, submission, and Run.
 
 For a request ID already committed, an identical normalized request returns the

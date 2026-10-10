@@ -88,9 +88,9 @@ pixel verification. Exact profile read/create-revision and manual
 session-application APIs are documented in
 [Saved looks](docs/looks.md#automation-profile-api). Guided creation also has a
 backend API for selecting an exact saved-look snapshot and for read-only Full
-Auto preflight plus atomic initial authorization. There is no profile editor or
-Full Auto coordinator, unattended execution, status/cancel/resume controls, or
-selection/consent UI; the manual workflow retains progression, review,
+Auto preflight plus atomic initial run authorization. There is no profile editor
+or execution coordinator, unattended execution, status/cancel/resume controls,
+or selection/consent UI; the manual workflow retains progression, review,
 submission, and Run controls. Portable-v1 JSON excludes profiles. See the
 [guided creation API](docs/sessions.md#saved-look-and-full-auto-creation-api).
 
@@ -102,9 +102,12 @@ effective canvas and framing. Reference and guided-paint workflows remain
 available through the manual path. Its read-only scope resolution is serialized
 with source and configuration updates. Creation accepts a quote through the
 inclusive 300-second boundary and preserves the authorization deadline at seven
-days after the original quote. An identical retry replays its stored receipt
+days after the original quote. Creation atomically writes the initial run state
+with its immutable authorization receipt; existing authorization receipts are
+backfilled into run records. An identical retry replays its stored receipt
 before rechecking current dependencies or quote age; changed content under the
-same request ID is refused.
+same request ID is refused. Persisted run state is not connected to execution or
+control endpoints yet.
 
 ## Composing from the catalogue
 

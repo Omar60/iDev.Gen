@@ -21,7 +21,10 @@ import db
 from backend import resource_planning
 import resource_readiness
 import resource_store
-from backend import comfy, resource_selection, saved_looks, session_plan, workflow_binding
+from backend import (
+    comfy, resource_full_auto, resource_selection, saved_looks, session_plan,
+    workflow_binding,
+)
 
 
 _POLICY_FIELDS = ("camera", "framing", "pose", "expression")
@@ -1348,6 +1351,9 @@ def create_or_replay(
                 json.dumps(authorization, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
                 resolution["scope_digest"], resolution["dependencies_digest"],
                 plan_digest, resolution["scope_issued_at"], resolution["expires_at"], now,
+            )
+            resource_full_auto.create_run_in_transaction(
+                run_id, session_id, plan_revision=1, created_at=now,
             )
             response["full_auto_run_id"] = run_id
         response_json = json.dumps(
