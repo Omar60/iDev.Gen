@@ -1,5 +1,16 @@
 # Project Diary
 
+## Full Auto Input Binding Acceptance, Task 3.3
+
+- Check mapped widget usability as well as presence: a selected model value
+  mapped to an integer seed is incompatible even when disconnected. Preserve
+  custom text widgets rather than inventing field-name semantic heuristics.
+- State reproduction preconditions accurately. A preflight with no checkpoint
+  override proves a map-validation gap, not that the runner applies a selected
+  checkpoint. Final acceptance must explicitly select the value under test.
+- Reuse recognized reference detection and disclose custom-node limits. Type
+  compatibility and prompt instructions do not certify semantics or pixels.
+
 ## Full Auto Atomic Creation Acceptance, Task 3.2
 
 - Inspect earlier prerequisite work before adding another implementation.

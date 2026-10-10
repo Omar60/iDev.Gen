@@ -94,6 +94,13 @@ selection/consent UI; the manual workflow retains progression, review,
 submission, and Run controls. Portable-v1 JSON excludes profiles. See the
 [guided creation API](docs/sessions.md#saved-look-and-full-auto-creation-api).
 
+Full Auto currently accepts only text-to-image workflows with no mapped
+reference slots or `LoadImage` references found by automatic detection. That
+detection does not certify every custom node as reference-free. Preflight binds
+the selected character, workflow, settings, exact saved-look/profile revisions,
+effective canvas and framing. Reference and guided-paint workflows remain
+available through the manual path.
+
 ## Composing from the catalogue
 
 A take can also be **dealt** instead of written: one camera, one act and one

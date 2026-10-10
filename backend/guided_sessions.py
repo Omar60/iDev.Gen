@@ -20,7 +20,7 @@ import db
 from backend import resource_planning
 import resource_readiness
 import resource_store
-from backend import resource_selection, saved_looks, session_plan, workflow_binding
+from backend import comfy, resource_selection, saved_looks, session_plan, workflow_binding
 
 
 _POLICY_FIELDS = ("camera", "framing", "pose", "expression")
@@ -761,6 +761,60 @@ def _validate_full_auto_canvas(
     return dimensions
 
 
+def _validate_full_auto_selected_choices(
+    model: dict,
+    settings: dict[str, Any],
+    graph: dict,
+    node_map: dict,
+    detected_map: dict,
+) -> None:
+    choices = workflow_binding.selected_workflow_choices(settings, model)
+    for slot, value, label in choices:
+        selected = bool(value)
+        if not selected and slot not in node_map:
+            continue
+        expected = value
+        if not selected:
+            # With no override, compare against the workflow's own widget type;
+            # do not copy its default into session settings or rewrite the graph.
+            detected_path = detected_map.get(slot, "").split(".")
+            if len(detected_path) != 3 or detected_path[1] != "inputs":
+                continue
+            detected_inputs = (graph.get(detected_path[0]) or {}).get("inputs")
+            if not isinstance(detected_inputs, dict):
+                continue
+            expected = detected_inputs.get(detected_path[2])
+            if isinstance(expected, list) or expected is None:
+                continue
+        path = node_map.get(slot, "").split(".")
+        if len(path) != 3 or path[1] != "inputs":
+            raise GuidedSessionError(
+                422, "workflow_compatibility_invalid",
+                f"The selected workflow has an invalid {label} mapping.",
+            )
+        inputs = (graph.get(path[0]) or {}).get("inputs")
+        if not isinstance(inputs, dict) or path[2] not in inputs:
+            raise GuidedSessionError(
+                422, "workflow_compatibility_invalid",
+                f"The selected workflow has an invalid {label} mapping.",
+            )
+        current = inputs[path[2]]
+        if isinstance(current, list):
+            if not selected:
+                continue
+            raise GuidedSessionError(
+                422, "workflow_compatibility_invalid",
+                f"The selected workflow connects the {label} input and cannot "
+                f"apply the selected value.",
+            )
+        if type(current) is not type(expected):
+            raise GuidedSessionError(
+                422, "workflow_compatibility_invalid",
+                f"The selected workflow has an incompatible widget for the "
+                f"selected {label}.",
+            )
+
+
 def _full_auto_stage_assignments(plan: dict, saved: dict) -> tuple[list[int], list[dict]]:
     stage_states = saved_looks._automation_profile_coverage_stage_states(saved)
     if len(plan["takes"]) < len(stage_states):
@@ -896,6 +950,25 @@ def _resolve_request(
 
     effective_body = dict(body)
     if is_full_auto:
+        try:
+            detected_map = comfy.detect_map(graph)
+        except (AttributeError, TypeError) as exc:
+            raise GuidedSessionError(
+                422, "workflow_compatibility_invalid",
+                "The selected workflow is not compatible with Full Auto.",
+            ) from exc
+        if any(
+            slot in node_map or slot in detected_map
+            for slot in comfy.REFERENCE_SLOTS
+        ):
+            raise GuidedSessionError(
+                422, "full_auto_workflow_unsupported",
+                "Full Auto requires a t2i workflow without a generation "
+                "reference; choose a compatible workflow or continue manually.",
+            )
+        _validate_full_auto_selected_choices(
+            model, settings, graph, node_map, detected_map,
+        )
         settings.update(_validate_full_auto_canvas(body, settings, graph, node_map))
         policy = {field: dict(value) for field, value in body["variation_policy"].items()}
         if full_auto["framing_intent"] == "full_body":

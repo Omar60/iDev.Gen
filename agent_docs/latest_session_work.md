@@ -1,54 +1,57 @@
 # Latest Session Work
 
-## Task 3.2 Accepted Closure
+## Task 3.3 Accepted Closure
 
-Internal Heavy deployment `full_auto_first_pending_20261009` addresses only
-Task 3.2 of `automate-resource-session-full-auto`. Intake began with a clean
-Git tree and 9 of 41 tasks complete. Main read the project framework and
-decisive OpenSpec/code contracts; Explorer independently mapped the existing
-creation writes and candidate sharing. Only 3.2 is newly checked, reaching
-10 of 41 tasks complete.
+Internal Heavy deployment `full-auto-first-pending-20261009` addresses only
+Task 3.3 of `automate-resource-session-full-auto`. Main completed framework
+intake and inspected the decisive specification/code contracts. Explorer
+mapped prerequisite implementation and missing acceptance evidence. Initial
+Git state was clean; only 3.3 is newly checked, reaching 11 of 41 tasks.
 
-## Delivered Evidence
+## Delivered Changes and Evidence
 
-Production already satisfies the shared-candidate and atomic-creation
-contract introduced as necessary Task 3.1 prerequisites. No production change
-was needed. Executor `implement_32` extended guided-creation tests with ten
-post-INSERT failure points, including each coverage row, complete row
-comparisons, HTTP/service races and committed response-loss replay. Assistant,
-runner and ComfyUI dispatch are forbidden in those tests.
+Executor added Full Auto-only refusal of mapped or detected generation
+references and unusable selected checkpoint/LoRA/sampler/scheduler mappings.
+Connected inputs and incompatible widget types fail before allocation. An
+absent override may use detected widget type for validation without copying
+its value or changing the graph. Custom text-widget mapping stays supported;
+manual behavior is unchanged. README and session API documentation explain
+eligibility, exact framing, canvas and detection limitations.
 
-Tester `verify_32` added independent acceptance covering the complete first
-revision, exact snapshot/permanent projection, stable progression events,
-per-take coverage, profile evidence, authorization and byte-exact response.
-It observes every actual mutating statement, fails after each one, compares
-complete row snapshots, then retries the same request ID for one complete
-allocation and an unchanged replay. An independent synchronized HTTP race
-verifies one complete session/run and identical 200/201 responses.
+Tester independently covers stored authorization/session/plan binding,
+carried character identity, default/override workflows, inherited/explicit
+canvas, exact look/profile revisions despite newer publications, replay after
+dependency drift, the t2i matrix, canonical full_body framing, fixed conflicts,
+connected canvas and zero-allocation refusals. Tests forbid real assistant,
+runner and ComfyUI effects.
 
-## Independent Verification
+Independent review found a widget-type gap. Executor repaired it and Tester
+rechecked. The first reproduction had no explicit checkpoint override, so it
+did not prove a selected checkpoint was written into a seed; final independent
+acceptance explicitly selects the checkpoint before exercising that mapping.
+A usage-limit interruption preserved partial changes; continuation reused
+context and verified the final repair rather than assuming completion.
 
-- Executor focused suite: 50 passed.
-- Tester independent acceptance: three passed.
-- Final `python -m pytest` on Python 3.11: 3,012 passed, one skipped,
-  three warnings, in 186.19 seconds.
+## Final Verification
+
+- Executor focused suite: 57 passed.
+- Tester focused acceptance/regression suites: 133 passed.
+- Complete `python -m pytest` on Python 3.11: 3,038 passed, one skipped,
+  three warnings, in 222.07 seconds.
+- Skip: filesystem symlinks unavailable (OSError).
+- Warnings: Pydantic field shadowing and HTTPX upload deprecation.
 - Strict OpenSpec validation and `git diff --check`: passed.
 
-Raw logs remain outside the repository. One intermediate full run exposed a
-Tester interception-scope error; Tester corrected its own test and reran
-the focused and full gates successfully. Warnings concern Pydantic field
-shadowing and HTTPX upload deprecation. The full log does not report the skip
-reason. Frontend tests/build were not required or run because frontend is
-unchanged. Final compact checks cover closure documents and the checkbox.
+Raw logs remain outside the repository. Frontend tests/build were not required
+or run because frontend is unchanged. Closure-only checks cover the final
+documents, task checkbox and personal-data policy before commit. Main owns
+acceptance and the scoped commit; Archivist owns the sealed read-only Git
+handoff and exact Deployment Token Report.
 
-## Acceptance and Continuation
+## Continuation and Limits
 
-Main accepts the complete Task 3.2 contract after inspecting code, the actual
-diff and independent output. Public README/session/look docs already describe
-the unchanged behavior; Archivist confirmed no additional public edits are
-needed. Main owns the scoped acceptance commit; Archivist owns the sealed
-read-only Git handoff and exact Deployment Token Report.
-
-Task 3.3 is the next pending task and was not started. The receipt is initial
-authorization intent, with no runtime coordinator or dispatch. No live
-generation, visual acceptance, external handoff, archive or push occurred.
+Task 3.4 remains pending. No coordinator, generation, visual acceptance,
+external handoff, OpenSpec archive or push occurred. Detection recognizes
+mapped reference slots and LoadImage nodes, not every custom reference node.
+Matching widget types do not prove arbitrary custom mapping semantics; canvas
+and framing instructions do not certify rendered pixels.

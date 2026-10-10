@@ -1633,6 +1633,30 @@ summary binds the exact saved look/profile, room and translation, model inputs,
 workflow and mappings, effective canvas and framing, provider, schedule,
 coverage, policy, and limits using safe values and digests.
 
+Full Auto v1 accepts only a `t2i` workflow with no reference slots mapped in
+`node_map` and no `LoadImage` references found by automatic workflow detection.
+Detection is best effort; custom reference nodes are not guaranteed to be
+recognized. Each selected checkpoint, LoRA, sampler, or scheduler value must
+map to an existing, unconnected input whose widget has the same JSON value type.
+Without a selected override, a detected default widget's type is checked when
+available, while its value and the workflow graph remain unchanged. Matching
+types do not certify the semantics of arbitrary custom values. If the model has
+no workflow default and the request omits `workflow_id`, preflight refuses
+instead of guessing. Preflight binds the resolved character/model and settings,
+workflow ID and graph/map digests, exact saved-look and profile revisions,
+effective canvas, and framing; creation returns `409 authorization_scope_changed`
+if any bound input changes.
+
+The effective canvas inherits the character's dimensions unless `width` and
+`height` are supplied together. Both must be positive multiples of 8. An explicit
+override requires usable mappings for both dimensions; a mapped connected or
+otherwise unusable dimension input is refused. The resolved dimensions appear in
+the preflight summary. With `framing_intent: "full_body"`, Full Auto sets framing
+to the exact value `Full body, head to toe, both feet visible, with space above
+the head and below the feet.` and preserves camera, pose, and expression policy.
+A different fixed framing is refused; this comparison is exact text equality,
+not semantic interpretation of free text.
+
 Creation adds the preflight's canonical `scope_digest` and UTC
 `scope_issued_at` to those six fields, making the closed eight-field
 `full_auto` object, and supplies the required top-level `request_id`. The quote

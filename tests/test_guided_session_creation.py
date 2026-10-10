@@ -653,6 +653,210 @@ def test_full_auto_canvas_refuses_connected_and_misbound_dimension_inputs():
     assert misbound.value.code == "workflow_compatibility_invalid"
 
 
+def _preflight_body(payload: dict) -> dict:
+    body = json.loads(json.dumps(payload))
+    body.pop("request_id")
+    body["full_auto"].pop("scope_digest")
+    body["full_auto"].pop("scope_issued_at")
+    return body
+
+
+def test_full_auto_refuses_t2i_generation_reference_and_preserves_manual_path(
+    client, seeded, monkeypatch,
+):
+    payload, _saved, _published = _full_auto_payload(
+        client, seeded, _room_anchor(),
+    )
+    workflow_id = db.one(
+        "SELECT workflow_id FROM model WHERE id = ?", seeded["model_id"],
+    )["workflow_id"]
+    graph = json.loads(db.one(
+        "SELECT graph FROM workflow WHERE id = ?", workflow_id,
+    )["graph"])
+    graph["9001"] = {
+        "class_type": "LoadImage",
+        "inputs": {"image": "reference.png"},
+    }
+    graph["9002"] = {
+        "class_type": "VAEEncode",
+        "inputs": {"pixels": ["9001", 0], "vae": ["1", 2]},
+    }
+    graph["6"]["inputs"]["latent_image"] = ["9002", 0]
+    reference_workflow = client.post("/api/workflows", json={
+        "name": "guided-full-auto-reference-workflow",
+        "graph": graph,
+        "kind": "t2i",
+    })
+    assert reference_workflow.status_code == 200, reference_workflow.text
+    workflow_id = reference_workflow.json()["id"]
+    node_map = json.loads(db.one(
+        "SELECT node_map FROM workflow WHERE id = ?", workflow_id,
+    )["node_map"])
+    node_map.pop("reference", None)
+    db.run(
+        "UPDATE model SET workflow_id = ? WHERE id = ?",
+        workflow_id, seeded["model_id"],
+    )
+    db.run(
+        "UPDATE workflow SET node_map = ? WHERE id = ?",
+        json.dumps(node_map), workflow_id,
+    )
+
+    before = _creation_snapshot()
+    _forbid_full_auto_side_effects(monkeypatch)
+    response = client.post(
+        "/api/sessions/guided/full-auto/preflight",
+        json=_preflight_body(payload),
+    )
+    detail = _error(response, 422, "full_auto_workflow_unsupported")
+    assert "generation reference" in detail["message"]
+    assert _creation_snapshot() == before
+
+    manual = _preflight_body(payload)
+    manual.pop("full_auto")
+    manual["request_id"] = str(uuid.uuid4())
+    manual["mode"] = "manual"
+    created = client.post("/api/sessions/guided", json=manual)
+    assert created.status_code == 201, created.text
+    assert db.one(
+        "SELECT workflow_id FROM session WHERE id = ?",
+        created.json()["session_id"],
+    )["workflow_id"] == workflow_id
+
+
+@pytest.mark.parametrize(
+    ("slot", "settings_field", "selected_value"),
+    [
+        ("checkpoint", "checkpoint", "base.safetensors"),
+        ("lora_name", None, None),
+        ("sampler", "sampler", "euler"),
+        ("scheduler", "scheduler", "normal"),
+    ],
+)
+def test_full_auto_refuses_connected_selected_settings(
+    client, seeded, monkeypatch, slot, settings_field, selected_value,
+):
+    payload, _saved, _published = _full_auto_payload(
+        client, seeded, _room_anchor(),
+    )
+    workflow_id = db.one(
+        "SELECT workflow_id FROM model WHERE id = ?", seeded["model_id"],
+    )["workflow_id"]
+    workflow = db.one(
+        "SELECT graph, node_map FROM workflow WHERE id = ?", workflow_id,
+    )
+    graph = json.loads(workflow["graph"])
+    node_map = json.loads(workflow["node_map"])
+    node_id, _inputs, field = node_map[slot].split(".")
+    graph[node_id]["inputs"][field] = ["1", 0]
+    db.run(
+        "UPDATE workflow SET graph = ? WHERE id = ?",
+        json.dumps(graph), workflow_id,
+    )
+    if settings_field is not None:
+        model = db.one("SELECT settings FROM model WHERE id = ?", seeded["model_id"])
+        settings = json.loads(model["settings"] or "{}")
+        settings[settings_field] = selected_value
+        db.run(
+            "UPDATE model SET settings = ? WHERE id = ?",
+            json.dumps(settings), seeded["model_id"],
+        )
+
+    before = _creation_snapshot()
+    _forbid_full_auto_side_effects(monkeypatch)
+    response = client.post(
+        "/api/sessions/guided/full-auto/preflight",
+        json=_preflight_body(payload),
+    )
+    detail = _error(response, 422, "workflow_compatibility_invalid")
+    assert "connects" in detail["message"]
+    assert _creation_snapshot() == before
+
+
+def test_full_auto_refuses_selected_setting_mapped_to_incompatible_widget_type(
+    client, seeded, monkeypatch,
+):
+    model = db.one(
+        "SELECT settings FROM model WHERE id = ?", seeded["model_id"],
+    )
+    settings = json.loads(model["settings"] or "{}")
+    settings["checkpoint"] = "models/selected.safetensors"
+    db.run(
+        "UPDATE model SET settings = ? WHERE id = ?",
+        json.dumps(settings), seeded["model_id"],
+    )
+    payload, _saved, _published = _full_auto_payload(
+        client, seeded, _room_anchor(),
+    )
+    workflow_id = db.one(
+        "SELECT workflow_id FROM model WHERE id = ?", seeded["model_id"],
+    )["workflow_id"]
+    row = db.one(
+        "SELECT node_map FROM workflow WHERE id = ?", workflow_id,
+    )
+    node_map = json.loads(row["node_map"])
+    assert "checkpoint" in node_map and "seed" in node_map
+    node_map["checkpoint"] = node_map["seed"]
+    db.run(
+        "UPDATE workflow SET node_map = ? WHERE id = ?",
+        json.dumps(node_map), workflow_id,
+    )
+
+    before = _creation_snapshot()
+    _forbid_full_auto_side_effects(monkeypatch)
+    response = client.post(
+        "/api/sessions/guided/full-auto/preflight",
+        json=_preflight_body(payload),
+    )
+    detail = _error(response, 422, "workflow_compatibility_invalid")
+    assert "incompatible widget" in detail["message"]
+    assert _creation_snapshot() == before
+
+
+def test_full_auto_accepts_selected_setting_mapped_to_custom_string_widget(
+    client, seeded, monkeypatch,
+):
+    model = db.one(
+        "SELECT settings FROM model WHERE id = ?", seeded["model_id"],
+    )
+    settings = json.loads(model["settings"] or "{}")
+    settings["checkpoint"] = "models/selected.safetensors"
+    db.run(
+        "UPDATE model SET settings = ? WHERE id = ?",
+        json.dumps(settings), seeded["model_id"],
+    )
+    payload, _saved, _published = _full_auto_payload(
+        client, seeded, _room_anchor(),
+    )
+    workflow_id = db.one(
+        "SELECT workflow_id FROM model WHERE id = ?", seeded["model_id"],
+    )["workflow_id"]
+    workflow = db.one(
+        "SELECT graph, node_map FROM workflow WHERE id = ?", workflow_id,
+    )
+    graph = json.loads(workflow["graph"])
+    graph["9001"] = {
+        "class_type": "CustomCheckpointNode",
+        "inputs": {"checkpoint_name": "models/workflow.safetensors"},
+    }
+    node_map = json.loads(workflow["node_map"])
+    node_map["checkpoint"] = "9001.inputs.checkpoint_name"
+    db.run(
+        "UPDATE workflow SET graph = ?, node_map = ? WHERE id = ?",
+        json.dumps(graph), json.dumps(node_map), workflow_id,
+    )
+
+    before = _creation_snapshot()
+    _forbid_full_auto_side_effects(monkeypatch)
+    response = client.post(
+        "/api/sessions/guided/full-auto/preflight",
+        json=_preflight_body(payload),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["summary"]["workflow"]["workflow_id"] == workflow_id
+    assert _creation_snapshot() == before
+
+
 def test_guided_manual_mode_fixed_policy_and_user_overrides_persist_without_assistant(client, seeded):
     anchor = _room_anchor()
     policy = {
