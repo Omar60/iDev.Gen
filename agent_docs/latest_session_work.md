@@ -1,65 +1,54 @@
 # Latest Session Work
 
-## Task 3.1 Accepted Closure
+## Task 3.2 Accepted Closure
 
-Internal Heavy deployment `full-auto-31-20261009` implements only Task 3.1
-of `automate-resource-session-full-auto`, from a clean tree. Main completed
-framework/OpenSpec intake and inspected decisive contracts and the real diff.
-Explorer and Tester identified overlap with Tasks 3.2-3.4; the user explicitly
-authorized the necessary preflight, consent and atomic-creation prerequisites
-within 3.1. Only 3.1 is newly checked; 9 of 41 tasks are complete.
+Internal Heavy deployment `full_auto_first_pending_20261009` addresses only
+Task 3.2 of `automate-resource-session-full-auto`. Intake began with a clean
+Git tree and 9 of 41 tasks complete. Main read the project framework and
+decisive OpenSpec/code contracts; Explorer independently mapped the existing
+creation writes and candidate sharing. Only 3.2 is newly checked, reaching
+10 of 41 tasks complete.
 
-## Delivered Contract
+## Delivered Evidence
 
-Guided requests accept strict exact saved-look and Full Auto objects. Omitted
-objects retain old normalized digest and response shapes; explicit null and
-coercions fail. Manual saved-look creation copies the exact immutable snapshot
-without profile application, progression, coverage or a Full Auto receipt.
-Snapshot identity never substitutes the portable export digest.
+Production already satisfies the shared-candidate and atomic-creation
+contract introduced as necessary Task 3.1 prerequisites. No production change
+was needed. Executor `implement_32` extended guided-creation tests with ten
+post-INSERT failure points, including each coverage row, complete row
+comparisons, HTTP/service races and committed response-loss replay. Assistant,
+runner and ComfyUI dispatch are forbidden in those tests.
 
-Read-only Full Auto preflight resolves the exact profile, stages, coverage,
-compatible t2i workflow and effective framing/canvas. Its safe summary binds
-request, model, translation, dependency and provider identities through values
-and digests. The scope digest hashes that canonical summary. Creation compares
-it inside the serialized allocation transaction, requires a non-future quote
-at most 300 seconds old, and preserves the original seven-day deadline.
-Identical committed replay returns stored bytes before quote/dependency checks.
+Tester `verify_32` added independent acceptance covering the complete first
+revision, exact snapshot/permanent projection, stable progression events,
+per-take coverage, profile evidence, authorization and byte-exact response.
+It observes every actual mutating statement, fails after each one, compares
+complete row snapshots, then retries the same request ID for one complete
+allocation and an unchanged replay. An independent synchronized HTTP race
+verifies one complete session/run and identical 200/201 responses.
 
-Successful Full Auto creation atomically stores the first populated plan,
-profile/coverage evidence, immutable initial full_auto_run_receipt and guided
-response. It does not dispatch assistants or generation. A pure saved-look
-candidate is shared with existing manual application; existing CAS/freeze
-contracts remain protected. Errors identify safe fields/states and remedies.
+## Independent Verification
 
-## Independent Evidence and Repairs
+- Executor focused suite: 50 passed.
+- Tester independent acceptance: three passed.
+- Final `python -m pytest` on Python 3.11: 3,012 passed, one skipped,
+  three warnings, in 186.19 seconds.
+- Strict OpenSpec validation and `git diff --check`: passed.
 
-Executor implement_31 owned production and ordinary repairs. Tester
-verify_scope_31 owned tests/test_task31_acceptance.py. Main required canonical
-summary hashing, explicit input bindings, the exact policy version, safe
-readiness remedies and rejection of explicitly null objects. Tester preserved
-binding/drift assertions while correcting raw-value display expectations and
-fixtures for canonical aside and same-second quote behavior.
+Raw logs remain outside the repository. One intermediate full run exposed a
+Tester interception-scope error; Tester corrected its own test and reran
+the focused and full gates successfully. Warnings concern Pydantic field
+shadowing and HTTPX upload deprecation. The full log does not report the skip
+reason. Frontend tests/build were not required or run because frontend is
+unchanged. Final compact checks cover closure documents and the checkbox.
 
-Final independent checks on production and public documentation:
+## Acceptance and Continuation
 
-- 57 independent acceptance tests passed.
-- python -m pytest on Python 3.11.9: 2,996 passed, one skipped, three warnings.
-- Strict OpenSpec validation and git diff --check passed.
+Main accepts the complete Task 3.2 contract after inspecting code, the actual
+diff and independent output. Public README/session/look docs already describe
+the unchanged behavior; Archivist confirmed no additional public edits are
+needed. Main owns the scoped acceptance commit; Archivist owns the sealed
+read-only Git handoff and exact Deployment Token Report.
 
-Raw logs are outside the repository in temporary storage. Warnings concern
-Pydantic and HTTPX deprecations. Frontend is unchanged, so its tests/build were
-not required or run. Compact privacy/control and OpenSpec/diff checks cover
-subsequent main-owned closure documentation and the single task checkbox.
-
-## Closure and Limits
-
-Main accepts 3.1 and owns its scoped acceptance commit. Archivist completed
-README and matching session/look documentation and owns the sealed read-only
-Git handoff and exact Deployment Token Report. No unrelated changes were
-present at intake. Tasks 3.2-3.4 retain their own acceptance and remain unchecked.
-Task 3.2 is the continuation point, not started in this deployment.
-
-The initial receipt has no runtime state, worker dispatch or coordinator.
-Unattended preparation/execution, status/cancel/resume and Full Auto UI remain
-unimplemented. Prompt instructions do not certify visual fidelity. No real
-generation, external handoff, archive or push occurred.
+Task 3.3 is the next pending task and was not started. The receipt is initial
+authorization intent, with no runtime coordinator or dispatch. No live
+generation, visual acceptance, external handoff, archive or push occurred.

@@ -13,6 +13,11 @@ import db
 import main
 import resource_store
 from backend import guided_sessions, session_plan, workflow_binding
+from test_automation_profile_readiness_independent import (
+    _profile as _automation_profile,
+    _publish as _publish_automation_profile,
+    _saved_look as _automation_saved_look,
+)
 
 
 def _room_anchor(*, kind: str = "rooms", ready: bool = True) -> dict[str, str]:
@@ -67,6 +72,170 @@ def _counts() -> tuple[int, int, int]:
         int(db.one(f"SELECT COUNT(*) AS n FROM {table}")["n"])
         for table in ("session", "session_plan", "guided_session_request")
     )
+
+
+_FULL_AUTO_CREATION_TABLES = (
+    "session",
+    "session_plan",
+    "session_plan_approval",
+    "prepared_take",
+    "session_profile_evidence",
+    "session_profile_coverage_revision",
+    "session_take_coverage_evidence",
+    "full_auto_run_receipt",
+    "guided_session_request",
+    "authoring_operation",
+    "shot",
+)
+
+
+def _creation_snapshot() -> dict[str, list[dict]]:
+    return {
+        table: db.q(f"SELECT * FROM {table} ORDER BY rowid")
+        for table in _FULL_AUTO_CREATION_TABLES
+    }
+
+
+def _forbid_full_auto_side_effects(monkeypatch) -> None:
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("guided Full Auto creation must not call an assistant or start generation")
+
+    monkeypatch.setattr(main.enhance, "_request_completion", unexpected)
+    monkeypatch.setattr(main.enhance, "run_structured", unexpected)
+    monkeypatch.setattr(main.runner, "start", unexpected)
+    monkeypatch.setattr(main.comfy, "queue_prompt", unexpected)
+
+
+def _full_auto_payload(client, seeded, anchor) -> tuple[dict, dict, dict]:
+    workflow = db.one("SELECT graph FROM workflow WHERE id = ?", seeded["workflow_id"])
+    created_workflow = client.post("/api/workflows", json={
+        "name": f"guided-full-auto-{uuid.uuid4().hex}",
+        "graph": json.loads(workflow["graph"]),
+        "kind": "t2i",
+    })
+    assert created_workflow.status_code == 200, created_workflow.text
+    db.run(
+        "UPDATE model SET workflow_id = ? WHERE id = ?",
+        created_workflow.json()["id"], seeded["model_id"],
+    )
+
+    saved = _automation_saved_look()
+    published = _publish_automation_profile(saved, _automation_profile(saved))
+    base = _body(
+        seeded,
+        anchor,
+        photo_count=4,
+        saved_look={
+            "look_key": saved["key"],
+            "version": saved["version"],
+            "content_digest": saved["content_digest"],
+        },
+        full_auto={
+            "authorization_version": 1,
+            "generate_without_pauses": True,
+            "profile_revision": published["profile_revision"],
+            "profile_digest": published["profile_digest"],
+            "progression": "all_stages_full_interval",
+            "framing_intent": "vary",
+        },
+    )
+    base.pop("request_id")
+    consent = client.post("/api/sessions/guided/full-auto/preflight", json=base)
+    assert consent.status_code == 200, consent.text
+    payload = {
+        **base,
+        "request_id": str(uuid.uuid4()),
+        "full_auto": {
+            **base["full_auto"],
+            "scope_digest": consent.json()["scope_digest"],
+            "scope_issued_at": consent.json()["scope_issued_at"],
+        },
+    }
+    return payload, saved, published
+
+
+def _assert_complete_full_auto_creation(
+    before: dict[str, list[dict]], payload: dict, saved: dict,
+    published: dict, response_bytes: bytes,
+) -> None:
+    after = _creation_snapshot()
+    expected_additions = {
+        "session": 1,
+        "session_plan": 1,
+        "session_plan_approval": 0,
+        "prepared_take": 0,
+        "session_profile_evidence": 1,
+        "session_profile_coverage_revision": 1,
+        "session_take_coverage_evidence": 4,
+        "full_auto_run_receipt": 1,
+        "guided_session_request": 1,
+        "authoring_operation": 0,
+        "shot": 0,
+    }
+    for table, added in expected_additions.items():
+        assert after[table][:len(before[table])] == before[table], table
+        assert len(after[table]) == len(before[table]) + added, table
+
+    result = json.loads(response_bytes)
+    assert set(result) == {"session_id", "plan_revision", "plan", "full_auto_run_id"}
+    assert result["plan_revision"] == 1
+    assert result["full_auto_run_id"]
+    sid = result["session_id"]
+    plan_row = db.one("SELECT * FROM session_plan WHERE session_id = ?", sid)
+    plan = json.loads(plan_row["plan_json"])
+    assert plan == result["plan"]
+    assert plan["look"] == saved["appearance"]
+    assert plan["authoring"]["look_snapshot"] == {
+        "look_id": saved["key"],
+        "version": saved["version"],
+        "content_digest": saved["content_digest"],
+        "appearance": saved["appearance"],
+        "outfit": saved["outfit"],
+    }
+    progression = plan["authoring"]["wardrobe_progression"]
+    assert progression is not None
+    stages = session_plan._saved_look_wardrobe_stages(saved["outfit"])
+    assert progression["stage_indices"] == list(range(len(stages))) == [0, 1, 2, 3]
+    take_ids = {take["take_id"] for take in plan["takes"]}
+    assert take_ids == {f"take-{index:03d}" for index in range(1, 5)}
+    assert all(take.get("wardrobe_coverage") for take in plan["takes"])
+
+    profile_evidence = db.one(
+        "SELECT * FROM session_profile_evidence WHERE session_id = ? AND plan_revision = 1",
+        sid,
+    )
+    assert profile_evidence["look_key"] == saved["key"]
+    assert profile_evidence["look_version"] == saved["version"]
+    assert profile_evidence["look_content_digest"] == saved["content_digest"]
+    assert profile_evidence["profile_revision"] == published["profile_revision"]
+    assert profile_evidence["profile_digest"] == published["profile_digest"]
+    coverage_revision = db.one(
+        "SELECT * FROM session_profile_coverage_revision WHERE session_id = ? AND plan_revision = 1",
+        sid,
+    )
+    assert set(json.loads(coverage_revision["derived_take_ids_json"])) == take_ids
+    coverage_rows = db.q(
+        "SELECT take_id, stage_index FROM session_take_coverage_evidence "
+        "WHERE session_id = ? AND plan_revision = 1 ORDER BY take_id",
+        sid,
+    )
+    assert {row["take_id"] for row in coverage_rows} == take_ids
+    assert {row["stage_index"] for row in coverage_rows} == set(range(4))
+
+    receipt = db.one(
+        "SELECT * FROM full_auto_run_receipt WHERE run_id = ?",
+        result["full_auto_run_id"],
+    )
+    assert receipt["session_id"] == sid
+    assert receipt["scope_digest"] == payload["full_auto"]["scope_digest"]
+    assert receipt["plan_digest"] == resource_store.canonical_digest(plan)
+    request = db.one(
+        "SELECT * FROM guided_session_request WHERE request_id = ?",
+        payload["request_id"],
+    )
+    assert request["session_id"] == sid
+    assert request["request_digest"] == guided_sessions.normalize_request(payload).body_digest
+    assert request["response_json"].encode("utf-8") == response_bytes
 
 
 def _error(response, status: int, code: str) -> dict:
@@ -669,6 +838,140 @@ def test_guided_transaction_failure_rolls_back_claim_session_and_plan(client, se
         "SELECT 1 FROM guided_session_request WHERE request_id = ?",
         payload["request_id"],
     ) is None
+
+
+@pytest.mark.parametrize(("table", "occurrence"), [
+    ("session", 1),
+    ("session_plan", 1),
+    ("session_profile_evidence", 1),
+    ("session_profile_coverage_revision", 1),
+    *(('session_take_coverage_evidence', index) for index in range(1, 5)),
+    ("full_auto_run_receipt", 1),
+    ("guided_session_request", 1),
+], ids=[
+    "session", "plan", "profile-evidence", "coverage-revision",
+    "coverage-take-1", "coverage-take-2", "coverage-take-3", "coverage-take-4",
+    "authorization-receipt", "guided-response",
+])
+def test_full_auto_failure_after_each_creation_write_rolls_back_all_rows(
+    client, seeded, monkeypatch, table, occurrence,
+):
+    monkeypatch.setitem(main.CONFIG, "llm_url", "https://assistant.invalid/v1")
+    monkeypatch.setitem(main.CONFIG, "llm_model", "guided-full-auto-test-provider")
+    _forbid_full_auto_side_effects(monkeypatch)
+    payload, _saved, _published = _full_auto_payload(
+        client, seeded, _room_anchor(),
+    )
+    before = _creation_snapshot()
+    original_run = db.run
+    writes_seen = 0
+
+    def fail_after_write(sql, *args):
+        nonlocal writes_seen
+        result = original_run(sql, *args)
+        normalized_sql = " ".join(sql.split()).upper()
+        if normalized_sql.startswith(f"INSERT INTO {table.upper()} "):
+            writes_seen += 1
+            if writes_seen == occurrence:
+                raise sqlite3.OperationalError("injected Full Auto write failure")
+        return result
+
+    monkeypatch.setattr(db, "run", fail_after_write)
+    with pytest.raises(sqlite3.OperationalError, match="injected Full Auto write failure"):
+        client.post("/api/sessions/guided", json=payload)
+
+    assert writes_seen == occurrence
+    assert _creation_snapshot() == before
+
+
+@pytest.mark.parametrize("entrypoint", ["http", "service"])
+def test_full_auto_concurrent_same_request_id_replays_one_complete_session(
+    client, seeded, monkeypatch, entrypoint,
+):
+    monkeypatch.setitem(main.CONFIG, "llm_url", "https://assistant.invalid/v1")
+    monkeypatch.setitem(main.CONFIG, "llm_model", "guided-full-auto-test-provider")
+    _forbid_full_auto_side_effects(monkeypatch)
+    payload, saved, published = _full_auto_payload(
+        client, seeded, _room_anchor(),
+    )
+    request = guided_sessions.normalize_request(payload)
+    candidate_calls = []
+    original_saved_look = session_plan.build_saved_look_application_candidate
+    original_progression = session_plan.build_full_auto_wardrobe_progression_candidate
+
+    def record_saved_look(*args, **kwargs):
+        candidate_calls.append("saved_look")
+        return original_saved_look(*args, **kwargs)
+
+    def record_progression(*args, **kwargs):
+        candidate_calls.append("progression")
+        return original_progression(*args, **kwargs)
+
+    monkeypatch.setattr(
+        session_plan, "build_saved_look_application_candidate", record_saved_look,
+    )
+    monkeypatch.setattr(
+        session_plan, "build_full_auto_wardrobe_progression_candidate", record_progression,
+    )
+    before = _creation_snapshot()
+    start = threading.Barrier(2)
+
+    def create_once():
+        start.wait(timeout=10)
+        if entrypoint == "http":
+            response = client.post("/api/sessions/guided", json=payload)
+            return response.status_code, response.content
+        response_json, was_new = guided_sessions.create_or_replay(
+            request, config=main.CONFIG,
+        )
+        return (201 if was_new else 200), response_json.encode("utf-8")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        responses = [future.result(timeout=20) for future in [
+            pool.submit(create_once), pool.submit(create_once),
+        ]]
+
+    assert sorted(status for status, _content in responses) == [200, 201]
+    assert responses[0][1] == responses[1][1]
+    assert candidate_calls == ["saved_look", "progression"]
+
+    # A retry after an unobserved successful response returns the same bytes.
+    replay = client.post("/api/sessions/guided", json=payload)
+    assert replay.status_code == 200, replay.text
+    assert replay.content == responses[0][1]
+    _assert_complete_full_auto_creation(
+        before, payload, saved, published, replay.content,
+    )
+
+
+def test_full_auto_replays_exact_response_after_commit_response_loss(
+    client, seeded, monkeypatch,
+):
+    monkeypatch.setitem(main.CONFIG, "llm_url", "https://assistant.invalid/v1")
+    monkeypatch.setitem(main.CONFIG, "llm_model", "guided-full-auto-test-provider")
+    _forbid_full_auto_side_effects(monkeypatch)
+    payload, saved, published = _full_auto_payload(
+        client, seeded, _room_anchor(),
+    )
+    before = _creation_snapshot()
+    original_create = guided_sessions.create_or_replay
+    lost_response = []
+
+    def commit_then_lose_response(*args, **kwargs):
+        lost_response.append(original_create(*args, **kwargs))
+        raise RuntimeError("simulated lost response after commit")
+
+    monkeypatch.setattr(guided_sessions, "create_or_replay", commit_then_lose_response)
+    with pytest.raises(RuntimeError, match="simulated lost response after commit"):
+        client.post("/api/sessions/guided", json=payload)
+
+    assert lost_response
+    monkeypatch.setattr(guided_sessions, "create_or_replay", original_create)
+    replay = client.post("/api/sessions/guided", json=payload)
+    assert replay.status_code == 200, replay.text
+    _assert_complete_full_auto_creation(
+        before, payload, saved, published, replay.content,
+    )
 
 
 def test_guided_accepts_500_stable_takes_and_rejects_overflow_or_coercion_before_writes(

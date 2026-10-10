@@ -1,5 +1,18 @@
 # Project Diary
 
+## Full Auto Atomic Creation Acceptance, Task 3.2
+
+- Inspect earlier prerequisite work before adding another implementation.
+  Shared candidates and atomic initial persistence already existed; dedicated
+  failure/race evidence completed this task without production changes.
+- Inject failures after writes, including each coverage row, and compare
+  complete persisted rows. Observe all actual mutations so zero-row cleanup
+  statements cannot hide an untested rollback boundary.
+- Prove both sides of response recovery: rollback permits the same request ID
+  to create once, while response loss after commit returns stored bytes without
+  a second allocation. Keep initial authorization intent distinct from later
+  coordinator/runtime behavior.
+
 ## Full Auto Guided Creation Scope, Task 3.1
 
 - Strict request extensions alone would let valid Full Auto requests enter
