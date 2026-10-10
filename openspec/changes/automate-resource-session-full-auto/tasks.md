@@ -18,7 +18,7 @@
 - [x] 3.2 Share existing look/progression candidate construction and atomically persist the first populated plan, profile evidence, authorization/run receipt and guided response; inject failures at each write and race identical request IDs to prove one complete session or zero allocation.
 - [x] 3.3 Bind effective workflow, character/model/settings and framing/canvas choices to authorization; verify carried-forward character selection, workflow default/override behavior, dimension mapping, connected-slot refusal, full-body versus conflicting fixed framing and no live-library latest substitution. Verify the v1 t2i eligibility matrix and exact full_body fixed-framing template without semantic free-text heuristics.
 
-- [ ] 3.4 Add read-only consent preflight and scope comparison at serialized creation; test zero allocations, every bound input changing between display and commit, 300-second quote expiry, preserved seven-day deadline, identical lost-response replay after expiry and idempotency conflict for changed scope under the same request ID.
+- [x] 3.4 Add read-only consent preflight and scope comparison at serialized creation; test zero allocations, every bound input changing between display and commit, 300-second quote expiry, preserved seven-day deadline, identical lost-response replay after expiry and idempotency conflict for changed scope under the same request ID.
 
 ## 4. Durable coordinator and shared mutation gates
 

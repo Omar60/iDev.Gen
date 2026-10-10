@@ -1,6 +1,7 @@
 """Closed request handling and atomic persistence for guided sessions."""
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -34,6 +35,12 @@ _FULL_AUTO_ASSISTANT_CALLS_PER_TAKE = 2
 _FULL_AUTO_IMAGE_ATTEMPTS_PER_TAKE = 1
 _FULL_AUTO_POLICY_VERSION = "resource-full-auto-v1"
 _SQLITE_INTEGER_MAX = saved_looks._SQLITE_INTEGER_MAX
+_ConfigInput = Mapping[str, Any] | Callable[[], Mapping[str, Any]] | None
+
+
+def _config_snapshot(config: _ConfigInput) -> dict[str, Any]:
+    current = config() if callable(config) else config
+    return dict(current or {})
 
 
 def _all_vary_policy() -> dict[str, dict[str, str]]:
@@ -1174,20 +1181,23 @@ def _resolve_request(
     return result
 
 
-def preflight_full_auto(body: dict[str, Any], *, config: dict[str, Any] | None = None) -> dict[str, Any]:
+def preflight_full_auto(body: dict[str, Any], *, config: _ConfigInput = None) -> dict[str, Any]:
     """Resolve a read-only Full Auto quote without creating session state."""
-    if not resource_planning.is_enabled():
-        raise GuidedSessionError(
-            503, "resource_planning_disabled",
-            "Guided session creation is disabled by configuration.",
+    with db.transaction():
+        if not resource_planning.is_enabled():
+            raise GuidedSessionError(
+                503, "resource_planning_disabled",
+                "Guided session creation is disabled by configuration.",
+            )
+        issued = datetime.now(timezone.utc).replace(microsecond=0).isoformat(timespec="seconds")
+        resolution = _resolve_request(
+            body, config=_config_snapshot(config), scope_issued_at=issued,
         )
-    issued = datetime.now(timezone.utc).replace(microsecond=0).isoformat(timespec="seconds")
-    resolution = _resolve_request(body, config=config, scope_issued_at=issued)
-    return {
-        "summary": resolution["summary"],
-        "scope_digest": resolution["scope_digest"],
-        "scope_issued_at": issued,
-    }
+        return {
+            "summary": resolution["summary"],
+            "scope_digest": resolution["scope_digest"],
+            "scope_issued_at": issued,
+        }
 
 
 def _refreshed_scope(body: dict[str, Any], config: dict[str, Any], issued: str) -> dict[str, Any]:
@@ -1205,7 +1215,7 @@ def _refreshed_scope(body: dict[str, Any], config: dict[str, Any], issued: str) 
 def create_or_replay(
     request: NormalizedGuidedRequest,
     *,
-    config: dict[str, Any] | None = None,
+    config: _ConfigInput = None,
 ) -> tuple[str, bool]:
     """Persist a new guided session or return the stored response for a retry."""
     if not resource_planning.is_enabled():
@@ -1236,7 +1246,7 @@ def create_or_replay(
 
         body = request.body
         full_auto = body.get("full_auto")
-        active_config = config or {}
+        active_config = _config_snapshot(config)
         resolution = None
         if full_auto is not None:
             now_utc = datetime.now(timezone.utc).replace(microsecond=0)

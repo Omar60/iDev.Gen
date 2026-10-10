@@ -778,14 +778,16 @@ def save_config(c: ConfigIn):
         if value and not Path(value).is_dir():
             raise HTTPException(400, f"{field}: '{value}' is not an existing folder")
 
-    data_dir_changed = c.data_dir != CONFIG.get("data_dir")
-    CONFIG = c.model_dump()
-    CONFIG_PATH.write_text(json.dumps(CONFIG, indent=2) + "\n", encoding="utf-8")
+    with db.transaction():
+        next_config = c.model_dump()
+        data_dir_changed = c.data_dir != CONFIG.get("data_dir")
+        CONFIG_PATH.write_text(json.dumps(next_config, indent=2) + "\n", encoding="utf-8")
+        CONFIG = next_config
 
-    comfy.url = c.comfy_url.rstrip("/")
-    COMFY_OUTPUT = Path(c.comfy_output_dir or "")
-    LORA_DIR = Path(c.lora_dir or "")
-    runner.comfy_output_dir = COMFY_OUTPUT
+        comfy.url = c.comfy_url.rstrip("/")
+        COMFY_OUTPUT = Path(c.comfy_output_dir or "")
+        LORA_DIR = Path(c.lora_dir or "")
+        runner.comfy_output_dir = COMFY_OUTPUT
     # DATA_DIR is not swapped live: the database is already open on the old one.
     return {"ok": True, "restart_required": data_dir_changed}
 
@@ -910,8 +912,9 @@ def create_workflow(w: WorkflowIn):
 @app.patch("/api/workflows/{wid}")
 def update_workflow(wid: int, w: WorkflowIn):
     _require_api_graph(w.graph)
-    db.run("UPDATE workflow SET name=?, graph=?, node_map=?, kind=? WHERE id=?",
-           w.name, json.dumps(w.graph), json.dumps(w.node_map), w.kind, wid)
+    with db.transaction():
+        db.run("UPDATE workflow SET name=?, graph=?, node_map=?, kind=? WHERE id=?",
+               w.name, json.dumps(w.graph), json.dumps(w.node_map), w.kind, wid)
     return {"ok": True}
 
 
@@ -974,12 +977,13 @@ def create_model(m: ModelIn):
 
 @app.patch("/api/models/{mid}")
 def update_model(mid: int, m: ModelIn):
-    db.run(
-        """UPDATE model SET name=?, lora_name=?, trigger=?, lora_strength=?, base_positive=?,
-                            base_negative=?, workflow_id=?, settings=?, notes=? WHERE id=?""",
-        m.name, m.lora_name, m.trigger, m.lora_strength, m.base_positive,
-        m.base_negative, m.workflow_id, json.dumps(m.settings), m.notes, mid,
-    )
+    with db.transaction():
+        db.run(
+            """UPDATE model SET name=?, lora_name=?, trigger=?, lora_strength=?, base_positive=?,
+                                base_negative=?, workflow_id=?, settings=?, notes=? WHERE id=?""",
+            m.name, m.lora_name, m.trigger, m.lora_strength, m.base_positive,
+            m.base_negative, m.workflow_id, json.dumps(m.settings), m.notes, mid,
+        )
     return {"ok": True}
 
 
@@ -3535,10 +3539,11 @@ def _adopt_config(cfg: dict) -> None:
     not rewrite the operator's config.json for nothing.
     """
     global CONFIG
-    if cfg == CONFIG:
-        return
-    CONFIG = cfg
-    CONFIG_PATH.write_text(json.dumps(CONFIG, indent=2) + "\n", encoding="utf-8")
+    with db.transaction():
+        if cfg == CONFIG:
+            return
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        CONFIG = cfg
 
 
 @app.get("/api/rooms")
@@ -3958,7 +3963,7 @@ async def create_guided_session(request: Request):
     try:
         normalized = guided_sessions.normalize_request(payload)
         response_json, was_new = guided_sessions.create_or_replay(
-            normalized, config=CONFIG,
+            normalized, config=lambda: CONFIG,
         )
     except guided_sessions.GuidedSessionError as exc:
         return _stable_error(exc.status_code, exc.code, exc.message, current=exc.current)
@@ -3984,7 +3989,7 @@ async def preflight_guided_full_auto(request: Request):
         return _stable_error(422, "invalid_json", "Request body must be valid JSON.")
     try:
         normalized = guided_sessions.normalize_preflight_request(payload)
-        result = guided_sessions.preflight_full_auto(normalized, config=CONFIG)
+        result = guided_sessions.preflight_full_auto(normalized, config=lambda: CONFIG)
     except guided_sessions.GuidedSessionError as exc:
         return _stable_error(exc.status_code, exc.code, exc.message, current=exc.current)
     return JSONResponse(content=result, status_code=200)

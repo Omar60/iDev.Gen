@@ -99,7 +99,12 @@ reference slots or `LoadImage` references found by automatic detection. That
 detection does not certify every custom node as reference-free. Preflight binds
 the selected character, workflow, settings, exact saved-look/profile revisions,
 effective canvas and framing. Reference and guided-paint workflows remain
-available through the manual path.
+available through the manual path. Its read-only scope resolution is serialized
+with source and configuration updates. Creation accepts a quote through the
+inclusive 300-second boundary and preserves the authorization deadline at seven
+days after the original quote. An identical retry replays its stored receipt
+before rechecking current dependencies or quote age; changed content under the
+same request ID is refused.
 
 ## Composing from the catalogue
 

@@ -1,5 +1,23 @@
 # Project Diary
 
+## Full Auto Consent Serialization, Task 3.4
+
+- Resolve live configuration after acquiring the allocation transaction;
+  passing a dictionary before the lock can preserve a stale consent view when
+  a writer replaces it. Both supported configuration writers must share the
+  boundary and publish their value only after the file write succeeds.
+- A no-write preflight still needs a consistent source view. Reuse the existing
+  transaction so an uncommitted translation that rolls back cannot enter a quote.
+- Inspect writers as well as the resolving reader: model/workflow PATCH used
+  unlocked `db.run` on the shared connection. Wrap those updates in the existing
+  transaction. Concurrent HTTP probes need separate portals and a writer-entry
+  signal; otherwise a paused async reader can prevent the writer from even
+  reaching its handler and conceal the missing lock.
+- Test both serialization orders and valid changed inputs, then compare complete
+  rows. Keep the seven-day deadline anchored to the quote and receipt replay
+  ahead of expiry/dependency checks. New tests ran after the fix; no pre-fix red
+  execution was recorded.
+
 ## Full Auto Input Binding Acceptance, Task 3.3
 
 - Check mapped widget usability as well as presence: a selected model value

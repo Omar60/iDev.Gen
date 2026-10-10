@@ -1628,9 +1628,11 @@ Before creation, `POST /api/sessions/guided/full-auto/preflight` accepts the
 same guided inputs and the six-field `full_auto` object above, but no
 `request_id`, `scope_digest`, or `scope_issued_at`. It returns a safe resolved
 summary, canonical `scope_digest`, and server-issued UTC `scope_issued_at`
-without allocating records or calling an assistant or image generator. The
-summary binds the exact saved look/profile, room and translation, model inputs,
-workflow and mappings, effective canvas and framing, provider, schedule,
+without allocating records or calling an assistant or image generator. Scope
+resolution runs in the existing serialized transaction without writes, so it
+observes source and configuration state consistently with concurrent updates.
+The summary binds the exact saved look/profile, room and translation, model
+inputs, workflow and mappings, effective canvas and framing, provider, schedule,
 coverage, policy, and limits using safe values and digests.
 
 Full Auto v1 accepts only a `t2i` workflow with no reference slots mapped in
@@ -1660,16 +1662,23 @@ not semantic interpretation of free text.
 Creation adds the preflight's canonical `scope_digest` and UTC
 `scope_issued_at` to those six fields, making the closed eight-field
 `full_auto` object, and supplies the required top-level `request_id`. The quote
-must be no more than 300 seconds old and cannot be from the future; creation
-recomputes the scope and returns `409 authorization_scope_changed` if a bound input or
-eligibility changed. The authorization expires seven days after the preflight
-timestamp, and creation does not extend it. A successful creation atomically
-stores the populated plan, applied profile and coverage evidence, initial
-authorization receipt, and idempotent response. It returns `full_auto_run_id`
-for that receipt but does not call an assistant or start ComfyUI. A runtime
-coordinator, unattended execution, run status, Cancel/Resume, and Full Auto
-selection/consent UI are not implemented; use the manual workflow for
+must be no more than 300 seconds old (the 300-second boundary is valid) and
+cannot be from the future; creation recomputes the scope inside its serialized
+allocation transaction and returns `409 authorization_scope_changed` if a
+bound input or eligibility changed. The authorization expires seven days after
+the original preflight timestamp, and creation does not extend that deadline.
+A successful creation atomically stores the populated plan, applied profile and
+coverage evidence, initial authorization receipt, and idempotent response. It
+returns `full_auto_run_id` without calling an assistant or starting ComfyUI.
+Runtime coordination, unattended execution, run status, Cancel/Resume, and Full
+Auto selection/consent UI remain unimplemented; use the manual workflow for
 preparation, review, submission, and Run.
+
+For a request ID already committed, an identical normalized request returns the
+exact stored response with HTTP 200 before quote-age or current-dependency
+checks, including after the quote expires or a bound dependency changes. Reusing
+that request ID with changed content returns `409 idempotency_conflict`; it does
+not allocate another session or receipt.
 
 If a network or 5xx error occurs, an error response is unreadable or malformed,
 or a success response is unreadable, malformed, or incomplete, the outcome stays

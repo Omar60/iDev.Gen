@@ -1,57 +1,68 @@
 # Latest Session Work
 
-## Task 3.3 Accepted Closure
+## Task 3.4 Accepted Closure
 
-Internal Heavy deployment `full-auto-first-pending-20261009` addresses only
-Task 3.3 of `automate-resource-session-full-auto`. Main completed framework
-intake and inspected the decisive specification/code contracts. Explorer
-mapped prerequisite implementation and missing acceptance evidence. Initial
-Git state was clean; only 3.3 is newly checked, reaching 11 of 41 tasks.
+Internal Heavy deployment `full-auto-first-20261010` addresses only Task 3.4
+of `automate-resource-session-full-auto`. Main completed framework intake and
+inspected specification, code, tests, actual diff and verification logs.
+Explorer mapped existing prerequisites and the configuration serialization gap.
+Initial Git state was clean. Only 3.4 is newly checked, reaching 12 of 41 tasks.
 
 ## Delivered Changes and Evidence
 
-Executor added Full Auto-only refusal of mapped or detected generation
-references and unusable selected checkpoint/LoRA/sampler/scheduler mappings.
-Connected inputs and incompatible widget types fail before allocation. An
-absent override may use detected widget type for validation without copying
-its value or changing the graph. Custom text-widget mapping stays supported;
-manual behavior is unchanged. README and session API documentation explain
-eligibility, exact framing, canvas and detection limitations.
+Executor retained the existing consent contract and added live configuration
+resolution inside the allocation transaction after committed receipt lookup.
+The guided routes supply the current configuration lazily. Configuration save
+and import adoption share the transaction boundary and publish configuration
+only after successful file writes. Model/workflow PATCH handlers now share
+that boundary too, preserving their existing HTTP/result contracts. Preflight
+uses the same no-write serialized resolution, including waiting for a
+rolled-back translation update.
 
-Tester independently covers stored authorization/session/plan binding,
-carried character identity, default/override workflows, inherited/explicit
-canvas, exact look/profile revisions despite newer publications, replay after
-dependency drift, the t2i matrix, canonical full_body framing, fixed conflicts,
-connected canvas and zero-allocation refusals. Tests forbid real assistant,
-runner and ComfyUI effects.
+Executor and Tester use separate test files. Independent probes cover both
+configuration serialization orders, unchanged every-table snapshots, valid
+changed request inputs, checkpoint/seed drift, inclusive 300-second acceptance
+and the original seven-day deadline. The combined matrix covers model inputs,
+default/explicit workflow, graph/map, translations, settings, exact look/profile,
+creative inputs, framing/canvas/count, provider identity/model, policy/compiler
+versions and call/attempt limits. Existing tests retain expired lost-response
+replay, changed-content idempotency conflict and legacy request compatibility.
 
-Independent review found a widget-type gap. Executor repaired it and Tester
-rechecked. The first reproduction had no explicit checkpoint override, so it
-did not prove a selected checkpoint was written into a seed; final independent
-acceptance explicitly selects the checkpoint before exercising that mapping.
-A usage-limit interruption preserved partial changes; continuation reused
-context and verified the final repair rather than assuming completion.
+Main requested missing input cases during review. Final source-writer inspection
+reopened acceptance before commit; Executor wrapped model/workflow updates and
+added both-order handler tests. Tester added independent HTTP interleavings,
+using a separate writer portal and a transaction-entry signal so shared event
+loop blocking cannot create a false pass. Tester repeated the full gate on the
+final tree. Refusal tests compare full
+rows in creation tables; independent request/source/configuration probes compare
+every database table. External assistant, runner and ComfyUI work is forbidden
+by fixtures. The new tests were first executed after the production fix; no
+pre-fix red run was captured.
 
 ## Final Verification
 
-- Executor focused suite: 57 passed.
-- Tester focused acceptance/regression suites: 133 passed.
-- Complete `python -m pytest` on Python 3.11: 3,038 passed, one skipped,
-  three warnings, in 222.07 seconds.
-- Skip: filesystem symlinks unavailable (OSError).
-- Warnings: Pydantic field shadowing and HTTPX upload deprecation.
+- Executor final consent file: 20 passed; privacy: 10 passed.
+- Tester independent consent file: 21 passed; combined consent suite: 41 passed.
+- Complete `python -m pytest` on Python 3.11.9: 3,079 passed, one skipped,
+  three warnings, in 238.41 seconds.
+- Focused privacy/invisible-character closure checks: 46 passed.
+- Skip: staged-path external-symlink probe; filesystem symlinks unavailable
+  (OSError).
+- Warnings: two Pydantic field-shadowing warnings and HTTPX upload deprecation.
 - Strict OpenSpec validation and `git diff --check`: passed.
 
-Raw logs remain outside the repository. Frontend tests/build were not required
-or run because frontend is unchanged. Closure-only checks cover the final
-documents, task checkbox and personal-data policy before commit. Main owns
-acceptance and the scoped commit; Archivist owns the sealed read-only Git
-handoff and exact Deployment Token Report.
+Raw logs remain outside the repository, including `fa34-full-final-reopen.log`,
+`fa34-focused-reopen.log` and `fa34-source-writer-regression.log`. Frontend tests
+and build were not required or run because frontend is unchanged. Closure-only
+checks cover final documents, task checkbox, privacy and invisible characters.
+Main owns acceptance and the scoped commit. Archivist owns the public consent
+documentation clarification, sealed read-only Git handoff and exact Deployment
+Token Report.
 
 ## Continuation and Limits
 
-Task 3.4 remains pending. No coordinator, generation, visual acceptance,
-external handoff, OpenSpec archive or push occurred. Detection recognizes
-mapped reference slots and LoadImage nodes, not every custom reference node.
-Matching widget types do not prove arbitrary custom mapping semantics; canvas
-and framing instructions do not certify rendered pixels.
+Task 4.1 remains pending and is not started. No runtime coordinator, generation,
+visual acceptance, external handoff, OpenSpec archive or push occurred. Consent
+digests compare scope; they do not confer mutation ownership. External content
+and runtime provider drift checks remain separate future dispatch boundaries.
+Canvas, coverage and framing instructions do not certify rendered pixels.
