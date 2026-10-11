@@ -22,6 +22,7 @@ import os
 import random
 import re
 import shutil
+import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -58,6 +59,7 @@ from backend import resource_translation
 from backend import resource_selection
 from backend import guided_sessions
 from backend import authoring_operations
+from backend import resource_full_auto
 from backend import saved_looks
 from backend import photo_staging
 from backend import photo_extraction
@@ -4139,30 +4141,38 @@ async def _run_prepare_takes_operation(
     session_id: int,
     operation_id: str,
     _predecessor_validation_cache: dict | None = None,
-) -> None:
+    *,
+    _full_auto_claim: resource_full_auto.RunClaim | None = None,
+) -> resource_full_auto.RunClaim | None:
     claim = None
     ticket = None
     take_id = None
+    full_auto_claim = _full_auto_claim
     predecessor_validation_cache = (
         {} if _predecessor_validation_cache is None
         else _predecessor_validation_cache
     )
     try:
+        if full_auto_claim is not None:
+            full_auto_claim = resource_full_auto.renew_run_claim(full_auto_claim)
         claim = authoring_operations.load_worker_claim(
             session_id, operation_id, planning_enabled=is_resource_planning_enabled(),
+            _full_auto_claim=full_auto_claim,
         )
         view = authoring_operations.get_operation(
             session_id, operation_id,
             planning_enabled=is_resource_planning_enabled(),
             assistant_available=enhance.configured(CONFIG),
+            _full_auto_claim=full_auto_claim,
         )
         if view["kind"] != "prepare_takes" or view["state"] != "active":
-            return
+            return full_auto_claim
         # Commit one take per fenced response so progress remains recoverable.
         take_id = view["progress"]["remaining"][0]
-        ticket = authoring_operations.renew_operation_lease(
-            claim, planning_enabled=is_resource_planning_enabled(),
-        )
+        if full_auto_claim is None:
+            ticket = authoring_operations.renew_operation_lease(
+                claim, planning_enabled=is_resource_planning_enabled(),
+            )
         current_snapshot = session_plan._prepared_take_row(
             session_id, claim.plan_revision, take_id,
         )
@@ -4174,19 +4184,27 @@ async def _run_prepare_takes_operation(
                 session_id, claim.plan_revision, take_id, row=current_snapshot,
                 _predecessor_validation_cache=predecessor_validation_cache,
             )
+            if full_auto_claim is not None:
+                full_auto_claim = resource_full_auto.renew_run_claim(full_auto_claim)
+                ticket = authoring_operations.renew_operation_lease(
+                    claim, planning_enabled=is_resource_planning_enabled(),
+                    _full_auto_claim=full_auto_claim,
+                )
             updated = authoring_operations.persist_operation_response(
                 claim, ticket, [{"target": take_id, "result": {}}],
                 reuse_take_snapshot=True,
                 planning_enabled=is_resource_planning_enabled(),
                 _predecessor_validation_cache=predecessor_validation_cache,
+                _full_auto_claim=full_auto_claim,
             )
             if updated["state"] == "active":
-                await _run_prepare_takes_operation(
+                return await _run_prepare_takes_operation(
                     session_id,
                     operation_id,
                     _predecessor_validation_cache=predecessor_validation_cache,
+                    _full_auto_claim=full_auto_claim,
                 )
-            return
+            return full_auto_claim
 
         preparation = resource_preparation.prepare_take_inputs(
             session_id, claim.plan_revision, take_id,
@@ -4202,13 +4220,30 @@ async def _run_prepare_takes_operation(
             _predecessor_validation_cache=predecessor_validation_cache,
         )
         assistant_request = {}
+        ticket_renewed_after_io = False
         if unlocked:
             instruction = resource_preparation.automatic_writer_instruction(context)
+            if full_auto_claim is not None:
+                full_auto_claim = resource_full_auto.renew_run_claim(full_auto_claim)
+                ticket = authoring_operations.renew_operation_lease(
+                    claim, planning_enabled=is_resource_planning_enabled(),
+                    _full_auto_claim=full_auto_claim,
+                )
             output = await enhance.run_structured(
                 CONFIG,
                 enhance.EnhanceIn(instruction=instruction, fields=unlocked),
                 request_evidence=assistant_request,
             )
+            if full_auto_claim is not None:
+                # The parent lease is checked after every in-flight assistant call.
+                # A lost or expired owner cannot persist a late result.
+                full_auto_claim = resource_full_auto.renew_run_claim(full_auto_claim)
+                ticket = authoring_operations.renew_operation_lease_after_io(
+                    claim, ticket,
+                    planning_enabled=is_resource_planning_enabled(),
+                    _full_auto_claim=full_auto_claim,
+                )
+                ticket_renewed_after_io = True
         else:
             output = {}
         writer_input = {"request": request, "assistant_request": assistant_request}
@@ -4224,33 +4259,121 @@ async def _run_prepare_takes_operation(
                 _predecessor_validation_cache=predecessor_validation_cache,
             )
 
+        if full_auto_claim is not None and not ticket_renewed_after_io:
+            full_auto_claim = resource_full_auto.renew_run_claim(full_auto_claim)
+            ticket = authoring_operations.renew_operation_lease(
+                claim, planning_enabled=is_resource_planning_enabled(),
+                _full_auto_claim=full_auto_claim,
+            )
         updated = authoring_operations.persist_operation_response(
             claim, ticket, [{"target": take_id, "result": output}],
             finalize_take=finalize,
             planning_enabled=is_resource_planning_enabled(),
             _predecessor_validation_cache=predecessor_validation_cache,
+            _full_auto_claim=full_auto_claim,
         )
         if updated["state"] == "active":
-            await _run_prepare_takes_operation(
+            return await _run_prepare_takes_operation(
                 session_id,
                 operation_id,
                 _predecessor_validation_cache=predecessor_validation_cache,
+                _full_auto_claim=full_auto_claim,
             )
+        return full_auto_claim
     except Exception:
         if claim is not None and take_id is not None:
             try:
-                if ticket is None:
+                if full_auto_claim is not None:
+                    full_auto_claim = resource_full_auto.renew_run_claim(full_auto_claim)
+                    ticket = authoring_operations.renew_operation_lease(
+                        claim, planning_enabled=is_resource_planning_enabled(),
+                        _full_auto_claim=full_auto_claim,
+                    )
+                elif ticket is None:
                     ticket = authoring_operations.renew_operation_lease(
                         claim, planning_enabled=is_resource_planning_enabled(),
                     )
                 authoring_operations.fail_operation_item(
                     claim, ticket, take_id,
                     planning_enabled=is_resource_planning_enabled(),
+                    _full_auto_claim=full_auto_claim,
                 )
             except authoring_operations.AuthoringOperationError:
                 pass
+            except resource_full_auto.FullAutoRunError:
+                pass
         logging.getLogger(__name__).warning(
             "Take preparation operation %s failed.", operation_id,
+        )
+        return full_auto_claim
+
+
+async def _run_full_auto_preparation(
+    claim: resource_full_auto.RunClaim,
+) -> dict:
+    """Prepare every authorized target in owned <=20-take children, then stop at validation."""
+    owner = claim
+    try:
+        run_row = resource_full_auto.require_prepare_claim(owner)
+        progress = resource_full_auto.initialize_prepare_progress(owner)
+        session_id = int(run_row["session_id"])
+        plan_revision = int(run_row["plan_revision"])
+        while progress["remaining_take_ids"]:
+            owner = resource_full_auto.renew_run_claim(owner)
+            batch = progress["remaining_take_ids"][:20]
+            batch_index = len(progress["completed_take_ids"]) // 20
+            request_id = str(uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"idevgen-full-auto:{owner.run_id}:{owner.epoch}:{owner.fencing_token}:{batch_index}",
+            ))
+            request = authoring_operations.normalize_start_request({
+                "request_id": request_id,
+                "expected_revision": plan_revision,
+                "kind": "prepare_takes",
+                "take_ids": batch,
+            })
+            child, _created = authoring_operations.start_operation(
+                session_id,
+                request,
+                planning_enabled=is_resource_planning_enabled(),
+                assistant_available=enhance.configured(CONFIG),
+                _full_auto_claim=owner,
+            )
+            if child["state"] == "active":
+                owner = await _run_prepare_takes_operation(
+                    session_id,
+                    child["operation_id"],
+                    _full_auto_claim=owner,
+                ) or owner
+                child = authoring_operations.get_operation(
+                    session_id,
+                    child["operation_id"],
+                    planning_enabled=is_resource_planning_enabled(),
+                    assistant_available=enhance.configured(CONFIG),
+                    _full_auto_claim=owner,
+                )
+            owner = resource_full_auto.renew_run_claim(owner)
+            progress = resource_full_auto.checkpoint_prepare_child(
+                owner,
+                child["operation_id"],
+            )
+            if child["state"] != "succeeded":
+                return resource_full_auto.advance_run(
+                    owner, "blocked", blocker_code="preparation_failed",
+                )
+        if progress["completed_take_ids"] != progress["target_ids"]:
+            raise resource_full_auto.FullAutoRunError(
+                409, "prepare_progress_stale", "Full Auto preparation did not complete every target.",
+            )
+        owner = resource_full_auto.renew_run_claim(owner)
+        return resource_full_auto.advance_run(owner, "active", phase="validate")
+    except authoring_operations.AuthoringOperationError:
+        # A normal child failure is represented by its persisted operation state
+        # and handled above. Any boundary error blocks only while this claim is
+        # still live; loss of ownership remains a hard refusal.
+        owner = resource_full_auto.renew_run_claim(owner)
+        return resource_full_auto.advance_run(
+            owner, "blocked", blocker_code="preparation_failed",
         )
 
 

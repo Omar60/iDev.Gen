@@ -1676,12 +1676,22 @@ control-action receipts. Historical control retries replay their stored result;
 eligible terminal Resume opens a new epoch. Cancellation-intent reconciliation
 uses observed backend evidence without remote I/O.
 
-This is a persistence/domain base only: no HTTP run-status or control endpoints,
-runtime coordinator, worker, scheduler, heartbeat, provider, or runner
-integration is implemented. Creation returns `full_auto_run_id` without calling
-an assistant or starting ComfyUI; unattended execution and Full Auto
-selection/consent UI remain unavailable. Use the manual workflow for
-preparation, review, submission, and Run.
+An internal preparation coordinator in `backend/main.py` accepts only an
+authenticated `RunClaim` for the run's prepare phase. It freezes the plan's
+ordered targets and chains persisted `prepare_takes` children of up to twenty
+takes, each bound to the run, epoch, fencing token, plan revision, and exact
+target batch. Parent progress records the verified completed prefix. Current
+`ready` or `generated` snapshots are validated and reused, preserving linked
+shots. A failed child blocks preparation while retaining completed results; if
+take 23 fails, the first 22 remain and no shots are submitted. After all targets
+are prepared, the coordinator advances to validation and stops.
+
+Guided creation and startup do not dispatch this coordinator, and no HTTP run
+controls invoke or resume it. Shared manual-control gates, 15-second
+coordinator and runner heartbeats, assistant-slot admission, approval,
+submission, and runner integration remain unfinished. The profile editor and
+Full Auto selection/consent UI are unavailable. The existing manual workflow
+remains the available path for preparation, review, submission, and Run.
 
 For a request ID already committed, an identical normalized request returns the
 exact stored response with HTTP 200 before quote-age or current-dependency

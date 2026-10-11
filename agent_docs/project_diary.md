@@ -1,5 +1,31 @@
 # Project Diary
 
+## Full Auto Owned Preparation, Task 4.2
+
+- Profile coordinator work separately from synthetic-provider setup. Share
+  immutable inputs only within one authoritative check and retain fresh
+  validation before dispatch and persistence.
+- Authenticate terminal child reads through their owner. Read the clock after
+  acquiring write locks and again before checkpoint writes; a renewal must
+  never revive an expired claim.
+- A twenty-target checkpoint can still validate a much larger predecessor
+  prefix. Count ancestor validation and repeated row scans when evaluating
+  bounded work; the child target limit alone is not a runtime bound.
+- Separate volume coordination contracts from expensive synthesis benchmarks.
+  Preserve representative real-worker, recovery and adversarial coverage, label
+  synthetic evidence explicitly, and never report an opt-in benchmark as passed
+  when only the coordinator contract ran.
+- Reuse the existing bounded worker and immutable preparation evidence; keep
+  ordered target/child checkpoints separate from replaceable transition evidence.
+- Adopt valid completed prefixes before selecting the next child, preserving
+  ready and linked rows. Read child completion from its durable operation row.
+- Revalidate adopted snapshots and dependencies inside the checkpoint write
+  transaction with a fresh cache. Check current lease time after lengthy local
+  validation as well as before it; an earlier valid read is not write authority.
+- A complete 500-take fake-provider test has substantial validation cost,
+  including its fixture. Do not attribute whole-test duration to the coordinator
+  or broaden predecessor caching across mutable dependencies without proof.
+
 ## Full Auto Run-State Acceptance, Task 4.1
 
 - Separate immutable consent and control receipts from mutable run epochs;

@@ -64,6 +64,7 @@ class OperationLeaseTicket:
     claim: OperationClaim
     lease_expires_at: str
     input_fingerprint: str
+    progress_fingerprint: str
     _signature: str = field(repr=False, compare=False)
 
 
@@ -71,6 +72,7 @@ def _operation_lease_ticket_signature(
     claim: OperationClaim,
     lease_expires_at: str,
     input_fingerprint: str,
+    progress_fingerprint: str,
 ) -> str:
     payload = json.dumps(
         {
@@ -84,6 +86,7 @@ def _operation_lease_ticket_signature(
             },
             "lease_expires_at": lease_expires_at,
             "input_fingerprint": input_fingerprint,
+            "progress_fingerprint": progress_fingerprint,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -97,6 +100,7 @@ def _is_authentic_operation_lease_ticket(ticket: OperationLeaseTicket) -> bool:
         not isinstance(ticket.claim, OperationClaim)
         or not isinstance(ticket.lease_expires_at, str)
         or not isinstance(ticket.input_fingerprint, str)
+        or not isinstance(ticket.progress_fingerprint, str)
         or not isinstance(ticket._signature, str)
     ):
         return False
@@ -105,6 +109,7 @@ def _is_authentic_operation_lease_ticket(ticket: OperationLeaseTicket) -> bool:
             ticket.claim,
             ticket.lease_expires_at,
             ticket.input_fingerprint,
+            ticket.progress_fingerprint,
         )
     except (TypeError, ValueError):
         return False
@@ -340,6 +345,38 @@ def _decode_json(value: str | None, *, default: Any) -> Any:
         ) from exc
 
 
+def _operation_progress_payload(row: dict) -> dict:
+    requested = _decode_json(row.get("requested_json"), default=None)
+    completed = _decode_json(row.get("completed_json"), default=None)
+    remaining = _decode_json(row.get("remaining_json"), default=None)
+    failed_item = row.get("failed_item")
+    if (
+        any(
+            not isinstance(value, list)
+            or any(not isinstance(item, str) for item in value)
+            for value in (requested, completed, remaining)
+        )
+        or (failed_item is not None and not isinstance(failed_item, str))
+        or requested != completed + ([failed_item] if failed_item is not None else []) + remaining
+    ):
+        raise AuthoringOperationError(
+            500,
+            "operation_state_invalid",
+            "The saved operation progress is inconsistent.",
+        )
+    return {
+        "requested": requested,
+        "completed": completed,
+        "failed_item": failed_item,
+        "remaining": remaining,
+        "result": _decode_json(row.get("result_json"), default=None),
+    }
+
+
+def _operation_progress_fingerprint(row: dict) -> str:
+    return resource_store.canonical_digest(_operation_progress_payload(row))
+
+
 def _normalize_shared_suggestion_input(value: Any, *, plan_revision: int) -> dict:
     """Validate the exact assistant request stored for suggestion evidence."""
     required = {"messages", "model", "parameters", "plan_revision"}
@@ -536,6 +573,7 @@ def load_worker_claim(
     operation_id: str,
     *,
     planning_enabled: bool | None = None,
+    _full_auto_claim: Any = None,
 ) -> OperationClaim:
     """Load the private fence and request identity for an internal worker.
 
@@ -561,10 +599,11 @@ def load_worker_claim(
             row,
             now_text=db.now(),
             planning_enabled=enabled,
-            check_inputs=True,
+            check_inputs=_full_auto_claim is None,
         )
     if row["state"] != "active":
         raise AuthoringOperationError(409, "operation_not_active", "The authoring operation is not active.")
+    _require_full_auto_owner(row, _full_auto_claim, now_text=db.now())
     return OperationClaim(
         operation_id=row["operation_id"],
         session_id=int(row["session_id"]),
@@ -620,6 +659,40 @@ def _require_live_claim(
     deadline = _utc_datetime(row["lease_expires_at"], field="lease")
     if now >= deadline:
         raise AuthoringOperationError(409, "authoring_lease_expired", "The authoring operation lease has expired.")
+
+
+def _require_full_auto_owner(
+    row: dict,
+    claim: Any,
+    *,
+    now_text: str,
+) -> None:
+    owner_id = row["full_auto_run_id"]
+    owner_epoch = row["full_auto_run_epoch"]
+    owner_fence = row["full_auto_run_fencing_token"]
+    if owner_id is None and owner_epoch is None and owner_fence is None:
+        if claim is not None:
+            raise AuthoringOperationError(409, "full_auto_owner_stale", "This operation has no Full Auto owner.")
+        return
+    if (
+        owner_id is None or type(owner_epoch) is not int or type(owner_fence) is not int
+        or claim is None
+    ):
+        raise AuthoringOperationError(409, "full_auto_owner_required", "A live Full Auto owner is required for this operation.")
+    from backend import resource_full_auto
+
+    try:
+        resource_full_auto.require_prepare_claim(
+            claim, session_id=int(row["session_id"]), now_text=now_text,
+        )
+    except resource_full_auto.FullAutoRunError as exc:
+        raise AuthoringOperationError(409, "full_auto_owner_stale", "The Full Auto operation owner is stale.") from exc
+    if (
+        claim.run_id != owner_id
+        or claim.epoch != owner_epoch
+        or claim.fencing_token != owner_fence
+    ):
+        raise AuthoringOperationError(409, "full_auto_owner_stale", "The Full Auto operation owner is stale.")
 
 
 def _current_operation_context(
@@ -765,17 +838,19 @@ def _current_operation_context(
             )
         effective_inputs: dict[str, Any]
         if row["kind"] == "prepare_takes":
+            prepared_inputs = resource_preparation._prepare_take_inputs_batch_with_plan(
+                session_id,
+                int(row["plan_revision"]),
+                requested,
+                plan,
+            )
             effective_inputs = {
                 "takes": [
                     {
                         "take_id": take_id,
-                        "inputs": resource_preparation.prepare_take_inputs(
-                            session_id,
-                            int(row["plan_revision"]),
-                            take_id,
-                        ),
+                        "inputs": prepared_inputs[index],
                     }
-                    for take_id in requested
+                    for index, take_id in enumerate(requested)
                 ],
             }
         else:
@@ -1073,6 +1148,7 @@ def renew_operation_lease(
     claim: OperationClaim,
     *,
     planning_enabled: bool | None = None,
+    _full_auto_claim: Any = None,
 ) -> OperationLeaseTicket:
     """Renew one live owner before a remote call or scheduling another item.
 
@@ -1100,8 +1176,10 @@ def renew_operation_lease(
     with db.transaction():
         now = _utc_datetime(now_text, field="current time")
         row = _read_claim_row(claim)
+        _require_full_auto_owner(row, _full_auto_claim, now_text=now_text)
         _require_live_claim(row, claim, now=now)
         *_, input_fingerprint, current_digest = _current_operation_context(row)
+        progress_fingerprint = _operation_progress_fingerprint(row)
         _require_original_input_digest(row, current_digest)
         if not _resolve_planning_enabled(None):
             _transition_terminal(
@@ -1141,7 +1219,100 @@ def renew_operation_lease(
         claim=claim,
         lease_expires_at=deadline,
         input_fingerprint=input_fingerprint,
-        _signature=_operation_lease_ticket_signature(claim, deadline, input_fingerprint),
+        progress_fingerprint=progress_fingerprint,
+        _signature=_operation_lease_ticket_signature(
+            claim, deadline, input_fingerprint, progress_fingerprint,
+        ),
+    )
+
+
+def renew_operation_lease_after_io(
+    claim: OperationClaim,
+    ticket: OperationLeaseTicket,
+    *,
+    planning_enabled: bool | None = None,
+    _full_auto_claim: Any = None,
+) -> OperationLeaseTicket:
+    """Renew a Full Auto child after remote I/O without reusing old inputs.
+
+    The signed pre-dispatch ticket authorizes this narrow lease extension only
+    while the parent owner, child fence, deadline, and persisted progress stay
+    live and unchanged. ``persist_operation_response`` remains responsible for
+    reloading and revalidating every effective input before it stores output.
+    """
+    if (
+        not isinstance(claim, OperationClaim)
+        or not isinstance(ticket, OperationLeaseTicket)
+        or not _is_authentic_operation_lease_ticket(ticket)
+        or ticket.claim != claim
+    ):
+        raise AuthoringOperationError(422, "invalid_request", "A backend operation lease ticket is required.")
+    if _full_auto_claim is None:
+        raise AuthoringOperationError(
+            409, "full_auto_owner_required", "A live Full Auto owner is required for this operation."
+        )
+    enabled = _resolve_planning_enabled(planning_enabled)
+    if not enabled:
+        raise AuthoringOperationError(
+            503,
+            "resource_planning_disabled",
+            "Resource planning is disabled by configuration.",
+        )
+    now_text = db.now()
+    with db.transaction():
+        now = _utc_datetime(now_text, field="current time")
+        row = _read_claim_row(claim)
+        _require_full_auto_owner(row, _full_auto_claim, now_text=now_text)
+        _require_live_claim(row, claim, now=now)
+        if row["lease_expires_at"] != ticket.lease_expires_at:
+            raise AuthoringOperationError(
+                409, "authoring_owner_stale", "This worker no longer owns the operation."
+            )
+        current_progress = _operation_progress_fingerprint(row)
+        if not hmac.compare_digest(current_progress, ticket.progress_fingerprint):
+            raise AuthoringOperationError(
+                409,
+                "authoring_inputs_stale",
+                "The operation progress changed while the response was in flight.",
+            )
+        if not _resolve_planning_enabled(None):
+            raise AuthoringOperationError(
+                503,
+                "resource_planning_disabled",
+                "Resource planning is disabled by configuration.",
+            )
+        deadline = db.authoring_operation_lease_deadline(now)
+        updated = db.conn().execute(
+            """UPDATE authoring_operation
+               SET lease_expires_at = ?, updated_at = ?
+               WHERE operation_id = ? AND state = 'active'
+                 AND fencing_token = ? AND request_digest = ? AND plan_revision = ?
+                 AND lease_expires_at = ?""",
+            (
+                deadline,
+                now_text,
+                claim.operation_id,
+                claim.fencing_token,
+                claim.request_digest,
+                claim.plan_revision,
+                ticket.lease_expires_at,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise AuthoringOperationError(
+                409, "authoring_owner_stale", "This worker no longer owns the operation."
+            )
+    return OperationLeaseTicket(
+        claim=claim,
+        lease_expires_at=deadline,
+        input_fingerprint=ticket.input_fingerprint,
+        progress_fingerprint=ticket.progress_fingerprint,
+        _signature=_operation_lease_ticket_signature(
+            claim,
+            deadline,
+            ticket.input_fingerprint,
+            ticket.progress_fingerprint,
+        ),
     )
 
 
@@ -1195,6 +1366,7 @@ def persist_operation_response(
     reuse_take_snapshot: bool = False,
     planning_enabled: bool | None = None,
     _predecessor_validation_cache: dict | None = None,
+    _full_auto_claim: Any = None,
 ) -> dict:
     """Atomically persist validated target results and ordered progress.
 
@@ -1229,6 +1401,7 @@ def persist_operation_response(
     with db.transaction():
         now = _utc_datetime(now_text, field="current time")
         row = _read_claim_row(claim)
+        _require_full_auto_owner(row, _full_auto_claim, now_text=now_text)
         if row["state"] == "cancel_requested":
             if (
                 ticket.claim != claim
@@ -1258,6 +1431,14 @@ def persist_operation_response(
             if row["lease_expires_at"] != ticket.lease_expires_at:
                 raise AuthoringOperationError(
                     409, "authoring_owner_stale", "This worker no longer owns the operation."
+                )
+            if not hmac.compare_digest(
+                _operation_progress_fingerprint(row), ticket.progress_fingerprint,
+            ):
+                raise AuthoringOperationError(
+                    409,
+                    "authoring_inputs_stale",
+                    "The operation progress changed while the response was in flight.",
                 )
 
             # This check is inside the write transaction. If the gate changed
@@ -1445,6 +1626,7 @@ def persist_operation_response(
                             409, "authoring_inputs_stale",
                             "Take finalization was skipped; discard this response.",
                         )
+                    _require_full_auto_owner(row, _full_auto_claim, now_text=db.now())
                     updated = db.conn().execute(
                         """UPDATE authoring_operation
                            SET state = ?, lease_expires_at = ?, completed_json = ?,
@@ -1502,6 +1684,7 @@ def start_operation(
     *,
     planning_enabled: bool,
     assistant_available: bool,
+    _full_auto_claim: Any = None,
 ) -> tuple[dict, bool]:
     """Atomically replay or claim one operation for this session."""
     planning_enabled = _resolve_planning_enabled(planning_enabled)
@@ -1520,6 +1703,19 @@ def start_operation(
                 "resource_planning_disabled",
                 "Resource planning is disabled by configuration.",
             )
+        if _full_auto_claim is not None:
+            if request["kind"] != "prepare_takes":
+                raise AuthoringOperationError(422, "invalid_request", "Full Auto can own only take-preparation operations.")
+            from backend import resource_full_auto
+
+            try:
+                owner = resource_full_auto.require_prepare_claim(
+                    _full_auto_claim, session_id=session_id, now_text=db.now(),
+                )
+            except resource_full_auto.FullAutoRunError as exc:
+                raise AuthoringOperationError(409, "full_auto_owner_stale", "The Full Auto operation owner is stale.") from exc
+            if int(owner["plan_revision"]) != request["expected_revision"]:
+                raise AuthoringOperationError(409, "plan_revision_stale", "The Full Auto plan changed before preparation.")
         session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
         if session is None:
             raise AuthoringOperationError(404, "session_not_found", "Session not found.")
@@ -1530,6 +1726,7 @@ def start_operation(
             request["request_id"],
         )
         if existing is not None:
+            _require_full_auto_owner(existing, _full_auto_claim, now_text=db.now())
             if existing["request_digest"] != request["request_digest"]:
                 raise AuthoringOperationError(
                     409,
@@ -1675,13 +1872,18 @@ def start_operation(
         }
         *_, input_digest = _current_operation_context(candidate)
         now = db.now()
+        owner_fields = (
+            (_full_auto_claim.run_id, _full_auto_claim.epoch, _full_auto_claim.fencing_token)
+            if _full_auto_claim is not None else (None, None, None)
+        )
         db.run(
             """INSERT INTO authoring_operation (
                    operation_id, request_id, session_id, plan_revision, kind,
                    request_digest, input_digest, state, fencing_token, lease_expires_at,
                    requested_json, completed_json, failed_item, error,
-                   remaining_json, result_json, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, '[]', NULL, NULL, ?, NULL, ?, ?)""",
+                   remaining_json, result_json, full_auto_run_id, full_auto_run_epoch,
+                   full_auto_run_fencing_token, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, '[]', NULL, NULL, ?, NULL, ?, ?, ?, ?, ?)""",
             operation_id,
             request["request_id"],
             session_id,
@@ -1692,9 +1894,19 @@ def start_operation(
             db.authoring_operation_lease_deadline(),
             requested_json,
             requested_json,
+            *owner_fields,
             now,
             now,
         )
+        if _full_auto_claim is not None:
+            from backend import resource_full_auto
+
+            try:
+                resource_full_auto.register_prepare_child(
+                    _full_auto_claim, operation_id, requested,
+                )
+            except resource_full_auto.FullAutoRunError as exc:
+                raise AuthoringOperationError(409, "full_auto_owner_stale", "The Full Auto operation owner is stale.") from exc
         row = _get_operation(operation_id)
         if row is None:
             raise AuthoringOperationError(
@@ -1715,6 +1927,7 @@ def fail_operation_item(
     failed_target: str,
     *,
     planning_enabled: bool | None = None,
+    _full_auto_claim: Any = None,
 ) -> dict:
     """Persist a safe per-item failure while retaining completed results for Resume."""
     if not isinstance(claim, OperationClaim) or not isinstance(ticket, OperationLeaseTicket):
@@ -1742,6 +1955,7 @@ def fail_operation_item(
     with db.transaction():
         now = _utc_datetime(now_text, field="current time")
         row = _read_claim_row(claim)
+        _require_full_auto_owner(row, _full_auto_claim, now_text=now_text)
         if row["state"] == "cancel_requested":
             if (
                 ticket.claim != claim
@@ -1782,6 +1996,14 @@ def fail_operation_item(
         _require_live_claim(row, claim, now=now)
         if ticket.claim != claim or row["lease_expires_at"] != ticket.lease_expires_at:
             raise AuthoringOperationError(409, "authoring_owner_stale", "This worker no longer owns the operation.")
+        if not hmac.compare_digest(
+            _operation_progress_fingerprint(row), ticket.progress_fingerprint,
+        ):
+            raise AuthoringOperationError(
+                409,
+                "authoring_inputs_stale",
+                "The operation progress changed while the response was in flight.",
+            )
         _, _, _, remaining, current_fingerprint = _current_operation_inputs(row)
         if current_fingerprint != ticket.input_fingerprint:
             raise AuthoringOperationError(
@@ -2075,10 +2297,15 @@ def get_operation(
     *,
     planning_enabled: bool | None = None,
     assistant_available: bool = True,
+    _full_auto_claim: Any = None,
 ) -> dict:
     """Recover and return one operation only when it belongs to the requested session."""
     enabled = _resolve_planning_enabled(planning_enabled)
-    recover_session_operations(session_id, planning_enabled=enabled)
+    recover_session_operations(
+        session_id,
+        planning_enabled=enabled,
+        check_inputs=_full_auto_claim is None,
+    )
     with db.transaction():
         row = db.one(
             "SELECT * FROM authoring_operation WHERE session_id = ? AND operation_id = ?",
@@ -2093,8 +2320,12 @@ def get_operation(
                 row,
                 now_text=db.now(),
                 planning_enabled=enabled,
-                check_inputs=True,
+                check_inputs=_full_auto_claim is None,
             )
+            if _full_auto_claim is not None:
+                _require_full_auto_owner(
+                    row, _full_auto_claim, now_text=db.now(),
+                )
             view = _operation_view(
                 row,
                 planning_enabled=enabled,

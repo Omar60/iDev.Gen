@@ -189,10 +189,11 @@ The module does NOT:
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 import db
 import importer
@@ -271,6 +272,22 @@ class _AuthoringPreparedResult:
     compiler_version: str
     provenance: Any
     operation_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _TakePreparationBatchContext:
+    """Shared inputs loaded once for one authoritative operation check."""
+
+    session_id: int
+    plan_revision: int
+    plan: dict
+    takes_by_id: dict[str, dict]
+    resource_entries: list[dict]
+    writer_guidance: dict[str, Any]
+    effective_wardrobes: dict[str, str]
+    profile_coverage_context: Any
+    model_context: dict[str, str] | None
+    reference_workflow_kind: str | None
 
 
 def _is_sealed_authoring_result(value: Any) -> bool:
@@ -1301,7 +1318,12 @@ def build_shared_state_summary(plan: Any) -> dict | None:
 # -- Effective state -------------------------------------------------------
 
 
-def _resolve_take_effective_state(plan: dict, take: dict) -> dict:
+def _resolve_take_effective_state(
+    plan: dict,
+    take: dict,
+    *,
+    _effective_wardrobes: Mapping[str, str] | None = None,
+) -> dict:
     """Return the effective state the take inherits from the plan.
 
     The function is a thin wrapper over
@@ -1327,7 +1349,10 @@ def _resolve_take_effective_state(plan: dict, take: dict) -> dict:
     suggestion; the structure the layer produces surfaces
     that fact explicitly.
     """
-    effective_wardrobes = session_plan.resolve_effective_wardrobes(plan)
+    effective_wardrobes = (
+        session_plan.resolve_effective_wardrobes(plan)
+        if _effective_wardrobes is None else _effective_wardrobes
+    )
     take_id = take["take_id"]
     if take_id not in effective_wardrobes:
         # ``resolve_effective_wardrobes`` already returned a
@@ -1460,41 +1485,144 @@ def prepare_take_inputs(
             f"{plan_revision_actual}, requested preparation revision is "
             f"{plan_revision}"
         )
-    take = None
-    for candidate in plan.get("takes", []):
-        if isinstance(candidate, dict) and candidate.get("take_id") == take_id:
-            take = candidate
-            break
-    if take is None:
-        raise PreparationError(
-            f"take_id {take_id!r} is not present in plan revision "
-            f"{plan_revision}"
+    return _prepare_take_inputs_batch_with_plan(
+        session_id, plan_revision, [take_id], plan,
+        manual_completion_by_take={take_id: manual_completion},
+    )[0]
+
+
+def prepare_take_inputs_batch(
+    session_id: int,
+    plan_revision: int,
+    take_ids: Sequence[str],
+) -> list[dict]:
+    """Prepare one bounded ordered group against one fresh plan read.
+
+    The shared context exists only for this call. Each target still loads its
+    own coverage row, adaptations, conflicts, and target-specific evidence.
+    """
+    if type(session_id) is not int:
+        raise PreparationArgumentError(
+            f"session_id must be an int, got {type(session_id).__name__}"
         )
-
-    # The take's own descriptive choices are read first; the
-    # manual completion is validated against the choices the
-    # take already established so a fixed state is never
-    # overridden silently.
-    take_choices = _take_choices_for_authoring_plan(plan, take)
-    manual = _validate_manual_completion(manual_completion, take_choices)
-
-    # The plan's selected resources are loaded by their exact
-    # immutable triple. The order is the plan's order, which
-    # the planner already normalised: the resolver and the
-    # conflict detector both rely on that order, and the
-    # assembly step reads resources in the order the
-    # preparation returns.
-    resource_entries = _prepare_selected_resource_inputs(plan)
-
-    effective_state = _resolve_take_effective_state(plan, take)
-    profile_coverage_evidence = session_plan._session_take_profile_coverage_evidence(
-        session_id, plan_revision, take_id, plan,
+    if type(plan_revision) is not int:
+        raise PreparationArgumentError(
+            f"plan_revision must be an int, got {type(plan_revision).__name__}"
+        )
+    _validate_preparation_batch_take_ids(take_ids)
+    workflow_binding.validate_workflow_binding_against_session(session_id)
+    actual_revision, plan = session_plan._load_current_resource_plan(session_id)  # noqa: SLF001
+    if actual_revision != plan_revision:
+        raise PreparationError(
+            f"session {session_id} plan revision is {actual_revision}, "
+            f"requested preparation revision is {plan_revision}"
+        )
+    return _prepare_take_inputs_batch_with_plan(
+        session_id, plan_revision, take_ids, plan,
     )
 
-    # The merged view the assembly step reads: take choices
-    # take precedence, the manual completion fills the
-    # choices the take did not yet establish. The keys are
-    # returned in canonical alphabetical order.
+
+def _validate_preparation_batch_take_ids(take_ids: Sequence[str]) -> None:
+    if (
+        not isinstance(take_ids, (list, tuple))
+        or not take_ids
+        or len(take_ids) > 20
+        or any(not isinstance(take_id, str) or not take_id for take_id in take_ids)
+        or len(set(take_ids)) != len(take_ids)
+    ):
+        raise PreparationArgumentError(
+            "take_ids must contain 1 to 20 distinct non-empty strings"
+        )
+
+
+def _prepare_take_inputs_batch_with_plan(
+    session_id: int,
+    plan_revision: int,
+    take_ids: Sequence[str],
+    plan: dict,
+    *,
+    manual_completion_by_take: Mapping[str, Mapping[str, str] | None] | None = None,
+) -> list[dict]:
+    """Build a private operation batch from its caller's validated plan read."""
+    _validate_preparation_batch_take_ids(take_ids)
+    if not isinstance(plan, dict):
+        raise PreparationArgumentError("plan must be a dict")
+    takes_by_id = {
+        take["take_id"]: take
+        for take in plan.get("takes", [])
+        if isinstance(take, dict) and isinstance(take.get("take_id"), str)
+    }
+    missing = [take_id for take_id in take_ids if take_id not in takes_by_id]
+    if missing:
+        raise PreparationError(
+            f"take_id {missing[0]!r} is not present in plan revision {plan_revision}"
+        )
+
+    resource_entries = _prepare_selected_resource_inputs(plan)
+    effective_wardrobes = session_plan.resolve_effective_wardrobes(plan)
+    profile_coverage_context = session_plan._build_session_take_profile_coverage_context(
+        session_id, plan_revision, plan,
+        _effective_wardrobes=effective_wardrobes,
+    )
+    application = profile_coverage_context["application"]
+    reference_workflow_kind = None
+    if application is not None and any(
+        bool(takes_by_id[take_id].get("reference")) for take_id in take_ids
+    ):
+        reference_workflow_kind = (db.one(
+            "SELECT w.kind AS kind FROM session s "
+            "LEFT JOIN workflow w ON w.id = s.reference_workflow_id "
+            "WHERE s.id = ?",
+            session_id,
+        ) or {}).get("kind") or ""
+    needs_model_context = application is not None and any(
+        not bool(takes_by_id[take_id].get("reference"))
+        or reference_workflow_kind == "guide"
+        for take_id in take_ids
+    )
+    context = _TakePreparationBatchContext(
+        session_id=session_id,
+        plan_revision=plan_revision,
+        plan=plan,
+        takes_by_id=takes_by_id,
+        resource_entries=resource_entries,
+        writer_guidance=_collect_writer_guidance(resource_entries),
+        effective_wardrobes=effective_wardrobes,
+        profile_coverage_context=profile_coverage_context,
+        model_context=(
+            _load_model_for_session(session_id) if needs_model_context else None
+        ),
+        reference_workflow_kind=reference_workflow_kind,
+    )
+    manual_by_take = manual_completion_by_take or {}
+    return [
+        _prepare_take_from_batch_context(
+            context, take_id, manual_completion=manual_by_take.get(take_id),
+        )
+        for take_id in take_ids
+    ]
+
+
+def _prepare_take_from_batch_context(
+    context: _TakePreparationBatchContext,
+    take_id: str,
+    *,
+    manual_completion: Mapping[str, str] | None = None,
+) -> dict:
+    session_id = context.session_id
+    plan_revision = context.plan_revision
+    plan = context.plan
+    take = context.takes_by_id[take_id]
+    take_choices = _take_choices_for_authoring_plan(plan, take)
+    manual = _validate_manual_completion(manual_completion, take_choices)
+    effective_state = _resolve_take_effective_state(
+        plan, take, _effective_wardrobes=context.effective_wardrobes,
+    )
+    profile_coverage_evidence = session_plan._session_take_profile_coverage_evidence(
+        session_id, plan_revision, take_id, plan,
+        _context=context.profile_coverage_context,
+    )
+
     effective_take_choices: dict[str, str] = {}
     for name in sorted(TAKE_DESCRIPTIVE_CHOICES):
         if name in take_choices:
@@ -1510,7 +1638,6 @@ def prepare_take_inputs(
         "plan_revision": plan_revision,
         "session_id": session_id,
     }
-
     preparation = {
         "take_id": take_id,
         "session_id": session_id,
@@ -1521,21 +1648,16 @@ def prepare_take_inputs(
         "manual_completion": {"descriptive_inputs": dict(sorted(manual.items()))},
         "effective_state": effective_state,
         "profile_coverage_evidence": profile_coverage_evidence,
-        "resource_inputs": resource_entries,
-        "writer_guidance": _collect_writer_guidance(resource_entries),
+        "resource_inputs": copy.deepcopy(context.resource_entries),
+        "writer_guidance": copy.deepcopy(context.writer_guidance),
         "provenance": provenance,
         "reference": bool(take.get("reference", False)),
     }
     if "prompt" in take and isinstance(take["prompt"], str) and take["prompt"].strip():
         preparation["prompt"] = str(take["prompt"]).strip()
-    # Task 4.2: the review state is computed from the
-    # preparation the same way a UI or a future task 4.4
-    # would compute it. The initial state has no
-    # adaptations; conflicts and unresolved placeholders
-    # are visible immediately so a reviewer can act on
-    # them before persistence. The state is JSON-serialisable
-    # and carries no wall-clock timestamps.
-    preparation["review_state"] = build_review_state(preparation, adaptations=None)
+    preparation["review_state"] = build_review_state(
+        preparation, adaptations=None, _preparation_batch_context=context,
+    )
     return preparation
 
 
@@ -2941,6 +3063,7 @@ def build_review_state(
     preparation: dict,
     *,
     adaptations: list[dict] | None = None,
+    _preparation_batch_context: _TakePreparationBatchContext | None = None,
 ) -> dict:
     """Return the visible review state for the take's preparation.
 
@@ -3059,6 +3182,11 @@ def build_review_state(
 
     open_conflicts.extend(_detect_profiled_garment_conflicts(
         preparation, validated_adaptations,
+        _preparation_batch_context=_preparation_batch_context,
+        _coverage_evidence=(
+            preparation.get("profile_coverage_evidence")
+            if _preparation_batch_context is not None else None
+        ),
     ))
 
     selected_resource_revisions: list[dict] = []
@@ -5005,6 +5133,8 @@ def _detect_profiled_garment_conflicts(
     *,
     trigger: str | None = None,
     base_positive: str | None = None,
+    _preparation_batch_context: _TakePreparationBatchContext | None = None,
+    _coverage_evidence: dict | None = None,
 ) -> list[dict]:
     """Find exact profile-owned garment wording reintroduced after removal."""
     session_id = preparation.get("session_id")
@@ -5017,22 +5147,33 @@ def _detect_profiled_garment_conflicts(
         or not take_id
     ):
         return []
-    if db.one(
-        "SELECT 1 FROM session_profile_evidence "
-        "WHERE session_id = ? AND plan_revision = ?",
-        session_id, plan_revision,
-    ) is None:
-        return []
-
-    actual_revision, plan = session_plan._load_current_resource_plan(session_id)
-    if actual_revision != plan_revision:
-        raise session_plan.PlanRevisionStale(
-            f"session {session_id} plan revision is {actual_revision}, "
-            f"requested preparation revision is {plan_revision}"
+    coverage_context = None
+    if _preparation_batch_context is None:
+        if db.one(
+            "SELECT 1 FROM session_profile_evidence "
+            "WHERE session_id = ? AND plan_revision = ?",
+            session_id, plan_revision,
+        ) is None:
+            return []
+        actual_revision, plan = session_plan._load_current_resource_plan(session_id)
+        if actual_revision != plan_revision:
+            raise session_plan.PlanRevisionStale(
+                f"session {session_id} plan revision is {actual_revision}, "
+                f"requested preparation revision is {plan_revision}"
+            )
+        application = session_plan._load_session_profile_application(
+            session_id, plan_revision, plan,
         )
-    application = session_plan._load_session_profile_application(
-        session_id, plan_revision, plan,
-    )
+    else:
+        if (
+            type(_preparation_batch_context) is not _TakePreparationBatchContext
+            or _preparation_batch_context.session_id != session_id
+            or _preparation_batch_context.plan_revision != plan_revision
+        ):
+            raise PreparationError("profile conflict context does not match the current take")
+        plan = _preparation_batch_context.plan
+        coverage_context = _preparation_batch_context.profile_coverage_context
+        application = coverage_context["application"]
     if application is None:
         return []
 
@@ -5048,19 +5189,27 @@ def _detect_profiled_garment_conflicts(
     is_reference = bool(take.get("reference"))
     full_context = True
     if is_reference:
-        ref_kind = (db.one(
-            "SELECT w.kind AS kind FROM session s "
-            "LEFT JOIN workflow w ON w.id = s.reference_workflow_id "
-            "WHERE s.id = ?",
-            session_id,
-        ) or {}).get("kind") or ""
+        ref_kind = (
+            _preparation_batch_context.reference_workflow_kind
+            if _preparation_batch_context is not None
+            else (db.one(
+                "SELECT w.kind AS kind FROM session s "
+                "LEFT JOIN workflow w ON w.id = s.reference_workflow_id "
+                "WHERE s.id = ?",
+                session_id,
+            ) or {}).get("kind") or ""
+        )
         full_context = ref_kind == "guide"
     if not full_context:
         # Edit instructions are bare operations on the supplied image, not
         # positive composition clauses with the session's profile context.
         return []
 
-    wardrobes = session_plan.resolve_effective_wardrobes(plan)
+    wardrobes = (
+        _preparation_batch_context.effective_wardrobes
+        if _preparation_batch_context is not None
+        else session_plan.resolve_effective_wardrobes(plan)
+    )
     wardrobe = wardrobes.get(take_id)
     effective_state = preparation.get("effective_state")
     if (
@@ -5072,8 +5221,12 @@ def _detect_profiled_garment_conflicts(
             "profile conflict checks require the authoritative effective wardrobe"
         )
 
-    coverage_evidence = session_plan._session_take_profile_coverage_evidence(
-        session_id, plan_revision, take_id, plan,
+    coverage_evidence = (
+        _coverage_evidence
+        if _preparation_batch_context is not None
+        else session_plan._session_take_profile_coverage_evidence(
+            session_id, plan_revision, take_id, plan,
+        )
     )
     if coverage_evidence is None:
         raise session_plan.PlanValidationError(
@@ -5132,7 +5285,12 @@ def _detect_profiled_garment_conflicts(
         return []
 
     if trigger is None or base_positive is None:
-        model = _load_model_for_session(session_id)
+        model = (
+            _preparation_batch_context.model_context
+            if _preparation_batch_context is not None
+            else _load_model_for_session(session_id)
+        )
+        model = model or {"trigger": "", "base_positive": ""}
         trigger = model["trigger"]
         base_positive = model["base_positive"]
     trigger = trigger or ""

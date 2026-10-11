@@ -731,6 +731,9 @@ CREATE TABLE IF NOT EXISTS authoring_operation (
     result_json     TEXT,
     acceptance_digest TEXT,
     acceptance_result_json TEXT,
+    full_auto_run_id TEXT REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    full_auto_run_epoch INTEGER,
+    full_auto_run_fencing_token INTEGER,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     UNIQUE (session_id, request_id),
@@ -739,6 +742,10 @@ CREATE TABLE IF NOT EXISTS authoring_operation (
     CHECK (kind IN ('shared_suggestions', 'prepare_takes')),
     CHECK (state IN ('active', 'cancel_requested', 'succeeded', 'failed', 'cancelled', 'expired')),
     CHECK (fencing_token > 0),
+    CHECK ((full_auto_run_id IS NULL AND full_auto_run_epoch IS NULL
+            AND full_auto_run_fencing_token IS NULL)
+        OR (full_auto_run_id IS NOT NULL AND full_auto_run_epoch > 0
+            AND full_auto_run_fencing_token > 0)),
     CHECK (state NOT IN ('active', 'cancel_requested') OR lease_expires_at IS NOT NULL)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_authoring_operation_nonterminal_session
@@ -884,6 +891,28 @@ WHEN NEW.fencing_token < OLD.fencing_token
 BEGIN
     SELECT RAISE(ABORT, 'Full Auto run fencing token cannot decrease');
 END;
+
+-- Durable ordered preparation progress stays independent from the generic
+-- coordinator evidence, which records the latest state transition.
+CREATE TABLE IF NOT EXISTS full_auto_prepare_progress (
+    run_id              TEXT PRIMARY KEY NOT NULL
+                        REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    plan_revision       INTEGER NOT NULL CHECK (plan_revision > 0),
+    target_ids_json     TEXT NOT NULL,
+    completed_ids_json  TEXT NOT NULL DEFAULT '[]',
+    updated_at          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS full_auto_prepare_child (
+    run_id          TEXT NOT NULL
+                    REFERENCES full_auto_prepare_progress(run_id) ON DELETE CASCADE,
+    batch_index     INTEGER NOT NULL CHECK (batch_index >= 0),
+    operation_id    TEXT NOT NULL UNIQUE
+                    REFERENCES authoring_operation(operation_id) ON DELETE CASCADE,
+    target_ids_json TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    PRIMARY KEY (run_id, batch_index)
+);
 
 CREATE TABLE IF NOT EXISTS full_auto_run_action_receipt (
     run_id         TEXT NOT NULL REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
@@ -1342,6 +1371,25 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
            WHEN NEW.input_digest IS NOT OLD.input_digest
            BEGIN
                SELECT RAISE(ABORT, 'authoring operation input digest is immutable');
+           END"""
+    )
+    operation_columns = columns("authoring_operation")
+    for name, declaration in (
+        ("full_auto_run_id", "TEXT REFERENCES full_auto_run(run_id) ON DELETE CASCADE"),
+        ("full_auto_run_epoch", "INTEGER"),
+        ("full_auto_run_fencing_token", "INTEGER"),
+    ):
+        if name not in operation_columns:
+            conn.execute(f"ALTER TABLE authoring_operation ADD COLUMN {name} {declaration}")
+    conn.execute(
+        """CREATE TRIGGER IF NOT EXISTS authoring_operation_full_auto_owner_immutable
+           BEFORE UPDATE OF full_auto_run_id, full_auto_run_epoch,
+                            full_auto_run_fencing_token ON authoring_operation
+           WHEN NEW.full_auto_run_id IS NOT OLD.full_auto_run_id
+             OR NEW.full_auto_run_epoch IS NOT OLD.full_auto_run_epoch
+             OR NEW.full_auto_run_fencing_token IS NOT OLD.full_auto_run_fencing_token
+           BEGIN
+               SELECT RAISE(ABORT, 'authoring operation Full Auto owner is immutable');
            END"""
     )
     if "derived_take_ids_json" not in columns("session_profile_coverage_revision"):

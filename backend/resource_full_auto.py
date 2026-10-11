@@ -435,6 +435,368 @@ def renew_run_claim(
         return _make_claim(_require_run(claim.run_id), claim.requires_reconciliation)
 
 
+def require_prepare_claim(
+    claim: RunClaim,
+    *,
+    session_id: int | None = None,
+    now_text: str | None = None,
+) -> dict:
+    """Authenticate a live prepare-phase capability at a child-work boundary."""
+    timestamp = _now_text(now_text)
+    row = _require_claim(claim, now_text=timestamp, reconciliation=False)
+    if (
+        row["state"] != "active"
+        or row["phase"] != "prepare"
+        or bool(row["cancel_intent"])
+        or (session_id is not None and int(row["session_id"]) != session_id)
+    ):
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto prepare owner is stale.")
+    authority_issue = _current_authority_issue(row, timestamp)
+    if authority_issue is not None:
+        raise _authority_error(authority_issue)
+    return row
+
+
+def _prepare_json_list(raw: str, *, field_name: str) -> list[str]:
+    try:
+        values = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise FullAutoRunError(500, "run_state_invalid", f"Saved preparation {field_name} is invalid.") from exc
+    if (
+        type(values) is not list
+        or any(type(value) is not str or not value for value in values)
+        or len(values) != len(set(values))
+    ):
+        raise FullAutoRunError(500, "run_state_invalid", f"Saved preparation {field_name} is invalid.")
+    return values
+
+
+def _read_prepare_progress(run_id: str) -> dict:
+    row = db.one("SELECT * FROM full_auto_prepare_progress WHERE run_id = ?", run_id)
+    if row is None:
+        raise FullAutoRunError(409, "prepare_checkpoint_missing", "Full Auto preparation has no saved target checkpoint.")
+    targets = _prepare_json_list(row["target_ids_json"], field_name="targets")
+    completed = _prepare_json_list(row["completed_ids_json"], field_name="progress")
+    if (
+        not targets
+        or len(targets) > 500
+        or completed != targets[:len(completed)]
+    ):
+        raise FullAutoRunError(500, "run_state_invalid", "Saved Full Auto preparation progress is invalid.")
+    children = []
+    for child in db.q(
+        "SELECT batch_index, operation_id, target_ids_json FROM full_auto_prepare_child "
+        "WHERE run_id = ? ORDER BY batch_index",
+        run_id,
+    ):
+        child_targets = _prepare_json_list(child["target_ids_json"], field_name="child targets")
+        if (
+            type(child["batch_index"]) is not int
+            or not child_targets
+            or len(child_targets) > 20
+            or not isinstance(child["operation_id"], str)
+        ):
+            raise FullAutoRunError(500, "run_state_invalid", "Saved Full Auto child preparation is invalid.")
+        children.append({
+            "batch_index": child["batch_index"],
+            "operation_id": child["operation_id"],
+            "target_ids": child_targets,
+        })
+    return {
+        "target_ids": targets,
+        "completed_take_ids": completed,
+        "children": children,
+        "remaining_take_ids": targets[len(completed):],
+    }
+
+
+def initialize_prepare_progress(claim: RunClaim) -> dict:
+    """Freeze the exact ordered plan targets before creating any child operation."""
+    from backend import session_plan
+    from backend import resource_preparation
+
+    timestamp = _now_text(None)
+    row = require_prepare_claim(claim, now_text=timestamp)
+    plan_row = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        int(row["session_id"]),
+    )
+    if plan_row is None or int(plan_row["plan_revision"]) != int(row["plan_revision"]):
+        raise FullAutoRunError(409, "plan_revision_stale", "The Full Auto plan changed before preparation.")
+    try:
+        plan = json.loads(plan_row["plan_json"])
+        plan = session_plan.validate_draft(plan)
+    except (TypeError, json.JSONDecodeError, session_plan.PlanValidationError) as exc:
+        raise FullAutoRunError(409, "plan_state_invalid", "The saved Full Auto plan could not be validated.") from exc
+    targets = [take["take_id"] for take in plan.get("takes", [])]
+    if (
+        not targets
+        or len(targets) > 500
+        or any(type(take_id) is not str or not take_id for take_id in targets)
+        or len(targets) != len(set(targets))
+    ):
+        raise FullAutoRunError(409, "plan_state_invalid", "The Full Auto plan has an invalid preparation target set.")
+
+    # A previously prepared current prefix is already completed work. Validate
+    # every row through the real evidence verifier before adopting it; no row or
+    # provenance is rewritten here.
+    validated_prefix: list[str] = []
+    validation_cache: dict = {}
+    for take_id in targets:
+        snapshot = session_plan._prepared_take_row(
+            int(row["session_id"]), int(row["plan_revision"]), take_id,
+        )
+        if snapshot is None or snapshot["status"] not in (
+            session_plan.PREPARED_TAKE_STATUS_READY,
+            session_plan.PREPARED_TAKE_STATUS_GENERATED,
+        ):
+            break
+        try:
+            resource_preparation.validate_authoring_prepared_evidence(
+                int(row["session_id"]), int(row["plan_revision"]), take_id,
+                row=snapshot, _predecessor_validation_cache=validation_cache,
+            )
+        except session_plan.AuthoringEvidenceInvalid:
+            break
+        validated_prefix.append(take_id)
+
+    with db.transaction():
+        # Validation above can take long enough for the parent lease or the
+        # prepared evidence to change. Re-read the clock after acquiring the
+        # write transaction, and revalidate every adopted snapshot against the
+        # authoritative rows and dependencies while concurrent writers are
+        # excluded. The evidence validator is read-only local/database work;
+        # no remote authoring or generation call runs in this transaction.
+        transaction_timestamp = _now_text(None)
+        row = require_prepare_claim(claim, now_text=transaction_timestamp)
+        current_plan_row = db.one(
+            "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+            int(row["session_id"]),
+        )
+        if (
+            current_plan_row is None
+            or int(current_plan_row["plan_revision"]) != int(row["plan_revision"])
+            or current_plan_row["plan_json"] != plan_row["plan_json"]
+        ):
+            raise FullAutoRunError(409, "plan_revision_stale", "The Full Auto plan changed before preparation.")
+        current_validation_cache: dict = {}
+        for take_id in validated_prefix:
+            current_snapshot = session_plan._prepared_take_row(
+                int(row["session_id"]), int(row["plan_revision"]), take_id,
+            )
+            if current_snapshot is None or current_snapshot["status"] not in (
+                session_plan.PREPARED_TAKE_STATUS_READY,
+                session_plan.PREPARED_TAKE_STATUS_GENERATED,
+            ):
+                raise FullAutoRunError(
+                    409, "prepared_evidence_stale",
+                    "Prepared Full Auto evidence changed before its checkpoint was saved.",
+                )
+            try:
+                resource_preparation.validate_authoring_prepared_evidence(
+                    int(row["session_id"]), int(row["plan_revision"]), take_id,
+                    row=current_snapshot,
+                    _predecessor_validation_cache=current_validation_cache,
+                )
+            except session_plan.AuthoringEvidenceInvalid as exc:
+                raise FullAutoRunError(
+                    409, "prepared_evidence_stale",
+                    "Prepared Full Auto evidence changed before its checkpoint was saved.",
+                ) from exc
+        # The full evidence check can itself be lengthy for a large existing
+        # prefix. Recheck ownership after it, immediately before persistence.
+        commit_timestamp = _now_text(None)
+        row = require_prepare_claim(claim, now_text=commit_timestamp)
+        encoded = _canonical_json(targets)
+        existing = db.one(
+            "SELECT plan_revision, target_ids_json, completed_ids_json "
+            "FROM full_auto_prepare_progress WHERE run_id = ?",
+            claim.run_id,
+        )
+        if existing is None:
+            db.run(
+                """INSERT INTO full_auto_prepare_progress
+                   (run_id, plan_revision, target_ids_json, completed_ids_json, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                claim.run_id, int(row["plan_revision"]), encoded,
+                _canonical_json(validated_prefix), commit_timestamp,
+            )
+        elif (
+            int(existing["plan_revision"]) != int(row["plan_revision"])
+            or existing["target_ids_json"] != encoded
+        ):
+            raise FullAutoRunError(409, "prepare_checkpoint_changed", "The saved Full Auto target set changed.")
+        else:
+            completed = _prepare_json_list(
+                existing["completed_ids_json"], field_name="progress",
+            )
+            if validated_prefix[:len(completed)] != completed:
+                raise FullAutoRunError(
+                    409, "prepared_evidence_stale",
+                    "Previously completed Full Auto evidence is no longer current.",
+                )
+            if len(validated_prefix) > len(completed):
+                db.run(
+                    "UPDATE full_auto_prepare_progress SET completed_ids_json = ?, updated_at = ? "
+                    "WHERE run_id = ?",
+                    _canonical_json(validated_prefix), commit_timestamp, claim.run_id,
+                )
+        return _read_prepare_progress(claim.run_id)
+
+
+def register_prepare_child(
+    claim: RunClaim,
+    operation_id: str,
+    target_ids: list[str],
+) -> dict:
+    """Bind one durable authoring operation to the next ordered <=20 targets."""
+    if not isinstance(operation_id, str) or not operation_id:
+        raise FullAutoRunError(422, "prepare_child_invalid", "A child operation identity is required.")
+    if type(target_ids) is not list or not target_ids or len(target_ids) > 20:
+        raise FullAutoRunError(422, "prepare_child_invalid", "A child operation must own one to twenty targets.")
+    with db.transaction():
+        row = require_prepare_claim(claim, now_text=_now_text(None))
+        progress = _read_prepare_progress(claim.run_id)
+        existing = db.one(
+            "SELECT batch_index, target_ids_json FROM full_auto_prepare_child "
+            "WHERE run_id = ? AND operation_id = ?",
+            claim.run_id, operation_id,
+        )
+        encoded = _canonical_json(target_ids)
+        if existing is not None:
+            if existing["target_ids_json"] != encoded:
+                raise FullAutoRunError(409, "prepare_child_conflict", "The child operation targets changed.")
+            return progress
+        expected = progress["remaining_take_ids"][:20]
+        if target_ids != expected:
+            raise FullAutoRunError(409, "prepare_child_order_stale", "The child targets do not match the next ordered plan batch.")
+        operation = db.one(
+            "SELECT session_id, plan_revision, kind, full_auto_run_id, "
+            "full_auto_run_epoch, full_auto_run_fencing_token FROM authoring_operation "
+            "WHERE operation_id = ?",
+            operation_id,
+        )
+        if (
+            operation is None
+            or int(operation["session_id"]) != int(row["session_id"])
+            or int(operation["plan_revision"]) != int(row["plan_revision"])
+            or operation["kind"] != "prepare_takes"
+            or operation["full_auto_run_id"] != claim.run_id
+            or operation["full_auto_run_epoch"] != claim.epoch
+            or operation["full_auto_run_fencing_token"] != claim.fencing_token
+        ):
+            raise FullAutoRunError(409, "prepare_child_owner_invalid", "The authoring operation is not owned by this Full Auto run.")
+        next_index = len(progress["children"])
+        timestamp = _now_text(None)
+        row = require_prepare_claim(claim, now_text=timestamp)
+        db.run(
+            """INSERT INTO full_auto_prepare_child
+               (run_id, batch_index, operation_id, target_ids_json, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            claim.run_id, next_index, operation_id, encoded, timestamp,
+        )
+        return _read_prepare_progress(claim.run_id)
+
+
+def checkpoint_prepare_child(
+    claim: RunClaim,
+    operation_id: str,
+    completed_take_ids: list[str] | None = None,
+) -> dict:
+    """Persist an ordered prefix read back from the fenced authoring child row."""
+    from backend import resource_preparation
+    from backend import session_plan
+
+    if completed_take_ids is not None and type(completed_take_ids) is not list:
+        raise FullAutoRunError(422, "prepare_progress_invalid", "Child preparation progress is invalid.")
+    with db.transaction():
+        row = require_prepare_claim(claim, now_text=_now_text(None))
+        progress = _read_prepare_progress(claim.run_id)
+        child = next((item for item in progress["children"] if item["operation_id"] == operation_id), None)
+        if child is None:
+            raise FullAutoRunError(409, "prepare_child_missing", "The authoring child is not registered to this run.")
+        operation = db.one(
+            "SELECT session_id, plan_revision, kind, state, requested_json, completed_json, "
+            "full_auto_run_id, full_auto_run_epoch, full_auto_run_fencing_token "
+            "FROM authoring_operation WHERE operation_id = ?",
+            operation_id,
+        )
+        if (
+            operation is None
+            or int(operation["session_id"]) != int(row["session_id"])
+            or int(operation["plan_revision"]) != int(row["plan_revision"])
+            or operation["kind"] != "prepare_takes"
+            or operation["full_auto_run_id"] != claim.run_id
+            or operation["full_auto_run_epoch"] != claim.epoch
+            or operation["full_auto_run_fencing_token"] != claim.fencing_token
+        ):
+            raise FullAutoRunError(409, "prepare_child_owner_invalid", "The authoring operation is not owned by this Full Auto run.")
+        persisted_targets = _prepare_json_list(
+            operation["requested_json"], field_name="child targets",
+        )
+        persisted_completed = _prepare_json_list(
+            operation["completed_json"], field_name="child progress",
+        )
+        if (
+            operation["state"] not in {"succeeded", "failed", "cancelled", "expired"}
+            or persisted_targets != child["target_ids"]
+            or (completed_take_ids is not None and completed_take_ids != persisted_completed)
+        ):
+            raise FullAutoRunError(
+                409, "prepare_progress_invalid",
+                "The child operation progress is not a persisted terminal result.",
+            )
+        prior = progress["completed_take_ids"]
+        expected_prior = progress["target_ids"][:len(prior)]
+        expected_child = progress["target_ids"][len(prior):len(prior) + len(child["target_ids"])]
+        if prior != expected_prior or child["target_ids"] != expected_child:
+            raise FullAutoRunError(409, "prepare_progress_stale", "The authoring child no longer matches ordered run progress.")
+        if persisted_completed != child["target_ids"][:len(persisted_completed)]:
+            raise FullAutoRunError(409, "prepare_progress_invalid", "Child progress must be an ordered target prefix.")
+
+        # A terminal authoring row is not sufficient evidence to advance the
+        # parent checkpoint. Revalidate only snapshots newly claimed by this
+        # child, under the same persistence transaction, against their current
+        # authoritative inputs. A fresh cache is deliberately scoped to this
+        # bounded child; it never spans batches or coordinator calls.
+        validation_cache: dict = {}
+        for take_id in persisted_completed:
+            snapshot = session_plan._prepared_take_row(
+                int(row["session_id"]), int(row["plan_revision"]), take_id,
+            )
+            if snapshot is None or snapshot["status"] not in (
+                session_plan.PREPARED_TAKE_STATUS_READY,
+                session_plan.PREPARED_TAKE_STATUS_GENERATED,
+            ):
+                raise FullAutoRunError(
+                    409, "prepared_evidence_stale",
+                    "A completed child snapshot is no longer current.",
+                )
+            try:
+                resource_preparation.validate_authoring_prepared_evidence(
+                    int(row["session_id"]), int(row["plan_revision"]), take_id,
+                    row=snapshot,
+                    _predecessor_validation_cache=validation_cache,
+                )
+            except session_plan.AuthoringEvidenceInvalid as exc:
+                raise FullAutoRunError(
+                    409, "prepared_evidence_stale",
+                    "A completed child snapshot is no longer current.",
+                ) from exc
+
+        completed = prior + persisted_completed
+        # Acquiring the transaction may wait on SQLite's write lock, and
+        # evidence validation can take time. Check the live owner once more
+        # immediately before the checkpoint write so elapsed leases fail closed.
+        timestamp = _now_text(None)
+        row = require_prepare_claim(claim, now_text=timestamp)
+        db.run(
+            "UPDATE full_auto_prepare_progress SET completed_ids_json = ?, updated_at = ? WHERE run_id = ?",
+            _canonical_json(completed), timestamp, claim.run_id,
+        )
+        return _read_prepare_progress(claim.run_id)
+
+
 def _valid_phase_step(current: str, requested: str) -> bool:
     if requested == current:
         return True

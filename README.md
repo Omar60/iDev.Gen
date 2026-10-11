@@ -88,10 +88,15 @@ pixel verification. Exact profile read/create-revision and manual
 session-application APIs are documented in
 [Saved looks](docs/looks.md#automation-profile-api). Guided creation also has a
 backend API for selecting an exact saved-look snapshot and for read-only Full
-Auto preflight plus atomic initial run authorization. There is no profile editor
-or execution coordinator, unattended execution, status/cancel/resume controls,
-or selection/consent UI; the manual workflow retains progression, review,
-submission, and Run controls. Portable-v1 JSON excludes profiles. See the
+Auto preflight plus atomic initial run authorization. An internal coordinator
+can prepare authorized takes in ordered batches of up to twenty, then stops at
+validation; creation and startup do not dispatch it, and HTTP run controls are
+not connected. Shared manual-control gates, 15-second coordinator and runner
+heartbeats, assistant-slot admission, approval, submission, and runner
+integration remain unfinished. The profile editor and Full Auto
+selection/consent UI are unavailable, so Full Auto is not yet an end-to-end user
+flow. The existing manual workflow remains available. Portable-v1 JSON
+excludes profiles. See the
 [guided creation API](docs/sessions.md#saved-look-and-full-auto-creation-api).
 
 Full Auto currently accepts only text-to-image workflows with no mapped

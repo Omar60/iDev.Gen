@@ -28,7 +28,10 @@ Verified baseline from the repository layout and application entry points.
   immutable storage, readiness, and translations are handled by the
   `resource_*` modules. `backend/resource_full_auto.py` persists Full Auto run
   state, fenced claims, cancellation/resume transitions, and immutable control
-  receipts; it is not yet connected to HTTP controls or an execution runtime.
+  receipts. An internal coordinator in `backend/main.py` prepares authorized
+  takes through ordered, owned batches of up to twenty and stops at validation;
+  creation/startup dispatch, HTTP controls, later review/submission/runner
+  phases, and user-facing Full Auto controls remain unimplemented.
 - `backend/saved_looks.py` stores self-contained saved-look versions and
   separate immutable, digest-bound automation-profile revisions and permanent
   appearance projections. Its coverage compiler binds the exact saved-look and

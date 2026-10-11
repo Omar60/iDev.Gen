@@ -3694,16 +3694,58 @@ def _insert_profile_coverage_evidence(
         )
 
 
+def _build_session_take_profile_coverage_context(
+    session_id: int,
+    plan_revision: int,
+    plan: dict,
+    *,
+    _effective_wardrobes: dict[str, str] | None = None,
+) -> dict:
+    """Load profile-wide immutable facts for one private preparation call."""
+    effective_wardrobes = (
+        resolve_effective_wardrobes(plan)
+        if _effective_wardrobes is None else _effective_wardrobes
+    )
+    return {
+        "session_id": session_id,
+        "plan_revision": plan_revision,
+        "plan": plan,
+        "application": _load_session_profile_application(
+            session_id, plan_revision, plan,
+        ),
+        "derived_take_ids": _profile_coverage_revision_derived_take_ids(
+            session_id, plan_revision, plan,
+        ),
+        "effective_wardrobes": effective_wardrobes,
+    }
+
+
 def _session_take_profile_coverage_evidence(
     session_id: int,
     plan_revision: int,
     take_id: str,
     plan: dict,
+    *,
+    _context: dict | None = None,
 ) -> dict | None:
-    application = _load_session_profile_application(session_id, plan_revision, plan)
-    bound_take_ids = _profile_coverage_revision_derived_take_ids(
-        session_id, plan_revision, plan,
-    )
+    if _context is None:
+        application = _load_session_profile_application(session_id, plan_revision, plan)
+        bound_take_ids = _profile_coverage_revision_derived_take_ids(
+            session_id, plan_revision, plan,
+        )
+        effective_wardrobes = None
+    else:
+        if (
+            type(_context) is not dict
+            or _context.get("session_id") != session_id
+            or _context.get("plan_revision") != plan_revision
+            or _context.get("plan") is not plan
+            or type(_context.get("effective_wardrobes")) is not dict
+        ):
+            raise PlanValidationError("profile coverage context does not match the current plan")
+        application = _context.get("application")
+        bound_take_ids = _context.get("derived_take_ids")
+        effective_wardrobes = _context["effective_wardrobes"]
     row = db.one(
         "SELECT * FROM session_take_coverage_evidence "
         "WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
@@ -3722,7 +3764,10 @@ def _session_take_profile_coverage_evidence(
     text_digest = hashlib.sha256(coverage.encode("utf-8", errors="strict")).hexdigest()
     derived = None
     if row is not None:
-        effective = resolve_effective_wardrobes(plan)
+        effective = (
+            resolve_effective_wardrobes(plan)
+            if effective_wardrobes is None else effective_wardrobes
+        )
         expected = _profile_coverage_record(
             application, row["stage_index"], effective[take_id], coverage,
         )
