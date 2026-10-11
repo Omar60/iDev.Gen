@@ -1,52 +1,47 @@
 # Latest Session Work
 
-## Full Auto Task 4.4 Handoff
+## Full Auto Task 4.5 Handoff
 
-Heavy deployment `full_auto_first_pending_20261010` addresses only Task 4.4 of
-`automate-resource-session-full-auto`. Main completed framework/OpenSpec intake,
-inspected critical contracts and retained architecture, scope and acceptance.
-Entry Git state was clean. Explorer mapped existing review boundaries, Executor
-implemented and repaired, Tester independently verified actual service/HTTP and
-SQLite behavior, and Archivist updated public guidance and module ownership.
+Heavy deployment `full_auto_4_5_20261011` addresses only Task 4.5 of
+`automate-resource-session-full-auto`. Main completed project-framework and
+OpenSpec intake, inspected critical contracts and retained architecture,
+scope, integration and acceptance. Entry Git state was clean. Explorer mapped
+the submission/runner boundaries, Executor implemented and repaired, Tester
+verified independently, and Archivist updated public guidance and ownership.
 
 ## Implementation and Boundaries
 
-The shared approval/new-submission transactions validate every current target,
-including linked snapshots and shot identity. Conflicts, placeholders, stale
-adaptations, drift and unaccepted duplicates block new approval/shot writes.
-Neutral plan notices remain inspectable without blocking. Current duplicate
-tuples are compared independently of frozen flags, with lineage self-copies
-excluded. Acceptance binds revision, target/snapshot/set digests and is revoked
-by normal plan invalidation. Policy approval retains exact authorization and
-snapshot evidence separately from human review approval.
+Additive immutable submission receipts bind ordered targets to prepared
+snapshots, shot IDs and snapshot digests. The internal submission driver calls
+the existing service and recovers committed links whose receipts were lost.
+It retains exact final prompts and advances to execute only after all receipts
+are present. Approval recovery accepts the approve phase and reuses verified
+persisted policy approval without rewriting it.
 
-The duplicate acceptance API uses a closed strict body. Full Auto writes recheck
-the live flag and current authority after aggregate validation, immediately
-before persistence. Manual/expert approvals and approved manual submission under
-disablement retain existing behavior; linked submission replay remains no-write.
+Runner.start retains its manual behavior and gains private authenticated
+Full Auto admission. It validates current authority, approval, evidence, complete
+receipts and pending shots in the actual shot-ID execution order. Flag and
+authority are checked again after aggregate review, immediately before writes.
+Admission persists before scheduling; an uncertain post-admission outcome
+refuses another start rather than assume remote work never happened.
 
-The internal review/approval driver is callable and stops at `submit`; the
-preparation coordinator still stops at `validate`. Ordered submission, scheduling,
-runner recovery and public run controls remain outside this task. No frontend
-files, real generation, external handoffs, archive or push are included.
+Preparation still stops at validate. Creation/startup do not schedule the whole
+flow, and there are no new public controls or UI. Global runner claims,
+heartbeats, remote journaling/recovery and cancellation settlement remain later
+tasks. No frontend edits or real-generation exercise were performed.
 
-## Verification and Closure State
+## Independent Evidence and Closure
 
-Independent review reproduced and verified three scoped repair classes: HTTP
-coercion/unknown-key acceptance, policy submission while disabled, and writes
-after lease/authorization expiry during aggregate review. The final independent
-focused set passed 28 tests, including full-table zero-write comparisons,
-workflow PATCH drift, target loss, normal plan CAS invalidation, manual transfer,
-linked replay and post-review flag changes. Privacy/format checks passed 46 tests;
-strict OpenSpec validation and diff checks passed. The final unfiltered command
-was `.venv/Scripts/python.exe -m pytest -q -rs`: exit code zero, 3,221 collected
-cases and two recorded skips, establishing 3,219 passes. Double quiet mode
-suppressed the pass-count summary. The skips cover opt-in real 500-take synthesis
-and unavailable filesystem symlinks. Main accepted the result and marked only
-4.4, bringing completion to 16 of 41 tasks. Closure includes the isolated
-acceptance commit and sealed Archivist report; no push is authorized.
+Tester accepted 26 focused cases covering approval recovery, cuts before and
+after each receipt of a four-target run, SQLite reopen, exact shot/prompt reuse,
+ordered runner execution with FakeComfy, missing/corrupt links and receipts,
+flag/lease changes during validation, cancellation/fence takeover and manual
+Run after cancellation. Main inspected the actual diff and final logs.
 
-The complete suite took about seven minutes. Bounded duration probes measured
-the synthetic 500-target coordinator at 1.61 seconds and 46 collection-adjacent
-tests at 7.115 seconds total. These do not identify the cause of total suite
-latency or rule out a slow test elsewhere; no performance change was made.
+The final complete `python -m pytest -v` run passed 3,245 tests with two skips
+and three warnings in 406.43 seconds on Python 3.11.9 / pytest 9.1.1. Skips were
+opt-in 500-take synthesis and an unavailable filesystem symlink. Independent
+privacy/format checks passed 46 tests; strict OpenSpec validation and diff
+checks passed. Frontend gates were inapplicable. Main accepted and marked only
+4.5 (17 of 41 complete). Closure includes the isolated acceptance commit and
+sealed Archivist report. No next task, archive or push is authorized.

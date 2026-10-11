@@ -1041,6 +1041,53 @@ BEGIN
   SELECT RAISE(ABORT, 'prepared_take in generated status is immutable history: identity, status, final_prompt, effective_state, mapping_version, compiler_version and provenance cannot be rewritten after submission.');
 END;
 
+-- Ordered Full Auto submission receipts make each existing prepared-take link
+-- replayable if the coordinator loses the response after shot creation.
+CREATE TABLE IF NOT EXISTS full_auto_submission_receipt (
+    run_id           TEXT NOT NULL REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    target_index     INTEGER NOT NULL CHECK (target_index >= 0),
+    take_id          TEXT NOT NULL CHECK (take_id <> ''),
+    prepared_take_id INTEGER NOT NULL REFERENCES prepared_take(id) ON DELETE CASCADE,
+    shot_id          INTEGER NOT NULL REFERENCES shot(id) ON DELETE CASCADE,
+    snapshot_digest  TEXT NOT NULL CHECK (length(snapshot_digest) = 64),
+    created_at       TEXT NOT NULL,
+    PRIMARY KEY (run_id, target_index),
+    UNIQUE (run_id, take_id),
+    UNIQUE (run_id, prepared_take_id),
+    UNIQUE (run_id, shot_id)
+);
+CREATE TRIGGER IF NOT EXISTS full_auto_submission_receipt_immutable
+BEFORE UPDATE ON full_auto_submission_receipt
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto submission receipt is immutable');
+END;
+
+-- Runner admission is durable before the in-process task is scheduled. A
+-- replay after an interrupted schedule fails closed instead of dispatching twice.
+CREATE TABLE IF NOT EXISTS full_auto_runner_admission (
+    run_id           TEXT PRIMARY KEY NOT NULL REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    session_id       INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    plan_revision    INTEGER NOT NULL CHECK (plan_revision > 0),
+    target_digest    TEXT NOT NULL CHECK (length(target_digest) = 64),
+    submission_digest TEXT NOT NULL CHECK (length(submission_digest) = 64),
+    admitted_at      TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS full_auto_runner_admission_matches_run
+BEFORE INSERT ON full_auto_runner_admission
+WHEN NOT EXISTS (
+    SELECT 1 FROM full_auto_run
+    WHERE run_id = NEW.run_id AND session_id = NEW.session_id
+      AND plan_revision = NEW.plan_revision
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto runner admission does not match its run');
+END;
+CREATE TRIGGER IF NOT EXISTS full_auto_runner_admission_immutable
+BEFORE UPDATE ON full_auto_runner_admission
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto runner admission is immutable');
+END;
+
 -- Reviewed adaptations of resource-v1 take descriptive inputs
 -- (task 4.2 of ``adopt-resource-session-planning``). One row
 -- per accepted (session, plan_revision, take_id, resource

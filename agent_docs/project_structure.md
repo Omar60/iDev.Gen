@@ -39,9 +39,16 @@ Verified baseline from the repository layout and application entry points.
   new Full Auto submissions enforce the gate; exact linked-shot replays remain
   no-write. Policy provenance is separate from human review approval. The review
   projection and digest-bound duplicate-acceptance endpoint are available, but
-  the coordinator does not invoke them. Creation/startup do not dispatch it; no
-  pause/Cancel/Resume routes or UI exist, and submission/runner phases remain
-  unimplemented.
+  the preparation coordinator does not invoke them. Separate internal
+  submission logic persists ordered receipts binding prepared snapshots to shot
+  links and digests, reuses links, and preserves final prompt bytes. A private
+  authenticated runner claim checks current authority/evidence and complete
+  receipts in persisted shot-ID order, then records one admission before
+  scheduling. An uncertain scheduling outcome after admission refuses replay
+  pending reconciliation. Creation/startup do not dispatch the full sequence;
+  no public Full Auto submission or execution controls or UI exist. Pause,
+  Cancel, and Resume controls are also absent. Heartbeats, child/runner recovery,
+  and global runner claims remain unfinished.
   The legacy runner loop is unchanged. Cancellation reconciliation records
   supplied backend evidence without remote I/O and does not establish recovery
   of an external ComfyUI job.

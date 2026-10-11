@@ -4390,7 +4390,8 @@ async def _run_full_auto_preparation(
 def _run_full_auto_review_and_approve(
     claim: resource_full_auto.RunClaim,
 ) -> tuple[dict, resource_full_auto.RunClaim | None]:
-    """Validate all targets, persist policy approval, and return the submit owner."""
+    """Validate targets and recover policy approval before returning the submit owner."""
+    session_plan._require_resource_planning_enabled()
     owner = claim
     run_snapshot = db.one(
         "SELECT plan_revision FROM full_auto_run WHERE run_id = ?", owner.run_id,
@@ -4401,7 +4402,7 @@ def _run_full_auto_review_and_approve(
         )
     plan_revision = int(run_snapshot["plan_revision"])
     run = resource_full_auto.require_session_mutation_allowed(
-        owner.session_id, claim=owner, allowed_phases=("validate",),
+        owner.session_id, claim=owner, allowed_phases=("validate", "approve"),
         expected_plan_revision=plan_revision,
     )
     if run is None:
@@ -4427,24 +4428,118 @@ def _run_full_auto_review_and_approve(
             None,
         )
 
-    owner = resource_full_auto.renew_run_claim(owner)
-    resource_full_auto.advance_run(owner, "active", phase="approve")
-    owner = resource_full_auto.renew_run_claim(owner)
-    try:
-        session_plan.approve_plan_review(
-            owner.session_id, plan_revision, _full_auto_claim=owner,
-        )
-    except resource_full_auto.FullAutoRunError as exc:
+    if run["phase"] == "validate":
         owner = resource_full_auto.renew_run_claim(owner)
-        return (
-            resource_full_auto.advance_run(
-                owner, "blocked", blocker_code=exc.code,
-            ),
-            None,
+        resource_full_auto.advance_run(owner, "active", phase="approve")
+        owner = resource_full_auto.renew_run_claim(owner)
+
+    approval = db.one(
+        "SELECT run_id FROM full_auto_plan_approval WHERE run_id = ? AND session_id = ?",
+        owner.run_id, owner.session_id,
+    )
+    if approval is None:
+        try:
+            session_plan.approve_plan_review(
+                owner.session_id, plan_revision, _full_auto_claim=owner,
+            )
+        except resource_full_auto.FullAutoRunError as exc:
+            owner = resource_full_auto.renew_run_claim(owner)
+            return (
+                resource_full_auto.advance_run(
+                    owner, "blocked", blocker_code=exc.code,
+                ),
+                None,
+            )
+    else:
+        session_plan._require_current_full_auto_policy_approval(
+            owner.run_id, owner.session_id, review,
         )
     owner = resource_full_auto.renew_run_claim(owner)
     view = resource_full_auto.advance_run(owner, "active", phase="submit")
     return view, owner
+
+
+def _full_auto_submission_state(
+    owner: resource_full_auto.RunClaim,
+) -> tuple[dict, dict]:
+    """Require current authority, policy evidence and ordered receipts before submitting."""
+    session_plan._require_resource_planning_enabled()
+    run_snapshot = db.one(
+        "SELECT plan_revision FROM full_auto_run WHERE run_id = ?", owner.run_id,
+    )
+    if run_snapshot is None:
+        raise resource_full_auto.FullAutoRunError(
+            409, "run_owner_stale", "The Full Auto submission owner is stale.",
+        )
+    plan_revision = int(run_snapshot["plan_revision"])
+    run = resource_full_auto.require_session_mutation_allowed(
+        owner.session_id, claim=owner, allowed_phases=("submit",),
+        expected_plan_revision=plan_revision,
+    )
+    if run is None:
+        raise resource_full_auto.FullAutoRunError(
+            409, "run_owner_stale", "The Full Auto submission owner is stale.",
+        )
+    current_revision, plan = session_plan._load_current_resource_plan(owner.session_id)
+    if current_revision != plan_revision:
+        raise resource_full_auto.FullAutoRunError(
+            409, "plan_revision_stale", "The Full Auto plan changed before submission.",
+        )
+    review = session_plan._full_auto_duplicate_review_evidence(
+        owner.session_id, current_revision, plan, owner.run_id,
+    )
+    session_plan._require_full_auto_review_ready(review)
+    try:
+        session_plan._require_current_full_auto_policy_approval(
+            owner.run_id, owner.session_id, review,
+        )
+    except session_plan.PlanReviewNotApproved as exc:
+        raise resource_full_auto.FullAutoRunError(
+            409, "full_auto_approval_stale", "The Full Auto approval no longer matches current evidence.",
+        ) from exc
+    progress = resource_full_auto.submission_progress(owner)
+    if progress["target_ids"] != review["target_ids"]:
+        raise resource_full_auto.FullAutoRunError(
+            409, "submission_target_stale", "The Full Auto target order changed before submission.",
+        )
+    progress["plan_revision"] = plan_revision
+    return progress, review
+
+
+def _run_full_auto_submission(
+    claim: resource_full_auto.RunClaim,
+) -> tuple[dict, resource_full_auto.RunClaim]:
+    """Submit only unreceipted targets in persisted order, reusing existing links."""
+    owner = claim
+    progress, _review = _full_auto_submission_state(owner)
+    for index, take_id in enumerate(progress["target_ids"]):
+        owner = resource_full_auto.renew_run_claim(owner)
+        progress, _review = _full_auto_submission_state(owner)
+        if index < progress["completed_count"]:
+            continue
+        if index != progress["completed_count"]:
+            raise resource_full_auto.FullAutoRunError(
+                409, "submission_order_invalid", "Full Auto submissions must continue in target order.",
+            )
+        submitted = session_plan.submit_prepared_take(
+            owner.session_id, progress["plan_revision"], take_id, _full_auto_claim=owner,
+        )
+        shot_id = submitted.get("shot_id") if isinstance(submitted, dict) else None
+        if type(shot_id) is not int:
+            raise resource_full_auto.FullAutoRunError(
+                500, "submission_result_invalid", "The prepared take submission returned no valid shot link.",
+            )
+        owner = resource_full_auto.renew_run_claim(owner)
+        resource_full_auto.record_submission_receipt(owner, index, take_id, shot_id)
+
+    owner = resource_full_auto.renew_run_claim(owner)
+    progress, _review = _full_auto_submission_state(owner)
+    if progress["completed_count"] != len(progress["target_ids"]):
+        raise resource_full_auto.FullAutoRunError(
+            409, "full_auto_submission_incomplete", "Every Full Auto target must be linked before execution.",
+        )
+    owner = resource_full_auto.renew_run_claim(owner)
+    return resource_full_auto.advance_run(owner, "active", phase="execute"), owner
 
 
 def _schedule_shared_suggestion_operation(view: dict) -> None:

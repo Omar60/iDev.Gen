@@ -775,6 +775,241 @@ def _read_prepare_progress(run_id: str) -> dict:
     }
 
 
+def _read_submission_receipts(
+    run_id: str,
+    session_id: int,
+    plan_revision: int,
+    target_ids: list[str],
+) -> list[dict]:
+    from backend import session_plan
+
+    receipts = db.q(
+        "SELECT * FROM full_auto_submission_receipt WHERE run_id = ? ORDER BY target_index",
+        run_id,
+    )
+    if len(receipts) > len(target_ids):
+        raise FullAutoRunError(500, "submission_receipt_invalid", "Saved Full Auto submission receipts are invalid.")
+    for index, receipt in enumerate(receipts):
+        prepared = db.one(
+            "SELECT * FROM prepared_take WHERE id = ?", receipt["prepared_take_id"],
+        )
+        shot = db.one(
+            "SELECT session_id, prompt FROM shot WHERE id = ?", receipt["shot_id"],
+        )
+        if (
+            type(receipt["target_index"]) is not int
+            or receipt["target_index"] != index
+            or receipt["take_id"] != target_ids[index]
+            or prepared is None
+            or int(prepared["session_id"]) != session_id
+            or int(prepared["plan_revision"]) != plan_revision
+            or prepared["take_id"] != target_ids[index]
+            or prepared["status"] != session_plan.PREPARED_TAKE_STATUS_GENERATED
+            or prepared["linked_shot_id"] != receipt["shot_id"]
+            or shot is None
+            or int(shot["session_id"]) != session_id
+            or shot["prompt"] != prepared["final_prompt"]
+            or receipt["snapshot_digest"]
+            != session_plan._full_auto_snapshot_reference(prepared)["snapshot_digest"]
+        ):
+            raise FullAutoRunError(500, "submission_receipt_invalid", "A Full Auto submission receipt no longer matches its linked shot.")
+    return receipts
+
+
+def submission_progress(claim: RunClaim) -> dict:
+    """Return the ordered submission receipt prefix for the current submit owner."""
+    with db.transaction():
+        row = require_session_mutation_allowed(
+            claim.session_id, claim=claim, allowed_phases=("submit",),
+        )
+        if row is None:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto submission owner is stale.")
+        progress = _read_prepare_progress(claim.run_id)
+        if progress["completed_take_ids"] != progress["target_ids"]:
+            raise FullAutoRunError(409, "prepare_progress_stale", "Full Auto preparation has not completed every target.")
+        receipts = _read_submission_receipts(
+            claim.run_id, claim.session_id, int(row["plan_revision"]), progress["target_ids"],
+        )
+        return {
+            "target_ids": progress["target_ids"],
+            "receipts": receipts,
+            "completed_count": len(receipts),
+            "plan_revision": int(row["plan_revision"]),
+        }
+
+
+def record_submission_receipt(
+    claim: RunClaim,
+    target_index: int,
+    take_id: str,
+    shot_id: int,
+    *,
+    now_text: str | None = None,
+) -> dict:
+    """Checkpoint one already-committed prepared-take link in target order."""
+    from backend import session_plan
+
+    timestamp = _now_text(now_text)
+    if type(target_index) is not int or target_index < 0 or not isinstance(take_id, str) or type(shot_id) is not int:
+        raise FullAutoRunError(422, "submission_receipt_invalid", "The Full Auto submission receipt is invalid.")
+    with db.transaction():
+        row = require_session_mutation_allowed(
+            claim.session_id, claim=claim, allowed_phases=("submit",),
+        )
+        if row is None:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto submission owner is stale.")
+        plan_revision = int(row["plan_revision"])
+        session_plan._require_resource_planning_enabled()
+        progress = _read_prepare_progress(claim.run_id)
+        if (
+            progress["completed_take_ids"] != progress["target_ids"]
+            or target_index >= len(progress["target_ids"])
+            or progress["target_ids"][target_index] != take_id
+        ):
+            raise FullAutoRunError(409, "submission_target_stale", "The Full Auto submission target order changed.")
+        current_revision, plan = session_plan._load_current_resource_plan(claim.session_id)
+        if current_revision != plan_revision:
+            raise FullAutoRunError(409, "plan_revision_stale", "The Full Auto plan changed before its submission receipt was saved.")
+        review = session_plan._full_auto_duplicate_review_evidence(
+            claim.session_id, current_revision, plan, claim.run_id,
+        )
+        session_plan._require_full_auto_review_ready(review)
+        if review["target_ids"] != progress["target_ids"]:
+            raise FullAutoRunError(409, "submission_target_stale", "The Full Auto target order changed before its submission receipt was saved.")
+        try:
+            session_plan._require_current_full_auto_policy_approval(
+                claim.run_id, claim.session_id, review,
+            )
+        except session_plan.PlanReviewNotApproved as exc:
+            raise FullAutoRunError(409, "full_auto_approval_stale", "The Full Auto approval no longer matches current evidence.") from exc
+        receipts = _read_submission_receipts(
+            claim.run_id, claim.session_id, plan_revision, progress["target_ids"],
+        )
+        if target_index < len(receipts):
+            receipt = receipts[target_index]
+            if receipt["shot_id"] == shot_id:
+                return receipt
+            raise FullAutoRunError(409, "submission_receipt_conflict", "The Full Auto target is already linked to a different shot.")
+        if target_index != len(receipts):
+            raise FullAutoRunError(409, "submission_order_invalid", "Full Auto submissions must be checkpointed in target order.")
+
+        prepared = db.one(
+            "SELECT * FROM prepared_take WHERE session_id = ? AND plan_revision = ? AND take_id = ?",
+            claim.session_id, plan_revision, take_id,
+        )
+        shot = db.one(
+            "SELECT session_id, prompt FROM shot WHERE id = ?", shot_id,
+        )
+        if (
+            prepared is None
+            or prepared["status"] != session_plan.PREPARED_TAKE_STATUS_GENERATED
+            or prepared["linked_shot_id"] != shot_id
+            or shot is None
+            or int(shot["session_id"]) != claim.session_id
+            or shot["prompt"] != prepared["final_prompt"]
+        ):
+            raise FullAutoRunError(409, "linked_snapshot_invalid", "The submitted shot does not match the prepared target.")
+        session_plan._require_resource_planning_enabled()
+        row = require_session_mutation_allowed(
+            claim.session_id, claim=claim, allowed_phases=("submit",),
+        )
+        if row is None or int(row["plan_revision"]) != plan_revision:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto submission owner is stale.")
+        db.run(
+            "INSERT INTO full_auto_submission_receipt "
+            "(run_id, target_index, take_id, prepared_take_id, shot_id, snapshot_digest, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            claim.run_id, target_index, take_id, prepared["id"], shot_id,
+            session_plan._full_auto_snapshot_reference(prepared)["snapshot_digest"], timestamp,
+        )
+        return _read_submission_receipts(
+            claim.run_id, claim.session_id, plan_revision, progress["target_ids"],
+        )[target_index]
+
+
+def admit_runner_start(session_id: int, claim: RunClaim) -> dict:
+    """Persist one safe runner admission before its in-process task is scheduled."""
+    from backend import session_plan
+
+    with db.transaction():
+        row = require_session_mutation_allowed(
+            session_id, claim=claim, allowed_phases=("execute",),
+        )
+        if row is None:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        plan_revision = int(row["plan_revision"])
+        if db.one(
+            "SELECT run_id FROM full_auto_runner_admission WHERE run_id = ?", claim.run_id,
+        ) is not None:
+            raise FullAutoRunError(
+                409, "full_auto_runner_already_admitted",
+                "The Full Auto runner was already admitted; its execution outcome requires reconciliation.",
+            )
+        session_plan._require_resource_planning_enabled()
+        current_revision, plan = session_plan._load_current_resource_plan(session_id)
+        if current_revision != plan_revision:
+            raise FullAutoRunError(409, "plan_revision_stale", "The Full Auto plan changed before execution.")
+        progress = _read_prepare_progress(claim.run_id)
+        if progress["completed_take_ids"] != progress["target_ids"]:
+            raise FullAutoRunError(409, "prepare_progress_stale", "Full Auto preparation has not completed every target.")
+        review = session_plan._full_auto_duplicate_review_evidence(
+            session_id, current_revision, plan, claim.run_id,
+        )
+        session_plan._require_full_auto_review_ready(review)
+        if review["target_ids"] != progress["target_ids"]:
+            raise FullAutoRunError(409, "submission_target_stale", "The Full Auto target order changed before execution.")
+        try:
+            session_plan._require_current_full_auto_policy_approval(
+                claim.run_id, session_id, review,
+            )
+        except session_plan.PlanReviewNotApproved as exc:
+            raise FullAutoRunError(409, "full_auto_approval_stale", "The Full Auto approval no longer matches current evidence.") from exc
+        receipts = _read_submission_receipts(
+            claim.run_id, claim.session_id, plan_revision, progress["target_ids"],
+        )
+        if len(receipts) != len(progress["target_ids"]):
+            raise FullAutoRunError(409, "full_auto_submission_incomplete", "Every Full Auto target must be linked before execution.")
+        shot_rows = db.q(
+            "SELECT id, status FROM shot WHERE session_id = ? ORDER BY id",
+            session_id,
+        )
+        if (
+            len(shot_rows) != len(receipts)
+            or {item["id"] for item in shot_rows} != {item["shot_id"] for item in receipts}
+            or [item["id"] for item in shot_rows] != [item["shot_id"] for item in receipts]
+            or any(item["status"] != "pending" for item in shot_rows)
+        ):
+            raise FullAutoRunError(409, "full_auto_execution_state_stale", "The Full Auto session no longer contains only its linked pending shots.")
+        submission_digest = _digest({
+            "run_id": claim.run_id,
+            "plan_revision": plan_revision,
+            "receipts": [
+                {
+                    key: receipt[key]
+                    for key in (
+                        "target_index", "take_id", "prepared_take_id", "shot_id",
+                        "snapshot_digest",
+                    )
+                }
+                for receipt in receipts
+            ],
+        })
+        session_plan._require_resource_planning_enabled()
+        row = require_session_mutation_allowed(
+            session_id, claim=claim, allowed_phases=("execute",),
+        )
+        if row is None or int(row["plan_revision"]) != plan_revision:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        db.run(
+            "INSERT INTO full_auto_runner_admission "
+            "(run_id, session_id, plan_revision, target_digest, submission_digest, admitted_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            claim.run_id, session_id, plan_revision,
+            review["target_digest"], submission_digest, _now_text(None),
+        )
+        return row
+
+
 def initialize_prepare_progress(claim: RunClaim) -> dict:
     """Freeze the exact ordered plan targets before creating any child operation."""
     from backend import session_plan

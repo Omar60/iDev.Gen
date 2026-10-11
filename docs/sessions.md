@@ -1735,12 +1735,22 @@ requires a refreshed review. Acceptance returns `409` when review is stale or
 no longer required.
 
 The preparation coordinator still stops after advancing to validation and does
-not invoke this step. Automatic submission, runner integration, heartbeats,
-assistant-slot admission, and the profile editor and selection/consent UI remain
-unfinished, so Full Auto is not an end-to-end user flow. The existing manual
-workflow remains available for sessions without a nonterminal Full Auto owner.
-This review validates persisted evidence and policy; it does not certify
-semantic correctness or rendered pixels.
+not invoke this step. Separate internal submission logic records immutable,
+ordered receipts binding each prepared snapshot to its shot link and snapshot
+digest. It reuses existing links after interruption and submits the stored
+`final_prompt` unchanged. `Runner.start` can accept a private authenticated Full
+Auto claim; before scheduling, it rechecks live authority, the planning flag,
+current prepared evidence and approval, complete receipts in target order, and
+that the session contains only those pending shots in persisted shot-ID order.
+Admission is persisted first. If the scheduling outcome is unknown after that
+write, another start is refused pending reconciliation. Creation and startup do
+not dispatch the full sequence, and there are no public Full Auto submission or
+execution controls or UI; this is not an end-to-end generation flow.
+Heartbeats, child/runner recovery, global runner claims, assistant-slot
+admission, and the profile editor and selection/consent UI remain unfinished.
+The existing manual workflow remains available for sessions without a
+nonterminal Full Auto owner. This review validates persisted evidence and
+policy; it does not certify semantic correctness or rendered pixels.
 
 For a request ID already committed, an identical normalized request returns the
 exact stored response with HTTP 200 before quote-age or current-dependency

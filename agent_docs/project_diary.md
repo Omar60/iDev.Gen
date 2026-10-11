@@ -1,5 +1,17 @@
 # Project Diary
 
+## Full Auto Task 4.5 Submission Recovery
+
+Checkpoint existing links in authorized target order, and validate a recovered
+link before recording its missing receipt. Preserve the prepared prompt bytes;
+a lost submission response does not justify another shot or recomposition.
+
+Runner admission must compare the ordered receipt IDs with the runner's actual
+`ORDER BY id`, not only compare sets or display indexes. Recheck the live flag
+and fenced authority after aggregate review, immediately before receipt or
+admission writes. A durable admission with an uncertain scheduling outcome
+must refuse replay until execution reconciliation exists.
+
 ## Full Auto Task 4.4 Review Boundaries
 
 Aggregate review must compare current duplicate tuples as well as validate

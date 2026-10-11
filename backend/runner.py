@@ -45,13 +45,16 @@ class Runner:
     def busy(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def start(self, session_id: int) -> None:
+    def start(self, session_id: int, *, _full_auto_claim=None) -> None:
         if self.busy:
             raise RuntimeError("A session is already running")
         with db.transaction():
             from backend import resource_full_auto
 
-            resource_full_auto.require_session_mutation_allowed(session_id)
+            if _full_auto_claim is None:
+                resource_full_auto.require_session_mutation_allowed(session_id)
+            else:
+                resource_full_auto.admit_runner_start(session_id, _full_auto_claim)
             db.run("UPDATE session SET status='running' WHERE id=?", session_id)
         self._cancel.discard(session_id)
         self._task = asyncio.create_task(self._run_session(session_id))

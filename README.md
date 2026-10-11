@@ -109,13 +109,20 @@ is included in `GET /api/sessions/{sid}/plan/review`; current duplicate
 acceptance is available through
 `POST /api/sessions/{sid}/plan/review/duplicates/accept`, bound to the current
 plan revision and review digest. The preparation coordinator still stops at
-validation and does not invoke this gate, so automatic submission, runner
-integration, heartbeats, assistant-slot admission, and the profile editor and
-selection/consent UI remain unfinished. Full Auto is not yet an end-to-end user
-flow. The existing manual workflow remains available for sessions without a
-nonterminal Full Auto owner. Automatic review validates persisted evidence; it
-does not certify semantic correctness or rendered pixels. Portable-v1 JSON
-excludes profiles. See the
+validation. Separate internal helpers persist ordered submission receipts that
+bind prepared snapshots to their shot links and digests, reuse those links, and
+preserve each stored final prompt. A private authenticated runner claim checks
+current authority and evidence plus complete ordered receipts, then persists
+one admission before scheduling the serial runner. If scheduling is uncertain
+after admission, replay is refused pending reconciliation. Creation and startup
+do not dispatch the full sequence, and no public Full Auto submission or
+execution controls or UI exist, so this is not an end-to-end generation flow. Runner and
+child recovery, heartbeats, global runner claims, assistant-slot admission, and
+the profile editor and selection/consent UI remain unfinished. The existing
+manual workflow remains available for sessions without a nonterminal Full Auto
+owner. Automatic review validates persisted evidence; it does not certify
+semantic correctness or rendered pixels. Portable-v1 JSON excludes profiles.
+See the
 [guided creation API](docs/sessions.md#saved-look-and-full-auto-creation-api).
 
 Full Auto currently accepts only text-to-image workflows with no mapped
