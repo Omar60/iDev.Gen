@@ -88,19 +88,22 @@ pixel verification. Exact profile read/create-revision and manual
 session-application APIs are documented in
 [Saved looks](docs/looks.md#automation-profile-api). Guided creation also has a
 backend API for selecting an exact saved-look snapshot and for read-only Full
-Auto preflight plus atomic initial run authorization. An internal coordinator
-can prepare authorized takes in ordered batches of up to twenty, then stops at
-validation; creation and startup do not dispatch it, and no pause, Cancel, or
-Resume controls are exposed by routes or UI. Shared service guards block manual
+Auto preflight plus atomic initial run authorization. The API also exposes
+persisted-run status, Cancel, Resume, and read-only Resume scope comparison;
+the request, CAS, replay, and quote contract is documented in
+[Full Auto status and controls](docs/sessions.md#full-auto-status-and-controls).
+These controls do not dispatch preparation or generation: the internal
+coordinator stops at validation, and creation and startup do not dispatch it.
+Shared service guards block manual
 preparation, suggestions, plan/adaptation edits, resource refreshes that would
 advance the plan, approval, submission, and runner run/retry/cancel while a Full
 Auto run is nonterminal. Read-only drift inspection and safe no-work replays may
 remain available. An internal pause can fence child work and authorize one
-plan CAS while retaining session ownership. A changed plan waits for renewed
-consent before the run can resume. Cancellation releases the guard only after
-backend evidence confirms settlement; pending or unknown work retains it. That
-reconciliation does no remote I/O and does not prove an external ComfyUI job
-stopped. A backend-only all-target review gate checks current prepared evidence
+plan CAS while retaining session ownership. Resume can compare changed scope
+and, after explicit acceptance, append a linked immutable authorization grant.
+Pending or unknown cancellation retains session ownership; the public controls
+do not contact ComfyUI, issue a global interrupt, or reconcile remote work. A
+backend-only all-target review gate checks current prepared evidence
 for Full Auto approval and new submissions: unresolved review conflicts,
 placeholders, stale adaptations, drift, and unaccepted exact duplicate tuples
 block them; neutral descriptive notices remain visible without blocking.
@@ -114,9 +117,9 @@ bind prepared snapshots to their shot links and digests, reuse those links, and
 preserve each stored final prompt. A private authenticated runner claim checks
 current authority and evidence plus complete ordered receipts, then persists
 one admission before scheduling the serial runner. If scheduling is uncertain
-after admission, replay is refused pending reconciliation. Creation and startup
-do not dispatch the full sequence, and no public Full Auto submission or
-execution controls or UI exist, so this is not an end-to-end generation flow. Runner and
+after admission, replay is refused pending reconciliation. Public Full Auto
+preparation, submission, and execution routes and a control UI are absent, so
+this is not an end-to-end generation flow. Runner and
 child recovery, heartbeats, global runner claims, assistant-slot admission, and
 the profile editor and selection/consent UI remain unfinished. The existing
 manual workflow remains available for sessions without a nonterminal Full Auto

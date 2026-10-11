@@ -11,11 +11,13 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
+import math
 import re
 import secrets
 from typing import Literal
 
 import db
+from backend import resource_planning
 
 
 RUN_LEASE = timedelta(seconds=60)
@@ -24,12 +26,34 @@ _MANUAL_EDIT_CLAIM_KEY = secrets.token_bytes(32)
 _SUPPORTED_AUTHORIZATION_VERSION = 1
 _SUPPORTED_POLICY_VERSION = "resource-full-auto-v1"
 _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PHASES = ("prepare", "validate", "approve", "submit", "execute", "reconcile")
 _MAIN_PHASES = _PHASES[:-1]
 _TERMINAL = frozenset({"cancelled", "failed", "succeeded", "completed_with_errors"})
 _NONTERMINAL = frozenset({
     "active", "waiting_authoring", "waiting_runner", "blocked", "cancel_requested",
 })
+_PUBLIC_BLOCKER_CODES = frozenset({
+    "authorization_expired", "authorization_scope_changed", "plan_revision_stale",
+    "resource_planning_disabled", "manual_edit_pause", "execution_outcome_unknown",
+    "run_work_unsettled", "policy_changed", "authorization_invalid", "budget_exhausted",
+    "preparation_failed", "duplicate_review_required", "full_auto_review_incomplete",
+    "duplicate_review_unavailable", "duplicate_review_not_required", "duplicate_review_stale",
+    "full_auto_authorization_missing", "full_auto_authorization_invalid",
+    "full_auto_plan_invalid", "full_auto_target_not_ready", "full_auto_targets_invalid",
+    "linked_snapshot_invalid", "workflow_changed", "prepared_evidence_stale",
+    "duplicate_evidence_missing", "duplicate_evidence_stale", "review_conflict",
+    "stale_adaptation", "unresolved_placeholders", "full_auto_approval_stale",
+    "full_auto_submission_incomplete", "submission_order_invalid", "submission_result_invalid",
+    "submission_target_stale", "full_auto_scope_unavailable",
+    "full_auto_continuity_requires_new_session", "dependency_changed", "correctable_input",
+    "source_changed", "comfy_unavailable", "verification_fence",
+})
+_PUBLIC_RUN_VIEW_FIELDS = (
+    "run_id", "session_id", "revision", "epoch", "plan_revision", "state", "phase",
+    "cancel_intent", "blocker_code", "created_at", "updated_at",
+)
+_PUBLIC_POLICY_VERSION = re.compile(r"^resource-full-auto-v[1-9][0-9]{0,2}$")
 
 
 class FullAutoRunError(Exception):
@@ -183,6 +207,90 @@ def _require_run(run_id: str) -> dict:
     return row
 
 
+def _check_run_session_identity(run_id: str, session_id: int | None) -> None:
+    identity = db.one("SELECT session_id FROM full_auto_run WHERE run_id = ?", run_id)
+    if identity is None or session_id is not None and int(identity["session_id"]) != session_id:
+        raise FullAutoRunError(404, "full_auto_run_not_found", "Full Auto run not found.")
+
+
+def _authorization_digest(authorization: dict, grant: dict) -> str:
+    return _digest({
+        "authorization": authorization,
+        "scope_digest": grant["scope_digest"],
+        "dependencies_digest": grant["dependencies_digest"],
+        "plan_digest": grant["plan_digest"],
+        "scope_issued_at": grant["scope_issued_at"],
+        "authorization_expires_at": grant["authorization_expires_at"],
+        "sequence": grant["sequence"],
+        "comparison_digest": grant.get("comparison_digest"),
+    })
+
+
+def current_authorization(run_id: str, *, session_id: int | None = None) -> dict:
+    """Return the validated latest grant while preserving its immutable root."""
+    receipt = db.one("SELECT * FROM full_auto_run_receipt WHERE run_id = ?", run_id)
+    if receipt is None or session_id is not None and int(receipt["session_id"]) != session_id:
+        raise FullAutoRunError(409, "full_auto_authorization_missing", "The Full Auto authorization is unavailable.")
+    try:
+        authorization = json.loads(receipt["authorization_json"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise FullAutoRunError(409, "full_auto_authorization_invalid", "The Full Auto authorization is invalid.") from exc
+    if not isinstance(authorization, dict):
+        raise FullAutoRunError(409, "full_auto_authorization_invalid", "The Full Auto authorization is invalid.")
+    current = {
+        "run_id": run_id,
+        "session_id": int(receipt["session_id"]),
+        "authorization": authorization,
+        "scope_digest": receipt["scope_digest"],
+        "dependencies_digest": receipt["dependencies_digest"],
+        "plan_digest": receipt["plan_digest"],
+        "scope_issued_at": receipt["scope_issued_at"],
+        "authorization_expires_at": receipt["authorization_expires_at"],
+        "sequence": 0,
+    }
+    current["authorization_digest"] = _authorization_digest(authorization, current)
+    for replacement in db.q(
+        "SELECT * FROM full_auto_run_authorization WHERE run_id = ? ORDER BY authorization_sequence",
+        run_id,
+    ):
+        if (
+            int(replacement["authorization_sequence"]) != current["sequence"] + 1
+            or replacement["previous_authorization_digest"] != current["authorization_digest"]
+        ):
+            raise FullAutoRunError(409, "full_auto_authorization_invalid", "The Full Auto authorization chain is invalid.")
+        try:
+            authorization = json.loads(replacement["authorization_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise FullAutoRunError(409, "full_auto_authorization_invalid", "The Full Auto authorization chain is invalid.") from exc
+        if not isinstance(authorization, dict):
+            raise FullAutoRunError(409, "full_auto_authorization_invalid", "The Full Auto authorization chain is invalid.")
+        current = {
+            "run_id": run_id,
+            "session_id": int(receipt["session_id"]),
+            "authorization": authorization,
+            "scope_digest": replacement["scope_digest"],
+            "dependencies_digest": replacement["dependencies_digest"],
+            "plan_digest": replacement["plan_digest"],
+            "scope_issued_at": replacement["scope_issued_at"],
+            "authorization_expires_at": replacement["authorization_expires_at"],
+            "sequence": int(replacement["authorization_sequence"]),
+            "comparison_digest": replacement["comparison_digest"],
+        }
+        current["authorization_digest"] = _authorization_digest(authorization, current)
+    root_is_legacy = current["sequence"] == 0
+    if (
+        authorization.get("authorization_expires_at") != current["authorization_expires_at"]
+        or ("scope_digest" in authorization and authorization.get("scope_digest") != current["scope_digest"])
+        or ("scope_issued_at" in authorization and authorization.get("scope_issued_at") != current["scope_issued_at"])
+        or (not root_is_legacy and (
+            authorization.get("scope_digest") != current["scope_digest"]
+            or authorization.get("scope_issued_at") != current["scope_issued_at"]
+        ))
+    ):
+        raise FullAutoRunError(409, "full_auto_authorization_invalid", "The Full Auto authorization is invalid.")
+    return current
+
+
 def _current_authority_issue(row: dict, now_text: str) -> str | None:
     """Return why this immutable grant can no longer authorize new work."""
     plan = db.one(
@@ -192,23 +300,13 @@ def _current_authority_issue(row: dict, now_text: str) -> str | None:
     if plan is None or int(plan["plan_revision"]) != int(row["plan_revision"]):
         return "plan_revision_stale"
 
-    receipt = db.one(
-        """SELECT session_id, authorization_json, authorization_expires_at
-           FROM full_auto_run_receipt WHERE run_id = ?""",
-        row["run_id"],
-    )
-    if receipt is None or int(receipt["session_id"]) != int(row["session_id"]):
-        return "authorization_invalid"
     try:
-        authorization = json.loads(receipt["authorization_json"])
+        grant = current_authorization(row["run_id"], session_id=int(row["session_id"]))
+        authorization = grant["authorization"]
         expiry = _timestamp(
-            receipt["authorization_expires_at"], field_name="authorization expiry",
+            grant["authorization_expires_at"], field_name="authorization expiry",
         )
     except (TypeError, json.JSONDecodeError, FullAutoRunError):
-        return "authorization_invalid"
-    if not isinstance(authorization, dict):
-        return "authorization_invalid"
-    if authorization.get("authorization_expires_at") != receipt["authorization_expires_at"]:
         return "authorization_invalid"
     if expiry <= _timestamp(now_text, field_name="current time"):
         return "authorization_expired"
@@ -235,21 +333,363 @@ def _authority_error(code: str) -> FullAutoRunError:
     return FullAutoRunError(409, code, messages.get(code, "Full Auto authority is no longer valid."))
 
 
-def _view(row: dict) -> dict:
-    """Return status-safe fields only; lease deadlines and fences stay private."""
-    return {
-        "run_id": row["run_id"],
-        "session_id": int(row["session_id"]),
-        "revision": int(row["revision"]),
-        "epoch": int(row["epoch"]),
-        "plan_revision": int(row["plan_revision"]),
-        "state": row["state"],
-        "phase": row["phase"],
-        "cancel_intent": bool(row["cancel_intent"]),
-        "blocker_code": row["blocker_code"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
+def _invalid_saved_status() -> FullAutoRunError:
+    return FullAutoRunError(
+        409, "run_state_invalid",
+        "The saved Full Auto status could not be safely verified.",
+    )
+
+
+def _invalid_saved_preparation() -> FullAutoRunError:
+    return FullAutoRunError(
+        500, "run_state_invalid",
+        "Saved Full Auto preparation could not be safely verified.",
+    )
+
+
+def _validate_public_run_view(view: dict) -> dict:
+    """Validate the closed scalar run view before exposing persisted values."""
+    if type(view) is not dict or any(field not in view for field in _PUBLIC_RUN_VIEW_FIELDS):
+        raise _invalid_saved_status()
+    run_id = view["run_id"]
+    session_id = view["session_id"]
+    revisions = (view["revision"], view["epoch"], view["plan_revision"])
+    blocker = view["blocker_code"]
+    if (
+        type(run_id) is not str or not run_id or len(run_id) > 200
+        or type(session_id) is not int or session_id <= 0
+        or any(type(value) is not int or value <= 0 for value in revisions)
+        or type(view["state"]) is not str or view["state"] not in _NONTERMINAL | _TERMINAL
+        or type(view["phase"]) is not str or view["phase"] not in _PHASES
+        or type(view["cancel_intent"]) is not bool
+        or (blocker is not None and (type(blocker) is not str or blocker not in _PUBLIC_BLOCKER_CODES))
+        or (view["state"] == "blocked") != (blocker is not None)
+    ):
+        raise _invalid_saved_status()
+    _timestamp(view["created_at"], field_name="creation timestamp")
+    _timestamp(view["updated_at"], field_name="update timestamp")
+    return {field: view[field] for field in _PUBLIC_RUN_VIEW_FIELDS}
+
+
+def _validate_status_authorization(authorization: object) -> tuple[dict, dict]:
+    """Validate only the closed authorization fields used by public status."""
+    auth_fields = {
+        "authorization_version", "generate_without_pauses", "profile_revision",
+        "profile_digest", "progression", "framing_intent", "scope_digest",
+        "scope_issued_at", "authorization_expires_at", "summary",
     }
+    summary_fields = {
+        "saved_look", "automation_profile", "room", "character_id",
+        "model_binding", "workflow", "provider", "generation_settings", "canvas",
+        "framing_intent", "effective_framing", "variation_policy", "photo_count",
+        "continuity_digest", "progression", "coverage_compiler_version",
+        "policy_version", "limits", "scope_issued_at", "authorization_expires_at",
+        "request_digest", "dependencies_digest",
+    }
+    limits_fields = {
+        "assistant_calls_per_take", "assistant_calls_total",
+        "image_attempts_per_take", "image_attempts_total",
+    }
+    if type(authorization) is not dict or set(authorization) != auth_fields:
+        raise _invalid_saved_status()
+    summary = authorization["summary"]
+    if type(summary) is not dict or set(summary) not in (
+        summary_fields, summary_fields - {"continuity_digest"},
+    ):
+        raise _invalid_saved_status()
+    photo_count = summary["photo_count"]
+    limits = summary["limits"]
+    if (
+        type(authorization["authorization_version"]) is not int
+        or not 1 <= authorization["authorization_version"] <= 999
+        or authorization["generate_without_pauses"] is not True
+        or type(authorization["profile_revision"]) is not int
+        or not 1 <= authorization["profile_revision"] <= 9_223_372_036_854_775_807
+        or type(authorization["profile_digest"]) is not str
+        or not _SHA256.fullmatch(authorization["profile_digest"])
+        or authorization["progression"] != "all_stages_full_interval"
+        or type(authorization["framing_intent"]) is not str
+        or authorization["framing_intent"] not in {"vary", "full_body"}
+        or type(authorization["scope_digest"]) is not str
+        or not _SHA256.fullmatch(authorization["scope_digest"])
+        or type(photo_count) is not int or not 1 <= photo_count <= 500
+        or type(limits) is not dict or set(limits) != limits_fields
+        or type(summary["policy_version"]) is not str
+        or not _PUBLIC_POLICY_VERSION.fullmatch(summary["policy_version"])
+        or type(summary["request_digest"]) is not str
+        or not _SHA256.fullmatch(summary["request_digest"])
+        or type(summary["dependencies_digest"]) is not str
+        or not _SHA256.fullmatch(summary["dependencies_digest"])
+        or ("continuity_digest" in summary and (
+            type(summary["continuity_digest"]) is not str
+            or not _SHA256.fullmatch(summary["continuity_digest"])
+        ))
+        or summary["scope_issued_at"] != authorization["scope_issued_at"]
+        or summary["authorization_expires_at"] != authorization["authorization_expires_at"]
+    ):
+        raise _invalid_saved_status()
+    try:
+        for name in ("scope_issued_at", "authorization_expires_at"):
+            value = authorization[name]
+            if type(value) is not str or _timestamp(value, field_name="authorization timestamp").isoformat(timespec="seconds") != value:
+                raise _invalid_saved_status()
+    except FullAutoRunError as exc:
+        raise _invalid_saved_status() from exc
+    if (
+        any(type(value) is not int or value <= 0 for value in limits.values())
+        or limits["assistant_calls_per_take"] != 2
+        or limits["image_attempts_per_take"] != 1
+        or limits["assistant_calls_total"] != photo_count * limits["assistant_calls_per_take"]
+        or limits["image_attempts_total"] != photo_count * limits["image_attempts_per_take"]
+    ):
+        raise _invalid_saved_status()
+    projected = _project_consent_summary(summary)
+    from backend import resource_store
+
+    if resource_store.canonical_digest(projected) != authorization["scope_digest"]:
+        raise _invalid_saved_status()
+    return projected, limits
+
+
+def _project_consent_summary(value: object) -> dict:
+    """Validate and copy the complete closed public consent-summary shape."""
+    fields = {
+        "saved_look", "automation_profile", "room", "character_id",
+        "model_binding", "workflow", "provider", "generation_settings", "canvas",
+        "framing_intent", "effective_framing", "variation_policy", "photo_count",
+        "continuity_digest", "progression", "coverage_compiler_version",
+        "policy_version", "limits", "scope_issued_at", "authorization_expires_at",
+        "request_digest", "dependencies_digest",
+    }
+
+    def fail() -> None:
+        raise _invalid_saved_status()
+
+    def digest(item: object) -> str:
+        if type(item) is not str or not _SHA256.fullmatch(item):
+            fail()
+        return item
+
+    def text(item: object, *, maximum: int = 500, safe_id: bool = False) -> str:
+        if (
+            type(item) is not str or not item or len(item) > maximum
+            or item != item.strip()
+            or any(ord(char) < 32 or ord(char) == 127 for char in item)
+            or (safe_id and any(not (char.isalnum() or char in "._:-") for char in item))
+        ):
+            fail()
+        return item
+
+    def positive_int(item: object, *, maximum: int = 9_223_372_036_854_775_807) -> int:
+        if type(item) is not int or not 1 <= item <= maximum:
+            fail()
+        return item
+
+    def policy_dimension(item: object) -> dict:
+        if type(item) is not dict:
+            fail()
+        mode = item.get("mode")
+        if mode == "vary" and set(item) == {"mode"}:
+            return {"mode": "vary"}
+        if (
+            mode == "fixed" and set(item) == {"mode", "value", "value_origin"}
+            and item.get("value_origin") == "user"
+        ):
+            return {
+                "mode": "fixed",
+                "value": text(item["value"], maximum=1000),
+                "value_origin": "user",
+            }
+        fail()
+
+    if type(value) is not dict or set(value) not in (
+        fields, fields - {"continuity_digest"},
+    ):
+        fail()
+
+    saved = value["saved_look"]
+    profile = value["automation_profile"]
+    room = value["room"]
+    model = value["model_binding"]
+    workflow = value["workflow"]
+    provider = value["provider"]
+    generation = value["generation_settings"]
+    canvas = value["canvas"]
+    variation = value["variation_policy"]
+    progression = value["progression"]
+    limits = value["limits"]
+    if (
+        type(saved) is not dict or set(saved) != {"look_key", "version", "content_digest"}
+        or type(profile) is not dict or set(profile) != {"revision", "digest", "ready"}
+        or type(room) is not dict or set(room) != {"library_key", "source_id", "content_digest", "translation_digest"}
+        or type(model) is not dict or set(model) != {
+            "model_id", "name", "trigger_digest", "base_positive_digest",
+            "base_negative_digest", "lora_selection_digest", "effective_settings_digest",
+        }
+        or type(workflow) is not dict or set(workflow) != {
+            "workflow_id", "kind", "graph_digest", "node_map_digest",
+        }
+        or type(provider) is not dict
+        or set(provider) not in (
+            {"model", "endpoint_identity"},
+            {"model", "endpoint_identity", "model_identity"},
+        )
+        or type(generation) is not dict
+        or not set(generation).issubset({"steps", "cfg", "sampler", "scheduler"})
+        or type(canvas) is not dict or set(canvas) != {"width", "height"}
+        or type(variation) is not dict
+        or set(variation) != {"camera", "framing", "pose", "expression"}
+        or type(progression) is not dict or set(progression) != {"policy", "stages"}
+        or type(progression["stages"]) is not list or not progression["stages"]
+        or type(limits) is not dict or set(limits) != {
+            "assistant_calls_per_take", "assistant_calls_total",
+            "image_attempts_per_take", "image_attempts_total",
+        }
+    ):
+        fail()
+
+    if (
+        text(saved["look_key"], maximum=128, safe_id=True) != saved["look_key"]
+        or positive_int(saved["version"]) != saved["version"]
+        or digest(saved["content_digest"]) != saved["content_digest"]
+        or positive_int(profile["revision"]) != profile["revision"]
+        or digest(profile["digest"]) != profile["digest"]
+        or profile["ready"] is not True
+        or text(room["library_key"], maximum=200, safe_id=True) != room["library_key"]
+        or text(room["source_id"], maximum=200, safe_id=True) != room["source_id"]
+        or digest(room["content_digest"]) != room["content_digest"]
+        or digest(room["translation_digest"]) != room["translation_digest"]
+        or positive_int(value["character_id"]) != value["character_id"]
+        or positive_int(model["model_id"]) != model["model_id"]
+        or type(model["name"]) is not str
+        or not model["name"] or len(model["name"]) > 120
+        or model["name"] != model["name"].strip()
+        or any(not (char.isalnum() or char in " ._-") for char in model["name"])
+        or any(digest(model[name]) != model[name] for name in (
+            "trigger_digest", "base_positive_digest", "base_negative_digest",
+            "lora_selection_digest", "effective_settings_digest",
+        ))
+        or positive_int(workflow["workflow_id"]) != workflow["workflow_id"]
+        or text(workflow["kind"], maximum=40, safe_id=True) != workflow["kind"]
+        or any(digest(workflow[name]) != workflow[name] for name in ("graph_digest", "node_map_digest"))
+        or digest(provider["endpoint_identity"]) != provider["endpoint_identity"]
+        or ("model_identity" in provider and digest(provider["model_identity"]) != provider["model_identity"])
+        or text(provider["model"], maximum=120, safe_id=True) != provider["model"]
+        or positive_int(canvas["width"], maximum=32768) != canvas["width"]
+        or positive_int(canvas["height"], maximum=32768) != canvas["height"]
+        or type(value["framing_intent"]) is not str
+        or value["framing_intent"] not in {"vary", "full_body"}
+        or value["photo_count"] != positive_int(value["photo_count"], maximum=500)
+        or ("continuity_digest" in value and digest(value["continuity_digest"]) != value["continuity_digest"])
+        or text(value["coverage_compiler_version"], maximum=100, safe_id=True) != value["coverage_compiler_version"]
+        or type(value["policy_version"]) is not str
+        or not _PUBLIC_POLICY_VERSION.fullmatch(value["policy_version"])
+        or digest(value["request_digest"]) != value["request_digest"]
+        or digest(value["dependencies_digest"]) != value["dependencies_digest"]
+    ):
+        fail()
+
+    normalized_generation: dict[str, object] = {}
+    for name, item in generation.items():
+        if name == "steps":
+            if type(item) is not int or not 1 <= item <= 9_223_372_036_854_775_807:
+                fail()
+            normalized_generation[name] = item
+        elif name == "cfg":
+            if type(item) not in {int, float}:
+                fail()
+            try:
+                finite = math.isfinite(item)
+            except (OverflowError, TypeError, ValueError):
+                finite = False
+            if not finite:
+                fail()
+            normalized_generation[name] = item
+        else:
+            normalized_generation[name] = text(item, maximum=80, safe_id=True)
+
+    normalized_variation = {
+        name: policy_dimension(variation[name])
+        for name in ("camera", "framing", "pose", "expression")
+    }
+    normalized_progression = []
+    for stage in progression["stages"]:
+        if type(stage) is not dict or set(stage) != {
+            "coverage", "first_take_id", "last_take_id", "stage_index", "take_count",
+        }:
+            fail()
+        if type(stage["stage_index"]) is not int or stage["stage_index"] < 0:
+            fail()
+        normalized_progression.append({
+            "coverage": text(stage["coverage"], maximum=1000),
+            "first_take_id": text(stage["first_take_id"], maximum=200, safe_id=True),
+            "last_take_id": text(stage["last_take_id"], maximum=200, safe_id=True),
+            "stage_index": stage["stage_index"],
+            "take_count": positive_int(stage["take_count"], maximum=500),
+        })
+    normalized_limits = {
+        name: positive_int(item, maximum=250_000)
+        for name, item in limits.items()
+    }
+    if (
+        normalized_limits["assistant_calls_per_take"] != 2
+        or normalized_limits["image_attempts_per_take"] != 1
+        or normalized_limits["assistant_calls_total"] != value["photo_count"] * 2
+        or normalized_limits["image_attempts_total"] != value["photo_count"]
+        or progression["policy"] != "all_stages_full_interval"
+    ):
+        fail()
+
+    projected = dict(value)
+    projected["saved_look"] = {
+        "look_key": saved["look_key"], "version": saved["version"],
+        "content_digest": saved["content_digest"],
+    }
+    projected["automation_profile"] = {
+        "revision": profile["revision"], "digest": profile["digest"], "ready": True,
+    }
+    projected["room"] = {
+        "library_key": room["library_key"], "source_id": room["source_id"],
+        "content_digest": room["content_digest"], "translation_digest": room["translation_digest"],
+    }
+    projected["model_binding"] = dict(model)
+    projected["workflow"] = dict(workflow)
+    projected["provider"] = dict(provider)
+    projected["generation_settings"] = normalized_generation
+    projected["canvas"] = {"width": canvas["width"], "height": canvas["height"]}
+    projected["effective_framing"] = policy_dimension(value["effective_framing"])
+    projected["variation_policy"] = normalized_variation
+    projected["progression"] = {
+        "policy": "all_stages_full_interval", "stages": normalized_progression,
+    }
+    projected["limits"] = normalized_limits
+    return projected
+
+
+def _view(row: dict) -> dict:
+    """Return validated status-safe fields; lease deadlines and fences stay private."""
+    if (
+        type(row.get("session_id")) is not int
+        or type(row.get("revision")) is not int
+        or type(row.get("epoch")) is not int
+        or type(row.get("plan_revision")) is not int
+        or type(row.get("cancel_intent")) is not int
+        or row.get("cancel_intent") not in (0, 1)
+    ):
+        raise _invalid_saved_status()
+    return _validate_public_run_view({
+        "run_id": row.get("run_id"),
+        "session_id": row["session_id"],
+        "revision": row["revision"],
+        "epoch": row["epoch"],
+        "plan_revision": row["plan_revision"],
+        "state": row.get("state"),
+        "phase": row.get("phase"),
+        "cancel_intent": bool(row["cancel_intent"]),
+        "blocker_code": row.get("blocker_code"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    })
 
 
 def get_run(run_id: str) -> dict:
@@ -259,6 +699,189 @@ def get_run(run_id: str) -> dict:
 def get_run_for_session(session_id: int) -> dict | None:
     row = _run_row_for_session(session_id)
     return None if row is None else _view(row)
+
+
+_BLOCKER_REMEDIES = {
+    "authorization_expired": (
+        "The Full Auto authorization expired.",
+        ["compare_scope", "resume_with_changed_scope", "cancel"],
+    ),
+    "authorization_scope_changed": (
+        "Authorized inputs changed since the last comparison.",
+        ["compare_scope", "review_changes", "cancel"],
+    ),
+    "plan_revision_stale": (
+        "The session plan changed and needs a fresh scope comparison.",
+        ["compare_scope", "review_changes", "cancel"],
+    ),
+    "resource_planning_disabled": (
+        "Resource planning is disabled by configuration.",
+        ["enable_resource_planning", "cancel"],
+    ),
+    "manual_edit_pause": (
+        "The run is paused for a reviewed plan edit.",
+        ["review_changes", "compare_scope", "cancel"],
+    ),
+    "execution_outcome_unknown": (
+        "The remote generation outcome is not verified.",
+        ["reconcile_cancellation", "review_status"],
+    ),
+    "run_work_unsettled": (
+        "Owned Full Auto work has not reached a verified terminal outcome.",
+        ["review_status", "cancel"],
+    ),
+    "policy_changed": (
+        "The recorded Full Auto policy is no longer supported.",
+        ["review_status", "cancel"],
+    ),
+    "authorization_invalid": (
+        "The saved Full Auto authorization could not be verified.",
+        ["review_status", "cancel"],
+    ),
+    "budget_exhausted": (
+        "The remaining Full Auto allowance cannot be verified as positive.",
+        ["review_status", "cancel"],
+    ),
+}
+
+
+def unresolved_work_count(session_id: int, run_id: str) -> int:
+    """Count local owned work conservatively; a linked shot may have dispatched."""
+    count = 0
+    session = db.one("SELECT status FROM session WHERE id = ?", session_id)
+    if session is None:
+        return 1
+    if session["status"] == "running":
+        count += 1
+    operations = db.q(
+        "SELECT state FROM authoring_operation WHERE session_id = ? AND full_auto_run_id = ?",
+        session_id, run_id,
+    )
+    count += sum(item["state"] not in {"succeeded", "failed", "cancelled", "expired"} for item in operations)
+    shots = db.q("SELECT status FROM shot WHERE session_id = ?", session_id)
+    admission = db.one("SELECT run_id FROM full_auto_runner_admission WHERE run_id = ?", run_id)
+    # Failed status alone cannot prove a remote attempt settled until the later
+    # attempt journal records that observation. Keep failed shots unresolved.
+    count += sum(item["status"] not in {"done", "cancelled"} for item in shots)
+    return count
+
+
+def public_run_status(session_id: int, run_id: str) -> dict:
+    """Build a closed status projection without prompts, paths, or owner secrets."""
+    row = _run_row(run_id)
+    if row is None or int(row["session_id"]) != session_id:
+        raise FullAutoRunError(404, "full_auto_run_not_found", "Full Auto run not found.")
+    view = _view(row)
+    grant = current_authorization(run_id, session_id=session_id)
+    summary, limits = _validate_status_authorization(grant["authorization"])
+    current_plan_revision, authorized_targets = _authoritative_plan_targets(
+        session_id, summary["photo_count"],
+    )
+    progress_row = db.one("SELECT * FROM full_auto_prepare_progress WHERE run_id = ?", run_id)
+    if progress_row is None:
+        targets: list[str] = []
+        prepared_ids: list[str] = []
+        progress = None
+    else:
+        progress = _read_prepare_progress(run_id)
+        targets = progress["target_ids"]
+        prepared_ids = progress["completed_take_ids"]
+    started_targets = _validated_prepare_accounting(
+        row, progress_row, progress, authorized_targets,
+    )
+    if progress_row is None and db.one(
+        "SELECT 1 FROM full_auto_submission_receipt WHERE run_id = ? LIMIT 1", run_id,
+    ) is not None:
+        raise _invalid_saved_status()
+    receipts = [] if progress_row is None else _read_submission_receipts(
+        run_id, session_id, int(progress_row["plan_revision"]), authorized_targets,
+    )
+    shots = db.q("SELECT id, status FROM shot WHERE session_id = ? ORDER BY id", session_id)
+    shot_status = {int(item["id"]): item["status"] for item in shots}
+    submitted_ids = [int(item["shot_id"]) for item in receipts]
+    if any(shot_id not in shot_status for shot_id in submitted_ids):
+        raise _invalid_saved_status()
+    completed = [shot_id for shot_id in submitted_ids if shot_status[shot_id] == "done"]
+    failed = [shot_id for shot_id in submitted_ids if shot_status[shot_id] == "failed"]
+    cancelled = [shot_id for shot_id in submitted_ids if shot_status[shot_id] == "cancelled"]
+    assistant_total = limits["assistant_calls_total"]
+    assistant_per_take = limits["assistant_calls_per_take"]
+    image_total = limits["image_attempts_total"]
+    image_per_take = limits["image_attempts_per_take"]
+    admission = db.one(
+        "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", run_id,
+    )
+    assistant_remaining = max(0, assistant_total - len(started_targets) * assistant_per_take)
+    image_remaining = max(0, image_total) if not submitted_ids and admission is None else 0
+    blocker_code = row["blocker_code"]
+    authority_issue = _current_authority_issue(row, db.now())
+    unresolved = unresolved_work_count(session_id, run_id)
+    if blocker_code is None:
+        blocker_code = authority_issue
+    if blocker_code is None and unresolved:
+        blocker_code = "run_work_unsettled"
+    if blocker_code is None and (
+        assistant_remaining == 0 or image_remaining == 0
+    ):
+        blocker_code = "budget_exhausted"
+    message, remedies = _BLOCKER_REMEDIES.get(
+        blocker_code,
+        ("Review the Full Auto run status and current session inputs.", ["review_status", "cancel"]),
+    ) if blocker_code else (None, [])
+    enabled = resource_planning.is_enabled()
+    state = row["state"]
+    cancelable = state in _NONTERMINAL
+    reconcile_only = bool(row["cancel_intent"]) and state in {"blocked", "cancel_requested"}
+    resumable_state = state in {"blocked", "cancelled", "failed", "completed_with_errors"}
+    policy_is_supported = summary.get("policy_version") == _SUPPORTED_POLICY_VERSION
+    authority_repairable = authority_issue not in {"authorization_invalid", "policy_changed"}
+    budget_available = (
+        type(assistant_remaining) is int and assistant_remaining > 0
+        and type(image_remaining) is int and image_remaining > 0
+    )
+    can_resume = reconcile_only or (
+        enabled and resumable_state and state != "succeeded" and unresolved == 0
+        and authority_repairable and policy_is_supported and budget_available
+    )
+    view.update({
+        "phase": row["phase"],
+        "blocker_code": blocker_code,
+        "current_plan_revision": current_plan_revision,
+        "progress": {
+            "target_count": len(targets) or int(summary.get("photo_count", 0)),
+            "prepared_count": len(prepared_ids),
+            "submitted_count": len(receipts),
+            "completed_count": len(completed),
+            "failed_count": len(failed),
+            "cancelled_count": len(cancelled),
+            "target_take_ids": targets,
+            "prepared_take_ids": prepared_ids,
+            "submitted_shot_ids": submitted_ids,
+            "completed_shot_ids": completed,
+            "failed_shot_ids": failed,
+            "cancelled_shot_ids": cancelled,
+            "unresolved_work_count": unresolved,
+        },
+        "authorization_version": grant["authorization"].get("authorization_version"),
+        "policy_version": summary.get("policy_version"),
+        "authorization_expires_at": grant["authorization_expires_at"],
+        "allowances": {
+            "assistant_calls_total": assistant_total,
+            "assistant_calls_per_take": assistant_per_take,
+            "assistant_calls_remaining_lower_bound": assistant_remaining,
+            "image_attempts_total": image_total,
+            "image_attempts_per_take": image_per_take,
+            "image_attempts_remaining_lower_bound": image_remaining,
+            "remaining_is_conservative_until_reservation_journals": True,
+        },
+        "blocker": None if blocker_code is None else {
+            "code": blocker_code, "message": message, "remedies": remedies,
+        },
+        "can_cancel": cancelable,
+        "can_resume": can_resume,
+        "resume_action": "reconcile_cancellation" if reconcile_only else "resume",
+    })
+    return view
 
 
 def _manual_edit_claim_payload(claim: ManualEditClaim) -> bytes:
@@ -435,7 +1058,7 @@ def _run_row_for_session(session_id: int) -> dict | None:
         """SELECT * FROM full_auto_run WHERE session_id = ?
            ORDER BY CASE WHEN state IN ('cancelled', 'failed', 'succeeded', 'completed_with_errors')
                          THEN 1 ELSE 0 END,
-                    created_at DESC, run_id DESC LIMIT 1""",
+                    created_at DESC, rowid DESC LIMIT 1""",
         session_id,
     )
 
@@ -759,7 +1382,8 @@ def _read_prepare_progress(run_id: str) -> dict:
             type(child["batch_index"]) is not int
             or not child_targets
             or len(child_targets) > 20
-            or not isinstance(child["operation_id"], str)
+            or type(child["operation_id"]) is not str
+            or not child["operation_id"]
         ):
             raise FullAutoRunError(500, "run_state_invalid", "Saved Full Auto child preparation is invalid.")
         children.append({
@@ -773,6 +1397,123 @@ def _read_prepare_progress(run_id: str) -> dict:
         "children": children,
         "remaining_take_ids": targets[len(completed):],
     }
+
+
+def _authoritative_plan_targets(session_id: int, photo_count: int) -> tuple[int, list[str]]:
+    from backend import session_plan
+
+    row = db.one(
+        "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+        session_id,
+    )
+    if row is None or type(row["plan_revision"]) is not int or row["plan_revision"] <= 0:
+        raise _invalid_saved_status()
+    try:
+        plan = session_plan.validate_draft(json.loads(row["plan_json"]))
+    except (TypeError, json.JSONDecodeError, session_plan.PlanValidationError) as exc:
+        raise _invalid_saved_status() from exc
+    targets = [take.get("take_id") for take in plan.get("takes", []) if type(take) is dict]
+    if (
+        len(targets) != photo_count
+        or not targets
+        or len(targets) > 500
+        or any(type(value) is not str or not value for value in targets)
+        or len(targets) != len(set(targets))
+    ):
+        raise _invalid_saved_status()
+    return int(row["plan_revision"]), targets
+
+
+def _validated_prepare_accounting(
+    run_row: dict,
+    progress_row: dict | None,
+    progress: dict | None,
+    authoritative_targets: list[str],
+) -> set[str]:
+    """Return targets whose authorized assistant allowance may be consumed."""
+    run_id = run_row["run_id"]
+    session_id = int(run_row["session_id"])
+    if progress_row is None:
+        if db.one("SELECT 1 FROM full_auto_prepare_child WHERE run_id = ?", run_id) is not None:
+            raise _invalid_saved_preparation()
+        if db.one(
+            "SELECT 1 FROM authoring_operation WHERE full_auto_run_id = ? AND kind = 'prepare_takes'",
+            run_id,
+        ) is not None:
+            raise _invalid_saved_preparation()
+        return set()
+    if (
+        progress is None
+        or type(progress_row["plan_revision"]) is not int
+        or progress_row["plan_revision"] != int(run_row["plan_revision"])
+        or progress["target_ids"] != authoritative_targets
+    ):
+        raise _invalid_saved_preparation()
+    target_set = set(authoritative_targets)
+    started = set(progress["completed_take_ids"])
+    child_ids = {child["operation_id"] for child in progress["children"]}
+    linked_operation_ids = {
+        row["operation_id"] for row in db.q(
+            "SELECT operation_id FROM authoring_operation WHERE full_auto_run_id = ? AND kind = 'prepare_takes'",
+            run_id,
+        )
+    }
+    if child_ids != linked_operation_ids:
+        raise _invalid_saved_preparation()
+    seen_child_targets: set[str] = set()
+    for child in progress["children"]:
+        child_targets = child["target_ids"]
+        if (
+            any(target not in target_set or target in seen_child_targets for target in child_targets)
+        ):
+            raise _invalid_saved_preparation()
+        seen_child_targets.update(child_targets)
+        operation = db.one(
+            "SELECT * FROM authoring_operation WHERE operation_id = ?",
+            child["operation_id"],
+        )
+        if (
+            operation is None
+            or type(operation["state"]) is not str
+            or operation["state"] not in {"active", "cancel_requested", "succeeded", "failed", "cancelled", "expired"}
+            or type(operation["session_id"]) is not int
+            or operation["session_id"] != session_id
+            or type(operation["plan_revision"]) is not int
+            or operation["plan_revision"] != progress_row["plan_revision"]
+            or operation["kind"] != "prepare_takes"
+            or operation["full_auto_run_id"] != run_id
+        ):
+            raise _invalid_saved_preparation()
+        requested = _prepare_json_list(operation["requested_json"], field_name="operation targets")
+        completed = _prepare_json_list(operation["completed_json"], field_name="operation progress")
+        remaining = _prepare_json_list(operation["remaining_json"], field_name="operation remaining targets")
+        failed = operation["failed_item"]
+        if (
+            requested != child_targets
+            or any(target not in target_set for target in requested)
+            or (failed is not None and (type(failed) is not str or failed not in requested))
+            or requested != completed + ([failed] if failed is not None else []) + remaining
+        ):
+            raise _invalid_saved_preparation()
+        if operation["state"] == "succeeded":
+            if failed is not None or remaining or completed != requested:
+                raise _invalid_saved_preparation()
+            started.update(requested)
+        elif operation["state"] == "failed":
+            started.update(completed)
+            if failed is None:
+                # The exact failed target is unavailable; conservatively spend
+                # this child's allowance until reservation journals exist.
+                started.update(requested)
+            else:
+                started.add(failed)
+        else:
+            # An interrupted or in-flight child may already have dispatched any
+            # target in its batch, so none of that batch's budget is reusable.
+            started.update(requested)
+    if not started.issubset(target_set):
+        raise _invalid_saved_preparation()
+    return started
 
 
 def _read_submission_receipts(
@@ -1423,6 +2164,10 @@ def _action_fields(
     request_id: str,
     expected_run_revision: int,
     expected_plan_revision: int,
+    *,
+    scope_digest: str | None = None,
+    comparison_issued_at: str | None = None,
+    accept_changed_scope: bool = False,
 ) -> tuple[dict, str]:
     if not isinstance(run_id, str) or not run_id:
         raise FullAutoRunError(422, "invalid_control_request", "run_id is required.")
@@ -1434,6 +2179,35 @@ def _action_fields(
         "expected_run_revision": _positive_int(expected_run_revision, "expected_run_revision"),
         "expected_plan_revision": _positive_int(expected_plan_revision, "expected_plan_revision"),
     }
+    if type(accept_changed_scope) is not bool:
+        raise FullAutoRunError(422, "invalid_control_request", "accept_changed_scope must be a boolean.")
+    if scope_digest is not None:
+        if action != "resume" or not isinstance(scope_digest, str) or not _SHA256.fullmatch(scope_digest):
+            raise FullAutoRunError(422, "invalid_control_request", "scope_digest is invalid.")
+        body["scope_digest"] = scope_digest
+    if comparison_issued_at is not None:
+        if (
+            action != "resume"
+            or not isinstance(comparison_issued_at, str)
+            or not 1 <= len(comparison_issued_at) <= 40
+        ):
+            raise FullAutoRunError(422, "invalid_control_request", "comparison_issued_at is invalid.")
+        try:
+            issued = _timestamp(comparison_issued_at, field_name="comparison timestamp")
+        except FullAutoRunError as exc:
+            raise FullAutoRunError(
+                422, "invalid_control_request", "comparison_issued_at is invalid.",
+            ) from exc
+        if issued.isoformat(timespec="seconds") != comparison_issued_at:
+            raise FullAutoRunError(
+                422, "invalid_control_request",
+                "comparison_issued_at must be a canonical UTC timestamp.",
+            )
+        body["comparison_issued_at"] = comparison_issued_at
+    if action == "resume":
+        body["accept_changed_scope"] = accept_changed_scope
+    elif scope_digest is not None or comparison_issued_at is not None or accept_changed_scope:
+        raise FullAutoRunError(422, "invalid_control_request", "Scope acceptance is only valid for Resume.")
     return body, _digest(body)
 
 
@@ -1441,9 +2215,10 @@ def _replay_action(
     run_id: str,
     request_id: str,
     request_digest: str,
+    expected_action: Literal["cancel", "resume"],
 ) -> RunActionResult | None:
     row = db.one(
-        "SELECT request_digest, response_json FROM full_auto_run_action_receipt "
+        "SELECT action, request_digest, epoch, response_json FROM full_auto_run_action_receipt "
         "WHERE run_id = ? AND request_id = ?",
         run_id, request_id,
     )
@@ -1457,9 +2232,31 @@ def _replay_action(
         view = json.loads(row["response_json"])
     except (TypeError, json.JSONDecodeError) as exc:
         raise FullAutoRunError(500, "run_receipt_invalid", "The saved Full Auto control receipt is invalid.") from exc
-    if not isinstance(view, dict):
+    authority = db.one("SELECT session_id FROM full_auto_run WHERE run_id = ?", run_id)
+    if type(view) is not dict or set(view) != set(_PUBLIC_RUN_VIEW_FIELDS) | {"action", "request_id"}:
         raise FullAutoRunError(500, "run_receipt_invalid", "The saved Full Auto control receipt is invalid.")
-    return RunActionResult(view=view, replayed=True)
+    if (
+        row["action"] != expected_action
+        or view.get("action") != expected_action
+        or type(view.get("request_id")) is not str
+        or view.get("request_id") != request_id
+        or type(view.get("run_id")) is not str
+        or view.get("run_id") != run_id
+        or authority is None
+        or type(view.get("session_id")) is not int
+        or view.get("session_id") != int(authority["session_id"])
+        or type(view.get("epoch")) is not int
+        or view.get("epoch") != int(row["epoch"])
+    ):
+        raise FullAutoRunError(409, "run_receipt_invalid", "The saved Full Auto control receipt is invalid.")
+    try:
+        public_view = _validate_public_run_view(view)
+    except FullAutoRunError as exc:
+        raise FullAutoRunError(500, "run_receipt_invalid", "The saved Full Auto control receipt is invalid.") from exc
+    return RunActionResult(
+        view={**public_view, "action": expected_action, "request_id": request_id},
+        replayed=True,
+    )
 
 
 def _action_view(row: dict, action: str, request_id: str) -> dict:
@@ -1487,8 +2284,12 @@ def _store_action(
 def _check_control_cas(row: dict, expected_run_revision: int, expected_plan_revision: int) -> None:
     if int(row["revision"]) != expected_run_revision:
         raise FullAutoRunError(409, "run_revision_stale", "The Full Auto run changed; reload its current state.")
-    if int(row["plan_revision"]) != expected_plan_revision:
-        raise FullAutoRunError(409, "plan_revision_stale", "The Full Auto run belongs to a different plan revision.")
+    current_plan = db.one(
+        "SELECT plan_revision FROM session_plan WHERE session_id = ?",
+        int(row["session_id"]),
+    )
+    if current_plan is None or int(current_plan["plan_revision"]) != expected_plan_revision:
+        raise FullAutoRunError(409, "plan_revision_stale", "The session plan changed; reload the current revision.")
 
 
 def cancel_run(
@@ -1498,19 +2299,26 @@ def cancel_run(
     expected_plan_revision: int,
     *,
     work_pending: bool | None,
+    derive_work_pending: bool = False,
+    expected_session_id: int | None = None,
     now_text: str | None = None,
 ) -> RunActionResult:
-    """Persist cancellation intent; callers supply backend-owned work evidence."""
+    """Persist cancellation intent using backend-owned, transaction-current evidence."""
+    if type(derive_work_pending) is not bool:
+        raise FullAutoRunError(422, "invalid_control_request", "derive_work_pending must be a boolean.")
     body, request_digest = _action_fields(
         "cancel", run_id, request_id, expected_run_revision, expected_plan_revision,
     )
     timestamp = _now_text(now_text)
     with db.transaction():
-        replay = _replay_action(run_id, request_id, request_digest)
+        _check_run_session_identity(run_id, expected_session_id)
+        replay = _replay_action(run_id, request_id, request_digest, "cancel")
         if replay is not None:
             return replay
         row = _require_run(run_id)
         _check_control_cas(row, body["expected_run_revision"], body["expected_plan_revision"])
+        if derive_work_pending:
+            work_pending = unresolved_work_count(int(row["session_id"]), run_id) > 0
         if row["state"] in {"cancel_requested", "blocked"} and bool(row["cancel_intent"]):
             # Repeated Cancel records its response but never polls or dispatches.
             pass
@@ -1548,10 +2356,16 @@ def cancel_run(
         return RunActionResult(view=view)
 
 
-def _resume_eligibility(row: dict, evidence: ResumeEligibility | None) -> str:
+def _resume_eligibility(
+    row: dict,
+    evidence: ResumeEligibility | None,
+    *,
+    current_plan_revision: int,
+    scope_accepted: bool = False,
+) -> str:
     if not isinstance(evidence, ResumeEligibility):
         raise FullAutoRunError(409, "resume_preflight_required", "Current Full Auto resume checks are required.")
-    if type(evidence.current_plan_revision) is not int or evidence.current_plan_revision != int(row["plan_revision"]):
+    if type(evidence.current_plan_revision) is not int or evidence.current_plan_revision != current_plan_revision:
         raise FullAutoRunError(409, "plan_revision_stale", "The current plan changed; refresh consent before resuming.")
     if type(evidence.unresolved_work) is not int or evidence.unresolved_work != 0:
         raise FullAutoRunError(409, "run_work_unsettled", "The Full Auto run still has unresolved owned work.")
@@ -1561,7 +2375,7 @@ def _resume_eligibility(row: dict, evidence: ResumeEligibility | None) -> str:
         raise FullAutoRunError(409, "authorization_expired", "The Full Auto authorization is no longer valid.")
     if type(evidence.policy_supported) is not bool or not evidence.policy_supported:
         raise FullAutoRunError(409, "policy_changed", "The recorded Full Auto policy is not supported.")
-    if type(evidence.scope_matches) is not bool or not evidence.scope_matches:
+    if type(evidence.scope_matches) is not bool or not evidence.scope_matches and not scope_accepted:
         raise FullAutoRunError(409, "authorization_scope_changed", "The authorized Full Auto inputs changed.")
     if type(evidence.budget_available) is not bool or not evidence.budget_available:
         raise FullAutoRunError(409, "budget_exhausted", "The authorized Full Auto budget is exhausted.")
@@ -1572,6 +2386,83 @@ def _resume_eligibility(row: dict, evidence: ResumeEligibility | None) -> str:
     return evidence.next_state
 
 
+def _current_resume_eligibility(
+    row: dict,
+    comparison: dict,
+    *,
+    now_text: str,
+) -> ResumeEligibility:
+    """Derive every resume gate from rows inside the control transaction."""
+    session_id = int(row["session_id"])
+    candidate = comparison.get("_authorization")
+    if not isinstance(candidate, dict):
+        candidate = current_authorization(
+            row["run_id"], session_id=session_id,
+        )["authorization"]
+    summary, limits = _validate_status_authorization(candidate)
+    expiry = candidate.get("authorization_expires_at")
+    if not isinstance(expiry, str):
+        raise FullAutoRunError(409, "full_auto_authorization_invalid", "The Full Auto authorization is invalid.")
+
+    current_plan_revision, authorized_targets = _authoritative_plan_targets(
+        session_id, summary["photo_count"],
+    )
+    progress_row = db.one(
+        "SELECT * FROM full_auto_prepare_progress WHERE run_id = ?", row["run_id"],
+    )
+    progress = None if progress_row is None else _read_prepare_progress(row["run_id"])
+    started_targets = _validated_prepare_accounting(
+        row, progress_row, progress, authorized_targets,
+    )
+    assistant_total = limits["assistant_calls_total"]
+    assistant_per_take = limits["assistant_calls_per_take"]
+    assistant_remaining = max(0, assistant_total - len(started_targets) * assistant_per_take)
+    image_total = limits["image_attempts_total"]
+    has_submission = bool(db.one(
+        "SELECT 1 FROM full_auto_submission_receipt WHERE run_id = ? LIMIT 1",
+        row["run_id"],
+    ))
+    has_admission = db.one(
+        "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", row["run_id"],
+    ) is not None
+    image_remaining = max(0, image_total) if not has_submission and not has_admission else 0
+    other_operations = db.one(
+        """SELECT 1 FROM authoring_operation
+           WHERE session_id = ? AND (full_auto_run_id IS NULL OR full_auto_run_id != ?)
+             AND state NOT IN ('succeeded', 'failed', 'cancelled', 'expired') LIMIT 1""",
+        session_id, row["run_id"],
+    )
+    other_run = db.one(
+        """SELECT 1 FROM full_auto_run
+           WHERE session_id = ? AND run_id != ?
+             AND state NOT IN ('cancelled', 'failed', 'succeeded', 'completed_with_errors')
+           LIMIT 1""",
+        session_id, row["run_id"],
+    )
+    phase = row["resume_phase"] or row["phase"]
+    return ResumeEligibility(
+        current_plan_revision=current_plan_revision,
+        unresolved_work=unresolved_work_count(session_id, row["run_id"]),
+        authorization_valid=(
+            _timestamp(expiry, field_name="authorization expiry")
+            > _timestamp(now_text, field_name="current time")
+        ),
+        policy_supported=(
+            candidate.get("authorization_version") == _SUPPORTED_AUTHORIZATION_VERSION
+            and candidate.get("generate_without_pauses") is True
+            and summary.get("policy_version") == _SUPPORTED_POLICY_VERSION
+        ),
+        budget_available=(
+            type(assistant_remaining) is int and assistant_remaining > 0
+            and type(image_remaining) is int and image_remaining > 0
+        ),
+        session_exclusive=other_operations is None and other_run is None,
+        scope_matches=not bool(comparison["changed"]),
+        planning_enabled=resource_planning.is_enabled(),
+        next_state="waiting_runner" if phase in {"submit", "execute"} else "waiting_authoring",
+    )
+
+
 def resume_run(
     run_id: str,
     request_id: str,
@@ -1579,36 +2470,76 @@ def resume_run(
     expected_plan_revision: int,
     *,
     eligibility: ResumeEligibility | None,
+    scope_digest: str | None = None,
+    comparison_issued_at: str | None = None,
+    accept_changed_scope: bool = False,
+    config: object = None,
+    defer_claim: bool = False,
+    expected_session_id: int | None = None,
     now_text: str | None = None,
 ) -> RunActionResult:
-    """Resume a valid epoch or acquire a read-only cancel-reconciliation lease."""
+    """Persist a checked resume transition; optionally leave claiming to a later coordinator."""
     body, request_digest = _action_fields(
         "resume", run_id, request_id, expected_run_revision, expected_plan_revision,
+        scope_digest=scope_digest, comparison_issued_at=comparison_issued_at,
+        accept_changed_scope=accept_changed_scope,
     )
+    if type(defer_claim) is not bool:
+        raise FullAutoRunError(422, "invalid_control_request", "defer_claim must be a boolean.")
     timestamp = _now_text(now_text)
     with db.transaction():
-        replay = _replay_action(run_id, request_id, request_digest)
+        _check_run_session_identity(run_id, expected_session_id)
+        replay = _replay_action(run_id, request_id, request_digest, "resume")
         if replay is not None:
             return replay
         row = _require_run(run_id)
-        _check_control_cas(row, body["expected_run_revision"], body["expected_plan_revision"])
-
-        if row["state"] == "blocked" and bool(row["cancel_intent"]):
-            deadline = run_lease_deadline(timestamp)
-            if row["lease_expires_at"] is not None and _timestamp(
-                row["lease_expires_at"], field_name="run lease",
-            ) > _timestamp(timestamp, field_name="current time"):
-                raise FullAutoRunError(409, "run_already_claimed", "Cancellation reconciliation already has an owner.")
-            db.run(
-                """UPDATE full_auto_run
-                   SET revision = revision + 1, fencing_token = fencing_token + 1,
-                       lease_expires_at = ?, lease_started_at = ?, updated_at = ?
-                   WHERE run_id = ? AND revision = ? AND fencing_token = ?""",
-                deadline, timestamp, timestamp, run_id, row["revision"], row["fencing_token"],
-            )
-            row = _require_run(run_id)
-            claim = _make_claim(row, True)
+        if row["state"] in {"blocked", "cancel_requested"} and bool(row["cancel_intent"]):
+            # Reconciliation is scoped to the run's original plan and remains
+            # available after unrelated plan drift because it authorizes no
+            # generation or input mutation.
+            if int(row["revision"]) != body["expected_run_revision"]:
+                raise FullAutoRunError(409, "run_revision_stale", "The Full Auto run changed; reload its current state.")
+            if int(row["plan_revision"]) != body["expected_plan_revision"]:
+                raise FullAutoRunError(409, "plan_revision_stale", "The Full Auto run plan changed; reload its current state.")
         else:
+            _check_control_cas(row, body["expected_run_revision"], body["expected_plan_revision"])
+
+        if row["state"] in {"blocked", "cancel_requested"} and bool(row["cancel_intent"]):
+            if scope_digest is not None or comparison_issued_at is not None or accept_changed_scope:
+                raise FullAutoRunError(
+                    409, "cancel_reconciliation_required",
+                    "Pending cancellation must be reconciled before Full Auto can resume.",
+                )
+            if defer_claim:
+                # This task exposes the control plane only. A later reconciliation
+                # worker may claim the run after it can observe remote work.
+                claim = None
+            else:
+                deadline = run_lease_deadline(timestamp)
+                if row["lease_expires_at"] is not None and _timestamp(
+                    row["lease_expires_at"], field_name="run lease",
+                ) > _timestamp(timestamp, field_name="current time"):
+                    raise FullAutoRunError(409, "run_already_claimed", "Cancellation reconciliation already has an owner.")
+                db.run(
+                    """UPDATE full_auto_run
+                       SET revision = revision + 1, fencing_token = fencing_token + 1,
+                           lease_expires_at = ?, lease_started_at = ?, updated_at = ?
+                       WHERE run_id = ? AND revision = ? AND fencing_token = ?""",
+                    deadline, timestamp, timestamp, run_id, row["revision"], row["fencing_token"],
+                )
+                row = _require_run(run_id)
+                claim = _make_claim(row, True)
+        else:
+            if scope_digest is not None and comparison_issued_at is None:
+                raise FullAutoRunError(
+                    422, "invalid_control_request",
+                    "comparison_issued_at is required with scope_digest.",
+                )
+            if comparison_issued_at is not None and scope_digest is None:
+                raise FullAutoRunError(
+                    422, "invalid_control_request",
+                    "scope_digest is required with comparison_issued_at.",
+                )
             if row["state"] not in {"blocked", "cancelled", "failed", "completed_with_errors"}:
                 raise FullAutoRunError(409, "run_not_resumable", "The Full Auto run cannot be resumed in its current state.")
             if row["state"] == "blocked" and row["lease_expires_at"] is not None:
@@ -1616,10 +2547,113 @@ def resume_run(
                     raise FullAutoRunError(409, "run_already_claimed", "The Full Auto run already has an owner.")
             if row["state"] == "succeeded":
                 raise FullAutoRunError(409, "run_not_resumable", "A successful Full Auto run is not resumable.")
-            authority_issue = _current_authority_issue(row, timestamp)
-            if authority_issue is not None:
-                raise _authority_error(authority_issue)
-            next_state = _resume_eligibility(row, eligibility)
+            comparison = None
+            scope_accepted = False
+            next_state = None
+            if scope_digest is not None or eligibility is None:
+                from backend import guided_sessions
+
+                comparison = guided_sessions.compare_full_auto_resume_scope(
+                    run_id, config=config, now_text=timestamp,
+                    comparison_issued_at=comparison_issued_at,
+                )
+                if scope_digest is not None and not hmac.compare_digest(
+                    comparison["scope_digest"], scope_digest,
+                ):
+                    raise FullAutoRunError(
+                        409, "resume_comparison_stale",
+                        "The Full Auto comparison is stale; refresh it before resuming.",
+                    )
+                scope_accepted = bool(comparison["changed"])
+                if scope_accepted and scope_digest is None:
+                    raise FullAutoRunError(
+                        409, "authorization_scope_changed",
+                        "Review and explicitly accept the changed Full Auto scope before resuming.",
+                        current_run={
+                            "run_id": run_id,
+                            "revision": int(row["revision"]),
+                            "plan_revision": int(comparison["plan_revision"]),
+                            "scope_digest": comparison["scope_digest"],
+                            "comparison_issued_at": comparison["comparison_issued_at"],
+                            "changed_fields": comparison["changed_fields"],
+                        },
+                    )
+                if scope_accepted and not accept_changed_scope:
+                    raise FullAutoRunError(
+                        409, "authorization_scope_changed",
+                        "Review and explicitly accept the changed Full Auto scope before resuming.",
+                        current_run={
+                            "run_id": run_id,
+                            "revision": int(row["revision"]),
+                            "plan_revision": int(comparison["plan_revision"]),
+                            "scope_digest": comparison["scope_digest"],
+                            "comparison_issued_at": comparison["comparison_issued_at"],
+                            "changed_fields": comparison["changed_fields"],
+                        },
+                    )
+                eligibility = _current_resume_eligibility(
+                    row, comparison, now_text=timestamp,
+                )
+                next_state = _resume_eligibility(
+                    row, eligibility,
+                    current_plan_revision=int(comparison["plan_revision"]),
+                    scope_accepted=scope_accepted,
+                )
+                if scope_accepted:
+                    if not resource_planning.is_enabled():
+                        raise FullAutoRunError(
+                            503, "resource_planning_disabled",
+                            "Full Auto authorization renewal is disabled by configuration.",
+                        )
+                    grant = current_authorization(run_id, session_id=int(row["session_id"]))
+                    authorization = comparison["_authorization"]
+                    if not isinstance(authorization, dict):
+                        raise FullAutoRunError(
+                            409, "full_auto_authorization_invalid",
+                            "The renewed Full Auto authorization could not be verified.",
+                        )
+                    sequence = int(grant["sequence"]) + 1
+                    db.run(
+                        """INSERT INTO full_auto_run_authorization
+                           (run_id, authorization_sequence, previous_authorization_digest,
+                            comparison_digest, authorization_json, scope_digest,
+                            dependencies_digest, plan_digest, scope_issued_at,
+                            authorization_expires_at, run_revision, plan_revision, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        run_id, sequence, grant["authorization_digest"],
+                        comparison["scope_digest"], _canonical_json(authorization),
+                        authorization["scope_digest"], comparison["_dependencies_digest"],
+                        comparison["_plan_digest"], authorization["scope_issued_at"],
+                        authorization["authorization_expires_at"], int(row["revision"]),
+                        int(comparison["plan_revision"]), timestamp,
+                    )
+                    db.run(
+                        """UPDATE full_auto_run
+                           SET plan_revision = ?, updated_at = ?
+                           WHERE run_id = ? AND revision = ? AND fencing_token = ?""",
+                        int(comparison["plan_revision"]), timestamp,
+                        run_id, row["revision"], row["fencing_token"],
+                    )
+                    row = _require_run(run_id)
+
+            current_plan = db.one(
+                "SELECT plan_revision FROM session_plan WHERE session_id = ?",
+                int(row["session_id"]),
+            )
+            current_plan_revision = int(current_plan["plan_revision"]) if current_plan is not None else 0
+            if comparison is None:
+                authority_issue = _current_authority_issue(row, timestamp)
+                if authority_issue is not None:
+                    raise _authority_error(authority_issue)
+                next_state = _resume_eligibility(
+                    row, eligibility,
+                    current_plan_revision=current_plan_revision,
+                )
+            elif current_plan_revision != int(comparison["plan_revision"]):
+                raise FullAutoRunError(
+                    409, "resume_comparison_stale",
+                    "The session plan changed during Resume; refresh the comparison.",
+                )
             is_new_epoch = row["state"] in _TERMINAL
             phase = row["resume_phase"] or row["phase"]
             if phase not in _MAIN_PHASES:
@@ -1628,22 +2662,23 @@ def resume_run(
                 row["lease_expires_at"], field_name="run lease",
             ) > _timestamp(timestamp, field_name="current time"):
                 raise FullAutoRunError(409, "run_already_claimed", "The Full Auto run already has an owner.")
-            deadline = run_lease_deadline(timestamp)
+            deadline = None if defer_claim else run_lease_deadline(timestamp)
             db.run(
                 """UPDATE full_auto_run
                    SET state = ?, phase = ?, revision = revision + 1,
                        epoch = epoch + ?, fencing_token = fencing_token + 1,
-                       lease_expires_at = ?, lease_started_at = ?,
+                       lease_expires_at = ?, lease_started_at = ?, plan_revision = ?,
                        cancel_intent = 0, cancel_intent_at = NULL, blocker_code = NULL,
                        resume_phase = NULL,
                        evidence_json = ?, updated_at = ?
                    WHERE run_id = ? AND revision = ? AND fencing_token = ?""",
-                next_state, phase, 1 if is_new_epoch else 0, deadline, timestamp,
+                next_state, phase, 1 if is_new_epoch else 0, deadline,
+                None if defer_claim else timestamp, current_plan_revision,
                 _canonical_json({"kind": "resume", "new_epoch": is_new_epoch}),
                 timestamp, run_id, row["revision"], row["fencing_token"],
             )
             row = _require_run(run_id)
-            claim = _make_claim(row, False)
+            claim = None if defer_claim else _make_claim(row, False)
 
         view = _action_view(row, "resume", request_id)
         _store_action(run_id, request_id, "resume", request_digest, row, view, timestamp)

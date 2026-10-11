@@ -5874,31 +5874,9 @@ def accept_full_auto_duplicate_review(
 
 
 def _full_auto_authorization_digest(run_id: str, session_id: int) -> str:
-    from backend import resource_store
-
-    receipt = db.one(
-        "SELECT authorization_json, scope_digest, dependencies_digest, plan_digest "
-        "FROM full_auto_run_receipt WHERE run_id = ? AND session_id = ?",
-        run_id, session_id,
-    )
-    if receipt is None:
-        raise resource_full_auto.FullAutoRunError(
-            409, "full_auto_authorization_missing",
-            "The Full Auto authorization receipt is unavailable.",
-        )
-    try:
-        authorization = json.loads(receipt["authorization_json"])
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise resource_full_auto.FullAutoRunError(
-            409, "full_auto_authorization_invalid",
-            "The Full Auto authorization receipt is invalid.",
-        ) from exc
-    return resource_store.canonical_digest({
-        "authorization": authorization,
-        "scope_digest": receipt["scope_digest"],
-        "dependencies_digest": receipt["dependencies_digest"],
-        "plan_digest": receipt["plan_digest"],
-    })
+    return resource_full_auto.current_authorization(
+        run_id, session_id=session_id,
+    )["authorization_digest"]
 
 
 def _full_auto_policy_approval_evidence(

@@ -894,6 +894,23 @@ def _scope_request_body(body: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _full_auto_continuity_digest(plan: dict[str, Any]) -> str:
+    authoring = plan["authoring"]
+    return resource_store.canonical_digest({
+        "look": plan["look"],
+        "initial_wardrobe": plan["initial_wardrobe"],
+        "selected_resources": plan["selected_resources"],
+        "brief": authoring["brief"],
+        "workflow_binding": authoring["workflow_binding"],
+        "variation_policy": authoring["variation_policy"],
+        "look_snapshot": authoring["look_snapshot"],
+        "wardrobe_progression": authoring["wardrobe_progression"],
+        "wardrobe_changes": plan["wardrobe_changes"],
+        "policy_version": _FULL_AUTO_POLICY_VERSION,
+        "coverage_compiler_version": saved_looks.AUTOMATION_COVERAGE_COMPILER_VERSION,
+    })
+
+
 def _resolve_request(
     body: dict[str, Any],
     *,
@@ -1143,6 +1160,7 @@ def _resolve_request(
         "effective_framing": effective_body["variation_policy"]["framing"],
         "variation_policy": effective_body["variation_policy"],
         "photo_count": body["photo_count"],
+        "continuity_digest": _full_auto_continuity_digest(plan),
         "progression": {
             "policy": full_auto["progression"],
             "stages": stages,
@@ -1213,6 +1231,260 @@ def _refreshed_scope(body: dict[str, Any], config: dict[str, Any], issued: str) 
         "scope_digest": resolution["scope_digest"],
         "scope_issued_at": issued,
     }
+
+
+def compare_full_auto_resume_scope(
+    run_id: str,
+    *,
+    config: _ConfigInput = None,
+    now_text: str | None = None,
+    comparison_issued_at: str | None = None,
+) -> dict[str, Any]:
+    """Build a read-only old/new authorization comparison from current rows."""
+    from backend import resource_full_auto
+
+    now = resource_full_auto._now_text(now_text)
+    now_instant = resource_full_auto._timestamp(now, field_name="current time")
+    if comparison_issued_at is None:
+        requested_comparison_issued = now
+    else:
+        issued_instant = resource_full_auto._timestamp(
+            comparison_issued_at, field_name="Resume comparison timestamp",
+        )
+        if issued_instant.isoformat(timespec="seconds") != comparison_issued_at:
+            raise resource_full_auto.FullAutoRunError(
+                422, "invalid_control_request",
+                "comparison_issued_at must be a canonical UTC timestamp.",
+            )
+        requested_comparison_issued = comparison_issued_at
+        age = now_instant - issued_instant
+        if age < timedelta(0) or age > _FULL_AUTO_SCOPE_MAX_AGE:
+            raise resource_full_auto.FullAutoRunError(
+                409, "resume_comparison_stale",
+                "The Full Auto comparison expired; refresh it before resuming.",
+            )
+    with db.transaction():
+        run = resource_full_auto._require_run(run_id)
+        session_id = int(run["session_id"])
+        grant = resource_full_auto.current_authorization(run_id, session_id=session_id)
+        saved_summary, _saved_limits = resource_full_auto._validate_status_authorization(
+            grant["authorization"],
+        )
+        plan_row = db.one(
+            "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+            session_id,
+        )
+        session = db.one("SELECT model_id FROM session WHERE id = ?", session_id)
+        if plan_row is None or session is None:
+            raise resource_full_auto.FullAutoRunError(
+                409, "full_auto_scope_unavailable",
+                "The current session inputs are unavailable for Resume comparison.",
+            )
+        try:
+            raw_plan = json.loads(plan_row["plan_json"])
+            plan = session_plan.validate_draft(raw_plan)
+        except (TypeError, json.JSONDecodeError, session_plan.PlanValidationError) as exc:
+            raise resource_full_auto.FullAutoRunError(
+                409, "full_auto_scope_unavailable",
+                "The current session plan is unavailable for Resume comparison.",
+            ) from exc
+
+        context = db.one(
+            "SELECT request_json FROM full_auto_run_scope_input WHERE run_id = ?",
+            run_id,
+        )
+        authorization = {**grant["authorization"], "summary": saved_summary}
+        if context is not None:
+            try:
+                body = json.loads(context["request_json"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "full_auto_scope_unavailable",
+                    "The saved Full Auto selection cannot be verified for Resume.",
+                ) from exc
+        else:
+            old_summary = authorization.get("summary")
+            saved = old_summary.get("saved_look") if isinstance(old_summary, dict) else None
+            room = old_summary.get("room") if isinstance(old_summary, dict) else None
+            if not isinstance(saved, dict) or not isinstance(room, dict):
+                raise resource_full_auto.FullAutoRunError(
+                    409, "full_auto_scope_unavailable",
+                    "The saved Full Auto selection cannot be verified for Resume.",
+                )
+            body = {
+                "character_id": int(session["model_id"]),
+                "workflow_id": None,
+                "scene_anchor": {
+                    key: room[key] for key in ("library_key", "source_id", "content_digest")
+                },
+                "photo_count": len(plan["takes"]),
+                "brief": plan["authoring"]["brief"],
+                "mode": plan["authoring"]["mode"],
+                "variation_policy": plan["authoring"]["variation_policy"],
+                "look": "",
+                "initial_wardrobe": "",
+                "saved_look": {
+                    "look_key": saved["look_key"],
+                    "version": saved["version"],
+                    "content_digest": saved["content_digest"],
+                },
+                "full_auto": {
+                    key: authorization[key]
+                    for key in (
+                        "authorization_version", "generate_without_pauses",
+                        "profile_revision", "profile_digest", "progression",
+                        "framing_intent", "scope_digest", "scope_issued_at",
+                    )
+                    if key in authorization
+                },
+            }
+
+        if not isinstance(body, dict) or not isinstance(body.get("full_auto"), dict):
+            raise resource_full_auto.FullAutoRunError(
+                409, "full_auto_scope_unavailable",
+                "The saved Full Auto selection cannot be verified for Resume.",
+            )
+        body = dict(body)
+        body["character_id"] = int(session["model_id"])
+        body["photo_count"] = len(plan["takes"])
+        body["brief"] = plan["authoring"]["brief"]
+        body["mode"] = plan["authoring"]["mode"]
+        body["variation_policy"] = plan["authoring"]["variation_policy"]
+        body["scene_anchor"] = plan["authoring"]["scene_anchor"]
+        snapshot = plan["authoring"]["look_snapshot"]
+        application = session_plan._load_session_profile_application(
+            session_id, int(plan_row["plan_revision"]), plan,
+        )
+        if isinstance(snapshot, dict):
+            body["saved_look"] = {
+                "look_key": application["saved_look"]["key"] if application else snapshot["look_id"],
+                "version": snapshot["version"],
+                "content_digest": snapshot["content_digest"],
+            }
+        if application is not None:
+            body["full_auto"] = dict(body["full_auto"])
+            body["full_auto"]["profile_revision"] = application["profile"]["profile_revision"]
+            body["full_auto"]["profile_digest"] = application["profile"]["profile_digest"]
+
+        issued = grant["scope_issued_at"]
+        try:
+            current = _resolve_request(
+                body, config=_config_snapshot(config), scope_issued_at=issued,
+            )
+        except GuidedSessionError as exc:
+            raise resource_full_auto.FullAutoRunError(
+                409, exc.code, exc.message,
+            ) from exc
+        current_summary = resource_full_auto._project_consent_summary({
+            **current["summary"],
+            "continuity_digest": _full_auto_continuity_digest(plan),
+        })
+        current_scope_digest = resource_store.canonical_digest(current_summary)
+        current_plan_digest = resource_store.canonical_digest(raw_plan)
+        old_summary = saved_summary
+        unchanged = (
+            current_scope_digest == grant["scope_digest"]
+            and current["dependencies_digest"] == grant["dependencies_digest"]
+            and current_plan_digest == grant["plan_digest"]
+            and int(plan_row["plan_revision"]) == int(run["plan_revision"])
+            and resource_full_auto._timestamp(
+                grant["authorization_expires_at"], field_name="authorization expiry",
+            ) > resource_full_auto._timestamp(now, field_name="current time")
+        )
+
+        comparison_issued = requested_comparison_issued
+        candidate = current if unchanged else _resolve_request(
+            body, config=_config_snapshot(config), scope_issued_at=comparison_issued,
+        )
+        new_summary = resource_full_auto._project_consent_summary({
+            **candidate["summary"],
+            "continuity_digest": _full_auto_continuity_digest(plan),
+        })
+        expires = candidate["expires_at"]
+        current_plan_revision = int(plan_row["plan_revision"])
+        new_scope_digest = resource_store.canonical_digest(new_summary)
+        continuity_fields = (
+            "saved_look", "automation_profile", "room", "character_id",
+            "model_binding", "workflow", "provider", "generation_settings",
+            "canvas", "framing_intent", "effective_framing", "variation_policy",
+            "request_digest", "progression", "coverage_compiler_version",
+            "policy_version",
+        )
+        comparison_fields = (*continuity_fields, "photo_count", "limits", "dependencies_digest")
+        changed_fields = [
+            field for field in comparison_fields
+            if old_summary.get(field) != new_summary.get(field)
+        ]
+        if current_plan_digest != grant["plan_digest"]:
+            changed_fields.append("plan")
+        if expires != grant["authorization_expires_at"]:
+            changed_fields.append("deadline")
+        if session_plan.has_generated_take(session_id) and (
+            (old_summary.get("continuity_digest") is not None
+             and old_summary.get("continuity_digest") != new_summary.get("continuity_digest"))
+            or any(field in changed_fields for field in continuity_fields)
+        ):
+            raise resource_full_auto.FullAutoRunError(
+                409, "full_auto_continuity_requires_new_session",
+                "Generated Full Auto history cannot continue under changed generation inputs; create a new session.",
+            )
+
+        comparison_payload = {
+            "run_id": run_id,
+            "run_revision": int(run["revision"]),
+            "plan_revision": current_plan_revision,
+            "previous_authorization_digest": grant["authorization_digest"],
+            "previous_scope_digest": grant["scope_digest"],
+            "next_scope_digest": new_scope_digest,
+            "next_dependencies_digest": candidate["dependencies_digest"],
+            "next_plan_digest": current_plan_digest,
+            # The exact quote timestamp binds the displayed renewal deadline.
+            # Resume echoes it so recomputation stays stable throughout the
+            # quote's bounded lifetime.
+            "renewal_lifetime_seconds": int(_FULL_AUTO_AUTHORIZATION_LIFETIME.total_seconds()),
+            "comparison_issued_at": comparison_issued,
+        }
+        comparison_digest = resource_store.canonical_digest(comparison_payload)
+        if unchanged:
+            new_summary = old_summary
+            new_scope_digest = grant["scope_digest"]
+            expires = grant["authorization_expires_at"]
+            changed_fields = []
+        return {
+            "run_id": run_id,
+            "run_revision": int(run["revision"]),
+            "plan_revision": current_plan_revision,
+            "changed": not unchanged,
+            "scope_digest": comparison_digest,
+            "comparison_issued_at": comparison_issued,
+            "changed_fields": changed_fields,
+            "old_scope": {
+                "summary": old_summary,
+                "scope_digest": grant["scope_digest"],
+                "authorization_expires_at": grant["authorization_expires_at"],
+            },
+            "new_scope": {
+                "summary": new_summary,
+                "scope_digest": new_scope_digest,
+                "authorization_expires_at": expires,
+                "renewal_lifetime_seconds": int(_FULL_AUTO_AUTHORIZATION_LIFETIME.total_seconds()),
+            },
+            "_authorization": None if unchanged else {
+                "authorization_version": body["full_auto"]["authorization_version"],
+                "generate_without_pauses": body["full_auto"]["generate_without_pauses"],
+                "profile_revision": body["full_auto"]["profile_revision"],
+                "profile_digest": body["full_auto"]["profile_digest"],
+                "progression": body["full_auto"]["progression"],
+                "framing_intent": body["full_auto"]["framing_intent"],
+                "scope_digest": new_scope_digest,
+                "scope_issued_at": comparison_issued,
+                "authorization_expires_at": expires,
+                "summary": new_summary,
+            },
+            "_dependencies_digest": candidate["dependencies_digest"],
+            "_plan_digest": current_plan_digest,
+            "_previous_authorization_digest": grant["authorization_digest"],
+        }
 
 
 def create_or_replay(
@@ -1351,6 +1623,12 @@ def create_or_replay(
                 json.dumps(authorization, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
                 resolution["scope_digest"], resolution["dependencies_digest"],
                 plan_digest, resolution["scope_issued_at"], resolution["expires_at"], now,
+            )
+            db.run(
+                "INSERT INTO full_auto_run_scope_input (run_id, request_json, created_at) VALUES (?, ?, ?)",
+                run_id,
+                json.dumps(body, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                now,
             )
             resource_full_auto.create_run_in_transaction(
                 run_id, session_id, plan_revision=1, created_at=now,

@@ -1,47 +1,54 @@
 # Latest Session Work
 
-## Full Auto Task 4.5 Handoff
+## Full Auto Task 4.6 Accepted Handoff
 
-Heavy deployment `full_auto_4_5_20261011` addresses only Task 4.5 of
-`automate-resource-session-full-auto`. Main completed project-framework and
-OpenSpec intake, inspected critical contracts and retained architecture,
-scope, integration and acceptance. Entry Git state was clean. Explorer mapped
-the submission/runner boundaries, Executor implemented and repaired, Tester
-verified independently, and Archivist updated public guidance and ownership.
+Deployment `full_auto_4_6_resume_20261011` completed only Task 4.6 of
+`automate-resource-session-full-auto`, continuing the preserved initial work.
+Initial HEAD `21296bd` was clean. Main completed framework/OpenSpec intake,
+retained architecture/scope/acceptance, delegated internal implementation and
+repair, and independently reviewed actual diff and Tester evidence. Main
+accepted and marked only 4.6; completion is 18 of 41.
 
-## Implementation and Boundaries
+## Delivered Contracts
 
-Additive immutable submission receipts bind ordered targets to prepared
-snapshots, shot IDs and snapshot digests. The internal submission driver calls
-the existing service and recovers committed links whose receipts were lost.
-It retains exact final prompts and advances to execute only after all receipts
-are present. Approval recovery accepts the approve phase and reuses verified
-persisted policy approval without rewriting it.
+Session-scoped discovery/status and strict Cancel/Resume bind request UUIDs
+and current run/plan revisions. Historical controls replay before mutable
+quote/dependency checks without changing later epochs. Additive immutable
+scope-input storage supports reconstruction; linked renewal grants preserve
+initial consent. Current-grant readers cover preparation, review, submission
+and runner authority. Resume-preflight returns old/new scope, digest and
+`comparison_issued_at`; changed scope requires explicit acceptance and an echoed
+nonfuture quote at most 300 seconds old. The displayed deadline remains fixed
+to that quote. Generated continuity still refuses changed frozen inputs.
 
-Runner.start retains its manual behavior and gains private authenticated
-Full Auto admission. It validates current authority, approval, evidence, complete
-receipts and pending shots in the actual shot-ID execution order. Flag and
-authority are checked again after aggregate review, immediately before writes.
-Admission persists before scheduling; an uncertain post-admission outcome
-refuses another start rather than assume remote work never happened.
+Closed projections reject malformed persisted summaries, progress IDs and
+control receipts without exposing nested prompts or private values. Receipt
+identity binds action, run, session and epoch. Conservative per-target
+allowances retain untouched work and valid ready snapshots; partial Resume
+preserves grants, children and snapshots without another call or shot.
+Creation failure injection includes the immutable scope-input row and retains
+complete rollback plus same-request retry/replay assertions.
 
-Preparation still stops at validate. Creation/startup do not schedule the whole
-flow, and there are no new public controls or UI. Global runner claims,
-heartbeats, remote journaling/recovery and cancellation settlement remain later
-tasks. No frontend edits or real-generation exercise were performed.
+## Independent Verification
 
-## Independent Evidence and Closure
+Tester accepted 27 focused cases and the final complete Python suite:
+3,272 passed, two skipped, five warnings, exit zero in 464.69 seconds via
+`.venv/Scripts/python.exe -m pytest`. The skips are opt-in 500-take synthesis
+and unavailable Windows symlink creation. Privacy/format passed 46 cases;
+strict OpenSpec validation and diff checks passed. Main read the actual logs
+and final fixture diff. The earlier complete-suite allocation expectation
+failure was corrected without weakening assertions. Earlier isolated CAS
+failure also reproduced on pristine HEAD due an absent immutable resource
+fixture; it did not recur in the final complete suite.
 
-Tester accepted 26 focused cases covering approval recovery, cuts before and
-after each receipt of a four-target run, SQLite reopen, exact shot/prompt reuse,
-ordered runner execution with FakeComfy, missing/corrupt links and receipts,
-flag/lease changes during validation, cancellation/fence takeover and manual
-Run after cancellation. Main inspected the actual diff and final logs.
+README, `docs/sessions.md` and `agent_docs/project_structure.md` document the
+API and boundaries. Closure includes task files and state documentation in an
+isolated Conventional Commit, followed by sealed Archivist reporting.
 
-The final complete `python -m pytest -v` run passed 3,245 tests with two skips
-and three warnings in 406.43 seconds on Python 3.11.9 / pytest 9.1.1. Skips were
-opt-in 500-take synthesis and an unavailable filesystem symlink. Independent
-privacy/format checks passed 46 tests; strict OpenSpec validation and diff
-checks passed. Frontend gates were inapplicable. Main accepted and marked only
-4.5 (17 of 41 complete). Closure includes the isolated acceptance commit and
-sealed Archivist report. No next task, archive or push is authorized.
+## Continuation Boundary
+
+No frontend edits, real generation, external handoff, next task, archive or
+push occurred. Controls persist transitions without dispatching the full
+coordinator or reconciling remote jobs. Heartbeats, global claims, exact
+physical-call reservations and attempt recovery remain later tasks; uncertain
+admitted work remains conservatively owned. Stop after this accepted task.

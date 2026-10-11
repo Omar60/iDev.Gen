@@ -25,6 +25,7 @@ _CREATION_TABLES = {
     "session_profile_coverage_revision",
     "session_take_coverage_evidence",
     "full_auto_run_receipt",
+    "full_auto_run_scope_input",
     "guided_session_request",
     "session_plan_approval",
     "prepared_take",
@@ -37,6 +38,7 @@ _REQUIRED_WRITE_TABLES = {
     "session_profile_coverage_revision",
     "session_take_coverage_evidence",
     "full_auto_run_receipt",
+    "full_auto_run_scope_input",
     "guided_session_request",
 }
 
@@ -205,6 +207,14 @@ def _assert_complete_creation(response, payload, consent, saved, published) -> N
         "summary": consent["summary"],
     }
 
+    scope_input = db.one(
+        "SELECT * FROM full_auto_run_scope_input WHERE run_id = ?", run_id,
+    )
+    assert scope_input is not None
+    normalized_payload = guided_sessions.normalize_request(payload).body
+    assert json.loads(scope_input["request_json"]) == normalized_payload
+    assert scope_input["created_at"] == receipt["created_at"]
+
     stored_request = db.one(
         "SELECT request_digest, response_json, session_id FROM guided_session_request WHERE request_id = ?",
         payload["request_id"],
@@ -272,6 +282,7 @@ def test_each_post_write_failure_rolls_back_full_creation_and_same_request_retri
     targets = [_mutation_target(sql) for sql in captured_mutations]
     assert _REQUIRED_WRITE_TABLES <= set(targets)
     assert targets.count("session_take_coverage_evidence") == base["photo_count"]
+    assert targets.count("full_auto_run_scope_input") == 1
     tables = _tables_to_snapshot(targets)
 
     for failure_index in range(1, len(captured_mutations) + 1):
@@ -320,7 +331,8 @@ def test_each_post_write_failure_rolls_back_full_creation_and_same_request_retri
             "session_profile_coverage_revision": 1,
             "session_take_coverage_evidence": base["photo_count"],
             "full_auto_run_receipt": 1,
-                "full_auto_run": 1,
+            "full_auto_run_scope_input": 1,
+            "full_auto_run": 1,
             "guided_session_request": 1,
         })
         assert {

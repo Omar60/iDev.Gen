@@ -2,29 +2,30 @@
 
 ## Goal and Current Position
 
-Heavy deployment `full_auto_4_5_20261011` addresses only Task 4.5 of
-`automate-resource-session-full-auto`. Main accepted the implementation after
-independent verification and marked only 4.5, bringing completion to 17 of 41.
-Entry Git state was clean.
+Heavy deployment `full_auto_4_6_resume_20261011` completed only Task 4.6 of
+`automate-resource-session-full-auto`, continuing preserved work from
+`full_auto_4_6_20261011`. Initial HEAD was `21296bd`; entry Git was clean.
+Main accepted independent verification and marked only 4.6: 18 of 41 complete.
 
-Ordered submission receipts recover committed snapshot/shot links without
-duplicate shots or prompt recomposition. Approval recovery reuses current
-policy evidence. The existing runner accepts a private authenticated claim
-only after every target has a valid ordered receipt and pending shot.
+Session discovery/status and Cancel/Resume use strict controls, request replay
+and run/current-plan CAS. Resume comparison binds an echoed server timestamp
+and the displayed seven-day deadline. Immutable linked consent preserves the
+initial grant. Public projections validate stored values and receipt identity;
+per-target conservative allowances retain eligible partial continuation.
 
-## Verification and Continuation
+## Verification and Boundaries
 
-Independent verification passed 26 focused tests and the complete
-`python -m pytest -v` suite: 3,245 passed, two skipped, three warnings on
-Python 3.11.9. Privacy/format checks passed 46 tests; strict OpenSpec validation
-and diff checks passed. The skips cover opt-in 500-take synthesis and an
-unavailable filesystem symlink. Frontend was unchanged.
+Independent verification passed 27 focused cases and the complete
+`.venv/Scripts/python.exe -m pytest`: 3,272 passed, two skipped, five warnings,
+exit zero in 464.69 seconds. Privacy/format passed 46 cases; strict OpenSpec
+validation and diff checks passed. The skips cover opt-in 500-take synthesis
+and an unavailable Windows symlink. The creation atomicity fixture now includes
+the new immutable scope-input row in rollback and every-write failure injection.
 
-Preparation still stops at validation; separate internal approval/submission
-drivers and runner admission are callable, but creation/startup do not dispatch
-the full journey. An uncertain outcome after durable runner admission refuses
-replay pending future execution reconciliation. Heartbeats, global runner
-claims, remote recovery and public controls remain pending tasks. No real
-generation, external handoff, subsequent task, archive or push was performed.
-Closure includes task documentation and an isolated acceptance commit, followed
-by the sealed Archivist handoff and Deployment Token Report.
+README, session guidance and module ownership documentation are updated.
+Frontend was unchanged; no frontend gates or real generation were performed.
+Controls do not dispatch the complete coordinator or reconcile remote jobs.
+Pending uncertainty remains owned; exact transport reservations and remote
+attempt journals remain later tasks. Closure records the isolated acceptance
+commit and sealed Archivist handoff/token report. No next task, archive or push
+is authorized.

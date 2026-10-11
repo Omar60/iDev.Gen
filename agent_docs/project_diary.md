@@ -1,5 +1,29 @@
 # Project Diary
 
+## Full Auto Task 4.6 Control Boundary
+
+Additive creation metadata must join complete-row allocation expectations and
+every-write failure injection. A previously green fixture may need stronger
+assertions when a new atomic row is added; never hide it from snapshots.
+After all repairs, independent full-suite evidence was green before acceptance.
+
+Independent review reproduced private nested receipt content and arbitrary
+persisted status values escaping public responses. Validate persisted response
+shapes and authoritative target identities, not only top-level field names.
+Bind Resume comparison to a client-echoed server timestamp so the displayed
+deadline survives elapsed review time; replay exact controls before current
+dependency and quote checks. Partial preparation cannot exhaust the whole
+run merely because one target was started.
+
+The user paused implementation and tests before independent acceptance.
+Preserve partial work and resume from the explicit handoff; do not infer a
+passing gate or task completion from unfinished worker activity.
+
+Keep immutable creation consent separate from linked renewal authorizations.
+Changed-scope comparison is a consent guard, not an owner capability. Public
+controls compute eligibility and settlement evidence server-side; uncertain
+durable runner admission cannot prove remote work never happened.
+
 ## Full Auto Task 4.5 Submission Recovery
 
 Checkpoint existing links in authorized target order, and validate a recovered

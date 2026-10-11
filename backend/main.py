@@ -197,6 +197,7 @@ def _is_stable_envelope_path(path: str) -> bool:
         or path.startswith("/api/looks")
         or path == "/api/sessions/guided"
         or path == "/api/sessions/guided/full-auto/preflight"
+        or (path.startswith("/api/sessions/") and "/full-auto" in path)
         or _is_profile_application_path(path)
         or "/plan/authoring/operations" in path
     )
@@ -4002,6 +4003,280 @@ async def preflight_guided_full_auto(request: Request):
     except guided_sessions.GuidedSessionError as exc:
         return _stable_error(exc.status_code, exc.code, exc.message, current=exc.current)
     return JSONResponse(content=result, status_code=200)
+
+
+class _FullAutoControlBaseIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    request_id: str
+    expected_run_revision: int = Field(
+        strict=True, ge=1, le=saved_looks._SQLITE_INTEGER_MAX,
+    )
+    expected_plan_revision: int = Field(
+        strict=True, ge=1, le=saved_looks._SQLITE_INTEGER_MAX,
+    )
+
+    @field_validator("request_id", mode="before")
+    @classmethod
+    def validate_request_id(cls, value: Any) -> str:
+        return resource_selection.normalize_client_uuid(value)
+
+
+class FullAutoCancelIn(_FullAutoControlBaseIn):
+    pass
+
+
+class FullAutoResumeIn(_FullAutoControlBaseIn):
+    scope_digest: str | None = Field(
+        default=None, strict=True, min_length=64, max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    comparison_issued_at: str | None = Field(
+        default=None, strict=True, min_length=20, max_length=40,
+    )
+    accept_changed_scope: bool = Field(default=False, strict=True)
+
+
+def _full_auto_public_comparison(
+    comparison: dict[str, Any],
+    *,
+    expected_run_id: str,
+) -> dict[str, Any]:
+    """Return a closed Resume quote only after validating every nested view."""
+    public_fields = {
+        "run_id", "run_revision", "plan_revision", "changed", "scope_digest",
+        "comparison_issued_at", "changed_fields", "old_scope", "new_scope",
+    }
+    internal_fields = {
+        "_authorization", "_dependencies_digest", "_plan_digest",
+        "_previous_authorization_digest",
+    }
+
+    def invalid() -> resource_full_auto.FullAutoRunError:
+        return resource_full_auto.FullAutoRunError(
+            409, "resume_comparison_invalid",
+            "The Full Auto comparison could not be safely verified.",
+        )
+
+    def timestamp(value: object) -> str:
+        if type(value) is not str:
+            raise invalid()
+        try:
+            parsed = resource_full_auto._timestamp(value, field_name="comparison timestamp")
+        except resource_full_auto.FullAutoRunError as exc:
+            raise invalid() from exc
+        if parsed.isoformat(timespec="seconds") != value:
+            raise invalid()
+        return value
+
+    from backend import resource_store
+
+    if (
+        type(comparison) is not dict
+        or set(comparison) != public_fields | internal_fields
+        or type(comparison.get("run_id")) is not str
+        or comparison["run_id"] != expected_run_id
+        or type(comparison.get("run_revision")) is not int
+        or comparison["run_revision"] < 1
+        or type(comparison.get("plan_revision")) is not int
+        or comparison["plan_revision"] < 1
+        or type(comparison.get("changed")) is not bool
+        or type(comparison.get("scope_digest")) is not str
+        or not resource_full_auto._SHA256.fullmatch(comparison["scope_digest"])
+        or type(comparison.get("changed_fields")) is not list
+        or any(type(field) is not str for field in comparison["changed_fields"])
+        or len(comparison["changed_fields"]) != len(set(comparison["changed_fields"]))
+        or type(comparison.get("old_scope")) is not dict
+        or set(comparison["old_scope"]) != {
+            "summary", "scope_digest", "authorization_expires_at",
+        }
+        or type(comparison.get("new_scope")) is not dict
+        or set(comparison["new_scope"]) != {
+            "summary", "scope_digest", "authorization_expires_at",
+            "renewal_lifetime_seconds",
+        }
+        or type(comparison.get("_dependencies_digest")) is not str
+        or not resource_full_auto._SHA256.fullmatch(comparison["_dependencies_digest"])
+        or type(comparison.get("_plan_digest")) is not str
+        or not resource_full_auto._SHA256.fullmatch(comparison["_plan_digest"])
+        or type(comparison.get("_previous_authorization_digest")) is not str
+        or not resource_full_auto._SHA256.fullmatch(comparison["_previous_authorization_digest"])
+    ):
+        raise invalid()
+
+    issued = timestamp(comparison["comparison_issued_at"])
+    if (
+        resource_full_auto._timestamp(issued, field_name="comparison timestamp")
+        > resource_full_auto._timestamp(db.now(), field_name="current time")
+    ):
+        raise invalid()
+    allowed_changed_fields = {
+        "saved_look", "automation_profile", "room", "character_id",
+        "model_binding", "workflow", "provider", "generation_settings",
+        "canvas", "framing_intent", "effective_framing", "variation_policy",
+        "request_digest", "progression", "coverage_compiler_version",
+        "policy_version", "photo_count", "limits", "dependencies_digest",
+        "continuity_digest", "plan", "deadline",
+    }
+    if any(field not in allowed_changed_fields for field in comparison["changed_fields"]):
+        raise invalid()
+
+    scopes = {}
+    for name in ("old_scope", "new_scope"):
+        scope = comparison[name]
+        projected_summary = resource_full_auto._project_consent_summary(scope["summary"])
+        scope_digest = scope["scope_digest"]
+        expires = timestamp(scope["authorization_expires_at"])
+        if (
+            type(scope_digest) is not str
+            or not resource_full_auto._SHA256.fullmatch(scope_digest)
+            or resource_store.canonical_digest(projected_summary) != scope_digest
+            or projected_summary["authorization_expires_at"] != expires
+        ):
+            raise invalid()
+        scopes[name] = {
+            "summary": projected_summary,
+            "scope_digest": scope_digest,
+            "authorization_expires_at": expires,
+        }
+    lifetime = comparison["new_scope"]["renewal_lifetime_seconds"]
+    if type(lifetime) is not int or not 1 <= lifetime <= 31_536_000:
+        raise invalid()
+    scopes["new_scope"]["renewal_lifetime_seconds"] = lifetime
+
+    candidate = comparison["_authorization"]
+    if comparison["changed"]:
+        try:
+            candidate_summary, _candidate_limits = resource_full_auto._validate_status_authorization(candidate)
+        except resource_full_auto.FullAutoRunError as exc:
+            raise invalid() from exc
+        if (
+            candidate_summary != scopes["new_scope"]["summary"]
+            or candidate["scope_digest"] != scopes["new_scope"]["scope_digest"]
+            or candidate["authorization_expires_at"] != scopes["new_scope"]["authorization_expires_at"]
+            or comparison["_dependencies_digest"] != candidate_summary["dependencies_digest"]
+        ):
+            raise invalid()
+    elif candidate is not None:
+        raise invalid()
+
+    expected_comparison_digest = resource_store.canonical_digest({
+        "run_id": comparison["run_id"],
+        "run_revision": comparison["run_revision"],
+        "plan_revision": comparison["plan_revision"],
+        "previous_authorization_digest": comparison["_previous_authorization_digest"],
+        "previous_scope_digest": scopes["old_scope"]["scope_digest"],
+        "next_scope_digest": scopes["new_scope"]["scope_digest"],
+        "next_dependencies_digest": comparison["_dependencies_digest"],
+        "next_plan_digest": comparison["_plan_digest"],
+        "renewal_lifetime_seconds": lifetime,
+        "comparison_issued_at": issued,
+    })
+    if expected_comparison_digest != comparison["scope_digest"]:
+        raise invalid()
+
+    return {
+        "run_id": comparison["run_id"],
+        "run_revision": comparison["run_revision"],
+        "plan_revision": comparison["plan_revision"],
+        "changed": comparison["changed"],
+        "scope_digest": comparison["scope_digest"],
+        "comparison_issued_at": issued,
+        "changed_fields": list(comparison["changed_fields"]),
+        "old_scope": scopes["old_scope"],
+        "new_scope": scopes["new_scope"],
+    }
+
+
+@app.get("/api/sessions/{sid}/full-auto")
+def get_session_full_auto_status(
+    sid: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
+):
+    """Return the current nonterminal Full Auto run or latest terminal run."""
+    if db.one("SELECT id FROM session WHERE id = ?", sid) is None:
+        return _stable_error(404, "session_not_found", "Session was not found.")
+    row = resource_full_auto._run_row_for_session(sid)
+    if row is None:
+        return {"current_run": None}
+    return {"current_run": resource_full_auto.public_run_status(sid, row["run_id"])}
+
+
+@app.get("/api/sessions/{sid}/full-auto/{run_id}")
+def get_scoped_full_auto_status(
+    sid: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
+    run_id: str = PathParam(min_length=1, max_length=200),
+):
+    if db.one("SELECT id FROM session WHERE id = ?", sid) is None:
+        return _stable_error(404, "session_not_found", "Session was not found.")
+    try:
+        return resource_full_auto.public_run_status(sid, run_id)
+    except resource_full_auto.FullAutoRunError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message)
+
+
+@app.get("/api/sessions/{sid}/full-auto/{run_id}/resume-preflight")
+def get_full_auto_resume_preflight(
+    sid: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
+    run_id: str = PathParam(min_length=1, max_length=200),
+):
+    if db.one("SELECT id FROM session WHERE id = ?", sid) is None:
+        return _stable_error(404, "session_not_found", "Session was not found.")
+    try:
+        resource_full_auto.public_run_status(sid, run_id)
+        comparison = guided_sessions.compare_full_auto_resume_scope(
+            run_id, config=lambda: CONFIG,
+        )
+        return _full_auto_public_comparison(comparison, expected_run_id=run_id)
+    except resource_full_auto.FullAutoRunError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message)
+
+
+@app.post("/api/sessions/{sid}/full-auto/{run_id}/cancel")
+def cancel_scoped_full_auto_run(
+    p: FullAutoCancelIn,
+    sid: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
+    run_id: str = PathParam(min_length=1, max_length=200),
+):
+    if db.one("SELECT id FROM session WHERE id = ?", sid) is None:
+        return _stable_error(404, "session_not_found", "Session was not found.")
+    try:
+        result = resource_full_auto.cancel_run(
+            run_id, p.request_id, p.expected_run_revision,
+            p.expected_plan_revision, work_pending=None,
+            derive_work_pending=True,
+            expected_session_id=sid,
+        )
+        status = 200 if result.replayed or result.view["state"] == "cancelled" else 202
+        return JSONResponse(content=result.view, status_code=status)
+    except resource_full_auto.FullAutoRunError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message, current=exc.current_run)
+
+
+@app.post("/api/sessions/{sid}/full-auto/{run_id}/resume")
+def resume_scoped_full_auto_run(
+    p: FullAutoResumeIn,
+    sid: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
+    run_id: str = PathParam(min_length=1, max_length=200),
+):
+    if db.one("SELECT id FROM session WHERE id = ?", sid) is None:
+        return _stable_error(404, "session_not_found", "Session was not found.")
+    try:
+        result = resource_full_auto.resume_run(
+            run_id, p.request_id, p.expected_run_revision,
+            p.expected_plan_revision, eligibility=None,
+            scope_digest=p.scope_digest,
+            comparison_issued_at=p.comparison_issued_at,
+            accept_changed_scope=p.accept_changed_scope,
+            config=lambda: CONFIG,
+            defer_claim=True,
+            expected_session_id=sid,
+        )
+        return JSONResponse(
+            content=result.view,
+            status_code=200 if result.replayed else 202,
+        )
+    except resource_full_auto.FullAutoRunError as exc:
+        return _stable_error(exc.status_code, exc.code, exc.message, current=exc.current_run)
 
 
 def _authoring_operation_error_response(exc: authoring_operations.AuthoringOperationError) -> JSONResponse:

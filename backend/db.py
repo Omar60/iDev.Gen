@@ -805,6 +805,46 @@ BEGIN
     SELECT RAISE(ABORT, 'Full Auto creation receipt is immutable');
 END;
 
+-- The closed guided inputs are retained so a later Resume comparison can
+-- resolve the same selections against current local dependencies.
+CREATE TABLE IF NOT EXISTS full_auto_run_scope_input (
+    run_id       TEXT PRIMARY KEY NOT NULL
+                 REFERENCES full_auto_run_receipt(run_id) ON DELETE CASCADE,
+    request_json TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS full_auto_run_scope_input_immutable
+BEFORE UPDATE ON full_auto_run_scope_input
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto scope input is immutable');
+END;
+
+-- Explicitly accepted replacement grants form a linear immutable chain. The
+-- original creation receipt above remains the root and is never rewritten.
+CREATE TABLE IF NOT EXISTS full_auto_run_authorization (
+    run_id                       TEXT NOT NULL
+                                 REFERENCES full_auto_run_receipt(run_id) ON DELETE CASCADE,
+    authorization_sequence       INTEGER NOT NULL CHECK (authorization_sequence > 0),
+    previous_authorization_digest TEXT NOT NULL CHECK (length(previous_authorization_digest) = 64),
+    comparison_digest            TEXT NOT NULL CHECK (length(comparison_digest) = 64),
+    authorization_json           TEXT NOT NULL,
+    scope_digest                 TEXT NOT NULL CHECK (length(scope_digest) = 64),
+    dependencies_digest          TEXT NOT NULL CHECK (length(dependencies_digest) = 64),
+    plan_digest                  TEXT NOT NULL CHECK (length(plan_digest) = 64),
+    scope_issued_at              TEXT NOT NULL,
+    authorization_expires_at     TEXT NOT NULL,
+    run_revision                 INTEGER NOT NULL CHECK (run_revision > 0),
+    plan_revision                INTEGER NOT NULL CHECK (plan_revision > 0),
+    created_at                   TEXT NOT NULL,
+    PRIMARY KEY (run_id, authorization_sequence),
+    UNIQUE (run_id, previous_authorization_digest)
+);
+CREATE TRIGGER IF NOT EXISTS full_auto_run_authorization_immutable
+BEFORE UPDATE ON full_auto_run_authorization
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto replacement authorization is immutable');
+END;
+
 -- Mutable coordinator state is kept separate from the immutable creation
 -- authorization so action replay and runtime progress cannot rewrite consent.
 CREATE TABLE IF NOT EXISTS full_auto_run (

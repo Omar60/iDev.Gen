@@ -1673,8 +1673,59 @@ idempotent response. Existing authorization receipts are backfilled into run
 records. The run domain stores state and phase, monotonic revision and execution
 epoch, signed private owner claims, 60-second fenced leases, and immutable
 control-action receipts. Historical control retries replay their stored result;
-eligible terminal Resume opens a new epoch. Cancellation-intent reconciliation
-uses observed backend evidence without remote I/O.
+eligible terminal Resume opens a new epoch.
+
+#### Full Auto status and controls
+
+`GET /api/sessions/{sid}/full-auto` returns the session's current nonterminal
+run, or its latest terminal run, as `current_run`; it returns `null` when none
+exists. `GET /api/sessions/{sid}/full-auto/{run_id}` returns a run only when it
+belongs to that session. The closed status view includes safe progress, current
+plan revision, authorization deadline, blocker/remedies, and action flags; it
+does not expose prompts, paths, private authorization, fencing tokens, or
+leases. `GET /api/sessions/{sid}/full-auto/{run_id}/resume-preflight` returns a
+read-only old/new scope comparison, changed fields, a comparison digest and
+timestamp, and the proposed authorization deadline.
+
+Cancel and Resume use the session-scoped routes below. Both bodies are closed
+and require a UUID `request_id` plus positive integer revisions; unknown fields,
+coercions, or stale run/plan revisions are refused. The server checks the run
+identity against the session and compares both revisions before a new action.
+
+```json
+{
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "expected_run_revision": 1,
+  "expected_plan_revision": 1
+}
+```
+
+```text
+POST /api/sessions/{sid}/full-auto/{run_id}/cancel
+POST /api/sessions/{sid}/full-auto/{run_id}/resume
+```
+
+Resume may include `scope_digest`, `comparison_issued_at`, and
+`accept_changed_scope`. The digest and canonical UTC timestamp must be supplied
+together from a fresh Resume comparison. A quote is valid for at most 300
+seconds, including the boundary, and cannot be from the future. When the
+comparison reports changed scope, review both summaries and explicitly set
+`accept_changed_scope: true`; the server recomputes the comparison and refuses
+a stale quote. The displayed deadline is fixed to the quote timestamp, so the
+renewed authorization expires seven days after `comparison_issued_at`, not
+after the later Resume request. Accepted changes append a linked immutable
+authorization and preserve the initial consent and prior grants. Changed
+generation inputs cannot continue generated history when continuity rules
+require a new session.
+
+An identical historical action with the same `request_id` replays its exact
+stored response before current-state checks; reusing that UUID with different
+content returns `409 idempotency_conflict`. New Cancel returns `202` while owned
+work remains unsettled and `200` once cancellation is settled; new Resume
+returns `202`. Exact replays return `200`. Pending or unknown work keeps the
+run's shared-write guard. These controls only persist/check backend state: they
+do not dispatch preparation or generation, contact ComfyUI, issue a global
+interrupt, or reconcile remote cancellation. No Full Auto control UI is present.
 
 An internal preparation coordinator in `backend/main.py` accepts only an
 authenticated `RunClaim` for the run's prepare phase. It freezes the plan's
@@ -1686,24 +1737,22 @@ shots. A failed child blocks preparation while retaining completed results; if
 take 23 fails, the first 22 remain and no shots are submitted. After all targets
 are prepared, the coordinator advances to validation and stops.
 
-Guided creation and startup do not dispatch this coordinator, and no pause,
-Cancel, or Resume controls are exposed by routes or UI. Shared service guards
-reject manual preparation, suggestions, plan/adaptation edits, resource
-refreshes that would advance the plan, approval, submission, and runner
-run/retry/cancel while a Full Auto run is nonterminal, including direct service
-and HTTP calls. Read-only drift inspection and safe replays that create no work
-may remain available.
+Guided creation and startup do not dispatch this coordinator. Shared service
+guards reject manual preparation, suggestions, plan/adaptation edits, resource refreshes that would
+advance the plan, approval, submission, and runner run/retry/cancel while a Full
+Auto run is nonterminal, including direct service and HTTP calls. Read-only
+drift inspection and safe replays that create no work may remain available.
 
 The internal pause-for-edit transition requires a session that is not running
 and has no pending or running shots. It fences the run and any authoring child,
 then grants private signed authority for one normal plan compare-and-swap (CAS),
-while the run stays blocked and retains session ownership. Once that edit
-changes the plan revision, automatic Resume is refused pending future renewed
-consent. Cancel releases the shared mutation guard only after backend evidence
-confirms settlement; pending or unknown work retains ownership. Cancellation
-reconciliation records supplied backend evidence without remote I/O, so it does
-not establish that an external ComfyUI job stopped. The legacy runner loop is
-unchanged; only its shared manual run/retry/cancel entry points are guarded.
+while the run stays blocked and retains session ownership. A later Resume
+compares current scope; changed inputs require a fresh quote and explicit
+acceptance. Cancel releases the shared mutation guard only after backend-owned
+evidence confirms no unresolved work. Pending or unknown cancellation retains
+ownership, and the API does not establish that an external ComfyUI job stopped.
+The legacy runner loop is unchanged; only its shared manual
+run/retry/cancel entry points are guarded.
 The backend includes an internal all-target review and policy-approval step.
 It validates every current target against ready or linked prepared evidence,
 workflow and resource dependencies, and per-take review state. Unresolved
@@ -1744,8 +1793,9 @@ current prepared evidence and approval, complete receipts in target order, and
 that the session contains only those pending shots in persisted shot-ID order.
 Admission is persisted first. If the scheduling outcome is unknown after that
 write, another start is refused pending reconciliation. Creation and startup do
-not dispatch the full sequence, and there are no public Full Auto submission or
-execution controls or UI; this is not an end-to-end generation flow.
+not dispatch the full sequence. Public submission and execution controls and a
+Full Auto control UI are absent; status and Cancel/Resume routes do not make
+this an end-to-end generation flow.
 Heartbeats, child/runner recovery, global runner claims, assistant-slot
 admission, and the profile editor and selection/consent UI remain unfinished.
 The existing manual workflow remains available for sessions without a

@@ -27,31 +27,31 @@ Verified baseline from the repository layout and application entry points.
   `resource_preparation.py`, and prompt/resource modules. Resource import,
   immutable storage, readiness, and translations are handled by the
   `resource_*` modules. `backend/resource_full_auto.py` persists Full Auto run
-  state, fenced claims, control receipts, and shared-write guards. A private
-  pause fences authoring children and grants one signed plan CAS while retaining
-  ownership. Terminal outcomes release the guard; pending or unknown
-  cancellation stays owned. Read-only drift inspection remains available, but
-  a refresh that advances the plan is blocked. The internal coordinator in
-  `backend/main.py` prepares ordered owned batches of up to twenty, then stops
-  at validation. A backend-internal all-target review and policy-approval step
-  validates current snapshots, conflicts, placeholders, adaptations, drift, and
+  state, fenced claims, immutable authorizations and control receipts, status
+  projections, and shared-write guards. Session-scoped API routes in
+  `backend/main.py` expose run discovery/status, Cancel, Resume, and read-only
+  scope comparison. Actions use UUID request IDs and run/current-plan revision
+  CAS; exact historical requests replay their stored response. Changed-scope
+  Resume requires a fresh digest/timestamp quote and explicit acceptance, then
+  appends a linked immutable authorization. Pending or unknown cancellation
+  retains session ownership; these routes do not contact ComfyUI, interrupt a
+  remote job, or reconcile external state, and no Full Auto control UI exists.
+  Creation/startup still do not dispatch the internal coordinator, which
+  prepares ordered owned batches of up to twenty and stops at validation.
+  Heartbeats, child/runner recovery, global runner claims, and automatic
+  end-to-end dispatch remain unfinished. Internal review and policy approval
+  validate current snapshots, conflicts, placeholders, adaptations, drift, and
   duplicate acceptance while keeping neutral notices nonblocking. Approval and
-  new Full Auto submissions enforce the gate; exact linked-shot replays remain
+  new Full Auto submissions enforce that gate; exact linked-shot replays remain
   no-write. Policy provenance is separate from human review approval. The review
   projection and digest-bound duplicate-acceptance endpoint are available, but
-  the preparation coordinator does not invoke them. Separate internal
-  submission logic persists ordered receipts binding prepared snapshots to shot
-  links and digests, reuses links, and preserves final prompt bytes. A private
-  authenticated runner claim checks current authority/evidence and complete
-  receipts in persisted shot-ID order, then records one admission before
-  scheduling. An uncertain scheduling outcome after admission refuses replay
-  pending reconciliation. Creation/startup do not dispatch the full sequence;
-  no public Full Auto submission or execution controls or UI exist. Pause,
-  Cancel, and Resume controls are also absent. Heartbeats, child/runner recovery,
-  and global runner claims remain unfinished.
-  The legacy runner loop is unchanged. Cancellation reconciliation records
-  supplied backend evidence without remote I/O and does not establish recovery
-  of an external ComfyUI job.
+  the preparation coordinator does not invoke them. Separate internal submission
+  logic persists ordered receipts binding prepared snapshots to shot links and
+  digests, reuses links, and preserves final prompt bytes. A private
+  authenticated runner claim checks current authority/evidence and ordered
+  receipts, then records admission before scheduling. An uncertain scheduling
+  outcome after admission refuses replay pending reconciliation. The legacy
+  runner loop is unchanged.
 - `backend/saved_looks.py` stores self-contained saved-look versions and
   separate immutable, digest-bound automation-profile revisions and permanent
   appearance projections. Its coverage compiler binds the exact saved-look and
