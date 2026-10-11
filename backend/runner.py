@@ -2,8 +2,8 @@
 
 Serial on purpose — one GPU, and a session is a photo shoot, not a benchmark:
 shots land in order so the gallery fills top to bottom. Each shot is committed to
-the DB *before* being queued, so a crash leaves a visible failed row, never an
-orphan job in ComfyUI.
+the DB *before* being queued. A Full Auto owner loss leaves an in-flight shot
+unresolved until the remote outcome can be reconciled.
 """
 from __future__ import annotations
 
@@ -54,10 +54,11 @@ class Runner:
             if _full_auto_claim is None:
                 resource_full_auto.require_session_mutation_allowed(session_id)
             else:
+                _full_auto_claim = resource_full_auto.renew_run_claim(_full_auto_claim)
                 resource_full_auto.admit_runner_start(session_id, _full_auto_claim)
             db.run("UPDATE session SET status='running' WHERE id=?", session_id)
         self._cancel.discard(session_id)
-        self._task = asyncio.create_task(self._run_session(session_id))
+        self._task = asyncio.create_task(self._run_session(session_id, _full_auto_claim))
 
     def cancel(self, session_id: int) -> None:
         with db.transaction():
@@ -88,9 +89,25 @@ class Runner:
 
     # -- loop -------------------------------------------------------------
 
-    async def _run_session(self, session_id: int) -> None:
+    async def _run_session(self, session_id: int, _full_auto_claim=None) -> None:
+        if _full_auto_claim is None:
+            await self._run_session_owned(session_id)
+            return
+        from backend import resource_full_auto
+
+        try:
+            async with resource_full_auto.RunClaimHeartbeat(_full_auto_claim) as heartbeat:
+                await self._run_session_owned(session_id, heartbeat)
+        except resource_full_auto.FullAutoRunError as exc:
+            self._cancel.discard(session_id)
+            log.warning("Full Auto runner stopped for session %s: %s", session_id, exc.code)
+
+    async def _run_session_owned(self, session_id: int, heartbeat=None) -> None:
+        from backend import resource_full_auto
+
         try:
             while True:
+                self._require_runner_owner(session_id, heartbeat)
                 shot = db.one(
                     "SELECT * FROM shot WHERE session_id=? AND status='pending' ORDER BY id LIMIT 1",
                     session_id,
@@ -98,23 +115,76 @@ class Runner:
                 if shot is None:
                     break
                 if session_id in self._cancel:
-                    db.run(
+                    self._owned_update(
+                        session_id, heartbeat,
                         "UPDATE shot SET status='cancelled' WHERE session_id=? AND status='pending'",
                         session_id,
                     )
                     break
-                await self._run_shot(session_id, shot)
+                await self._run_shot(session_id, shot, heartbeat)
+        except resource_full_auto.FullAutoRunError:
+            if heartbeat is None:
+                raise
+            self._cancel.discard(session_id)
+            return
         except Exception as exc:  # noqa: BLE001 - the loop must never die silently
             log.exception("session %s crashed", session_id)
-            db.run("UPDATE session SET status='failed' WHERE id=?", session_id)
-            db.run(
-                "UPDATE shot SET status='failed', error=? WHERE session_id=? AND status IN ('pending','running')",
-                str(exc)[:500], session_id,
-            )
+            if heartbeat is not None:
+                # An admitted ComfyUI request may still be running. Keep the
+                # session/shot evidence unresolved so reconciliation cannot
+                # mistake owner loss or a local timeout for settled work.
+                self._cancel.discard(session_id)
+                return
+            try:
+                self._owned_update(session_id, heartbeat, "UPDATE session SET status='failed' WHERE id=?", session_id)
+                self._owned_update(
+                    session_id, heartbeat,
+                    "UPDATE shot SET status='failed', error=? WHERE session_id=? AND status IN ('pending','running')",
+                    str(exc)[:500], session_id,
+                )
+            except resource_full_auto.FullAutoRunError:
+                return
             return
         cancelled = session_id in self._cancel
         self._cancel.discard(session_id)
-        db.run("UPDATE session SET status=? WHERE id=?", self._final_status(session_id, cancelled), session_id)
+        self._owned_update(
+            session_id, heartbeat,
+            "UPDATE session SET status=? WHERE id=?",
+            self._final_status(session_id, cancelled), session_id,
+        )
+
+    @staticmethod
+    def _owned_update(session_id: int, heartbeat, sql: str, *params) -> int:
+        if heartbeat is None:
+            return db.run(sql, *params)
+        from backend import resource_full_auto
+
+        with db.transaction():
+            claim = heartbeat.check()
+            resource_full_auto.require_session_mutation_allowed(
+                session_id, claim=claim, allowed_phases=("execute",),
+            )
+            return db.run(sql, *params)
+
+    @staticmethod
+    def _require_runner_owner(session_id: int, heartbeat) -> None:
+        if heartbeat is None:
+            return
+        from backend import resource_full_auto
+
+        resource_full_auto.require_session_mutation_allowed(
+            session_id, claim=heartbeat.check(), allowed_phases=("execute",),
+        )
+
+    @staticmethod
+    def _renew_runner_owner(session_id: int, heartbeat) -> None:
+        if heartbeat is None:
+            return
+        from backend import resource_full_auto
+
+        resource_full_auto.require_session_mutation_allowed(
+            session_id, claim=heartbeat.renew_now(), allowed_phases=("execute",),
+        )
 
     @staticmethod
     def _final_status(session_id: int, cancelled: bool) -> str:
@@ -129,7 +199,9 @@ class Runner:
                FROM shot WHERE session_id=?""", session_id)
         return "failed" if counts["failed"] and not counts["done"] else "done"
 
-    async def _run_shot(self, session_id: int, shot: dict) -> None:
+    async def _run_shot(self, session_id: int, shot: dict, heartbeat=None) -> None:
+        from backend import resource_full_auto
+
         session = db.jload(db.one("SELECT * FROM session WHERE id=?", session_id), "settings")
         model = db.one("SELECT * FROM model WHERE id=?", session["model_id"])
         # A reference take is edited by the session's second graph; everything else
@@ -195,45 +267,82 @@ class Runner:
             for slot in ("checkpoint", "lora_name", "lora_strength"):
                 values.pop(slot)
 
-        db.run("UPDATE shot SET status='running', seed=? WHERE id=?", seed, shot["id"])
+        self._owned_update(
+            session_id, heartbeat,
+            "UPDATE shot SET status='running', seed=? WHERE id=?", seed, shot["id"],
+        )
         try:
             # Inside the try, and after the row says `running`: a missing anchor
             # fails this shot with a readable line instead of taking the run down.
             if shot["use_reference"]:
-                values.update(await self._reference_values(session, shot))
+                values.update(await self._reference_values(session, shot, heartbeat))
+            self._require_runner_owner(session_id, heartbeat)
             graph = apply_map(wf["graph"], wf["node_map"], values)
+            self._renew_runner_owner(session_id, heartbeat)
             prompt_id = await self.comfy.queue_prompt(graph, CLIENT_ID)
+            self._require_runner_owner(session_id, heartbeat)
+        except resource_full_auto.FullAutoRunError:
+            raise
         except Exception as exc:  # noqa: BLE001 - a rejected graph fails one shot, not the run
-            db.run("UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
-                   str(exc)[:500], db.now(), shot["id"])
+            self._owned_update(
+                session_id, heartbeat,
+                "UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
+                str(exc)[:500], db.now(), shot["id"],
+            )
             return
-        db.run("UPDATE shot SET prompt_id=? WHERE id=?", prompt_id, shot["id"])
+        self._owned_update(
+            session_id, heartbeat,
+            "UPDATE shot SET prompt_id=? WHERE id=?", prompt_id, shot["id"],
+        )
 
-        history = await self._await_history(prompt_id, session_id)
+        try:
+            history = await self._await_history(prompt_id, session_id, heartbeat)
+        except TimeoutError as exc:
+            if heartbeat is None:
+                raise
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The admitted ComfyUI execution did not settle before its timeout.",
+            ) from exc
         if history is None:
+            self._require_runner_owner(session_id, heartbeat)
             await self.comfy.interrupt()
-            db.run("UPDATE shot SET status='cancelled', finished_at=? WHERE id=?", db.now(), shot["id"])
+            self._owned_update(
+                session_id, heartbeat,
+                "UPDATE shot SET status='cancelled', finished_at=? WHERE id=?",
+                db.now(), shot["id"],
+            )
             return
 
+        self._require_runner_owner(session_id, heartbeat)
         images = output_images(history)
         if not images:
             msg = _history_error(history) or "ComfyUI returned no image"
-            db.run("UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
-                   msg[:500], db.now(), shot["id"])
+            self._owned_update(
+                session_id, heartbeat,
+                "UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
+                msg[:500], db.now(), shot["id"],
+            )
             return
 
         try:
+            self._require_runner_owner(session_id, heartbeat)
             filename = await self._collect(session_id, shot, images[0])
         except OSError as exc:  # disk full, misconfigured path, file already moved
-            db.run("UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
-                   str(exc)[:500], db.now(), shot["id"])
+            self._owned_update(
+                session_id, heartbeat,
+                "UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
+                str(exc)[:500], db.now(), shot["id"],
+            )
             return
-        db.run("UPDATE shot SET status='done', filename=?, finished_at=? WHERE id=?",
-               filename, db.now(), shot["id"])
-        self._adopt_anchor(session, shot)
+        self._owned_update(
+            session_id, heartbeat,
+            "UPDATE shot SET status='done', filename=?, finished_at=? WHERE id=?",
+            filename, db.now(), shot["id"],
+        )
+        self._adopt_anchor(session, shot, heartbeat)
 
-    @staticmethod
-    def _adopt_anchor(session: dict, shot: dict) -> None:
+    def _adopt_anchor(self, session: dict, shot: dict, heartbeat=None) -> None:
         """The first photo a reference session produces becomes its reference.
 
         Shooting the anchor and editing it is one shoot, so queueing both in one
@@ -245,10 +354,13 @@ class Runner:
             return
         if not db.one("SELECT id FROM shot WHERE session_id=? AND use_reference=1", session["id"]):
             return
-        db.run("UPDATE session SET anchor_shot_ids=? WHERE id=?",
-               json.dumps([shot["id"]]), session["id"])
+        self._owned_update(
+            session["id"], heartbeat,
+            "UPDATE session SET anchor_shot_ids=? WHERE id=?",
+            json.dumps([shot["id"]]), session["id"],
+        )
 
-    async def _reference_values(self, session: dict, shot: dict) -> dict:
+    async def _reference_values(self, session: dict, shot: dict, heartbeat=None) -> dict:
         """Upload the session's anchor photos and return them as slot values.
 
         The anchors carry the identity and the wardrobe, which is why a reference
@@ -276,26 +388,39 @@ class Runner:
             path = self.sessions_dir / str(row["session_id"]) / row["filename"]
             if not path.exists():
                 raise FileNotFoundError(f"The reference photo is missing from disk: {path}")
+            self._require_runner_owner(int(session["id"]), heartbeat)
             values[slot] = await self.comfy.upload_image(path, f"idevgen_ref_{anchor_id}{path.suffix}")
+            self._require_runner_owner(int(session["id"]), heartbeat)
         # Pinned to the shot, not read back off the session: the gallery's pick can
         # change afterwards, and a before/after that compares against a photo this
         # take never saw is worse than no comparison at all.
-        db.run("UPDATE shot SET reference_shot_ids=? WHERE id=?",
-               json.dumps(anchors[:len(REFERENCE_SLOTS)]), shot["id"])
+        self._owned_update(
+            int(session["id"]), heartbeat,
+            "UPDATE shot SET reference_shot_ids=? WHERE id=?",
+            json.dumps(anchors[:len(REFERENCE_SLOTS)]), shot["id"],
+        )
         return values
 
-    async def _await_history(self, prompt_id: str, session_id: int) -> dict | None:
+    async def _await_history(self, prompt_id: str, session_id: int, heartbeat=None) -> dict | None:
         """Poll until the job leaves ComfyUI's queue. None = cancelled/timeout."""
+        from backend import resource_full_auto
+
         waited = 0.0
         while waited < SHOT_TIMEOUT:
+            self._require_runner_owner(session_id, heartbeat)
             if session_id in self._cancel:
                 return None
             await asyncio.sleep(POLL_SECONDS)
+            self._require_runner_owner(session_id, heartbeat)
             waited += POLL_SECONDS
             try:
                 history = await self.comfy.history(prompt_id)
+            except resource_full_auto.FullAutoRunError:
+                raise
             except Exception:  # ComfyUI restarting / transient — keep polling
+                self._require_runner_owner(session_id, heartbeat)
                 continue
+            self._require_runner_owner(session_id, heartbeat)
             if history and history.get("status", {}).get("completed") is not None:
                 return history
             if history and history.get("outputs"):

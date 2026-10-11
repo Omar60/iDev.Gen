@@ -1792,12 +1792,22 @@ Auto claim; before scheduling, it rechecks live authority, the planning flag,
 current prepared evidence and approval, complete receipts in target order, and
 that the session contains only those pending shots in persisted shot-ID order.
 Admission is persisted first. If the scheduling outcome is unknown after that
-write, another start is refused pending reconciliation. Creation and startup do
-not dispatch the full sequence. Public submission and execution controls and a
-Full Auto control UI are absent; status and Cancel/Resume routes do not make
-this an end-to-end generation flow.
-Heartbeats, child/runner recovery, global runner claims, assistant-slot
-admission, and the profile editor and selection/consent UI remain unfinished.
+write, another start is refused while the outcome remains unresolved. Creation
+and startup do not dispatch the full sequence. Public submission and execution
+controls and a Full Auto control UI are absent; status and Cancel/Resume routes
+do not make this an end-to-end generation flow.
+
+Parent and execution `RunClaim`s have 60-second leases renewed by asynchronous
+15-second heartbeats through assistant and ComfyUI I/O; child-operation leases
+remain ten minutes. During preparation recovery, the replacement coordinator
+waits for any live child to settle. It resumes that same registered child under
+a new fence if expired or failed, preserving the verified prefix. A stale
+execution owner stops subsequent writes and dispatches, leaving admission
+unresolved. No
+attempt journal or remote reconciliation flow is delivered. Execution-runner
+recovery, a global runner claim shared with manual starts and FIFO runner
+admission, FIFO assistant-slot admission, and the profile editor and
+selection/consent UI remain unfinished.
 The existing manual workflow remains available for sessions without a
 nonterminal Full Auto owner. This review validates persisted evidence and
 policy; it does not certify semantic correctness or rendered pixels.

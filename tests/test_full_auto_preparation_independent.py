@@ -347,6 +347,8 @@ def test_take_twenty_three_failure_preserves_twenty_two_and_resume_reuses_them(
     assert child_rows[1]["failed_item"] == target_ids[22]
     assert json.loads(child_rows[1]["completed_json"]) == target_ids[20:22]
     assert json.loads(child_rows[1]["remaining_json"]) == target_ids[23:]
+    failed_operation_id = child_rows[1]["operation_id"]
+    failed_operation_fence = child_rows[1]["fencing_token"]
     completed_before_resume = _assert_ready_snapshots(session_id, target_ids[:22])
     _assert_no_submission(session_id)
 
@@ -366,7 +368,17 @@ def test_take_twenty_three_failure_preserves_twenty_two_and_resume_reuses_them(
     assert result["state"] == "active"
     assert result["phase"] == "validate"
     assert [call["take_id"] for call in assistant.calls[resumed_call_index:]] == target_ids[22:]
-    assert _batch_targets(run_id)[-1] == target_ids[22:]
+    assert _batch_targets(run_id) == [target_ids[:20], target_ids[20:]]
+    resumed_child = db.one(
+        "SELECT operation_id, state, fencing_token, requested_json, completed_json, remaining_json "
+        "FROM authoring_operation WHERE operation_id = ?",
+        failed_operation_id,
+    )
+    assert resumed_child["state"] == "succeeded"
+    assert resumed_child["fencing_token"] > failed_operation_fence
+    assert json.loads(resumed_child["requested_json"]) == target_ids[20:]
+    assert json.loads(resumed_child["completed_json"]) == target_ids[20:]
+    assert json.loads(resumed_child["remaining_json"]) == []
     assert _prepared_rows(session_id)[:22] == completed_before_resume
     _assert_ready_snapshots(session_id, target_ids)
     assert all(call["transaction_open"] is False for call in assistant.calls)

@@ -38,8 +38,16 @@ Verified baseline from the repository layout and application entry points.
   remote job, or reconcile external state, and no Full Auto control UI exists.
   Creation/startup still do not dispatch the internal coordinator, which
   prepares ordered owned batches of up to twenty and stops at validation.
-  Heartbeats, child/runner recovery, global runner claims, and automatic
-  end-to-end dispatch remain unfinished. Internal review and policy approval
+  Full Auto `RunClaim`s for preparation and execution have 60-second leases,
+  renewed by asynchronous 15-second heartbeats through assistant and ComfyUI
+  I/O. Child operation leases remain ten minutes. Preparation recovery waits
+  for live children to settle, then resumes a registered child under a new fence
+  after expiry or failure while preserving the completed prefix. A stale
+  execution owner stops subsequent writes and dispatches and leaves admission
+  unresolved. Execution-runner recovery, a global runner claim shared
+  with manual starts and FIFO runner admission, attempt journaling, remote
+  reconciliation, FIFO assistant-slot admission, and automatic end-to-end
+  dispatch remain unfinished. Internal review and policy approval
   validate current snapshots, conflicts, placeholders, adaptations, drift, and
   duplicate acceptance while keeping neutral notices nonblocking. Approval and
   new Full Auto submissions enforce that gate; exact linked-shot replays remain

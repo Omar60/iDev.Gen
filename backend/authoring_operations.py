@@ -1205,6 +1205,9 @@ def renew_operation_lease(
         )
     disabled_during_renewal = False
     with db.transaction():
+        # A child heartbeat can wait for this write lock while its Full Auto
+        # parent lease expires. Validate against the clock after acquisition.
+        now_text = db.now()
         now = _utc_datetime(now_text, field="current time")
         row = _read_claim_row(claim)
         _require_full_auto_owner(row, _full_auto_claim, now_text=now_text)
@@ -1213,15 +1216,25 @@ def renew_operation_lease(
         progress_fingerprint = _operation_progress_fingerprint(row)
         _require_original_input_digest(row, current_digest)
         if not _resolve_planning_enabled(None):
+            commit_now_text = db.now()
+            commit_now = _utc_datetime(commit_now_text, field="current time")
+            _require_full_auto_owner(row, _full_auto_claim, now_text=commit_now_text)
+            _require_live_claim(row, claim, now=commit_now)
             _transition_terminal(
                 row,
                 state="cancelled",
                 diagnostic_code="feature_disabled",
-                now_text=now_text,
+                now_text=commit_now_text,
             )
             disabled_during_renewal = True
         else:
-            deadline = db.authoring_operation_lease_deadline(now)
+            # Local input validation above is normally short, but the child
+            # and parent must both still be live at the write boundary.
+            commit_now_text = db.now()
+            commit_now = _utc_datetime(commit_now_text, field="current time")
+            _require_full_auto_owner(row, _full_auto_claim, now_text=commit_now_text)
+            _require_live_claim(row, claim, now=commit_now)
+            deadline = db.authoring_operation_lease_deadline(commit_now)
             updated = db.conn().execute(
                 """UPDATE authoring_operation
                    SET lease_expires_at = ?, updated_at = ?
@@ -1229,7 +1242,7 @@ def renew_operation_lease(
                      AND fencing_token = ? AND request_digest = ? AND plan_revision = ?""",
                 (
                     deadline,
-                    now_text,
+                    commit_now_text,
                     claim.operation_id,
                     claim.fencing_token,
                     claim.request_digest,
@@ -1289,8 +1302,10 @@ def renew_operation_lease_after_io(
             "resource_planning_disabled",
             "Resource planning is disabled by configuration.",
         )
-    now_text = db.now()
     with db.transaction():
+        # This renewal follows remote assistant I/O. A transaction-lock wait
+        # must not let a stale parent renew the child lease after takeover.
+        now_text = db.now()
         now = _utc_datetime(now_text, field="current time")
         row = _read_claim_row(claim)
         _require_full_auto_owner(row, _full_auto_claim, now_text=now_text)
@@ -1312,7 +1327,15 @@ def renew_operation_lease_after_io(
                 "resource_planning_disabled",
                 "Resource planning is disabled by configuration.",
             )
-        deadline = db.authoring_operation_lease_deadline(now)
+        commit_now_text = db.now()
+        commit_now = _utc_datetime(commit_now_text, field="current time")
+        _require_full_auto_owner(row, _full_auto_claim, now_text=commit_now_text)
+        _require_live_claim(row, claim, now=commit_now)
+        if row["lease_expires_at"] != ticket.lease_expires_at:
+            raise AuthoringOperationError(
+                409, "authoring_owner_stale", "This worker no longer owns the operation."
+            )
+        deadline = db.authoring_operation_lease_deadline(commit_now)
         updated = db.conn().execute(
             """UPDATE authoring_operation
                SET lease_expires_at = ?, updated_at = ?
@@ -1321,7 +1344,7 @@ def renew_operation_lease_after_io(
                  AND lease_expires_at = ?""",
             (
                 deadline,
-                now_text,
+                commit_now_text,
                 claim.operation_id,
                 claim.fencing_token,
                 claim.request_digest,
@@ -2191,10 +2214,13 @@ def resume_operation(
         assistant_available=assistant_available,
     )
 
-    now_text = db.now()
-    now = _utc_datetime(now_text, field="current time")
     missing = False
     with db.transaction():
+        # Do not base a resumed lease on a timestamp captured before waiting
+        # for SQLite's write lock. In particular, rebinds under a Full Auto
+        # owner must fail closed if that parent lease expired while waiting.
+        now_text = db.now()
+        now = _utc_datetime(now_text, field="current time")
         if not _resolve_planning_enabled(None):
             raise AuthoringOperationError(
                 503,
@@ -2291,18 +2317,57 @@ def resume_operation(
                         "resource_planning_disabled",
                         "Resource planning is disabled by configuration.",
                     )
+                owner_epoch = None
+                owner_fence = None
+                if _full_auto_claim is not None:
+                    from backend import resource_full_auto
+
+                    try:
+                        resource_full_auto.require_resumable_prepare_child(
+                            _full_auto_claim, dict(row), now_text=now_text,
+                        )
+                    except resource_full_auto.FullAutoRunError as exc:
+                        raise AuthoringOperationError(
+                            exc.status_code, exc.code, exc.message,
+                            current_run=exc.current_run or resource_full_auto.get_run_for_session(session_id),
+                        ) from exc
+                    owner_epoch = _full_auto_claim.epoch
+                    owner_fence = _full_auto_claim.fencing_token
+                # Input/progress validation above is local but may cross the
+                # parent lease deadline. Recheck the current parent immediately
+                # before rebinding this child, and base its renewed lease on
+                # that same fresh timestamp.
+                commit_now_text = db.now()
+                if _full_auto_claim is not None:
+                    try:
+                        resource_full_auto.require_prepare_claim(
+                            _full_auto_claim,
+                            session_id=session_id,
+                            now_text=commit_now_text,
+                        )
+                    except resource_full_auto.FullAutoRunError as exc:
+                        raise AuthoringOperationError(
+                            exc.status_code, exc.code, exc.message,
+                            current_run=exc.current_run or resource_full_auto.get_run_for_session(session_id),
+                        ) from exc
+                now = _utc_datetime(commit_now_text, field="current time")
                 deadline = db.authoring_operation_lease_deadline(now)
                 updated = db.conn().execute(
                     """UPDATE authoring_operation
                        SET state = 'active', fencing_token = fencing_token + 1,
                            lease_expires_at = ?, failed_item = NULL, error = NULL,
-                           remaining_json = ?, updated_at = ?
+                           remaining_json = ?,
+                           full_auto_run_epoch = COALESCE(?, full_auto_run_epoch),
+                           full_auto_run_fencing_token = COALESCE(?, full_auto_run_fencing_token),
+                           updated_at = ?
                        WHERE operation_id = ? AND state IN ('failed', 'cancelled', 'expired')
                          AND fencing_token = ? AND plan_revision = ?""",
                     (
                         deadline,
                         json.dumps(retry_remaining, ensure_ascii=False, separators=(",", ":")),
-                        now_text,
+                        owner_epoch,
+                        owner_fence,
+                        commit_now_text,
                         operation_id,
                         row["fencing_token"],
                         expected_revision,

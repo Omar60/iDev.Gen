@@ -117,14 +117,23 @@ bind prepared snapshots to their shot links and digests, reuse those links, and
 preserve each stored final prompt. A private authenticated runner claim checks
 current authority and evidence plus complete ordered receipts, then persists
 one admission before scheduling the serial runner. If scheduling is uncertain
-after admission, replay is refused pending reconciliation. Public Full Auto
-preparation, submission, and execution routes and a control UI are absent, so
-this is not an end-to-end generation flow. Runner and
-child recovery, heartbeats, global runner claims, assistant-slot admission, and
-the profile editor and selection/consent UI remain unfinished. The existing
+after admission, another start is refused while the outcome remains unresolved.
+Public Full Auto preparation, submission, and execution routes and a control UI
+are absent, so this is not an end-to-end generation flow. Full Auto `RunClaim`s
+for preparation and execution have 60-second leases, renewed by asynchronous
+15-second heartbeats through assistant and ComfyUI I/O; child-operation leases
+remain ten minutes. During preparation recovery, the replacement coordinator
+waits for any live child to settle. It resumes that same registered child under
+a new fence if expired or failed, preserving the verified prefix. A stale
+execution owner stops subsequent writes and dispatches, leaving admission
+unresolved. Execution-runner recovery,
+a global runner claim shared with manual starts and FIFO runner admission,
+attempt journaling and remote reconciliation, FIFO assistant-slot admission,
+and the profile editor and selection/consent UI remain unfinished. The existing
 manual workflow remains available for sessions without a nonterminal Full Auto
-owner. Automatic review validates persisted evidence; it does not certify
-semantic correctness or rendered pixels. Portable-v1 JSON excludes profiles.
+owner.
+Automatic review validates persisted evidence; it does not certify semantic
+correctness or rendered pixels. Portable-v1 JSON excludes profiles.
 See the
 [guided creation API](docs/sessions.md#saved-look-and-full-auto-creation-api).
 

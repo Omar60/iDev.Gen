@@ -1494,13 +1494,40 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
     ):
         if name not in operation_columns:
             conn.execute(f"ALTER TABLE authoring_operation ADD COLUMN {name} {declaration}")
+    conn.execute("DROP TRIGGER IF EXISTS authoring_operation_full_auto_owner_immutable")
     conn.execute(
-        """CREATE TRIGGER IF NOT EXISTS authoring_operation_full_auto_owner_immutable
+        """CREATE TRIGGER authoring_operation_full_auto_owner_immutable
            BEFORE UPDATE OF full_auto_run_id, full_auto_run_epoch,
                             full_auto_run_fencing_token ON authoring_operation
-           WHEN NEW.full_auto_run_id IS NOT OLD.full_auto_run_id
-             OR NEW.full_auto_run_epoch IS NOT OLD.full_auto_run_epoch
-             OR NEW.full_auto_run_fencing_token IS NOT OLD.full_auto_run_fencing_token
+           WHEN (NEW.full_auto_run_id IS NOT OLD.full_auto_run_id
+              OR NEW.full_auto_run_epoch IS NOT OLD.full_auto_run_epoch
+              OR NEW.full_auto_run_fencing_token IS NOT OLD.full_auto_run_fencing_token)
+            AND NOT (
+               OLD.state IN ('expired', 'failed')
+               AND OLD.lease_expires_at IS NULL
+               AND NEW.state = 'active'
+               AND NEW.lease_expires_at IS NOT NULL
+               AND NEW.fencing_token = OLD.fencing_token + 1
+               AND OLD.full_auto_run_id IS NOT NULL
+               AND NEW.full_auto_run_id IS OLD.full_auto_run_id
+               AND OLD.kind = 'prepare_takes'
+               AND NEW.kind = 'prepare_takes'
+               AND NEW.full_auto_run_epoch > 0
+               AND NEW.full_auto_run_fencing_token > 0
+               AND EXISTS (
+                   SELECT 1 FROM full_auto_run run
+                   WHERE run.run_id = OLD.full_auto_run_id
+                     AND run.state = 'active' AND run.phase = 'prepare'
+                     AND run.epoch = NEW.full_auto_run_epoch
+                     AND run.fencing_token = NEW.full_auto_run_fencing_token
+                     AND run.lease_expires_at IS NOT NULL
+               )
+               AND EXISTS (
+                   SELECT 1 FROM full_auto_prepare_child child
+                   WHERE child.run_id = OLD.full_auto_run_id
+                     AND child.operation_id = OLD.operation_id
+               )
+            )
            BEGIN
                SELECT RAISE(ABORT, 'authoring operation Full Auto owner is immutable');
            END"""

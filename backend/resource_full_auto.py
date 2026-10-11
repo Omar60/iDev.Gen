@@ -6,6 +6,7 @@ services that actually observed those operations.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -21,6 +22,7 @@ from backend import resource_planning
 
 
 RUN_LEASE = timedelta(seconds=60)
+RUN_HEARTBEAT_INTERVAL = timedelta(seconds=15)
 _RUN_CLAIM_KEY = secrets.token_bytes(32)
 _MANUAL_EDIT_CLAIM_KEY = secrets.token_bytes(32)
 _SUPPORTED_AUTHORIZATION_VERSION = 1
@@ -86,6 +88,59 @@ class RunClaim:
     lease_expires_at: str
     requires_reconciliation: bool
     _signature: str = field(repr=False, compare=False)
+
+
+class RunClaimHeartbeat:
+    """Renew one coordinator claim independently while its owner awaits I/O."""
+
+    def __init__(self, claim: RunClaim):
+        self.claim = claim
+        self.error: FullAutoRunError | None = None
+        self._task: asyncio.Task | None = None
+
+    async def __aenter__(self) -> RunClaimHeartbeat:
+        self._task = asyncio.create_task(self._renew())
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> bool:
+        if self._task is not None:
+            if not self._task.done():
+                self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        if self.error is not None:
+            raise self.error
+        return False
+
+    def check(self) -> RunClaim:
+        if self.error is not None:
+            raise self.error
+        return self.claim
+
+    def renew_now(self) -> RunClaim:
+        """Refresh the shared capability at a foreground dispatch boundary."""
+        self.check()
+        try:
+            self.claim = renew_run_claim(self.claim)
+        except FullAutoRunError as exc:
+            self.error = exc
+            raise
+        except Exception as exc:  # noqa: BLE001 - a failed renewal fences the owner
+            self.error = FullAutoRunError(
+                503, "run_heartbeat_failed", "The Full Auto run lease could not be renewed.",
+            )
+            raise self.error from exc
+        return self.claim
+
+    async def _renew(self) -> None:
+        while True:
+            await asyncio.sleep(RUN_HEARTBEAT_INTERVAL.total_seconds())
+            try:
+                self.renew_now()
+            except FullAutoRunError:
+                return
 
 
 @dataclass(frozen=True)
@@ -1307,8 +1362,17 @@ def renew_run_claim(
     *,
     now_text: str | None = None,
 ) -> RunClaim:
-    timestamp = _now_text(now_text)
     with db.transaction():
+        # A caller can wait on SQLite's write lock long enough for its lease to
+        # expire. Use the live clock only after the transaction has acquired
+        # that lock; explicit timestamps remain deterministic for tests and
+        # internal callers.
+        timestamp = _now_text(now_text)
+        row = _require_claim(claim, now_text=timestamp, reconciliation=claim.requires_reconciliation)
+        # Keep the owner valid at the actual compare-and-swap boundary too.
+        # The validation above is local, but must not accidentally revive a
+        # lease if that work itself crosses the expiry instant.
+        timestamp = _now_text(now_text)
         row = _require_claim(claim, now_text=timestamp, reconciliation=claim.requires_reconciliation)
         deadline = run_lease_deadline(timestamp)
         changed = db.conn().execute(
@@ -1359,6 +1423,52 @@ def _prepare_json_list(raw: str, *, field_name: str) -> list[str]:
     return values
 
 
+def require_resumable_prepare_child(
+    claim: RunClaim,
+    operation: dict,
+    *,
+    now_text: str | None = None,
+) -> dict:
+    """Authorize rebinding one expired registered child to the current owner."""
+    timestamp = _now_text(now_text)
+    row = require_prepare_claim(
+        claim, session_id=int(operation["session_id"]), now_text=timestamp,
+    )
+    if (
+        operation.get("state") not in {"expired", "failed"}
+        or operation.get("kind") != "prepare_takes"
+        or operation.get("full_auto_run_id") != claim.run_id
+        or type(operation.get("full_auto_run_epoch")) is not int
+        or type(operation.get("full_auto_run_fencing_token")) is not int
+        or int(operation["plan_revision"]) != int(row["plan_revision"])
+    ):
+        raise FullAutoRunError(409, "prepare_child_owner_invalid", "Only a terminal retryable child of this Full Auto run can be resumed.")
+
+    progress = _read_prepare_progress(claim.run_id)
+    child = next(
+        (item for item in progress["children"] if item["operation_id"] == operation["operation_id"]),
+        None,
+    )
+    requested = _prepare_json_list(operation["requested_json"], field_name="operation targets")
+    completed = _prepare_json_list(operation["completed_json"], field_name="operation progress")
+    if child is None or child["target_ids"] != requested:
+        raise FullAutoRunError(409, "prepare_child_missing", "The expired operation is not the registered Full Auto child.")
+    if completed != requested[:len(completed)]:
+        raise FullAutoRunError(409, "prepare_progress_invalid", "The expired child progress is not an ordered prefix.")
+
+    child_start = progress["target_ids"].index(requested[0])
+    cursor = len(progress["completed_take_ids"])
+    adopted_count = cursor - child_start
+    if (
+        adopted_count < 0
+        or adopted_count >= len(requested)
+        or progress["target_ids"][child_start:child_start + len(requested)] != requested
+        or len(completed) > adopted_count
+    ):
+        raise FullAutoRunError(409, "prepare_progress_stale", "The expired child no longer matches the first uncheckpointed target range.")
+    return {"progress": progress, "child": child, "child_start": child_start}
+
+
 def _read_prepare_progress(run_id: str) -> dict:
     row = db.one("SELECT * FROM full_auto_prepare_progress WHERE run_id = ?", run_id)
     if row is None:
@@ -1372,6 +1482,8 @@ def _read_prepare_progress(run_id: str) -> dict:
     ):
         raise FullAutoRunError(500, "run_state_invalid", "Saved Full Auto preparation progress is invalid.")
     children = []
+    target_positions = {take_id: index for index, take_id in enumerate(targets)}
+    previous_child_end: int | None = None
     for child in db.q(
         "SELECT batch_index, operation_id, target_ids_json FROM full_auto_prepare_child "
         "WHERE run_id = ? ORDER BY batch_index",
@@ -1380,12 +1492,21 @@ def _read_prepare_progress(run_id: str) -> dict:
         child_targets = _prepare_json_list(child["target_ids_json"], field_name="child targets")
         if (
             type(child["batch_index"]) is not int
+            or child["batch_index"] != len(children)
             or not child_targets
             or len(child_targets) > 20
             or type(child["operation_id"]) is not str
             or not child["operation_id"]
         ):
             raise FullAutoRunError(500, "run_state_invalid", "Saved Full Auto child preparation is invalid.")
+        child_start = target_positions.get(child_targets[0])
+        if (
+            child_start is None
+            or targets[child_start:child_start + len(child_targets)] != child_targets
+            or (previous_child_end is not None and child_start != previous_child_end)
+        ):
+            raise FullAutoRunError(500, "run_state_invalid", "Saved Full Auto child ranges overlap or are out of order.")
+        previous_child_end = child_start + len(child_targets)
         children.append({
             "batch_index": child["batch_index"],
             "operation_id": child["operation_id"],
@@ -1988,12 +2109,21 @@ def checkpoint_prepare_child(
                 "The child operation progress is not a persisted terminal result.",
             )
         prior = progress["completed_take_ids"]
-        expected_prior = progress["target_ids"][:len(prior)]
-        expected_child = progress["target_ids"][len(prior):len(prior) + len(child["target_ids"])]
-        if prior != expected_prior or child["target_ids"] != expected_child:
+        child_start = progress["target_ids"].index(child["target_ids"][0])
+        child_end = child_start + len(child["target_ids"])
+        if (
+            prior != progress["target_ids"][:len(prior)]
+            or progress["target_ids"][child_start:child_end] != child["target_ids"]
+            or len(prior) < child_start
+        ):
             raise FullAutoRunError(409, "prepare_progress_stale", "The authoring child no longer matches ordered run progress.")
+        adopted_from_child = len(prior) - child_start
+        if adopted_from_child > len(child["target_ids"]) and persisted_completed != child["target_ids"]:
+            raise FullAutoRunError(409, "prepare_progress_stale", "The authoring child was checkpointed out of order.")
         if persisted_completed != child["target_ids"][:len(persisted_completed)]:
             raise FullAutoRunError(409, "prepare_progress_invalid", "Child progress must be an ordered target prefix.")
+        if persisted_completed[:min(adopted_from_child, len(child["target_ids"]))] != child["target_ids"][:min(adopted_from_child, len(child["target_ids"]))]:
+            raise FullAutoRunError(409, "prepare_progress_stale", "The checkpointed child prefix changed.")
 
         # A terminal authoring row is not sufficient evidence to advance the
         # parent checkpoint. Revalidate only snapshots newly claimed by this
@@ -2025,16 +2155,18 @@ def checkpoint_prepare_child(
                     "A completed child snapshot is no longer current.",
                 ) from exc
 
-        completed = prior + persisted_completed
+        newly_completed = persisted_completed[min(adopted_from_child, len(child["target_ids"])):]
+        completed = prior + newly_completed
         # Acquiring the transaction may wait on SQLite's write lock, and
         # evidence validation can take time. Check the live owner once more
         # immediately before the checkpoint write so elapsed leases fail closed.
         timestamp = _now_text(None)
         row = require_prepare_claim(claim, now_text=timestamp)
-        db.run(
-            "UPDATE full_auto_prepare_progress SET completed_ids_json = ?, updated_at = ? WHERE run_id = ?",
-            _canonical_json(completed), timestamp, claim.run_id,
-        )
+        if completed != prior:
+            db.run(
+                "UPDATE full_auto_prepare_progress SET completed_ids_json = ?, updated_at = ? WHERE run_id = ?",
+                _canonical_json(completed), timestamp, claim.run_id,
+            )
         return _read_prepare_progress(claim.run_id)
 
 

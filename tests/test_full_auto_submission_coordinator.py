@@ -331,10 +331,18 @@ def test_runner_admits_all_linked_targets_once_and_fails_closed_after_schedule_c
         client, seeded, monkeypatch,
     )
     _view, execute_owner = main._run_full_auto_submission(owner)
+
+    def assert_forwarded_claim(claim, expected) -> None:
+        assert claim is not None
+        assert (claim.run_id, claim.session_id, claim.epoch, claim.fencing_token) == (
+            expected.run_id, expected.session_id, expected.epoch, expected.fencing_token,
+        )
+
     runner = Runner(None, tmp_path / "sessions", tmp_path / "output")
     started: list[int] = []
 
-    async def record_start(sid: int) -> None:
+    async def record_start(sid: int, _full_auto_claim=None) -> None:
+        assert_forwarded_claim(_full_auto_claim, execute_owner)
         started.append(sid)
 
     runner._run_session = record_start
@@ -361,8 +369,13 @@ def test_runner_admits_all_linked_targets_once_and_fails_closed_after_schedule_c
     runner2 = Runner(None, tmp_path / "sessions-2", tmp_path / "output-2")
     second_started: list[int] = []
 
-    async def record_second_start(sid: int) -> None:
-        second_started.append(sid)
+    def record_second_start(sid: int, _full_auto_claim=None):
+        assert_forwarded_claim(_full_auto_claim, execute_owner2)
+
+        async def record() -> None:
+            second_started.append(sid)
+
+        return record()
 
     runner2._run_session = record_second_start
 

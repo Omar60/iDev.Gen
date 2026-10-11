@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timedelta
 import json
 import os
+import sqlite3
 import uuid
 
 import httpx
@@ -214,6 +216,227 @@ def test_full_auto_chains_bounded_children_through_all_targets_and_stops_at_vali
         )
         assert operation["full_auto_run_id"] == run_id
         assert len(json.loads(operation["requested_json"])) <= 20
+
+
+def test_full_auto_coordinator_heartbeat_keeps_long_assistant_io_owned(
+    client, seeded, monkeypatch,
+):
+    session_id, run_id, revision, targets = _create_run(
+        client, seeded, photo_count=4,
+    )
+    provider = _install_provider(monkeypatch, session_id, revision, targets)
+    owner = resource_full_auto.claim_run(run_id)
+    resource_full_auto.initialize_prepare_progress(owner)
+    request = authoring_operations.normalize_start_request({
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": revision,
+        "kind": "prepare_takes",
+        "take_ids": targets,
+    })
+    child, created = authoring_operations.start_operation(
+        session_id, request, planning_enabled=True, assistant_available=True,
+        _full_auto_claim=owner,
+    )
+    assert created is True
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_run_structured = main.enhance.run_structured
+    original_now = db.now
+    original_renew = resource_full_auto.renew_run_claim
+    initial = datetime.fromisoformat(original_now().replace("Z", "+00:00"))
+    clock = [initial]
+    step = [timedelta(seconds=20)]
+    renewal_errors = []
+    renewal_times = []
+
+    def track_renewal(claim, **kwargs):
+        renewal_times.append(asyncio.get_running_loop().time())
+        try:
+            return original_renew(claim, **kwargs)
+        except Exception as exc:
+            renewal_errors.append(exc)
+            raise
+
+    async def delayed_assistant(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await original_run_structured(*args, **kwargs)
+
+    def fake_now():
+        value = clock[0]
+        clock[0] += step[0]
+        return value.isoformat(timespec="seconds")
+
+    monkeypatch.setattr(main.enhance, "run_structured", delayed_assistant)
+    monkeypatch.setattr(resource_full_auto, "renew_run_claim", track_renewal)
+    monkeypatch.setattr(resource_full_auto, "RUN_HEARTBEAT_INTERVAL", timedelta(milliseconds=5))
+
+    async def run_with_long_io():
+        task = asyncio.create_task(main._run_prepare_takes_operation(
+            session_id, child["operation_id"], _full_auto_claim=owner,
+        ))
+        await entered.wait()
+        before = db.one(
+            "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
+        )["lease_started_at"]
+        monkeypatch.setattr(db, "now", fake_now)
+        await asyncio.sleep(0.1)
+        after = db.one(
+            "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
+        )["lease_started_at"]
+        assert datetime.fromisoformat(after) - datetime.fromisoformat(before) >= timedelta(seconds=60), (renewal_errors, renewal_times)
+        step[0] = timedelta(0)
+        release.set()
+        renewed_owner = await task
+        assert renewed_owner is not None
+
+    asyncio.run(run_with_long_io())
+    monkeypatch.setattr(db, "now", original_now)
+    assert provider["calls"] == targets
+    assert db.one(
+        "SELECT status FROM prepared_take WHERE session_id = ? AND take_id = ?",
+        session_id, targets[0],
+    )["status"] == "ready"
+
+
+def test_replacement_coordinator_waits_for_live_child_then_resumes_registered_child(
+    client, seeded, monkeypatch,
+):
+    session_id, run_id, revision, targets = _create_run(
+        client, seeded, photo_count=4,
+    )
+    provider = _install_provider(monkeypatch, session_id, revision, targets)
+    owner = resource_full_auto.claim_run(run_id)
+    resource_full_auto.initialize_prepare_progress(owner)
+    request = authoring_operations.normalize_start_request({
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": revision,
+        "kind": "prepare_takes",
+        "take_ids": targets,
+    })
+    child, created = authoring_operations.start_operation(
+        session_id, request, planning_enabled=True, assistant_available=True,
+        _full_auto_claim=owner,
+    )
+    assert created is True
+    first_snapshot = None
+    assistant_calls = 0
+    second_entered = asyncio.Event()
+    release_second = asyncio.Event()
+    old_child_fencing_tokens = []
+    original_run_structured = main.enhance.run_structured
+
+    async def stop_during_second_assistant(*args, **kwargs):
+        nonlocal assistant_calls, first_snapshot
+        assistant_calls += 1
+        if assistant_calls == 2:
+            first_snapshot = db.one(
+                "SELECT id, status FROM prepared_take WHERE session_id = ? AND take_id = ?",
+                session_id, targets[0],
+            )
+            assert first_snapshot is not None and first_snapshot["status"] == "ready"
+            second_entered.set()
+            await release_second.wait()
+        return await original_run_structured(*args, **kwargs)
+
+    monkeypatch.setattr(main.enhance, "run_structured", stop_during_second_assistant)
+    monkeypatch.setattr(resource_full_auto, "RUN_HEARTBEAT_INTERVAL", timedelta(milliseconds=5))
+
+    async def recover_while_child_is_live():
+        old_child_task = asyncio.create_task(main._run_prepare_takes_operation(
+            session_id, child["operation_id"], _full_auto_claim=owner,
+        ))
+        await second_entered.wait()
+        progress = db.one(
+            "SELECT completed_json, fencing_token, state FROM authoring_operation WHERE operation_id = ?",
+            child["operation_id"],
+        )
+        assert json.loads(progress["completed_json"]) == [targets[0]]
+        assert progress["state"] == "active"
+        old_child_fencing_tokens.append(progress["fencing_token"])
+
+        db.run(
+            "UPDATE full_auto_run SET lease_started_at = ?, lease_expires_at = ? WHERE run_id = ?",
+            "1999-12-31T23:58:00+00:00", "2000-01-01T00:00:00+00:00", run_id,
+        )
+        recovery_claim = resource_full_auto.claim_run(run_id)
+        assert recovery_claim.requires_reconciliation is True
+        recovery_task = asyncio.create_task(main._run_full_auto_preparation(recovery_claim))
+        await asyncio.sleep(0.035)
+        assert not recovery_task.done()
+        assert assistant_calls == 2
+        live_child = db.one(
+            "SELECT state, fencing_token, full_auto_run_fencing_token FROM authoring_operation "
+            "WHERE operation_id = ?", child["operation_id"],
+        )
+        assert live_child["state"] == "active"
+        assert live_child["fencing_token"] == progress["fencing_token"]
+        assert live_child["full_auto_run_fencing_token"] == owner.fencing_token
+        with pytest.raises(sqlite3.IntegrityError, match="Full Auto owner is immutable"):
+            db.run(
+                "UPDATE authoring_operation SET full_auto_run_fencing_token = ? "
+                "WHERE operation_id = ?",
+                recovery_claim.fencing_token,
+                child["operation_id"],
+            )
+        assert db.one(
+            "SELECT COUNT(*) AS n FROM authoring_operation WHERE full_auto_run_id = ?", run_id,
+        )["n"] == 1
+
+        db.run(
+            "UPDATE authoring_operation SET lease_expires_at = ? WHERE operation_id = ?",
+            "2000-01-01T00:00:00+00:00", child["operation_id"],
+        )
+        result = await asyncio.wait_for(recovery_task, timeout=3)
+        assert (result["state"], result["phase"]) == ("active", "validate")
+        old_child_task.cancel()
+        try:
+            await old_child_task
+        except (asyncio.CancelledError, resource_full_auto.FullAutoRunError):
+            pass
+
+    asyncio.run(recover_while_child_is_live())
+    prepared = db.q(
+        "SELECT id, take_id, status FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = ? ORDER BY take_id", session_id, revision,
+    )
+    assert [row["take_id"] for row in prepared] == sorted(targets)
+    assert all(row["status"] == "ready" for row in prepared)
+    assert provider["calls"] == targets
+    assert assistant_calls == len(targets) + 1
+    assert db.one(
+        "SELECT id FROM prepared_take WHERE session_id = ? AND take_id = ?",
+        session_id, targets[0],
+    )["id"] == first_snapshot["id"]
+    progress = resource_full_auto._read_prepare_progress(run_id)
+    assert len(progress["children"]) == 1
+    assert progress["children"][0]["operation_id"] == child["operation_id"]
+    assert progress["children"][0]["target_ids"] == targets
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM full_auto_prepare_child WHERE run_id = ?", run_id,
+    )["n"] == 1
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM authoring_operation WHERE full_auto_run_id = ?", run_id,
+    )["n"] == 1
+    resumed_operation = db.one(
+        "SELECT state, requested_json, completed_json, remaining_json, fencing_token, "
+        "full_auto_run_epoch, full_auto_run_fencing_token FROM authoring_operation "
+        "WHERE operation_id = ?",
+        child["operation_id"],
+    )
+    current_run = db.one(
+        "SELECT epoch, fencing_token FROM full_auto_run WHERE run_id = ?", run_id,
+    )
+    assert resumed_operation["state"] == "succeeded"
+    assert json.loads(resumed_operation["requested_json"]) == targets
+    assert json.loads(resumed_operation["completed_json"]) == targets
+    assert json.loads(resumed_operation["remaining_json"]) == []
+    assert len(old_child_fencing_tokens) == 1
+    assert resumed_operation["fencing_token"] > old_child_fencing_tokens[0]
+    assert (
+        resumed_operation["full_auto_run_epoch"],
+        resumed_operation["full_auto_run_fencing_token"],
+    ) == (current_run["epoch"], current_run["fencing_token"])
 
 
 def test_full_auto_500_traverses_twenty_five_owned_children_without_truncation(

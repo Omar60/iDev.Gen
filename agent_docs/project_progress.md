@@ -2,30 +2,31 @@
 
 ## Goal and Current Position
 
-Heavy deployment `full_auto_4_6_resume_20261011` completed only Task 4.6 of
-`automate-resource-session-full-auto`, continuing preserved work from
-`full_auto_4_6_20261011`. Initial HEAD was `21296bd`; entry Git was clean.
-Main accepted independent verification and marked only 4.6: 18 of 41 complete.
+Heavy deployment `full_auto_4_7_20261011` completed only Task 4.7 of
+`automate-resource-session-full-auto`. Entry Git was clean at `b31dbb2`.
+Main accepted independent verification and marked only 4.7: 19 of 41 complete.
+User explicitly placed existing RunClaim heartbeats in 4.7 and shared global
+runner ownership in 5.1.
 
-Session discovery/status and Cancel/Resume use strict controls, request replay
-and run/current-plan CAS. Resume comparison binds an echoed server timestamp
-and the displayed seven-day deadline. Immutable linked consent preserves the
-initial grant. Public projections validate stored values and receipt identity;
-per-target conservative allowances retain eligible partial continuation.
+Coordinator and admitted runner renew every 15 seconds with 60-second leases.
+Preparation preserves live ten-minute child ownership through long I/O and
+coordinator loss. Recovery waits, preserves verified progress and resumes the
+registered expired child under the current fenced owner. Stale ownership and
+overlapping child ranges fail closed before further dispatch or writes.
+Renewal uses fresh time inside the transaction and before its guarded update.
 
 ## Verification and Boundaries
 
-Independent verification passed 27 focused cases and the complete
-`.venv/Scripts/python.exe -m pytest`: 3,272 passed, two skipped, five warnings,
-exit zero in 464.69 seconds. Privacy/format passed 46 cases; strict OpenSpec
-validation and diff checks passed. The skips cover opt-in 500-take synthesis
-and an unavailable Windows symlink. The creation atomicity fixture now includes
-the new immutable scope-input row in rollback and every-write failure injection.
+Independent final complete Python gate: 3,283 passed, two skipped, five warnings,
+exit zero in 465.78 seconds. Seven independent heartbeat/expiry cases and 46
+privacy/format cases passed; strict OpenSpec validation and diff checks passed.
+The corrected clock harness proves injection reachability and no mutation on
+rejection; the earlier invalid harness is not regression evidence. Final quiet
+output does not identify skip reasons.
 
-README, session guidance and module ownership documentation are updated.
-Frontend was unchanged; no frontend gates or real generation were performed.
-Controls do not dispatch the complete coordinator or reconcile remote jobs.
-Pending uncertainty remains owned; exact transport reservations and remote
-attempt journals remain later tasks. Closure records the isolated acceptance
-commit and sealed Archivist handoff/token report. No next task, archive or push
-is authorized.
+README, session guidance and module ownership are updated. Main state documents
+record acceptance before the isolated task commit and sealed Archivist report.
+Frontend was unchanged and its gates were not run; no real generation occurred.
+Global/manual claims, FIFO transport reservations, remote journals/reconciliation
+and complete coordinator startup dispatch remain later tasks. Uncertain remote
+admission remains conservatively owned. No next task, archive or push.

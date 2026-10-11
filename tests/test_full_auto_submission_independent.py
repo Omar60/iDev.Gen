@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -76,6 +76,108 @@ async def _start_and_wait(runner: Runner, session_id: int, claim=None) -> None:
         runner.start(session_id, _full_auto_claim=claim)
     if runner._task is not None:
         await runner._task
+
+
+def test_full_auto_runner_heartbeat_keeps_long_comfy_io_owned(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _revision, _targets, owner = _approved_run(
+        client, seeded, monkeypatch, photo_count=4,
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_history = fake.history
+    original_now = db.now
+    clock = [datetime.fromisoformat(original_now().replace("Z", "+00:00"))]
+    step = [timedelta(seconds=20)]
+
+    async def slow_history(prompt_id):
+        entered.set()
+        await release.wait()
+        return await original_history(prompt_id)
+
+    def fake_now():
+        value = clock[0]
+        clock[0] += step[0]
+        return value.isoformat(timespec="seconds")
+
+    monkeypatch.setattr(fake, "history", slow_history)
+    monkeypatch.setattr(resource_full_auto, "RUN_HEARTBEAT_INTERVAL", timedelta(milliseconds=5))
+
+    async def run_with_long_io():
+        runner.start(session_id, _full_auto_claim=execute_owner)
+        await entered.wait()
+        before = db.one(
+            "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
+        )["lease_started_at"]
+        monkeypatch.setattr(db, "now", fake_now)
+        await asyncio.sleep(0.1)
+        after = db.one(
+            "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
+        )["lease_started_at"]
+        assert datetime.fromisoformat(after) - datetime.fromisoformat(before) >= timedelta(seconds=60)
+        step[0] = timedelta(0)
+        release.set()
+        await runner._task
+
+    asyncio.run(run_with_long_io())
+    assert fake.attempts == len(_targets)
+    assert {row["status"] for row in db.q(
+        "SELECT status FROM shot WHERE session_id = ?", session_id,
+    )} == {"done"}
+    assert db.one("SELECT status FROM session WHERE id = ?", session_id)["status"] == "done"
+    assert db.one("SELECT run_id FROM full_auto_runner_admission WHERE run_id = ?", run_id)
+
+
+def test_full_auto_runner_owner_loss_preserves_unknown_admission_without_redispatch(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _revision, _targets, owner = _approved_run(
+        client, seeded, monkeypatch, photo_count=4,
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_queue = fake.queue_prompt
+
+    async def delayed_queue(graph, client_id):
+        prompt_id = await original_queue(graph, client_id)
+        entered.set()
+        await release.wait()
+        return prompt_id
+
+    monkeypatch.setattr(fake, "queue_prompt", delayed_queue)
+
+    async def lose_owner_during_comfy_io():
+        runner.start(session_id, _full_auto_claim=execute_owner)
+        await entered.wait()
+        db.run(
+            "UPDATE full_auto_run SET lease_started_at = ?, lease_expires_at = ? WHERE run_id = ?",
+            "1999-12-31T23:58:00+00:00", "2000-01-01T00:00:00+00:00", run_id,
+        )
+        reconciliation = resource_full_auto.claim_run(run_id)
+        unresolved = resource_full_auto.unresolved_work_count(session_id, run_id)
+        assert unresolved > 0
+        view, _next_owner = resource_full_auto.reconcile_expired_lease(
+            reconciliation,
+            resource_full_auto.LeaseReconciliationEvidence(
+                "unknown", unresolved, "run_work_unsettled",
+            ),
+        )
+        assert view["state"] == "blocked"
+        release.set()
+        await runner._task
+
+    asyncio.run(lose_owner_during_comfy_io())
+    shots = db.q("SELECT status, prompt_id FROM shot WHERE session_id = ? ORDER BY id", session_id)
+    assert fake.attempts == 1
+    assert shots[0] == {"status": "running", "prompt_id": ""}
+    assert all(row == {"status": "pending", "prompt_id": ""} for row in shots[1:])
+    assert db.one("SELECT status FROM session WHERE id = ?", session_id)["status"] == "running"
+    assert db.one("SELECT run_id FROM full_auto_runner_admission WHERE run_id = ?", run_id)
 
 
 @pytest.mark.parametrize("interleaving", ["feature_flag", "lease_expiry"])

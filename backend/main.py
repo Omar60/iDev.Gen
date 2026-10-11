@@ -4513,11 +4513,20 @@ async def _run_prepare_takes_operation(
                     claim, planning_enabled=is_resource_planning_enabled(),
                     _full_auto_claim=full_auto_claim,
                 )
-            output = await enhance.run_structured(
-                CONFIG,
-                enhance.EnhanceIn(instruction=instruction, fields=unlocked),
-                request_evidence=assistant_request,
-            )
+            if full_auto_claim is None:
+                output = await enhance.run_structured(
+                    CONFIG,
+                    enhance.EnhanceIn(instruction=instruction, fields=unlocked),
+                    request_evidence=assistant_request,
+                )
+            else:
+                async with resource_full_auto.RunClaimHeartbeat(full_auto_claim) as heartbeat:
+                    output = await enhance.run_structured(
+                        CONFIG,
+                        enhance.EnhanceIn(instruction=instruction, fields=unlocked),
+                        request_evidence=assistant_request,
+                    )
+                full_auto_claim = heartbeat.check()
             if full_auto_claim is not None:
                 # The parent lease is checked after every in-flight assistant call.
                 # A lost or expired owner cannot persist a late result.
@@ -4593,11 +4602,62 @@ async def _run_prepare_takes_operation(
         return full_auto_claim
 
 
+async def _recover_expired_full_auto_prepare_owner(
+    claim: resource_full_auto.RunClaim,
+) -> resource_full_auto.RunClaim | dict:
+    """Wait out an old preparation child before resuming from its checkpoints."""
+    if not claim.requires_reconciliation:
+        return claim
+    row = db.one(
+        "SELECT session_id, phase, resume_phase FROM full_auto_run WHERE run_id = ?",
+        claim.run_id,
+    )
+    if row is None or row["phase"] != "reconcile" or row["resume_phase"] != "prepare":
+        raise resource_full_auto.FullAutoRunError(
+            409, "run_reconciliation_required", "The saved Full Auto preparation phase is unavailable.",
+        )
+    operations = db.q(
+        "SELECT operation_id FROM authoring_operation "
+        "WHERE session_id = ? AND full_auto_run_id = ? ORDER BY created_at, operation_id",
+        row["session_id"], claim.run_id,
+    )
+    async with resource_full_auto.RunClaimHeartbeat(claim) as heartbeat:
+        while True:
+            active = []
+            for operation in operations:
+                status = authoring_operations.get_operation(
+                    int(row["session_id"]), operation["operation_id"],
+                    planning_enabled=is_resource_planning_enabled(),
+                    assistant_available=enhance.configured(CONFIG),
+                )
+                if status["state"] in {"active", "cancel_requested"}:
+                    active.append(operation["operation_id"])
+            if not active:
+                break
+            heartbeat.check()
+            await asyncio.sleep(resource_full_auto.RUN_HEARTBEAT_INTERVAL.total_seconds())
+        owner = heartbeat.check()
+
+    unresolved = resource_full_auto.unresolved_work_count(
+        int(row["session_id"]), claim.run_id,
+    )
+    evidence = resource_full_auto.LeaseReconciliationEvidence(
+        "safe_to_continue" if unresolved == 0 else "unknown",
+        unresolved,
+        None if unresolved == 0 else "run_work_unsettled",
+    )
+    view, next_owner = resource_full_auto.reconcile_expired_lease(owner, evidence)
+    return next_owner if next_owner is not None else view
+
+
 async def _run_full_auto_preparation(
     claim: resource_full_auto.RunClaim,
 ) -> dict:
     """Prepare every authorized target in owned <=20-take children, then stop at validation."""
-    owner = claim
+    recovered = await _recover_expired_full_auto_prepare_owner(claim)
+    if isinstance(recovered, dict):
+        return recovered
+    owner = recovered
     try:
         run_row = resource_full_auto.require_prepare_claim(owner)
         progress = resource_full_auto.initialize_prepare_progress(owner)
@@ -4606,24 +4666,72 @@ async def _run_full_auto_preparation(
         while progress["remaining_take_ids"]:
             owner = resource_full_auto.renew_run_claim(owner)
             batch = progress["remaining_take_ids"][:20]
-            batch_index = len(progress["completed_take_ids"]) // 20
-            request_id = str(uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"idevgen-full-auto:{owner.run_id}:{owner.epoch}:{owner.fencing_token}:{batch_index}",
-            ))
-            request = authoring_operations.normalize_start_request({
-                "request_id": request_id,
-                "expected_revision": plan_revision,
-                "kind": "prepare_takes",
-                "take_ids": batch,
-            })
-            child, _created = authoring_operations.start_operation(
-                session_id,
-                request,
-                planning_enabled=is_resource_planning_enabled(),
-                assistant_available=enhance.configured(CONFIG),
-                _full_auto_claim=owner,
+            registered_child = next(
+                (
+                    item for item in progress["children"]
+                    if progress["remaining_take_ids"][0] in item["target_ids"]
+                ),
+                None,
             )
+            if registered_child is not None:
+                child = authoring_operations.get_operation(
+                    session_id,
+                    registered_child["operation_id"],
+                    planning_enabled=is_resource_planning_enabled(),
+                    assistant_available=enhance.configured(CONFIG),
+                )
+                if child["state"] in {"expired", "failed"}:
+                    child, _status = authoring_operations.resume_operation(
+                        session_id,
+                        child["operation_id"],
+                        plan_revision,
+                        planning_enabled=is_resource_planning_enabled(),
+                        assistant_available=enhance.configured(CONFIG),
+                        _full_auto_claim=owner,
+                    )
+                elif child["state"] in {"active", "cancel_requested"}:
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "prepare_child_active",
+                        "A registered Full Auto child is still live and cannot be rebound.",
+                    )
+                else:
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "prepare_child_not_resumable",
+                        "A registered Full Auto child is not safely resumable.",
+                    )
+            else:
+                # A child registered after the current prefix cannot be skipped
+                # or overlapped if earlier evidence no longer validates.
+                remaining_start = len(progress["completed_take_ids"])
+                target_positions = {
+                    take_id: index for index, take_id in enumerate(progress["target_ids"])
+                }
+                if any(
+                    target_positions[item["target_ids"][0]] > remaining_start
+                    for item in progress["children"]
+                ):
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "prepare_progress_stale",
+                        "A registered Full Auto child follows an uncheckpointed target range.",
+                    )
+                batch_index = len(progress["children"])
+                request_id = str(uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"idevgen-full-auto:{owner.run_id}:{owner.epoch}:{owner.fencing_token}:{batch_index}",
+                ))
+                request = authoring_operations.normalize_start_request({
+                    "request_id": request_id,
+                    "expected_revision": plan_revision,
+                    "kind": "prepare_takes",
+                    "take_ids": batch,
+                })
+                child, _created = authoring_operations.start_operation(
+                    session_id,
+                    request,
+                    planning_enabled=is_resource_planning_enabled(),
+                    assistant_available=enhance.configured(CONFIG),
+                    _full_auto_claim=owner,
+                )
             if child["state"] == "active":
                 owner = await _run_prepare_takes_operation(
                     session_id,

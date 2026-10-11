@@ -1,5 +1,23 @@
 # Project Diary
 
+## Full Auto Task 4.7 Ownership Recovery
+
+Lease time must be read after transaction acquisition and immediately before
+CAS; a pre-lock timestamp can revive ownership that expired while waiting.
+Fake-clock interception must assert it reached the actual context-entry path.
+The initial injection harness was invalid; corrected final passing cases do
+not establish a pre-repair red run.
+
+Recovery waits for a live child and resumes the same registered expired child.
+Creating overlapping replacement batches loses ordered progress and can repeat
+physical work. Keep run ownership distinct from the future global runner claim.
+Heartbeat checks protect both long I/O and foreground dispatch/write boundaries;
+uncertain remote admission cannot be treated as proof of no remote execution.
+
+Runner callback fixtures must carry the admitted claim and preserve once-only
+admission and replay refusal assertions when the internal signature changes.
+Independent full-suite evidence passed after this fixture repair.
+
 ## Full Auto Task 4.6 Control Boundary
 
 Additive creation metadata must join complete-row allocation expectations and
