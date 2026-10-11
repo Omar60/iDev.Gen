@@ -20,6 +20,7 @@ import db
 
 RUN_LEASE = timedelta(seconds=60)
 _RUN_CLAIM_KEY = secrets.token_bytes(32)
+_MANUAL_EDIT_CLAIM_KEY = secrets.token_bytes(32)
 _SUPPORTED_AUTHORIZATION_VERSION = 1
 _SUPPORTED_POLICY_VERSION = "resource-full-auto-v1"
 _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -34,11 +35,19 @@ _NONTERMINAL = frozenset({
 class FullAutoRunError(Exception):
     """A stable domain failure; route adapters may map ``status_code`` to HTTP."""
 
-    def __init__(self, status_code: int, code: str, message: str) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        *,
+        current_run: dict | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
+        self.current_run = current_run
 
 
 @dataclass(frozen=True)
@@ -52,6 +61,19 @@ class RunClaim:
     lease_started_at: str
     lease_expires_at: str
     requires_reconciliation: bool
+    _signature: str = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class ManualEditClaim:
+    """Private one-revision authority issued only after an explicit pause."""
+
+    run_id: str
+    session_id: int
+    revision: int
+    epoch: int
+    fencing_token: int
+    plan_revision: int
     _signature: str = field(repr=False, compare=False)
 
 
@@ -235,8 +257,251 @@ def get_run(run_id: str) -> dict:
 
 
 def get_run_for_session(session_id: int) -> dict | None:
-    row = db.one("SELECT * FROM full_auto_run WHERE session_id = ?", session_id)
+    row = _run_row_for_session(session_id)
     return None if row is None else _view(row)
+
+
+def _manual_edit_claim_payload(claim: ManualEditClaim) -> bytes:
+    return _canonical_json({
+        "purpose": "full-auto-manual-edit-v1",
+        "run_id": claim.run_id,
+        "session_id": claim.session_id,
+        "revision": claim.revision,
+        "epoch": claim.epoch,
+        "fencing_token": claim.fencing_token,
+        "plan_revision": claim.plan_revision,
+    }).encode("utf-8")
+
+
+def _make_manual_edit_claim(row: dict) -> ManualEditClaim:
+    unsigned = ManualEditClaim(
+        run_id=row["run_id"],
+        session_id=int(row["session_id"]),
+        revision=int(row["revision"]),
+        epoch=int(row["epoch"]),
+        fencing_token=int(row["fencing_token"]),
+        plan_revision=int(row["plan_revision"]),
+        _signature="",
+    )
+    signature = hmac.new(
+        _MANUAL_EDIT_CLAIM_KEY, _manual_edit_claim_payload(unsigned), hashlib.sha256,
+    ).hexdigest()
+    return ManualEditClaim(**{**unsigned.__dict__, "_signature": signature})
+
+
+def _require_manual_edit_claim(
+    claim: ManualEditClaim,
+    row: dict,
+    *,
+    session_id: int,
+    expected_plan_revision: int | None,
+) -> dict:
+    if not isinstance(claim, ManualEditClaim) or not isinstance(claim._signature, str):
+        raise FullAutoRunError(409, "full_auto_edit_authority_stale", "The paused Full Auto edit authority is stale.")
+    expected = hmac.new(
+        _MANUAL_EDIT_CLAIM_KEY, _manual_edit_claim_payload(claim), hashlib.sha256,
+    ).hexdigest()
+    actual_plan = db.one("SELECT plan_revision FROM session_plan WHERE session_id = ?", session_id)
+    if (
+        not hmac.compare_digest(expected, claim._signature)
+        or claim.run_id != row["run_id"]
+        or claim.session_id != session_id
+        or claim.revision != int(row["revision"])
+        or claim.epoch != int(row["epoch"])
+        or claim.fencing_token != int(row["fencing_token"])
+        or claim.plan_revision != int(row["plan_revision"])
+        or expected_plan_revision is not None
+        and expected_plan_revision != claim.plan_revision
+        or actual_plan is None
+        or int(actual_plan["plan_revision"]) != claim.plan_revision
+        or row["state"] != "blocked"
+        or row["blocker_code"] != "manual_edit_pause"
+        or bool(row["cancel_intent"])
+    ):
+        raise FullAutoRunError(409, "full_auto_edit_authority_stale", "The paused Full Auto edit authority is stale.")
+    return row
+
+
+def require_session_mutation_allowed(
+    session_id: int,
+    *,
+    claim: RunClaim | None = None,
+    allowed_phases: tuple[str, ...] = (),
+    edit_claim: ManualEditClaim | None = None,
+    expected_plan_revision: int | None = None,
+    target_id: str | None = None,
+    operation_id: str | None = None,
+) -> dict | None:
+    """Fence shared writes unless a live phase owner or paused-edit capability authorizes them.
+
+    Call inside the transaction that performs the protected mutation. Manual
+    sessions and terminal Full Auto runs retain their existing behavior.
+    """
+    row = _run_row_for_session(session_id)
+    if row is None or row["state"] in _TERMINAL:
+        if claim is not None or edit_claim is not None:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto run owner is stale.")
+        return None
+
+    safe = _view(row)
+    if edit_claim is not None:
+        if claim is not None:
+            raise FullAutoRunError(409, "invalid_owner_capability", "Only one Full Auto owner capability may be used.", current_run=safe)
+        return _require_manual_edit_claim(
+            edit_claim, row, session_id=session_id,
+            expected_plan_revision=expected_plan_revision,
+        )
+    if claim is None:
+        raise FullAutoRunError(
+            409, "full_auto_session_owned",
+            "Full Auto owns this session. Pause it for an explicit edit or settle Cancel before manual work.",
+            current_run=safe,
+        )
+
+    if not allowed_phases or any(phase not in _MAIN_PHASES for phase in allowed_phases):
+        raise FullAutoRunError(500, "invalid_owner_phase", "The Full Auto mutation phase is invalid.", current_run=safe)
+    try:
+        current = _require_claim(claim, now_text=db.now(), reconciliation=False)
+    except FullAutoRunError as exc:
+        raise FullAutoRunError(
+            exc.status_code, exc.code, exc.message, current_run=safe,
+        ) from exc
+    if (
+        int(current["session_id"]) != session_id
+        or current["phase"] not in allowed_phases
+        or bool(current["cancel_intent"])
+        or expected_plan_revision is not None
+        and expected_plan_revision != int(current["plan_revision"])
+    ):
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto owner is not valid for this mutation phase.", current_run=safe)
+    authority_issue = _current_authority_issue(current, db.now())
+    if authority_issue is not None:
+        raise FullAutoRunError(409, authority_issue, "Full Auto authority is no longer valid for new work.", current_run=safe)
+    if target_id is not None or operation_id is not None:
+        if current["phase"] != "prepare" or not isinstance(target_id, str) or not target_id or not isinstance(operation_id, str) or not operation_id:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto owner is not valid for this preparation target.", current_run=safe)
+        try:
+            require_prepare_target_claim(
+                claim, target_id, operation_id, now_text=db.now(),
+            )
+        except FullAutoRunError as exc:
+            raise FullAutoRunError(
+                exc.status_code, exc.code, exc.message, current_run=safe,
+            ) from exc
+    return current
+
+
+def require_prepare_target_claim(
+    claim: RunClaim,
+    target_id: str,
+    operation_id: str,
+    *,
+    now_text: str | None = None,
+) -> dict:
+    """Require the current registered child to own this exact preparation target."""
+    timestamp = _now_text(now_text)
+    with db.transaction():
+        row = require_prepare_claim(claim, now_text=timestamp)
+        progress = _read_prepare_progress(claim.run_id)
+        child = next(
+            (item for item in progress["children"] if item["operation_id"] == operation_id),
+            None,
+        )
+        operation = db.one(
+            "SELECT session_id, plan_revision, kind, state, full_auto_run_id, "
+            "full_auto_run_epoch, full_auto_run_fencing_token "
+            "FROM authoring_operation WHERE operation_id = ?",
+            operation_id,
+        )
+        if (
+            child is None
+            or target_id not in child["target_ids"]
+            or target_id in progress["completed_take_ids"]
+            or operation is None
+            or int(operation["session_id"]) != int(row["session_id"])
+            or int(operation["plan_revision"]) != int(row["plan_revision"])
+            or operation["kind"] != "prepare_takes"
+            or operation["state"] != "active"
+            or operation["full_auto_run_id"] != claim.run_id
+            or operation["full_auto_run_epoch"] != claim.epoch
+            or operation["full_auto_run_fencing_token"] != claim.fencing_token
+        ):
+            raise FullAutoRunError(409, "run_target_not_owned", "The Full Auto child does not own this preparation target.")
+        return row
+
+
+def _run_row_for_session(session_id: int) -> dict | None:
+    return db.one(
+        """SELECT * FROM full_auto_run WHERE session_id = ?
+           ORDER BY CASE WHEN state IN ('cancelled', 'failed', 'succeeded', 'completed_with_errors')
+                         THEN 1 ELSE 0 END,
+                    created_at DESC, run_id DESC LIMIT 1""",
+        session_id,
+    )
+
+
+def pause_for_manual_edit(
+    run_id: str,
+    expected_run_revision: int,
+    expected_plan_revision: int,
+    *,
+    now_text: str | None = None,
+) -> tuple[dict, ManualEditClaim]:
+    """Fence idle owned work and issue private authority for one normal plan CAS.
+
+    This is an explicit suspended state, distinct from settled Cancel/manual
+    transfer. The Full Auto run stays blocked and keeps session ownership.
+    """
+    timestamp = _now_text(now_text)
+    claim = None
+    view = None
+    with db.transaction():
+        row = _require_run(run_id)
+        if (
+            int(row["revision"]) != expected_run_revision
+            or int(row["plan_revision"]) != expected_plan_revision
+        ):
+            raise FullAutoRunError(409, "run_revision_stale", "The Full Auto run changed before it could be paused.", current_run=_view(row))
+        if row["state"] not in {"active", "waiting_authoring", "waiting_runner", "blocked"} or row["cancel_intent"]:
+            raise FullAutoRunError(409, "run_not_pauseable", "This Full Auto run cannot be paused for editing.", current_run=_view(row))
+        if row["state"] == "blocked" and row["blocker_code"] != "manual_edit_pause":
+            raise FullAutoRunError(409, "run_not_pauseable", "This Full Auto run requires reconciliation before editing.", current_run=_view(row))
+        session_id = int(row["session_id"])
+        session = db.one("SELECT status FROM session WHERE id = ?", session_id)
+        unsettled_shot = db.one(
+            "SELECT id FROM shot WHERE session_id = ? AND status IN ('pending', 'running') LIMIT 1",
+            session_id,
+        )
+        if session is None or session["status"] == "running" or unsettled_shot is not None:
+            raise FullAutoRunError(409, "run_work_unsettled", "Owned work must settle before Full Auto can be paused for editing.", current_run=_view(row))
+        plan = db.one("SELECT plan_revision FROM session_plan WHERE session_id = ?", int(row["session_id"]))
+        if plan is None or int(plan["plan_revision"]) != expected_plan_revision:
+            raise FullAutoRunError(409, "plan_revision_stale", "The current plan changed before Full Auto could be paused.", current_run=_view(row))
+        changed = db.conn().execute(
+            """UPDATE full_auto_run
+               SET state = 'blocked', revision = revision + 1,
+                   fencing_token = fencing_token + 1, lease_expires_at = NULL,
+                   lease_started_at = NULL, resume_phase = phase,
+                   cancel_intent = 0, cancel_intent_at = NULL,
+                   blocker_code = 'manual_edit_pause',
+                   evidence_json = ?, updated_at = ?
+               WHERE run_id = ? AND revision = ? AND fencing_token = ?""",
+            (_canonical_json({"kind": "manual_edit_pause"}), timestamp,
+             run_id, row["revision"], row["fencing_token"]),
+        ).rowcount
+        if changed != 1:
+            raise FullAutoRunError(409, "run_revision_stale", "The Full Auto run changed before it could be paused.", current_run=_view(row))
+        updated = _require_run(run_id)
+        # Fence any late assistant response using the same child-operation CAS
+        # used when a normal plan revision invalidates preparation work.
+        from backend import authoring_operations
+
+        authoring_operations.cancel_for_plan_change(session_id, expected_plan_revision + 1)
+        claim = _make_manual_edit_claim(updated)
+        view = _view(updated)
+    if view is None or claim is None:
+        raise FullAutoRunError(500, "run_pause_failed", "The Full Auto pause was not saved.")
+    return view, claim
 
 
 def create_run_in_transaction(

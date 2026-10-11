@@ -27,11 +27,17 @@ Verified baseline from the repository layout and application entry points.
   `resource_preparation.py`, and prompt/resource modules. Resource import,
   immutable storage, readiness, and translations are handled by the
   `resource_*` modules. `backend/resource_full_auto.py` persists Full Auto run
-  state, fenced claims, cancellation/resume transitions, and immutable control
-  receipts. An internal coordinator in `backend/main.py` prepares authorized
-  takes through ordered, owned batches of up to twenty and stops at validation;
-  creation/startup dispatch, HTTP controls, later review/submission/runner
-  phases, and user-facing Full Auto controls remain unimplemented.
+  state, fenced claims, control receipts, and shared-write guards. A private
+  pause fences authoring children and grants one signed plan CAS while retaining
+  ownership. Terminal outcomes release the guard; pending or unknown
+  cancellation stays owned. Read-only drift inspection remains available, but
+  a refresh that advances the plan is blocked. The internal coordinator in
+  `backend/main.py` prepares ordered owned batches of up to twenty, then stops
+  at validation. Creation/startup do not dispatch it; no pause/Cancel/Resume
+  routes or UI exist, and review/submission/runner phases remain unimplemented.
+  The legacy runner loop is unchanged. Cancellation reconciliation records
+  supplied backend evidence without remote I/O and does not establish recovery
+  of an external ComfyUI job.
 - `backend/saved_looks.py` stores self-contained saved-look versions and
   separate immutable, digest-bound automation-profile revisions and permanent
   appearance projections. Its coverage compiler binds the exact saved-look and

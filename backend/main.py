@@ -332,6 +332,13 @@ async def _saved_look_error_handler(request: Request, exc: saved_looks.SavedLook
     return _stable_error(exc.status_code, exc.code, exc.message)
 
 
+@app.exception_handler(resource_full_auto.FullAutoRunError)
+async def _full_auto_run_error_handler(request: Request, exc: resource_full_auto.FullAutoRunError):
+    return _stable_error(
+        exc.status_code, exc.code, exc.message, current=exc.current_run,
+    )
+
+
 @app.exception_handler(Exception)
 async def _unhandled_exception_handler(request: Request, exc: Exception):
     """Last-resort guard for routes with a stable error contract.
@@ -4001,6 +4008,8 @@ def _authoring_operation_error_response(exc: authoring_operations.AuthoringOpera
     detail: dict[str, Any] = {"code": exc.code, "message": exc.message}
     if exc.operation is not None:
         detail["operation"] = exc.operation
+    if exc.current_run is not None:
+        detail["current"] = exc.current_run
     return JSONResponse(status_code=exc.status_code, content={"detail": detail})
 
 
@@ -4257,6 +4266,7 @@ async def _run_prepare_takes_operation(
                     ticket, writer_input, result, context, predecessor_projection,
                 ),
                 _predecessor_validation_cache=predecessor_validation_cache,
+                _full_auto_claim=full_auto_claim,
             )
 
         if full_auto_claim is not None and not ticket_renewed_after_io:
@@ -4896,6 +4906,11 @@ class PreparedTakeCompleteIn(BaseModel):
 
 
 def _prepared_take_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, resource_full_auto.FullAutoRunError):
+        detail: dict[str, Any] = {"code": exc.code, "message": exc.message}
+        if exc.current_run is not None:
+            detail["current"] = exc.current_run
+        return HTTPException(exc.status_code, detail)
     if isinstance(exc, resource_preparation.ResourcePlanningDisabled):
         return HTTPException(503, "Resource planning is disabled by configuration")
     if isinstance(exc, session_plan.ResourcePlanningDisabled):
@@ -5624,6 +5639,10 @@ def apply_saved_look_profile_to_plan(
         )
     except session_plan.SessionNotFound:
         return _stable_error(404, "session_not_found", "Session was not found.")
+    except resource_full_auto.FullAutoRunError as exc:
+        return _stable_error(
+            exc.status_code, exc.code, exc.message, current=exc.current_run,
+        )
     except Exception:
         return _stable_error(500, "internal_error", "Unexpected server error.")
     return {
@@ -8249,8 +8268,7 @@ def _require_usable_reference(session: dict) -> None:
 
 @app.post("/api/sessions/{sid}/retry")
 def retry_failed(sid: int):
-    db.run("UPDATE shot SET status='pending', error='' WHERE session_id=? AND status IN ('failed','cancelled')", sid)
-    count = db.one("SELECT COUNT(*) AS n FROM shot WHERE session_id=? AND status='pending'", sid)["n"]
+    count = runner.retry(sid)
     return {"pending": count}
 
 

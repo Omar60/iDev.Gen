@@ -81,6 +81,7 @@ import time
 from typing import Any
 
 import db
+from backend import resource_full_auto
 from backend import resource_planning
 
 try:
@@ -231,6 +232,30 @@ def _require_resource_planning_enabled(planning_enabled: bool = True) -> None:
         raise ResourcePlanningDisabled(
             "Resource planning is disabled by configuration."
         )
+
+
+def _require_full_auto_mutation(
+    session_id: int,
+    *,
+    claim: Any = None,
+    allowed_phases: tuple[str, ...] = (),
+    edit_claim: Any = None,
+    expected_plan_revision: int | None = None,
+    target_id: str | None = None,
+    operation_id: str | None = None,
+) -> dict | None:
+    """Authenticate an internal Full Auto capability at a plan write boundary."""
+    from backend import resource_full_auto
+
+    return resource_full_auto.require_session_mutation_allowed(
+        session_id,
+        claim=claim,
+        allowed_phases=allowed_phases,
+        edit_claim=edit_claim,
+        expected_plan_revision=expected_plan_revision,
+        target_id=target_id,
+        operation_id=operation_id,
+    )
 
 
 class WardrobeProgressionPreviewUnavailable(Exception):
@@ -2436,6 +2461,9 @@ def begin_preparation(
     session_id: int,
     plan_revision: int,
     take_id: str,
+    *,
+    _full_auto_claim: Any = None,
+    _full_auto_operation_id: str | None = None,
 ) -> dict:
     """Persist pending before lengthy work and return the durable row.
 
@@ -2460,6 +2488,11 @@ def begin_preparation(
                         f"{plan_revision} is invalidated history"
                     )
                 return _decode_prepared_take(existing)
+            _require_full_auto_mutation(
+                session_id, claim=_full_auto_claim, allowed_phases=("prepare",),
+                expected_plan_revision=plan_revision,
+                target_id=take_id, operation_id=_full_auto_operation_id,
+            )
             now = db.now()
             db.run(
                 "INSERT INTO prepared_take "
@@ -2483,6 +2516,7 @@ def begin_preparation(
         PreparedTakePersistenceError,
         ResourcePlanningDisabled,
         workflow_binding.WorkflowChanged,
+        resource_full_auto.FullAutoRunError,
     ):
         raise
     except Exception as exc:
@@ -2519,6 +2553,7 @@ def complete_preparation(
     mapping_version: str,
     compiler_version: str,
     provenance: Any,
+    _full_auto_claim: Any = None,
 ) -> dict:
     """Complete a raw historical snapshot; authoring-v1 requires sealed persistence."""
     _require_resource_planning_enabled()
@@ -2599,6 +2634,11 @@ def complete_preparation(
                     "the requested snapshot"
                 )
 
+            _require_full_auto_mutation(
+                session_id, claim=_full_auto_claim, allowed_phases=("prepare",),
+                expected_plan_revision=plan_revision,
+            )
+
             import resource_preparation
 
             resource_evidence = resource_preparation.build_pre_authoring_resource_input_evidence(
@@ -2639,6 +2679,7 @@ def complete_preparation(
         PreparedTakePersistenceError,
         ResourcePlanningDisabled,
         workflow_binding.WorkflowChanged,
+        resource_full_auto.FullAutoRunError,
     ):
         raise
     except Exception as exc:
@@ -2817,6 +2858,14 @@ def complete_authoring_preparation(result: Any) -> dict:
             validate_authoring_prepared_evidence(
                 session_id, plan_revision, take_id, row=candidate_row,
             )
+            _require_full_auto_mutation(
+                session_id,
+                claim=getattr(result, "_full_auto_claim", None),
+                allowed_phases=("prepare",),
+                expected_plan_revision=plan_revision,
+                target_id=take_id,
+                operation_id=getattr(result, "operation_id", None),
+            )
             now = db.now()
             db.run(
                 "UPDATE prepared_take SET final_prompt = ?, effective_state = ?, "
@@ -2854,6 +2903,7 @@ def complete_authoring_preparation(result: Any) -> dict:
         PreparedTakePersistenceError,
         ResourcePlanningDisabled,
         workflow_binding.WorkflowChanged,
+        resource_full_auto.FullAutoRunError,
     ):
         raise
     except Exception as exc:
@@ -2978,6 +3028,8 @@ def record_writer_synthesis(
     mapping_version: str,
     compiler_version: str,
     provenance: Any,
+    _full_auto_claim: Any = None,
+    _full_auto_operation_id: str | None = None,
 ) -> dict:
     """Persist the writer synthesis block on a pending prepared_take row.
 
@@ -3041,6 +3093,11 @@ def record_writer_synthesis(
                     f"and a row that is already ready, generated or "
                     f"invalidated is history"
                 )
+            _require_full_auto_mutation(
+                session_id, claim=_full_auto_claim, allowed_phases=("prepare",),
+                expected_plan_revision=plan_revision,
+                target_id=take_id, operation_id=_full_auto_operation_id,
+            )
             now = db.now()
             db.run(
                 "UPDATE prepared_take SET effective_state = ?, "
@@ -3067,6 +3124,7 @@ def record_writer_synthesis(
         PreparedTakePersistenceError,
         ResourcePlanningDisabled,
         workflow_binding.WorkflowChanged,
+        resource_full_auto.FullAutoRunError,
     ):
         raise
     except Exception as exc:
@@ -3081,6 +3139,7 @@ def apply_shared_suggestion_acceptance(
     expected_fields: list[str],
     evidence: dict,
     accepted: dict[str, str],
+    _full_auto_claim: Any = None,
 ) -> dict:
     """Apply reviewed shared suggestions through a dedicated plan CAS.
 
@@ -3124,6 +3183,11 @@ def apply_shared_suggestion_acceptance(
             raise PlanRevisionStale(
                 f"session {session_id} plan revision is {actual_revision}, expected {expected_revision}; refusing stale acceptance"
             )
+        _require_full_auto_mutation(
+            session_id, claim=_full_auto_claim,
+            allowed_phases=("prepare", "validate"),
+            expected_plan_revision=expected_revision,
+        )
         try:
             old_plan_raw = json.loads(current["plan_json"])
         except (TypeError, json.JSONDecodeError) as exc:
@@ -3887,9 +3951,14 @@ def _persist_plan_revision(
     carry_profile_evidence: bool = True,
     profile_application: dict | None = None,
     profile_coverage_evidence: dict[str, dict] | None = None,
+    _full_auto_edit_claim: Any = None,
 ) -> dict:
     """Persist one already-CAS-checked plan change inside its transaction."""
     actual = 0 if current is None else int(current["plan_revision"])
+    _require_full_auto_mutation(
+        session_id, edit_claim=_full_auto_edit_claim,
+        expected_plan_revision=actual,
+    )
     now = db.now()
     profile_evidence_to_carry = None
     prior_profile_application = None
@@ -4065,6 +4134,7 @@ def save_draft(
     expected_revision: int,
     *,
     shared_decisions: Any = None,
+    _full_auto_edit_claim: Any = None,
 ) -> dict:
     """Save a draft plan with a compare-and-swap on the revision.
 
@@ -4281,6 +4351,7 @@ def save_draft(
 
         result = _persist_plan_revision(
             session_id, current, old_plan, validated, conflicts,
+            _full_auto_edit_claim=_full_auto_edit_claim,
         )
     return result
 
@@ -4381,6 +4452,7 @@ def apply_saved_look(
     planning_enabled: bool,
     profile_revision: int | None = None,
     profile_digest: str | None = None,
+    _full_auto_edit_claim: Any = None,
 ) -> dict:
     """Apply an immutable saved look through an explicit, server-owned CAS."""
     _require_resource_planning_enabled(planning_enabled)
@@ -4524,6 +4596,7 @@ def apply_saved_look(
             carry_profile_evidence=profile_application is None,
             profile_application=profile_application,
             profile_coverage_evidence=coverage_evidence,
+            _full_auto_edit_claim=_full_auto_edit_claim,
         )
         return result
 
@@ -4638,6 +4711,7 @@ def apply_wardrobe_progression_preview(
     reviewed_wardrobes: Any,
     *,
     planning_enabled: bool,
+    _full_auto_edit_claim: Any = None,
 ) -> dict:
     """Recompute and atomically apply an exact server-issued wardrobe review."""
     _require_resource_planning_enabled(planning_enabled)
@@ -4712,6 +4786,7 @@ def apply_wardrobe_progression_preview(
         conflicts = detect_resource_constant_conflicts(derived["plan"])
         result = _persist_plan_revision(
             session_id, current, plan, derived["plan"], conflicts,
+            _full_auto_edit_claim=_full_auto_edit_claim,
         )
         return {
             "plan_revision": result["plan_revision"],
@@ -4827,6 +4902,11 @@ def refresh_resources(
                 "copied_forward_takes": [],
                 "diagnostics": [],
             }
+
+        # Drift inspection above is read-only and remains available while
+        # Full Auto owns the session. Once a revision would be advanced,
+        # require the same shared ownership gate as an ordinary plan edit.
+        resource_full_auto.require_session_mutation_allowed(session_id)
 
         affected_take_ids = set(direct_codes)
         if classify_plan_authoring(plan) == PLAN_AUTHORING_KIND_AUTOMATIC:
@@ -4986,6 +5066,8 @@ def submit_prepared_take(
     session_id: int,
     plan_revision: int,
     take_id: str,
+    *,
+    _full_auto_claim: Any = None,
 ) -> dict:
     """Submit a finalized prepared take to shot creation and the serial queue.
 
@@ -5043,6 +5125,11 @@ def submit_prepared_take(
                 raise PreparedTakePersistenceError(
                     f"prepared take {take_id!r} is marked generated but linked shot {linked_id} is missing"
                 )
+
+            _require_full_auto_mutation(
+                session_id, claim=_full_auto_claim, allowed_phases=("submit",),
+                expected_plan_revision=plan_revision,
+            )
 
             approval = db.one(
                 "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
@@ -5179,6 +5266,7 @@ def submit_prepared_take(
         PreparedTakePersistenceError,
         PlanReviewNotApproved,
         workflow_binding.WorkflowChanged,
+        resource_full_auto.FullAutoRunError,
     ):
         raise
     except Exception as exc:
@@ -5262,7 +5350,12 @@ def _validate_unlinked_ready_snapshot_dependencies(
             )
 
 
-def approve_plan_review(session_id: int, plan_revision: int) -> dict:
+def approve_plan_review(
+    session_id: int,
+    plan_revision: int,
+    *,
+    _full_auto_claim: Any = None,
+) -> dict:
     """Authoritatively record approval of the plan review for session_id and plan_revision.
 
     Validates that:
@@ -5290,6 +5383,10 @@ def approve_plan_review(session_id: int, plan_revision: int) -> dict:
             raise PlanRevisionStale(
                 f"session {session_id} plan revision is {current_rev}, requested {plan_revision}"
             )
+        _require_full_auto_mutation(
+            session_id, claim=_full_auto_claim, allowed_phases=("approve",),
+            expected_plan_revision=plan_revision,
+        )
         _validate_unlinked_ready_snapshot_dependencies(
             session_id, plan_revision, plan,
         )

@@ -35,12 +35,32 @@ class AuthoringOperationError(Exception):
         message: str,
         *,
         operation: dict | None = None,
+        current_run: dict | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
         self.operation = operation
+        self.current_run = current_run
+
+
+def _require_session_mutation(
+    session_id: int,
+    *,
+    claim: Any = None,
+    allowed_phases: tuple[str, ...] = (),
+) -> None:
+    from backend import resource_full_auto
+
+    try:
+        resource_full_auto.require_session_mutation_allowed(
+            session_id, claim=claim, allowed_phases=allowed_phases,
+        )
+    except resource_full_auto.FullAutoRunError as exc:
+        raise AuthoringOperationError(
+            exc.status_code, exc.code, exc.message, current_run=exc.current_run,
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -678,7 +698,12 @@ def _require_full_auto_owner(
         owner_id is None or type(owner_epoch) is not int or type(owner_fence) is not int
         or claim is None
     ):
-        raise AuthoringOperationError(409, "full_auto_owner_required", "A live Full Auto owner is required for this operation.")
+        from backend import resource_full_auto
+
+        raise AuthoringOperationError(
+            409, "full_auto_owner_required", "A live Full Auto owner is required for this operation.",
+            current_run=resource_full_auto.get_run_for_session(int(row["session_id"])),
+        )
     from backend import resource_full_auto
 
     try:
@@ -686,13 +711,19 @@ def _require_full_auto_owner(
             claim, session_id=int(row["session_id"]), now_text=now_text,
         )
     except resource_full_auto.FullAutoRunError as exc:
-        raise AuthoringOperationError(409, "full_auto_owner_stale", "The Full Auto operation owner is stale.") from exc
+        raise AuthoringOperationError(
+            409, "full_auto_owner_stale", "The Full Auto operation owner is stale.",
+            current_run=exc.current_run or resource_full_auto.get_run_for_session(int(row["session_id"])),
+        ) from exc
     if (
         claim.run_id != owner_id
         or claim.epoch != owner_epoch
         or claim.fencing_token != owner_fence
     ):
-        raise AuthoringOperationError(409, "full_auto_owner_stale", "The Full Auto operation owner is stale.")
+        raise AuthoringOperationError(
+            409, "full_auto_owner_stale", "The Full Auto operation owner is stale.",
+            current_run=resource_full_auto.get_run_for_session(int(row["session_id"])),
+        )
 
 
 def _current_operation_context(
@@ -1713,7 +1744,10 @@ def start_operation(
                     _full_auto_claim, session_id=session_id, now_text=db.now(),
                 )
             except resource_full_auto.FullAutoRunError as exc:
-                raise AuthoringOperationError(409, "full_auto_owner_stale", "The Full Auto operation owner is stale.") from exc
+                raise AuthoringOperationError(
+                    409, "full_auto_owner_stale", "The Full Auto operation owner is stale.",
+                    current_run=exc.current_run or resource_full_auto.get_run_for_session(session_id),
+                ) from exc
             if int(owner["plan_revision"]) != request["expected_revision"]:
                 raise AuthoringOperationError(409, "plan_revision_stale", "The Full Auto plan changed before preparation.")
         session = db.one("SELECT id, settings FROM session WHERE id = ?", session_id)
@@ -1738,6 +1772,12 @@ def start_operation(
                 planning_enabled=planning_enabled,
                 assistant_available=assistant_available,
             ), False
+
+        _require_session_mutation(
+            session_id,
+            claim=_full_auto_claim,
+            allowed_phases=("prepare",),
+        )
 
         if session_plan.read_composition_mode(session.get("settings")) != session_plan.MODE_RESOURCE_V1:
             raise AuthoringOperationError(
@@ -2063,6 +2103,7 @@ def cancel_operation(
     *,
     planning_enabled: bool | None = None,
     assistant_available: bool = True,
+    _full_auto_claim: Any = None,
 ) -> tuple[dict, int]:
     """Stop future scheduling and fence late responses through persisted state."""
     enabled = _resolve_planning_enabled(planning_enabled)
@@ -2098,6 +2139,10 @@ def cancel_operation(
                     ),
                 )
             if row["state"] == "active":
+                _require_session_mutation(
+                    session_id, claim=_full_auto_claim,
+                    allowed_phases=("prepare",),
+                )
                 db.conn().execute(
                     """UPDATE authoring_operation
                        SET state = 'cancel_requested', error = ?, updated_at = ?
@@ -2128,6 +2173,7 @@ def resume_operation(
     *,
     planning_enabled: bool | None = None,
     assistant_available: bool = True,
+    _full_auto_claim: Any = None,
 ) -> tuple[dict, int]:
     """Claim a retry with a fresh fence after validating original inputs."""
     enabled = _resolve_planning_enabled(planning_enabled)
@@ -2195,6 +2241,10 @@ def resume_operation(
                     ),
                 )
             elif row["state"] in ("failed", "cancelled", "expired"):
+                _require_session_mutation(
+                    session_id, claim=_full_auto_claim,
+                    allowed_phases=("prepare",),
+                )
                 if not assistant_available:
                     raise AuthoringOperationError(
                         409,
@@ -2343,6 +2393,7 @@ def accept_shared_suggestion(
     request: dict,
     *,
     planning_enabled: bool | None = None,
+    _full_auto_claim: Any = None,
 ) -> dict:
     """Accept a succeeded shared-suggestion result through one operation/plan CAS."""
     enabled = _resolve_planning_enabled(planning_enabled)
@@ -2462,6 +2513,11 @@ def accept_shared_suggestion(
             "accepted": accepted,
         }
 
+        _require_session_mutation(
+            session_id, claim=_full_auto_claim,
+            allowed_phases=("prepare", "validate"),
+        )
+
         try:
             saved_plan = session_plan.apply_shared_suggestion_acceptance(
                 session_id,
@@ -2469,6 +2525,7 @@ def accept_shared_suggestion(
                 expected_fields=requested,
                 evidence=evidence,
                 accepted=accepted,
+                _full_auto_claim=_full_auto_claim,
             )
         except session_plan.ResourcePlanningDisabled as exc:
             raise AuthoringOperationError(

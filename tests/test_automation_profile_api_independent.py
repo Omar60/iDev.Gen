@@ -3,7 +3,8 @@ from __future__ import annotations
 import db
 import main
 import pytest
-from backend import resource_planning, resource_store, saved_looks
+from backend import resource_full_auto, resource_planning, resource_store, saved_looks
+from test_full_auto_shared_ownership import _active_run
 from test_task13_appearance_ownership import (
     _profile,
     _saved_bracelet_look,
@@ -151,6 +152,72 @@ def test_profile_application_through_http_invalidates_existing_preparation(
     assert evidence["look_content_digest"] == saved["content_digest"]
     assert evidence["profile_revision"] == published["profile_revision"]
     assert evidence["profile_digest"] == published["profile_digest"]
+
+
+def test_profile_application_returns_safe_full_auto_ownership_conflict(
+    client, seeded, monkeypatch,
+):
+    session_id, run_id, revision, _targets = _active_run(
+        client, seeded, monkeypatch,
+    )
+    saved = _saved_bracelet_look()
+    published_response = _publish(
+        client, saved, _profile(saved, bracelet_owner="garment", revision=1),
+    )
+    assert published_response.status_code == 200, published_response.text
+    published = published_response.json()
+    before = {
+        "plan": dict(db.one(
+            "SELECT * FROM session_plan WHERE session_id = ?", session_id,
+        )),
+        "evidence": db.q(
+            "SELECT * FROM session_profile_evidence WHERE session_id = ? ORDER BY rowid",
+            session_id,
+        ),
+        "prepared": db.q(
+            "SELECT * FROM prepared_take WHERE session_id = ? ORDER BY id",
+            session_id,
+        ),
+        "shots": db.q(
+            "SELECT * FROM shot WHERE session_id = ? ORDER BY id",
+            session_id,
+        ),
+    }
+
+    response = _apply_profile(
+        client, session_id, saved, published, revision,
+    )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "full_auto_session_owned"
+    assert detail["message"] == (
+        "Full Auto owns this session. Pause it for an explicit edit or settle Cancel before manual work."
+    )
+    current = detail["current"]
+    assert current["run_id"] == run_id
+    assert current["state"] == "active"
+    assert not {
+        "lease_expires_at", "lease_started_at", "fencing_token", "claim",
+        "_signature", "authorization_json",
+    }.intersection(current)
+    assert {
+        "plan": dict(db.one(
+            "SELECT * FROM session_plan WHERE session_id = ?", session_id,
+        )),
+        "evidence": db.q(
+            "SELECT * FROM session_profile_evidence WHERE session_id = ? ORDER BY rowid",
+            session_id,
+        ),
+        "prepared": db.q(
+            "SELECT * FROM prepared_take WHERE session_id = ? ORDER BY id",
+            session_id,
+        ),
+        "shots": db.q(
+            "SELECT * FROM shot WHERE session_id = ? ORDER BY id",
+            session_id,
+        ),
+    } == before
 
 
 def test_profile_free_manual_application_remains_explicit_and_portable_v1_stays_closed(

@@ -48,12 +48,36 @@ class Runner:
     def start(self, session_id: int) -> None:
         if self.busy:
             raise RuntimeError("A session is already running")
+        with db.transaction():
+            from backend import resource_full_auto
+
+            resource_full_auto.require_session_mutation_allowed(session_id)
+            db.run("UPDATE session SET status='running' WHERE id=?", session_id)
         self._cancel.discard(session_id)
-        db.run("UPDATE session SET status='running' WHERE id=?", session_id)
         self._task = asyncio.create_task(self._run_session(session_id))
 
     def cancel(self, session_id: int) -> None:
+        with db.transaction():
+            from backend import resource_full_auto
+
+            resource_full_auto.require_session_mutation_allowed(session_id)
         self._cancel.add(session_id)
+
+    def retry(self, session_id: int) -> int:
+        with db.transaction():
+            from backend import resource_full_auto
+
+            resource_full_auto.require_session_mutation_allowed(session_id)
+            db.run(
+                "UPDATE shot SET status='pending', error='' "
+                "WHERE session_id=? AND status IN ('failed','cancelled')",
+                session_id,
+            )
+            count = db.one(
+                "SELECT COUNT(*) AS n FROM shot WHERE session_id=? AND status='pending'",
+                session_id,
+            )["n"]
+        return int(count)
 
     def current_session(self) -> int | None:
         row = db.one("SELECT id FROM session WHERE status='running' LIMIT 1")

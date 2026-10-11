@@ -352,6 +352,61 @@ def test_cancel_intent_blocks_terminal_claims_and_reconciliation_never_activates
     assert error.value.code == "run_owner_stale"
 
 
+def test_manual_transfer_keeps_mutation_fence_until_cancellation_is_verified_settled(tmp_path):
+    run_id, session_id, _path = _seed_run(tmp_path, session_name="manual-transfer")
+    shot_id = db.run(
+        "INSERT INTO shot (session_id, shot_index, prompt, status, created_at) "
+        "VALUES (?, 0, ?, 'pending', ?)",
+        session_id, "A synthetic pending shot.", START,
+    )
+
+    with pytest.raises(resource_full_auto.FullAutoRunError) as active:
+        resource_full_auto.require_session_mutation_allowed(session_id)
+    assert active.value.code == "full_auto_session_owned"
+
+    cancel = resource_full_auto.cancel_run(
+        run_id, "manual-transfer-cancel", 1, 1,
+        work_pending=True, now_text=START,
+    )
+    assert cancel.view["state"] == "cancel_requested"
+    with pytest.raises(resource_full_auto.FullAutoRunError) as pending:
+        resource_full_auto.require_session_mutation_allowed(session_id)
+    assert pending.value.code == "full_auto_session_owned"
+
+    reconcile = resource_full_auto.claim_run(
+        run_id, now_text="2026-10-01T12:00:01+00:00",
+    )
+    blocked = resource_full_auto.reconcile_cancellation(
+        reconcile,
+        resource_full_auto.CancellationEvidence(
+            "unknown", "2026-10-01T12:00:02+00:00", 1,
+            blocker_code="comfy_unavailable", shot_ids=(str(shot_id),),
+        ),
+        now_text="2026-10-01T12:00:02+00:00",
+    )
+    assert blocked["state"] == "blocked" and blocked["cancel_intent"] is True
+    with pytest.raises(resource_full_auto.FullAutoRunError) as unknown:
+        resource_full_auto.require_session_mutation_allowed(session_id)
+    assert unknown.value.code == "full_auto_session_owned"
+
+    retry = resource_full_auto.resume_run(
+        run_id, "manual-transfer-reconcile", blocked["revision"], 1,
+        eligibility=None, now_text="2026-10-01T12:00:03+00:00",
+    )
+    settled = resource_full_auto.reconcile_cancellation(
+        retry.claim,
+        resource_full_auto.CancellationEvidence(
+            "settled", "2026-10-01T12:00:04+00:00", 0,
+            shot_ids=(str(shot_id),),
+        ),
+        now_text="2026-10-01T12:00:04+00:00",
+    )
+    assert settled["state"] == "cancelled"
+    assert settled["cancel_intent"] is True
+    assert resource_full_auto.require_session_mutation_allowed(session_id) is None
+    assert db.one("SELECT status FROM shot WHERE id = ?", shot_id)["status"] == "pending"
+
+
 def test_execution_transitions_require_ordered_phases_and_settled_outcomes(tmp_path):
     run_id, _session_id, _path = _seed_run(tmp_path)
     claim = resource_full_auto.claim_run(run_id, now_text=START)

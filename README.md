@@ -90,13 +90,22 @@ session-application APIs are documented in
 backend API for selecting an exact saved-look snapshot and for read-only Full
 Auto preflight plus atomic initial run authorization. An internal coordinator
 can prepare authorized takes in ordered batches of up to twenty, then stops at
-validation; creation and startup do not dispatch it, and HTTP run controls are
-not connected. Shared manual-control gates, 15-second coordinator and runner
-heartbeats, assistant-slot admission, approval, submission, and runner
-integration remain unfinished. The profile editor and Full Auto
-selection/consent UI are unavailable, so Full Auto is not yet an end-to-end user
-flow. The existing manual workflow remains available. Portable-v1 JSON
-excludes profiles. See the
+validation; creation and startup do not dispatch it, and no pause, Cancel, or
+Resume controls are exposed by routes or UI. Shared service guards block manual
+preparation, suggestions, plan/adaptation edits, resource refreshes that would
+advance the plan, approval, submission, and runner run/retry/cancel while a Full
+Auto run is nonterminal. Read-only drift inspection and safe no-work replays may
+remain available. An internal pause can fence child work and authorize one
+plan CAS while retaining session ownership. A changed plan waits for renewed
+consent before the run can resume. Cancellation releases the guard only after
+backend evidence confirms settlement; pending or unknown work retains it. That
+reconciliation does no remote I/O and does not prove an external ComfyUI job
+stopped. Full Auto
+heartbeats, assistant-slot admission, automatic approval/submission and runner
+integration, plus the profile editor and selection/consent UI, remain
+unfinished, so Full Auto is not yet an end-to-end user flow. The existing
+manual workflow remains available for sessions without a nonterminal Full Auto
+owner. Portable-v1 JSON excludes profiles. See the
 [guided creation API](docs/sessions.md#saved-look-and-full-auto-creation-api).
 
 Full Auto currently accepts only text-to-image workflows with no mapped
@@ -111,8 +120,8 @@ days after the original quote. Creation atomically writes the initial run state
 with its immutable authorization receipt; existing authorization receipts are
 backfilled into run records. An identical retry replays its stored receipt
 before rechecking current dependencies or quote age; changed content under the
-same request ID is refused. Persisted run state is not connected to execution or
-control endpoints yet.
+same request ID is refused. The shared-write guards also apply to direct service
+and HTTP callers while the run remains nonterminal.
 
 ## Composing from the catalogue
 

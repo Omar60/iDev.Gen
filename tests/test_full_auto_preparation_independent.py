@@ -425,7 +425,7 @@ def test_twenty_existing_owned_snapshots_start_at_remaining_batch_and_checkpoint
             planning_enabled=True,
             assistant_available=True,
         )
-    assert manual_error.value.code == "authoring_active"
+    assert manual_error.value.code == "full_auto_session_owned"
     assert db.one(
         "SELECT COUNT(*) AS n FROM authoring_operation WHERE session_id = ?", session_id,
     )["n"] == operation_count
@@ -555,6 +555,19 @@ def test_generated_linked_snapshot_is_reused_without_reauthoring_or_resubmitting
     assert saved_child["progress"]["completed"] == target_ids
     resource_full_auto.checkpoint_prepare_child(owner, child["operation_id"])
 
+    # Manual review/submission is a supported transfer only after Full Auto has
+    # been explicitly cancelled with evidence that its owned preparation work
+    # is settled. The cancelled run can later resume under its unchanged scope.
+    run_row = db.one("SELECT * FROM full_auto_run WHERE run_id = ?", run_id)
+    cancelled = resource_full_auto.cancel_run(
+        run_id,
+        str(uuid.uuid4()),
+        run_row["revision"],
+        run_row["plan_revision"],
+        work_pending=False,
+    )
+    assert cancelled.view["state"] == "cancelled"
+
     review = session_plan.approve_plan_review(session_id, 1)
     assert review["approved"] is True
     submitted = session_plan.submit_prepared_take(session_id, 1, target_ids[0])
@@ -574,6 +587,17 @@ def test_generated_linked_snapshot_is_reused_without_reauthoring_or_resubmitting
         "SELECT * FROM full_auto_prepare_child WHERE run_id = ? ORDER BY batch_index",
         run_id,
     )
+
+    run_row = db.one("SELECT * FROM full_auto_run WHERE run_id = ?", run_id)
+    resumed = resource_full_auto.resume_run(
+        run_id,
+        str(uuid.uuid4()),
+        run_row["revision"],
+        run_row["plan_revision"],
+        eligibility=_resume_eligibility(run_row["plan_revision"]),
+    )
+    assert resumed.claim is not None
+    owner = resumed.claim
     calls_before_coordinator = len(assistant.calls)
     _forbid_downstream_generation(monkeypatch)
 

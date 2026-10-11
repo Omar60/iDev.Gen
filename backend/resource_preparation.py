@@ -201,6 +201,7 @@ import resource_prompts
 import resource_readiness
 import resource_store
 from backend import resource_planning
+from backend import resource_full_auto
 import sys
 
 if __name__ == "backend.resource_preparation" and "resource_preparation" not in sys.modules:
@@ -272,6 +273,7 @@ class _AuthoringPreparedResult:
     compiler_version: str
     provenance: Any
     operation_id: str | None = None
+    _full_auto_claim: Any = None
 
 
 @dataclass(frozen=True)
@@ -2580,6 +2582,9 @@ def record_take_adaptation(
     plan_revision: int,
     take_id: str,
     adaptation: Any,
+    *,
+    _full_auto_claim: Any = None,
+    _full_auto_operation_id: str | None = None,
 ) -> dict:
     """Validate and persist a single reviewed adaptation for the take.
 
@@ -2684,6 +2689,25 @@ def record_take_adaptation(
                 raise ResourcePlanningDisabled(
                     "Resource planning is disabled by configuration."
                 )
+            if _full_auto_claim is not None and (
+                not isinstance(_full_auto_operation_id, str)
+                or not _full_auto_operation_id
+            ):
+                raise resource_full_auto.FullAutoRunError(
+                    409, "run_owner_stale",
+                    "The Full Auto owner is not valid for this adaptation target.",
+                )
+            resource_full_auto.require_session_mutation_allowed(
+                session_id,
+                claim=_full_auto_claim,
+                allowed_phases=("prepare",),
+                expected_plan_revision=plan_revision,
+                target_id=take_id if _full_auto_claim is not None else None,
+                operation_id=(
+                    _full_auto_operation_id
+                    if _full_auto_claim is not None else None
+                ),
+            )
             existing = db.one(
                 "SELECT id, source_value, updated_at FROM take_resource_adaptation "
                 "WHERE session_id = ? AND plan_revision = ? AND take_id = ? "
@@ -2775,6 +2799,7 @@ def record_take_adaptation(
         PreparationRevisionMissing,
         PreparationError,
         session_plan.PreparedTakeConflict,
+        resource_full_auto.FullAutoRunError,
     ):
         raise
     except Exception as exc:
@@ -4850,6 +4875,10 @@ def synthesize_unlocked_fields(
         )
 
     request = assemble_writer_request(preparation, unlocked=unlocked)
+    # A pending snapshot may be a safe replay, but it does not authorize a
+    # new assistant call after Full Auto has taken session ownership.
+    with db.transaction():
+        resource_full_auto.require_session_mutation_allowed(session_id)
     # The pending marker is created BEFORE the writer
     # call so a writer that fails before answering
     # leaves the take recoverable: the row is on
@@ -4981,6 +5010,7 @@ def _persist_synthesis_after_pending(
         session_plan.SessionNotFound,
         session_plan.PreparedTakePersistenceError,
         session_plan.ResourcePlanningDisabled,
+        resource_full_auto.FullAutoRunError,
     ):
         raise
     except Exception as exc:
@@ -5050,6 +5080,7 @@ def _persist_synthesis(
         session_plan.SessionNotFound,
         session_plan.PreparedTakePersistenceError,
         session_plan.ResourcePlanningDisabled,
+        resource_full_auto.FullAutoRunError,
     ):
         raise
     except Exception as exc:
@@ -7164,6 +7195,7 @@ def finalize_take_preparation(
     writer: WriterCallable | None = None,
     _operation_result: tuple[Any, dict, dict, dict, dict] | None = None,
     _predecessor_validation_cache: dict | None = None,
+    _full_auto_claim: Any = None,
 ) -> dict:
     """Atomically finalize take preparation into an immutable snapshot.
 
@@ -7544,7 +7576,13 @@ def finalize_take_preparation(
     # is read-only; a refusal raises ``WorkflowChanged`` and the
     # ``begin_preparation`` call below never runs.
     workflow_binding.validate_workflow_binding_against_session(session_id)
-    session_plan.begin_preparation(session_id, plan_revision, take_id)
+    session_plan.begin_preparation(
+        session_id, plan_revision, take_id,
+        _full_auto_claim=_full_auto_claim,
+        _full_auto_operation_id=(
+            operation_id if _operation_result is not None else None
+        ),
+    )
     if plan_kind in (session_plan.PLAN_AUTHORING_KIND_MANUAL, session_plan.PLAN_AUTHORING_KIND_AUTOMATIC):
         authoring_result = _AuthoringPreparedResult(
             _AUTHORING_RESULT_SEAL,
@@ -7557,6 +7595,7 @@ def finalize_take_preparation(
             COMPILER_VERSION,
             provenance,
             operation_id if _operation_result is not None else None,
+            _full_auto_claim,
         )
         return session_plan.complete_authoring_preparation(authoring_result)
     return session_plan.complete_preparation(
@@ -7568,4 +7607,5 @@ def finalize_take_preparation(
         mapping_version=MAPPING_VERSION,
         compiler_version=COMPILER_VERSION,
         provenance=provenance,
+        _full_auto_claim=_full_auto_claim,
     )

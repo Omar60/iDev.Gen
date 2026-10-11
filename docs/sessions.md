@@ -1686,12 +1686,29 @@ shots. A failed child blocks preparation while retaining completed results; if
 take 23 fails, the first 22 remain and no shots are submitted. After all targets
 are prepared, the coordinator advances to validation and stops.
 
-Guided creation and startup do not dispatch this coordinator, and no HTTP run
-controls invoke or resume it. Shared manual-control gates, 15-second
-coordinator and runner heartbeats, assistant-slot admission, approval,
-submission, and runner integration remain unfinished. The profile editor and
-Full Auto selection/consent UI are unavailable. The existing manual workflow
-remains the available path for preparation, review, submission, and Run.
+Guided creation and startup do not dispatch this coordinator, and no pause,
+Cancel, or Resume controls are exposed by routes or UI. Shared service guards
+reject manual preparation, suggestions, plan/adaptation edits, resource
+refreshes that would advance the plan, approval, submission, and runner
+run/retry/cancel while a Full Auto run is nonterminal, including direct service
+and HTTP calls. Read-only drift inspection and safe replays that create no work
+may remain available.
+
+The internal pause-for-edit transition requires a session that is not running
+and has no pending or running shots. It fences the run and any authoring child,
+then grants private signed authority for one normal plan compare-and-swap (CAS),
+while the run stays blocked and retains session ownership. Once that edit
+changes the plan revision, automatic Resume is refused pending future renewed
+consent. Cancel releases the shared mutation guard only after backend evidence
+confirms settlement; pending or unknown work retains ownership. Cancellation
+reconciliation records supplied backend evidence without remote I/O, so it does
+not establish that an external ComfyUI job stopped. The legacy runner loop is
+unchanged; only its shared manual run/retry/cancel entry points are guarded.
+The coordinator still stops after preparation advances to validation. Full Auto
+heartbeats, assistant-slot admission, automatic review/approval/submission,
+runner integration, and the profile editor and selection/consent UI remain
+unfinished. The existing manual workflow remains available for sessions
+without a nonterminal Full Auto owner.
 
 For a request ID already committed, an identical normalized request returns the
 exact stored response with HTTP 200 before quote-age or current-dependency

@@ -742,6 +742,28 @@ class TestTask43DriftEnforcementOnAuthoringPaths:
             "SELECT * FROM session_plan_approval WHERE session_id = ?", sid,
         ) is None
 
+    def test_reapproval_after_workflow_drift_preserves_existing_approval(self, client, seeded):
+        sid = _seed_authoring_session(
+            client, model_id=seeded["model_id"], workflow_id=seeded["workflow_id"],
+        )
+        plan = _authoring_plan(seeded["workflow_id"])
+        _save_authoring_plan(sid, plan)
+        session_plan.approve_plan_review(sid, 1)
+        approval = dict(db.one(
+            "SELECT * FROM session_plan_approval WHERE session_id = ?", sid,
+        ))
+
+        db.run(
+            "UPDATE workflow SET kind = 'edit' WHERE id = ?",
+            seeded["workflow_id"],
+        )
+        with pytest.raises(workflow_binding.WorkflowChanged):
+            session_plan.approve_plan_review(sid, 1)
+
+        assert db.one(
+            "SELECT * FROM session_plan_approval WHERE session_id = ?", sid,
+        ) == approval
+
     def test_submit_prepared_take_runs_validator_on_ready_branch(
         self, client, seeded,
     ):

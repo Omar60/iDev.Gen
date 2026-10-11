@@ -1,5 +1,17 @@
 # Project Diary
 
+## Full Auto Task 4.3 Acceptance
+
+Keep shared ownership guards at service boundaries and preserve safe conflict
+mapping through broad HTTP exception handlers. Approval replay must still check
+live dependency drift. A paused edit uses existing CAS without widening the old
+authorization; legacy runner integration requires later execution machinery.
+
+An isolated passing race test does not resolve a failing full-suite gate. Compare
+with pristine HEAD before attributing a concurrency failure to a scoped change.
+The existing CAS race also failed in pristine HEAD; its cause remains unresolved.
+The final complete suite passed without changing or weakening the race test.
+
 ## Full Auto Owned Preparation, Task 4.2
 
 - Profile coordinator work separately from synthetic-provider setup. Share
