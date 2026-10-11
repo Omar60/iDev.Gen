@@ -33,8 +33,15 @@ Verified baseline from the repository layout and application entry points.
   cancellation stays owned. Read-only drift inspection remains available, but
   a refresh that advances the plan is blocked. The internal coordinator in
   `backend/main.py` prepares ordered owned batches of up to twenty, then stops
-  at validation. Creation/startup do not dispatch it; no pause/Cancel/Resume
-  routes or UI exist, and review/submission/runner phases remain unimplemented.
+  at validation. A backend-internal all-target review and policy-approval step
+  validates current snapshots, conflicts, placeholders, adaptations, drift, and
+  duplicate acceptance while keeping neutral notices nonblocking. Approval and
+  new Full Auto submissions enforce the gate; exact linked-shot replays remain
+  no-write. Policy provenance is separate from human review approval. The review
+  projection and digest-bound duplicate-acceptance endpoint are available, but
+  the coordinator does not invoke them. Creation/startup do not dispatch it; no
+  pause/Cancel/Resume routes or UI exist, and submission/runner phases remain
+  unimplemented.
   The legacy runner loop is unchanged. Cancellation reconciliation records
   supplied backend evidence without remote I/O and does not establish recovery
   of an external ComfyUI job.

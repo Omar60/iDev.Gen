@@ -5131,18 +5131,35 @@ def submit_prepared_take(
                 expected_plan_revision=plan_revision,
             )
 
-            approval = db.one(
-                "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
-                session_id,
-            )
-            if approval is None or int(approval["plan_revision"]) != plan_revision:
-                raise PlanReviewNotApproved(
-                    f"session {session_id} plan revision {plan_revision} has not been approved for submission"
+            if _full_auto_claim is not None:
+                receipt = db.one(
+                    "SELECT run_id FROM full_auto_run_receipt WHERE session_id = ?",
+                    session_id,
                 )
-
-            _validate_unlinked_ready_snapshot_dependencies(
-                session_id, plan_revision, plan,
-            )
+                if receipt is None:
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "full_auto_authorization_missing",
+                        "The Full Auto authorization receipt is unavailable.",
+                    )
+                review = _full_auto_duplicate_review_evidence(
+                    session_id, plan_revision, plan, receipt["run_id"],
+                )
+                _require_full_auto_review_ready(review)
+                _require_current_full_auto_policy_approval(
+                    receipt["run_id"], session_id, review,
+                )
+            else:
+                approval = db.one(
+                    "SELECT plan_revision FROM session_plan_approval WHERE session_id = ?",
+                    session_id,
+                )
+                if approval is None or int(approval["plan_revision"]) != plan_revision:
+                    raise PlanReviewNotApproved(
+                        f"session {session_id} plan revision {plan_revision} has not been approved for submission"
+                    )
+                _validate_unlinked_ready_snapshot_dependencies(
+                    session_id, plan_revision, plan,
+                )
             take_ids = {
                 t.get("take_id")
                 for t in plan.get("takes", [])
@@ -5213,6 +5230,23 @@ def submit_prepared_take(
             ref_strength = validated_fields["reference_strength"]
             seed = validated_fields["seed"]
 
+            if _full_auto_claim is not None:
+                # Full Auto policy approval does not grant authority after the
+                # resource-planning feature is disabled. Recheck immediately
+                # before the first submission write; also refresh ownership,
+                # lease, and authorization after aggregate and local evidence
+                # validation. Linked replays returned above, while the manual
+                # approval path keeps its legacy gate.
+                _require_resource_planning_enabled()
+                current_run = _require_full_auto_mutation(
+                    session_id, claim=_full_auto_claim, allowed_phases=("submit",),
+                    expected_plan_revision=plan_revision,
+                )
+                if current_run is None or current_run["run_id"] != receipt["run_id"]:
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "run_owner_stale", "The Full Auto submission owner is stale.",
+                    )
+
             now = db.now()
             shot_id = db.run(
                 "INSERT INTO shot (session_id, shot_index, shot_label, prompt, negative, "
@@ -5265,6 +5299,7 @@ def submit_prepared_take(
         PreparedTakeConflict,
         PreparedTakePersistenceError,
         PlanReviewNotApproved,
+        ResourcePlanningDisabled,
         workflow_binding.WorkflowChanged,
         resource_full_auto.FullAutoRunError,
     ):
@@ -5350,6 +5385,577 @@ def _validate_unlinked_ready_snapshot_dependencies(
             )
 
 
+def _full_auto_snapshot_reference(row: dict) -> dict:
+    from backend import resource_store
+
+    content = {
+        key: row.get(key)
+        for key in (
+            "id", "session_id", "plan_revision", "take_id", "final_prompt",
+            "effective_state", "mapping_version", "compiler_version", "provenance",
+        )
+    }
+    return {
+        "take_id": row.get("take_id"),
+        "prepared_take_id": row.get("id"),
+        "snapshot_digest": resource_store.canonical_digest(content),
+    }
+
+
+def _full_auto_duplicate_review_evidence(
+    session_id: int,
+    plan_revision: int,
+    plan: dict,
+    run_id: str,
+) -> dict:
+    """Read and validate the complete Full Auto review set without writing."""
+    from backend import resource_preparation, resource_store
+
+    target_ids = [
+        take.get("take_id") for take in plan.get("takes", [])
+        if isinstance(take, dict)
+    ]
+    target_digest = resource_store.canonical_digest({
+        "plan_revision": plan_revision,
+        "take_ids": target_ids,
+    })
+    blockers: list[dict] = []
+    blocker_keys: set[tuple[str, str | None]] = set()
+    evidence_complete = (
+        bool(target_ids)
+        and len(target_ids) <= 500
+        and all(type(take_id) is str and take_id for take_id in target_ids)
+        and len(target_ids) == len(set(target_ids))
+    )
+
+    def block(code: str, take_id: str | None = None) -> None:
+        key = (code, take_id)
+        if key not in blocker_keys:
+            blocker_keys.add(key)
+            blockers.append({"code": code, **({"take_id": take_id} if take_id else {})})
+
+    if not evidence_complete:
+        block("full_auto_targets_invalid")
+        return {
+            "evidence_complete": False,
+            "plan_revision": plan_revision,
+            "target_ids": target_ids,
+            "target_digest": target_digest,
+            "snapshot_digest": None,
+            "duplicate_set_digest": None,
+            "review_digest": None,
+            "snapshots": [],
+            "duplicates": [],
+            "blockers": blockers,
+            "accepted": False,
+        }
+
+    if classify_plan_authoring(plan) != PLAN_AUTHORING_KIND_AUTOMATIC:
+        block("full_auto_plan_invalid")
+        evidence_complete = False
+
+    try:
+        _safe_validate_workflow_binding(session_id)
+    except workflow_binding.WorkflowChanged:
+        block("workflow_changed")
+        evidence_complete = False
+    except Exception:
+        block("prepared_evidence_stale")
+        evidence_complete = False
+
+    target_set = set(target_ids)
+    current_rows = db.q(
+        "SELECT take_id, status FROM prepared_take WHERE session_id = ? "
+        "AND plan_revision = ? AND status IN (?, ?)",
+        session_id, plan_revision,
+        PREPARED_TAKE_STATUS_READY, PREPARED_TAKE_STATUS_GENERATED,
+    )
+    if any(row["take_id"] not in target_set for row in current_rows):
+        block("full_auto_targets_invalid")
+        evidence_complete = False
+
+    snapshots: list[dict] = []
+    validated_targets: list[dict] = []
+    duplicates: list[dict] = []
+    predecessor_validation_cache: dict = {}
+    for take_id in target_ids:
+        row = _prepared_take_row(session_id, plan_revision, take_id)
+        if row is None or row.get("status") not in (
+            PREPARED_TAKE_STATUS_READY, PREPARED_TAKE_STATUS_GENERATED,
+        ):
+            block("full_auto_target_not_ready", take_id)
+            evidence_complete = False
+            continue
+        if row["status"] == PREPARED_TAKE_STATUS_READY:
+            if row.get("linked_shot_id") is not None:
+                block("linked_snapshot_invalid", take_id)
+                evidence_complete = False
+                continue
+        else:
+            linked_id = row.get("linked_shot_id")
+            shot = db.one(
+                "SELECT session_id, prompt FROM shot WHERE id = ?", linked_id,
+            ) if type(linked_id) is int else None
+            if (
+                shot is None
+                or int(shot["session_id"]) != session_id
+                or shot["prompt"] != row.get("final_prompt")
+            ):
+                block("linked_snapshot_invalid", take_id)
+                evidence_complete = False
+                continue
+
+        snapshots.append(_full_auto_snapshot_reference(row))
+        if not evidence_complete:
+            continue
+        try:
+            validated = validate_authoring_prepared_evidence(
+                session_id, plan_revision, take_id, row=row,
+                _predecessor_validation_cache=predecessor_validation_cache,
+            )
+        except workflow_binding.WorkflowChanged:
+            block("workflow_changed", take_id)
+            evidence_complete = False
+            continue
+        except Exception:
+            block("prepared_evidence_stale", take_id)
+            evidence_complete = False
+            continue
+
+        authoring_evidence = validated.authoring_evidence
+        duplicate_flags = (
+            authoring_evidence.get("duplicate_flags")
+            if isinstance(authoring_evidence, dict) else None
+        )
+        if (
+            not isinstance(duplicate_flags, dict)
+            or duplicate_flags.get("status") != "recorded"
+            or not isinstance(duplicate_flags.get("flags"), list)
+        ):
+            block("duplicate_evidence_missing", take_id)
+            evidence_complete = False
+            continue
+
+        try:
+            lineage_root, _ = resource_preparation._duplicate_lineage_root(row)
+            choices_digest = resource_preparation._duplicate_choices_digest(
+                row.get("effective_state"),
+            )
+        except Exception:
+            block("duplicate_evidence_stale", take_id)
+            evidence_complete = False
+            continue
+        validated_targets.append({
+            "take_id": take_id,
+            "prepared_take_id": int(row["id"]),
+            "lineage_root_id": lineage_root,
+            "choices_digest": choices_digest,
+            "snapshot_digest": snapshots[-1]["snapshot_digest"],
+        })
+
+        for flag in duplicate_flags["flags"]:
+            representative = db.one(
+                "SELECT id, session_id, plan_revision, take_id, final_prompt, "
+                "effective_state, mapping_version, compiler_version, provenance "
+                "FROM prepared_take WHERE id = ?",
+                flag["prepared_take_id"],
+            )
+            if representative is None:
+                block("duplicate_evidence_stale", take_id)
+                evidence_complete = False
+                continue
+            duplicates.append({
+                "take_id": take_id,
+                "prepared_take_id": int(row["id"]),
+                "duplicate_take_id": flag["take_id"],
+                "duplicate_prepared_take_id": int(representative["id"]),
+                "choices_digest": flag["choices_digest"],
+                "representative_snapshot_digest": _full_auto_snapshot_reference(
+                    dict(representative),
+                )["snapshot_digest"],
+            })
+
+        try:
+            preparation = resource_preparation.prepare_take_inputs(
+                session_id, plan_revision, take_id,
+            )
+            review = resource_preparation.build_review_state(preparation)
+        except workflow_binding.WorkflowChanged:
+            block("workflow_changed", take_id)
+            evidence_complete = False
+            continue
+        except Exception:
+            block("prepared_evidence_stale", take_id)
+            evidence_complete = False
+            continue
+        if review.get("conflicts"):
+            block("review_conflict", take_id)
+        if review.get("stale_adaptations"):
+            block("stale_adaptation", take_id)
+        if review.get("unresolved_placeholders"):
+            block("unresolved_placeholders", take_id)
+
+    target_by_id = {
+        item["prepared_take_id"]: item for item in validated_targets
+    }
+    for left_index, left in enumerate(validated_targets):
+        for right in validated_targets[left_index + 1:]:
+            if (
+                left["lineage_root_id"] == right["lineage_root_id"]
+                or left["choices_digest"] != right["choices_digest"]
+            ):
+                continue
+            duplicates.append({
+                "take_id": left["take_id"],
+                "prepared_take_id": left["prepared_take_id"],
+                "duplicate_take_id": right["take_id"],
+                "duplicate_prepared_take_id": right["prepared_take_id"],
+                "choices_digest": left["choices_digest"],
+                "representative_snapshot_digest": right["snapshot_digest"],
+            })
+
+    # Normalize current-target pairs so the persisted comparison and the live
+    # tuple comparison produce one stable row regardless of which take was prepared last.
+    for item in duplicates:
+        candidate = target_by_id.get(item["prepared_take_id"])
+        representative = target_by_id.get(item["duplicate_prepared_take_id"])
+        if (
+            candidate is None or representative is None
+            or (candidate["take_id"], candidate["prepared_take_id"])
+            <= (representative["take_id"], representative["prepared_take_id"])
+        ):
+            continue
+        item["take_id"], item["duplicate_take_id"] = (
+            item["duplicate_take_id"], item["take_id"],
+        )
+        item["prepared_take_id"], item["duplicate_prepared_take_id"] = (
+            item["duplicate_prepared_take_id"], item["prepared_take_id"],
+        )
+        item["representative_snapshot_digest"] = candidate["snapshot_digest"]
+
+    duplicate_keys = {
+        (
+            item["take_id"], item["prepared_take_id"],
+            item["duplicate_take_id"], item["duplicate_prepared_take_id"],
+        ): item
+        for item in duplicates
+    }
+    duplicates = [duplicate_keys[key] for key in sorted(duplicate_keys)]
+    snapshot_digest = (
+        resource_store.canonical_digest(snapshots)
+        if len(snapshots) == len(target_ids) else None
+    )
+    duplicate_set_digest = resource_store.canonical_digest(duplicates)
+    review_digest = (
+        resource_store.canonical_digest({
+            "version": 1,
+            "session_id": session_id,
+            "plan_revision": plan_revision,
+            "target_digest": target_digest,
+            "snapshot_digest": snapshot_digest,
+            "duplicate_set_digest": duplicate_set_digest,
+        })
+        if evidence_complete and snapshot_digest is not None else None
+    )
+    acceptance = db.one(
+        "SELECT session_id, plan_revision, target_digest, snapshot_digest, "
+        "duplicate_set_digest, review_digest "
+        "FROM full_auto_duplicate_review_acceptance WHERE run_id = ?",
+        run_id,
+    )
+    accepted = bool(
+        acceptance is not None
+        and review_digest is not None
+        and int(acceptance["session_id"]) == session_id
+        and int(acceptance["plan_revision"]) == plan_revision
+        and acceptance["target_digest"] == target_digest
+        and acceptance["snapshot_digest"] == snapshot_digest
+        and acceptance["duplicate_set_digest"] == duplicate_set_digest
+        and acceptance["review_digest"] == review_digest
+    )
+    return {
+        "evidence_complete": evidence_complete,
+        "plan_revision": plan_revision,
+        "target_ids": target_ids,
+        "target_digest": target_digest,
+        "snapshot_digest": snapshot_digest,
+        "duplicate_set_digest": duplicate_set_digest,
+        "review_digest": review_digest,
+        "snapshots": snapshots,
+        "duplicates": duplicates,
+        "blockers": blockers,
+        "accepted": accepted,
+    }
+
+
+def _require_full_auto_review_ready(review: dict) -> None:
+    _require_full_auto_review_evidence(review)
+    if review["duplicates"] and not review["accepted"]:
+        raise resource_full_auto.FullAutoRunError(
+            409, "duplicate_review_required",
+            "Review and explicitly accept the current duplicate set before Full Auto approval.",
+        )
+
+
+def _require_full_auto_review_evidence(review: dict) -> None:
+    if not review["evidence_complete"] and not review["blockers"]:
+        raise resource_full_auto.FullAutoRunError(
+            409, "full_auto_review_incomplete", "Full Auto review evidence is incomplete.",
+        )
+    if review["blockers"]:
+        blocker = review["blockers"][0]
+        code = blocker["code"]
+        messages = {
+            "full_auto_target_not_ready": "Every Full Auto target must have a verified ready or linked snapshot.",
+            "full_auto_targets_invalid": "The Full Auto target set does not match the current plan.",
+            "linked_snapshot_invalid": "A linked Full Auto snapshot no longer matches its shot.",
+            "workflow_changed": "The bound Full Auto workflow changed after preparation.",
+            "prepared_evidence_stale": "A Full Auto prepared snapshot no longer matches current evidence.",
+            "duplicate_evidence_missing": "Current duplicate comparison evidence is unavailable.",
+            "duplicate_evidence_stale": "A duplicate comparison representative changed.",
+            "review_conflict": "Full Auto review found an unresolved structural or ownership conflict.",
+            "stale_adaptation": "Full Auto review found a stale resource adaptation.",
+            "unresolved_placeholders": "Full Auto review found unresolved resource placeholders.",
+            "full_auto_plan_invalid": "The current plan is not a valid Full Auto plan.",
+        }
+        raise resource_full_auto.FullAutoRunError(
+            409, code, messages.get(code, "Full Auto review is incomplete."),
+        )
+
+
+def get_full_auto_duplicate_review_state(
+    session_id: int,
+    plan_revision: int | None = None,
+) -> dict | None:
+    """Return safe duplicate-review digests only for a Full Auto session."""
+    receipt = db.one(
+        "SELECT run_id FROM full_auto_run_receipt WHERE session_id = ?", session_id,
+    )
+    if receipt is None:
+        return None
+    current_rev, plan = _load_current_resource_plan(session_id)
+    if plan_revision is not None and current_rev != plan_revision:
+        raise PlanRevisionStale(
+            f"session {session_id} plan revision is {current_rev}, requested {plan_revision}"
+        )
+    review = _full_auto_duplicate_review_evidence(
+        session_id, current_rev, plan, receipt["run_id"],
+    )
+    return {
+        "state": (
+            "blocked" if not review["evidence_complete"] or review["blockers"]
+            else "duplicate_review_required" if review["duplicates"] and not review["accepted"]
+            else "ready"
+        ),
+        "plan_revision": current_rev,
+        "target_digest": review["target_digest"],
+        "snapshot_digest": review["snapshot_digest"],
+        "duplicate_set_digest": review["duplicate_set_digest"],
+        "review_digest": review["review_digest"],
+        "duplicates": review["duplicates"],
+        "duplicate_acceptance_required": bool(review["duplicates"]),
+        "duplicate_acceptance_current": review["accepted"],
+        "blockers": review["blockers"],
+    }
+
+
+def _require_current_full_auto_duplicate_review_run(
+    session_id: int,
+    *,
+    expected_run_id: str | None = None,
+) -> tuple[dict, dict, str]:
+    """Re-read the duplicate-review run and authorization at a write boundary."""
+    receipt = db.one(
+        "SELECT run_id FROM full_auto_run_receipt WHERE session_id = ?", session_id,
+    )
+    run = resource_full_auto._run_row_for_session(session_id)
+    if (
+        receipt is None or run is None
+        or run["run_id"] != receipt["run_id"]
+        or expected_run_id is not None and run["run_id"] != expected_run_id
+        or run["state"] not in {"active", "blocked"}
+        or run["phase"] not in {"validate", "approve"}
+        or bool(run["cancel_intent"])
+        or run["state"] == "blocked"
+        and run["blocker_code"] != "duplicate_review_required"
+    ):
+        raise resource_full_auto.FullAutoRunError(
+            409, "duplicate_review_unavailable",
+            "The Full Auto run is not waiting for duplicate review.",
+        )
+    checked_at = db.now()
+    authority_issue = resource_full_auto._current_authority_issue(run, checked_at)
+    if authority_issue is not None:
+        raise resource_full_auto.FullAutoRunError(
+            409, authority_issue,
+            "Full Auto authorization is no longer valid for this review.",
+        )
+    return receipt, run, checked_at
+
+
+def accept_full_auto_duplicate_review(
+    session_id: int,
+    plan_revision: int,
+    review_digest: str,
+) -> dict:
+    """Persist only an explicit acceptance of the exact current duplicate review."""
+    from backend import resource_store
+
+    _require_resource_planning_enabled()
+    if type(plan_revision) is not int or plan_revision <= 0:
+        raise PlanValidationError("plan_revision must be a positive integer")
+    if (
+        not isinstance(review_digest, str)
+        or len(review_digest) != 64
+        or any(char not in "0123456789abcdef" for char in review_digest)
+    ):
+        raise PlanValidationError("review_digest must be a lowercase SHA-256 digest")
+
+    with db.transaction():
+        _require_resource_planning_enabled()
+        current_rev, plan = _load_current_resource_plan(session_id)
+        if current_rev != plan_revision:
+            raise PlanRevisionStale(
+                f"session {session_id} plan revision is {current_rev}, requested {plan_revision}"
+            )
+        receipt, _run, _checked_at = _require_current_full_auto_duplicate_review_run(
+            session_id,
+        )
+        review = _full_auto_duplicate_review_evidence(
+            session_id, current_rev, plan, receipt["run_id"],
+        )
+        _require_full_auto_review_evidence(review)
+        if not review["duplicates"]:
+            raise resource_full_auto.FullAutoRunError(
+                409, "duplicate_review_not_required",
+                "The current Full Auto target set has no exact duplicate tuples to accept.",
+            )
+        if review["review_digest"] != review_digest:
+            raise resource_full_auto.FullAutoRunError(
+                409, "duplicate_review_stale",
+                "The Full Auto duplicate set or prepared snapshots changed; refresh the review.",
+            )
+        if review["accepted"]:
+            return {
+                "session_id": session_id,
+                "plan_revision": plan_revision,
+                "accepted": True,
+                "review_digest": review_digest,
+            }
+        _require_resource_planning_enabled()
+        receipt, _run, now = _require_current_full_auto_duplicate_review_run(
+            session_id, expected_run_id=receipt["run_id"],
+        )
+        db.run(
+            "INSERT INTO full_auto_duplicate_review_acceptance "
+            "(run_id, session_id, plan_revision, target_digest, snapshot_digest, "
+            "duplicate_set_digest, review_digest, accepted_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(run_id) DO UPDATE SET "
+            "session_id = excluded.session_id, plan_revision = excluded.plan_revision, "
+            "target_digest = excluded.target_digest, snapshot_digest = excluded.snapshot_digest, "
+            "duplicate_set_digest = excluded.duplicate_set_digest, "
+            "review_digest = excluded.review_digest, accepted_at = excluded.accepted_at",
+            receipt["run_id"], session_id, plan_revision,
+            review["target_digest"], review["snapshot_digest"],
+            review["duplicate_set_digest"], review_digest, now,
+        )
+        db.run(
+            "DELETE FROM full_auto_plan_approval WHERE run_id = ? "
+            "AND review_digest <> ?",
+            receipt["run_id"], review_digest,
+        )
+        return {
+            "session_id": session_id,
+            "plan_revision": plan_revision,
+            "accepted": True,
+            "review_digest": review_digest,
+        }
+
+
+def _full_auto_authorization_digest(run_id: str, session_id: int) -> str:
+    from backend import resource_store
+
+    receipt = db.one(
+        "SELECT authorization_json, scope_digest, dependencies_digest, plan_digest "
+        "FROM full_auto_run_receipt WHERE run_id = ? AND session_id = ?",
+        run_id, session_id,
+    )
+    if receipt is None:
+        raise resource_full_auto.FullAutoRunError(
+            409, "full_auto_authorization_missing",
+            "The Full Auto authorization receipt is unavailable.",
+        )
+    try:
+        authorization = json.loads(receipt["authorization_json"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise resource_full_auto.FullAutoRunError(
+            409, "full_auto_authorization_invalid",
+            "The Full Auto authorization receipt is invalid.",
+        ) from exc
+    return resource_store.canonical_digest({
+        "authorization": authorization,
+        "scope_digest": receipt["scope_digest"],
+        "dependencies_digest": receipt["dependencies_digest"],
+        "plan_digest": receipt["plan_digest"],
+    })
+
+
+def _full_auto_policy_approval_evidence(
+    run_id: str,
+    session_id: int,
+    review: dict,
+) -> dict:
+    return {
+        "schema_version": 1,
+        "approval_kind": "policy",
+        "run_id": run_id,
+        "session_id": session_id,
+        "plan_revision": review["plan_revision"],
+        "authorization_digest": _full_auto_authorization_digest(run_id, session_id),
+        "target_ids": review["target_ids"],
+        "target_digest": review["target_digest"],
+        "snapshots": review["snapshots"],
+        "snapshot_digest": review["snapshot_digest"],
+        "duplicates": review["duplicates"],
+        "duplicate_set_digest": review["duplicate_set_digest"],
+        "review_digest": review["review_digest"],
+        "duplicate_acceptance_digest": review["review_digest"] if review["duplicates"] else None,
+    }
+
+
+def _require_current_full_auto_policy_approval(
+    run_id: str,
+    session_id: int,
+    review: dict,
+) -> None:
+    row = db.one(
+        "SELECT plan_revision, authorization_digest, target_digest, snapshot_digest, "
+        "duplicate_set_digest, review_digest, evidence_json "
+        "FROM full_auto_plan_approval WHERE run_id = ? AND session_id = ?",
+        run_id, session_id,
+    )
+    expected = _full_auto_policy_approval_evidence(run_id, session_id, review)
+    try:
+        actual = json.loads(row["evidence_json"]) if row is not None else None
+    except (TypeError, json.JSONDecodeError):
+        actual = None
+    if (
+        row is None
+        or int(row["plan_revision"]) != review["plan_revision"]
+        or row["authorization_digest"] != expected["authorization_digest"]
+        or row["target_digest"] != review["target_digest"]
+        or row["snapshot_digest"] != review["snapshot_digest"]
+        or row["duplicate_set_digest"] != review["duplicate_set_digest"]
+        or row["review_digest"] != review["review_digest"]
+        or actual != expected
+    ):
+        raise PlanReviewNotApproved(
+            f"session {session_id} plan revision {review['plan_revision']} "
+            "does not have current Full Auto policy approval"
+        )
+
+
 def approve_plan_review(
     session_id: int,
     plan_revision: int,
@@ -5383,10 +5989,58 @@ def approve_plan_review(
             raise PlanRevisionStale(
                 f"session {session_id} plan revision is {current_rev}, requested {plan_revision}"
             )
-        _require_full_auto_mutation(
+        full_auto_run = _require_full_auto_mutation(
             session_id, claim=_full_auto_claim, allowed_phases=("approve",),
             expected_plan_revision=plan_revision,
         )
+        if _full_auto_claim is not None:
+            if full_auto_run is None:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "run_owner_stale", "The Full Auto approval owner is stale.",
+                )
+            review = _full_auto_duplicate_review_evidence(
+                session_id, plan_revision, plan, full_auto_run["run_id"],
+            )
+            _require_full_auto_review_ready(review)
+            evidence = _full_auto_policy_approval_evidence(
+                full_auto_run["run_id"], session_id, review,
+            )
+            _require_resource_planning_enabled()
+            current_run = _require_full_auto_mutation(
+                session_id, claim=_full_auto_claim, allowed_phases=("approve",),
+                expected_plan_revision=plan_revision,
+            )
+            if current_run is None or current_run["run_id"] != full_auto_run["run_id"]:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "run_owner_stale", "The Full Auto approval owner is stale.",
+                )
+            now = db.now()
+            db.run(
+                "INSERT INTO full_auto_plan_approval "
+                "(run_id, session_id, plan_revision, authorization_digest, target_digest, "
+                "snapshot_digest, duplicate_set_digest, review_digest, evidence_json, approved_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET "
+                "session_id = excluded.session_id, plan_revision = excluded.plan_revision, "
+                "authorization_digest = excluded.authorization_digest, "
+                "target_digest = excluded.target_digest, snapshot_digest = excluded.snapshot_digest, "
+                "duplicate_set_digest = excluded.duplicate_set_digest, "
+                "review_digest = excluded.review_digest, evidence_json = excluded.evidence_json, "
+                "approved_at = excluded.approved_at",
+                full_auto_run["run_id"], session_id, plan_revision,
+                evidence["authorization_digest"], evidence["target_digest"],
+                evidence["snapshot_digest"], evidence["duplicate_set_digest"],
+                evidence["review_digest"], json.dumps(
+                    evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ), now,
+            )
+            return {
+                "session_id": session_id,
+                "plan_revision": plan_revision,
+                "approved": True,
+                "approved_at": now,
+                "approval_kind": "policy",
+            }
         _validate_unlinked_ready_snapshot_dependencies(
             session_id, plan_revision, plan,
         )
@@ -5409,3 +6063,5 @@ def approve_plan_review(
 def invalidate_plan_approval(session_id: int) -> None:
     """Invalidate any existing plan review approval for session_id."""
     db.run("DELETE FROM session_plan_approval WHERE session_id = ?", session_id)
+    db.run("DELETE FROM full_auto_duplicate_review_acceptance WHERE session_id = ?", session_id)
+    db.run("DELETE FROM full_auto_plan_approval WHERE session_id = ?", session_id)

@@ -930,6 +930,32 @@ BEGIN
     SELECT RAISE(ABORT, 'Full Auto action receipt is immutable');
 END;
 
+-- Full Auto policy review remains distinct from the human plan approval row.
+-- Its digests bind the exact authorized target and immutable snapshot set.
+CREATE TABLE IF NOT EXISTS full_auto_duplicate_review_acceptance (
+    run_id              TEXT PRIMARY KEY REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    session_id          INTEGER NOT NULL UNIQUE REFERENCES session(id) ON DELETE CASCADE,
+    plan_revision       INTEGER NOT NULL CHECK (plan_revision > 0),
+    target_digest       TEXT NOT NULL CHECK (length(target_digest) = 64),
+    snapshot_digest     TEXT NOT NULL CHECK (length(snapshot_digest) = 64),
+    duplicate_set_digest TEXT NOT NULL CHECK (length(duplicate_set_digest) = 64),
+    review_digest       TEXT NOT NULL CHECK (length(review_digest) = 64),
+    accepted_at         TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS full_auto_plan_approval (
+    run_id              TEXT PRIMARY KEY REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    session_id          INTEGER NOT NULL UNIQUE REFERENCES session(id) ON DELETE CASCADE,
+    plan_revision       INTEGER NOT NULL CHECK (plan_revision > 0),
+    authorization_digest TEXT NOT NULL CHECK (length(authorization_digest) = 64),
+    target_digest       TEXT NOT NULL CHECK (length(target_digest) = 64),
+    snapshot_digest     TEXT NOT NULL CHECK (length(snapshot_digest) = 64),
+    duplicate_set_digest TEXT NOT NULL CHECK (length(duplicate_set_digest) = 64),
+    review_digest       TEXT NOT NULL CHECK (length(review_digest) = 64),
+    evidence_json       TEXT NOT NULL,
+    approved_at         TEXT NOT NULL
+);
+
 -- Authoritative review approval for resource-v1 plan revisions (task 5.4).
 -- One row per session; creating or saving a new plan revision invalidates
 -- the approval, and submission routes reject unapproved revisions with

@@ -1704,11 +1704,43 @@ confirms settlement; pending or unknown work retains ownership. Cancellation
 reconciliation records supplied backend evidence without remote I/O, so it does
 not establish that an external ComfyUI job stopped. The legacy runner loop is
 unchanged; only its shared manual run/retry/cancel entry points are guarded.
-The coordinator still stops after preparation advances to validation. Full Auto
-heartbeats, assistant-slot admission, automatic review/approval/submission,
-runner integration, and the profile editor and selection/consent UI remain
-unfinished. The existing manual workflow remains available for sessions
-without a nonterminal Full Auto owner.
+The backend includes an internal all-target review and policy-approval step.
+It validates every current target against ready or linked prepared evidence,
+workflow and resource dependencies, and per-take review state. Unresolved
+conflicts, placeholders, stale adaptations, drift, or unaccepted exact duplicate
+tuples block approval and new Full Auto submissions; neutral descriptive notices
+remain visible without blocking. New submissions recheck this gate before
+writing a shot, while an exact linked-shot replay remains no-write. Policy
+approval is stored separately from human plan-review approval.
+The `GET /api/sessions/{sid}/plan/review` response adds a
+`full_auto_duplicate_review` projection for Full Auto sessions, with state
+(`blocked`, `duplicate_review_required`, or `ready`), duplicate pairs, blockers,
+current digests, and whether acceptance is required or current. When exact
+duplicates need review,
+`POST /api/sessions/{sid}/plan/review/duplicates/accept` accepts the current
+duplicate review with exactly this strict JSON body:
+
+```json
+{
+  "plan_revision": 1,
+  "review_digest": "<64 lowercase hexadecimal characters>"
+}
+```
+
+`plan_revision` must be an integer from 1 through 9223372036854775807;
+`review_digest` must be a lowercase SHA-256 digest. Extra fields, coercions, or
+invalid values return `422` without writes. The acceptance is bound to the
+current plan, target set, and prepared snapshots; a changed plan or snapshot
+requires a refreshed review. Acceptance returns `409` when review is stale or
+no longer required.
+
+The preparation coordinator still stops after advancing to validation and does
+not invoke this step. Automatic submission, runner integration, heartbeats,
+assistant-slot admission, and the profile editor and selection/consent UI remain
+unfinished, so Full Auto is not an end-to-end user flow. The existing manual
+workflow remains available for sessions without a nonterminal Full Auto owner.
+This review validates persisted evidence and policy; it does not certify
+semantic correctness or rendered pixels.
 
 For a request ID already committed, an identical normalized request returns the
 exact stored response with HTTP 200 before quote-age or current-dependency

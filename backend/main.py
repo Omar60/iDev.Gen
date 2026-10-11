@@ -4387,6 +4387,66 @@ async def _run_full_auto_preparation(
         )
 
 
+def _run_full_auto_review_and_approve(
+    claim: resource_full_auto.RunClaim,
+) -> tuple[dict, resource_full_auto.RunClaim | None]:
+    """Validate all targets, persist policy approval, and return the submit owner."""
+    owner = claim
+    run_snapshot = db.one(
+        "SELECT plan_revision FROM full_auto_run WHERE run_id = ?", owner.run_id,
+    )
+    if run_snapshot is None:
+        raise resource_full_auto.FullAutoRunError(
+            409, "run_owner_stale", "The Full Auto validation owner is stale.",
+        )
+    plan_revision = int(run_snapshot["plan_revision"])
+    run = resource_full_auto.require_session_mutation_allowed(
+        owner.session_id, claim=owner, allowed_phases=("validate",),
+        expected_plan_revision=plan_revision,
+    )
+    if run is None:
+        raise resource_full_auto.FullAutoRunError(
+            409, "run_owner_stale", "The Full Auto validation owner is stale.",
+        )
+    current_revision, plan = session_plan._load_current_resource_plan(owner.session_id)
+    if current_revision != plan_revision:
+        raise resource_full_auto.FullAutoRunError(
+            409, "plan_revision_stale", "The Full Auto plan changed during review.",
+        )
+    review = session_plan._full_auto_duplicate_review_evidence(
+        owner.session_id, current_revision, plan, owner.run_id,
+    )
+    try:
+        session_plan._require_full_auto_review_ready(review)
+    except resource_full_auto.FullAutoRunError as exc:
+        owner = resource_full_auto.renew_run_claim(owner)
+        return (
+            resource_full_auto.advance_run(
+                owner, "blocked", blocker_code=exc.code,
+            ),
+            None,
+        )
+
+    owner = resource_full_auto.renew_run_claim(owner)
+    resource_full_auto.advance_run(owner, "active", phase="approve")
+    owner = resource_full_auto.renew_run_claim(owner)
+    try:
+        session_plan.approve_plan_review(
+            owner.session_id, plan_revision, _full_auto_claim=owner,
+        )
+    except resource_full_auto.FullAutoRunError as exc:
+        owner = resource_full_auto.renew_run_claim(owner)
+        return (
+            resource_full_auto.advance_run(
+                owner, "blocked", blocker_code=exc.code,
+            ),
+            None,
+        )
+    owner = resource_full_auto.renew_run_claim(owner)
+    view = resource_full_auto.advance_run(owner, "active", phase="submit")
+    return view, owner
+
+
 def _schedule_shared_suggestion_operation(view: dict) -> None:
     if view.get("kind") not in ("shared_suggestions", "prepare_takes"):
         return
@@ -5238,12 +5298,18 @@ def get_plan_review(sid: int, plan_revision: int | None = None):
                 "mapping_version": resource_preparation.MAPPING_VERSION,
             })
         approved_rev = session_plan.get_approved_plan_revision(sid)
-        return {
+        result = {
             "session_id": sid,
             "plan_revision": current_rev,
             "reviewed_revision": approved_rev if approved_rev == current_rev else None,
             "takes": reviews,
         }
+        duplicate_review = session_plan.get_full_auto_duplicate_review_state(
+            sid, current_rev,
+        )
+        if duplicate_review is not None:
+            result["full_auto_duplicate_review"] = duplicate_review
+        return result
     except Exception as exc:
         raise _prepared_take_http_error(exc)
 
@@ -5431,6 +5497,22 @@ class PlanReviewApproveIn(BaseModel):
     plan_revision: int
 
 
+class FullAutoDuplicateReviewAcceptIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    plan_revision: int = Field(
+        strict=True,
+        ge=1,
+        le=saved_looks._SQLITE_INTEGER_MAX,
+    )
+    review_digest: str = Field(
+        strict=True,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
 @app.post("/api/sessions/{sid}/plan/review/approve")
 @app.post("/api/sessions/{sid}/plan/approve")
 def approve_plan_review_endpoint(sid: int, p: PlanReviewApproveIn):
@@ -5462,6 +5544,23 @@ def approve_plan_review_endpoint(sid: int, p: PlanReviewApproveIn):
             "approved": True,
             "approved_at": res["approved_at"],
         }
+    except Exception as exc:
+        raise _prepared_take_http_error(exc)
+
+
+@app.post("/api/sessions/{sid}/plan/review/duplicates/accept")
+def accept_full_auto_duplicate_review_endpoint(
+    sid: int,
+    p: FullAutoDuplicateReviewAcceptIn,
+):
+    """Accept only the duplicate set bound to the current Full Auto review."""
+    if not is_resource_planning_enabled():
+        raise HTTPException(503, "Resource planning is disabled by configuration")
+    try:
+        result = session_plan.accept_full_auto_duplicate_review(
+            sid, p.plan_revision, p.review_digest,
+        )
+        return {"ok": True, **result}
     except Exception as exc:
         raise _prepared_take_http_error(exc)
 

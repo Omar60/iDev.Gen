@@ -100,12 +100,22 @@ plan CAS while retaining session ownership. A changed plan waits for renewed
 consent before the run can resume. Cancellation releases the guard only after
 backend evidence confirms settlement; pending or unknown work retains it. That
 reconciliation does no remote I/O and does not prove an external ComfyUI job
-stopped. Full Auto
-heartbeats, assistant-slot admission, automatic approval/submission and runner
-integration, plus the profile editor and selection/consent UI, remain
-unfinished, so Full Auto is not yet an end-to-end user flow. The existing
-manual workflow remains available for sessions without a nonterminal Full Auto
-owner. Portable-v1 JSON excludes profiles. See the
+stopped. A backend-only all-target review gate checks current prepared evidence
+for Full Auto approval and new submissions: unresolved review conflicts,
+placeholders, stale adaptations, drift, and unaccepted exact duplicate tuples
+block them; neutral descriptive notices remain visible without blocking.
+Approval records separate Full Auto policy provenance. The review projection
+is included in `GET /api/sessions/{sid}/plan/review`; current duplicate
+acceptance is available through
+`POST /api/sessions/{sid}/plan/review/duplicates/accept`, bound to the current
+plan revision and review digest. The preparation coordinator still stops at
+validation and does not invoke this gate, so automatic submission, runner
+integration, heartbeats, assistant-slot admission, and the profile editor and
+selection/consent UI remain unfinished. Full Auto is not yet an end-to-end user
+flow. The existing manual workflow remains available for sessions without a
+nonterminal Full Auto owner. Automatic review validates persisted evidence; it
+does not certify semantic correctness or rendered pixels. Portable-v1 JSON
+excludes profiles. See the
 [guided creation API](docs/sessions.md#saved-look-and-full-auto-creation-api).
 
 Full Auto currently accepts only text-to-image workflows with no mapped

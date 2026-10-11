@@ -1,5 +1,16 @@
 # Project Diary
 
+## Full Auto Task 4.4 Review Boundaries
+
+Aggregate review must compare current duplicate tuples as well as validate
+historical flags. Keep policy approval separate from human review, and preserve
+manual approval-before-preparation and linked no-write replay contracts.
+
+A transaction prevents competing database writes but does not stop time or
+feature-flag changes. Recheck authority and enablement after lengthy validation,
+immediately before approval, acceptance or shot writes. Strict domain validation
+cannot recover types already coerced by a permissive HTTP request model.
+
 ## Full Auto Task 4.3 Acceptance
 
 Keep shared ownership guards at service boundaries and preserve safe conflict

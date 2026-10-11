@@ -2,28 +2,28 @@
 
 ## Goal and Current Position
 
-Internal Heavy deployment `full-auto-4-3-20261010` addresses only Task 4.3 of
-`automate-resource-session-full-auto`. The change remains at 15 of 41 completed
-tasks; 4.3 is accepted after independent verification. Entry Git state was clean.
+Internal Heavy deployment `full_auto_first_pending_20261010` addresses only Task
+4.4 of `automate-resource-session-full-auto`. Main accepted Task 4.4 after
+independent verification; only 4.4 was marked, bringing completion to 16 of 41.
+Entry Git state was clean.
 
-Implementation and scoped repairs passed independent adversarial review.
-Shared service guards exclude competing manual mutations while Full Auto owns a
-session. Domain pause/edit uses a signed single-CAS capability and retains the
-owner. Cancel settlement releases manual exclusion; pending cancellation does not.
+The existing approval and submission services now enforce a Full Auto-only
+all-target evidence gate. Policy approval is separate from human review.
+Explicit duplicate acceptance binds the current plan, target set and snapshots.
+Neutral descriptive notices remain nonblocking; manual/expert contracts remain.
 
 ## Verification and Continuation
 
-The final uninstrumented complete Python suite passed: 3191 passed, two skipped,
-zero failures. Independent adversarial checks, strict OpenSpec validation and
-diff checks passed. Only Task 4.3 is marked complete; the next task is outside
-this deployment. Main acceptance is complete; commit and Archivist reporting remain closure steps.
+Independent review found and verified repairs for coercing duplicate-acceptance
+requests, disabled-policy submission and authority expiring during aggregate
+validation. The final focused set passed 28 tests; privacy/format checks passed
+46 tests, and strict OpenSpec validation and diff checks passed. The final complete
+Python suite ran with the virtualenv interpreter and exited successfully: 3,221
+collected cases, 3,219 passes and two skips. The skips cover opt-in real 500-take
+synthesis and unavailable filesystem symlinks. All task gates passed; closure
+includes the isolated acceptance commit and sealed Archivist report.
 
-An existing concurrent CAS test intermittently fails before the new guard:
-Tester reproduced it in pristine HEAD (27 of 100 isolated runs failed). The
-cause remains unresolved; this deployment did not change database concurrency
-or weaken that test. It passed in the final full suite.
-
-The legacy runner loop remains unchanged and cannot start an owned Full Auto
-session. Public Full Auto controls, changed-scope continuation, remote attempt
-journaling and cancellation probes remain later tasks. No real generation,
-external handoff, archive, push or subsequent task was performed.
+The internal review/approval driver stops at submission admission. Preparation
+still stops at validation; public run controls, ordered submission receipts,
+runner integration and recovery remain later tasks. No frontend changes or real
+generation are included. No later task, archive or push is authorized.
