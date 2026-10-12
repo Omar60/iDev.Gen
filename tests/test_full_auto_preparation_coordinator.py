@@ -729,7 +729,7 @@ def test_failed_twenty_third_take_preserves_twenty_two_and_resume_reuses_them(
 
     assert blocked["state"] == "blocked"
     assert blocked["phase"] == "prepare"
-    assert blocked["blocker_code"] == "preparation_failed"
+    assert blocked["blocker_code"] == "writer_output_invalid"
     assert first_provider["calls"] == targets[:23]
     assert first_provider["transaction_depths"] == [0] * 23
     rows = _prepared_rows(session_id, revision)

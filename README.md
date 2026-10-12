@@ -127,7 +127,20 @@ assistant slot across Full Auto runs and reserves each physical POST, including
 compatibility fallbacks, before dispatch. Each authorization allows at most two
 assistant calls per take and twice the target count overall. Full Auto requests
 have a 300-second total timeout, while manual assistant requests keep their
-existing transport behavior. During recovery, the replacement coordinator
+existing transport behavior. Provider failures have separate Full Auto blockers
+for unavailable configuration, transport errors, rate limits, structured
+refusals, unusable output, and provider drift. Only structured refusal or
+content-filter metadata counts as a refusal. A valid `Retry-After` value in
+seconds or HTTP-date is persisted, and Resume waits until its UTC deadline. The
+qualifying HTTP 400 reasoning-parameter fallback consumes its own reservation;
+other provider failures do not trigger a hidden prompt retry. Before an owned
+shot dispatch, the runner checks ComfyUI with a read-only stats request; failed
+stats or history reads get at most three persisted probes after 5, 15, and 30
+seconds, and history recovery never resends the prompt. Exhaustion blocks
+`comfy_unavailable`; after admission and shot linking, unresolved work keeps
+Resume disabled. The status directs operators to Setup, inspection, or Cancel,
+but local HTTP termination does not establish that remote ComfyUI work stopped.
+During recovery, the replacement coordinator
 waits for any live child to settle. It resumes that same registered child under
 a new fence if expired or failed, preserving the verified prefix. A stale
 execution owner stops subsequent writes and dispatches, leaving admission

@@ -1,5 +1,28 @@
 # Project Diary
 
+## Full Auto Task 4.9 Provider Recovery
+
+Reserve read-only recovery probes before their GET, not after a failed response.
+A crash between transport and persistence must consume the probe; reentry must
+honor its persisted due time instead of issuing another initial availability read.
+
+Read time after acquiring the transaction and again after authority validation.
+Lease validity and authorization expiry are separate gates: a live lease must
+not allow a probe after its grant expires. Independent delay probes reproduced
+both failures and retained cursor-unchanged assertions through repair.
+
+Classifying a child failure must not bypass its completed-prefix checkpoint.
+Adopt only independently validated persisted snapshots before fencing the parent,
+preserving public progress and existing recovery/reuse assertions.
+
+Keep malformed prose distinct from structured refusal and preserve consumed
+reservations on provider drift. Retry-After is an explicit Resume deadline,
+not an automatic retry instruction. Connectivity is not attempt settlement.
+
+Final full-suite evidence passed after two complete runs observed different
+concurrency failures outside the changed production paths. An isolated pass
+does not replace a complete gate or establish that those races were repaired.
+
 ## Full Auto Task 4.8 Assistant Reservations
 
 Read lease time after acquiring the transaction and again at the guarded write.

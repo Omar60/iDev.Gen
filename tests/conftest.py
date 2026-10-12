@@ -85,6 +85,9 @@ class FakeComfy:
         self.uploads.append((str(path), name))
         return f"idevgen/{name}"
 
+    async def stats(self) -> dict:
+        return {}
+
     async def queue_prompt(self, graph: dict, client_id: str) -> str:
         self.attempts += 1
         if self.fail_queue or self.attempts <= self.fail_first:

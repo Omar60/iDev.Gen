@@ -326,7 +326,7 @@ def test_take_twenty_three_failure_preserves_twenty_two_and_resume_reuses_them(
     result = asyncio.run(main._run_full_auto_preparation(owner))
 
     assert result["state"] == "blocked"
-    assert result["blocker_code"] == "preparation_failed"
+    assert result["blocker_code"] == "writer_output_invalid"
     assert [call["take_id"] for call in assistant.calls] == target_ids[:23]
     progress = db.one(
         "SELECT * FROM full_auto_prepare_progress WHERE run_id = ?", run_id,

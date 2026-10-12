@@ -8,6 +8,8 @@ unresolved until the remote outcome can be reconciled.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+import hashlib
 import json
 import logging
 import random
@@ -122,10 +124,17 @@ class Runner:
                     )
                     break
                 await self._run_shot(session_id, shot, heartbeat)
-        except resource_full_auto.FullAutoRunError:
+        except resource_full_auto.FullAutoRunError as exc:
             if heartbeat is None:
                 raise
             self._cancel.discard(session_id)
+            if exc.code == "comfy_unavailable":
+                try:
+                    resource_full_auto.advance_run(
+                        heartbeat.check(), "blocked", blocker_code="comfy_unavailable",
+                    )
+                except resource_full_auto.FullAutoRunError:
+                    pass
             return
         except Exception as exc:  # noqa: BLE001 - the loop must never die silently
             log.exception("session %s crashed", session_id)
@@ -267,6 +276,10 @@ class Runner:
             for slot in ("checkpoint", "lora_name", "lora_strength"):
                 values.pop(slot)
 
+        if heartbeat is not None:
+            await self._ensure_comfy_available(
+                session_id, heartbeat, f"dispatch:{int(shot['id'])}",
+            )
         self._owned_update(
             session_id, heartbeat,
             "UPDATE shot SET status='running', seed=? WHERE id=?", seed, shot["id"],
@@ -401,11 +414,104 @@ class Runner:
         )
         return values
 
+    async def _recover_comfy_read(
+        self, session_id: int, heartbeat, scope: str, read, *, state=None,
+    ):
+        """Retry one owned read boundary on the persisted 5/15/30-second schedule."""
+        from backend import resource_full_auto
+
+        if state is None:
+            state = resource_full_auto.schedule_comfy_probe(heartbeat.check(), scope)
+        waited = 0.0
+        while True:
+            due_at = state["due_at"]
+            if due_at is None:
+                raise resource_full_auto.FullAutoRunError(
+                    503, "comfy_unavailable",
+                    "ComfyUI did not recover after bounded read-only checks.",
+                )
+            try:
+                due = datetime.fromisoformat(str(due_at).replace("Z", "+00:00"))
+                now = datetime.fromisoformat(db.now().replace("Z", "+00:00"))
+                delay = max(0.0, (due - now).total_seconds())
+            except (TypeError, ValueError):
+                raise resource_full_auto.FullAutoRunError(
+                    500, "run_state_invalid", "Saved ComfyUI probe deadline is invalid.",
+                )
+            while delay > 0:
+                self._require_runner_owner(session_id, heartbeat)
+                if session_id in self._cancel:
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "run_control_required", "The Full Auto runner was cancelled.",
+                    )
+                interval = min(delay, resource_full_auto.RUN_HEARTBEAT_INTERVAL.total_seconds())
+                await asyncio.sleep(interval)
+                waited += interval
+                self._require_runner_owner(session_id, heartbeat)
+                now = datetime.fromisoformat(db.now().replace("Z", "+00:00"))
+                delay = max(0.0, (due - now).total_seconds())
+            self._require_runner_owner(session_id, heartbeat)
+            if session_id in self._cancel:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "run_control_required", "The Full Auto runner was cancelled.",
+                )
+            # Consume the probe durably before issuing its GET. A restart after a
+            # lost response continues at the next deadline instead of replaying
+            # the same read without bound.
+            state = resource_full_auto.reserve_comfy_probe(heartbeat.check(), scope)
+            try:
+                result = await read()
+            except resource_full_auto.FullAutoRunError:
+                raise
+            except Exception:  # noqa: BLE001 - only this read boundary is retried
+                self._require_runner_owner(session_id, heartbeat)
+                state = resource_full_auto.comfy_probe_state(heartbeat.check(), scope)
+                continue
+            self._require_runner_owner(session_id, heartbeat)
+            resource_full_auto.clear_comfy_probe_state(heartbeat.check(), scope)
+            return result, waited
+
+    async def _ensure_comfy_available(self, session_id: int, heartbeat, scope: str) -> None:
+        """Gate owned queue dispatch on ComfyUI without sending a prompt probe."""
+        from backend import resource_full_auto
+
+        self._require_runner_owner(session_id, heartbeat)
+        scope_state = resource_full_auto.comfy_probe_state(heartbeat.check(), scope)
+        if scope_state["pending"]:
+            await self._recover_comfy_read(
+                session_id, heartbeat, scope, self.comfy.stats, state=scope_state,
+            )
+            return
+        try:
+            await self.comfy.stats()
+        except resource_full_auto.FullAutoRunError:
+            raise
+        except Exception:  # noqa: BLE001 - availability is the only fact used here
+            scope_state = resource_full_auto.schedule_comfy_probe(heartbeat.check(), scope)
+            await self._recover_comfy_read(
+                session_id, heartbeat, scope, self.comfy.stats, state=scope_state,
+            )
+        else:
+            resource_full_auto.clear_comfy_probe_state(heartbeat.check(), scope)
+
     async def _await_history(self, prompt_id: str, session_id: int, heartbeat=None) -> dict | None:
         """Poll until the job leaves ComfyUI's queue. None = cancelled/timeout."""
         from backend import resource_full_auto
 
         waited = 0.0
+        scope = "history:" + hashlib.sha256(prompt_id.encode("utf-8")).hexdigest()
+        if heartbeat is not None:
+            scope_state = resource_full_auto.comfy_probe_state(heartbeat.check(), scope)
+            if scope_state["pending"]:
+                history, recovery_waited = await self._recover_comfy_read(
+                    session_id, heartbeat, scope,
+                    lambda: self.comfy.history(prompt_id), state=scope_state,
+                )
+                waited += recovery_waited
+                if history and history.get("status", {}).get("completed") is not None:
+                    return history
+                if history and history.get("outputs"):
+                    return history
         while waited < SHOT_TIMEOUT:
             self._require_runner_owner(session_id, heartbeat)
             if session_id in self._cancel:
@@ -417,8 +523,21 @@ class Runner:
                 history = await self.comfy.history(prompt_id)
             except resource_full_auto.FullAutoRunError:
                 raise
-            except Exception:  # ComfyUI restarting / transient — keep polling
+            except Exception:  # ComfyUI restarting / transient read failure
                 self._require_runner_owner(session_id, heartbeat)
+                if heartbeat is None:
+                    continue
+                scope_state = resource_full_auto.schedule_comfy_probe(heartbeat.check(), scope)
+                history, recovery_waited = await self._recover_comfy_read(
+                    session_id, heartbeat, scope,
+                    lambda: self.comfy.history(prompt_id),
+                    state=scope_state,
+                )
+                waited += recovery_waited
+                if history and history.get("status", {}).get("completed") is not None:
+                    return history
+                if history and history.get("outputs"):
+                    return history
                 continue
             self._require_runner_owner(session_id, heartbeat)
             if history and history.get("status", {}).get("completed") is not None:

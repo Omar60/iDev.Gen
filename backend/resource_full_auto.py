@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 import hashlib
 import hmac
 import json
@@ -29,6 +30,7 @@ ASSISTANT_SLOT_HEARTBEAT_INTERVAL = timedelta(seconds=15)
 ASSISTANT_DISPATCH_TIMEOUT = timedelta(seconds=300)
 # Persisted timestamps have one-second precision, so quarantine rounds safely up.
 ASSISTANT_DISPATCH_TIMESTAMP_MARGIN = timedelta(seconds=1)
+COMFY_PROBE_DELAYS = (5, 15, 30)
 _RUN_CLAIM_KEY = secrets.token_bytes(32)
 _MANUAL_EDIT_CLAIM_KEY = secrets.token_bytes(32)
 _ASSISTANT_SLOT_CLAIM_KEY = secrets.token_bytes(32)
@@ -57,6 +59,8 @@ _PUBLIC_BLOCKER_CODES = frozenset({
     "submission_target_stale", "full_auto_scope_unavailable",
     "full_auto_continuity_requires_new_session", "dependency_changed", "correctable_input",
     "source_changed", "comfy_unavailable", "verification_fence",
+    "assistant_unavailable", "assistant_transport_error", "assistant_rate_limited",
+    "assistant_refused", "writer_output_invalid", "provider_changed",
 })
 _PUBLIC_RUN_VIEW_FIELDS = (
     "run_id", "session_id", "revision", "epoch", "plan_revision", "state", "phase",
@@ -256,6 +260,27 @@ def _now_text(value: str | None) -> str:
     text = value if value is not None else db.now()
     _timestamp(text, field_name="current time")
     return text
+
+
+def assistant_retry_after_deadline(value: str | None, *, now_text: str | None = None) -> str | None:
+    """Return a canonical absolute deadline for a valid Retry-After value."""
+    if not isinstance(value, str) or not value or len(value) > 128:
+        return None
+    timestamp = _now_text(now_text)
+    now = _timestamp(timestamp, field_name="current time")
+    try:
+        if value.isascii() and value.isdecimal():
+            deadline = now + timedelta(seconds=int(value))
+        else:
+            deadline = parsedate_to_datetime(value)
+            if deadline.tzinfo is None or deadline.utcoffset() is None:
+                return None
+            deadline = deadline.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if deadline <= now:
+        return None
+    return deadline.isoformat(timespec="seconds")
 
 
 def run_lease_deadline(started_at: str | None = None) -> str:
@@ -780,6 +805,34 @@ def get_run_for_session(session_id: int) -> dict | None:
 
 
 _BLOCKER_REMEDIES = {
+    "assistant_unavailable": (
+        "No prompt assistant is configured for this Full Auto run.",
+        ["configure_assistant", "resume", "cancel"],
+    ),
+    "assistant_transport_error": (
+        "The prompt assistant could not complete the request.",
+        ["check_provider", "resume", "cancel"],
+    ),
+    "assistant_rate_limited": (
+        "The prompt assistant rate limited this run.",
+        ["wait", "resume", "cancel"],
+    ),
+    "assistant_refused": (
+        "The prompt assistant refused this take.",
+        ["revise_brief", "manual_authoring", "cancel"],
+    ),
+    "writer_output_invalid": (
+        "The prompt assistant returned unusable structured output.",
+        ["revise_brief", "manual_authoring", "resume"],
+    ),
+    "provider_changed": (
+        "The configured prompt assistant changed after Full Auto authorization.",
+        ["compare_scope", "review_changes", "cancel"],
+    ),
+    "comfy_unavailable": (
+        "ComfyUI remained unavailable after bounded read-only checks. Check the ComfyUI endpoint and availability in Setup.",
+        ["review_status", "cancel"],
+    ),
     "authorization_expired": (
         "The Full Auto authorization expired.",
         ["compare_scope", "resume_with_changed_scope", "cancel"],
@@ -821,6 +874,213 @@ _BLOCKER_REMEDIES = {
         ["review_status", "cancel"],
     ),
 }
+
+
+def _require_comfy_probe_owner(claim: RunClaim, timestamp: str) -> dict:
+    row = _require_claim(
+        claim, now_text=timestamp, reconciliation=claim.requires_reconciliation,
+    )
+    if (
+        row["phase"] not in {"execute", "reconcile"}
+        or row["phase"] == "reconcile" and row["resume_phase"] != "execute"
+        or bool(row["cancel_intent"])
+    ):
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto ComfyUI probe owner is stale.")
+    authority_issue = _current_authority_issue(row, timestamp)
+    if authority_issue is not None:
+        raise _authority_error(authority_issue)
+    if not resource_planning.is_enabled():
+        raise FullAutoRunError(
+            503, "resource_planning_disabled", "Full Auto is disabled by configuration.",
+        )
+    return row
+
+
+def _require_comfy_probe_authorization_deadline(row: dict, timestamp: str) -> None:
+    """Recheck the grant deadline after authority validation, at the write edge."""
+    try:
+        grant = current_authorization(
+            row["run_id"], session_id=int(row["session_id"]),
+        )
+        expiry = _timestamp(
+            grant["authorization_expires_at"], field_name="authorization expiry",
+        )
+    except (TypeError, json.JSONDecodeError, FullAutoRunError) as exc:
+        raise _authority_error("authorization_invalid") from exc
+    if expiry <= _timestamp(timestamp, field_name="current time"):
+        raise _authority_error("authorization_expired")
+
+
+def _recheck_comfy_probe_owner_before_write(
+    claim: RunClaim,
+    now_text: str | None,
+) -> tuple[dict, str]:
+    """Revalidate authority, then check the live fence again at the write edge."""
+    timestamp = _now_text(now_text)
+    _require_comfy_probe_owner(claim, timestamp)
+    timestamp = _now_text(now_text)
+    row = _require_claim(claim, now_text=timestamp, reconciliation=claim.requires_reconciliation)
+    if (
+        row["phase"] not in {"execute", "reconcile"}
+        or row["phase"] == "reconcile" and row["resume_phase"] != "execute"
+        or bool(row["cancel_intent"])
+    ):
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto ComfyUI probe owner is stale.")
+    if not resource_planning.is_enabled():
+        raise FullAutoRunError(
+            503, "resource_planning_disabled", "Full Auto is disabled by configuration.",
+        )
+    # Authority validation can finish just as its grant expires. The fresh
+    # timestamp above protects the deadline independently from the earlier
+    # authority check, while this live claim check still protects the fence.
+    _require_comfy_probe_authorization_deadline(row, timestamp)
+    return row, timestamp
+
+
+def _validate_comfy_probe_scope(scope: str) -> None:
+    if not isinstance(scope, str) or not re.fullmatch(r"(?:dispatch|history):[a-f0-9]{1,64}", scope):
+        raise FullAutoRunError(422, "invalid_probe_scope", "The ComfyUI probe scope is invalid.")
+
+
+def comfy_probe_state(
+    claim: RunClaim,
+    scope: str,
+    *,
+    now_text: str | None = None,
+) -> dict[str, object]:
+    """Read the durable bounded-probe cursor for one owned dispatch/history boundary."""
+    _validate_comfy_probe_scope(scope)
+    with db.transaction():
+        timestamp = _now_text(now_text)
+        row = _require_comfy_probe_owner(claim, timestamp)
+        if row["comfy_probe_scope"] != scope:
+            return {"scope": scope, "count": 0, "due_at": None, "pending": False}
+        count = row["comfy_probe_count"]
+        due_at = row["comfy_probe_due_at"]
+        if type(count) is not int or not 0 <= count <= len(COMFY_PROBE_DELAYS):
+            raise FullAutoRunError(500, "run_state_invalid", "Saved ComfyUI probe state is invalid.")
+        if due_at is not None:
+            _timestamp(due_at, field_name="ComfyUI probe deadline")
+        return {"scope": scope, "count": count, "due_at": due_at, "pending": True}
+
+
+def schedule_comfy_probe(
+    claim: RunClaim,
+    scope: str,
+    *,
+    now_text: str | None = None,
+) -> dict[str, object]:
+    """Persist the initial 5-second read-only recovery deadline after a failed read."""
+    _validate_comfy_probe_scope(scope)
+    with db.transaction():
+        timestamp = _now_text(now_text)
+        current_time = _timestamp(timestamp, field_name="current time")
+        row = _require_comfy_probe_owner(claim, timestamp)
+        same_scope = row["comfy_probe_scope"] == scope
+        count = int(row["comfy_probe_count"]) if same_scope else 0
+        due_at = row["comfy_probe_due_at"] if same_scope else None
+        if not 0 <= count <= len(COMFY_PROBE_DELAYS):
+            raise FullAutoRunError(500, "run_state_invalid", "Saved ComfyUI probe state is invalid.")
+        if not due_at and count < len(COMFY_PROBE_DELAYS):
+            due_at = (current_time + timedelta(seconds=COMFY_PROBE_DELAYS[0])).isoformat(
+                timespec="seconds",
+            )
+        row, timestamp = _recheck_comfy_probe_owner_before_write(claim, now_text)
+        current_time = _timestamp(timestamp, field_name="current time")
+        same_scope = row["comfy_probe_scope"] == scope
+        count = int(row["comfy_probe_count"]) if same_scope else 0
+        due_at = row["comfy_probe_due_at"] if same_scope else None
+        if not 0 <= count <= len(COMFY_PROBE_DELAYS):
+            raise FullAutoRunError(500, "run_state_invalid", "Saved ComfyUI probe state is invalid.")
+        if not due_at and count < len(COMFY_PROBE_DELAYS):
+            due_at = (current_time + timedelta(seconds=COMFY_PROBE_DELAYS[0])).isoformat(
+                timespec="seconds",
+            )
+        db.run(
+            """UPDATE full_auto_run
+               SET comfy_probe_scope = ?, comfy_probe_count = ?, comfy_probe_due_at = ?,
+                   updated_at = ?
+               WHERE run_id = ? AND epoch = ? AND fencing_token = ?""",
+            scope, count, due_at, timestamp, claim.run_id, claim.epoch, claim.fencing_token,
+        )
+        return {"scope": scope, "count": count, "due_at": due_at, "pending": True}
+
+
+def reserve_comfy_probe(
+    claim: RunClaim,
+    scope: str,
+    *,
+    now_text: str | None = None,
+) -> dict[str, object]:
+    """Durably consume the next probe before its GET so a lost response cannot replay it."""
+    _validate_comfy_probe_scope(scope)
+    with db.transaction():
+        timestamp = _now_text(now_text)
+        current_time = _timestamp(timestamp, field_name="current time")
+        row = _require_comfy_probe_owner(claim, timestamp)
+        if row["comfy_probe_scope"] != scope:
+            raise FullAutoRunError(409, "comfy_probe_not_scheduled", "No ComfyUI probe is scheduled.")
+        count = row["comfy_probe_count"]
+        due_at = row["comfy_probe_due_at"]
+        if type(count) is not int or not 0 <= count <= len(COMFY_PROBE_DELAYS):
+            raise FullAutoRunError(500, "run_state_invalid", "Saved ComfyUI probe state is invalid.")
+        if count >= len(COMFY_PROBE_DELAYS) or due_at is None:
+            raise FullAutoRunError(
+                503, "comfy_unavailable", "ComfyUI did not recover after bounded read-only checks.",
+            )
+        if _timestamp(due_at, field_name="ComfyUI probe deadline") > current_time:
+            raise FullAutoRunError(409, "comfy_probe_not_due", "The next ComfyUI probe is not due yet.")
+        row, timestamp = _recheck_comfy_probe_owner_before_write(claim, now_text)
+        current_time = _timestamp(timestamp, field_name="current time")
+        if row["comfy_probe_scope"] != scope:
+            raise FullAutoRunError(409, "comfy_probe_not_scheduled", "No ComfyUI probe is scheduled.")
+        count = row["comfy_probe_count"]
+        due_at = row["comfy_probe_due_at"]
+        if type(count) is not int or not 0 <= count <= len(COMFY_PROBE_DELAYS):
+            raise FullAutoRunError(500, "run_state_invalid", "Saved ComfyUI probe state is invalid.")
+        if count >= len(COMFY_PROBE_DELAYS) or due_at is None:
+            raise FullAutoRunError(
+                503, "comfy_unavailable", "ComfyUI did not recover after bounded read-only checks.",
+            )
+        if _timestamp(due_at, field_name="ComfyUI probe deadline") > current_time:
+            raise FullAutoRunError(409, "comfy_probe_not_due", "The next ComfyUI probe is not due yet.")
+        next_count = count + 1
+        next_due_at = None if next_count == len(COMFY_PROBE_DELAYS) else (
+            current_time + timedelta(seconds=COMFY_PROBE_DELAYS[next_count])
+        ).isoformat(timespec="seconds")
+        db.run(
+            """UPDATE full_auto_run
+               SET comfy_probe_count = ?, comfy_probe_due_at = ?, updated_at = ?
+               WHERE run_id = ? AND epoch = ? AND fencing_token = ?""",
+            next_count, next_due_at, timestamp,
+            claim.run_id, claim.epoch, claim.fencing_token,
+        )
+        return {"scope": scope, "count": next_count, "due_at": next_due_at, "pending": True}
+
+
+def clear_comfy_probe_state(
+    claim: RunClaim,
+    scope: str,
+    *,
+    now_text: str | None = None,
+) -> None:
+    """Clear only the completed read boundary's probe cursor."""
+    _validate_comfy_probe_scope(scope)
+    with db.transaction():
+        timestamp = _now_text(now_text)
+        row = _require_comfy_probe_owner(claim, timestamp)
+        if row["comfy_probe_scope"] != scope:
+            return
+        row, timestamp = _recheck_comfy_probe_owner_before_write(claim, now_text)
+        if row["comfy_probe_scope"] != scope:
+            return
+        db.run(
+            """UPDATE full_auto_run
+               SET comfy_probe_scope = NULL, comfy_probe_count = 0,
+                   comfy_probe_due_at = NULL, updated_at = ?
+               WHERE run_id = ? AND epoch = ? AND fencing_token = ?""",
+            timestamp, claim.run_id, claim.epoch, claim.fencing_token,
+        )
 
 
 def unresolved_work_count(session_id: int, run_id: str) -> int:
@@ -1065,6 +1325,19 @@ def public_run_status(session_id: int, run_id: str) -> dict:
         enabled and resumable_state and state != "succeeded" and unresolved == 0
         and authority_repairable and policy_is_supported and budget_available
     )
+    retry_after_at = row.get("assistant_retry_after_at")
+    retry_wait_active = False
+    if blocker_code == "assistant_rate_limited" and retry_after_at:
+        try:
+            retry_wait_active = _timestamp(
+                retry_after_at, field_name="assistant Retry-After deadline",
+            ) > _timestamp(db.now(), field_name="current time")
+        except FullAutoRunError:
+            raise _invalid_saved_status()
+        if retry_wait_active:
+            message = f"The prompt assistant can be resumed after {retry_after_at} UTC."
+            remedies = ["wait", "resume", "cancel"]
+            can_resume = False
     view.update({
         "phase": row["phase"],
         "blocker_code": blocker_code,
@@ -1669,8 +1942,8 @@ def _assistant_owner_rows(
         or _canonical_json(provider_identity) != _canonical_json(summary["provider"])
     ):
         raise FullAutoRunError(
-            409, "authorization_scope_changed",
-            "The assistant provider changed after Full Auto authorization.",
+            409, "provider_changed",
+            "The configured assistant provider changed after Full Auto authorization.",
         )
     return run, operation, grant, {"summary": summary, "limits": limits}
 
@@ -3077,18 +3350,22 @@ def advance_run(
     *,
     phase: str | None = None,
     blocker_code: str | None = None,
+    assistant_retry_after: str | None = None,
     now_text: str | None = None,
 ) -> dict:
     """Apply only the nonterminal coordinator transitions from the state table."""
-    timestamp = _now_text(now_text)
     if to_state not in {"active", "waiting_authoring", "waiting_runner", "blocked"}:
         raise FullAutoRunError(409, "run_transition_refused", "The requested run transition is not allowed.")
     if phase is not None and phase not in _MAIN_PHASES:
         raise FullAutoRunError(409, "run_phase_invalid", "The requested Full Auto phase is invalid.")
     if blocker_code is not None and not _SAFE_CODE.fullmatch(blocker_code):
         raise FullAutoRunError(422, "invalid_blocker_code", "The Full Auto blocker code is invalid.")
-
     with db.transaction():
+        timestamp = _now_text(now_text)
+        retry_after_at = (
+            assistant_retry_after_deadline(assistant_retry_after, now_text=timestamp)
+            if blocker_code == "assistant_rate_limited" else None
+        )
         row = _require_claim(claim, now_text=timestamp)
         authority_issue = _current_authority_issue(row, timestamp)
         if authority_issue is not None and to_state != "blocked":
@@ -3124,9 +3401,14 @@ def advance_run(
                SET state = ?, phase = ?, revision = revision + 1,
                    fencing_token = fencing_token + ?, lease_expires_at = ?,
                    lease_started_at = ?,
-                   blocker_code = ?, evidence_json = ?, updated_at = ?
+                   blocker_code = ?, assistant_retry_after_at = ?,
+                   comfy_probe_scope = CASE WHEN ? = 'comfy_unavailable' THEN comfy_probe_scope ELSE NULL END,
+                   comfy_probe_count = CASE WHEN ? = 'comfy_unavailable' THEN comfy_probe_count ELSE 0 END,
+                   comfy_probe_due_at = CASE WHEN ? = 'comfy_unavailable' THEN comfy_probe_due_at ELSE NULL END,
+                   evidence_json = ?, updated_at = ?
                WHERE run_id = ? AND epoch = ? AND fencing_token = ?""",
             to_state, next_phase, fence_delta, lease, lease_started, blocker_code,
+            retry_after_at, blocker_code, blocker_code, blocker_code,
             _canonical_json({"kind": "state_transition", "from": source, "to": to_state}),
             timestamp, claim.run_id, claim.epoch, claim.fencing_token,
         )
@@ -3169,7 +3451,9 @@ def complete_run(
                SET state = ?, revision = revision + 1,
                    fencing_token = fencing_token + 1, lease_expires_at = NULL,
                    lease_started_at = NULL, cancel_intent = 0,
-                   cancel_intent_at = NULL, blocker_code = NULL, resume_phase = NULL,
+                   cancel_intent_at = NULL, blocker_code = NULL,
+                   assistant_retry_after_at = NULL, comfy_probe_scope = NULL,
+                   comfy_probe_count = 0, comfy_probe_due_at = NULL, resume_phase = NULL,
                    evidence_json = ?, updated_at = ?
                WHERE run_id = ? AND epoch = ? AND fencing_token = ?""",
             target,
@@ -3568,6 +3852,16 @@ def resume_run(
                 row = _require_run(run_id)
                 claim = _make_claim(row, True)
         else:
+            retry_after_at = row["assistant_retry_after_at"]
+            if row["blocker_code"] == "assistant_rate_limited" and retry_after_at is not None:
+                if _timestamp(retry_after_at, field_name="assistant Retry-After deadline") > _timestamp(
+                    timestamp, field_name="current time",
+                ):
+                    raise FullAutoRunError(
+                        409, "assistant_retry_after",
+                        f"Resume is available after {retry_after_at} UTC.",
+                        current_run=_view(row),
+                    )
             if scope_digest is not None and comparison_issued_at is None:
                 raise FullAutoRunError(
                     422, "invalid_control_request",
@@ -3716,7 +4010,8 @@ def resume_run(
                        epoch = epoch + ?, fencing_token = fencing_token + 1,
                        lease_expires_at = ?, lease_started_at = ?, plan_revision = ?,
                        cancel_intent = 0, cancel_intent_at = NULL, blocker_code = NULL,
-                       resume_phase = NULL,
+                       assistant_retry_after_at = NULL, comfy_probe_scope = NULL,
+                       comfy_probe_count = 0, comfy_probe_due_at = NULL, resume_phase = NULL,
                        evidence_json = ?, updated_at = ?
                    WHERE run_id = ? AND revision = ? AND fencing_token = ?""",
                 next_state, phase, 1 if is_new_epoch else 0, deadline,

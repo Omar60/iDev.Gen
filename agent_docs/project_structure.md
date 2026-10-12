@@ -45,7 +45,17 @@ Verified baseline from the repository layout and application entry points.
   including compatibility fallbacks, before dispatch. Its ten-minute lease
   renews every fifteen seconds. Full Auto requests have a 300-second total
   timeout; manual and other non-Full-Auto calls keep their existing transport
-  behavior. These local bounds do not establish that provider-side work stopped.
+  behavior. Full Auto uses `assistant_unavailable`,
+  `assistant_transport_error`, `assistant_rate_limited`, `assistant_refused`,
+  `writer_output_invalid`, and `provider_changed` blockers. Only structured
+  refusal/content-filter metadata counts as refusal; prose is not guessed.
+  Valid `Retry-After` seconds or dates are persisted and gate Resume until their
+  UTC deadline. The runner checks ComfyUI stats before owned dispatch and retries
+  failed stats/history GETs with at most three persisted probes after 5, 15, and
+  30 seconds, reserving each probe before GET and never resending a prompt.
+  Exhaustion blocks `comfy_unavailable`; linked unresolved work keeps Resume
+  disabled.
+  Local HTTP termination does not establish that remote work stopped.
   Preparation recovery waits for live children to settle, then resumes a
   registered child under a new fence
   after expiry or failure while preserving the completed prefix. A stale

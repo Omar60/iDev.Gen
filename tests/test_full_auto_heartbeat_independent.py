@@ -357,6 +357,7 @@ def test_history_transport_error_retries_in_manual_and_full_auto_runner_paths(
     client, seeded, monkeypatch, make_runner,
 ):
     monkeypatch.setattr("runner.POLL_SECONDS", 0)
+    monkeypatch.setattr(resource_full_auto, "COMFY_PROBE_DELAYS", (0, 0, 0))
     manual_runner, _manual_comfy = make_runner()
     manual_calls = []
 

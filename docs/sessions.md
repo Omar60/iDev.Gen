@@ -1746,6 +1746,20 @@ request is unresolved, the slot stays quarantined through the bounded local
 request lifetime. A local timeout does not establish that provider-side work
 stopped.
 
+Full Auto records distinct blockers for a missing assistant
+(`assistant_unavailable`), transport failure (`assistant_transport_error`),
+HTTP 429 (`assistant_rate_limited`), structured refusal or content filter
+(`assistant_refused`), unusable completion output (`writer_output_invalid`),
+and provider drift (`provider_changed`). Ordinary response prose is not treated
+as a refusal. The qualifying HTTP 400 reasoning-parameter compatibility
+fallback consumes its own reserved POST; other provider failures do not cause
+an automatic prompt retry. Manual assistant requests keep their existing
+transport behavior. For a valid `Retry-After`, Full Auto accepts delta-seconds
+or an HTTP-date and persists the resulting UTC deadline. While it is in the
+future, status sets `can_resume` false and Resume returns
+`409 assistant_retry_after`; after it passes, retrying requires an explicit
+Resume.
+
 An internal preparation coordinator in `backend/main.py` accepts only an
 authenticated `RunClaim` for the run's prepare phase. It freezes the plan's
 ordered targets and chains persisted `prepare_takes` children of up to twenty
@@ -1815,6 +1829,18 @@ write, another start is refused while the outcome remains unresolved. Creation
 and startup do not dispatch the full sequence. Public submission and execution
 controls and a Full Auto control UI are absent; status and Cancel/Resume routes
 do not make this an end-to-end generation flow.
+
+Before each owned runner dispatch, the runner makes a read-only ComfyUI stats
+GET. If that fails, the initial request is followed by at most three more GETs
+after 5, 15, and 30 seconds. A failed history GET uses the same bounded schedule
+and retries only the history read; it never resends the prompt. Probe scope,
+deadline, and consumed count are persisted, with each count reserved before its
+GET, so a lost response or database reopen cannot reset or replay that probe.
+Exhaustion blocks `comfy_unavailable`. Because runner admission and linked
+pending shots already exist at that point, unresolved work keeps Resume
+disabled under the current conservative gate. The blocker points to Setup and
+status inspection or Cancel; Cancel does not prove remote work stopped, and
+local HTTP termination does not establish that ComfyUI stopped a generation.
 
 Parent and execution `RunClaim`s have 60-second leases renewed by asynchronous
 15-second heartbeats through assistant and ComfyUI I/O; child-operation leases

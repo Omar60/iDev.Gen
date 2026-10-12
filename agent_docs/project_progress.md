@@ -2,35 +2,44 @@
 
 ## Goal and Accepted Position
 
-Heavy deployment `full-auto-first-20261011` completed only Task 4.8 of
-`automate-resource-session-full-auto`. Entry Git was clean at `e8ca7f1`.
-Main accepted the independent final review and marked only 4.8: 20 of 41 tasks.
+Heavy deployment `full-auto-next-20261011` completed only Task 4.9 of
+`automate-resource-session-full-auto`, from clean HEAD `a071273`.
+Main accepted the actual diff and independent final verification; only 4.9 is
+marked complete, bringing the change to 21 of 41 tasks.
 
-Full Auto preparation now shares a durable FIFO assistant slot, yields after
-one take and reserves allowance before every physical POST, including the
-reasoning fallback. Ten-minute slot leases renew every fifteen seconds;
-owner loss retains quarantine through the bounded local request timeout.
-Each Full Auto POST has a total 300-second deadline. Manual transport is unchanged.
+Full Auto distinguishes unavailable assistants, transport errors, rate limits,
+structured refusals, invalid writer output and provider drift. Explicit Resume
+respects persisted Retry-After deadlines. Existing physical request reservations,
+compatibility fallback and manual behavior are retained.
 
-Historical reservations and linked authorizations remain cumulative. Status
-shows the current grant's total remaining allowance; Resume separately checks
-the pending take. Budget-only renewal requires explicit changed-scope acceptance,
-with the displayed allowance and reservation counts bound into the quote.
+Owned ComfyUI dispatch and history reads use at most three additional read-only
+probes after 5, 15 and 30 seconds. Reservations precede GETs; persisted cursors
+survive response loss and database reopening. Lease, authorization, cancellation
+and feature-flag checks protect writes. Classified preparation failures preserve
+the independently validated completed prefix.
 
 ## Independent Verification
 
-Final complete Python gate: 3,315 passed, two skipped, five warnings, exit zero
-in 524.19 seconds. Focused verification: 73 passed, one skipped. Privacy and
-format: 46 passed. Strict OpenSpec validation, compileall and diff checks passed.
-The skips were the opt-in 500-take synthesis benchmark and unavailable symlinks.
-No frontend changed; frontend gates were not applicable.
+Final complete Python gate: 3,346 passed, two skipped, five warnings, exit zero
+in 547.93 seconds. Focused acceptance: 87 passed, one skipped. Privacy: ten
+passed; format: 36 passed. Strict OpenSpec validation, compileall and diff checks
+passed. No frontend changed; its gates were not applicable.
+
+An initial gate exposed missing preparation checkpoints and old generic error
+expectations; both were corrected without weakening prefix/reuse assertions.
+Independent probes reproduced and verified repairs for lease and authorization
+expiry during local validation. Two complete runs also observed different
+concurrency failures outside the changed production paths; the final complete
+run passed unchanged. Those failures were not diagnosed or claimed repaired.
 
 ## Stop Boundary
 
-README, session guidance and module ownership receive the verified closure
-handoff. Close only this task with the acceptance commit and Archivist's sealed
-Deployment Token Report. Task 4.9 remains unchecked and unstarted here.
-No real generation, external handoff, archive or push occurred. Local timeout
-or connection closure does not prove that remote provider computation stopped.
-Full coordinator startup dispatch, runner admission and remote attempt recovery
-remain later tasks.
+Close only Task 4.9 with its acceptance commit and sealed Archivist token report.
+Task 4.10 remains unchecked and unstarted. No next task, archive, push, external
+handoff or real generation is authorized in this deployment.
+
+Creation/startup orchestration and attempt journaling remain later work.
+ComfyUI probe exhaustion after admission leaves linked pending work unresolved
+and ordinary Resume unavailable; status offers Setup inspection and Cancel
+without claiming remote settlement. Local connection termination does not prove
+remote computation stopped.

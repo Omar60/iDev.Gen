@@ -862,6 +862,10 @@ CREATE TABLE IF NOT EXISTS full_auto_run (
     cancel_intent    INTEGER NOT NULL DEFAULT 0 CHECK (cancel_intent IN (0, 1)),
     cancel_intent_at TEXT,
     blocker_code     TEXT,
+    assistant_retry_after_at TEXT,
+    comfy_probe_scope TEXT,
+    comfy_probe_count INTEGER NOT NULL DEFAULT 0 CHECK (comfy_probe_count BETWEEN 0 AND 3),
+    comfy_probe_due_at TEXT,
     resume_phase     TEXT,
     evidence_json    TEXT NOT NULL DEFAULT '{}',
     created_at       TEXT NOT NULL,
@@ -1502,6 +1506,16 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
         conn.execute("ALTER TABLE full_auto_run ADD COLUMN lease_started_at TEXT")
     if "cancel_intent_at" not in run_columns:
         conn.execute("ALTER TABLE full_auto_run ADD COLUMN cancel_intent_at TEXT")
+    if "assistant_retry_after_at" not in run_columns:
+        conn.execute("ALTER TABLE full_auto_run ADD COLUMN assistant_retry_after_at TEXT")
+    if "comfy_probe_scope" not in run_columns:
+        conn.execute("ALTER TABLE full_auto_run ADD COLUMN comfy_probe_scope TEXT")
+    if "comfy_probe_count" not in run_columns:
+        conn.execute(
+            "ALTER TABLE full_auto_run ADD COLUMN comfy_probe_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if "comfy_probe_due_at" not in run_columns:
+        conn.execute("ALTER TABLE full_auto_run ADD COLUMN comfy_probe_due_at TEXT")
     conn.execute(
         """UPDATE full_auto_run SET lease_started_at = updated_at
            WHERE lease_expires_at IS NOT NULL AND lease_started_at IS NULL"""

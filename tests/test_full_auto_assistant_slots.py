@@ -678,7 +678,7 @@ def test_provider_drift_fences_full_auto_post_and_response(
     assert len(calls) == (0 if drift_before_dispatch else 1)
     assert db.one(
         "SELECT state, blocker_code FROM full_auto_run WHERE run_id = ?", run_id,
-    ) == {"state": "blocked", "blocker_code": "authorization_scope_changed"}
+    ) == {"state": "blocked", "blocker_code": "provider_changed"}
     assert db.one(
         "SELECT state FROM authoring_operation WHERE operation_id = ?", operation_id,
     )["state"] == "failed"

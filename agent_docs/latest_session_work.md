@@ -1,62 +1,62 @@
 # Latest Session Work
 
-## Full Auto Task 4.8 Accepted Handoff
+## Full Auto Task 4.9 Accepted Handoff
 
-Heavy deployment `full-auto-first-20261011` delivered only Task 4.8 of
-`automate-resource-session-full-auto`, from clean HEAD `e8ca7f1`.
-Main retained architecture, scope, integration and acceptance. The internal
-Executor implemented and repaired; Tester independently inspected the actual
-diff and ran final verification. Archivist owns verified public/module docs
-and the final sealed usage report. Only 4.8 is marked complete: 20 of 41 tasks.
+Deployment `full-auto-next-20261011` addressed only Task 4.9 of
+`automate-resource-session-full-auto`, from clean HEAD `a071273`.
+Main owned architecture, scope, integration and acceptance. Internal Executor
+implemented and repaired; independent Testers inspected the actual diff and
+executed final gates. Archivist updated README, session guidance and structure.
+Only 4.9 is marked complete: 21 of 41 tasks.
 
 ## Delivered Contracts
 
-A persisted assistant FIFO orders eligible takes by ready timestamp and run ID,
-yields after each take and drops ineligible waiters. The shared Full Auto slot
-uses ten-minute leases and fifteen-second heartbeats. Durable reservations
-precede every actual shared enhance POST, including its compatibility fallback.
-Limits are two calls per take and twice the target count per authorization;
-lost responses remain consumed. Owner, child, provider, cancellation, feature
-flag and expiry checks fence dispatch and response persistence without holding
-transactions across remote I/O.
+Full Auto provider failures use assistant_unavailable, assistant_transport_error,
+assistant_rate_limited, assistant_refused, writer_output_invalid and
+provider_changed. Refusal requires structured metadata, never prose inference.
+Retry-After seconds/HTTP dates produce persisted UTC deadlines enforced by
+status and explicit Resume. Fallback HTTP 400 reserves its own physical request;
+other failures introduce no hidden prompt retry. In-flight drift discards output
+without refunding the request, and prior valid preparation remains visible.
 
-Each Full Auto physical request has a total 300-second deadline; settlement
-follows transport cancellation, and quarantine includes a second-precision
-safety margin. Unrelated manual assistant behavior retains its old transport.
-Safe transport metadata and available token usage are recorded without payloads.
-
-Linked renewal preserves historical accounting. Public total remaining allowance
-belongs to the current grant; pending-take eligibility is separate. Exhausted
-budgets can obtain an explicit allowance-only comparison and acceptance without
-an unrelated input edit. Quotes commit allowance and reservation-count digests.
+Before owned shot dispatch the runner reads ComfyUI stats. Failed stats/history
+reads allow three additional GET probes after 5/15/30 seconds. Each probe consumes
+its durable count before transport; lost responses retain consumption and the
+next due time. Reentry does not issue another initial GET for an existing cursor.
+History recovery reads the same prompt and never resends it. Connectivity alone
+does not certify an unknown attempt's outcome. Probe writes recheck live lease,
+authorization deadline, cancellation and enablement after local validation.
 
 ## Independent Acceptance Evidence
 
-Main read raw final logs. Complete `.venv/Scripts/python.exe -m pytest` passed:
-3,315 passed, two skipped, five warnings, exit zero in 524.19 seconds.
-Focused Full Auto/transport/coordinator/control verification passed 73 cases
-with one skip; initial and fallback total-timeout cases passed independently.
-Privacy/format passed 46 cases. Strict OpenSpec validation, compileall and
-`git diff --check` passed. Frontend is unchanged and its gates were not run.
-The skips were the opt-in 500-take synthesis benchmark and unavailable symlinks.
+Main inspected raw final output. Complete `.venv/Scripts/python.exe -m pytest`
+passed: 3,346 passed, two skipped, five warnings, exit zero in 547.93 seconds.
+Focused acceptance passed 87 cases with one skip. Privacy and format passed ten
+and 36 cases respectively. Strict OpenSpec validation, compileall and diff checks
+passed. Frontend is unchanged and its gates were not applicable.
 
-Independent failures exposed pre-lock and pre-write clock sampling, obsolete
-grant balances, unchanged Resume with an exhausted grant, and unbounded total
-transport duration. Repairs passed the retained and corrected temporal probes.
-The first overlap harness aged persisted dispatch evidence; final timeout
-acceptance instead asserts actual scaled-time cancellation for both physical
-POST paths. Task 10.3's earlier reported failure passed independently and in
-the final complete suite; it was not repaired or claimed permanently absent.
+The first complete gate had 3,338 passes, two skips and four failures: missing
+public preparation prefix, two obsolete generic error expectations, and a CAS
+resource lookup race. The next complete gate had 3,345 passes, two skips and a
+cancel/response race failure; that case passed alone. The final full rerun passed
+without further changes. These concurrency failures remain unconfirmed in cause.
+
+Independent temporal probes failed before repair for lease expiry and then
+authorization expiry during validation; retained regressions passed afterward.
+Prefix checkpoint repair retained full 40-take recovery/reuse assertions.
+The Executor's last reporting turn hit a usage limit after applying repairs;
+a new independent Tester completed final verification using the existing tree.
 
 ## Files and Continuation Boundary
 
-Production changes: db, enhance, guided_sessions, resource_full_auto, main and
-authoring_operations. Tests: assistant_slots, assistant_independent, control API
-and the existing Full Auto probe. Closure includes README, session guidance,
-project structure, the three main-owned state documents and the single task mark.
+Production: db, enhance, main, resource_full_auto and runner. Coverage: two new
+provider test modules, shared fake stats and narrowly updated slots, heartbeat
+and preparation tests. Closure: README, session guidance, structure, the three
+main-owned state documents and the single task checkbox.
 
-Stop after this task's acceptance commit and sealed Archivist report. No next
-task, archive, push, external handoff or real generation is authorized here.
-The local HTTP deadline does not prove remote provider computation ended.
-Classification/retry recovery, global runner claims, remote journaling and full
-startup-to-generation orchestration remain outside Task 4.8.
+Stop after the acceptance commit and sealed Archivist report. Do not start 4.10,
+archive, push, create external handoffs or run real generation. Full startup
+dispatch and attempt journaling/reconciliation remain later tasks. Exhausted
+ComfyUI reads after runner admission leave pending shots/session state unresolved
+with ordinary Resume disabled; inspect Setup/status or request Cancel without
+assuming settlement. Local HTTP termination does not prove remote work stopped.

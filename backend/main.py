@@ -4667,6 +4667,8 @@ async def _run_prepare_takes_operation(
         assistant_request = {}
         ticket_renewed_after_io = False
         if unlocked:
+            if full_auto_claim is not None and not enhance.configured(CONFIG):
+                raise enhance.AssistantProviderError("assistant_unavailable")
             instruction = resource_preparation.automatic_writer_instruction(context)
             if full_auto_claim is not None:
                 full_auto_claim = resource_full_auto.renew_run_claim(full_auto_claim)
@@ -4780,11 +4782,17 @@ async def _run_prepare_takes_operation(
             except Exception:  # noqa: BLE001 - the run transition below also fences stale slots
                 pass
         blocker_code = getattr(failure, "code", None)
+        if full_auto_claim is not None and isinstance(
+            failure, resource_preparation.WriterOutputInvalid,
+        ):
+            blocker_code = "writer_output_invalid"
         if full_auto_claim is not None and not is_resource_planning_enabled():
             blocker_code = "resource_planning_disabled"
         if full_auto_claim is not None and blocker_code in {
             "authorization_expired", "authorization_scope_changed", "authorization_invalid",
             "policy_changed", "resource_planning_disabled", "budget_exhausted",
+            "assistant_unavailable", "assistant_transport_error", "assistant_rate_limited",
+            "assistant_refused", "writer_output_invalid", "provider_changed",
         }:
             try:
                 full_auto_claim = resource_full_auto.renew_run_claim(full_auto_claim)
@@ -4807,8 +4815,29 @@ async def _run_prepare_takes_operation(
                         authoring_operations.fail_full_auto_item_after_authority_fence(
                             claim, ticket, take_id, _full_auto_claim=full_auto_claim,
                         )
+                if blocker_code in {
+                    "assistant_unavailable", "assistant_transport_error",
+                    "assistant_rate_limited", "assistant_refused",
+                    "writer_output_invalid", "provider_changed",
+                } and db.one(
+                    "SELECT 1 FROM full_auto_prepare_child WHERE run_id = ? AND operation_id = ?",
+                    full_auto_claim.run_id, operation_id,
+                ) is not None:
+                    try:
+                        # Preserve only the child's already-persisted prefix. The
+                        # checkpoint revalidates every snapshot under this live
+                        # claim before advance_run fences the owner below.
+                        resource_full_auto.checkpoint_prepare_child(
+                            full_auto_claim, operation_id,
+                        )
+                    except (resource_full_auto.FullAutoRunError, authoring_operations.AuthoringOperationError) as checkpoint_error:
+                        logging.getLogger(__name__).warning(
+                            "Take preparation prefix for %s was not checkpointed (%s).",
+                            operation_id, getattr(checkpoint_error, "code", "checkpoint_failed"),
+                        )
                 resource_full_auto.advance_run(
                     full_auto_claim, "blocked", blocker_code=blocker_code,
+                    assistant_retry_after=getattr(failure, "retry_after", None),
                 )
             except (resource_full_auto.FullAutoRunError, authoring_operations.AuthoringOperationError):
                 pass
@@ -4991,6 +5020,20 @@ async def _run_full_auto_preparation(
                     child["operation_id"],
                     _full_auto_claim=owner,
                 ) or owner
+                current_run = db.one(
+                    "SELECT state, blocker_code FROM full_auto_run WHERE run_id = ?",
+                    owner.run_id,
+                )
+                if (
+                    current_run is not None
+                    and current_run["state"] == "blocked"
+                    and current_run["blocker_code"] in {
+                        "assistant_unavailable", "assistant_transport_error",
+                        "assistant_rate_limited", "assistant_refused",
+                        "writer_output_invalid", "provider_changed",
+                    }
+                ):
+                    return resource_full_auto.public_run_status(session_id, owner.run_id)
                 child = authoring_operations.get_operation(
                     session_id,
                     child["operation_id"],
@@ -4998,6 +5041,20 @@ async def _run_full_auto_preparation(
                     assistant_available=enhance.configured(CONFIG),
                     _full_auto_claim=owner,
                 )
+            current_run = db.one(
+                "SELECT state, blocker_code FROM full_auto_run WHERE run_id = ?",
+                owner.run_id,
+            )
+            if (
+                current_run is not None
+                and current_run["state"] == "blocked"
+                and current_run["blocker_code"] in {
+                    "assistant_unavailable", "assistant_transport_error",
+                    "assistant_rate_limited", "assistant_refused",
+                    "writer_output_invalid", "provider_changed",
+                }
+            ):
+                return resource_full_auto.public_run_status(session_id, owner.run_id)
             owner = resource_full_auto.renew_run_claim(owner)
             progress = resource_full_auto.checkpoint_prepare_child(
                 owner,
@@ -5013,13 +5070,17 @@ async def _run_full_auto_preparation(
             )
         owner = resource_full_auto.renew_run_claim(owner)
         return resource_full_auto.advance_run(owner, "active", phase="validate")
-    except authoring_operations.AuthoringOperationError:
+    except authoring_operations.AuthoringOperationError as exc:
         # A normal child failure is represented by its persisted operation state
         # and handled above. Any boundary error blocks only while this claim is
         # still live; loss of ownership remains a hard refusal.
         owner = resource_full_auto.renew_run_claim(owner)
+        blocker_code = exc.code if exc.code in {
+            "assistant_unavailable", "assistant_transport_error", "assistant_rate_limited",
+            "assistant_refused", "writer_output_invalid", "provider_changed",
+        } else "preparation_failed"
         return resource_full_auto.advance_run(
-            owner, "blocked", blocker_code="preparation_failed",
+            owner, "blocked", blocker_code=blocker_code,
         )
 
 

@@ -34,6 +34,15 @@ log = logging.getLogger("idevgen.enhance")
 # had even looked at the photo. A hosted endpoint never comes close to this.
 TIMEOUT = 300
 
+
+class AssistantProviderError(Exception):
+    """Safe Full Auto provider classification without provider payload text."""
+
+    def __init__(self, code: str, *, retry_after: str | None = None) -> None:
+        super().__init__(code)
+        self.code = code
+        self.retry_after = retry_after
+
 # A photo the LLM has to read, not a photo to generate from: the browser scales
 # what it picks down to 1024px, and this is only the wall that stops a raw
 # camera file from being base64'd into a JSON body.
@@ -229,6 +238,8 @@ async def _request_completion(
                        "you can also describe the image manually.",
         })
     if not configured(config):
+        if full_auto_before_dispatch is not None:
+            raise AssistantProviderError("assistant_unavailable")
         raise HTTPException(400, "No prompt assistant is configured. Open Setup and "
                                  "fill in the LLM endpoint and model.")
     if image:
@@ -288,11 +299,11 @@ async def _request_completion(
         choices = payload.get("choices")
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             choice = choices[0]
+            metadata["content_filter"] = choice.get("finish_reason") == "content_filter"
             message = choice.get("message")
             if isinstance(message, dict):
                 refusal = message.get("refusal")
                 metadata["structured_refusal"] = isinstance(refusal, str) and bool(refusal.strip())
-                metadata["content_filter"] = choice.get("finish_reason") == "content_filter"
         usage = payload.get("usage")
         if isinstance(usage, dict):
             safe_usage = {
@@ -320,7 +331,10 @@ async def _request_completion(
             raise
         except TimeoutError as exc:
             if reservation_id is not None and full_auto_settle_dispatch is not None:
-                full_auto_settle_dispatch(reservation_id, safe_metadata(None))
+                metadata = safe_metadata(None)
+                full_auto_settle_dispatch(reservation_id, metadata)
+                if full_auto_check_response is not None:
+                    full_auto_check_response(reservation_id, metadata)
             raise httpx.ReadTimeout(
                 "The Full Auto assistant request exceeded its total timeout.",
                 request=httpx.Request("POST", url),
@@ -329,7 +343,10 @@ async def _request_completion(
             # The transport call has returned by raising, so the physical
             # request has ended even when the failure was not an HTTPX error.
             if reservation_id is not None and full_auto_settle_dispatch is not None:
-                full_auto_settle_dispatch(reservation_id, safe_metadata(None))
+                metadata = safe_metadata(None)
+                full_auto_settle_dispatch(reservation_id, metadata)
+                if full_auto_check_response is not None:
+                    full_auto_check_response(reservation_id, metadata)
             raise
 
         if reservation_id is not None:
@@ -347,6 +364,8 @@ async def _request_completion(
                 body = {k: v for k, v in body.items() if k != "reasoning_effort"}
                 r = await post_completion(c, body)
     except httpx.HTTPError as exc:  # noqa: BLE001 - the safe URL and exception type are the useful half
+        if full_auto_before_dispatch is not None:
+            raise AssistantProviderError("assistant_transport_error") from exc
         # A timeout stringifies to nothing at all, and "did not answer: " with
         # nothing after it is the least useful error this app could print.
         raise _completion_failure(
@@ -354,11 +373,26 @@ async def _request_completion(
             image=bool(image),
         )
     if r.status_code >= 400:
+        if full_auto_before_dispatch is not None:
+            if r.status_code == 429:
+                retry_after = safe_metadata(r).get("retry_after")
+                raise AssistantProviderError(
+                    "assistant_rate_limited",
+                    retry_after=retry_after if isinstance(retry_after, str) else None,
+                )
+            raise AssistantProviderError("assistant_transport_error")
         # Same rule as a failed shot: the sentence that says what broke, not the
         # provider's whole error document.
         raise _completion_failure(
             config, safe_url, f"answered {r.status_code}", image=bool(image),
         )
+    if full_auto_before_dispatch is not None:
+        metadata = safe_metadata(r)
+        if (
+            metadata.get("structured_refusal") is True
+            or metadata.get("content_filter") is True
+        ):
+            raise AssistantProviderError("assistant_refused")
     if request_evidence is not None:
         request_evidence.clear()
         request_evidence.update({
@@ -380,6 +414,8 @@ async def _request_completion(
         elif not isinstance(content, str):
             raise TypeError("completion content is not a string")
     except (KeyError, IndexError, TypeError, ValueError):
+        if full_auto_before_dispatch is not None:
+            raise AssistantProviderError("writer_output_invalid")
         raise _completion_failure(
             config, safe_url, "answered something that is not an OpenAI-compatible completion",
             image=bool(image),
@@ -426,16 +462,22 @@ async def run_structured(
     safe_url = _safe_endpoint(raw_url)
 
     if not content or not content.strip():
+        if full_auto_before_dispatch is not None:
+            raise AssistantProviderError("writer_output_invalid")
         raise _completion_failure(
             config, safe_url, "answered with invalid structured JSON", image=has_image,
         )
     try:
         parsed = json.loads(content, object_pairs_hook=_object_pairs_hook)
     except (json.JSONDecodeError, ValueError):
+        if full_auto_before_dispatch is not None:
+            raise AssistantProviderError("writer_output_invalid")
         raise _completion_failure(
             config, safe_url, "answered with invalid structured JSON", image=has_image,
         )
     if not isinstance(parsed, dict):
+        if full_auto_before_dispatch is not None:
+            raise AssistantProviderError("writer_output_invalid")
         raise _completion_failure(
             config,
             safe_url,
