@@ -20,6 +20,7 @@ import base64
 import json
 import logging
 import re
+from collections.abc import Callable
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -214,6 +215,9 @@ async def _request_completion(
     *,
     structured: bool = False,
     request_evidence: dict[str, object] | None = None,
+    full_auto_before_dispatch: Callable[[], int] | None = None,
+    full_auto_settle_dispatch: Callable[[int, dict[str, object]], None] | None = None,
+    full_auto_check_response: Callable[[int, dict[str, object]], None] | None = None,
 ) -> str:
     """Shared configured URL/model/body/auth/timeout/retry/error boundary."""
     image = image or p.image
@@ -267,12 +271,81 @@ async def _request_completion(
              model, p.n, system, asked, f", {len(p.fields)} fields" if p.fields else "")
     key = config.get("llm_key")
     headers = {"Authorization": f"Bearer {key}"} if isinstance(key, str) and key else {}
+
+    def safe_metadata(response: httpx.Response | None) -> dict[str, object]:
+        if response is None:
+            return {"status": None}
+        metadata: dict[str, object] = {"status": response.status_code}
+        retry_after = response.headers.get("Retry-After", "")
+        if retry_after and len(retry_after) <= 128 and all(char.isprintable() for char in retry_after):
+            metadata["retry_after"] = retry_after
+        try:
+            payload = response.json()
+        except (ValueError, TypeError):
+            return metadata
+        if not isinstance(payload, dict):
+            return metadata
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            choice = choices[0]
+            message = choice.get("message")
+            if isinstance(message, dict):
+                refusal = message.get("refusal")
+                metadata["structured_refusal"] = isinstance(refusal, str) and bool(refusal.strip())
+                metadata["content_filter"] = choice.get("finish_reason") == "content_filter"
+        usage = payload.get("usage")
+        if isinstance(usage, dict):
+            safe_usage = {
+                name: value for name, value in usage.items()
+                if name in {"prompt_tokens", "completion_tokens", "total_tokens"}
+                and type(value) is int and value >= 0
+            }
+            if safe_usage:
+                metadata["usage"] = safe_usage
+        return metadata
+
+    async def post_completion(client: httpx.AsyncClient, request_body: dict) -> httpx.Response:
+        """Bound Full Auto POST wall time while leaving manual calls unchanged."""
+        if full_auto_before_dispatch is None:
+            return await client.post(url, json=request_body, headers=headers)
+
+        reservation_id = full_auto_before_dispatch()
+        try:
+            async with asyncio.timeout(TIMEOUT):
+                response = await client.post(url, json=request_body, headers=headers)
+        except asyncio.CancelledError:
+            # Owner loss can cancel this coroutine while the request is still
+            # unwinding. Keep the durable reservation inflight so its slot is
+            # quarantined until the request actually ends or times out.
+            raise
+        except TimeoutError as exc:
+            if reservation_id is not None and full_auto_settle_dispatch is not None:
+                full_auto_settle_dispatch(reservation_id, safe_metadata(None))
+            raise httpx.ReadTimeout(
+                "The Full Auto assistant request exceeded its total timeout.",
+                request=httpx.Request("POST", url),
+            ) from exc
+        except Exception:
+            # The transport call has returned by raising, so the physical
+            # request has ended even when the failure was not an HTTPX error.
+            if reservation_id is not None and full_auto_settle_dispatch is not None:
+                full_auto_settle_dispatch(reservation_id, safe_metadata(None))
+            raise
+
+        if reservation_id is not None:
+            metadata = safe_metadata(response)
+            if full_auto_settle_dispatch is not None:
+                full_auto_settle_dispatch(reservation_id, metadata)
+            if full_auto_check_response is not None:
+                full_auto_check_response(reservation_id, metadata)
+        return response
+
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as c:
-            r = await c.post(url, json=body, headers=headers)
+            r = await post_completion(c, body)
             if r.status_code == 400 and "reasoning" in r.text.lower():
                 body = {k: v for k, v in body.items() if k != "reasoning_effort"}
-                r = await c.post(url, json=body, headers=headers)
+                r = await post_completion(c, body)
     except httpx.HTTPError as exc:  # noqa: BLE001 - the safe URL and exception type are the useful half
         # A timeout stringifies to nothing at all, and "did not answer: " with
         # nothing after it is the least useful error this app could print.
@@ -335,11 +408,17 @@ async def run_structured(
     image: str = "",
     *,
     request_evidence: dict[str, object] | None = None,
+    full_auto_before_dispatch: Callable[[], int] | None = None,
+    full_auto_settle_dispatch: Callable[[int, dict[str, object]], None] | None = None,
+    full_auto_check_response: Callable[[int, dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     """New JSON-object transport; preserve parsed structure exactly."""
     has_image = bool(image or p.image)
     content = await _request_completion(
         config, p, image, structured=True, request_evidence=request_evidence,
+        full_auto_before_dispatch=full_auto_before_dispatch,
+        full_auto_settle_dispatch=full_auto_settle_dispatch,
+        full_auto_check_response=full_auto_check_response,
     )
     raw_url = config.get("llm_url", "").rstrip("/")
     if raw_url and not raw_url.endswith("/chat/completions"):

@@ -1681,9 +1681,11 @@ eligible terminal Resume opens a new epoch.
 run, or its latest terminal run, as `current_run`; it returns `null` when none
 exists. `GET /api/sessions/{sid}/full-auto/{run_id}` returns a run only when it
 belongs to that session. The closed status view includes safe progress, current
-plan revision, authorization deadline, blocker/remedies, and action flags; it
-does not expose prompts, paths, private authorization, fencing tokens, or
-leases. `GET /api/sessions/{sid}/full-auto/{run_id}/resume-preflight` returns a
+plan revision, authorization deadline, blocker/remedies, action flags, the
+cumulative authorized assistant-call total, and the current grant's remaining
+assistant allowance. It does not expose
+prompts, paths, private authorization, fencing tokens, or leases.
+`GET /api/sessions/{sid}/full-auto/{run_id}/resume-preflight` returns a
 read-only old/new scope comparison, changed fields, a comparison digest and
 timestamp, and the proposed authorization deadline.
 
@@ -1716,7 +1718,11 @@ renewed authorization expires seven days after `comparison_issued_at`, not
 after the later Resume request. Accepted changes append a linked immutable
 authorization and preserve the initial consent and prior grants. Changed
 generation inputs cannot continue generated history when continuity rules
-require a new session.
+require a new session. Prior grants and assistant-call reservations remain
+cumulative. Status reports the current grant's remaining assistant allowance,
+and Resume separately checks the next pending take. A budget-only renewal is a
+scope change: its fresh quote binds the displayed allowance and reservation
+counts, and Resume requires explicit acceptance.
 
 An identical historical action with the same `request_id` replays its exact
 stored response before current-state checks; reusing that UUID with different
@@ -1726,6 +1732,19 @@ returns `202`. Exact replays return `200`. Pending or unknown work keeps the
 run's shared-write guard. These controls only persist/check backend state: they
 do not dispatch preparation or generation, contact ComfyUI, issue a global
 interrupt, or reconcile remote cancellation. No Full Auto control UI is present.
+
+During Full Auto preparation, takes wait in one durable FIFO assistant slot
+shared across Full Auto runs, so only one Full Auto assistant request is in
+flight at a time. Manual and other non-Full-Auto assistant requests do not use
+this slot. A Full Auto authorization allows at most two calls per take and twice
+the authorized target count overall. Each physical HTTP POST consumes a durable
+reservation immediately before dispatch, including a compatibility fallback; a
+lost response still consumes its reservation. The ten-minute slot lease renews
+every fifteen seconds, and each Full Auto request has a 300-second total
+timeout. If ownership is lost while a
+request is unresolved, the slot stays quarantined through the bounded local
+request lifetime. A local timeout does not establish that provider-side work
+stopped.
 
 An internal preparation coordinator in `backend/main.py` accepts only an
 authenticated `RunClaim` for the run's prepare phase. It freezes the plan's

@@ -80,7 +80,7 @@ def test_session_discovery_empty_missing_and_scoped_safe_status(client, seeded, 
     assert run["authorization_version"] == 1
     assert run["policy_version"] == "resource-full-auto-v1"
     assert run["progress"]["target_count"] == 4
-    assert run["allowances"]["remaining_is_conservative_until_reservation_journals"] is True
+    assert run["allowances"]["assistant_calls_remaining_lower_bound"] == 8
     serialized = json.dumps(run, sort_keys=True).lower()
     for forbidden in (
         "prompt", "final_prompt", "path", "authorization_json",

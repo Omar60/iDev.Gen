@@ -122,14 +122,19 @@ Public Full Auto preparation, submission, and execution routes and a control UI
 are absent, so this is not an end-to-end generation flow. Full Auto `RunClaim`s
 for preparation and execution have 60-second leases, renewed by asynchronous
 15-second heartbeats through assistant and ComfyUI I/O; child-operation leases
-remain ten minutes. During preparation recovery, the replacement coordinator
+remain ten minutes. The internal preparation coordinator uses one durable FIFO
+assistant slot across Full Auto runs and reserves each physical POST, including
+compatibility fallbacks, before dispatch. Each authorization allows at most two
+assistant calls per take and twice the target count overall. Full Auto requests
+have a 300-second total timeout, while manual assistant requests keep their
+existing transport behavior. During recovery, the replacement coordinator
 waits for any live child to settle. It resumes that same registered child under
 a new fence if expired or failed, preserving the verified prefix. A stale
 execution owner stops subsequent writes and dispatches, leaving admission
 unresolved. Execution-runner recovery,
 a global runner claim shared with manual starts and FIFO runner admission,
-attempt journaling and remote reconciliation, FIFO assistant-slot admission,
-and the profile editor and selection/consent UI remain unfinished. The existing
+attempt journaling and remote reconciliation, and the profile editor and
+selection/consent UI remain unfinished. The existing
 manual workflow remains available for sessions without a nonterminal Full Auto
 owner.
 Automatic review validates persisted evidence; it does not certify semantic

@@ -19,11 +19,10 @@ from test_full_auto_control_api import (
 
 
 from test_full_auto_preparation_independent import (
-    _StructuredAssistant,
     _create_run as _create_preparable_run,
     _forbid_downstream_generation,
-    _install_transport,
 )
+from test_full_auto_preparation_coordinator import _install_provider
 
 
 def _rewrite_initial_authorization(run_id: str, mutate) -> None:
@@ -221,8 +220,11 @@ def test_probe_partial_valid_preparation_can_resume_without_dispatch(
     session_id, run_id, targets = _create_preparable_run(
         client, seeded, monkeypatch, photo_count=4,
     )
-    assistant = _StructuredAssistant(fail_at=targets[1])
-    _install_transport(monkeypatch, assistant)
+    assistant = _install_provider(
+        monkeypatch, session_id,
+        int(db.one("SELECT plan_revision FROM session_plan WHERE session_id = ?", session_id)["plan_revision"]),
+        targets, fail_take=targets[1],
+    )
     _forbid_downstream_generation(monkeypatch)
     result = asyncio.run(main._run_full_auto_preparation(
         resource_full_auto.claim_run(run_id),
@@ -234,15 +236,15 @@ def test_probe_partial_valid_preparation_can_resume_without_dispatch(
     )
     assert snapshot is not None and snapshot["status"] == "ready"
     snapshot = dict(snapshot)
-    assert [call["take_id"] for call in assistant.calls] == targets[:2]
+    assert assistant["calls"] == targets[:2]
     status = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}")
     assert status.status_code == 200, status.text
     assert status.json()["progress"]["prepared_take_ids"] == [targets[0]]
     assert status.json()["progress"]["unresolved_work_count"] == 0
     assert status.json()["can_resume"] is True
-    # The attempted/ready takes may conservatively consume their own slots;
-    # unstarted remaining takes must retain their per-take lower-bound allowance.
-    assert status.json()["allowances"]["assistant_calls_remaining_lower_bound"] == 4
+    # The public remaining value is executable allowance for the next take,
+    # The public total is the current grant's balance; resume eligibility is per-take.
+    assert status.json()["allowances"]["assistant_calls_remaining_lower_bound"] == 6
     assert status.json()["allowances"]["image_attempts_remaining_lower_bound"] == 4
     before_grants = db.q(
         "SELECT * FROM full_auto_run_authorization WHERE run_id = ? ORDER BY authorization_sequence",
@@ -263,7 +265,7 @@ def test_probe_partial_valid_preparation_can_resume_without_dispatch(
         session_id, targets[0],
     )
     assert dict(after) == snapshot
-    assert [call["take_id"] for call in assistant.calls] == targets[:2]
+    assert assistant["calls"] == targets[:2]
     assert db.q(
         "SELECT * FROM full_auto_run_authorization WHERE run_id = ? ORDER BY authorization_sequence",
         run_id,
@@ -278,7 +280,7 @@ def test_probe_partial_valid_preparation_can_resume_without_dispatch(
     )
     assert after_resume.status_code == 200, after_resume.text
     assert after_resume.json()["can_resume"] is False
-    assert after_resume.json()["allowances"]["assistant_calls_remaining_lower_bound"] == 4
+    assert after_resume.json()["allowances"]["assistant_calls_remaining_lower_bound"] == 6
     assert after_resume.json()["allowances"]["image_attempts_remaining_lower_bound"] == 4
 
 

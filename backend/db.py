@@ -932,6 +932,62 @@ BEGIN
     SELECT RAISE(ABORT, 'Full Auto run fencing token cannot decrease');
 END;
 
+-- Full Auto preparation takes enter one durable assistant FIFO. Reservations
+-- represent physical HTTP dispatches, including responses lost after sending.
+CREATE TABLE IF NOT EXISTS full_auto_assistant_slot (
+    run_id                    TEXT NOT NULL REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    session_id                INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    take_id                   TEXT NOT NULL CHECK (take_id <> ''),
+    operation_id              TEXT NOT NULL,
+    ready_at                  TEXT NOT NULL,
+    generation                INTEGER NOT NULL CHECK (generation > 0),
+    state                     TEXT NOT NULL CHECK (state IN ('waiting', 'active', 'quarantined', 'completed', 'released')),
+    run_epoch                 INTEGER NOT NULL CHECK (run_epoch > 0),
+    run_fencing_token         INTEGER NOT NULL CHECK (run_fencing_token > 0),
+    operation_fencing_token   INTEGER NOT NULL CHECK (operation_fencing_token > 0),
+    lease_expires_at          TEXT,
+    inflight_reservation_id   INTEGER,
+    updated_at                TEXT NOT NULL,
+    PRIMARY KEY (run_id, take_id),
+    CHECK ((state IN ('active', 'quarantined')) = (lease_expires_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_full_auto_assistant_single_slot
+    ON full_auto_assistant_slot(state)
+    WHERE state IN ('active', 'quarantined');
+CREATE INDEX IF NOT EXISTS ix_full_auto_assistant_fifo
+    ON full_auto_assistant_slot(ready_at, run_id)
+    WHERE state = 'waiting';
+
+CREATE TABLE IF NOT EXISTS full_auto_assistant_reservation (
+    reservation_id        INTEGER PRIMARY KEY,
+    run_id                TEXT NOT NULL REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    authorization_sequence INTEGER NOT NULL CHECK (authorization_sequence >= 0),
+    session_id            INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    take_id               TEXT NOT NULL CHECK (take_id <> ''),
+    operation_id          TEXT NOT NULL,
+    slot_generation       INTEGER NOT NULL CHECK (slot_generation > 0),
+    request_number        INTEGER NOT NULL CHECK (request_number IN (1, 2)),
+    dispatched_at         TEXT NOT NULL,
+    settled_at            TEXT,
+    response_metadata_json TEXT,
+    UNIQUE (run_id, authorization_sequence, take_id, request_number)
+);
+CREATE INDEX IF NOT EXISTS ix_full_auto_assistant_reservation_usage
+    ON full_auto_assistant_reservation(run_id, authorization_sequence, take_id);
+
+CREATE TRIGGER IF NOT EXISTS full_auto_release_idle_assistant_slot
+AFTER UPDATE OF state ON full_auto_run
+WHEN NEW.state IN ('blocked', 'cancel_requested', 'cancelled', 'failed', 'succeeded', 'completed_with_errors')
+BEGIN
+    UPDATE full_auto_assistant_slot
+       SET state = CASE WHEN state = 'waiting' OR inflight_reservation_id IS NULL
+                        THEN 'released' ELSE 'quarantined' END,
+           lease_expires_at = CASE WHEN state = 'waiting' OR inflight_reservation_id IS NULL
+                                   THEN NULL ELSE lease_expires_at END,
+           updated_at = NEW.updated_at
+     WHERE run_id = NEW.run_id AND state IN ('waiting', 'active', 'quarantined');
+END;
+
 -- Durable ordered preparation progress stays independent from the generic
 -- coordinator evidence, which records the latest state transition.
 CREATE TABLE IF NOT EXISTS full_auto_prepare_progress (

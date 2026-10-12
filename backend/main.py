@@ -4045,11 +4045,12 @@ def _full_auto_public_comparison(
     """Return a closed Resume quote only after validating every nested view."""
     public_fields = {
         "run_id", "run_revision", "plan_revision", "changed", "scope_digest",
-        "comparison_issued_at", "changed_fields", "old_scope", "new_scope",
+        "comparison_issued_at", "changed_fields", "assistant_allowance",
+        "old_scope", "new_scope",
     }
     internal_fields = {
         "_authorization", "_dependencies_digest", "_plan_digest",
-        "_previous_authorization_digest",
+        "_previous_authorization_digest", "_reservation_counts_digest",
     }
 
     def invalid() -> resource_full_auto.FullAutoRunError:
@@ -4086,6 +4087,13 @@ def _full_auto_public_comparison(
         or type(comparison.get("changed_fields")) is not list
         or any(type(field) is not str for field in comparison["changed_fields"])
         or len(comparison["changed_fields"]) != len(set(comparison["changed_fields"]))
+        or (comparison.get("changed") is True) != ("assistant_allowance" in comparison.get("changed_fields", []))
+        or type(comparison.get("assistant_allowance")) is not dict
+        or set(comparison["assistant_allowance"]) != {
+            "pending_take_id", "old_executable_remaining", "old_pending_take_remaining",
+            "additional_calls_total", "additional_calls_per_take",
+            "new_executable_remaining", "new_pending_take_remaining",
+        }
         or type(comparison.get("old_scope")) is not dict
         or set(comparison["old_scope"]) != {
             "summary", "scope_digest", "authorization_expires_at",
@@ -4101,6 +4109,34 @@ def _full_auto_public_comparison(
         or not resource_full_auto._SHA256.fullmatch(comparison["_plan_digest"])
         or type(comparison.get("_previous_authorization_digest")) is not str
         or not resource_full_auto._SHA256.fullmatch(comparison["_previous_authorization_digest"])
+        or type(comparison.get("_reservation_counts_digest")) is not str
+        or not resource_full_auto._SHA256.fullmatch(comparison["_reservation_counts_digest"])
+    ):
+        raise invalid()
+
+    allowance = comparison["assistant_allowance"]
+    if (
+        allowance["pending_take_id"] is not None
+        and (type(allowance["pending_take_id"]) is not str or not allowance["pending_take_id"])
+    ):
+        raise invalid()
+    for key in (
+        "old_executable_remaining", "additional_calls_total", "additional_calls_per_take",
+        "new_executable_remaining",
+    ):
+        if type(allowance[key]) is not int or allowance[key] < 0:
+            raise invalid()
+    for key in ("old_pending_take_remaining", "new_pending_take_remaining"):
+        value = allowance[key]
+        if value is not None and (type(value) is not int or value < 0):
+            raise invalid()
+        if (allowance["pending_take_id"] is None) != (value is None):
+            raise invalid()
+    if not comparison["changed"] and (
+        allowance["additional_calls_total"] != 0
+        or allowance["additional_calls_per_take"] != 0
+        or allowance["new_executable_remaining"] != allowance["old_executable_remaining"]
+        or allowance["new_pending_take_remaining"] != allowance["old_pending_take_remaining"]
     ):
         raise invalid()
 
@@ -4116,7 +4152,7 @@ def _full_auto_public_comparison(
         "canvas", "framing_intent", "effective_framing", "variation_policy",
         "request_digest", "progression", "coverage_compiler_version",
         "policy_version", "photo_count", "limits", "dependencies_digest",
-        "continuity_digest", "plan", "deadline",
+        "continuity_digest", "plan", "deadline", "assistant_allowance",
     }
     if any(field not in allowed_changed_fields for field in comparison["changed_fields"]):
         raise invalid()
@@ -4147,7 +4183,7 @@ def _full_auto_public_comparison(
     candidate = comparison["_authorization"]
     if comparison["changed"]:
         try:
-            candidate_summary, _candidate_limits = resource_full_auto._validate_status_authorization(candidate)
+            candidate_summary, candidate_limits = resource_full_auto._validate_status_authorization(candidate)
         except resource_full_auto.FullAutoRunError as exc:
             raise invalid() from exc
         if (
@@ -4155,6 +4191,17 @@ def _full_auto_public_comparison(
             or candidate["scope_digest"] != scopes["new_scope"]["scope_digest"]
             or candidate["authorization_expires_at"] != scopes["new_scope"]["authorization_expires_at"]
             or comparison["_dependencies_digest"] != candidate_summary["dependencies_digest"]
+            or allowance["additional_calls_total"] != candidate_limits["assistant_calls_total"]
+            or allowance["additional_calls_per_take"] != candidate_limits["assistant_calls_per_take"]
+            or allowance["new_pending_take_remaining"] != (
+                candidate_limits["assistant_calls_per_take"]
+                if allowance["pending_take_id"] is not None else None
+            )
+            or allowance["new_executable_remaining"] != (
+                min(candidate_limits["assistant_calls_total"], candidate_limits["assistant_calls_per_take"])
+                if allowance["pending_take_id"] is not None
+                else candidate_limits["assistant_calls_total"]
+            )
         ):
             raise invalid()
     elif candidate is not None:
@@ -4171,6 +4218,8 @@ def _full_auto_public_comparison(
         "next_plan_digest": comparison["_plan_digest"],
         "renewal_lifetime_seconds": lifetime,
         "comparison_issued_at": issued,
+        "assistant_allowance": allowance,
+        "reservation_counts_digest": comparison["_reservation_counts_digest"],
     })
     if expected_comparison_digest != comparison["scope_digest"]:
         raise invalid()
@@ -4183,6 +4232,7 @@ def _full_auto_public_comparison(
         "scope_digest": comparison["scope_digest"],
         "comparison_issued_at": issued,
         "changed_fields": list(comparison["changed_fields"]),
+        "assistant_allowance": allowance,
         "old_scope": scopes["old_scope"],
         "new_scope": scopes["new_scope"],
     }
@@ -4421,6 +4471,116 @@ async def _run_shared_suggestion_operation(session_id: int, operation_id: str) -
         )
 
 
+class _FullAutoPreparationHeartbeat:
+    """Renew the run, child and shared assistant slot while Full Auto waits or posts."""
+
+    def __init__(self, run_claim, operation_claim, ticket):
+        self.run_claim = run_claim
+        self.operation_claim = operation_claim
+        self.ticket = ticket
+        self.slot_claim = None
+        self.error = None
+        self._task = None
+        self._last_assistant_heartbeat = 0.0
+
+    async def __aenter__(self):
+        self._last_assistant_heartbeat = asyncio.get_running_loop().time()
+        self._task = asyncio.create_task(self._renew())
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        if self._task is not None:
+            if not self._task.done():
+                self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        if exc_type is None:
+            self.check()
+        return False
+
+    def provider_identity(self):
+        return guided_sessions._provider_identity(CONFIG)[0]
+
+    def check(self):
+        if self.error is not None:
+            raise self.error
+
+    def acquire(self, take_id):
+        self.check()
+        slot = resource_full_auto.try_acquire_assistant_slot(
+            self.run_claim, self.operation_claim, take_id, self.provider_identity(),
+        )
+        if slot is not None:
+            self.slot_claim = slot
+        return slot
+
+    def before_dispatch(self):
+        self.check()
+        if self.slot_claim is None:
+            raise resource_full_auto.FullAutoRunError(
+                409, "assistant_slot_missing", "The Full Auto assistant slot is unavailable.",
+            )
+        return resource_full_auto.reserve_assistant_dispatch(
+            self.slot_claim, self.run_claim, self.operation_claim, self.provider_identity(),
+        )
+
+    def settle_dispatch(self, reservation_id, metadata):
+        if self.slot_claim is None:
+            return
+        resource_full_auto.settle_assistant_dispatch(self.slot_claim, reservation_id, metadata)
+
+    def check_response(self, reservation_id, metadata):
+        self.check()
+        if self.slot_claim is None:
+            raise resource_full_auto.FullAutoRunError(
+                409, "assistant_slot_missing", "The Full Auto assistant slot is unavailable.",
+            )
+        resource_full_auto.check_assistant_response(
+            self.slot_claim, self.run_claim, self.operation_claim, self.provider_identity(),
+        )
+
+    def _renew_now(self):
+        self.run_claim = resource_full_auto.renew_run_claim(self.run_claim)
+        now = asyncio.get_running_loop().time()
+        if now - self._last_assistant_heartbeat >= (
+            resource_full_auto.ASSISTANT_SLOT_HEARTBEAT_INTERVAL.total_seconds()
+        ):
+            self.ticket = authoring_operations.renew_operation_lease(
+                self.operation_claim,
+                planning_enabled=is_resource_planning_enabled(),
+                _full_auto_claim=self.run_claim,
+            )
+            if self.slot_claim is not None:
+                self.slot_claim = resource_full_auto.renew_assistant_slot(
+                    self.slot_claim, self.run_claim, self.operation_claim, self.provider_identity(),
+                )
+            self._last_assistant_heartbeat = now
+
+    async def _renew(self):
+        interval = resource_full_auto.RUN_HEARTBEAT_INTERVAL.total_seconds()
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                self._renew_now()
+            except resource_full_auto.FullAutoRunError as exc:
+                self.error = exc
+                return
+            except authoring_operations.AuthoringOperationError as exc:
+                self.error = resource_full_auto.FullAutoRunError(
+                    exc.status_code, exc.code, exc.message,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 - heartbeat failure fences this owner
+                self.error = resource_full_auto.FullAutoRunError(
+                    503, "assistant_heartbeat_failed",
+                    "The Full Auto assistant lease could not be renewed.",
+                )
+                self.error.__cause__ = exc
+                return
+
+
 async def _run_prepare_takes_operation(
     session_id: int,
     operation_id: str,
@@ -4431,6 +4591,7 @@ async def _run_prepare_takes_operation(
     claim = None
     ticket = None
     take_id = None
+    assistant_slot_claim = None
     full_auto_claim = _full_auto_claim
     predecessor_validation_cache = (
         {} if _predecessor_validation_cache is None
@@ -4513,20 +4674,32 @@ async def _run_prepare_takes_operation(
                     claim, planning_enabled=is_resource_planning_enabled(),
                     _full_auto_claim=full_auto_claim,
                 )
+                heartbeat = _FullAutoPreparationHeartbeat(full_auto_claim, claim, ticket)
+                try:
+                    async with heartbeat:
+                        while assistant_slot_claim is None:
+                            assistant_slot_claim = heartbeat.acquire(take_id)
+                            if assistant_slot_claim is None:
+                                await asyncio.sleep(0.05)
+                        output = await enhance.run_structured(
+                            CONFIG,
+                            enhance.EnhanceIn(instruction=instruction, fields=unlocked),
+                            request_evidence=assistant_request,
+                            full_auto_before_dispatch=heartbeat.before_dispatch,
+                            full_auto_settle_dispatch=heartbeat.settle_dispatch,
+                            full_auto_check_response=heartbeat.check_response,
+                        )
+                        heartbeat.check()
+                finally:
+                    full_auto_claim = heartbeat.run_claim
+                    ticket = heartbeat.ticket
+                    assistant_slot_claim = heartbeat.slot_claim
             if full_auto_claim is None:
                 output = await enhance.run_structured(
                     CONFIG,
                     enhance.EnhanceIn(instruction=instruction, fields=unlocked),
                     request_evidence=assistant_request,
                 )
-            else:
-                async with resource_full_auto.RunClaimHeartbeat(full_auto_claim) as heartbeat:
-                    output = await enhance.run_structured(
-                        CONFIG,
-                        enhance.EnhanceIn(instruction=instruction, fields=unlocked),
-                        request_evidence=assistant_request,
-                    )
-                full_auto_claim = heartbeat.check()
             if full_auto_claim is not None:
                 # The parent lease is checked after every in-flight assistant call.
                 # A lost or expired owner cannot persist a late result.
@@ -4565,6 +4738,11 @@ async def _run_prepare_takes_operation(
             planning_enabled=is_resource_planning_enabled(),
             _predecessor_validation_cache=predecessor_validation_cache,
             _full_auto_claim=full_auto_claim,
+            _full_auto_assistant_slot=assistant_slot_claim,
+            _assistant_provider_identity=(
+                (lambda: guided_sessions._provider_identity(CONFIG)[0])
+                if assistant_slot_claim is not None else None
+            ),
         )
         if updated["state"] == "active":
             return await _run_prepare_takes_operation(
@@ -4574,7 +4752,70 @@ async def _run_prepare_takes_operation(
                 _full_auto_claim=full_auto_claim,
             )
         return full_auto_claim
-    except Exception:
+    except asyncio.CancelledError:
+        if full_auto_claim is not None and claim is not None and take_id is not None:
+            try:
+                if assistant_slot_claim is not None:
+                    resource_full_auto.release_assistant_slot(
+                        assistant_slot_claim, completed=False,
+                    )
+                else:
+                    resource_full_auto.abandon_assistant_slot_waiter(
+                        full_auto_claim, claim, take_id,
+                    )
+            except Exception:  # noqa: BLE001 - preserve cancellation and retain any quarantine
+                pass
+        raise
+    except Exception as failure:
+        if full_auto_claim is not None and claim is not None and take_id is not None:
+            try:
+                if assistant_slot_claim is not None:
+                    resource_full_auto.release_assistant_slot(
+                        assistant_slot_claim, completed=False,
+                    )
+                else:
+                    resource_full_auto.abandon_assistant_slot_waiter(
+                        full_auto_claim, claim, take_id,
+                    )
+            except Exception:  # noqa: BLE001 - the run transition below also fences stale slots
+                pass
+        blocker_code = getattr(failure, "code", None)
+        if full_auto_claim is not None and not is_resource_planning_enabled():
+            blocker_code = "resource_planning_disabled"
+        if full_auto_claim is not None and blocker_code in {
+            "authorization_expired", "authorization_scope_changed", "authorization_invalid",
+            "policy_changed", "resource_planning_disabled", "budget_exhausted",
+        }:
+            try:
+                full_auto_claim = resource_full_auto.renew_run_claim(full_auto_claim)
+                if blocker_code == "resource_planning_disabled":
+                    authoring_operations.recover_session_operations(
+                        session_id, planning_enabled=False, check_inputs=False,
+                    )
+                elif claim is not None and ticket is not None and take_id is not None:
+                    try:
+                        ticket = authoring_operations.renew_operation_lease(
+                            claim, planning_enabled=is_resource_planning_enabled(),
+                            _full_auto_claim=full_auto_claim,
+                        )
+                        authoring_operations.fail_operation_item(
+                            claim, ticket, take_id,
+                            planning_enabled=is_resource_planning_enabled(),
+                            _full_auto_claim=full_auto_claim,
+                        )
+                    except authoring_operations.AuthoringOperationError:
+                        authoring_operations.fail_full_auto_item_after_authority_fence(
+                            claim, ticket, take_id, _full_auto_claim=full_auto_claim,
+                        )
+                resource_full_auto.advance_run(
+                    full_auto_claim, "blocked", blocker_code=blocker_code,
+                )
+            except (resource_full_auto.FullAutoRunError, authoring_operations.AuthoringOperationError):
+                pass
+            logging.getLogger(__name__).warning(
+                "Take preparation operation %s was fenced by %s.", operation_id, blocker_code,
+            )
+            return None
         if claim is not None and take_id is not None:
             try:
                 if full_auto_claim is not None:
@@ -4595,6 +4836,18 @@ async def _run_prepare_takes_operation(
             except authoring_operations.AuthoringOperationError:
                 pass
             except resource_full_auto.FullAutoRunError:
+                pass
+        if full_auto_claim is not None and claim is not None and ticket is not None and take_id is not None:
+            try:
+                parent = db.one(
+                    "SELECT state, cancel_intent FROM full_auto_run WHERE run_id = ?",
+                    full_auto_claim.run_id,
+                )
+                if parent is not None and parent["state"] == "cancel_requested" and parent["cancel_intent"]:
+                    authoring_operations.cancel_full_auto_item_after_run_cancel(
+                        claim, ticket, take_id,
+                    )
+            except authoring_operations.AuthoringOperationError:
                 pass
         logging.getLogger(__name__).warning(
             "Take preparation operation %s failed.", operation_id,

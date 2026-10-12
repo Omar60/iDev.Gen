@@ -1392,6 +1392,26 @@ def compare_full_auto_resume_scope(
             ) > resource_full_auto._timestamp(now, field_name="current time")
         )
 
+        target_ids = [take.get("take_id") for take in plan.get("takes", [])]
+        progress_row = db.one(
+            "SELECT * FROM full_auto_prepare_progress WHERE run_id = ?", run_id,
+        )
+        progress = None if progress_row is None else resource_full_auto._read_prepare_progress(run_id)
+        started_targets = resource_full_auto._validated_prepare_accounting(
+            run, progress_row, progress, target_ids,
+        )
+        pending_take_id = next(
+            (take_id for take_id in target_ids if take_id not in started_targets),
+            None,
+        )
+        old_allowance = resource_full_auto.assistant_executable_allowance(
+            run_id, pending_take_id,
+        )
+        budget_refill_required = (
+            pending_take_id is not None and old_allowance["executable_remaining"] == 0
+        )
+        unchanged = unchanged and not budget_refill_required
+
         comparison_issued = requested_comparison_issued
         candidate = current if unchanged else _resolve_request(
             body, config=_config_snapshot(config), scope_issued_at=comparison_issued,
@@ -1419,6 +1439,8 @@ def compare_full_auto_resume_scope(
             changed_fields.append("plan")
         if expires != grant["authorization_expires_at"]:
             changed_fields.append("deadline")
+        if not unchanged:
+            changed_fields.append("assistant_allowance")
         if session_plan.has_generated_take(session_id) and (
             (old_summary.get("continuity_digest") is not None
              and old_summary.get("continuity_digest") != new_summary.get("continuity_digest"))
@@ -1429,6 +1451,31 @@ def compare_full_auto_resume_scope(
                 "Generated Full Auto history cannot continue under changed generation inputs; create a new session.",
             )
 
+        if unchanged:
+            additional_calls_total = 0
+            additional_calls_per_take = 0
+            new_executable_remaining = old_allowance["executable_remaining"]
+            new_pending_take_remaining = old_allowance["pending_take_remaining"]
+        else:
+            new_limits = new_summary["limits"]
+            additional_calls_total = int(new_limits["assistant_calls_total"])
+            additional_calls_per_take = int(new_limits["assistant_calls_per_take"])
+            new_pending_take_remaining = (
+                additional_calls_per_take if pending_take_id is not None else None
+            )
+            new_executable_remaining = (
+                min(additional_calls_total, additional_calls_per_take)
+                if pending_take_id is not None else additional_calls_total
+            )
+        assistant_allowance = {
+            "pending_take_id": pending_take_id,
+            "old_executable_remaining": old_allowance["executable_remaining"],
+            "old_pending_take_remaining": old_allowance["pending_take_remaining"],
+            "additional_calls_total": additional_calls_total,
+            "additional_calls_per_take": additional_calls_per_take,
+            "new_executable_remaining": new_executable_remaining,
+            "new_pending_take_remaining": new_pending_take_remaining,
+        }
         comparison_payload = {
             "run_id": run_id,
             "run_revision": int(run["revision"]),
@@ -1443,6 +1490,8 @@ def compare_full_auto_resume_scope(
             # quote's bounded lifetime.
             "renewal_lifetime_seconds": int(_FULL_AUTO_AUTHORIZATION_LIFETIME.total_seconds()),
             "comparison_issued_at": comparison_issued,
+            "assistant_allowance": assistant_allowance,
+            "reservation_counts_digest": old_allowance["reservation_counts_digest"],
         }
         comparison_digest = resource_store.canonical_digest(comparison_payload)
         if unchanged:
@@ -1458,6 +1507,7 @@ def compare_full_auto_resume_scope(
             "scope_digest": comparison_digest,
             "comparison_issued_at": comparison_issued,
             "changed_fields": changed_fields,
+            "assistant_allowance": assistant_allowance,
             "old_scope": {
                 "summary": old_summary,
                 "scope_digest": grant["scope_digest"],
@@ -1484,6 +1534,7 @@ def compare_full_auto_resume_scope(
             "_dependencies_digest": candidate["dependencies_digest"],
             "_plan_digest": current_plan_digest,
             "_previous_authorization_digest": grant["authorization_digest"],
+            "_reservation_counts_digest": old_allowance["reservation_counts_digest"],
         }
 
 

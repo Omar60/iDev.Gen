@@ -40,14 +40,20 @@ Verified baseline from the repository layout and application entry points.
   prepares ordered owned batches of up to twenty and stops at validation.
   Full Auto `RunClaim`s for preparation and execution have 60-second leases,
   renewed by asynchronous 15-second heartbeats through assistant and ComfyUI
-  I/O. Child operation leases remain ten minutes. Preparation recovery waits
-  for live children to settle, then resumes a registered child under a new fence
+  I/O. Child operation leases remain ten minutes. Preparation uses one durable
+  FIFO assistant slot across Full Auto runs and reserves every physical POST,
+  including compatibility fallbacks, before dispatch. Its ten-minute lease
+  renews every fifteen seconds. Full Auto requests have a 300-second total
+  timeout; manual and other non-Full-Auto calls keep their existing transport
+  behavior. These local bounds do not establish that provider-side work stopped.
+  Preparation recovery waits for live children to settle, then resumes a
+  registered child under a new fence
   after expiry or failure while preserving the completed prefix. A stale
   execution owner stops subsequent writes and dispatches and leaves admission
-  unresolved. Execution-runner recovery, a global runner claim shared
-  with manual starts and FIFO runner admission, attempt journaling, remote
-  reconciliation, FIFO assistant-slot admission, and automatic end-to-end
-  dispatch remain unfinished. Internal review and policy approval
+  unresolved. Execution-runner recovery, a global runner claim shared with
+  manual starts and FIFO runner admission, attempt journaling, remote
+  reconciliation, and automatic end-to-end dispatch remain unfinished.
+  Internal review and policy approval
   validate current snapshots, conflicts, placeholders, adaptations, drift, and
   duplicate acceptance while keeping neutral notices nonblocking. Approval and
   new Full Auto submissions enforce that gate; exact linked-shot replays remain

@@ -1,32 +1,36 @@
 # Project Progress
 
-## Goal and Current Position
+## Goal and Accepted Position
 
-Heavy deployment `full_auto_4_7_20261011` completed only Task 4.7 of
-`automate-resource-session-full-auto`. Entry Git was clean at `b31dbb2`.
-Main accepted independent verification and marked only 4.7: 19 of 41 complete.
-User explicitly placed existing RunClaim heartbeats in 4.7 and shared global
-runner ownership in 5.1.
+Heavy deployment `full-auto-first-20261011` completed only Task 4.8 of
+`automate-resource-session-full-auto`. Entry Git was clean at `e8ca7f1`.
+Main accepted the independent final review and marked only 4.8: 20 of 41 tasks.
 
-Coordinator and admitted runner renew every 15 seconds with 60-second leases.
-Preparation preserves live ten-minute child ownership through long I/O and
-coordinator loss. Recovery waits, preserves verified progress and resumes the
-registered expired child under the current fenced owner. Stale ownership and
-overlapping child ranges fail closed before further dispatch or writes.
-Renewal uses fresh time inside the transaction and before its guarded update.
+Full Auto preparation now shares a durable FIFO assistant slot, yields after
+one take and reserves allowance before every physical POST, including the
+reasoning fallback. Ten-minute slot leases renew every fifteen seconds;
+owner loss retains quarantine through the bounded local request timeout.
+Each Full Auto POST has a total 300-second deadline. Manual transport is unchanged.
 
-## Verification and Boundaries
+Historical reservations and linked authorizations remain cumulative. Status
+shows the current grant's total remaining allowance; Resume separately checks
+the pending take. Budget-only renewal requires explicit changed-scope acceptance,
+with the displayed allowance and reservation counts bound into the quote.
 
-Independent final complete Python gate: 3,283 passed, two skipped, five warnings,
-exit zero in 465.78 seconds. Seven independent heartbeat/expiry cases and 46
-privacy/format cases passed; strict OpenSpec validation and diff checks passed.
-The corrected clock harness proves injection reachability and no mutation on
-rejection; the earlier invalid harness is not regression evidence. Final quiet
-output does not identify skip reasons.
+## Independent Verification
 
-README, session guidance and module ownership are updated. Main state documents
-record acceptance before the isolated task commit and sealed Archivist report.
-Frontend was unchanged and its gates were not run; no real generation occurred.
-Global/manual claims, FIFO transport reservations, remote journals/reconciliation
-and complete coordinator startup dispatch remain later tasks. Uncertain remote
-admission remains conservatively owned. No next task, archive or push.
+Final complete Python gate: 3,315 passed, two skipped, five warnings, exit zero
+in 524.19 seconds. Focused verification: 73 passed, one skipped. Privacy and
+format: 46 passed. Strict OpenSpec validation, compileall and diff checks passed.
+The skips were the opt-in 500-take synthesis benchmark and unavailable symlinks.
+No frontend changed; frontend gates were not applicable.
+
+## Stop Boundary
+
+README, session guidance and module ownership receive the verified closure
+handoff. Close only this task with the acceptance commit and Archivist's sealed
+Deployment Token Report. Task 4.9 remains unchecked and unstarted here.
+No real generation, external handoff, archive or push occurred. Local timeout
+or connection closure does not prove that remote provider computation stopped.
+Full coordinator startup dispatch, runner admission and remote attempt recovery
+remain later tasks.

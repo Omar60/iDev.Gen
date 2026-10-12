@@ -23,8 +23,15 @@ from backend import resource_planning
 
 RUN_LEASE = timedelta(seconds=60)
 RUN_HEARTBEAT_INTERVAL = timedelta(seconds=15)
+ASSISTANT_SLOT_LEASE = timedelta(minutes=10)
+ASSISTANT_SLOT_HEARTBEAT_INTERVAL = timedelta(seconds=15)
+# Keep aligned with enhance.TIMEOUT; only Full Auto dispatches use this bound.
+ASSISTANT_DISPATCH_TIMEOUT = timedelta(seconds=300)
+# Persisted timestamps have one-second precision, so quarantine rounds safely up.
+ASSISTANT_DISPATCH_TIMESTAMP_MARGIN = timedelta(seconds=1)
 _RUN_CLAIM_KEY = secrets.token_bytes(32)
 _MANUAL_EDIT_CLAIM_KEY = secrets.token_bytes(32)
+_ASSISTANT_SLOT_CLAIM_KEY = secrets.token_bytes(32)
 _SUPPORTED_AUTHORIZATION_VERSION = 1
 _SUPPORTED_POLICY_VERSION = "resource-full-auto-v1"
 _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -87,6 +94,22 @@ class RunClaim:
     lease_started_at: str
     lease_expires_at: str
     requires_reconciliation: bool
+    _signature: str = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class AssistantSlotClaim:
+    """Backend-only FIFO slot capability for one Full Auto take."""
+
+    run_id: str
+    session_id: int
+    take_id: str
+    operation_id: str
+    generation: int
+    epoch: int
+    run_fencing_token: int
+    operation_fencing_token: int
+    lease_expires_at: str
     _signature: str = field(repr=False, compare=False)
 
 
@@ -821,6 +844,142 @@ def unresolved_work_count(session_id: int, run_id: str) -> int:
     return count
 
 
+def assistant_call_accounting(run_id: str) -> dict[str, int]:
+    """Return cumulative linked-grant allowance and durable physical dispatches."""
+    # current_authorization verifies that the linked renewal chain is complete
+    # before any historical grant is included in public accounting.
+    current_authorization(run_id)
+    rows = [db.one(
+        "SELECT authorization_json FROM full_auto_run_receipt WHERE run_id = ?", run_id,
+    )]
+    rows.extend(db.q(
+        "SELECT authorization_json FROM full_auto_run_authorization WHERE run_id = ? "
+        "ORDER BY authorization_sequence", run_id,
+    ))
+    grants: list[dict] = []
+    total = 0
+    for row in rows:
+        if row is None:
+            raise FullAutoRunError(409, "full_auto_authorization_invalid", "The Full Auto authorization is invalid.")
+        try:
+            authorization = json.loads(row["authorization_json"])
+            _summary, limits = _validate_status_authorization(authorization)
+        except (TypeError, KeyError, json.JSONDecodeError, FullAutoRunError) as exc:
+            raise FullAutoRunError(409, "full_auto_authorization_invalid", "The Full Auto authorization is invalid.") from exc
+        grants.append(limits)
+        total += int(limits["assistant_calls_total"])
+    run = _run_row(run_id)
+    if run is None:
+        raise FullAutoRunError(404, "full_auto_run_not_found", "Full Auto run not found.")
+    reservations = db.q(
+        "SELECT * FROM full_auto_assistant_reservation WHERE run_id = ? ORDER BY reservation_id",
+        run_id,
+    )
+    counts: dict[int, int] = {}
+    per_take: dict[tuple[int, str], int] = {}
+    for reservation in reservations:
+        sequence = reservation["authorization_sequence"]
+        if (
+            type(sequence) is not int or not 0 <= sequence < len(grants)
+            or type(reservation["session_id"]) is not int
+            or int(reservation["session_id"]) != int(run["session_id"])
+            or type(reservation["take_id"]) is not str or not reservation["take_id"]
+            or type(reservation["operation_id"]) is not str or not reservation["operation_id"]
+            or type(reservation["slot_generation"]) is not int or reservation["slot_generation"] <= 0
+            or type(reservation["request_number"]) is not int
+            or not 1 <= reservation["request_number"] <= int(grants[sequence]["assistant_calls_per_take"])
+        ):
+            raise _invalid_saved_status()
+        try:
+            _timestamp(reservation["dispatched_at"], field_name="assistant dispatch")
+            if reservation["settled_at"] is None:
+                if reservation["response_metadata_json"] is not None:
+                    raise _invalid_saved_status()
+            else:
+                _timestamp(reservation["settled_at"], field_name="assistant response")
+                metadata = json.loads(reservation["response_metadata_json"])
+                if _safe_assistant_response_metadata(metadata) != metadata:
+                    raise _invalid_saved_status()
+        except (TypeError, json.JSONDecodeError, FullAutoRunError) as exc:
+            raise _invalid_saved_status() from exc
+        counts[sequence] = counts.get(sequence, 0) + 1
+        key = (sequence, reservation["take_id"])
+        per_take[key] = per_take.get(key, 0) + 1
+    if (
+        any(count > int(grants[sequence]["assistant_calls_total"]) for sequence, count in counts.items())
+        or any(count > int(grants[sequence]["assistant_calls_per_take"]) for (sequence, _take), count in per_take.items())
+    ):
+        raise _invalid_saved_status()
+    reserved = len(reservations)
+    if reserved > total:
+        raise _invalid_saved_status()
+    return {"authorized": total, "reserved": reserved, "remaining": max(0, total - reserved)}
+
+
+def assistant_executable_allowance(
+    run_id: str,
+    pending_take_id: str | None,
+) -> dict[str, Any]:
+    """Return the latest grant's executable allowance and its reservation commitment."""
+    historical = assistant_call_accounting(run_id)
+    grant = current_authorization(run_id)
+    _summary, limits = _validate_status_authorization(grant["authorization"])
+    sequence = int(grant["sequence"])
+    grouped = db.q(
+        """SELECT authorization_sequence, take_id, COUNT(*) AS count
+           FROM full_auto_assistant_reservation WHERE run_id = ?
+           GROUP BY authorization_sequence, take_id
+           ORDER BY authorization_sequence, take_id""",
+        run_id,
+    )
+    by_grant: dict[int, int] = {}
+    by_take: dict[str, int] = {}
+    for row in grouped:
+        row_sequence = int(row["authorization_sequence"])
+        count = int(row["count"])
+        by_grant[row_sequence] = by_grant.get(row_sequence, 0) + count
+        if row_sequence == sequence:
+            by_take[row["take_id"]] = count
+    grant_reserved = by_grant.get(sequence, 0)
+    grant_remaining = max(0, int(limits["assistant_calls_total"]) - grant_reserved)
+    if pending_take_id is None:
+        per_take_reserved = 0
+        per_take_remaining = None
+        executable_remaining = grant_remaining
+    else:
+        per_take_reserved = by_take.get(pending_take_id, 0)
+        per_take_remaining = max(
+            0, int(limits["assistant_calls_per_take"]) - per_take_reserved,
+        )
+        executable_remaining = min(grant_remaining, per_take_remaining)
+    counts_digest = _digest({
+        "authorization_sequence": sequence,
+        "reserved_by_grant_and_take": [
+            {
+                "authorization_sequence": int(row["authorization_sequence"]),
+                "take_id": row["take_id"],
+                "count": int(row["count"]),
+            }
+            for row in grouped
+        ],
+    })
+    return {
+        "authorized": historical["authorized"],
+        "reserved": historical["reserved"],
+        "historical_remaining": historical["remaining"],
+        "authorization_sequence": sequence,
+        "grant_authorized": int(limits["assistant_calls_total"]),
+        "grant_reserved": grant_reserved,
+        "grant_remaining": grant_remaining,
+        "per_take_authorized": int(limits["assistant_calls_per_take"]),
+        "pending_take_id": pending_take_id,
+        "pending_take_reserved": per_take_reserved,
+        "pending_take_remaining": per_take_remaining,
+        "executable_remaining": executable_remaining,
+        "reservation_counts_digest": counts_digest,
+    }
+
+
 def public_run_status(session_id: int, run_id: str) -> dict:
     """Build a closed status projection without prompts, paths, or owner secrets."""
     row = _run_row(run_id)
@@ -866,7 +1025,20 @@ def public_run_status(session_id: int, run_id: str) -> dict:
     admission = db.one(
         "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", run_id,
     )
-    assistant_remaining = max(0, assistant_total - len(started_targets) * assistant_per_take)
+    pending_assistant_take = next(
+        (take_id for take_id in authorized_targets if take_id not in started_targets),
+        None,
+    )
+    assistant_accounting = assistant_executable_allowance(run_id, pending_assistant_take)
+    assistant_total = assistant_accounting["authorized"]
+    assistant_remaining = assistant_accounting["grant_remaining"]
+    assistant_executable_remaining = assistant_accounting["executable_remaining"]
+    assistant_budget_available = (
+        pending_assistant_take is None or assistant_executable_remaining > 0
+    )
+    assistant_budget_blocked = (
+        pending_assistant_take is not None and assistant_executable_remaining == 0
+    )
     image_remaining = max(0, image_total) if not submitted_ids and admission is None else 0
     blocker_code = row["blocker_code"]
     authority_issue = _current_authority_issue(row, db.now())
@@ -875,9 +1047,7 @@ def public_run_status(session_id: int, run_id: str) -> dict:
         blocker_code = authority_issue
     if blocker_code is None and unresolved:
         blocker_code = "run_work_unsettled"
-    if blocker_code is None and (
-        assistant_remaining == 0 or image_remaining == 0
-    ):
+    if blocker_code is None and (assistant_budget_blocked or image_remaining == 0):
         blocker_code = "budget_exhausted"
     message, remedies = _BLOCKER_REMEDIES.get(
         blocker_code,
@@ -890,10 +1060,7 @@ def public_run_status(session_id: int, run_id: str) -> dict:
     resumable_state = state in {"blocked", "cancelled", "failed", "completed_with_errors"}
     policy_is_supported = summary.get("policy_version") == _SUPPORTED_POLICY_VERSION
     authority_repairable = authority_issue not in {"authorization_invalid", "policy_changed"}
-    budget_available = (
-        type(assistant_remaining) is int and assistant_remaining > 0
-        and type(image_remaining) is int and image_remaining > 0
-    )
+    budget_available = assistant_budget_available and image_remaining > 0
     can_resume = reconcile_only or (
         enabled and resumable_state and state != "succeeded" and unresolved == 0
         and authority_repairable and policy_is_supported and budget_available
@@ -927,7 +1094,6 @@ def public_run_status(session_id: int, run_id: str) -> dict:
             "image_attempts_total": image_total,
             "image_attempts_per_take": image_per_take,
             "image_attempts_remaining_lower_bound": image_remaining,
-            "remaining_is_conservative_until_reservation_journals": True,
         },
         "blocker": None if blocker_code is None else {
             "code": blocker_code, "message": message, "remedies": remedies,
@@ -1307,6 +1473,9 @@ def claim_run(run_id: str, *, now_text: str | None = None) -> RunClaim:
             if not expired:
                 raise FullAutoRunError(409, "run_already_claimed", "The Full Auto run already has an owner.")
 
+        if expired:
+            quarantine_run_assistant_slots(run_id, now_text=timestamp)
+
         state_requires_reconciliation = row["state"] == "cancel_requested" or bool(row["cancel_intent"])
         prior_phase = row["resume_phase"]
         phase = row["phase"]
@@ -1407,6 +1576,729 @@ def require_prepare_claim(
     if authority_issue is not None:
         raise _authority_error(authority_issue)
     return row
+
+
+def _assistant_slot_payload(claim: AssistantSlotClaim) -> bytes:
+    return _canonical_json({
+        "purpose": "full-auto-assistant-slot-v1",
+        "run_id": claim.run_id,
+        "session_id": claim.session_id,
+        "take_id": claim.take_id,
+        "operation_id": claim.operation_id,
+        "generation": claim.generation,
+        "epoch": claim.epoch,
+        "run_fencing_token": claim.run_fencing_token,
+        "operation_fencing_token": claim.operation_fencing_token,
+        "lease_expires_at": claim.lease_expires_at,
+    }).encode("utf-8")
+
+
+def _make_assistant_slot_claim(row: dict) -> AssistantSlotClaim:
+    unsigned = AssistantSlotClaim(
+        run_id=row["run_id"],
+        session_id=int(row["session_id"]),
+        take_id=row["take_id"],
+        operation_id=row["operation_id"],
+        generation=int(row["generation"]),
+        epoch=int(row["run_epoch"]),
+        run_fencing_token=int(row["run_fencing_token"]),
+        operation_fencing_token=int(row["operation_fencing_token"]),
+        lease_expires_at=row["lease_expires_at"],
+        _signature="",
+    )
+    signature = hmac.new(
+        _ASSISTANT_SLOT_CLAIM_KEY, _assistant_slot_payload(unsigned), hashlib.sha256,
+    ).hexdigest()
+    return AssistantSlotClaim(**{**unsigned.__dict__, "_signature": signature})
+
+
+def _authentic_assistant_slot_claim(claim: AssistantSlotClaim) -> bool:
+    if not isinstance(claim, AssistantSlotClaim) or not isinstance(claim._signature, str):
+        return False
+    expected = hmac.new(
+        _ASSISTANT_SLOT_CLAIM_KEY, _assistant_slot_payload(claim), hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, claim._signature)
+
+
+def _assistant_owner_rows(
+    run_claim: RunClaim,
+    operation_claim: Any,
+    take_id: str,
+    *,
+    now_text: str,
+    provider_identity: object,
+) -> tuple[dict, dict, dict, dict]:
+    """Revalidate parent, child, provider and current grant at one local boundary."""
+    from backend import authoring_operations
+
+    if not isinstance(operation_claim, authoring_operations.OperationClaim):
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto preparation owner is stale.")
+    if not resource_planning.is_enabled():
+        raise FullAutoRunError(
+            503, "resource_planning_disabled", "Full Auto is disabled by configuration.",
+        )
+    run = require_prepare_claim(run_claim, session_id=operation_claim.session_id, now_text=now_text)
+    operation = db.one(
+        "SELECT * FROM authoring_operation WHERE operation_id = ?", operation_claim.operation_id,
+    )
+    if operation is None or (
+        operation["state"] != "active"
+        or int(operation["session_id"]) != operation_claim.session_id
+        or int(operation["plan_revision"]) != operation_claim.plan_revision
+        or int(operation["fencing_token"]) != operation_claim.fencing_token
+        or operation["request_digest"] != operation_claim.request_digest
+        or operation["full_auto_run_id"] != run_claim.run_id
+        or operation["full_auto_run_epoch"] != run_claim.epoch
+        or operation["full_auto_run_fencing_token"] != run_claim.fencing_token
+        or operation["lease_expires_at"] is None
+        or _timestamp(operation["lease_expires_at"], field_name="operation lease")
+        <= _timestamp(now_text, field_name="current time")
+    ):
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto preparation owner is stale.")
+    try:
+        remaining = json.loads(operation["remaining_json"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise FullAutoRunError(409, "prepare_child_owner_invalid", "The Full Auto preparation target is stale.") from exc
+    if type(remaining) is not list or not remaining or remaining[0] != take_id:
+        raise FullAutoRunError(409, "prepare_child_order_stale", "The Full Auto take is no longer next.")
+    grant = current_authorization(run_claim.run_id, session_id=run_claim.session_id)
+    summary, limits = _validate_status_authorization(grant["authorization"])
+    if (
+        type(provider_identity) is not dict
+        or _canonical_json(provider_identity) != _canonical_json(summary["provider"])
+    ):
+        raise FullAutoRunError(
+            409, "authorization_scope_changed",
+            "The assistant provider changed after Full Auto authorization.",
+        )
+    return run, operation, grant, {"summary": summary, "limits": limits}
+
+
+def _fresh_assistant_owner_rows(
+    run_claim: RunClaim,
+    operation_claim: Any,
+    take_id: str,
+    provider_identity: object,
+    *,
+    now_text: str | None = None,
+) -> tuple[dict, dict, dict, dict, str]:
+    """Recheck every assistant owner against the latest locked clock sample."""
+    def validate(timestamp: str) -> tuple[dict, dict, dict, dict]:
+        try:
+            return _assistant_owner_rows(
+                run_claim, operation_claim, take_id, now_text=timestamp,
+                provider_identity=provider_identity,
+            )
+        except FullAutoRunError as exc:
+            if exc.code == "run_lease_expired":
+                raise FullAutoRunError(
+                    409, "run_owner_stale", "The Full Auto prepare owner is stale.",
+                ) from exc
+            raise
+
+    timestamp = _now_text(now_text)
+    rows = validate(timestamp)
+    checked_at = _now_text(None)
+    if _timestamp(checked_at, field_name="current time") > _timestamp(
+        timestamp, field_name="current time",
+    ):
+        timestamp = checked_at
+        rows = validate(timestamp)
+
+    # Validation itself can cross an expiry boundary. Check the rows once more
+    # against a clock sample taken after that work, without trusting a timestamp
+    # captured before the transaction or the owner lookups.
+    run, operation, grant, authorization = rows
+    now = _timestamp(checked_at, field_name="current time")
+    if run.get("lease_expires_at") is None or _timestamp(
+        run["lease_expires_at"], field_name="run lease",
+    ) <= now:
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto prepare owner is stale.")
+    if operation.get("lease_expires_at") is None or _timestamp(
+        operation["lease_expires_at"], field_name="operation lease",
+    ) <= now:
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto preparation owner is stale.")
+    authority_issue = _current_authority_issue(run, checked_at)
+    if authority_issue is not None:
+        raise _authority_error(authority_issue)
+    if not resource_planning.is_enabled():
+        raise FullAutoRunError(
+            503, "resource_planning_disabled", "Full Auto is disabled by configuration.",
+        )
+    return run, operation, grant, authorization, checked_at
+
+
+def _assistant_slot_row(claim: AssistantSlotClaim) -> dict | None:
+    return db.one(
+        "SELECT * FROM full_auto_assistant_slot WHERE run_id = ? AND take_id = ?",
+        claim.run_id, claim.take_id,
+    )
+
+
+def _release_or_quarantine_slot(row: dict, *, now_text: str) -> None:
+    """Release idle ownership, retaining an unsettled physical request fence."""
+    reservation_id = row.get("inflight_reservation_id")
+    if reservation_id is None:
+        db.run(
+            "UPDATE full_auto_assistant_slot SET state = 'released', lease_expires_at = NULL, "
+            "updated_at = ? WHERE run_id = ? AND take_id = ?",
+            now_text, row["run_id"], row["take_id"],
+        )
+        return
+    reservation = db.one(
+        "SELECT dispatched_at, settled_at FROM full_auto_assistant_reservation WHERE reservation_id = ?",
+        int(reservation_id),
+    )
+    if reservation is not None and reservation["settled_at"] is not None:
+        db.run(
+            "UPDATE full_auto_assistant_slot SET state = 'released', lease_expires_at = NULL, "
+            "inflight_reservation_id = NULL, updated_at = ? WHERE run_id = ? AND take_id = ?",
+            now_text, row["run_id"], row["take_id"],
+        )
+        return
+    lease_deadline = row.get("lease_expires_at") or now_text
+    if reservation is not None:
+        timeout_deadline = (
+            _timestamp(reservation["dispatched_at"], field_name="assistant dispatch")
+            + ASSISTANT_DISPATCH_TIMEOUT + ASSISTANT_DISPATCH_TIMESTAMP_MARGIN
+        ).isoformat(timespec="seconds")
+        if _timestamp(timeout_deadline, field_name="assistant timeout") > _timestamp(
+            lease_deadline, field_name="assistant lease",
+        ):
+            lease_deadline = timeout_deadline
+    db.run(
+        "UPDATE full_auto_assistant_slot SET state = 'quarantined', lease_expires_at = ?, "
+        "updated_at = ? WHERE run_id = ? AND take_id = ?",
+        lease_deadline, now_text, row["run_id"], row["take_id"],
+    )
+
+
+def _recover_assistant_slot(now_text: str) -> None:
+    row = db.one(
+        "SELECT * FROM full_auto_assistant_slot WHERE state IN ('active', 'quarantined') LIMIT 1",
+    )
+    if row is None:
+        return
+    now = _timestamp(now_text, field_name="current time")
+    if row["state"] == "quarantined":
+        if row["lease_expires_at"] is None or _timestamp(
+            row["lease_expires_at"], field_name="assistant lease",
+        ) <= now:
+            db.run(
+                "UPDATE full_auto_assistant_slot SET state = 'released', lease_expires_at = NULL, "
+                "inflight_reservation_id = NULL, updated_at = ? "
+                "WHERE run_id = ? AND take_id = ? AND state = 'quarantined'",
+                now_text, row["run_id"], row["take_id"],
+            )
+        return
+
+    run = db.one("SELECT * FROM full_auto_run WHERE run_id = ?", row["run_id"])
+    operation = db.one(
+        "SELECT * FROM authoring_operation WHERE operation_id = ?", row["operation_id"],
+    )
+    parent_alive = run is not None and (
+        run["state"] == "active" and run["phase"] == "prepare"
+        and not bool(run["cancel_intent"])
+        and int(run["epoch"]) == int(row["run_epoch"])
+        and int(run["fencing_token"]) == int(row["run_fencing_token"])
+        and run["lease_expires_at"] is not None
+        and _timestamp(run["lease_expires_at"], field_name="run lease") > now
+    )
+    child_alive = operation is not None and (
+        operation["state"] == "active"
+        and int(operation["fencing_token"]) == int(row["operation_fencing_token"])
+        and operation["lease_expires_at"] is not None
+        and _timestamp(operation["lease_expires_at"], field_name="operation lease") > now
+    )
+    slot_alive = row["lease_expires_at"] is not None and _timestamp(
+        row["lease_expires_at"], field_name="assistant lease",
+    ) > now
+    if not parent_alive or not child_alive or not slot_alive:
+        _release_or_quarantine_slot(row, now_text=now_text)
+        refreshed = db.one(
+            "SELECT * FROM full_auto_assistant_slot WHERE run_id = ? AND take_id = ?",
+            row["run_id"], row["take_id"],
+        )
+        if (
+            refreshed is not None and refreshed["state"] == "quarantined"
+            and refreshed["lease_expires_at"] is not None
+            and _timestamp(refreshed["lease_expires_at"], field_name="assistant lease") <= now
+        ):
+            db.run(
+                "UPDATE full_auto_assistant_slot SET state = 'released', lease_expires_at = NULL, "
+                "inflight_reservation_id = NULL, updated_at = ? WHERE run_id = ? AND take_id = ?",
+                now_text, row["run_id"], row["take_id"],
+            )
+
+
+def _discard_stale_assistant_waiters(now_text: str) -> None:
+    """Remove expired or fenced waiters so they cannot hold FIFO priority."""
+    now = _timestamp(now_text, field_name="current time")
+    enabled = resource_planning.is_enabled()
+    for slot in db.q(
+        "SELECT * FROM full_auto_assistant_slot WHERE state = 'waiting' "
+        "ORDER BY ready_at, run_id, rowid",
+    ):
+        run = db.one("SELECT * FROM full_auto_run WHERE run_id = ?", slot["run_id"])
+        operation = db.one(
+            "SELECT * FROM authoring_operation WHERE operation_id = ?", slot["operation_id"],
+        )
+        try:
+            live = enabled and run is not None and operation is not None and (
+                run["state"] == "active" and run["phase"] == "prepare"
+                and not bool(run["cancel_intent"])
+                and int(run["epoch"]) == int(slot["run_epoch"])
+                and int(run["fencing_token"]) == int(slot["run_fencing_token"])
+                and run["lease_expires_at"] is not None
+                and _timestamp(run["lease_expires_at"], field_name="run lease") > now
+                and operation["state"] == "active"
+                and int(operation["session_id"]) == int(slot["session_id"])
+                and int(operation["fencing_token"]) == int(slot["operation_fencing_token"])
+                and operation["full_auto_run_id"] == slot["run_id"]
+                and operation["full_auto_run_epoch"] == int(slot["run_epoch"])
+                and operation["full_auto_run_fencing_token"] == int(slot["run_fencing_token"])
+                and operation["lease_expires_at"] is not None
+                and _timestamp(operation["lease_expires_at"], field_name="operation lease") > now
+            )
+            if live:
+                live = _current_authority_issue(run, now_text) is None
+        except (TypeError, ValueError, FullAutoRunError):
+            live = False
+        if not live:
+            db.run(
+                "UPDATE full_auto_assistant_slot SET state = 'released', updated_at = ? "
+                "WHERE run_id = ? AND take_id = ? AND state = 'waiting'",
+                now_text, slot["run_id"], slot["take_id"],
+            )
+
+
+def try_acquire_assistant_slot(
+    run_claim: RunClaim,
+    operation_claim: Any,
+    take_id: str,
+    provider_identity: object,
+    *,
+    now_text: str | None = None,
+) -> AssistantSlotClaim | None:
+    """Persist FIFO readiness and acquire the one cross-run Full Auto slot."""
+    if type(take_id) is not str or not take_id:
+        raise FullAutoRunError(422, "full_auto_target_not_ready", "The prepared take identity is invalid.")
+    with db.transaction():
+        timestamp = _now_text(None)
+        run, operation, _grant, _authorization, timestamp = _fresh_assistant_owner_rows(
+            run_claim, operation_claim, take_id, provider_identity, now_text=timestamp,
+        )
+        existing = db.one(
+            "SELECT * FROM full_auto_assistant_slot WHERE run_id = ? AND take_id = ?",
+            run_claim.run_id, take_id,
+        )
+        if existing is None:
+            _run, _operation, _grant, _authorization, timestamp = _fresh_assistant_owner_rows(
+                run_claim, operation_claim, take_id, provider_identity,
+            )
+            generation = 1
+            db.run(
+                """INSERT INTO full_auto_assistant_slot
+                   (run_id, session_id, take_id, operation_id, ready_at, generation, state,
+                    run_epoch, run_fencing_token, operation_fencing_token, lease_expires_at,
+                    inflight_reservation_id, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, NULL, NULL, ?)""",
+                run_claim.run_id, run_claim.session_id, take_id, operation_claim.operation_id,
+                timestamp, generation, run_claim.epoch, run_claim.fencing_token,
+                operation_claim.fencing_token, timestamp,
+            )
+        elif existing["state"] in {"released", "completed"} or (
+            existing["state"] == "waiting" and (
+                existing["operation_id"] != operation_claim.operation_id
+                or int(existing["run_epoch"]) != run_claim.epoch
+                or int(existing["run_fencing_token"]) != run_claim.fencing_token
+                or int(existing["operation_fencing_token"]) != operation_claim.fencing_token
+            )
+        ):
+            _run, _operation, _grant, _authorization, timestamp = _fresh_assistant_owner_rows(
+                run_claim, operation_claim, take_id, provider_identity,
+            )
+            generation = int(existing["generation"]) + 1
+            db.run(
+                """UPDATE full_auto_assistant_slot
+                   SET session_id = ?, operation_id = ?, ready_at = ?, generation = ?,
+                       state = 'waiting', run_epoch = ?, run_fencing_token = ?,
+                       operation_fencing_token = ?, lease_expires_at = NULL,
+                       inflight_reservation_id = NULL, updated_at = ?
+                   WHERE run_id = ? AND take_id = ?
+                     AND state IN ('released', 'completed', 'waiting')""",
+                run_claim.session_id, operation_claim.operation_id, timestamp, generation,
+                run_claim.epoch, run_claim.fencing_token, operation_claim.fencing_token,
+                timestamp, run_claim.run_id, take_id,
+            )
+
+        timestamp = _now_text(None)
+        _recover_assistant_slot(timestamp)
+        _discard_stale_assistant_waiters(timestamp)
+        current = db.one(
+            "SELECT * FROM full_auto_assistant_slot WHERE run_id = ? AND take_id = ?",
+            run_claim.run_id, take_id,
+        )
+        if current is None:
+            raise FullAutoRunError(500, "assistant_slot_invalid", "The assistant slot could not be read.")
+        if current["state"] == "active":
+            return None
+        if current["state"] != "waiting":
+            return None
+        occupied = db.one(
+            "SELECT run_id, take_id FROM full_auto_assistant_slot "
+            "WHERE state IN ('active', 'quarantined') LIMIT 1",
+        )
+        if occupied is not None:
+            return None
+        first = db.one(
+            "SELECT * FROM full_auto_assistant_slot WHERE state = 'waiting' "
+            "ORDER BY ready_at, run_id, rowid LIMIT 1",
+        )
+        if first is None or first["run_id"] != run_claim.run_id or first["take_id"] != take_id:
+            return None
+        _run, _operation, _grant, _authorization, timestamp = _fresh_assistant_owner_rows(
+            run_claim, operation_claim, take_id, provider_identity,
+        )
+        _discard_stale_assistant_waiters(timestamp)
+        current = db.one(
+            "SELECT * FROM full_auto_assistant_slot WHERE run_id = ? AND take_id = ?",
+            run_claim.run_id, take_id,
+        )
+        occupied = db.one(
+            "SELECT run_id, take_id FROM full_auto_assistant_slot "
+            "WHERE state IN ('active', 'quarantined') LIMIT 1",
+        )
+        first = db.one(
+            "SELECT * FROM full_auto_assistant_slot WHERE state = 'waiting' "
+            "ORDER BY ready_at, run_id, rowid LIMIT 1",
+        )
+        if (
+            current is None or current["state"] != "waiting" or occupied is not None
+            or first is None or first["run_id"] != run_claim.run_id
+            or first["take_id"] != take_id
+        ):
+            return None
+        timestamp = _now_text(None)
+        _run, _operation, _grant, _authorization, timestamp = _fresh_assistant_owner_rows(
+            run_claim, operation_claim, take_id, provider_identity, now_text=timestamp,
+        )
+        deadline = (
+            _timestamp(timestamp, field_name="current time") + ASSISTANT_SLOT_LEASE
+        ).isoformat(timespec="seconds")
+        changed = db.conn().execute(
+            """UPDATE full_auto_assistant_slot SET state = 'active', lease_expires_at = ?, updated_at = ?
+               WHERE run_id = ? AND take_id = ? AND state = 'waiting' AND generation = ?""",
+            (deadline, timestamp, run_claim.run_id, take_id, current["generation"]),
+        ).rowcount
+        if changed != 1:
+            return None
+        return _make_assistant_slot_claim(db.one(
+            "SELECT * FROM full_auto_assistant_slot WHERE run_id = ? AND take_id = ?",
+            run_claim.run_id, take_id,
+        ))
+
+
+def _require_live_assistant_slot(
+    slot_claim: AssistantSlotClaim,
+    run_claim: RunClaim,
+    operation_claim: Any,
+    provider_identity: object,
+    *,
+    now_text: str | None,
+) -> tuple[dict, dict, dict, dict, dict, str]:
+    if not _authentic_assistant_slot_claim(slot_claim):
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto assistant slot is stale.")
+    run, operation, grant, authorization, checked_at = _fresh_assistant_owner_rows(
+        run_claim, operation_claim, slot_claim.take_id, provider_identity,
+        now_text=now_text,
+    )
+    row = _assistant_slot_row(slot_claim)
+    if row is None or (
+        row["state"] != "active"
+        or row["operation_id"] != operation_claim.operation_id
+        or int(row["generation"]) != slot_claim.generation
+        or int(row["run_epoch"]) != run_claim.epoch
+        or int(row["run_fencing_token"]) != run_claim.fencing_token
+        or int(row["operation_fencing_token"]) != operation_claim.fencing_token
+        or row["lease_expires_at"] != slot_claim.lease_expires_at
+        or _timestamp(row["lease_expires_at"], field_name="assistant lease")
+        <= _timestamp(checked_at, field_name="current time")
+    ):
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto assistant slot is stale.")
+    return run, operation, grant, authorization, row, checked_at
+
+
+def renew_assistant_slot(
+    slot_claim: AssistantSlotClaim,
+    run_claim: RunClaim,
+    operation_claim: Any,
+    provider_identity: object,
+    *,
+    now_text: str | None = None,
+) -> AssistantSlotClaim:
+    with db.transaction():
+        timestamp = _now_text(None)
+        _run, _operation, _grant, _authorization, row, timestamp = _require_live_assistant_slot(
+            slot_claim, run_claim, operation_claim, provider_identity, now_text=timestamp,
+        )
+        deadline = (
+            _timestamp(timestamp, field_name="current time") + ASSISTANT_SLOT_LEASE
+        ).isoformat(timespec="seconds")
+        changed = db.conn().execute(
+            "UPDATE full_auto_assistant_slot SET lease_expires_at = ?, updated_at = ? "
+            "WHERE run_id = ? AND take_id = ? AND generation = ? AND state = 'active' "
+            "AND lease_expires_at = ? AND inflight_reservation_id IS ?",
+            (deadline, timestamp, slot_claim.run_id, slot_claim.take_id, slot_claim.generation,
+             row["lease_expires_at"], row["inflight_reservation_id"]),
+        ).rowcount
+        if changed != 1:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto assistant slot is stale.")
+        return _make_assistant_slot_claim(db.one(
+            "SELECT * FROM full_auto_assistant_slot WHERE run_id = ? AND take_id = ?",
+            slot_claim.run_id, slot_claim.take_id,
+        ))
+
+
+def _safe_assistant_response_metadata(metadata: object) -> dict:
+    if type(metadata) is not dict or set(metadata) - {
+        "status", "retry_after", "structured_refusal", "content_filter", "usage",
+    }:
+        raise FullAutoRunError(500, "assistant_metadata_invalid", "Assistant transport metadata is invalid.")
+    result: dict[str, object] = {}
+    status = metadata.get("status")
+    if status is not None and (type(status) is not int or not 100 <= status <= 599):
+        raise FullAutoRunError(500, "assistant_metadata_invalid", "Assistant transport metadata is invalid.")
+    result["status"] = status
+    retry_after = metadata.get("retry_after")
+    if retry_after is not None:
+        if (
+            type(retry_after) is not str or len(retry_after) > 128
+            or any(not char.isprintable() for char in retry_after)
+        ):
+            raise FullAutoRunError(500, "assistant_metadata_invalid", "Assistant transport metadata is invalid.")
+        result["retry_after"] = retry_after
+    for name in ("structured_refusal", "content_filter"):
+        value = metadata.get(name)
+        if value is not None:
+            if type(value) is not bool:
+                raise FullAutoRunError(500, "assistant_metadata_invalid", "Assistant transport metadata is invalid.")
+            result[name] = value
+    usage = metadata.get("usage")
+    if usage is not None:
+        allowed = {"prompt_tokens", "completion_tokens", "total_tokens"}
+        if type(usage) is not dict or set(usage) - allowed or any(
+            type(value) is not int or value < 0 for value in usage.values()
+        ):
+            raise FullAutoRunError(500, "assistant_metadata_invalid", "Assistant transport metadata is invalid.")
+        result["usage"] = usage
+    return result
+
+
+def reserve_assistant_dispatch(
+    slot_claim: AssistantSlotClaim,
+    run_claim: RunClaim,
+    operation_claim: Any,
+    provider_identity: object,
+    *,
+    now_text: str | None = None,
+) -> int:
+    """Durably consume one call immediately before the physical POST."""
+    with db.transaction():
+        timestamp = _now_text(None)
+        _run, _operation, grant, authorization, row, _checked_at = _require_live_assistant_slot(
+            slot_claim, run_claim, operation_claim, provider_identity, now_text=timestamp,
+        )
+        if row["inflight_reservation_id"] is not None:
+            raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
+        summary, limits = authorization["summary"], authorization["limits"]
+        sequence = int(grant["sequence"])
+        per_take = int(db.one(
+            """SELECT COUNT(*) AS count FROM full_auto_assistant_reservation
+               WHERE run_id = ? AND authorization_sequence = ? AND take_id = ?""",
+            run_claim.run_id, sequence, slot_claim.take_id,
+        )["count"])
+        grant_total = int(db.one(
+            """SELECT COUNT(*) AS count FROM full_auto_assistant_reservation
+               WHERE run_id = ? AND authorization_sequence = ?""",
+            run_claim.run_id, sequence,
+        )["count"])
+        cumulative_reserved = int(db.one(
+            "SELECT COUNT(*) AS count FROM full_auto_assistant_reservation WHERE run_id = ?",
+            run_claim.run_id,
+        )["count"])
+        grant_rows = [db.one(
+            "SELECT authorization_json FROM full_auto_run_receipt WHERE run_id = ?",
+            run_claim.run_id,
+        )]
+        grant_rows.extend(db.q(
+            "SELECT authorization_json FROM full_auto_run_authorization WHERE run_id = ? ORDER BY authorization_sequence",
+            run_claim.run_id,
+        ))
+        cumulative_limit = 0
+        for item in grant_rows:
+            if item is None:
+                continue
+            try:
+                raw = json.loads(item["authorization_json"])
+                _grant_summary, grant_limits = _validate_status_authorization(raw)
+            except (TypeError, KeyError, json.JSONDecodeError, FullAutoRunError) as exc:
+                raise FullAutoRunError(
+                    409, "full_auto_authorization_invalid", "The Full Auto authorization chain is invalid.",
+                ) from exc
+            cumulative_limit += int(grant_limits["assistant_calls_total"])
+        if (
+            per_take >= int(limits["assistant_calls_per_take"])
+            or grant_total >= int(limits["assistant_calls_total"])
+            or cumulative_reserved >= cumulative_limit
+        ):
+            raise FullAutoRunError(409, "budget_exhausted", "The authorized assistant call allowance is exhausted.")
+        request_number = per_take + 1
+        timestamp = _now_text(None)
+        _run, _operation, _grant, _authorization, row, timestamp = _require_live_assistant_slot(
+            slot_claim, run_claim, operation_claim, provider_identity, now_text=timestamp,
+        )
+        if row["inflight_reservation_id"] is not None:
+            raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
+        cursor = db.conn().execute(
+            """INSERT INTO full_auto_assistant_reservation
+               (run_id, authorization_sequence, session_id, take_id, operation_id,
+                slot_generation, request_number, dispatched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (run_claim.run_id, sequence, run_claim.session_id, slot_claim.take_id,
+             operation_claim.operation_id, slot_claim.generation, request_number, timestamp),
+        )
+        reservation_id = int(cursor.lastrowid)
+        timestamp = _now_text(None)
+        _run, _operation, _grant, _authorization, row, timestamp = _require_live_assistant_slot(
+            slot_claim, run_claim, operation_claim, provider_identity, now_text=timestamp,
+        )
+        if row["inflight_reservation_id"] is not None:
+            raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
+        updated = db.conn().execute(
+            """UPDATE full_auto_assistant_slot SET inflight_reservation_id = ?, updated_at = ?
+               WHERE run_id = ? AND take_id = ? AND generation = ? AND state = 'active'
+                 AND inflight_reservation_id IS NULL""",
+            (reservation_id, timestamp, slot_claim.run_id, slot_claim.take_id, slot_claim.generation),
+        ).rowcount
+        if updated != 1:
+            raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
+        return reservation_id
+
+
+def settle_assistant_dispatch(
+    slot_claim: AssistantSlotClaim,
+    reservation_id: int,
+    metadata: object,
+    *,
+    now_text: str | None = None,
+) -> None:
+    """Record only safe transport facts, including an observed failed response."""
+    safe = _safe_assistant_response_metadata(metadata)
+    timestamp = _now_text(now_text)
+    encoded = _canonical_json(safe)
+    with db.transaction():
+        row = db.one(
+            """SELECT * FROM full_auto_assistant_reservation
+               WHERE reservation_id = ? AND run_id = ? AND take_id = ? AND slot_generation = ?""",
+            reservation_id, slot_claim.run_id, slot_claim.take_id, slot_claim.generation,
+        )
+        if row is None or row["settled_at"] is not None:
+            return
+        db.run(
+            "UPDATE full_auto_assistant_reservation SET settled_at = ?, response_metadata_json = ? "
+            "WHERE reservation_id = ? AND settled_at IS NULL",
+            timestamp, encoded, reservation_id,
+        )
+        slot = _assistant_slot_row(slot_claim)
+        if slot is None or int(slot["generation"]) != slot_claim.generation:
+            return
+        if slot["inflight_reservation_id"] != reservation_id:
+            return
+        if slot["state"] == "quarantined":
+            db.run(
+                "UPDATE full_auto_assistant_slot SET state = 'released', lease_expires_at = NULL, "
+                "inflight_reservation_id = NULL, updated_at = ? WHERE run_id = ? AND take_id = ?",
+                timestamp, slot_claim.run_id, slot_claim.take_id,
+            )
+        else:
+            db.run(
+                "UPDATE full_auto_assistant_slot SET inflight_reservation_id = NULL, updated_at = ? "
+                "WHERE run_id = ? AND take_id = ? AND generation = ? AND inflight_reservation_id = ?",
+                timestamp, slot_claim.run_id, slot_claim.take_id,
+                slot_claim.generation, reservation_id,
+            )
+
+
+def check_assistant_response(
+    slot_claim: AssistantSlotClaim,
+    run_claim: RunClaim,
+    operation_claim: Any,
+    provider_identity: object,
+    *,
+    now_text: str | None = None,
+) -> None:
+    with db.transaction():
+        _require_live_assistant_slot(
+            slot_claim, run_claim, operation_claim, provider_identity,
+            now_text=_now_text(now_text),
+        )
+
+
+def release_assistant_slot(
+    slot_claim: AssistantSlotClaim,
+    *,
+    completed: bool,
+    now_text: str | None = None,
+) -> None:
+    """Yield after a take settles, or quarantine if its request is still live."""
+    if not _authentic_assistant_slot_claim(slot_claim) or type(completed) is not bool:
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto assistant slot is stale.")
+    timestamp = _now_text(now_text)
+    with db.transaction():
+        row = _assistant_slot_row(slot_claim)
+        if row is None or int(row["generation"]) != slot_claim.generation:
+            return
+        if row["inflight_reservation_id"] is not None:
+            _release_or_quarantine_slot(row, now_text=timestamp)
+            return
+        db.run(
+            "UPDATE full_auto_assistant_slot SET state = ?, lease_expires_at = NULL, "
+            "updated_at = ? WHERE run_id = ? AND take_id = ? AND generation = ?",
+            "completed" if completed else "released", timestamp,
+            slot_claim.run_id, slot_claim.take_id, slot_claim.generation,
+        )
+
+
+def abandon_assistant_slot_waiter(
+    run_claim: RunClaim,
+    operation_claim: Any,
+    take_id: str,
+    *,
+    now_text: str | None = None,
+) -> None:
+    """Drop FIFO readiness when its local worker coroutine is cancelled."""
+    timestamp = _now_text(now_text)
+    with db.transaction():
+        db.run(
+            "UPDATE full_auto_assistant_slot SET state = 'released', updated_at = ? "
+            "WHERE run_id = ? AND take_id = ? AND operation_id = ? AND state = 'waiting' "
+            "AND run_epoch = ? AND run_fencing_token = ? AND operation_fencing_token = ?",
+            timestamp, run_claim.run_id, take_id, operation_claim.operation_id,
+            run_claim.epoch, run_claim.fencing_token, operation_claim.fencing_token,
+        )
+
+
+def quarantine_run_assistant_slots(run_id: str, *, now_text: str) -> None:
+    """Fence slots owned by a run before a replacement coordinator takes over."""
+    with db.transaction():
+        rows = db.q(
+            "SELECT * FROM full_auto_assistant_slot WHERE run_id = ? AND state = 'active'",
+            run_id,
+        )
+        for row in rows:
+            _release_or_quarantine_slot(row, now_text=now_text)
 
 
 def _prepare_json_list(raw: str, *, field_name: str) -> list[str]:
@@ -2548,7 +3440,19 @@ def _current_resume_eligibility(
     )
     assistant_total = limits["assistant_calls_total"]
     assistant_per_take = limits["assistant_calls_per_take"]
-    assistant_remaining = max(0, assistant_total - len(started_targets) * assistant_per_take)
+    pending_assistant_take = next(
+        (take_id for take_id in authorized_targets if take_id not in started_targets),
+        None,
+    )
+    if bool(comparison.get("changed")):
+        assistant_remaining = (
+            assistant_total if pending_assistant_take is None
+            else min(assistant_total, assistant_per_take)
+        )
+    else:
+        assistant_remaining = assistant_executable_allowance(
+            row["run_id"], pending_assistant_take,
+        )["executable_remaining"]
     image_total = limits["image_attempts_total"]
     has_submission = bool(db.one(
         "SELECT 1 FROM full_auto_submission_receipt WHERE run_id = ? LIMIT 1",
@@ -2585,7 +3489,9 @@ def _current_resume_eligibility(
             and summary.get("policy_version") == _SUPPORTED_POLICY_VERSION
         ),
         budget_available=(
-            type(assistant_remaining) is int and assistant_remaining > 0
+            (pending_assistant_take is None or (
+                type(assistant_remaining) is int and assistant_remaining > 0
+            ))
             and type(image_remaining) is int and image_remaining > 0
         ),
         session_exclusive=other_operations is None and other_run is None,
@@ -2698,6 +3604,15 @@ def resume_run(
                     )
                 scope_accepted = bool(comparison["changed"])
                 if scope_accepted and scope_digest is None:
+                    allowance = comparison.get("assistant_allowance", {})
+                    if (
+                        comparison.get("changed_fields") == ["assistant_allowance"]
+                        and allowance.get("old_executable_remaining") == 0
+                    ):
+                        raise FullAutoRunError(
+                            409, "budget_exhausted",
+                            "The current Full Auto assistant allowance is exhausted; review and accept a new allowance.",
+                        )
                     raise FullAutoRunError(
                         409, "authorization_scope_changed",
                         "Review and explicitly accept the changed Full Auto scope before resuming.",

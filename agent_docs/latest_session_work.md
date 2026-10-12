@@ -1,50 +1,62 @@
 # Latest Session Work
 
-## Full Auto Task 4.7 Accepted Handoff
+## Full Auto Task 4.8 Accepted Handoff
 
-Heavy deployment `full_auto_4_7_20261011` completed only Task 4.7 of
-`automate-resource-session-full-auto`. Initial HEAD `b31dbb2` was clean.
-Main completed repository/framework/OpenSpec intake, retained architecture,
-scope, integration and acceptance, and delegated implementation/repairs to
-Executor, independent verification to Tester, and documentation to Archivist.
-User clarified that 4.7 renews the existing RunClaim; the shared global runner
-claim belongs to 5.1. Only 4.7 is marked complete: 19 of 41 tasks.
+Heavy deployment `full-auto-first-20261011` delivered only Task 4.8 of
+`automate-resource-session-full-auto`, from clean HEAD `e8ca7f1`.
+Main retained architecture, scope, integration and acceptance. The internal
+Executor implemented and repaired; Tester independently inspected the actual
+diff and ran final verification. Archivist owns verified public/module docs
+and the final sealed usage report. Only 4.8 is marked complete: 20 of 41 tasks.
 
 ## Delivered Contracts
 
-Coordinator and admitted Full Auto runner ownership renew every 15 seconds
-with a 60-second RunClaim lease. Shared preparation protects healthy long
-assistant I/O while retaining the ten-minute child lease. Recovery waits for
-live children without runner admission, then resumes the registered expired
-child under the current fenced owner, preserving verified progress. Ordered
-child ranges and foreground authority checks refuse duplicate dispatch and
-stale-owner writes. Lease renewal checks fresh time after acquiring the
-transaction and immediately before the guarded write.
+A persisted assistant FIFO orders eligible takes by ready timestamp and run ID,
+yields after each take and drops ineligible waiters. The shared Full Auto slot
+uses ten-minute leases and fifteen-second heartbeats. Durable reservations
+precede every actual shared enhance POST, including its compatibility fallback.
+Limits are two calls per take and twice the target count per authorization;
+lost responses remain consumed. Owner, child, provider, cancellation, feature
+flag and expiry checks fence dispatch and response persistence without holding
+transactions across remote I/O.
 
-## Independent Acceptance
+Each Full Auto physical request has a total 300-second deadline; settlement
+follows transport cancellation, and quarantine includes a second-precision
+safety margin. Unrelated manual assistant behavior retains its old transport.
+Safe transport metadata and available token usage are recorded without payloads.
 
-Tester independently reviewed the specification and actual diff. Final complete
-`.venv/Scripts/python.exe -m pytest` passed: 3,283 passed, two skipped, five
-warnings, exit zero in 465.78 seconds. Seven independent heartbeat/expiry cases
-passed; privacy/format checks passed 46 cases. Strict OpenSpec validation and
-`git diff --check` passed. Main read raw logs and accepted the actual result.
-The first full gate failed on an obsolete runner callback fixture; its repair
-retains claim identity, single admission and replay refusal assertions.
+Linked renewal preserves historical accounting. Public total remaining allowance
+belongs to the current grant; pending-take eligibility is separate. Exhausted
+budgets can obtain an explicit allowance-only comparison and acceptance without
+an unrelated input edit. Quotes commit allowance and reservation-count digests.
 
-An initial clock-injection reproduction used an invalid harness. The corrected
-harness asserts injection reachability and unchanged complete row snapshots;
-its final cases pass. It was not rerun against the pre-repair implementation,
-so no corrected red-before-green claim is made. Skip reasons were not captured
-by the final quiet-suite output.
+## Independent Acceptance Evidence
 
-README, session guidance and module ownership are updated. Closure stages only
-this task and its documentation, creates an acceptance Conventional Commit,
-and then seals the repository for Archivist's exact Deployment Token Report.
+Main read raw final logs. Complete `.venv/Scripts/python.exe -m pytest` passed:
+3,315 passed, two skipped, five warnings, exit zero in 524.19 seconds.
+Focused Full Auto/transport/coordinator/control verification passed 73 cases
+with one skip; initial and fallback total-timeout cases passed independently.
+Privacy/format passed 46 cases. Strict OpenSpec validation, compileall and
+`git diff --check` passed. Frontend is unchanged and its gates were not run.
+The skips were the opt-in 500-take synthesis benchmark and unavailable symlinks.
 
-## Continuation Boundary
+Independent failures exposed pre-lock and pre-write clock sampling, obsolete
+grant balances, unchanged Resume with an exhausted grant, and unbounded total
+transport duration. Repairs passed the retained and corrected temporal probes.
+The first overlap harness aged persisted dispatch evidence; final timeout
+acceptance instead asserts actual scaled-time cancellation for both physical
+POST paths. Task 10.3's earlier reported failure passed independently and in
+the final complete suite; it was not repaired or claimed permanently absent.
 
-No frontend changes or gates, real generation, external handoff, next task,
-archive or push occurred. Global/manual runner claims, FIFO assistant admission,
-physical-call reservations, remote attempt reconciliation and full coordinator
-startup dispatch remain outside 4.7. Uncertain remote admission stays owned;
-heartbeat recovery does not prove remote work never happened. Stop here.
+## Files and Continuation Boundary
+
+Production changes: db, enhance, guided_sessions, resource_full_auto, main and
+authoring_operations. Tests: assistant_slots, assistant_independent, control API
+and the existing Full Auto probe. Closure includes README, session guidance,
+project structure, the three main-owned state documents and the single task mark.
+
+Stop after this task's acceptance commit and sealed Archivist report. No next
+task, archive, push, external handoff or real generation is authorized here.
+The local HTTP deadline does not prove remote provider computation ended.
+Classification/retry recovery, global runner claims, remote journaling and full
+startup-to-generation orchestration remain outside Task 4.8.

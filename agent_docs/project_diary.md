@@ -1,5 +1,21 @@
 # Project Diary
 
+## Full Auto Task 4.8 Assistant Reservations
+
+Read lease time after acquiring the transaction and again at the guarded write.
+Owner validation itself can outlast a lease; signed claims do not preserve time.
+Independent lock-wait and validation-delay probes must assert injection reachability.
+
+Keep cumulative reservation history distinct from the current grant's usable
+total and the next take's allowance. Budget-only consent must bind the displayed
+additional calls and reservation counts, including same-timestamp renewal.
+
+HTTPX phase timeouts do not bound total request duration. Full Auto needs a total
+deadline around each physical POST, including fallback, to support finite slot
+quarantine. Verify actual cancellation with a scaled timer; aging database rows
+alone does not test the transport's monotonic deadline. Local cancellation does
+not certify that remote provider computation stopped. Preserve manual behavior.
+
 ## Full Auto Task 4.7 Ownership Recovery
 
 Lease time must be read after transaction acquisition and immediately before

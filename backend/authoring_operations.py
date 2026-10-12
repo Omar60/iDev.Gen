@@ -1421,6 +1421,8 @@ def persist_operation_response(
     planning_enabled: bool | None = None,
     _predecessor_validation_cache: dict | None = None,
     _full_auto_claim: Any = None,
+    _full_auto_assistant_slot: Any = None,
+    _assistant_provider_identity: Any = None,
 ) -> dict:
     """Atomically persist validated target results and ordered progress.
 
@@ -1681,6 +1683,23 @@ def persist_operation_response(
                             "Take finalization was skipped; discard this response.",
                         )
                     _require_full_auto_owner(row, _full_auto_claim, now_text=db.now())
+                    if _full_auto_assistant_slot is not None:
+                        from backend import resource_full_auto
+
+                        if not callable(_assistant_provider_identity):
+                            raise AuthoringOperationError(
+                                500, "assistant_provider_identity_missing",
+                                "The authorized assistant provider could not be verified.",
+                            )
+                        try:
+                            resource_full_auto.check_assistant_response(
+                                _full_auto_assistant_slot, _full_auto_claim, claim,
+                                _assistant_provider_identity(), now_text=db.now(),
+                            )
+                        except resource_full_auto.FullAutoRunError as exc:
+                            raise AuthoringOperationError(
+                                exc.status_code, exc.code, exc.message,
+                            ) from exc
                     updated = db.conn().execute(
                         """UPDATE authoring_operation
                            SET state = ?, lease_expires_at = ?, completed_json = ?,
@@ -1715,6 +1734,17 @@ def persist_operation_response(
                             claim.session_id, claim.plan_revision, targets[0],
                             _predecessor_validation_cache=_predecessor_validation_cache,
                         )
+                    if _full_auto_assistant_slot is not None:
+                        from backend import resource_full_auto
+
+                        try:
+                            resource_full_auto.release_assistant_slot(
+                                _full_auto_assistant_slot, completed=True, now_text=db.now(),
+                            )
+                        except resource_full_auto.FullAutoRunError as exc:
+                            raise AuthoringOperationError(
+                                exc.status_code, exc.code, exc.message,
+                            ) from exc
                     saved = _get_operation(claim.operation_id)
                     if saved is None:
                         raise AuthoringOperationError(
@@ -2117,6 +2147,173 @@ def fail_operation_item(
             planning_enabled=enabled,
             assistant_available=True,
         )
+
+
+def fail_full_auto_item_after_authority_fence(
+    claim: OperationClaim,
+    ticket: OperationLeaseTicket,
+    failed_target: str,
+    *,
+    _full_auto_claim: Any,
+) -> dict:
+    """Settle a discarded Full Auto response when its authorization just expired.
+
+    This path records no assistant content. It verifies the signed parent and
+    child leases directly, allowing an expired grant to stop its child instead
+    of leaving an active operation behind until its lease times out.
+    """
+    from backend import resource_full_auto
+
+    if (
+        not isinstance(claim, OperationClaim)
+        or not isinstance(ticket, OperationLeaseTicket)
+        or not _is_authentic_operation_lease_ticket(ticket)
+        or ticket.claim != claim
+        or not isinstance(_full_auto_claim, resource_full_auto.RunClaim)
+        or not isinstance(failed_target, str)
+        or not failed_target
+    ):
+        raise AuthoringOperationError(422, "invalid_request", "A backend Full Auto lease is required.")
+    with db.transaction():
+        def validate_owner(timestamp: str) -> tuple[dict, list[str]]:
+            run = resource_full_auto._require_claim(
+                _full_auto_claim, now_text=timestamp, reconciliation=False,
+            )
+            if (
+                run["state"] != "active" or run["phase"] != "prepare"
+                or bool(run["cancel_intent"])
+            ):
+                raise AuthoringOperationError(
+                    409, "full_auto_owner_stale", "The Full Auto operation owner is stale.",
+                )
+            row = _read_claim_row(claim)
+            _require_live_claim(row, claim, now=_utc_datetime(timestamp, field="current time"))
+            if (
+                row["kind"] != "prepare_takes"
+                or row["full_auto_run_id"] != _full_auto_claim.run_id
+                or row["full_auto_run_epoch"] != _full_auto_claim.epoch
+                or row["full_auto_run_fencing_token"] != _full_auto_claim.fencing_token
+                or row["lease_expires_at"] != ticket.lease_expires_at
+                or not hmac.compare_digest(
+                    _operation_progress_fingerprint(row), ticket.progress_fingerprint,
+                )
+            ):
+                raise AuthoringOperationError(
+                    409, "authoring_owner_stale", "This worker no longer owns the operation.",
+                )
+            remaining = _decode_json(row.get("remaining_json"), default=[])
+            if not isinstance(remaining, list) or not remaining or remaining[0] != failed_target:
+                raise AuthoringOperationError(
+                    409, "authoring_inputs_stale", "The failed take is no longer next.",
+                )
+            unsettled = db.one(
+                """SELECT 1 FROM full_auto_assistant_reservation
+                   WHERE run_id = ? AND operation_id = ? AND settled_at IS NULL LIMIT 1""",
+                _full_auto_claim.run_id, claim.operation_id,
+            )
+            if unsettled is not None:
+                raise AuthoringOperationError(
+                    409, "assistant_request_unsettled", "The assistant request is not settled.",
+                )
+            return row, remaining
+
+        # BEGIN IMMEDIATE may have waited behind another writer. Sample time
+        # after acquiring it, then repeat the complete parent/child fence at
+        # the final settlement boundary.
+        validate_owner(db.now())
+        now_text = db.now()
+        row, remaining = validate_owner(now_text)
+        updated = db.conn().execute(
+            """UPDATE authoring_operation
+               SET state = 'failed', lease_expires_at = NULL, failed_item = ?, error = ?,
+                   remaining_json = ?, updated_at = ?
+               WHERE operation_id = ? AND state = 'active' AND fencing_token = ?
+                 AND request_digest = ? AND plan_revision = ?""",
+            (
+                failed_target, _diagnostic("item_failed"),
+                json.dumps(remaining[1:], ensure_ascii=False, separators=(",", ":")),
+                now_text, claim.operation_id, claim.fencing_token,
+                claim.request_digest, claim.plan_revision,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise AuthoringOperationError(409, "authoring_owner_stale", "This worker no longer owns the operation.")
+        saved = _get_operation(claim.operation_id)
+        if saved is None:
+            raise AuthoringOperationError(500, "operation_state_invalid", "The operation could not be read after saving.")
+        return _operation_view(saved, planning_enabled=resource_planning.is_enabled(), assistant_available=True)
+
+
+def cancel_full_auto_item_after_run_cancel(
+    claim: OperationClaim,
+    ticket: OperationLeaseTicket,
+    cancelled_target: str,
+) -> dict:
+    """Discard and settle an active child after its Full Auto parent was cancelled."""
+    if (
+        not isinstance(claim, OperationClaim)
+        or not isinstance(ticket, OperationLeaseTicket)
+        or not _is_authentic_operation_lease_ticket(ticket)
+        or ticket.claim != claim
+        or not isinstance(cancelled_target, str)
+        or not cancelled_target
+    ):
+        raise AuthoringOperationError(422, "invalid_request", "A backend operation lease ticket is required.")
+    with db.transaction():
+        def validate_cancel(timestamp: str) -> tuple[dict, list[str]]:
+            row = _read_claim_row(claim)
+            _require_live_claim(row, claim, now=_utc_datetime(timestamp, field="current time"))
+            if (
+                row["kind"] != "prepare_takes"
+                or row["full_auto_run_id"] is None
+                or row["full_auto_run_epoch"] is None
+                or row["lease_expires_at"] != ticket.lease_expires_at
+                or not hmac.compare_digest(
+                    _operation_progress_fingerprint(row), ticket.progress_fingerprint,
+                )
+            ):
+                raise AuthoringOperationError(
+                    409, "authoring_owner_stale", "This worker no longer owns the operation.",
+                )
+            parent = db.one(
+                "SELECT epoch, state, cancel_intent FROM full_auto_run WHERE run_id = ?",
+                row["full_auto_run_id"],
+            )
+            if (
+                parent is None
+                or int(parent["epoch"]) != int(row["full_auto_run_epoch"])
+                or parent["state"] != "cancel_requested"
+                or int(parent["cancel_intent"]) != 1
+            ):
+                raise AuthoringOperationError(
+                    409, "full_auto_owner_stale", "The Full Auto operation owner is stale.",
+                )
+            remaining = _decode_json(row.get("remaining_json"), default=[])
+            if not isinstance(remaining, list) or not remaining or remaining[0] != cancelled_target:
+                raise AuthoringOperationError(
+                    409, "authoring_inputs_stale", "The cancelled take is no longer next.",
+                )
+            unsettled = db.one(
+                """SELECT 1 FROM full_auto_assistant_reservation
+                   WHERE run_id = ? AND operation_id = ? AND settled_at IS NULL LIMIT 1""",
+                row["full_auto_run_id"], claim.operation_id,
+            )
+            if unsettled is not None:
+                raise AuthoringOperationError(
+                    409, "assistant_request_unsettled", "The assistant request is not settled.",
+                )
+            return row, remaining
+
+        validate_cancel(db.now())
+        now_text = db.now()
+        row, _remaining = validate_cancel(now_text)
+        _transition_terminal(
+            row, state="cancelled", diagnostic_code="cancel_requested", now_text=now_text,
+        )
+        saved = _get_operation(claim.operation_id)
+        if saved is None:
+            raise AuthoringOperationError(500, "operation_state_invalid", "The operation could not be read after cancellation.")
+        return _operation_view(saved, planning_enabled=resource_planning.is_enabled(), assistant_available=True)
 
 
 def cancel_operation(
