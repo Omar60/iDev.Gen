@@ -60,7 +60,19 @@ Verified baseline from the repository layout and application entry points.
   registered child under a new fence
   after expiry or failure while preserving the completed prefix. A stale
   execution owner stops subsequent writes and dispatches and leaves admission
-  unresolved. Execution-runner recovery, a global runner claim shared with
+  unresolved. DELETE APIs and SQLite triggers protect active or unsettled runs
+  from deleting sessions, linked shots, and exact model/workflow dependencies
+  across direct and cascade paths; `full_auto_in_use` reports affected session
+  IDs. SQLite triggers also reject direct deletes of bound saved-look versions
+  or profile revisions while protected; no look/profile DELETE API exists.
+  Run claims and lease reconciliation set affected nonterminal runs to
+  `blocked`, persist `dependency_missing`, and advance the fence. For
+  `cancelled`, `failed`, or `completed_with_errors`, status projects the blocker
+  and Resume refuses without changing the terminal row. Claims use the run UUID,
+  epoch, and fence; each output-collection retry revalidates the claim and shot
+  before moving a file, preventing reused numeric session or shot IDs from
+  authorizing stale writes. Profile-evidence foreign keys can still restrict
+  direct profile removal after settlement. Execution-runner recovery, a global runner claim shared with
   manual starts and FIFO runner admission, attempt journaling, remote
   reconciliation, and automatic end-to-end dispatch remain unfinished.
   Internal review and policy approval

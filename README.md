@@ -150,6 +150,18 @@ attempt journaling and remote reconciliation, and the profile editor and
 selection/consent UI remain unfinished. The existing
 manual workflow remains available for sessions without a nonterminal Full Auto
 owner.
+While a run is nonterminal or its work is unresolved, supported DELETE routes
+for its session, linked shots, model, or workflow return `409 full_auto_in_use`
+with affected session IDs; Cancel the run and wait for settlement before
+retrying. Direct SQLite deletes of bound saved-look versions or profile
+revisions also hit `full_auto_in_use` triggers while protected. No look/profile
+DELETE API exists. A profile-evidence foreign key can still prevent direct
+profile removal after settlement. A run claim or lease reconciliation
+that finds a missing dependency sets the nonterminal run to `blocked` with
+`dependency_missing` and advances its fence.
+For `cancelled`, `failed`, or `completed_with_errors` runs, status projects
+`dependency_missing` and Resume refuses without changing the terminal state.
+Restore the exact dependency; later revisions are not substituted.
 Automatic review validates persisted evidence; it does not certify semantic
 correctness or rendered pixels. Portable-v1 JSON excludes profiles.
 See the

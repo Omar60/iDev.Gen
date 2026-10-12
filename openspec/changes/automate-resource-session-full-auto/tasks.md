@@ -32,7 +32,7 @@
 - [x] 4.7 Implement coordinator/runner heartbeats and child-owner recovery with Decision 9 lease durations; fake-clock tests must cover healthy long I/O, waiting without runner ownership, coordinator death with a live child lease, expiry and forbidden duplicate dispatch.
 - [x] 4.8 Add FIFO assistant-slot admission across Full Auto runs and durable request reservations; verify one in-flight request, two-per-take/twice-count allowances including compatibility fallback and lost responses, seven-day authorization expiry, explicit renewal and unchanged unrelated manual assistant behavior. Exercise the actual shared enhance transport: reserve and fence both initial/fallback dispatches, test cancellation/expiry between them, and retain manual compatibility behavior.
 - [x] 4.9 Classify missing/failed/rate-limited/refusing providers and bounded ComfyUI availability recovery; verify structured refusals versus malformed prose, Retry-After, three read-only retry probes surviving restart and zero hidden prompt retries. Test actual HTTP 400 fallback, 429 Retry-After, structured refusal and malformed-response paths; test provider drift before dispatch and while a response is in flight.
-- [ ] 4.10 Guard session/shot/model/workflow and supported look/profile deletion transactionally; test cascade and direct paths, creation/deletion and cancel/deletion races, dependency_missing recovery and stale workers after numeric session-ID reuse.
+- [x] 4.10 Guard session/shot/model/workflow and supported look/profile deletion transactionally; test cascade and direct paths, creation/deletion and cancel/deletion races, dependency_missing recovery and stale workers after numeric session-ID reuse.
 
 ## 5. Runner recovery and cancellation
 

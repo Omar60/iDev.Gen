@@ -2,44 +2,38 @@
 
 ## Goal and Accepted Position
 
-Heavy deployment `full-auto-next-20261011` completed only Task 4.9 of
-`automate-resource-session-full-auto`, from clean HEAD `a071273`.
-Main accepted the actual diff and independent final verification; only 4.9 is
-marked complete, bringing the change to 21 of 41 tasks.
+Heavy deployment `full-auto-20261012` addressed only Task 4.10 of
+`automate-resource-session-full-auto`, from clean HEAD `e928217`.
+Main accepted the actual production diff and independent final verification.
+Only 4.10 is complete, bringing the change to 22 of 41 tasks.
 
-Full Auto distinguishes unavailable assistants, transport errors, rate limits,
-structured refusals, invalid writer output and provider drift. Explicit Resume
-respects persisted Retry-After deadlines. Existing physical request reservations,
-compatibility fallback and manual behavior are retained.
-
-Owned ComfyUI dispatch and history reads use at most three additional read-only
-probes after 5, 15 and 30 seconds. Reservations precede GETs; persisted cursors
-survive response loss and database reopening. Lease, authorization, cancellation
-and feature-flag checks protect writes. Classified preparation failures preserve
-the independently validated completed prefix.
+Transactional API and SQLite guards protect sessions, linked shots and exact
+model/workflow/look/profile dependencies across direct and cascade deletion.
+All immutable authorization grants remain protected, including renewals.
+Missing exact dependencies stop active recovery with durable blocking/fencing;
+terminal Resume refuses without changing the stopped epoch. Image-move retries
+check UUID/epoch/fence and shot identity under the deletion lock.
 
 ## Independent Verification
 
-Final complete Python gate: 3,346 passed, two skipped, five warnings, exit zero
-in 547.93 seconds. Focused acceptance: 87 passed, one skipped. Privacy: ten
-passed; format: 36 passed. Strict OpenSpec validation, compileall and diff checks
-passed. No frontend changed; its gates were not applicable.
+Final complete `.venv/Scripts/python.exe -m pytest`: 3,370 passed, two skipped,
+five warnings, exit zero in 610.53 seconds. Independent deletion matrix: 13
+passed. Privacy/control: 46 passed. Strict OpenSpec and diff checks passed.
+Frontend is unchanged; frontend tests/build are not applicable to this task.
 
-An initial gate exposed missing preparation checkpoints and old generic error
-expectations; both were corrected without weakening prefix/reuse assertions.
-Independent probes reproduced and verified repairs for lease and authorization
-expiry during local validation. Two complete runs also observed different
-concurrency failures outside the changed production paths; the final complete
-run passed unchanged. Those failures were not diagnosed or claimed repaired.
+The first complete gate had two failures: inconsistent expiry-fixture digest
+and the existing CAS resource lookup race. The fixture was repaired without
+weakening expiry assertions. The next gate retained only CAS failure. Pristine
+HEAD reproduced the CAS race in two of five isolated processes; its root cause
+is unresolved. The final full gate passed without a CAS code/test change.
 
-## Stop Boundary
+## Continuation Boundary
 
-Close only Task 4.9 with its acceptance commit and sealed Archivist token report.
-Task 4.10 remains unchecked and unstarted. No next task, archive, push, external
-handoff or real generation is authorized in this deployment.
-
-Creation/startup orchestration and attempt journaling remain later work.
-ComfyUI probe exhaustion after admission leaves linked pending work unresolved
-and ordinary Resume unavailable; status offers Setup inspection and Cancel
-without claiming remote settlement. Local connection termination does not prove
-remote computation stopped.
+Close only 4.10 with the acceptance commit and sealed Archivist token report.
+Task 5.1 remains unchecked and unstarted. No archive, push, external handoff or
+real generation is authorized. Attempt journaling and end-to-end dispatch remain
+later work. Until journaling supplies definitive settlement, failed/pending
+shots and incomplete admission evidence conservatively protect deletion.
+No look/profile deletion API was added; historical profile evidence can retain
+its existing foreign-key restriction after settlement. Folder cleanup failure
+remains visible and can leave a folder for manual cleanup.

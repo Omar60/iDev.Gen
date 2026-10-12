@@ -16,7 +16,7 @@ from fastapi import HTTPException
 
 import db
 import main
-from backend import resource_full_auto
+from backend import resource_full_auto, resource_store
 import runner as runner_module
 import test_full_auto_preparation_coordinator as preparation
 import test_full_auto_submission_independent as submission
@@ -934,12 +934,17 @@ def test_probe_reservation_rechecks_authorization_after_authority_validation(
     authorization = json.loads(receipt["authorization_json"])
     authorization["authorization_expires_at"] = expiry
     authorization["summary"]["authorization_expires_at"] = expiry
+    authorization["scope_digest"] = resource_store.canonical_digest(
+        resource_full_auto._project_consent_summary(authorization["summary"]),
+    )
     db.run("DROP TRIGGER full_auto_run_receipt_immutable")
     try:
         db.run(
             "UPDATE full_auto_run_receipt "
-            "SET authorization_json = ?, authorization_expires_at = ? WHERE run_id = ?",
-            json.dumps(authorization, ensure_ascii=False, sort_keys=True), expiry, run_id,
+            "SET authorization_json = ?, authorization_expires_at = ?, scope_digest = ? "
+            "WHERE run_id = ?",
+            json.dumps(authorization, ensure_ascii=False, sort_keys=True), expiry,
+            authorization["scope_digest"], run_id,
         )
     finally:
         db.run(trigger["sql"])

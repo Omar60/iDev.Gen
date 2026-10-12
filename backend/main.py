@@ -337,6 +337,7 @@ async def _saved_look_error_handler(request: Request, exc: saved_looks.SavedLook
 async def _full_auto_run_error_handler(request: Request, exc: resource_full_auto.FullAutoRunError):
     return _stable_error(
         exc.status_code, exc.code, exc.message, current=exc.current_run,
+        affected_sessions=exc.affected_sessions,
     )
 
 
@@ -930,7 +931,9 @@ def update_workflow(wid: int, w: WorkflowIn):
 
 @app.delete("/api/workflows/{wid}")
 def delete_workflow(wid: int):
-    db.run("DELETE FROM workflow WHERE id=?", wid)
+    with db.transaction():
+        resource_full_auto.require_deletion_allowed("workflow", wid)
+        db.run("DELETE FROM workflow WHERE id=?", wid)
     return {"ok": True}
 
 
@@ -999,7 +1002,9 @@ def update_model(mid: int, m: ModelIn):
 
 @app.delete("/api/models/{mid}")
 def delete_model(mid: int):
-    db.run("DELETE FROM model WHERE id=?", mid)
+    with db.transaction():
+        resource_full_auto.require_deletion_allowed("model", mid)
+        db.run("DELETE FROM model WHERE id=?", mid)
     return {"ok": True}
 
 
@@ -2264,6 +2269,7 @@ def _stable_error(
     code: str,
     message: str,
     current: dict | None = None,
+    affected_sessions: list[int] | None = None,
 ) -> JSONResponse:
     """Build a stable error envelope response.
 
@@ -2281,6 +2287,8 @@ def _stable_error(
     }
     if current is not None and code != "selection_state_invalid" and status_code != 500:
         payload["detail"]["current"] = current
+    if affected_sessions is not None and status_code != 500:
+        payload["detail"]["affected_sessions"] = affected_sessions
     return JSONResponse(status_code=status_code, content=payload)
 
 
@@ -9319,15 +9327,22 @@ def contact_sheet(sid: int, min_rating: int = 1):
 
 @app.delete("/api/sessions/{sid}")
 def delete_session(sid: int):
-    if runner.current_session() == sid:
-        raise HTTPException(409, "the session is running")
-    db.run("DELETE FROM session WHERE id=?", sid)
     folder = SESSIONS_DIR / str(sid)
-    if not folder.exists():
-        return {"ok": True}
-    try:
-        shutil.rmtree(folder)
-    except OSError as exc:
+    cleanup_error = None
+    # Keep the SQLite write lock until the numeric folder has been removed so
+    # a newly allocated session cannot adopt it between the row delete and cleanup.
+    with db.transaction():
+        resource_full_auto.require_deletion_allowed("session", sid)
+        if runner.current_session() == sid:
+            raise HTTPException(409, "the session is running")
+        db.run("DELETE FROM session WHERE id=?", sid)
+        if folder.exists():
+            try:
+                shutil.rmtree(folder)
+            except OSError as exc:
+                cleanup_error = exc
+    if cleanup_error is not None:
+        exc = cleanup_error
         # Swallowing this is not harmless: SQLite reuses the id of a deleted row,
         # so a folder that survives would hand its photos to the next session
         # under the same number, shown as if they were its own.
@@ -10168,10 +10183,12 @@ def shot_image(shot_id: int):
 
 @app.delete("/api/shots/{shot_id}")
 def delete_shot(shot_id: int):
-    shot = db.one("SELECT * FROM shot WHERE id=?", shot_id)
-    if shot and shot["filename"]:
-        (SESSIONS_DIR / str(shot["session_id"]) / shot["filename"]).unlink(missing_ok=True)
-    db.run("DELETE FROM shot WHERE id=?", shot_id)
+    with db.transaction():
+        shot = db.one("SELECT * FROM shot WHERE id=?", shot_id)
+        resource_full_auto.require_deletion_allowed("shot", shot_id)
+        db.run("DELETE FROM shot WHERE id=?", shot_id)
+        if shot and shot["filename"]:
+            (SESSIONS_DIR / str(shot["session_id"]) / shot["filename"]).unlink(missing_ok=True)
     return {"ok": True}
 
 

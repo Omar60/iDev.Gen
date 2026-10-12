@@ -53,6 +53,7 @@ _PUBLIC_BLOCKER_CODES = frozenset({
     "full_auto_authorization_missing", "full_auto_authorization_invalid",
     "full_auto_plan_invalid", "full_auto_target_not_ready", "full_auto_targets_invalid",
     "linked_snapshot_invalid", "workflow_changed", "prepared_evidence_stale",
+    "dependency_missing",
     "duplicate_evidence_missing", "duplicate_evidence_stale", "review_conflict",
     "stale_adaptation", "unresolved_placeholders", "full_auto_approval_stale",
     "full_auto_submission_incomplete", "submission_order_invalid", "submission_result_invalid",
@@ -79,12 +80,14 @@ class FullAutoRunError(Exception):
         message: str,
         *,
         current_run: dict | None = None,
+        affected_sessions: list[int] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
         self.current_run = current_run
+        self.affected_sessions = affected_sessions
 
 
 @dataclass(frozen=True)
@@ -394,6 +397,74 @@ def current_authorization(run_id: str, *, session_id: int | None = None) -> dict
     return current
 
 
+def _bound_dependency_issue(authorization: dict) -> str | None:
+    summary = authorization.get("summary") if isinstance(authorization, dict) else None
+    if (
+        not isinstance(authorization, dict)
+        or not isinstance(summary, dict)
+        or not {"model_binding", "workflow", "saved_look"}.issubset(summary)
+        or "profile_revision" not in authorization
+        or "profile_digest" not in authorization
+    ):
+        # Older domain tests and migrated policy-only receipts intentionally do
+        # not represent a complete consent binding. Preserve their established
+        # validation errors; only complete grants can report a lost dependency.
+        return None
+    try:
+        summary, _limits = _validate_status_authorization(authorization)
+        saved = summary["saved_look"]
+        room = summary["room"]
+        model = summary["model_binding"]
+        workflow = summary["workflow"]
+        profile_revision = authorization["profile_revision"]
+        profile_digest = authorization["profile_digest"]
+    except (KeyError, TypeError, FullAutoRunError):
+        return "authorization_invalid"
+    if any((
+        db.one("SELECT 1 FROM model WHERE id = ?", model["model_id"]) is None,
+        db.one("SELECT 1 FROM workflow WHERE id = ?", workflow["workflow_id"]) is None,
+        db.one(
+            "SELECT 1 FROM saved_look_version WHERE look_key = ? AND version = ?",
+            saved["look_key"], saved["version"],
+        ) is None,
+        db.one(
+            """SELECT 1 FROM saved_look_automation_profile
+               WHERE look_key = ? AND look_version = ? AND profile_revision = ?
+                 AND profile_digest = ?""",
+            saved["look_key"], saved["version"], profile_revision, profile_digest,
+        ) is None,
+    )):
+        return "dependency_missing"
+
+    # Resolve the exact room identity captured by consent. A later revision for
+    # the same source does not replace a lost authorized revision.
+    library = db.one(
+        "SELECT * FROM resource_library WHERE library_key = ?",
+        room["library_key"],
+    )
+    if library is None:
+        return "dependency_missing"
+    if library["kind"] != "rooms":
+        return "dependency_changed"
+    revision_row = db.one(
+        """SELECT id FROM asset_revision
+           WHERE library_id = ? AND source_id = ? AND content_digest = ?""",
+        library["id"], room["source_id"], room["content_digest"],
+    )
+    if revision_row is None:
+        return "dependency_missing"
+
+    try:
+        from backend import guided_sessions, resource_store
+
+        _resolved_library, revision = guided_sessions._validate_ready_room(room)
+    except guided_sessions.GuidedSessionError:
+        return "dependency_changed"
+    if resource_store.canonical_digest(revision.get("translation")) != room["translation_digest"]:
+        return "dependency_changed"
+    return None
+
+
 def _current_authority_issue(row: dict, now_text: str) -> str | None:
     """Return why this immutable grant can no longer authorize new work."""
     plan = db.one(
@@ -414,6 +485,10 @@ def _current_authority_issue(row: dict, now_text: str) -> str | None:
     if expiry <= _timestamp(now_text, field_name="current time"):
         return "authorization_expired"
 
+    dependency_issue = _bound_dependency_issue(authorization)
+    if dependency_issue is not None:
+        return dependency_issue
+
     summary = authorization.get("summary")
     if (
         type(authorization.get("authorization_version")) is not int
@@ -432,6 +507,8 @@ def _authority_error(code: str) -> FullAutoRunError:
         "authorization_expired": "The Full Auto authorization has expired.",
         "authorization_invalid": "The persisted Full Auto authorization is invalid.",
         "policy_changed": "The recorded Full Auto policy is not supported.",
+        "dependency_missing": "A resource bound to this Full Auto run is missing. Restore it or keep the run stopped.",
+        "dependency_changed": "A resource bound to this Full Auto run changed after consent. Review the current scope before continuing.",
     }
     return FullAutoRunError(409, code, messages.get(code, "Full Auto authority is no longer valid."))
 
@@ -861,6 +938,14 @@ _BLOCKER_REMEDIES = {
         "Owned Full Auto work has not reached a verified terminal outcome.",
         ["review_status", "cancel"],
     ),
+    "dependency_missing": (
+        "A resource bound to this Full Auto run is missing.",
+        ["restore_dependency", "cancel"],
+    ),
+    "dependency_changed": (
+        "A resource bound to this Full Auto run changed after consent.",
+        ["compare_scope", "cancel"],
+    ),
     "policy_changed": (
         "The recorded Full Auto policy is no longer supported.",
         ["review_status", "cancel"],
@@ -1101,7 +1186,132 @@ def unresolved_work_count(session_id: int, run_id: str) -> int:
     # Failed status alone cannot prove a remote attempt settled until the later
     # attempt journal records that observation. Keep failed shots unresolved.
     count += sum(item["status"] not in {"done", "cancelled"} for item in shots)
+    if admission is not None:
+        try:
+            expected = int(current_authorization(run_id)["authorization"]["summary"]["photo_count"])
+            linked = db.q(
+                """SELECT sh.id, sh.session_id, sh.status
+                   FROM full_auto_submission_receipt receipt
+                   LEFT JOIN shot sh ON sh.id = receipt.shot_id
+                   WHERE receipt.run_id = ?""",
+                run_id,
+            )
+            if len(linked) != expected:
+                count += 1
+            count += sum(
+                shot["id"] is None or shot["session_id"] != session_id
+                or shot["status"] not in {"done", "cancelled"}
+                for shot in linked
+            )
+        except (FullAutoRunError, TypeError, KeyError, ValueError):
+            count += 1
     return count
+
+
+def _run_deletion_protected(row: dict) -> bool:
+    return row["state"] not in _TERMINAL or unresolved_work_count(
+        int(row["session_id"]), row["run_id"],
+    ) > 0
+
+
+def _deletion_grants(run_id: str) -> list[dict] | None:
+    try:
+        current_authorization(run_id)
+        rows = [db.one(
+            "SELECT authorization_json FROM full_auto_run_receipt WHERE run_id = ?",
+            run_id,
+        )]
+        rows.extend(db.q(
+            "SELECT authorization_json FROM full_auto_run_authorization "
+            "WHERE run_id = ? ORDER BY authorization_sequence",
+            run_id,
+        ))
+        grants = []
+        for row in rows:
+            if row is None:
+                return None
+            authorization = json.loads(row["authorization_json"])
+            _validate_status_authorization(authorization)
+            grants.append(authorization)
+        return grants
+    except (FullAutoRunError, TypeError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def _authorization_uses_dependency(
+    authorization: dict,
+    dependency: str,
+    identity: object,
+) -> bool:
+    summary, _limits = _validate_status_authorization(authorization)
+    if dependency == "model":
+        return summary["model_binding"]["model_id"] == identity
+    if dependency == "workflow":
+        return summary["workflow"]["workflow_id"] == identity
+    if dependency == "look":
+        return (summary["saved_look"]["look_key"], summary["saved_look"]["version"]) == identity
+    if dependency == "profile":
+        return (
+            summary["saved_look"]["look_key"], summary["saved_look"]["version"],
+            authorization["profile_revision"], authorization["profile_digest"],
+        ) == identity
+    raise ValueError(f"Unsupported Full Auto deletion dependency: {dependency}")
+
+
+def require_deletion_allowed(dependency: str, identity: object) -> None:
+    """Refuse deletion while any exact grant or unsettled run still depends on it."""
+    affected: set[int] = set()
+    if dependency == "session":
+        rows = db.q("SELECT * FROM full_auto_run WHERE session_id = ?", identity)
+        affected.update(
+            int(row["session_id"]) for row in rows if _run_deletion_protected(row)
+        )
+    elif dependency == "shot":
+        shot = db.one("SELECT * FROM shot WHERE id = ?", identity)
+        if shot is None:
+            return
+        runs = db.q(
+            "SELECT * FROM full_auto_run WHERE session_id = ?", shot["session_id"],
+        )
+        for row in runs:
+            if not _run_deletion_protected(row):
+                continue
+            linked = db.one(
+                "SELECT 1 FROM full_auto_submission_receipt WHERE run_id = ? AND shot_id = ? "
+                "UNION SELECT 1 FROM prepared_take WHERE session_id = ? AND linked_shot_id = ? LIMIT 1",
+                row["run_id"], identity, row["session_id"], identity,
+            )
+            uncertain_admission = db.one(
+                "SELECT 1 FROM full_auto_deletion_uncertain_admission WHERE run_id = ?",
+                row["run_id"],
+            )
+            if linked is not None or (
+                uncertain_admission is not None
+                and shot["status"] in {"pending", "running", "failed"}
+            ):
+                affected.add(int(row["session_id"]))
+    else:
+        if dependency not in {"model", "workflow", "look", "profile"}:
+            raise ValueError(f"Unsupported Full Auto deletion dependency: {dependency}")
+        for row in db.q("SELECT * FROM full_auto_run"):
+            if not _run_deletion_protected(row):
+                continue
+            grants = _deletion_grants(row["run_id"])
+            if grants is None or any(
+                _authorization_uses_dependency(grant, dependency, identity)
+                for grant in grants
+            ):
+                affected.add(int(row["session_id"]))
+
+    if affected:
+        ids = sorted(affected)
+        raise FullAutoRunError(
+            409,
+            "full_auto_in_use",
+            "Full Auto still depends on this item in session(s) "
+            f"{', '.join(map(str, ids))}. Cancel each run and wait until its work settles before deleting.",
+            affected_sessions=ids,
+        )
 
 
 def assistant_call_accounting(run_id: str) -> dict[str, int]:
@@ -1303,7 +1513,9 @@ def public_run_status(session_id: int, run_id: str) -> dict:
     blocker_code = row["blocker_code"]
     authority_issue = _current_authority_issue(row, db.now())
     unresolved = unresolved_work_count(session_id, run_id)
-    if blocker_code is None:
+    if authority_issue == "dependency_missing":
+        blocker_code = authority_issue
+    elif blocker_code is None:
         blocker_code = authority_issue
     if blocker_code is None and unresolved:
         blocker_code = "run_work_unsettled"
@@ -1319,7 +1531,9 @@ def public_run_status(session_id: int, run_id: str) -> dict:
     reconcile_only = bool(row["cancel_intent"]) and state in {"blocked", "cancel_requested"}
     resumable_state = state in {"blocked", "cancelled", "failed", "completed_with_errors"}
     policy_is_supported = summary.get("policy_version") == _SUPPORTED_POLICY_VERSION
-    authority_repairable = authority_issue not in {"authorization_invalid", "policy_changed"}
+    authority_repairable = authority_issue not in {
+        "authorization_invalid", "policy_changed", "dependency_missing",
+    }
     budget_available = assistant_budget_available and image_remaining > 0
     can_resume = reconcile_only or (
         enabled and resumable_state and state != "succeeded" and unresolved == 0
@@ -3852,6 +4066,8 @@ def resume_run(
                 row = _require_run(run_id)
                 claim = _make_claim(row, True)
         else:
+            if _current_authority_issue(row, timestamp) == "dependency_missing":
+                raise _authority_error("dependency_missing")
             retry_after_at = row["assistant_retry_after_at"]
             if row["blocker_code"] == "assistant_rate_limited" and retry_after_at is not None:
                 if _timestamp(retry_after_at, field_name="assistant Retry-After deadline") > _timestamp(

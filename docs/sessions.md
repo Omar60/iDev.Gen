@@ -1733,6 +1733,39 @@ run's shared-write guard. These controls only persist/check backend state: they
 do not dispatch preparation or generation, contact ComfyUI, issue a global
 interrupt, or reconcile remote cancellation. No Full Auto control UI is present.
 
+#### Full Auto deletion guards and recovery
+
+DELETE routes for sessions, shots protected by a submission receipt or
+prepared link (or pending, running, or failed shots under uncertain admission),
+models, and workflows return HTTP `409` with
+`detail.code: "full_auto_in_use"` and affected session IDs. The response
+directs the operator to Cancel each run and wait for its work to settle before
+retrying. A terminal run remains protected while owned work or runner admission
+is unresolved. API checks and SQLite triggers protect these routes and cascade
+paths; renewed grants remain protected alongside the initial grant and bind
+exact model/workflow IDs, look key/version, and profile revision/digest.
+
+SQLite triggers also reject direct deletion of a bound saved-look version or
+profile revision with `full_auto_in_use` while the run is protected. No
+look/profile DELETE API exists. Even after a run settles, profile-evidence
+foreign keys can still prevent directly deleting a referenced profile revision.
+
+If a bound dependency is removed out of band, a run claim or lease
+reconciliation persists a nonterminal run as `blocked` with
+`dependency_missing` and an advanced fence. For
+`cancelled`, `failed`, or `completed_with_errors` runs, status projects that
+blocker and Resume refuses without changing the terminal state. The blocker
+offers a restore remedy. Restore the exact bound item; for a missing room, the
+authorized revision must return, since a later revision is not a substitute. A
+changed room translation reports `dependency_changed`.
+
+Session deletion serializes row removal and attempted folder cleanup in one
+write transaction; if cleanup fails, the route reports it and the folder may
+survive. Owned workers use the run UUID, epoch, and fencing token. Each
+output-collection retry rechecks that claim and the exact shot's session/status
+in a short transaction around the move. Reused numeric session or shot IDs
+therefore cannot authorize stale work to write into a replacement session.
+
 During Full Auto preparation, takes wait in one durable FIFO assistant slot
 shared across Full Auto runs, so only one Full Auto assistant request is in
 flight at a time. Manual and other non-Full-Auto assistant requests do not use

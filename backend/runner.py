@@ -53,6 +53,8 @@ class Runner:
         with db.transaction():
             from backend import resource_full_auto
 
+            if db.one("SELECT 1 FROM session WHERE id = ?", session_id) is None:
+                raise RuntimeError("Session not found")
             if _full_auto_claim is None:
                 resource_full_auto.require_session_mutation_allowed(session_id)
             else:
@@ -340,7 +342,7 @@ class Runner:
 
         try:
             self._require_runner_owner(session_id, heartbeat)
-            filename = await self._collect(session_id, shot, images[0])
+            filename = await self._collect(session_id, shot, images[0], heartbeat)
         except OSError as exc:  # disk full, misconfigured path, file already moved
             self._owned_update(
                 session_id, heartbeat,
@@ -546,7 +548,7 @@ class Runner:
                 return history
         raise TimeoutError(f"The shot ran past {SHOT_TIMEOUT}s without finishing")
 
-    async def _collect(self, session_id: int, shot: dict, image: dict) -> str:
+    async def _collect(self, session_id: int, shot: dict, image: dict, heartbeat=None) -> str:
         """Move the rendered file out of ComfyUI's output into the session folder.
 
         The move is retried because on Windows the PNG is briefly locked by
@@ -558,13 +560,35 @@ class Runner:
         """
         src = self.comfy_output_dir / (image.get("subfolder") or "") / image["filename"]
         dest_dir = self.sessions_dir / str(session_id)
-        dest_dir.mkdir(parents=True, exist_ok=True)
         name = f"{shot['id']:05d}_{slug(shot['shot_label'])}{Path(image['filename']).suffix}"
         dest = dest_dir / name
 
         for attempt in range(1, MOVE_ATTEMPTS + 1):
             try:
-                shutil.move(str(src), str(dest))
+                if heartbeat is None:
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(src), str(dest))
+                else:
+                    from backend import resource_full_auto
+
+                    # Each move is short and serialized with session deletion; a
+                    # retry sleep must never hold the database transaction open.
+                    with db.transaction():
+                        self._require_runner_owner(session_id, heartbeat)
+                        current = db.one(
+                            "SELECT session_id, status FROM shot WHERE id = ?",
+                            shot["id"],
+                        )
+                        if (
+                            current is None
+                            or current["session_id"] != session_id
+                            or current["status"] != "running"
+                        ):
+                            raise resource_full_auto.FullAutoRunError(
+                                409, "run_owner_stale", "The Full Auto runner no longer owns this shot.",
+                            )
+                        dest_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(src), str(dest))
                 break
             except FileNotFoundError as exc:
                 raise FileNotFoundError(f"Generated file not found: {src}") from exc

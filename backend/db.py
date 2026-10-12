@@ -1362,6 +1362,170 @@ CREATE TABLE IF NOT EXISTS resource_selection_file (
 
 CREATE INDEX IF NOT EXISTS ix_resource_selection_file_sel_order
     ON resource_selection_file(selection_id, order_index);
+
+-- A Full Auto deletion is unsafe while a coordinator, child operation or
+-- possibly-dispatched shot still depends on the session. Keep this predicate
+-- in SQLite so raw db.run/connection deletes receive the same protection.
+CREATE VIEW IF NOT EXISTS full_auto_deletion_uncertain_admission AS
+SELECT a.run_id, a.session_id
+FROM full_auto_runner_admission a
+WHERE COALESCE((
+          SELECT json_extract(x.authorization_json, '$.summary.photo_count')
+          FROM full_auto_run_authorization x
+          WHERE x.run_id = a.run_id
+          ORDER BY x.authorization_sequence DESC LIMIT 1
+      ), (
+          SELECT json_extract(x.authorization_json, '$.summary.photo_count')
+          FROM full_auto_run_receipt x WHERE x.run_id = a.run_id
+      ), -1) != (
+          SELECT COUNT(*) FROM full_auto_submission_receipt x
+          WHERE x.run_id = a.run_id
+      )
+   OR EXISTS (
+       SELECT 1
+       FROM full_auto_submission_receipt x
+       LEFT JOIN shot sh ON sh.id = x.shot_id
+       WHERE x.run_id = a.run_id
+         AND (sh.id IS NULL OR sh.session_id != a.session_id
+              OR sh.status NOT IN ('done', 'cancelled'))
+   );
+
+CREATE VIEW IF NOT EXISTS full_auto_deletion_protected_run AS
+SELECT r.run_id, r.session_id
+FROM full_auto_run r
+WHERE r.state NOT IN ('cancelled', 'failed', 'succeeded', 'completed_with_errors')
+   OR EXISTS (
+       SELECT 1 FROM session s WHERE s.id = r.session_id AND s.status = 'running'
+   )
+   OR EXISTS (
+       SELECT 1 FROM authoring_operation o
+       WHERE o.session_id = r.session_id AND o.full_auto_run_id = r.run_id
+         AND o.state NOT IN ('succeeded', 'failed', 'cancelled', 'expired')
+   )
+   OR EXISTS (
+       SELECT 1 FROM shot sh
+       WHERE sh.session_id = r.session_id AND sh.status NOT IN ('done', 'cancelled')
+   )
+   OR EXISTS (
+       SELECT 1 FROM full_auto_runner_admission a
+       WHERE a.run_id = r.run_id AND (
+           COALESCE((
+               SELECT json_extract(x.authorization_json, '$.summary.photo_count')
+               FROM full_auto_run_authorization x
+               WHERE x.run_id = r.run_id
+               ORDER BY x.authorization_sequence DESC LIMIT 1
+           ), (
+               SELECT json_extract(x.authorization_json, '$.summary.photo_count')
+               FROM full_auto_run_receipt x WHERE x.run_id = r.run_id
+           ), -1) != (
+               SELECT COUNT(*) FROM full_auto_submission_receipt x
+               WHERE x.run_id = r.run_id
+           )
+           OR EXISTS (
+               SELECT 1
+               FROM full_auto_submission_receipt x
+               LEFT JOIN shot sh ON sh.id = x.shot_id
+               WHERE x.run_id = r.run_id
+                 AND (sh.id IS NULL OR sh.session_id != r.session_id
+                      OR sh.status NOT IN ('done', 'cancelled'))
+           )
+       )
+   );
+
+CREATE VIEW IF NOT EXISTS full_auto_deletion_grant AS
+SELECT r.run_id, r.session_id, receipt.authorization_json
+FROM full_auto_run r
+JOIN full_auto_run_receipt receipt ON receipt.run_id = r.run_id
+UNION ALL
+SELECT r.run_id, r.session_id, replacement.authorization_json
+FROM full_auto_run r
+JOIN full_auto_run_authorization replacement ON replacement.run_id = r.run_id;
+
+CREATE TRIGGER IF NOT EXISTS full_auto_protect_session_delete
+BEFORE DELETE ON session
+WHEN EXISTS (
+    SELECT 1 FROM full_auto_deletion_protected_run p WHERE p.session_id = OLD.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'full_auto_in_use');
+END;
+
+CREATE TRIGGER IF NOT EXISTS full_auto_protect_shot_delete
+BEFORE DELETE ON shot
+WHEN EXISTS (
+    SELECT 1
+    FROM full_auto_deletion_protected_run p
+    WHERE p.session_id = OLD.session_id
+      AND (
+          EXISTS (
+              SELECT 1 FROM full_auto_submission_receipt x
+              WHERE x.run_id = p.run_id AND x.shot_id = OLD.id
+          )
+          OR EXISTS (
+              SELECT 1 FROM prepared_take x
+              JOIN full_auto_run r ON r.session_id = x.session_id
+              WHERE r.run_id = p.run_id AND x.linked_shot_id = OLD.id
+          )
+          OR (
+              OLD.status IN ('pending', 'running', 'failed')
+              AND EXISTS (
+                  SELECT 1 FROM full_auto_deletion_uncertain_admission a
+                  WHERE a.run_id = p.run_id AND a.session_id = OLD.session_id
+              )
+          )
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'full_auto_in_use');
+END;
+
+CREATE TRIGGER IF NOT EXISTS full_auto_protect_model_delete
+BEFORE DELETE ON model
+WHEN EXISTS (
+    SELECT 1 FROM full_auto_deletion_grant g
+    JOIN full_auto_deletion_protected_run p ON p.run_id = g.run_id
+    WHERE json_extract(g.authorization_json, '$.summary.model_binding.model_id') = OLD.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'full_auto_in_use');
+END;
+
+CREATE TRIGGER IF NOT EXISTS full_auto_protect_workflow_delete
+BEFORE DELETE ON workflow
+WHEN EXISTS (
+    SELECT 1 FROM full_auto_deletion_grant g
+    JOIN full_auto_deletion_protected_run p ON p.run_id = g.run_id
+    WHERE json_extract(g.authorization_json, '$.summary.workflow.workflow_id') = OLD.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'full_auto_in_use');
+END;
+
+CREATE TRIGGER IF NOT EXISTS full_auto_protect_look_delete
+BEFORE DELETE ON saved_look_version
+WHEN EXISTS (
+    SELECT 1 FROM full_auto_deletion_grant g
+    JOIN full_auto_deletion_protected_run p ON p.run_id = g.run_id
+    WHERE json_extract(g.authorization_json, '$.summary.saved_look.look_key') = OLD.look_key
+      AND json_extract(g.authorization_json, '$.summary.saved_look.version') = OLD.version
+)
+BEGIN
+    SELECT RAISE(ABORT, 'full_auto_in_use');
+END;
+
+CREATE TRIGGER IF NOT EXISTS full_auto_protect_profile_delete
+BEFORE DELETE ON saved_look_automation_profile
+WHEN EXISTS (
+    SELECT 1 FROM full_auto_deletion_grant g
+    JOIN full_auto_deletion_protected_run p ON p.run_id = g.run_id
+    WHERE json_extract(g.authorization_json, '$.summary.saved_look.look_key') = OLD.look_key
+      AND json_extract(g.authorization_json, '$.summary.saved_look.version') = OLD.look_version
+      AND json_extract(g.authorization_json, '$.profile_revision') = OLD.profile_revision
+      AND json_extract(g.authorization_json, '$.profile_digest') = OLD.profile_digest
+)
+BEGIN
+    SELECT RAISE(ABORT, 'full_auto_in_use');
+END;
 """
 
 _conn: sqlite3.Connection | None = None

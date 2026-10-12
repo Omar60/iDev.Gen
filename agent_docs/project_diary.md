@@ -1,5 +1,33 @@
 # Project Diary
 
+## Full Auto Task 4.10 Deletion Boundaries
+
+Guard supported deletions in the same transaction as dependency lookup, and
+protect direct persistence/cascade paths in SQLite. Bind all immutable consent
+grants, including renewals, rather than a mutable model default or latest look.
+Cancellation intent and a terminal run label alone do not prove remote settlement;
+retain conservative admission and linked-shot evidence until journaling exists.
+
+An absent dependency must durably block and fence active recovery. Independent
+look-loss and room-revision-loss probes reproduced a projection-only blocker and
+a missing room check; both passed after repair. Distinguish missing exact source
+identity from changed translation, and never substitute a later revision.
+A refused Resume preserves an already terminal epoch: terminal-to-blocked is
+outside the allowed transition graph. Keep the missing-dependency diagnostic and
+prevent dispatch without reopening it.
+
+Revalidate UUID, epoch and fence inside each lock-held image-move attempt, including
+after a sharing-violation retry. Release transactions before retry sleeps and
+serialize folder cleanup with allocation to protect reused numeric session IDs.
+Retain historical profile evidence and its existing foreign-key restriction.
+
+The first full gate exposed an expiry fixture whose summary changed without
+rehashing consent. Repair its digest while retaining temporal injection and
+unchanged-reservation assertions. Both initial full runs also failed the CAS
+resource lookup test. Pristine HEAD reproduced it in two of five isolated
+processes; the final full gate passed unchanged. This establishes preexistence,
+not a root cause or repair of the concurrency failure.
+
 ## Full Auto Task 4.9 Provider Recovery
 
 Reserve read-only recovery probes before their GET, not after a failed response.
