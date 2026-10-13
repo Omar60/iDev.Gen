@@ -224,9 +224,10 @@ async def _request_completion(
     *,
     structured: bool = False,
     request_evidence: dict[str, object] | None = None,
-    full_auto_before_dispatch: Callable[[], int] | None = None,
-    full_auto_settle_dispatch: Callable[[int, dict[str, object]], None] | None = None,
-    full_auto_check_response: Callable[[int, dict[str, object]], None] | None = None,
+    full_auto_before_dispatch: Callable[[], object] | None = None,
+    full_auto_settle_dispatch: Callable[[object, dict[str, object]], None] | None = None,
+    full_auto_check_response: Callable[[object, dict[str, object]], None] | None = None,
+    full_auto_finish_dispatch: Callable[[object], None] | None = None,
 ) -> str:
     """Shared configured URL/model/body/auth/timeout/retry/error boundary."""
     image = image or p.image
@@ -320,21 +321,25 @@ async def _request_completion(
         if full_auto_before_dispatch is None:
             return await client.post(url, json=request_body, headers=headers)
 
-        reservation_id = full_auto_before_dispatch()
+        reservation = full_auto_before_dispatch()
         try:
             async with asyncio.timeout(TIMEOUT):
-                response = await client.post(url, json=request_body, headers=headers)
+                try:
+                    response = await client.post(url, json=request_body, headers=headers)
+                finally:
+                    if reservation is not None and full_auto_finish_dispatch is not None:
+                        full_auto_finish_dispatch(reservation)
         except asyncio.CancelledError:
             # Owner loss can cancel this coroutine while the request is still
             # unwinding. Keep the durable reservation inflight so its slot is
             # quarantined until the request actually ends or times out.
             raise
         except TimeoutError as exc:
-            if reservation_id is not None and full_auto_settle_dispatch is not None:
+            if reservation is not None and full_auto_settle_dispatch is not None:
                 metadata = safe_metadata(None)
-                full_auto_settle_dispatch(reservation_id, metadata)
+                full_auto_settle_dispatch(reservation, metadata)
                 if full_auto_check_response is not None:
-                    full_auto_check_response(reservation_id, metadata)
+                    full_auto_check_response(reservation, metadata)
             raise httpx.ReadTimeout(
                 "The Full Auto assistant request exceeded its total timeout.",
                 request=httpx.Request("POST", url),
@@ -342,19 +347,19 @@ async def _request_completion(
         except Exception:
             # The transport call has returned by raising, so the physical
             # request has ended even when the failure was not an HTTPX error.
-            if reservation_id is not None and full_auto_settle_dispatch is not None:
+            if reservation is not None and full_auto_settle_dispatch is not None:
                 metadata = safe_metadata(None)
-                full_auto_settle_dispatch(reservation_id, metadata)
+                full_auto_settle_dispatch(reservation, metadata)
                 if full_auto_check_response is not None:
-                    full_auto_check_response(reservation_id, metadata)
+                    full_auto_check_response(reservation, metadata)
             raise
 
-        if reservation_id is not None:
+        if reservation is not None:
             metadata = safe_metadata(response)
             if full_auto_settle_dispatch is not None:
-                full_auto_settle_dispatch(reservation_id, metadata)
+                full_auto_settle_dispatch(reservation, metadata)
             if full_auto_check_response is not None:
-                full_auto_check_response(reservation_id, metadata)
+                full_auto_check_response(reservation, metadata)
         return response
 
     try:
@@ -444,9 +449,10 @@ async def run_structured(
     image: str = "",
     *,
     request_evidence: dict[str, object] | None = None,
-    full_auto_before_dispatch: Callable[[], int] | None = None,
-    full_auto_settle_dispatch: Callable[[int, dict[str, object]], None] | None = None,
-    full_auto_check_response: Callable[[int, dict[str, object]], None] | None = None,
+    full_auto_before_dispatch: Callable[[], object] | None = None,
+    full_auto_settle_dispatch: Callable[[object, dict[str, object]], None] | None = None,
+    full_auto_check_response: Callable[[object, dict[str, object]], None] | None = None,
+    full_auto_finish_dispatch: Callable[[object], None] | None = None,
 ) -> dict[str, object]:
     """New JSON-object transport; preserve parsed structure exactly."""
     has_image = bool(image or p.image)
@@ -455,6 +461,7 @@ async def run_structured(
         full_auto_before_dispatch=full_auto_before_dispatch,
         full_auto_settle_dispatch=full_auto_settle_dispatch,
         full_auto_check_response=full_auto_check_response,
+        full_auto_finish_dispatch=full_auto_finish_dispatch,
     )
     raw_url = config.get("llm_url", "").rstrip("/")
     if raw_url and not raw_url.endswith("/chat/completions"):

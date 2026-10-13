@@ -20,7 +20,7 @@ from contextlib import suppress
 from pathlib import Path
 
 import db
-from comfy import REFERENCE_SLOTS, Comfy, apply_map, output_images
+from comfy import REFERENCE_SLOTS, Comfy, ComfyError, apply_map, output_images
 
 log = logging.getLogger("idevgen.runner")
 
@@ -31,6 +31,12 @@ SHOT_TIMEOUT = 900  # 15 min per image; a hung job must not wedge the session
 # attempts wait ~8s in total before the shot is called failed.
 MOVE_ATTEMPTS = 6
 MOVE_RETRY_DELAY = 0.4
+
+
+class RunnerBusyError(RuntimeError):
+    """Immediate manual Run refusal with a stable API code."""
+
+    code = "runner_busy"
 
 
 class Runner:
@@ -47,22 +53,51 @@ class Runner:
     def busy(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def start(self, session_id: int, *, _full_auto_claim=None) -> None:
-        if self.busy:
-            raise RuntimeError("A session is already running")
-        with db.transaction():
-            from backend import resource_full_auto
+    def start(self, session_id: int, *, _full_auto_claim=None) -> bool:
+        from backend import resource_full_auto
 
+        runner_claim = None
+        with db.transaction():
             if db.one("SELECT 1 FROM session WHERE id = ?", session_id) is None:
                 raise RuntimeError("Session not found")
-            if _full_auto_claim is None:
-                resource_full_auto.require_session_mutation_allowed(session_id)
-            else:
+            if _full_auto_claim is not None:
                 _full_auto_claim = resource_full_auto.renew_run_claim(_full_auto_claim)
+            try:
+                runner_claim = resource_full_auto.acquire_runner_claim(
+                    session_id, run_claim=_full_auto_claim,
+                )
+            except resource_full_auto.FullAutoRunError as exc:
+                if _full_auto_claim is None and exc.code == "runner_busy":
+                    raise RunnerBusyError(exc.message) from exc
+                raise
+            if runner_claim is None:
+                row = db.one(
+                    "SELECT state FROM full_auto_run WHERE run_id = ?",
+                    _full_auto_claim.run_id,
+                )
+                if row is None:
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "run_owner_stale", "The Full Auto execution owner is stale.",
+                    )
+                if row["state"] == "waiting_runner":
+                    resource_full_auto.release_waiting_runner_claim(_full_auto_claim)
+                else:
+                    resource_full_auto.advance_run(_full_auto_claim, "waiting_runner")
+                return False
+            if _full_auto_claim is not None:
+                run = db.one(
+                    "SELECT state FROM full_auto_run WHERE run_id = ?",
+                    _full_auto_claim.run_id,
+                )
+                if run is not None and run["state"] == "waiting_runner":
+                    resource_full_auto.advance_run(_full_auto_claim, "active")
                 resource_full_auto.admit_runner_start(session_id, _full_auto_claim)
             db.run("UPDATE session SET status='running' WHERE id=?", session_id)
         self._cancel.discard(session_id)
-        self._task = asyncio.create_task(self._run_session(session_id, _full_auto_claim))
+        self._task = asyncio.create_task(
+            self._run_claimed_session(session_id, runner_claim, _full_auto_claim),
+        )
+        return True
 
     def cancel(self, session_id: int) -> None:
         with db.transaction():
@@ -93,7 +128,31 @@ class Runner:
 
     # -- loop -------------------------------------------------------------
 
-    async def _run_session(self, session_id: int, _full_auto_claim=None) -> None:
+    async def _run_claimed_session(self, session_id: int, runner_claim, full_auto_claim) -> None:
+        from backend import resource_full_auto
+
+        heartbeat = resource_full_auto.RunnerClaimHeartbeat(runner_claim, full_auto_claim)
+        try:
+            try:
+                async with heartbeat:
+                    await self._run_session(
+                        session_id, _full_auto_claim=full_auto_claim,
+                        _runner_claim=heartbeat,
+                    )
+            except resource_full_auto.FullAutoRunError as exc:
+                self._cancel.discard(session_id)
+                log.warning("runner stopped for session %s: %s", session_id, exc.code)
+        finally:
+            try:
+                if not resource_full_auto.release_runner_claim(heartbeat.claim):
+                    log.warning("runner claim retained for session %s with unresolved work", session_id)
+            except resource_full_auto.FullAutoRunError as exc:
+                log.warning("runner claim release refused for session %s: %s", session_id, exc.code)
+
+    async def _run_session(self, session_id: int, _full_auto_claim=None, _runner_claim=None) -> None:
+        if _runner_claim is not None:
+            await self._run_session_owned(session_id, _runner_claim)
+            return
         if _full_auto_claim is None:
             await self._run_session_owned(session_id)
             return
@@ -130,7 +189,7 @@ class Runner:
             if heartbeat is None:
                 raise
             self._cancel.discard(session_id)
-            if exc.code == "comfy_unavailable":
+            if self._has_full_auto_owner(heartbeat) and exc.code == "comfy_unavailable":
                 try:
                     resource_full_auto.advance_run(
                         heartbeat.check(), "blocked", blocker_code="comfy_unavailable",
@@ -145,12 +204,17 @@ class Runner:
                 # session/shot evidence unresolved so reconciliation cannot
                 # mistake owner loss or a local timeout for settled work.
                 self._cancel.discard(session_id)
-                return
+                unresolved = db.one(
+                    "SELECT id FROM shot WHERE session_id=? AND status='running' LIMIT 1",
+                    session_id,
+                )
+                if getattr(heartbeat, "run_claim", None) is not None or unresolved is not None:
+                    return
             try:
                 self._owned_update(session_id, heartbeat, "UPDATE session SET status='failed' WHERE id=?", session_id)
                 self._owned_update(
                     session_id, heartbeat,
-                    "UPDATE shot SET status='failed', error=? WHERE session_id=? AND status IN ('pending','running')",
+                    "UPDATE shot SET status='failed', error=? WHERE session_id=? AND status='pending'",
                     str(exc)[:500], session_id,
                 )
             except resource_full_auto.FullAutoRunError:
@@ -176,6 +240,10 @@ class Runner:
                 session_id, claim=claim, allowed_phases=("execute",),
             )
             return db.run(sql, *params)
+
+    @staticmethod
+    def _has_full_auto_owner(heartbeat) -> bool:
+        return heartbeat is not None and getattr(heartbeat, "run_claim", None) is not None
 
     @staticmethod
     def _require_runner_owner(session_id: int, heartbeat) -> None:
@@ -278,7 +346,7 @@ class Runner:
             for slot in ("checkpoint", "lora_name", "lora_strength"):
                 values.pop(slot)
 
-        if heartbeat is not None:
+        if self._has_full_auto_owner(heartbeat):
             await self._ensure_comfy_available(
                 session_id, heartbeat, f"dispatch:{int(shot['id'])}",
             )
@@ -294,7 +362,24 @@ class Runner:
             self._require_runner_owner(session_id, heartbeat)
             graph = apply_map(wf["graph"], wf["node_map"], values)
             self._renew_runner_owner(session_id, heartbeat)
-            prompt_id = await self.comfy.queue_prompt(graph, CLIENT_ID)
+            try:
+                prompt_id = await self.comfy.queue_prompt(graph, CLIENT_ID)
+            except ComfyError as exc:
+                # A ComfyUI validation response is an explicit queue refusal.
+                # A server error response may arrive after acceptance, so only
+                # a 4xx (or a test double's status-less definitive refusal) is
+                # safe to record as a failed shot.
+                if exc.status_code is None or 400 <= exc.status_code < 500:
+                    raise
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "ComfyUI returned an ambiguous response while queueing the shot.",
+                ) from exc
+            except Exception as exc:  # noqa: BLE001 - dispatch may have succeeded remotely
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "The ComfyUI queue response was not received; the shot may still be running.",
+                ) from exc
             self._require_runner_owner(session_id, heartbeat)
         except resource_full_auto.FullAutoRunError:
             raise
@@ -313,7 +398,7 @@ class Runner:
         try:
             history = await self._await_history(prompt_id, session_id, heartbeat)
         except TimeoutError as exc:
-            if heartbeat is None:
+            if not self._has_full_auto_owner(heartbeat):
                 raise
             raise resource_full_auto.FullAutoRunError(
                 409, "execution_outcome_unknown",
@@ -321,7 +406,17 @@ class Runner:
             ) from exc
         if history is None:
             self._require_runner_owner(session_id, heartbeat)
+            if self._has_full_auto_owner(heartbeat):
+                # A local cancellation marker cannot prove that ComfyUI stopped
+                # this remote execution. Keep its running shot as a durable
+                # unresolved marker and leave global interrupt to reconciliation.
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "The admitted ComfyUI execution may still be running.",
+                )
+            self._renew_runner_owner(session_id, heartbeat)
             await self.comfy.interrupt()
+            self._require_runner_owner(session_id, heartbeat)
             self._owned_update(
                 session_id, heartbeat,
                 "UPDATE shot SET status='cancelled', finished_at=? WHERE id=?",
@@ -502,7 +597,7 @@ class Runner:
 
         waited = 0.0
         scope = "history:" + hashlib.sha256(prompt_id.encode("utf-8")).hexdigest()
-        if heartbeat is not None:
+        if self._has_full_auto_owner(heartbeat):
             scope_state = resource_full_auto.comfy_probe_state(heartbeat.check(), scope)
             if scope_state["pending"]:
                 history, recovery_waited = await self._recover_comfy_read(
@@ -527,7 +622,7 @@ class Runner:
                 raise
             except Exception:  # ComfyUI restarting / transient read failure
                 self._require_runner_owner(session_id, heartbeat)
-                if heartbeat is None:
+                if not self._has_full_auto_owner(heartbeat):
                     continue
                 scope_state = resource_full_auto.schedule_comfy_probe(heartbeat.check(), scope)
                 history, recovery_waited = await self._recover_comfy_read(

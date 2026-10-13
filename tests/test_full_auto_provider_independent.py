@@ -85,12 +85,15 @@ def _approved_execute_owner(client, seeded, monkeypatch):
 
 
 def _install_virtual_probe_clock(monkeypatch, start: datetime) -> list[datetime]:
-    """Advance only runner sleeps; leave the owned heartbeat suspended."""
+    """Advance only runner sleeps; leave both owned heartbeats suspended."""
     clock = [start]
     real_sleep = asyncio.sleep
     monkeypatch.setattr(db, "now", lambda: clock[0].isoformat(timespec="seconds"))
     monkeypatch.setattr(
         resource_full_auto, "RUN_HEARTBEAT_INTERVAL", timedelta(seconds=1000),
+    )
+    monkeypatch.setattr(
+        resource_full_auto, "RUNNER_HEARTBEAT_INTERVAL", timedelta(seconds=1000),
     )
 
     async def sleep(seconds=0, result=None):

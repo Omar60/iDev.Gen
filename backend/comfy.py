@@ -46,7 +46,9 @@ _LATENT_CLASSES = ("EmptyLatentImage", "EmptySD3LatentImage", "EmptyLatentImageP
 
 
 class ComfyError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class Comfy:
@@ -93,7 +95,7 @@ class Comfy:
         async with httpx.AsyncClient(timeout=60) as c:
             r = await c.post(f"{self.url}/prompt", json={"prompt": graph, "client_id": client_id})
             if r.status_code >= 400:
-                raise ComfyError(_error_text(r))
+                raise ComfyError(_error_text(r), status_code=r.status_code)
             return r.json()["prompt_id"]
 
     async def history(self, prompt_id: str) -> dict | None:

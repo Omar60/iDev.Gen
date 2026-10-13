@@ -41,7 +41,7 @@ import crop
 import db
 import enhance
 from comfy import REFERENCE_SLOTS, SLOTS, Comfy, detect_map, graph_checkpoint
-from runner import Runner, slug
+from runner import Runner, RunnerBusyError, slug
 
 # The import pipeline and the registry it writes into. These are `backend.*`
 # imports and not bare ones because that is how the package refers to itself;
@@ -100,13 +100,40 @@ comfy = Comfy(CONFIG["comfy_url"])
 runner = Runner(comfy, SESSIONS_DIR, COMFY_OUTPUT)
 
 
+def _recover_interrupted_runner_work() -> None:
+    """Fail old unclaimed work while preserving remote work evidence for its owner."""
+    with db.transaction():
+        slot = db.one(
+            "SELECT owner_kind, session_id FROM global_runner_claim WHERE singleton = 1",
+        )
+        owned_session_id = (
+            slot["session_id"] if slot is not None and slot["owner_kind"] is not None else None
+        )
+        if owned_session_id is None:
+            db.run("UPDATE session SET status='failed' WHERE status='running'")
+            db.run(
+                "UPDATE shot SET status='failed', error='interrupted when the app closed' "
+                "WHERE status='running'",
+            )
+        else:
+            # An expired lease cannot prove that ComfyUI stopped accepting work.
+            # Keep this owner's running evidence so new admissions fail closed.
+            db.run(
+                "UPDATE session SET status='failed' WHERE status='running' AND id<>?",
+                owned_session_id,
+            )
+            db.run(
+                "UPDATE shot SET status='failed', error='interrupted when the app closed' "
+                "WHERE status='running' AND session_id<>?",
+                owned_session_id,
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.connect(DATA_DIR / "idevgen.db")
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    # A session left 'running' by a crash owns no job: nothing is polling it.
-    db.run("UPDATE session SET status='failed' WHERE status='running'")
-    db.run("UPDATE shot SET status='failed', error='interrupted when the app closed' WHERE status='running'")
+    _recover_interrupted_runner_work()
     resource_selection.startup_recovery()
     authoring_operations.startup_recovery(planning_enabled=is_resource_planning_enabled())
     photo_staging.startup_recovery()
@@ -4534,10 +4561,13 @@ class _FullAutoPreparationHeartbeat:
             self.slot_claim, self.run_claim, self.operation_claim, self.provider_identity(),
         )
 
-    def settle_dispatch(self, reservation_id, metadata):
+    def settle_dispatch(self, reservation, metadata):
         if self.slot_claim is None:
             return
-        resource_full_auto.settle_assistant_dispatch(self.slot_claim, reservation_id, metadata)
+        resource_full_auto.settle_assistant_dispatch(self.slot_claim, reservation, metadata)
+
+    def finish_dispatch(self, reservation):
+        resource_full_auto.finish_local_assistant_dispatch(reservation)
 
     def check_response(self, reservation_id, metadata):
         self.check()
@@ -4698,6 +4728,7 @@ async def _run_prepare_takes_operation(
                             full_auto_before_dispatch=heartbeat.before_dispatch,
                             full_auto_settle_dispatch=heartbeat.settle_dispatch,
                             full_auto_check_response=heartbeat.check_response,
+                            full_auto_finish_dispatch=heartbeat.finish_dispatch,
                         )
                         heartbeat.check()
                 finally:
@@ -9039,6 +9070,8 @@ async def run_session(sid: int):
         raise HTTPException(400, "no pending shots")
     try:
         runner.start(sid)
+    except RunnerBusyError as exc:
+        raise HTTPException(409, detail={"code": exc.code, "message": str(exc)})
     except RuntimeError as exc:
         raise HTTPException(409, str(exc))
     return {"ok": True, "pending": pending}

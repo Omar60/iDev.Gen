@@ -114,9 +114,18 @@ acceptance is available through
 plan revision and review digest. The preparation coordinator still stops at
 validation. Separate internal helpers persist ordered submission receipts that
 bind prepared snapshots to their shot links and digests, reuse those links, and
-preserve each stored final prompt. A private authenticated runner claim checks
-current authority and evidence plus complete ordered receipts, then persists
-one admission before scheduling the serial runner. If scheduling is uncertain
+preserve each stored final prompt. Before scheduling, a private authenticated
+claim checks current authority and evidence plus complete ordered receipts,
+acquires the shared local runner, and persists one admission. A Full Auto run
+waiting for the runner stores `runner_ready_at` and its run ID in
+`waiting_runner` without an admission receipt. The SQLite runner claim is signed
+and fenced, has a 60-second lease renewed by 15-second heartbeats, and is shared
+by manual and Full Auto starts. Manual starts are never queued: they return
+`409 runner_busy`
+when another session owns the runner, an eligible Full Auto waiter has
+priority, or earlier runner work remains unresolved. Eligible waiters follow
+readiness-time order; blocked, cancelled, expired, or authority-ineligible runs
+are skipped, and Resume enters with fresh priority. If scheduling is uncertain
 after admission, another start is refused while the outcome remains unresolved.
 Public Full Auto preparation, submission, and execution routes and a control UI
 are absent, so this is not an end-to-end generation flow. Full Auto `RunClaim`s
@@ -140,14 +149,31 @@ seconds, and history recovery never resends the prompt. Exhaustion blocks
 `comfy_unavailable`; after admission and shot linking, unresolved work keeps
 Resume disabled. The status directs operators to Setup, inspection, or Cancel,
 but local HTTP termination does not establish that remote ComfyUI work stopped.
+The assistant slot also fences a live Full Auto POST in this process, bound to
+its reservation and local SQLite database identity. An expired quarantine is
+not released while that POST is still unwinding; cancellation cleanup must end
+before the local fence clears. After restart, recovery uses the persisted
+quarantine deadline as its only local guard and may release the slot once that
+deadline expires. This does not coordinate other processes or throttle
+provider-side work; manual assistant requests remain outside the slot.
+A lost or ambiguous ComfyUI queue response leaves the shot `running` as
+unresolved evidence and blocks new local starts even after the runner lease
+expires. Only a confirmed queue refusal is marked `failed`, allowing the serial
+runner to continue; no remote reconciliation or retry remedy is available for
+the ambiguous case.
+On restart, startup cleanup preserves the persisted owner's running session
+and shot rows even after lease expiry, while marking unclaimed legacy rows as
+interrupted failures. This retains uncertainty; it does not reconcile,
+redispatch, or recover Full Auto execution.
 During recovery, the replacement coordinator
 waits for any live child to settle. It resumes that same registered child under
 a new fence if expired or failed, preserving the verified prefix. A stale
 execution owner stops subsequent writes and dispatches, leaving admission
-unresolved. Execution-runner recovery,
-a global runner claim shared with manual starts and FIFO runner admission,
-attempt journaling and remote reconciliation, and the profile editor and
-selection/consent UI remain unfinished. The existing
+unresolved. The shared claim completes local runner admission only; Full Auto
+attempt journaling and recovery, remote prompt correlation and
+cancellation/reconciliation, external queue policy, and the end-to-end
+creation/startup flow remain unfinished. The profile editor and selection/
+consent UI also remain unfinished. The existing
 manual workflow remains available for sessions without a nonterminal Full Auto
 owner.
 While a run is nonterminal or its work is unresolved, supported DELETE routes

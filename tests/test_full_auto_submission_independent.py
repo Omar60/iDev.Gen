@@ -91,7 +91,8 @@ def test_full_auto_runner_heartbeat_keeps_long_comfy_io_owned(
     original_history = fake.history
     original_now = db.now
     clock = [datetime.fromisoformat(original_now().replace("Z", "+00:00"))]
-    step = [timedelta(seconds=20)]
+    # Each renewal validates both leases; keep synthetic clock steps below expiry.
+    step = [timedelta(seconds=10)]
 
     async def slow_history(prompt_id):
         entered.set()
@@ -104,7 +105,9 @@ def test_full_auto_runner_heartbeat_keeps_long_comfy_io_owned(
         return value.isoformat(timespec="seconds")
 
     monkeypatch.setattr(fake, "history", slow_history)
-    monkeypatch.setattr(resource_full_auto, "RUN_HEARTBEAT_INTERVAL", timedelta(milliseconds=5))
+    monkeypatch.setattr(
+        resource_full_auto, "RUNNER_HEARTBEAT_INTERVAL", timedelta(milliseconds=5),
+    )
 
     async def run_with_long_io():
         runner.start(session_id, _full_auto_claim=execute_owner)
@@ -112,12 +115,22 @@ def test_full_auto_runner_heartbeat_keeps_long_comfy_io_owned(
         before = db.one(
             "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
         )["lease_started_at"]
+        before_runner = db.one(
+            "SELECT lease_started_at FROM global_runner_claim WHERE singleton = 1",
+        )["lease_started_at"]
         monkeypatch.setattr(db, "now", fake_now)
         await asyncio.sleep(0.1)
         after = db.one(
             "SELECT lease_started_at FROM full_auto_run WHERE run_id = ?", run_id,
         )["lease_started_at"]
+        after_runner = db.one(
+            "SELECT lease_started_at FROM global_runner_claim WHERE singleton = 1",
+        )["lease_started_at"]
         assert datetime.fromisoformat(after) - datetime.fromisoformat(before) >= timedelta(seconds=60)
+        assert (
+            datetime.fromisoformat(after_runner) - datetime.fromisoformat(before_runner)
+            >= timedelta(seconds=60)
+        )
         step[0] = timedelta(0)
         release.set()
         await runner._task

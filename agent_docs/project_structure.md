@@ -49,6 +49,11 @@ Verified baseline from the repository layout and application entry points.
   `assistant_transport_error`, `assistant_rate_limited`, `assistant_refused`,
   `writer_output_invalid`, and `provider_changed` blockers. Only structured
   refusal/content-filter metadata counts as refusal; prose is not guessed.
+  A live Full Auto POST has a process-local fence bound to its reservation and
+  SQLite identity, so quarantine expiry cannot release the slot while the POST
+  unwinds. On restart, only the persisted quarantine deadline remains; this is
+  not cross-process or provider-side coordination, and manual calls remain
+  outside the slot.
   Valid `Retry-After` seconds or dates are persisted and gate Resume until their
   UTC deadline. The runner checks ComfyUI stats before owned dispatch and retries
   failed stats/history GETs with at most three persisted probes after 5, 15, and
@@ -72,9 +77,20 @@ Verified baseline from the repository layout and application entry points.
   epoch, and fence; each output-collection retry revalidates the claim and shot
   before moving a file, preventing reused numeric session or shot IDs from
   authorizing stale writes. Profile-evidence foreign keys can still restrict
-  direct profile removal after settlement. Execution-runner recovery, a global runner claim shared with
-  manual starts and FIFO runner admission, attempt journaling, remote
-  reconciliation, and automatic end-to-end dispatch remain unfinished.
+  direct profile removal after settlement. One signed, fenced SQLite runner
+  claim with a 60-second lease and 15-second heartbeat is shared by manual and
+  Full Auto starts. Manual starts return `409 runner_busy` for an active owner,
+  an eligible Full Auto waiter, or unresolved earlier runner work; they are not
+  queued. Full Auto waiters persist `runner_ready_at`; eligible order uses that
+  timestamp then run ID. Resume re-enters with fresh priority; blocked,
+  cancelled, expired, or
+  authority-ineligible runs are skipped. This implements local admission only.
+  Startup cleanup preserves running rows for the persisted owner after lease
+  expiry and marks unclaimed legacy running rows interrupted; it preserves
+  uncertainty but does not reconcile or recover execution.
+  Runner attempt journaling/recovery, remote prompt correlation,
+  cancellation/reconciliation, external queue policy, and end-to-end startup
+  remain unfinished.
   Internal review and policy approval
   validate current snapshots, conflicts, placeholders, adaptations, drift, and
   duplicate acceptance while keeping neutral notices nonblocking. Approval and

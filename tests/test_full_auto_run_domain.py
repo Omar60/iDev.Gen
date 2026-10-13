@@ -507,6 +507,41 @@ def test_allowed_wait_block_cancel_and_resume_transitions(tmp_path):
     assert resumed_epoch.view["epoch"] == settled["epoch"] + 1
 
 
+def test_resume_to_runner_wait_gets_a_fresh_fifo_position(tmp_path):
+    run_id, _session_id, _path = _seed_run(tmp_path, session_name="resume-runner-position")
+    owner = resource_full_auto.claim_run(run_id, now_text=START)
+    for phase in ("validate", "approve", "submit", "execute"):
+        resource_full_auto.advance_run(owner, "active", phase=phase, now_text=START)
+    waiting = resource_full_auto.advance_run(owner, "waiting_runner", now_text=START)
+    assert waiting["state"] == "waiting_runner"
+    assert db.one(
+        "SELECT runner_ready_at FROM full_auto_run WHERE run_id = ?", run_id,
+    )["runner_ready_at"] == START
+
+    owner = resource_full_auto.claim_run(run_id, now_text=START)
+    blocked = resource_full_auto.advance_run(
+        owner, "blocked", blocker_code="comfy_unavailable", now_text=START,
+    )
+    assert blocked["state"] == "blocked"
+    # Model a legacy or interrupted row that still carries its old queue slot;
+    # Resume must replace it even though blocked rows are skipped by admission.
+    db.run(
+        "UPDATE full_auto_run SET runner_ready_at = ? WHERE run_id = ?",
+        "1999-01-01T00:00:00+00:00", run_id,
+    )
+
+    resumed_at = "2026-10-01T12:00:10+00:00"
+    resumed = resource_full_auto.resume_run(
+        run_id, "resume-runner-position", blocked["revision"], 1,
+        eligibility=_resume_checks(next_state="waiting_runner"), now_text=resumed_at,
+    )
+
+    assert resumed.view["state"] == "waiting_runner"
+    assert db.one(
+        "SELECT runner_ready_at FROM full_auto_run WHERE run_id = ?", run_id,
+    )["runner_ready_at"] == resumed_at
+
+
 @pytest.mark.parametrize(
     ("outcome", "expected_state"),
     [

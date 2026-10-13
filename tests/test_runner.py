@@ -2,13 +2,17 @@
 file into the session, and what happens when something goes wrong."""
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 
 import db
+import main
 import resource_preparation
 import runner as runner_mod
 import session_plan
+from backend import resource_full_auto
 from conftest import EDIT_GRAPH, GRAPH
 
 
@@ -18,15 +22,15 @@ def _fast_poll(monkeypatch):
     monkeypatch.setattr(runner_mod, "MOVE_RETRY_DELAY", 0.001)
 
 
-def _session(client, count=2, **model_kw):
-    wf = client.post("/api/workflows", json={"name": "wf", "graph": GRAPH}).json()
-    payload = {"name": "ada", "lora_name": "characters/ada.safetensors", "trigger": "4da woman",
+def _session(client, count=2, *, tag="session", **model_kw):
+    wf = client.post("/api/workflows", json={"name": f"wf-{tag}", "graph": GRAPH}).json()
+    payload = {"name": f"ada-{tag}", "lora_name": "characters/ada.safetensors", "trigger": "4da woman",
                "base_negative": "blurry", "workflow_id": wf["id"],
                "settings": {"width": 832, "height": 1216, "steps": 8, "cfg": 1.0}}
     payload.update(model_kw)
     mid = client.post("/api/models", json=payload).json()["id"]
     return client.post("/api/sessions", json={
-        "model_id": mid, "name": "shoot", "seed_mode": "fixed", "seed": 77,
+        "model_id": mid, "name": f"shoot-{tag}", "seed_mode": "fixed", "seed": 77,
         "settings": {"lora_strength": 0.85},
         "shots": [{"label": "beach", "prompt": "on the beach", "count": count}],
     }).json()["id"]
@@ -428,15 +432,171 @@ def test_an_anchor_whose_file_vanished_fails_that_shot_readably(client, make_run
 def test_two_sessions_at_once_are_refused(client, make_runner):
     sid = _session(client, count=1)
     r, _ = make_runner()
+    other, _ = make_runner()
 
     async def scenario():
-        r.start(sid)
-        with pytest.raises(RuntimeError):
-            r.start(sid)
+        assert r.start(sid) is True
+        with pytest.raises(runner_mod.RunnerBusyError) as error:
+            other.start(sid)
+        assert error.value.code == "runner_busy"
         await r._task
 
     asyncio.run(scenario())
     assert db.one("SELECT status FROM session WHERE id=?", sid)["status"] == "done"
+
+
+def test_manual_run_route_returns_stable_busy_code_for_shared_runner(client, make_runner, monkeypatch):
+    sid = _session(client, count=1, tag="owner")
+    other_sid = _session(client, count=1, tag="waiting")
+    owner, _ = make_runner()
+    second, _ = make_runner()
+    monkeypatch.setattr(main, "runner", second)
+    monkeypatch.setattr(main, "output_dir_ok", lambda: True)
+
+    async def scenario():
+        owner.start(sid)
+        with pytest.raises(HTTPException) as error:
+            await main.run_session(other_sid)
+        assert error.value.status_code == 409
+        assert error.value.detail["code"] == "runner_busy"
+        await owner._task
+
+    asyncio.run(scenario())
+
+
+def test_manual_runner_does_not_use_full_auto_comfy_probes(client, make_runner, monkeypatch):
+    sid = _session(client, count=1)
+    r, fake = make_runner()
+    calls = []
+
+    async def forbidden_probe():
+        calls.append("stats")
+        raise AssertionError("manual Run must not use Full Auto availability probes")
+
+    monkeypatch.setattr(fake, "stats", forbidden_probe)
+
+    async def scenario():
+        r.start(sid)
+        await r._task
+
+    asyncio.run(scenario())
+    assert calls == []
+    assert db.one("SELECT status FROM session WHERE id=?", sid)["status"] == "done"
+
+
+def test_runner_releases_latest_renewed_global_claim(client, make_runner, monkeypatch):
+    sid = _session(client, count=1)
+    r, _ = make_runner()
+    monkeypatch.setattr(
+        resource_full_auto, "RUNNER_HEARTBEAT_INTERVAL", timedelta(milliseconds=2),
+    )
+    clock = [datetime(2026, 10, 12, tzinfo=timezone.utc)]
+
+    def advancing_now():
+        clock[0] += timedelta(seconds=1)
+        return clock[0].isoformat(timespec="seconds")
+
+    monkeypatch.setattr(db, "now", advancing_now)
+    observed = []
+
+    async def hold_runner(_sid, _full_auto_claim=None, _runner_claim=None):
+        await asyncio.sleep(0.025)
+        observed.append(_runner_claim.claim.lease_started_at)
+
+    r._run_session = hold_runner
+
+    async def scenario():
+        r.start(sid)
+        initial = db.one(
+            "SELECT lease_started_at FROM global_runner_claim WHERE singleton=1",
+        )["lease_started_at"]
+        await r._task
+        return initial
+
+    initial = asyncio.run(scenario())
+    assert observed and observed[0] != initial
+    slot = db.one("SELECT owner_kind, owner_nonce FROM global_runner_claim WHERE singleton=1")
+    assert slot == {"owner_kind": None, "owner_nonce": None}
+
+
+def test_startup_preserves_claimed_running_work_after_lease_expiry(
+    client, make_runner,
+):
+    owned_session = _session(client, count=1, tag="startup-owned")
+    legacy_session = _session(client, count=1, tag="startup-unclaimed")
+    claim = resource_full_auto.acquire_runner_claim(owned_session)
+    assert claim is not None
+    expired_at = "2000-01-01T00:00:00+00:00"
+    db.run(
+        "UPDATE global_runner_claim SET lease_expires_at = ? WHERE singleton = 1",
+        expired_at,
+    )
+    db.run("UPDATE session SET status='running' WHERE id IN (?, ?)", owned_session, legacy_session)
+    db.run("UPDATE shot SET status='running' WHERE session_id IN (?, ?)", owned_session, legacy_session)
+    owned_session_before = db.one("SELECT * FROM session WHERE id = ?", owned_session)
+    owned_shot_before = db.one("SELECT * FROM shot WHERE session_id = ?", owned_session)
+    owner_before = db.one("SELECT * FROM global_runner_claim WHERE singleton = 1")
+    legacy_session_before = db.one("SELECT * FROM session WHERE id = ?", legacy_session)
+    legacy_shot_before = db.one("SELECT * FROM shot WHERE session_id = ?", legacy_session)
+
+    main._recover_interrupted_runner_work()
+
+    assert db.one("SELECT * FROM session WHERE id = ?", owned_session) == owned_session_before
+    assert db.one("SELECT * FROM shot WHERE session_id = ?", owned_session) == owned_shot_before
+    assert db.one("SELECT * FROM global_runner_claim WHERE singleton = 1") == owner_before
+    assert db.one("SELECT status FROM session WHERE id = ?", legacy_session)["status"] == "failed"
+    assert db.one("SELECT status, error FROM shot WHERE session_id = ?", legacy_session) == {
+        "status": "failed", "error": "interrupted when the app closed",
+    }
+    expected_legacy_session = {**legacy_session_before, "status": "failed"}
+    expected_legacy_shot = {
+        **legacy_shot_before,
+        "status": "failed",
+        "error": "interrupted when the app closed",
+    }
+    assert db.one("SELECT * FROM session WHERE id = ?", legacy_session) == expected_legacy_session
+    assert db.one("SELECT * FROM shot WHERE session_id = ?", legacy_session) == expected_legacy_shot
+
+    runner, fake = make_runner()
+    with pytest.raises(runner_mod.RunnerBusyError) as busy:
+        runner.start(legacy_session)
+    assert busy.value.code == "runner_busy"
+    assert fake.attempts == 0
+    assert db.one("SELECT * FROM global_runner_claim WHERE singleton = 1") == owner_before
+
+
+def test_full_auto_missing_history_does_not_interrupt_global_comfy_queue(
+    client, make_runner, monkeypatch,
+):
+    sid = _session(client, count=1)
+    r, fake = make_runner()
+    shot = db.one("SELECT * FROM shot WHERE session_id=?", sid)
+
+    class ClaimedHeartbeat:
+        run_claim = object()
+
+        def check(self):
+            return self.run_claim
+
+    heartbeat = ClaimedHeartbeat()
+    monkeypatch.setattr(r, "_ensure_comfy_available", lambda *_args: asyncio.sleep(0))
+    monkeypatch.setattr(r, "_require_runner_owner", lambda *_args: None)
+    monkeypatch.setattr(r, "_renew_runner_owner", lambda *_args: None)
+    monkeypatch.setattr(
+        r, "_owned_update", lambda _sid, _heartbeat, sql, *params: db.run(sql, *params),
+    )
+
+    async def missing_history(_prompt_id, _session_id, _heartbeat):
+        return None
+
+    monkeypatch.setattr(r, "_await_history", missing_history)
+
+    with pytest.raises(resource_full_auto.FullAutoRunError) as error:
+        asyncio.run(r._run_shot(sid, shot, heartbeat))
+
+    assert error.value.code == "execution_outcome_unknown"
+    assert fake.interrupted == 0
+    assert db.one("SELECT status FROM shot WHERE id=?", shot["id"])["status"] == "running"
 
 
 def _guide_run(client, make_runner, kind):

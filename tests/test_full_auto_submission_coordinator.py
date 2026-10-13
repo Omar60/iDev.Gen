@@ -236,7 +236,7 @@ def test_runner_admission_rejects_incomplete_or_corrupt_links_without_starting(
     runner = Runner(None, tmp_path / "sessions", tmp_path / "output")
     started: list[int] = []
 
-    async def record_start(sid: int) -> None:
+    async def record_start(sid: int, _full_auto_claim=None, _runner_claim=None) -> None:
         started.append(sid)
 
     runner._run_session = record_start
@@ -304,7 +304,7 @@ def test_runner_admission_rejects_receipts_whose_ids_run_out_of_target_order(
     runner = Runner(None, tmp_path / "sessions", tmp_path / "output")
     started: list[int] = []
 
-    async def record_start(sid: int) -> None:
+    async def record_start(sid: int, _full_auto_claim=None, _runner_claim=None) -> None:
         started.append(sid)
 
     runner._run_session = record_start
@@ -341,7 +341,7 @@ def test_runner_admits_all_linked_targets_once_and_fails_closed_after_schedule_c
     runner = Runner(None, tmp_path / "sessions", tmp_path / "output")
     started: list[int] = []
 
-    async def record_start(sid: int, _full_auto_claim=None) -> None:
+    async def record_start(sid: int, _full_auto_claim=None, _runner_claim=None) -> None:
         assert_forwarded_claim(_full_auto_claim, execute_owner)
         started.append(sid)
 
@@ -369,7 +369,7 @@ def test_runner_admits_all_linked_targets_once_and_fails_closed_after_schedule_c
     runner2 = Runner(None, tmp_path / "sessions-2", tmp_path / "output-2")
     second_started: list[int] = []
 
-    def record_second_start(sid: int, _full_auto_claim=None):
+    def record_second_start(sid: int, _full_auto_claim=None, _runner_claim=None):
         assert_forwarded_claim(_full_auto_claim, execute_owner2)
 
         async def record() -> None:
@@ -494,7 +494,7 @@ def test_receipt_and_runner_admission_recheck_feature_flag_after_review(
     runner = Runner(None, tmp_path / "sessions", tmp_path / "output")
     started: list[int] = []
 
-    async def record_start(sid: int) -> None:
+    async def record_start(sid: int, _full_auto_claim=None, _runner_claim=None) -> None:
         started.append(sid)
 
     runner._run_session = record_start

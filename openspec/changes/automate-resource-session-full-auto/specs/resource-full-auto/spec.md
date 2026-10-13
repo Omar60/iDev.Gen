@@ -433,6 +433,11 @@ Across Full Auto runs, at most one assistant HTTP request SHALL be in flight. Ta
 - **WHEN** takes from several runs become eligible
 - **THEN** only one Full Auto request is in flight and persisted FIFO order selects subsequent takes
 
+#### Scenario: A local request outlives the persisted quarantine deadline
+- **WHEN** owner loss quarantines a physical assistant POST and event-loop delay prevents its timeout cancellation from finishing before the persisted deadline
+- **THEN** its local completion fence prevents another Full Auto POST until the transport and cancellation cleanup finish
+- **AND** the original reservations remain consumed and manual assistant transport remains unchanged
+
 ### Requirement: Runner admission skips ineligible waiters
 
 Runner-ready sessions SHALL be admitted FIFO, skipping cancelled/blocked/expired work, and execute serially once admitted.

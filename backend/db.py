@@ -862,6 +862,7 @@ CREATE TABLE IF NOT EXISTS full_auto_run (
     cancel_intent    INTEGER NOT NULL DEFAULT 0 CHECK (cancel_intent IN (0, 1)),
     cancel_intent_at TEXT,
     blocker_code     TEXT,
+    runner_ready_at  TEXT,
     assistant_retry_after_at TEXT,
     comfy_probe_scope TEXT,
     comfy_probe_count INTEGER NOT NULL DEFAULT 0 CHECK (comfy_probe_count BETWEEN 0 AND 3),
@@ -1187,6 +1188,29 @@ BEFORE UPDATE ON full_auto_runner_admission
 BEGIN
     SELECT RAISE(ABORT, 'Full Auto runner admission is immutable');
 END;
+
+-- One durable, fenced owner for the local GPU runner across all Runner instances.
+CREATE TABLE IF NOT EXISTS global_runner_claim (
+    singleton          INTEGER PRIMARY KEY CHECK (singleton = 1),
+    owner_kind         TEXT CHECK (owner_kind IS NULL OR owner_kind IN ('manual', 'full_auto')),
+    session_id         INTEGER,
+    run_id             TEXT,
+    owner_nonce        TEXT,
+    fencing_token      INTEGER NOT NULL DEFAULT 0 CHECK (fencing_token >= 0),
+    lease_started_at   TEXT,
+    lease_expires_at   TEXT,
+    CHECK (
+        (owner_kind IS NULL AND session_id IS NULL AND run_id IS NULL
+         AND owner_nonce IS NULL AND lease_started_at IS NULL AND lease_expires_at IS NULL)
+        OR
+        (owner_kind = 'manual' AND session_id IS NOT NULL AND run_id IS NULL
+         AND owner_nonce IS NOT NULL AND lease_started_at IS NOT NULL AND lease_expires_at IS NOT NULL)
+        OR
+        (owner_kind = 'full_auto' AND session_id IS NOT NULL AND run_id IS NOT NULL
+         AND owner_nonce IS NOT NULL AND lease_started_at IS NOT NULL AND lease_expires_at IS NOT NULL)
+    )
+);
+INSERT OR IGNORE INTO global_runner_claim (singleton, fencing_token) VALUES (1, 0);
 
 -- Reviewed adaptations of resource-v1 take descriptive inputs
 -- (task 4.2 of ``adopt-resource-session-planning``). One row
@@ -1680,6 +1704,12 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
         )
     if "comfy_probe_due_at" not in run_columns:
         conn.execute("ALTER TABLE full_auto_run ADD COLUMN comfy_probe_due_at TEXT")
+    if "runner_ready_at" not in run_columns:
+        conn.execute("ALTER TABLE full_auto_run ADD COLUMN runner_ready_at TEXT")
+    conn.execute(
+        """UPDATE full_auto_run SET runner_ready_at = updated_at
+           WHERE state = 'waiting_runner' AND runner_ready_at IS NULL"""
+    )
     conn.execute(
         """UPDATE full_auto_run SET lease_started_at = updated_at
            WHERE lease_expires_at IS NOT NULL AND lease_started_at IS NULL"""

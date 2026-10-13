@@ -353,6 +353,96 @@ def test_waiting_runner_has_no_runner_admission_owner(
     assert before_run["lease_expires_at"] is None
 
 
+def test_runner_waiters_keep_fifo_priority_and_do_not_consume_admission(
+    client, monkeypatch,
+):
+    monkeypatch.setattr(db, "now", lambda: run_independent.START)
+    run_a, session_a = run_independent._seed_run("runner-fifo-a")
+    run_b, session_b = run_independent._seed_run("runner-fifo-b")
+    _model_id, manual_session = run_independent._seed_session("runner-fifo-manual")
+
+    def execute_owner(run_id):
+        owner = resource_full_auto.claim_run(run_id, now_text=run_independent.START)
+        for phase in ("validate", "approve", "submit", "execute"):
+            resource_full_auto.advance_run(
+                owner, "active", phase=phase, now_text=run_independent.START,
+            )
+        return owner
+
+    manual_slot = resource_full_auto.acquire_runner_claim(manual_session)
+    assert manual_slot is not None and manual_slot.owner_kind == "manual"
+    owner_a = execute_owner(run_a)
+    owner_b = execute_owner(run_b)
+    assert main.runner.start(session_a, _full_auto_claim=owner_a) is False
+    assert main.runner.start(session_b, _full_auto_claim=owner_b) is False
+
+    waiters = db.q(
+        "SELECT run_id, session_id, runner_ready_at FROM full_auto_run "
+        "WHERE state='waiting_runner' ORDER BY runner_ready_at, run_id",
+    )
+    assert [row["run_id"] for row in waiters] == sorted((run_a, run_b))
+    assert all(row["runner_ready_at"] == run_independent.START for row in waiters)
+    assert db.q(
+        "SELECT * FROM full_auto_runner_admission WHERE run_id IN (?, ?)", run_a, run_b,
+    ) == []
+
+    _other_model, manual_waiter_session = run_independent._seed_session("runner-fifo-manual-waiter")
+    with pytest.raises(resource_full_auto.FullAutoRunError) as busy:
+        resource_full_auto.acquire_runner_claim(manual_waiter_session)
+    assert busy.value.code == "runner_busy"
+    assert db.one(
+        "SELECT owner_kind, owner_nonce FROM global_runner_claim WHERE singleton=1",
+    ) == {"owner_kind": "manual", "owner_nonce": manual_slot.owner_nonce}
+
+    assert resource_full_auto.release_runner_claim(manual_slot) is True
+    first, later = waiters
+    later_owner = resource_full_auto.claim_run(later["run_id"], now_text=run_independent.START)
+    assert resource_full_auto.acquire_runner_claim(
+        later["session_id"], run_claim=later_owner,
+    ) is None
+    assert resource_full_auto.release_waiting_runner_claim(later_owner)["state"] == "waiting_runner"
+
+    first_owner = resource_full_auto.claim_run(first["run_id"], now_text=run_independent.START)
+    first_slot = resource_full_auto.acquire_runner_claim(
+        first["session_id"], run_claim=first_owner,
+    )
+    assert first_slot is not None
+    assert first_slot.owner_kind == "full_auto" and first_slot.run_id == first["run_id"]
+    assert resource_full_auto.release_runner_claim(first_slot) is True
+
+
+def test_expired_global_runner_lease_with_running_shot_fails_closed(client, monkeypatch):
+    monkeypatch.setattr(db, "now", lambda: run_independent.START)
+    _model_id, owner_session = run_independent._seed_session("runner-expired-owner")
+    _other_model, other_session = run_independent._seed_session("runner-expired-contender")
+    claim = resource_full_auto.acquire_runner_claim(owner_session)
+    assert claim is not None
+    db.run(
+        "INSERT INTO shot (session_id, created_at, status) VALUES (?, ?, 'running')",
+        owner_session, run_independent.START,
+    )
+    db.run(
+        "UPDATE global_runner_claim SET lease_started_at=?, lease_expires_at=? WHERE singleton=1",
+        "2000-01-01T00:00:00+00:00", "2000-01-01T00:01:00+00:00",
+    )
+
+    with pytest.raises(resource_full_auto.FullAutoRunError) as error:
+        resource_full_auto.acquire_runner_claim(other_session)
+
+    assert error.value.code == "runner_busy"
+    assert db.one(
+        "SELECT owner_nonce, fencing_token FROM global_runner_claim WHERE singleton=1",
+    ) == {"owner_nonce": claim.owner_nonce, "fencing_token": claim.fencing_token}
+
+    db.run(
+        "UPDATE global_runner_claim SET owner_kind=NULL, session_id=NULL, run_id=NULL, "
+        "owner_nonce=NULL, lease_started_at=NULL, lease_expires_at=NULL WHERE singleton=1",
+    )
+    with pytest.raises(resource_full_auto.FullAutoRunError) as orphaned:
+        resource_full_auto.acquire_runner_claim(other_session)
+    assert orphaned.value.code == "runner_busy"
+
+
 def test_history_transport_error_retries_in_manual_and_full_auto_runner_paths(
     client, seeded, monkeypatch, make_runner,
 ):

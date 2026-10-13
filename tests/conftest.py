@@ -27,6 +27,7 @@ os.environ["IDEVGEN_CONFIG"] = str(TMP / "config.json")
 import db  # noqa: E402
 import main  # noqa: E402
 from runner import Runner  # noqa: E402
+from comfy import ComfyError  # noqa: E402
 
 # Minimal but realistic API graph: the positive conditioning goes through
 # FluxGuidance, which is what breaks a naive mapping detection.
@@ -91,7 +92,7 @@ class FakeComfy:
     async def queue_prompt(self, graph: dict, client_id: str) -> str:
         self.attempts += 1
         if self.fail_queue or self.attempts <= self.fail_first:
-            raise RuntimeError("Prompt outputs failed validation")
+            raise ComfyError("Prompt outputs failed validation")
         self.graphs.append(graph)
         return f"pid-{len(self.graphs)}"
 
@@ -131,6 +132,10 @@ def client():
         yield c
     # Full Auto guards intentionally reject deleting a live owner. Test cleanup
     # first removes the synthetic coordinator rows after each isolated case.
+    db.run(
+        "UPDATE global_runner_claim SET owner_kind=NULL, session_id=NULL, run_id=NULL, "
+        "owner_nonce=NULL, lease_started_at=NULL, lease_expires_at=NULL WHERE singleton=1"
+    )
     db.run("DELETE FROM full_auto_run")
     for table in ("shot", "session", "model", "workflow", "cell", "component", "reading",
                   "garment", "outfit", "saved_look_photo_evidence",

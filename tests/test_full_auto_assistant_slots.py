@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
+import sqlite3
+import time
 import uuid
 
 import httpx
@@ -157,7 +159,7 @@ def test_full_auto_total_timeout_cancels_fallback_before_next_post(
     second_fields = _fields_by_take(second_session, second_revision, second_targets)
 
     assert enhance.TIMEOUT == resource_full_auto.ASSISTANT_DISPATCH_TIMEOUT.total_seconds()
-    timeout_seconds = 0.08
+    timeout_seconds = 1.0
     monkeypatch.setattr(enhance, "TIMEOUT", timeout_seconds)
     monkeypatch.setattr(
         resource_full_auto, "ASSISTANT_DISPATCH_TIMEOUT",
@@ -178,6 +180,7 @@ def test_full_auto_total_timeout_cancels_fallback_before_next_post(
         requests.append(request)
         try:
             if len(requests) == 1:
+                await asyncio.sleep(0.65)
                 return httpx.Response(400, text="Unsupported reasoning_effort")
             if len(requests) == 2:
                 fallback_entered.set()
@@ -247,6 +250,10 @@ def test_full_auto_total_timeout_cancels_fallback_before_next_post(
             else:
                 raise AssertionError("the second run did not wait behind the live fallback POST")
 
+            await asyncio.sleep(0.01)
+            time.sleep(2.3)
+            assert not fallback_finished.is_set()
+            assert datetime.fromisoformat(slot["lease_expires_at"]) < datetime.now(timezone.utc)
             await asyncio.wait_for(
                 second_task, timeout=5,
             )
@@ -270,6 +277,31 @@ def test_full_auto_total_timeout_cancels_fallback_before_next_post(
     assert len(settled) == 2
     assert settled[1]["settled_at"] is not None
     assert json.loads(settled[1]["response_metadata_json"]) == {"status": None}
+
+
+def test_local_assistant_dispatch_fence_uses_database_identity(tmp_path):
+    original_connection = db._conn
+    database_path = tmp_path / "first.sqlite"
+    first_connection = sqlite3.connect(database_path)
+    reopened_connection = sqlite3.connect(database_path)
+    other_connection = sqlite3.connect(tmp_path / "second.sqlite")
+    fence = None
+    try:
+        db._conn = first_connection
+        fence = resource_full_auto._register_local_assistant_dispatch(7)
+        assert resource_full_auto._local_assistant_dispatch_live(7)
+
+        db._conn = reopened_connection
+        assert resource_full_auto._local_assistant_dispatch_live(7)
+
+        db._conn = other_connection
+        assert not resource_full_auto._local_assistant_dispatch_live(7)
+    finally:
+        resource_full_auto.finish_local_assistant_dispatch(fence)
+        db._conn = original_connection
+        first_connection.close()
+        reopened_connection.close()
+        other_connection.close()
 
 
 def test_manual_structured_transport_has_no_full_auto_total_deadline(monkeypatch):

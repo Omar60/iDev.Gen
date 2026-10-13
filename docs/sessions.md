@@ -1774,10 +1774,15 @@ the authorized target count overall. Each physical HTTP POST consumes a durable
 reservation immediately before dispatch, including a compatibility fallback; a
 lost response still consumes its reservation. The ten-minute slot lease renews
 every fifteen seconds, and each Full Auto request has a 300-second total
-timeout. If ownership is lost while a
-request is unresolved, the slot stays quarantined through the bounded local
-request lifetime. A local timeout does not establish that provider-side work
-stopped.
+timeout. If ownership is lost while a request is unresolved, the slot stays
+quarantined. It tracks each live Full Auto POST in this process, bound to its
+reservation and local SQLite database identity; lease or quarantine-deadline
+expiry cannot release the slot while that POST is still unwinding. Cancellation
+cleanup ends before the local fence clears. After restart, no in-memory request
+fence remains, so the persisted quarantine deadline is the only local guard and
+the slot may be released once it expires. This does not coordinate other
+processes or provider-side work; manual assistant requests remain outside the
+slot. A local timeout does not establish that provider-side work stopped.
 
 Full Auto records distinct blockers for a missing assistant
 (`assistant_unavailable`), transport failure (`assistant_transport_error`),
@@ -1857,11 +1862,20 @@ digest. It reuses existing links after interruption and submits the stored
 Auto claim; before scheduling, it rechecks live authority, the planning flag,
 current prepared evidence and approval, complete receipts in target order, and
 that the session contains only those pending shots in persisted shot-ID order.
-Admission is persisted first. If the scheduling outcome is unknown after that
-write, another start is refused while the outcome remains unresolved. Creation
-and startup do not dispatch the full sequence. Public submission and execution
-controls and a Full Auto control UI are absent; status and Cancel/Resume routes
-do not make this an end-to-end generation flow.
+The local SQLite runner claim is shared with manual starts, is signed and
+fenced, and uses a 60-second lease renewed by 15-second heartbeats. Once the
+claim is acquired, Full Auto admission is persisted before scheduling. If the
+scheduling outcome is unknown after that write, another start is refused while
+the outcome remains unresolved. A Full Auto run waiting for the runner persists
+`runner_ready_at` and its run ID in `waiting_runner`, without an admission
+receipt. Eligible waiters are ordered by readiness timestamp and run ID;
+blocked, cancelled, expired, or authority-ineligible runs are skipped, and
+Resume re-enters with fresh priority. Manual starts are never queued: they
+return HTTP `409` with `detail.code: "runner_busy"` when another session owns
+the runner, an eligible Full Auto waiter has priority, or earlier runner work is
+unresolved. Creation and startup do not dispatch the full sequence. Public
+submission and execution controls and a Full Auto control UI are absent; status
+and Cancel/Resume routes do not make this an end-to-end generation flow.
 
 Before each owned runner dispatch, the runner makes a read-only ComfyUI stats
 GET. If that fails, the initial request is followed by at most three more GETs
@@ -1874,6 +1888,16 @@ pending shots already exist at that point, unresolved work keeps Resume
 disabled under the current conservative gate. The blocker points to Setup and
 status inspection or Cancel; Cancel does not prove remote work stopped, and
 local HTTP termination does not establish that ComfyUI stopped a generation.
+A lost or ambiguous ComfyUI queue response leaves its shot `running` as
+unresolved evidence and blocks new local starts even after the runner lease
+expires. Only a confirmed queue refusal is marked `failed`, allowing the serial
+runner to continue. No remote reconciliation or retry remedy is available for
+this ambiguous outcome.
+Startup cleanup transactionally preserves running session/shot rows for the
+persisted global owner even after lease expiry; unclaimed legacy running rows
+are marked failed as interrupted. This keeps new local admissions blocked but
+does not reconcile the remote outcome, redispatch the shot, or recover Full
+Auto execution.
 
 Parent and execution `RunClaim`s have 60-second leases renewed by asynchronous
 15-second heartbeats through assistant and ComfyUI I/O; child-operation leases
@@ -1881,11 +1905,11 @@ remain ten minutes. During preparation recovery, the replacement coordinator
 waits for any live child to settle. It resumes that same registered child under
 a new fence if expired or failed, preserving the verified prefix. A stale
 execution owner stops subsequent writes and dispatches, leaving admission
-unresolved. No
-attempt journal or remote reconciliation flow is delivered. Execution-runner
-recovery, a global runner claim shared with manual starts and FIFO runner
-admission, FIFO assistant-slot admission, and the profile editor and
-selection/consent UI remain unfinished.
+unresolved. No attempt journal, remote prompt correlation, remote cancellation
+or reconciliation, or external queue policy is delivered, and execution-attempt
+recovery remains unfinished. The shared runner claim covers local admission
+only. Creation/startup still do not invoke the coordinator for an end-to-end
+run, and the profile editor and selection/consent UI remain unfinished.
 The existing manual workflow remains available for sessions without a
 nonterminal Full Auto owner. This review validates persisted evidence and
 policy; it does not certify semantic correctness or rendered pixels.

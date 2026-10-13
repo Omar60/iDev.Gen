@@ -14,8 +14,11 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import re
 import secrets
+import threading
+import uuid
 from typing import Literal
 
 import db
@@ -24,6 +27,8 @@ from backend import resource_planning
 
 RUN_LEASE = timedelta(seconds=60)
 RUN_HEARTBEAT_INTERVAL = timedelta(seconds=15)
+RUNNER_LEASE = timedelta(seconds=60)
+RUNNER_HEARTBEAT_INTERVAL = timedelta(seconds=15)
 ASSISTANT_SLOT_LEASE = timedelta(minutes=10)
 ASSISTANT_SLOT_HEARTBEAT_INTERVAL = timedelta(seconds=15)
 # Keep aligned with enhance.TIMEOUT; only Full Auto dispatches use this bound.
@@ -32,8 +37,11 @@ ASSISTANT_DISPATCH_TIMEOUT = timedelta(seconds=300)
 ASSISTANT_DISPATCH_TIMESTAMP_MARGIN = timedelta(seconds=1)
 COMFY_PROBE_DELAYS = (5, 15, 30)
 _RUN_CLAIM_KEY = secrets.token_bytes(32)
+_RUNNER_CLAIM_KEY = secrets.token_bytes(32)
 _MANUAL_EDIT_CLAIM_KEY = secrets.token_bytes(32)
 _ASSISTANT_SLOT_CLAIM_KEY = secrets.token_bytes(32)
+_LOCAL_ASSISTANT_DISPATCHES: set["AssistantDispatchFence"] = set()
+_LOCAL_ASSISTANT_DISPATCHES_LOCK = threading.Lock()
 _SUPPORTED_AUTHORIZATION_VERSION = 1
 _SUPPORTED_POLICY_VERSION = "resource-full-auto-v1"
 _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -105,6 +113,20 @@ class RunClaim:
 
 
 @dataclass(frozen=True)
+class RunnerClaim:
+    """Backend-only capability for the shared serial GPU runner."""
+
+    owner_kind: Literal["manual", "full_auto"]
+    session_id: int
+    run_id: str | None
+    owner_nonce: str
+    fencing_token: int
+    lease_started_at: str
+    lease_expires_at: str
+    _signature: str = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
 class AssistantSlotClaim:
     """Backend-only FIFO slot capability for one Full Auto take."""
 
@@ -118,6 +140,12 @@ class AssistantSlotClaim:
     operation_fencing_token: int
     lease_expires_at: str
     _signature: str = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class AssistantDispatchFence:
+    reservation_id: int
+    database_identity: tuple[str | int, ...]
 
 
 class RunClaimHeartbeat:
@@ -149,6 +177,11 @@ class RunClaimHeartbeat:
             raise self.error
         return self.claim
 
+    @property
+    def run_claim(self) -> RunClaim:
+        """Expose the owner kind to shared runner code without probing it."""
+        return self.claim
+
     def renew_now(self) -> RunClaim:
         """Refresh the shared capability at a foreground dispatch boundary."""
         self.check()
@@ -167,6 +200,65 @@ class RunClaimHeartbeat:
     async def _renew(self) -> None:
         while True:
             await asyncio.sleep(RUN_HEARTBEAT_INTERVAL.total_seconds())
+            try:
+                self.renew_now()
+            except FullAutoRunError:
+                return
+
+
+class RunnerClaimHeartbeat:
+    """Renew the global runner lease and optional Full Auto owner during I/O."""
+
+    def __init__(self, claim: RunnerClaim, run_claim: RunClaim | None = None):
+        self.claim = claim
+        self.run_claim = run_claim
+        self.error: FullAutoRunError | None = None
+        self._task: asyncio.Task | None = None
+
+    async def __aenter__(self) -> RunnerClaimHeartbeat:
+        self._task = asyncio.create_task(self._renew())
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> bool:
+        if self._task is not None:
+            if not self._task.done():
+                self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        if self.error is not None:
+            raise self.error
+        return False
+
+    def check(self) -> RunClaim | None:
+        if self.error is not None:
+            raise self.error
+        _require_runner_claim(self.claim, now_text=db.now())
+        if self.run_claim is not None:
+            _require_claim(self.run_claim, now_text=db.now(), reconciliation=False)
+        return self.run_claim
+
+    def renew_now(self) -> RunClaim | None:
+        if self.error is not None:
+            raise self.error
+        try:
+            self.claim = renew_runner_claim(self.claim)
+            if self.run_claim is not None:
+                self.run_claim = renew_run_claim(self.run_claim)
+        except FullAutoRunError as exc:
+            self.error = exc
+            raise
+        except Exception as exc:  # noqa: BLE001 - a failed renewal fences the runner
+            self.error = FullAutoRunError(
+                503, "runner_heartbeat_failed", "The runner lease could not be renewed.",
+            )
+            raise self.error from exc
+        return self.run_claim
+
+    async def _renew(self) -> None:
+        while True:
+            await asyncio.sleep(RUNNER_HEARTBEAT_INTERVAL.total_seconds())
             try:
                 self.renew_now()
             except FullAutoRunError:
@@ -2043,6 +2135,249 @@ def renew_run_claim(
         return _make_claim(_require_run(claim.run_id), claim.requires_reconciliation)
 
 
+def _runner_claim_payload(claim: RunnerClaim) -> bytes:
+    return _canonical_json({
+        "purpose": "global-runner-claim-v1",
+        "owner_kind": claim.owner_kind,
+        "session_id": claim.session_id,
+        "run_id": claim.run_id,
+        "owner_nonce": claim.owner_nonce,
+        "fencing_token": claim.fencing_token,
+        "lease_started_at": claim.lease_started_at,
+        "lease_expires_at": claim.lease_expires_at,
+    }).encode("utf-8")
+
+
+def _make_runner_claim(row: dict) -> RunnerClaim:
+    unsigned = RunnerClaim(
+        owner_kind=row["owner_kind"],
+        session_id=int(row["session_id"]),
+        run_id=row["run_id"],
+        owner_nonce=row["owner_nonce"],
+        fencing_token=int(row["fencing_token"]),
+        lease_started_at=row["lease_started_at"],
+        lease_expires_at=row["lease_expires_at"],
+        _signature="",
+    )
+    signature = hmac.new(_RUNNER_CLAIM_KEY, _runner_claim_payload(unsigned), hashlib.sha256).hexdigest()
+    return RunnerClaim(**{**unsigned.__dict__, "_signature": signature})
+
+
+def _require_runner_claim(claim: RunnerClaim, *, now_text: str) -> dict:
+    if not isinstance(claim, RunnerClaim) or not isinstance(claim._signature, str):
+        raise FullAutoRunError(409, "runner_owner_stale", "The runner owner is stale.")
+    expected = hmac.new(_RUNNER_CLAIM_KEY, _runner_claim_payload(claim), hashlib.sha256).hexdigest()
+    row = db.one("SELECT * FROM global_runner_claim WHERE singleton = 1")
+    if (
+        not hmac.compare_digest(expected, claim._signature)
+        or row is None
+        or row["owner_kind"] != claim.owner_kind
+        or row["session_id"] != claim.session_id
+        or row["run_id"] != claim.run_id
+        or row["owner_nonce"] != claim.owner_nonce
+        or int(row["fencing_token"]) != claim.fencing_token
+        or row["lease_started_at"] != claim.lease_started_at
+        or row["lease_expires_at"] != claim.lease_expires_at
+    ):
+        raise FullAutoRunError(409, "runner_owner_stale", "The runner owner is stale.")
+    if _timestamp(row["lease_expires_at"], field_name="runner lease") <= _timestamp(
+        now_text, field_name="current time",
+    ):
+        raise FullAutoRunError(409, "runner_lease_expired", "The runner lease expired.")
+    return row
+
+
+def _eligible_runner_waiters(now_text: str, *, exclude_run_id: str | None = None) -> list[dict]:
+    if not resource_planning.is_enabled():
+        return []
+    rows = db.q(
+        """SELECT * FROM full_auto_run
+           WHERE state = 'waiting_runner' AND phase = 'execute'
+             AND cancel_intent = 0 AND runner_ready_at IS NOT NULL
+             AND NOT EXISTS (
+                 SELECT 1 FROM full_auto_runner_admission a WHERE a.run_id = full_auto_run.run_id
+             )
+           ORDER BY runner_ready_at, run_id"""
+    )
+    return [
+        row for row in rows
+        if row["run_id"] != exclude_run_id and _current_authority_issue(row, now_text) is None
+    ]
+
+
+def acquire_runner_claim(
+    session_id: int,
+    *,
+    run_claim: RunClaim | None = None,
+    now_text: str | None = None,
+) -> RunnerClaim | None:
+    """Reserve the single local runner or return None for an eligible Full Auto wait."""
+    with db.transaction():
+        def validate(timestamp: str) -> tuple[dict | None, dict, bool]:
+            run = None
+            if run_claim is not None:
+                run = require_session_mutation_allowed(
+                    session_id, claim=run_claim, allowed_phases=("execute",),
+                )
+                if run is None or run["phase"] != "execute":
+                    raise FullAutoRunError(
+                        409, "run_owner_stale", "The Full Auto execution owner is stale.",
+                    )
+                run = _require_claim(run_claim, now_text=timestamp, reconciliation=False)
+                if db.one(
+                    "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", run_claim.run_id,
+                ) is not None:
+                    raise FullAutoRunError(
+                        409, "full_auto_runner_already_admitted",
+                        "The Full Auto runner was already admitted; its execution outcome requires reconciliation.",
+                    )
+                authority_issue = _current_authority_issue(run, timestamp)
+                if authority_issue is not None:
+                    raise _authority_error(authority_issue)
+            else:
+                require_session_mutation_allowed(session_id)
+                waiter = next(iter(_eligible_runner_waiters(timestamp)), None)
+                if waiter is not None:
+                    raise FullAutoRunError(
+                        409, "runner_busy", "A Full Auto run is waiting for the runner.",
+                        current_run=_view(waiter),
+                    )
+
+            slot = db.one("SELECT * FROM global_runner_claim WHERE singleton = 1")
+            if slot is None:
+                raise FullAutoRunError(
+                    500, "runner_claim_missing", "The shared runner claim is unavailable.",
+                )
+            if slot["owner_kind"] is not None:
+                expired = _timestamp(slot["lease_expires_at"], field_name="runner lease") <= _timestamp(
+                    timestamp, field_name="current time",
+                )
+                if not expired:
+                    return run, slot, False
+
+            # A pre-lease process may have left a running shot before the
+            # durable singleton existed. A free or expired claim cannot prove
+            # that such remote work stopped, so every running shot fences all
+            # new admissions until reconciliation settles it.
+            unresolved = db.one(
+                "SELECT id FROM shot WHERE status = 'running' LIMIT 1",
+            )
+            if unresolved is not None:
+                return run, slot, False
+
+            if run_claim is not None:
+                waiters = _eligible_runner_waiters(timestamp, exclude_run_id=run_claim.run_id)
+                if run["state"] != "waiting_runner" and waiters:
+                    return run, slot, False
+                if run["state"] == "waiting_runner":
+                    current_key = (run["runner_ready_at"] or "", run["run_id"])
+                    if any((item["runner_ready_at"], item["run_id"]) < current_key for item in waiters):
+                        return run, slot, False
+            return run, slot, True
+
+        timestamp = _now_text(now_text)
+        run, slot, eligible = validate(timestamp)
+        if not eligible:
+            if run_claim is not None:
+                return None
+            reason = "The previous runner attempt is unresolved."
+            if slot["owner_kind"] is not None and _timestamp(
+                slot["lease_expires_at"], field_name="runner lease",
+            ) > _timestamp(timestamp, field_name="current time"):
+                reason = "The runner is already executing another session."
+            raise FullAutoRunError(409, "runner_busy", reason)
+
+        # Full authorization, FIFO, and stale-owner checks can involve many
+        # reads. Validate them again against a fresh clock immediately before
+        # writing the singleton owner row so a lease cannot cross its deadline
+        # during admission and still receive dispatch authority.
+        timestamp = _now_text(now_text)
+        run, slot, eligible = validate(timestamp)
+        if not eligible:
+            if run_claim is not None:
+                return None
+            reason = "The previous runner attempt is unresolved."
+            if slot["owner_kind"] is not None and _timestamp(
+                slot["lease_expires_at"], field_name="runner lease",
+            ) > _timestamp(timestamp, field_name="current time"):
+                reason = "The runner is already executing another session."
+            raise FullAutoRunError(409, "runner_busy", reason)
+
+        owner_kind = "full_auto" if run_claim is not None else "manual"
+        owner_nonce = uuid.uuid4().hex
+        started_at = timestamp
+        expires_at = (_timestamp(timestamp, field_name="current time") + RUNNER_LEASE).isoformat(timespec="seconds")
+        fencing_token = int(slot["fencing_token"]) + 1
+        changed = db.conn().execute(
+            """UPDATE global_runner_claim
+               SET owner_kind = ?, session_id = ?, run_id = ?, owner_nonce = ?,
+                   fencing_token = ?, lease_started_at = ?, lease_expires_at = ?
+               WHERE singleton = 1 AND fencing_token = ? AND owner_nonce IS ?""",
+            (owner_kind, session_id, run_claim.run_id if run_claim is not None else None,
+             owner_nonce, fencing_token, started_at, expires_at,
+             slot["fencing_token"], slot["owner_nonce"]),
+        ).rowcount
+        if changed != 1:
+            raise FullAutoRunError(409, "runner_owner_stale", "The shared runner changed during admission.")
+        return _make_runner_claim(db.one(
+            "SELECT * FROM global_runner_claim WHERE singleton = 1",
+        ))
+
+
+def renew_runner_claim(
+    claim: RunnerClaim,
+    *,
+    now_text: str | None = None,
+) -> RunnerClaim:
+    with db.transaction():
+        timestamp = _now_text(now_text)
+        _require_runner_claim(claim, now_text=timestamp)
+        timestamp = _now_text(now_text)
+        _require_runner_claim(claim, now_text=timestamp)
+        deadline = (
+            _timestamp(timestamp, field_name="current time") + RUNNER_LEASE
+        ).isoformat(timespec="seconds")
+        changed = db.conn().execute(
+            """UPDATE global_runner_claim
+               SET lease_expires_at = ?, lease_started_at = ?
+               WHERE singleton = 1 AND owner_nonce = ? AND fencing_token = ?
+                 AND lease_expires_at = ? AND lease_started_at = ?""",
+            (deadline, timestamp, claim.owner_nonce, claim.fencing_token,
+             claim.lease_expires_at, claim.lease_started_at),
+        ).rowcount
+        if changed != 1:
+            raise FullAutoRunError(409, "runner_owner_stale", "The runner owner is stale.")
+        return _make_runner_claim(db.one("SELECT * FROM global_runner_claim WHERE singleton = 1"))
+
+
+def release_runner_claim(claim: RunnerClaim, *, now_text: str | None = None) -> bool:
+    """Release only a live owner whose session has no unresolved dispatched shot."""
+    with db.transaction():
+        timestamp = _now_text(now_text)
+        _require_runner_claim(claim, now_text=timestamp)
+        unresolved = db.one("SELECT id FROM shot WHERE status = 'running' LIMIT 1")
+        # Check again at the actual release boundary. The lease may expire
+        # while the unresolved-work query runs, and expired ownership must not
+        # be mistaken for proof that the remote queue settled.
+        timestamp = _now_text(now_text)
+        _require_runner_claim(claim, now_text=timestamp)
+        if unresolved is not None or db.one(
+            "SELECT id FROM shot WHERE status = 'running' LIMIT 1",
+        ) is not None:
+            return False
+        changed = db.conn().execute(
+            """UPDATE global_runner_claim
+               SET owner_kind = NULL, session_id = NULL, run_id = NULL, owner_nonce = NULL,
+                   lease_started_at = NULL, lease_expires_at = NULL
+               WHERE singleton = 1 AND owner_nonce = ? AND fencing_token = ?
+                 AND lease_started_at = ? AND lease_expires_at = ?""",
+            (claim.owner_nonce, claim.fencing_token, claim.lease_started_at, claim.lease_expires_at),
+        ).rowcount
+        if changed != 1:
+            raise FullAutoRunError(409, "runner_owner_stale", "The runner owner is stale.")
+        return True
+
+
 def require_prepare_claim(
     claim: RunClaim,
     *,
@@ -2223,6 +2558,43 @@ def _assistant_slot_row(claim: AssistantSlotClaim) -> dict | None:
     )
 
 
+def _assistant_database_identity() -> tuple[str | int, ...]:
+    main = next(
+        (row for row in db.conn().execute("PRAGMA database_list") if row[1] == "main"),
+        None,
+    )
+    if main is None:
+        raise RuntimeError("The Full Auto database identity is unavailable.")
+    filename = main[2]
+    if not filename:
+        return ("memory", id(db.conn()))
+    path = os.path.normcase(os.path.realpath(filename))
+    stat = os.stat(path)
+    return ("file", path, int(stat.st_dev), int(stat.st_ino))
+
+
+def _register_local_assistant_dispatch(reservation_id: int) -> AssistantDispatchFence:
+    fence = AssistantDispatchFence(reservation_id, _assistant_database_identity())
+    with _LOCAL_ASSISTANT_DISPATCHES_LOCK:
+        _LOCAL_ASSISTANT_DISPATCHES.add(fence)
+    return fence
+
+
+def finish_local_assistant_dispatch(fence: object) -> None:
+    if not isinstance(fence, AssistantDispatchFence):
+        return
+    with _LOCAL_ASSISTANT_DISPATCHES_LOCK:
+        _LOCAL_ASSISTANT_DISPATCHES.discard(fence)
+
+
+def _local_assistant_dispatch_live(reservation_id: object) -> bool:
+    if type(reservation_id) is not int:
+        return False
+    fence = AssistantDispatchFence(reservation_id, _assistant_database_identity())
+    with _LOCAL_ASSISTANT_DISPATCHES_LOCK:
+        return fence in _LOCAL_ASSISTANT_DISPATCHES
+
+
 def _release_or_quarantine_slot(row: dict, *, now_text: str) -> None:
     """Release idle ownership, retaining an unsettled physical request fence."""
     reservation_id = row.get("inflight_reservation_id")
@@ -2233,11 +2605,12 @@ def _release_or_quarantine_slot(row: dict, *, now_text: str) -> None:
             now_text, row["run_id"], row["take_id"],
         )
         return
+    locally_live = _local_assistant_dispatch_live(int(reservation_id))
     reservation = db.one(
         "SELECT dispatched_at, settled_at FROM full_auto_assistant_reservation WHERE reservation_id = ?",
         int(reservation_id),
     )
-    if reservation is not None and reservation["settled_at"] is not None:
+    if reservation is not None and reservation["settled_at"] is not None and not locally_live:
         db.run(
             "UPDATE full_auto_assistant_slot SET state = 'released', lease_expires_at = NULL, "
             "inflight_reservation_id = NULL, updated_at = ? WHERE run_id = ? AND take_id = ?",
@@ -2269,9 +2642,12 @@ def _recover_assistant_slot(now_text: str) -> None:
         return
     now = _timestamp(now_text, field_name="current time")
     if row["state"] == "quarantined":
-        if row["lease_expires_at"] is None or _timestamp(
+        deadline_expired = row["lease_expires_at"] is None or _timestamp(
             row["lease_expires_at"], field_name="assistant lease",
-        ) <= now:
+        ) <= now
+        if deadline_expired and not _local_assistant_dispatch_live(
+            row["inflight_reservation_id"],
+        ):
             db.run(
                 "UPDATE full_auto_assistant_slot SET state = 'released', lease_expires_at = NULL, "
                 "inflight_reservation_id = NULL, updated_at = ? "
@@ -2311,6 +2687,7 @@ def _recover_assistant_slot(now_text: str) -> None:
             refreshed is not None and refreshed["state"] == "quarantined"
             and refreshed["lease_expires_at"] is not None
             and _timestamp(refreshed["lease_expires_at"], field_name="assistant lease") <= now
+            and not _local_assistant_dispatch_live(refreshed["inflight_reservation_id"])
         ):
             db.run(
                 "UPDATE full_auto_assistant_slot SET state = 'released', lease_expires_at = NULL, "
@@ -2590,98 +2967,111 @@ def reserve_assistant_dispatch(
     provider_identity: object,
     *,
     now_text: str | None = None,
-) -> int:
+) -> AssistantDispatchFence:
     """Durably consume one call immediately before the physical POST."""
-    with db.transaction():
-        timestamp = _now_text(None)
-        _run, _operation, grant, authorization, row, _checked_at = _require_live_assistant_slot(
-            slot_claim, run_claim, operation_claim, provider_identity, now_text=timestamp,
-        )
-        if row["inflight_reservation_id"] is not None:
-            raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
-        summary, limits = authorization["summary"], authorization["limits"]
-        sequence = int(grant["sequence"])
-        per_take = int(db.one(
-            """SELECT COUNT(*) AS count FROM full_auto_assistant_reservation
-               WHERE run_id = ? AND authorization_sequence = ? AND take_id = ?""",
-            run_claim.run_id, sequence, slot_claim.take_id,
-        )["count"])
-        grant_total = int(db.one(
-            """SELECT COUNT(*) AS count FROM full_auto_assistant_reservation
-               WHERE run_id = ? AND authorization_sequence = ?""",
-            run_claim.run_id, sequence,
-        )["count"])
-        cumulative_reserved = int(db.one(
-            "SELECT COUNT(*) AS count FROM full_auto_assistant_reservation WHERE run_id = ?",
-            run_claim.run_id,
-        )["count"])
-        grant_rows = [db.one(
-            "SELECT authorization_json FROM full_auto_run_receipt WHERE run_id = ?",
-            run_claim.run_id,
-        )]
-        grant_rows.extend(db.q(
-            "SELECT authorization_json FROM full_auto_run_authorization WHERE run_id = ? ORDER BY authorization_sequence",
-            run_claim.run_id,
-        ))
-        cumulative_limit = 0
-        for item in grant_rows:
-            if item is None:
-                continue
-            try:
-                raw = json.loads(item["authorization_json"])
-                _grant_summary, grant_limits = _validate_status_authorization(raw)
-            except (TypeError, KeyError, json.JSONDecodeError, FullAutoRunError) as exc:
-                raise FullAutoRunError(
-                    409, "full_auto_authorization_invalid", "The Full Auto authorization chain is invalid.",
-                ) from exc
-            cumulative_limit += int(grant_limits["assistant_calls_total"])
-        if (
-            per_take >= int(limits["assistant_calls_per_take"])
-            or grant_total >= int(limits["assistant_calls_total"])
-            or cumulative_reserved >= cumulative_limit
-        ):
-            raise FullAutoRunError(409, "budget_exhausted", "The authorized assistant call allowance is exhausted.")
-        request_number = per_take + 1
-        timestamp = _now_text(None)
-        _run, _operation, _grant, _authorization, row, timestamp = _require_live_assistant_slot(
-            slot_claim, run_claim, operation_claim, provider_identity, now_text=timestamp,
-        )
-        if row["inflight_reservation_id"] is not None:
-            raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
-        cursor = db.conn().execute(
-            """INSERT INTO full_auto_assistant_reservation
-               (run_id, authorization_sequence, session_id, take_id, operation_id,
-                slot_generation, request_number, dispatched_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (run_claim.run_id, sequence, run_claim.session_id, slot_claim.take_id,
-             operation_claim.operation_id, slot_claim.generation, request_number, timestamp),
-        )
-        reservation_id = int(cursor.lastrowid)
-        timestamp = _now_text(None)
-        _run, _operation, _grant, _authorization, row, timestamp = _require_live_assistant_slot(
-            slot_claim, run_claim, operation_claim, provider_identity, now_text=timestamp,
-        )
-        if row["inflight_reservation_id"] is not None:
-            raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
-        updated = db.conn().execute(
-            """UPDATE full_auto_assistant_slot SET inflight_reservation_id = ?, updated_at = ?
-               WHERE run_id = ? AND take_id = ? AND generation = ? AND state = 'active'
-                 AND inflight_reservation_id IS NULL""",
-            (reservation_id, timestamp, slot_claim.run_id, slot_claim.take_id, slot_claim.generation),
-        ).rowcount
-        if updated != 1:
-            raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
-        return reservation_id
+    fence = None
+    try:
+        with db.transaction():
+            timestamp = _now_text(None)
+            _run, _operation, grant, authorization, row, _checked_at = _require_live_assistant_slot(
+                slot_claim, run_claim, operation_claim, provider_identity, now_text=timestamp,
+            )
+            if row["inflight_reservation_id"] is not None:
+                raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
+            limits = authorization["limits"]
+            sequence = int(grant["sequence"])
+            per_take = int(db.one(
+                """SELECT COUNT(*) AS count FROM full_auto_assistant_reservation
+                   WHERE run_id = ? AND authorization_sequence = ? AND take_id = ?""",
+                run_claim.run_id, sequence, slot_claim.take_id,
+            )["count"])
+            grant_total = int(db.one(
+                """SELECT COUNT(*) AS count FROM full_auto_assistant_reservation
+                   WHERE run_id = ? AND authorization_sequence = ?""",
+                run_claim.run_id, sequence,
+            )["count"])
+            cumulative_reserved = int(db.one(
+                "SELECT COUNT(*) AS count FROM full_auto_assistant_reservation WHERE run_id = ?",
+                run_claim.run_id,
+            )["count"])
+            grant_rows = [db.one(
+                "SELECT authorization_json FROM full_auto_run_receipt WHERE run_id = ?",
+                run_claim.run_id,
+            )]
+            grant_rows.extend(db.q(
+                "SELECT authorization_json FROM full_auto_run_authorization WHERE run_id = ? ORDER BY authorization_sequence",
+                run_claim.run_id,
+            ))
+            cumulative_limit = 0
+            for item in grant_rows:
+                if item is None:
+                    continue
+                try:
+                    raw = json.loads(item["authorization_json"])
+                    _grant_summary, grant_limits = _validate_status_authorization(raw)
+                except (TypeError, KeyError, json.JSONDecodeError, FullAutoRunError) as exc:
+                    raise FullAutoRunError(
+                        409, "full_auto_authorization_invalid", "The Full Auto authorization chain is invalid.",
+                    ) from exc
+                cumulative_limit += int(grant_limits["assistant_calls_total"])
+            if (
+                per_take >= int(limits["assistant_calls_per_take"])
+                or grant_total >= int(limits["assistant_calls_total"])
+                or cumulative_reserved >= cumulative_limit
+            ):
+                raise FullAutoRunError(409, "budget_exhausted", "The authorized assistant call allowance is exhausted.")
+            request_number = per_take + 1
+            timestamp = _now_text(None)
+            _run, _operation, _grant, _authorization, row, timestamp = _require_live_assistant_slot(
+                slot_claim, run_claim, operation_claim, provider_identity, now_text=timestamp,
+            )
+            if row["inflight_reservation_id"] is not None:
+                raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
+            cursor = db.conn().execute(
+                """INSERT INTO full_auto_assistant_reservation
+                   (run_id, authorization_sequence, session_id, take_id, operation_id,
+                    slot_generation, request_number, dispatched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run_claim.run_id, sequence, run_claim.session_id, slot_claim.take_id,
+                 operation_claim.operation_id, slot_claim.generation, request_number, timestamp),
+            )
+            reservation_id = int(cursor.lastrowid)
+            timestamp = _now_text(None)
+            _run, _operation, _grant, _authorization, row, timestamp = _require_live_assistant_slot(
+                slot_claim, run_claim, operation_claim, provider_identity, now_text=timestamp,
+            )
+            if row["inflight_reservation_id"] is not None:
+                raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
+            updated = db.conn().execute(
+                """UPDATE full_auto_assistant_slot SET inflight_reservation_id = ?, updated_at = ?
+                   WHERE run_id = ? AND take_id = ? AND generation = ? AND state = 'active'
+                     AND inflight_reservation_id IS NULL""",
+                (reservation_id, timestamp, slot_claim.run_id, slot_claim.take_id, slot_claim.generation),
+            ).rowcount
+            if updated != 1:
+                raise FullAutoRunError(409, "assistant_slot_busy", "The Full Auto assistant slot is busy.")
+            fence = _register_local_assistant_dispatch(reservation_id)
+    except BaseException:
+        if fence is not None:
+            finish_local_assistant_dispatch(fence)
+        raise
+    return fence
 
 
 def settle_assistant_dispatch(
     slot_claim: AssistantSlotClaim,
-    reservation_id: int,
+    reservation_id: int | AssistantDispatchFence,
     metadata: object,
     *,
     now_text: str | None = None,
 ) -> None:
     """Record only safe transport facts, including an observed failed response."""
+    if isinstance(reservation_id, AssistantDispatchFence):
+        if reservation_id.database_identity != _assistant_database_identity():
+            return
+        reservation_id = reservation_id.reservation_id
+    if type(reservation_id) is not int:
+        raise FullAutoRunError(500, "assistant_reservation_invalid", "The assistant reservation is invalid.")
     safe = _safe_assistant_response_metadata(metadata)
     timestamp = _now_text(now_text)
     encoded = _canonical_json(safe)
@@ -3615,15 +4005,39 @@ def advance_run(
                SET state = ?, phase = ?, revision = revision + 1,
                    fencing_token = fencing_token + ?, lease_expires_at = ?,
                    lease_started_at = ?,
+                   runner_ready_at = CASE WHEN ? = 'waiting_runner' THEN ? ELSE NULL END,
                    blocker_code = ?, assistant_retry_after_at = ?,
                    comfy_probe_scope = CASE WHEN ? = 'comfy_unavailable' THEN comfy_probe_scope ELSE NULL END,
                    comfy_probe_count = CASE WHEN ? = 'comfy_unavailable' THEN comfy_probe_count ELSE 0 END,
                    comfy_probe_due_at = CASE WHEN ? = 'comfy_unavailable' THEN comfy_probe_due_at ELSE NULL END,
                    evidence_json = ?, updated_at = ?
                WHERE run_id = ? AND epoch = ? AND fencing_token = ?""",
-            to_state, next_phase, fence_delta, lease, lease_started, blocker_code,
+            to_state, next_phase, fence_delta, lease, lease_started,
+            to_state, timestamp, blocker_code,
             retry_after_at, blocker_code, blocker_code, blocker_code,
             _canonical_json({"kind": "state_transition", "from": source, "to": to_state}),
+            timestamp, claim.run_id, claim.epoch, claim.fencing_token,
+        )
+        return _view(_require_run(claim.run_id))
+
+
+def release_waiting_runner_claim(
+    claim: RunClaim,
+    *,
+    now_text: str | None = None,
+) -> dict:
+    """Drop a scheduler claim while preserving a waiting run's FIFO position."""
+    with db.transaction():
+        timestamp = _now_text(now_text)
+        row = _require_claim(claim, now_text=timestamp)
+        if row["state"] != "waiting_runner" or row["phase"] != "execute":
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto runner waiter is stale.")
+        db.run(
+            """UPDATE full_auto_run
+               SET revision = revision + 1, fencing_token = fencing_token + 1,
+                   lease_expires_at = NULL, lease_started_at = NULL, updated_at = ?
+               WHERE run_id = ? AND epoch = ? AND fencing_token = ?
+                 AND state = 'waiting_runner'""",
             timestamp, claim.run_id, claim.epoch, claim.fencing_token,
         )
         return _view(_require_run(claim.run_id))
@@ -4228,10 +4642,12 @@ def resume_run(
                        cancel_intent = 0, cancel_intent_at = NULL, blocker_code = NULL,
                        assistant_retry_after_at = NULL, comfy_probe_scope = NULL,
                        comfy_probe_count = 0, comfy_probe_due_at = NULL, resume_phase = NULL,
+                   runner_ready_at = CASE WHEN ? = 'waiting_runner' THEN ? ELSE NULL END,
                        evidence_json = ?, updated_at = ?
                    WHERE run_id = ? AND revision = ? AND fencing_token = ?""",
                 next_state, phase, 1 if is_new_epoch else 0, deadline,
                 None if defer_claim else timestamp, current_plan_revision,
+                next_state, timestamp,
                 _canonical_json({"kind": "resume", "new_epoch": is_new_epoch}),
                 timestamp, run_id, row["revision"], row["fencing_token"],
             )

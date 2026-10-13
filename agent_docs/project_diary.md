@@ -1,5 +1,28 @@
 # Project Diary
 
+## Full Auto Task 5.1 Runner and Assistant Admission
+
+Keep shared runner admission separate from immutable per-run admission receipts.
+Waiting must not consume a receipt, and lease expiry cannot prove remote GPU
+settlement. Release the heartbeat's latest claim and preserve owner-bound running
+rows through startup rather than erase uncertainty before journaling exists.
+
+Wall-clock quarantine expiry does not prove a live local assistant POST ended:
+an event-loop pause can delay timeout cancellation beyond that deadline. The
+independent probe reproduced overlap in current code and pristine HEAD, and the
+user explicitly authorized this prerequisite within Task 5.1. Bind a local
+completion fence to the physical reservation and database identity, keep it
+through asynchronous cancellation cleanup, and preserve durable restart quarantine.
+Never replace actual no-overlap or reservation assertions with a larger timeout.
+
+The final full Python gate passed after scoped repairs. Prior failing gates and
+unconfirmed multiloop harness causes remain evidence, not repaired claims.
+Separate test-fixture setup cost and plan validation from assistant/GPU work when
+investigating a large-plan test; percentages alone do not measure individual tests.
+The bounded profile measured four real 40-target preparation/recovery cases at
+24-38 seconds each, versus 1.62 seconds for synthetic 500-target coordination;
+the 500-target first-child checkpoint case took only 0.61 seconds including fixtures.
+Measure per-test durations before attributing a full-suite progress pause.
 ## Full Auto Task 4.10 Deletion Boundaries
 
 Guard supported deletions in the same transaction as dependency lookup, and
