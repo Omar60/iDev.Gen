@@ -3726,6 +3726,9 @@ def begin_execution_attempt(
     seed: int,
     filename_prefix: str,
     graph_digest: str,
+    client_id: str,
+    capability_evidence: dict,
+    client_prompt_id: str | None,
     source_workflow_binding: dict,
     source_effective_inputs: dict,
     now_text: str | None = None,
@@ -3737,8 +3740,44 @@ def begin_execution_attempt(
         or type(seed) is not int or seed <= 0
         or not isinstance(filename_prefix, str) or not filename_prefix
         or not isinstance(graph_digest, str) or not _SHA256.fullmatch(graph_digest)
+        or not isinstance(client_id, str) or not client_id or len(client_id) > 128
     ):
         raise FullAutoRunError(422, "execution_attempt_invalid", "The execution attempt is invalid.")
+    expected_capability_keys = {
+        "schema", "endpoint_digest", "server_identity_digest", "server_version",
+        "client_prompt_id", "advertised_client_prompt_id",
+    }
+    if (
+        not isinstance(capability_evidence, dict)
+        or set(capability_evidence) != expected_capability_keys
+        or capability_evidence.get("schema") != "comfy-execution-capability-v1"
+        or not isinstance(capability_evidence.get("endpoint_digest"), str)
+        or not _SHA256.fullmatch(capability_evidence["endpoint_digest"])
+        or not isinstance(capability_evidence.get("server_identity_digest"), str)
+        or not _SHA256.fullmatch(capability_evidence["server_identity_digest"])
+        or (capability_evidence.get("server_version") is not None
+            and (not isinstance(capability_evidence["server_version"], str)
+                 or not capability_evidence["server_version"].strip()))
+        or type(capability_evidence.get("client_prompt_id")) is not bool
+        or (capability_evidence.get("advertised_client_prompt_id") is not None
+            and type(capability_evidence["advertised_client_prompt_id"]) is not bool)
+        or (capability_evidence["client_prompt_id"]
+            and (capability_evidence["advertised_client_prompt_id"] is not True
+                 or capability_evidence["server_version"] is None))
+    ):
+        raise FullAutoRunError(422, "execution_attempt_invalid", "The capability evidence is invalid.")
+    if capability_evidence["client_prompt_id"]:
+        if (
+            not isinstance(client_prompt_id, str)
+            or not re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                client_prompt_id,
+            )
+            or str(uuid.UUID(client_prompt_id)) != client_prompt_id
+        ):
+            raise FullAutoRunError(422, "execution_attempt_invalid", "The client prompt ID is invalid.")
+    elif client_prompt_id is not None:
+        raise FullAutoRunError(422, "execution_attempt_invalid", "An unverified client prompt ID is not allowed.")
 
     with db.transaction():
         timestamp = _now_text(now_text)
@@ -3810,13 +3849,130 @@ def begin_execution_attempt(
             """INSERT INTO full_auto_execution_attempt (
                    attempt_id, run_id, session_id, shot_id, attempt_number,
                    run_epoch, run_fencing_token, runner_fencing_token, seed,
-                   filename_prefix, graph_digest, dispatch_state, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'intent', ?, ?)""",
+                   filename_prefix, graph_digest, client_prompt_id, client_id,
+                   capability_evidence_json, dispatch_state, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'intent', ?, ?)""",
             attempt_id, claim.run_id, claim.session_id, shot_id, attempt_number,
             claim.epoch, claim.fencing_token, runner_claim.fencing_token, seed,
-            filename_prefix, graph_digest, timestamp, timestamp,
+            filename_prefix, graph_digest, client_prompt_id, client_id,
+            _canonical_json(capability_evidence), timestamp, timestamp,
         )
         return db.one("SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id)
+
+
+def validate_execution_attempt_dispatch(
+    claim: RunClaim,
+    runner_claim: RunnerClaim,
+    *,
+    attempt_id: str,
+    capability_evidence: dict,
+    source_workflow_binding: dict,
+    source_effective_inputs: dict,
+) -> dict:
+    """Recheck the authorized owner and frozen inputs after an identity GET, just before POST."""
+    with db.transaction():
+        timestamp = _now_text(None)
+        runner_row = _require_runner_claim(runner_claim, now_text=timestamp)
+        if (
+            runner_claim.owner_kind != "full_auto"
+            or runner_claim.session_id != claim.session_id
+            or runner_claim.run_id != claim.run_id
+            or runner_row["run_id"] != claim.run_id
+        ):
+            raise FullAutoRunError(409, "runner_owner_stale", "The Full Auto runner owner is stale.")
+        run = require_session_mutation_allowed(
+            claim.session_id, claim=claim, allowed_phases=("execute",),
+        )
+        if run is None or run["run_id"] != claim.run_id:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        if not resource_planning.is_enabled():
+            raise FullAutoRunError(
+                503, "resource_planning_disabled", "Resource planning is disabled by configuration.",
+            )
+        _validate_execution_dependencies(run)
+        _validate_captured_workflow_source(claim.session_id, source_workflow_binding)
+        _validate_captured_effective_inputs(run, source_effective_inputs)
+
+        attempt = db.one(
+            "SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id,
+        )
+        if (
+            attempt is None
+            or not _attempt_matches_claim(attempt, claim, runner_claim)
+            or attempt["dispatch_state"] != "intent"
+            or attempt["completion_state"] != "pending"
+        ):
+            raise FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The execution intent changed before the remote request was sent.",
+            )
+        try:
+            frozen = json.loads(attempt["capability_evidence_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise FullAutoRunError(
+                409, "execution_outcome_unknown", "The saved ComfyUI identity evidence is unreadable.",
+            ) from exc
+        if capability_evidence != frozen:
+            raise FullAutoRunError(
+                409, "execution_capability_changed",
+                "The ComfyUI identity changed before the generation request was sent.",
+            )
+        shot = db.one(
+            "SELECT session_id, status FROM shot WHERE id = ?", attempt["shot_id"],
+        )
+        if (
+            shot is None or int(shot["session_id"]) != claim.session_id
+            or shot["status"] != "running"
+        ):
+            raise FullAutoRunError(
+                409, "run_owner_stale", "The Full Auto shot is no longer ready to dispatch.",
+            )
+        # The dependency/file checks above can be slow. Re-fence the physical
+        # dispatch boundary just as begin_execution_attempt does before saving
+        # its intent; this transaction follows the identity GET and no remote
+        # call may intervene between its commit and POST.
+        timestamp = _now_text(None)
+        runner_row = _require_runner_claim(runner_claim, now_text=timestamp)
+        if (
+            runner_claim.owner_kind != "full_auto"
+            or runner_claim.session_id != claim.session_id
+            or runner_claim.run_id != claim.run_id
+            or runner_row["run_id"] != claim.run_id
+        ):
+            raise FullAutoRunError(409, "runner_owner_stale", "The Full Auto runner owner is stale.")
+        run = require_session_mutation_allowed(
+            claim.session_id, claim=claim, allowed_phases=("execute",),
+        )
+        if run is None or run["run_id"] != claim.run_id:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        if not resource_planning.is_enabled():
+            raise FullAutoRunError(
+                503, "resource_planning_disabled", "Resource planning is disabled by configuration.",
+            )
+        attempt = db.one(
+            "SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id,
+        )
+        if (
+            attempt is None or not _attempt_matches_claim(attempt, claim, runner_claim)
+            or attempt["dispatch_state"] != "intent"
+            or attempt["completion_state"] != "pending"
+            or attempt["capability_evidence_json"] != _canonical_json(capability_evidence)
+        ):
+            raise FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The execution intent changed before the remote request was sent.",
+            )
+        shot = db.one(
+            "SELECT session_id, status FROM shot WHERE id = ?", attempt["shot_id"],
+        )
+        if (
+            shot is None or int(shot["session_id"]) != claim.session_id
+            or shot["status"] != "running"
+        ):
+            raise FullAutoRunError(
+                409, "run_owner_stale", "The Full Auto shot is no longer ready to dispatch.",
+            )
+        return attempt
 
 
 def _validate_captured_workflow_source(session_id: int, captured: dict) -> None:
@@ -3904,6 +4060,15 @@ def record_execution_dispatch(
         )
         if attempt is None or not _attempt_matches_claim(attempt, claim, runner_claim):
             raise FullAutoRunError(409, "run_owner_stale", "The execution attempt receipt is stale.")
+        if (
+            state == "acknowledged"
+            and attempt["client_prompt_id"] is not None
+            and attempt["client_prompt_id"] != prompt_id
+        ):
+            raise FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "ComfyUI acknowledged a different prompt ID than the verified client ID.",
+            )
         current = attempt["dispatch_state"]
         if state == "acknowledged":
             if current == "acknowledged":
@@ -3953,6 +4118,7 @@ def record_execution_output(
     *,
     image: dict,
     expected_filename: str,
+    correlation_evidence: dict | None = None,
 ) -> dict:
     """Save remote output evidence before the normal output-file move begins."""
     evidence = {
@@ -3960,6 +4126,8 @@ def record_execution_output(
         "subfolder": image.get("subfolder") or "",
         "type": image.get("type"),
     }
+    if correlation_evidence is not None:
+        evidence["correlation"] = correlation_evidence
     with db.transaction():
         timestamp = _now_text(None)
         runner_row = _require_runner_claim(runner_claim, now_text=timestamp)
@@ -3985,7 +4153,22 @@ def record_execution_output(
             if attempt["output_evidence_json"] != encoded or attempt["expected_filename"] != expected_filename:
                 raise FullAutoRunError(409, "run_state_invalid", "The output evidence conflicts with the saved attempt.")
             return attempt
-        if attempt["dispatch_state"] != "acknowledged" or attempt["completion_state"] != "pending":
+        output_only_recovery = (
+            attempt["dispatch_state"] == "outcome_unknown"
+            and isinstance(correlation_evidence, dict)
+            and correlation_evidence == {
+                "source": "output_png",
+                "attempt_id": attempt["attempt_id"],
+                "client_id": attempt["client_id"],
+                "graph_digest": attempt["graph_digest"],
+                "filename_prefix": attempt["filename_prefix"],
+                "client_prompt_id": attempt["client_prompt_id"],
+            }
+        )
+        if (
+            attempt["completion_state"] != "pending"
+            or (attempt["dispatch_state"] != "acknowledged" and not output_only_recovery)
+        ):
             raise FullAutoRunError(409, "run_state_invalid", "The output cannot advance this attempt.")
         db.run(
             """UPDATE full_auto_execution_attempt
@@ -3993,6 +4176,14 @@ def record_execution_output(
                    expected_filename=?, updated_at=? WHERE attempt_id=?""",
             encoded, expected_filename, timestamp, attempt_id,
         )
+        if output_only_recovery:
+            # The remote prompt ID remains unknown, but a generated image must
+            # not be mistaken for an imported photo by the existing clone path.
+            db.run(
+                "UPDATE shot SET prompt_id=? WHERE id=? AND session_id=?",
+                f"idevgen-recovered-output:{attempt_id}",
+                attempt["shot_id"], attempt["session_id"],
+            )
         return db.one("SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id)
 
 

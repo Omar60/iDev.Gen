@@ -55,7 +55,7 @@ def test_attempt_intent_is_committed_before_post_and_ack_before_history(
     original_history = fake.history
     observed = []
 
-    async def observe_queue(graph, client_id):
+    async def observe_queue(graph, client_id, **kwargs):
         shot = _disk_one(
             "SELECT id, status, seed, prompt_id FROM shot "
             "WHERE session_id = ? AND status = 'running'",
@@ -78,7 +78,7 @@ def test_attempt_intent_is_committed_before_post_and_ack_before_history(
         )
         assert attempt["graph_digest"] == resource_store.canonical_digest(graph)
         observed.append((attempt["shot_id"], attempt["attempt_id"]))
-        return await original_queue(graph, client_id)
+        return await original_queue(graph, client_id, **kwargs)
 
     async def observe_history(prompt_id):
         attempt = _disk_one(
@@ -525,3 +525,46 @@ def test_moved_file_survives_completion_write_crash_without_marking_or_queueing_
         "dispatch_state": "acknowledged",
         "completion_state": "output_available",
     }]
+
+
+def test_execution_capability_migration_is_additive_and_rebuilds_identity_trigger(tmp_path):
+    connection = sqlite3.connect(tmp_path / "legacy.sqlite")
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.executescript(db.SCHEMA)
+        connection.execute(
+            "DROP TRIGGER full_auto_execution_attempt_identity_immutable",
+        )
+        for column in (
+            "client_prompt_id", "client_id", "capability_evidence_json",
+        ):
+            connection.execute(
+                f"ALTER TABLE full_auto_execution_attempt DROP COLUMN {column}",
+            )
+        connection.execute(
+            """CREATE TRIGGER full_auto_execution_attempt_identity_immutable
+               BEFORE UPDATE OF attempt_id ON full_auto_execution_attempt
+               BEGIN
+                   SELECT RAISE(ABORT, 'legacy identity trigger');
+               END""",
+        )
+
+        db._migrate(connection, tmp_path)
+
+        columns = {
+            row["name"]: row for row in connection.execute(
+                "PRAGMA table_info(full_auto_execution_attempt)",
+            )
+        }
+        assert {"client_prompt_id", "client_id", "capability_evidence_json"} <= set(columns)
+        assert columns["client_id"]["dflt_value"] == "''"
+        assert columns["capability_evidence_json"]["dflt_value"] == "'{}'"
+        trigger = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' "
+            "AND name='full_auto_execution_attempt_identity_immutable'",
+        ).fetchone()["sql"]
+        assert "client_prompt_id" in trigger
+        assert "client_id" in trigger
+        assert "capability_evidence_json" in trigger
+    finally:
+        connection.close()

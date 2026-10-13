@@ -9,10 +9,13 @@ and the user only fixes what it got wrong.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import mimetypes
+import uuid
 
 import httpx
+from PIL import Image
 
 # Slots a session can drive. Anything not present in a workflow's map is simply
 # not patched — the workflow's own widget value stands.
@@ -40,15 +43,18 @@ CHECKPOINT_FIELDS = ("ckpt_name", "unet_name")
 # Where uploaded anchors land inside ComfyUI's input/, so they stay together and
 # are recognisable next to whatever the user drops there by hand.
 UPLOAD_SUBFOLDER = "idevgen"
+ATTEMPT_METADATA_KEY = "idevgen_attempt"
+ATTEMPT_METADATA_SCHEMA = "idevgen-full-auto-attempt-v1"
 
 _SAMPLER_CLASSES = ("KSampler", "SamplerCustom", "KSamplerAdvanced")
 _LATENT_CLASSES = ("EmptyLatentImage", "EmptySD3LatentImage", "EmptyLatentImagePresets")
 
 
 class ComfyError(RuntimeError):
-    def __init__(self, message: str, *, status_code: int | None = None):
+    def __init__(self, message: str, *, status_code: int | None = None, code: str | None = None):
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
 
 
 class Comfy:
@@ -63,6 +69,15 @@ class Comfy:
 
     async def stats(self) -> dict:
         return await self._get("/system_stats")
+
+    async def execution_capabilities(self, *, stats: dict | None = None) -> dict:
+        """Return frozen-safe identity evidence; only an advertised boolean enables IDs."""
+        stats = await self.stats() if stats is None else stats
+        try:
+            features = await self._get("/features")
+        except Exception:  # noqa: BLE001 - absent/unavailable metadata means conservative mode
+            features = {}
+        return execution_capability_evidence(self.url, stats, features)
 
     async def loras(self) -> list[str]:
         info = await self._get("/object_info/LoraLoader")
@@ -91,16 +106,49 @@ class Comfy:
                 "samplers": await widget("KSampler", "sampler_name"),
                 "schedulers": await widget("KSampler", "scheduler")}
 
-    async def queue_prompt(self, graph: dict, client_id: str) -> str:
+    async def queue_prompt(
+        self,
+        graph: dict,
+        client_id: str,
+        *,
+        client_prompt_id: str | None = None,
+        attempt_metadata: dict | None = None,
+    ) -> str:
+        if client_prompt_id is not None:
+            try:
+                if str(uuid.UUID(client_prompt_id)) != client_prompt_id:
+                    raise ValueError
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise ValueError("client_prompt_id must be a canonical UUID") from exc
+        payload = {"prompt": graph, "client_id": client_id}
+        if client_prompt_id is not None:
+            payload["prompt_id"] = client_prompt_id
+        if attempt_metadata is not None:
+            payload["extra_data"] = {
+                ATTEMPT_METADATA_KEY: attempt_metadata,
+                "extra_pnginfo": {ATTEMPT_METADATA_KEY: attempt_metadata},
+            }
         async with httpx.AsyncClient(timeout=60) as c:
-            r = await c.post(f"{self.url}/prompt", json={"prompt": graph, "client_id": client_id})
+            r = await c.post(f"{self.url}/prompt", json=payload)
             if r.status_code >= 400:
                 raise ComfyError(_error_text(r), status_code=r.status_code)
-            return r.json()["prompt_id"]
+            prompt_id = r.json().get("prompt_id")
+            if not isinstance(prompt_id, str) or not prompt_id:
+                raise ComfyError("ComfyUI returned no prompt ID.", status_code=r.status_code)
+            if client_prompt_id is not None and prompt_id != client_prompt_id:
+                raise ComfyError(
+                    "ComfyUI acknowledged a different prompt ID.",
+                    status_code=r.status_code,
+                    code="prompt_id_mismatch",
+                )
+            return prompt_id
 
     async def history(self, prompt_id: str) -> dict | None:
         data = await self._get(f"/history/{prompt_id}")
         return data.get(prompt_id)
+
+    async def history_entries(self) -> dict:
+        return await self._get("/history")
 
     async def upload_image(self, path, name: str) -> str:
         """Put a local file in ComfyUI's `input/` and return what a LoadImage takes.
@@ -131,6 +179,121 @@ class Comfy:
 
     async def queue_state(self) -> dict:
         return await self._get("/queue")
+
+
+def execution_capability_evidence(url: str, stats: dict, features: dict) -> dict:
+    """Hash private endpoint/system identity and accept only an explicit feature flag."""
+    system = stats.get("system") if isinstance(stats, dict) else None
+    system = system if isinstance(system, dict) else {}
+    version = system.get("comfyui_version")
+    if isinstance(version, str) and version.strip():
+        # ComfyUI uses explicit sentinel strings when its server version cannot
+        # identify the running implementation. Keep those servers conservative
+        # even when they advertise client prompt IDs.
+        version = None if version.strip().casefold() == "unknown" else version
+    else:
+        version = None
+    advertised = features.get("client_prompt_id") if isinstance(features, dict) else None
+    advertised = advertised if type(advertised) is bool else None
+    identity = {
+        "endpoint": hashlib.sha256(url.rstrip("/").encode("utf-8")).hexdigest(),
+        "version": version,
+        "deploy_environment": system.get("deploy_environment")
+        if isinstance(system.get("deploy_environment"), str) else None,
+        "argv": system.get("argv")
+        if isinstance(system.get("argv"), list)
+        and all(isinstance(value, str) for value in system["argv"]) else None,
+        "python_version": system.get("python_version")
+        if isinstance(system.get("python_version"), str) else None,
+        "pytorch_version": system.get("pytorch_version")
+        if isinstance(system.get("pytorch_version"), str) else None,
+    }
+    identity_digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+    ).hexdigest()
+    return {
+        "schema": "comfy-execution-capability-v1",
+        "endpoint_digest": identity["endpoint"],
+        "server_identity_digest": identity_digest,
+        "server_version": version,
+        "client_prompt_id": advertised is True and version is not None,
+        "advertised_client_prompt_id": advertised,
+    }
+
+
+def build_attempt_metadata(client_id: str, attempt: dict) -> dict:
+    """Return the exact persisted marker shared by queue, history and PNG metadata."""
+    return {
+        "schema": ATTEMPT_METADATA_SCHEMA,
+        "client_id": client_id,
+        "attempt_id": attempt["attempt_id"],
+        "graph_digest": attempt["graph_digest"],
+        "filename_prefix": attempt["filename_prefix"],
+        "client_prompt_id": attempt["client_prompt_id"],
+    }
+
+
+def prompt_entry_fields(entry: object) -> tuple[str, dict, dict]:
+    """Extract prompt ID, graph and extra_data from a Comfy queue/history record."""
+    if not isinstance(entry, (list, tuple)) or len(entry) < 4:
+        raise ValueError("Malformed Comfy prompt record")
+    prompt_id, graph, extra_data = entry[1], entry[2], entry[3]
+    if not isinstance(prompt_id, str) or not prompt_id:
+        raise ValueError("Malformed Comfy prompt ID")
+    if not isinstance(graph, dict) or not isinstance(extra_data, dict):
+        raise ValueError("Malformed Comfy prompt metadata")
+    return prompt_id, graph, extra_data
+
+
+def attempt_marker(extra_data: dict) -> dict | None:
+    """Read one strictly shaped marker; malformed advertised markers fail closed."""
+    marker = extra_data.get(ATTEMPT_METADATA_KEY)
+    if marker is None:
+        return None
+    if (
+        not isinstance(marker, dict)
+        or set(marker) != {
+            "schema", "client_id", "attempt_id", "graph_digest",
+            "filename_prefix", "client_prompt_id",
+        }
+        or marker.get("schema") != ATTEMPT_METADATA_SCHEMA
+        or not isinstance(marker.get("client_id"), str)
+        or not isinstance(marker.get("attempt_id"), str)
+        or not isinstance(marker.get("graph_digest"), str)
+        or not isinstance(marker.get("filename_prefix"), str)
+        or (marker.get("client_prompt_id") is not None
+            and not isinstance(marker.get("client_prompt_id"), str))
+    ):
+        raise ValueError("Malformed Full Auto attempt metadata")
+    return marker
+
+
+def png_attempt_metadata(path) -> tuple[dict | None, dict | None]:
+    """Read actual Comfy PNG text metadata, rejecting invalid or partial evidence."""
+    with Image.open(path) as image:
+        marker_text = image.info.get(ATTEMPT_METADATA_KEY)
+        prompt_text = image.info.get("prompt")
+        if marker_text is None and prompt_text is None:
+            return None, None
+        if not isinstance(marker_text, str) or not isinstance(prompt_text, str):
+            raise ValueError("Incomplete Comfy PNG metadata")
+        marker = json.loads(marker_text)
+        prompt = json.loads(prompt_text)
+        image.verify()
+    if not isinstance(marker, dict) or not isinstance(prompt, dict):
+        raise ValueError("Malformed Comfy PNG metadata")
+    return marker, prompt
+
+
+def graph_has_prefix(graph: dict, prefix: str) -> bool:
+    """Require exactly one SaveImage node to carry this attempt's unique prefix."""
+    matches = [
+        node.get("inputs", {}).get("filename_prefix")
+        for node in graph.values()
+        if isinstance(node, dict) and node.get("class_type") == "SaveImage"
+        and isinstance(node.get("inputs"), dict)
+    ]
+    return matches.count(prefix) == 1
 
 
 def _error_text(r: httpx.Response) -> str:

@@ -10,9 +10,12 @@ import json
 import os
 import sys
 import tempfile
+import copy
 from pathlib import Path
 
 import pytest
+from PIL import Image
+from PIL.PngImagePlugin import PngInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -27,7 +30,7 @@ os.environ["IDEVGEN_CONFIG"] = str(TMP / "config.json")
 import db  # noqa: E402
 import main  # noqa: E402
 from runner import Runner  # noqa: E402
-from comfy import ComfyError  # noqa: E402
+from comfy import ComfyError, execution_capability_evidence  # noqa: E402
 
 # Minimal but realistic API graph: the positive conditioning goes through
 # FluxGuidance, which is what breaks a naive mapping detection.
@@ -81,43 +84,104 @@ class FakeComfy:
         self.graphs: list[dict] = []
         self.uploads: list[tuple[str, str]] = []
         self.interrupted = 0
+        self.prompt_records: dict[str, dict] = {}
+        self.queue_records: list[list] = []
+        self.advertise_client_prompt_id = False
+        self.server_stats = {"system": {"comfyui_version": "test-fake"}}
 
     async def upload_image(self, path, name: str) -> str:
         self.uploads.append((str(path), name))
         return f"idevgen/{name}"
 
     async def stats(self) -> dict:
-        return {}
+        return copy.deepcopy(self.server_stats)
 
-    async def queue_prompt(self, graph: dict, client_id: str) -> str:
+    async def execution_capabilities(self) -> dict:
+        return execution_capability_evidence(
+            "http://fake-comfy.invalid",
+            self.server_stats,
+            {"client_prompt_id": self.advertise_client_prompt_id},
+        )
+
+    async def queue_prompt(
+        self, graph: dict, client_id: str, *, client_prompt_id=None, attempt_metadata=None,
+    ) -> str:
         self.attempts += 1
         if self.fail_queue or self.attempts <= self.fail_first:
             raise ComfyError("Prompt outputs failed validation")
-        self.graphs.append(graph)
-        return f"pid-{len(self.graphs)}"
+        prompt_id = client_prompt_id or f"pid-{self.attempts}"
+        extra_data = {"client_id": client_id}
+        if attempt_metadata is not None:
+            extra_data["idevgen_attempt"] = copy.deepcopy(attempt_metadata)
+            extra_data["extra_pnginfo"] = {
+                "idevgen_attempt": copy.deepcopy(attempt_metadata),
+            }
+        graph_copy = copy.deepcopy(graph)
+        self.graphs.append(graph_copy)
+        entry = [self.attempts, prompt_id, graph_copy, extra_data, []]
+        self.queue_records.append(entry)
+        self.prompt_records[prompt_id] = {
+            "prompt": entry,
+            "status": None,
+            "outputs": {},
+        }
+        return prompt_id
 
     async def history(self, prompt_id: str) -> dict:
+        record = self.prompt_records.get(prompt_id)
+        if record is None:
+            return None
         if self.no_images:
             # Shaped like a real ComfyUI failure: the useful sentence is buried in
             # a dict that also carries the traceback and the whole prompt.
-            return {"status": {"completed": False, "messages": [["execution_error", {
+            result = {"status": {"completed": False, "messages": [["execution_error", {
                         "node_id": "9", "node_type": "KSampler",
                         "exception_type": "RuntimeError",
                         "exception_message": "Given normalized_shape=[2560]",
                         "traceback": ["  File \"execution.py\", line 545"],
                         "current_inputs": {"model": ["a very long dump"]}}]]},
-                    "outputs": {}}
-        prefix = self.graphs[-1]["8"]["inputs"]["filename_prefix"]
+                    "outputs": {}, "prompt": record["prompt"]}
+            record.update(result)
+            return copy.deepcopy(result)
+        graph = record["prompt"][2]
+        extra_data = record["prompt"][3]
+        prefix = graph["8"]["inputs"]["filename_prefix"]
         subfolder, _, stem = prefix.rpartition("/")
         filename = f"{stem}_00001_.png"
         if self.write_file:
             folder = self.output_dir / subfolder
             folder.mkdir(parents=True, exist_ok=True)
-            (folder / filename).write_bytes(b"\x89PNG fake")
-        return {
+            marker = extra_data.get("idevgen_attempt")
+            if marker is None:
+                (folder / filename).write_bytes(b"\x89PNG fake")
+            else:
+                png_info = PngInfo()
+                png_info.add_text("prompt", json.dumps(graph))
+                png_info.add_text("idevgen_attempt", json.dumps(marker))
+                Image.new("RGB", (2, 2), (64, 96, 128)).save(
+                    folder / filename, format="PNG", pnginfo=png_info,
+                )
+        result = {
+            "prompt": record["prompt"],
             "status": {"completed": True},
             "outputs": {"8": {"images": [{"filename": filename, "subfolder": subfolder, "type": "output"}]}},
         }
+        record.update(result)
+        self.queue_records = [entry for entry in self.queue_records if entry[1] != prompt_id]
+        return copy.deepcopy(result)
+
+    async def queue_state(self) -> dict:
+        return {
+            "queue_running": copy.deepcopy(self.queue_records),
+            "queue_pending": [],
+        }
+
+    async def history_entries(self) -> dict:
+        return copy.deepcopy({
+            prompt_id: record
+            for prompt_id, record in self.prompt_records.items()
+            if record.get("status") is not None
+        })
 
     async def interrupt(self) -> None:
         self.interrupted += 1

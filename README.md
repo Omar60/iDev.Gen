@@ -102,7 +102,11 @@ remain available. An internal pause can fence child work and authorize one
 plan CAS while retaining session ownership. Resume can compare changed scope
 and, after explicit acceptance, append a linked immutable authorization grant.
 Pending or unknown cancellation retains session ownership; the public controls
-do not contact ComfyUI, issue a global interrupt, or reconcile remote work. A
+do not contact ComfyUI, issue a global interrupt, or reconcile remote work. No
+verified targeted-cancel path is available; the current runner leaves an owned
+ComfyUI job to finish and reports its pending state:
+`Cancellation pending: current generation must finish.` Durable cancellation
+and reconciliation remain unfinished. A
 backend-only all-target review gate checks current prepared evidence
 for Full Auto approval and new submissions: unresolved review conflicts,
 placeholders, stale adaptations, drift, and unaccepted exact duplicate tuples
@@ -156,11 +160,17 @@ before the local fence clears. After restart, recovery uses the persisted
 quarantine deadline as its only local guard and may release the slot once that
 deadline expires. This does not coordinate other processes or throttle
 provider-side work; manual assistant requests remain outside the slot.
-A lost or ambiguous ComfyUI queue response leaves the shot `running` as
-unresolved evidence and blocks new local starts even after the runner lease
-expires. Only a confirmed queue refusal is marked `failed`, allowing the serial
-runner to continue; no remote reconciliation or retry remedy is available for
-the ambiguous case.
+Full Auto enables caller-supplied prompt UUIDs only when `/features` advertises
+`client_prompt_id` as the boolean `true` and `/system_stats` reports an
+identifiable ComfyUI version. It stores hashes of the configured endpoint and
+server identity, then rechecks that identity before the POST and before
+accepting output. An ambiguous POST is never resent. Its live, read-only
+queue/history scan can recover one attempt only when metadata, graph digest,
+prefix, and identity agree; otherwise one local PNG can be adopted only when
+its embedded attempt metadata and graph match. Filename alone is insufficient.
+Missing, conflicting, or duplicate evidence leaves the outcome unresolved.
+PNG-only recovery can settle the image while the remote prompt ID remains
+unknown. No tested-version mapping or minimum version is assumed.
 On restart, startup cleanup preserves the persisted owner's running session
 and shot rows even after lease expiry, while marking unclaimed legacy rows as
 interrupted failures. This retains uncertainty; it does not reconcile,
@@ -170,11 +180,11 @@ waits for any live child to settle. It resumes that same registered child under
 a new fence if expired or failed, preserving the verified prefix. A stale
 execution owner stops subsequent writes and dispatches, leaving admission
 unresolved. The shared claim completes local runner admission; Full Auto
-execution attempts are now journaled through local output settlement, while
-unknown outcomes remain unresolved and cannot be blindly resent.
-Execution-attempt recovery, remote prompt correlation and
-cancellation/reconciliation, external queue policy, and the end-to-end
-creation/startup flow remain unfinished. The profile editor and
+execution attempts are journaled through local output settlement, and
+ambiguous live responses use verified correlation evidence. Startup recovery
+of journaled attempts, durable cancellation/reconciliation, explicit retry
+controls, external queue policy, and the end-to-end creation/startup flow remain
+unfinished. The profile editor and
 selection/consent UI also remain unfinished. The existing
 manual workflow remains available for sessions without a nonterminal Full Auto
 owner.

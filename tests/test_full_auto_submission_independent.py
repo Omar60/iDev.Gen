@@ -8,6 +8,8 @@ from pathlib import Path
 import sqlite3
 
 import pytest
+from PIL import Image
+from PIL.PngImagePlugin import PngInfo
 
 import db
 import main
@@ -181,8 +183,8 @@ def test_full_auto_runner_owner_loss_preserves_unknown_admission_without_redispa
     release = asyncio.Event()
     original_queue = fake.queue_prompt
 
-    async def delayed_queue(graph, client_id):
-        prompt_id = await original_queue(graph, client_id)
+    async def delayed_queue(graph, client_id, **kwargs):
+        prompt_id = await original_queue(graph, client_id, **kwargs)
         entered.set()
         await release.wait()
         return prompt_id
@@ -237,7 +239,7 @@ def test_full_auto_attempt_journal_orders_queue_ack_output_and_locked_move(
     real_move = runner_mod.shutil.move
     move_calls = 0
 
-    async def observe_queue(graph, client_id):
+    async def observe_queue(graph, client_id, **kwargs):
         shot = db.one(
             "SELECT id, status, seed, prompt_id FROM shot WHERE session_id = ? "
             "AND status = 'running'", session_id,
@@ -259,7 +261,7 @@ def test_full_auto_attempt_journal_orders_queue_ack_output_and_locked_move(
         assert attempt["filename_prefix"].endswith(attempt["attempt_id"])
         assert attempt["graph_digest"] == resource_store.canonical_digest(graph)
         events.append("intent")
-        return await original_queue(graph, client_id)
+        return await original_queue(graph, client_id, **kwargs)
 
     async def observe_history(prompt_id):
         attempt = db.one(
@@ -467,7 +469,7 @@ def test_full_auto_keeps_explicit_canvas_when_model_dimension_defaults_change(
     )
 
 
-def test_full_auto_lost_queue_response_keeps_unknown_attempt_and_blocks_redispatch(
+def test_full_auto_lost_queue_response_recovers_unique_attempt_without_reposting(
     client, seeded, monkeypatch, make_runner,
 ):
     session_id, run_id, _revision, _targets, owner = _approved_run(
@@ -477,11 +479,198 @@ def test_full_auto_lost_queue_response_keeps_unknown_attempt_and_blocks_redispat
     runner, fake = make_runner()
     original_queue = fake.queue_prompt
 
-    async def accepted_without_response(graph, client_id):
-        await original_queue(graph, client_id)
+    async def accepted_without_response(graph, client_id, **kwargs):
+        await original_queue(graph, client_id, **kwargs)
         raise RuntimeError("queue response was lost")
 
     fake.queue_prompt = accepted_without_response
+
+    async def run():
+        runner.start(session_id, _full_auto_claim=execute_owner)
+        await runner._task
+
+    asyncio.run(run())
+    attempts = db.q(
+        "SELECT dispatch_state, completion_state, prompt_id, client_prompt_id "
+        "FROM full_auto_execution_attempt WHERE run_id = ? ORDER BY shot_id", run_id,
+    )
+    assert len(attempts) == len(_targets)
+    assert all(row["dispatch_state"] == "acknowledged" for row in attempts)
+    assert all(row["completion_state"] == "completed" for row in attempts)
+    assert all(row["prompt_id"] and row["client_prompt_id"] is None for row in attempts)
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM shot WHERE session_id = ? AND status = 'done'",
+        session_id,
+    )["n"] == len(_targets)
+    # Every accepted lost response was reconciled read-only; no POST was replayed.
+    assert fake.attempts == len(_targets)
+
+
+@pytest.mark.parametrize(
+    "tamper", ["duplicate", "graph_mismatch", "malformed_metadata", "malformed_queue", "malformed_history"],
+)
+def test_full_auto_queue_reconciliation_does_not_repost_unresolved_work(
+    client, seeded, monkeypatch, make_runner, tamper,
+):
+    session_id, run_id, _revision, _targets, owner = _approved_run(
+        client, seeded, monkeypatch, photo_count=4,
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner()
+    fake.advertise_client_prompt_id = True
+    original_queue = fake.queue_prompt
+    original_history = fake.history
+    candidate_output_path = None
+    collect_calls = []
+    collect = runner._collect
+
+    async def record_collect(check_session_id, shot, image, heartbeat=None):
+        collect_calls.append(image)
+        return await collect(check_session_id, shot, image, heartbeat)
+
+    runner._collect = record_collect
+
+    async def ambiguous_acceptance(graph, client_id, **kwargs):
+        nonlocal candidate_output_path
+        prompt_id = await original_queue(graph, client_id, **kwargs)
+        if tamper == "duplicate":
+            fake.queue_records.append(fake.queue_records[-1])
+        else:
+            if tamper == "graph_mismatch":
+                fake.queue_records[-1][2]["8"]["inputs"]["filename_prefix"] = "ComfyUI"
+            elif tamper == "malformed_metadata":
+                fake.queue_records[-1][3]["idevgen_attempt"] = ["invalid"]
+            elif tamper == "malformed_queue":
+                fake.queue_records.append(["invalid"])
+            else:
+                prompt_id = fake.queue_records[-1][1]
+                queue_record = fake.queue_records[-1]
+                completed_history = await original_history(prompt_id)
+                image = completed_history["outputs"]["8"]["images"][0]
+                candidate_output_path = (
+                    fake.output_dir / image["subfolder"] / image["filename"]
+                )
+                malformed_history = {**completed_history, "prompt": ["invalid"]}
+                fake.queue_records.append(queue_record)
+                fake.prompt_records[prompt_id]["prompt"] = ["invalid"]
+                # Keep history enumeration empty so the one well-formed queue
+                # occurrence can establish remote identity; the later direct
+                # history read must still fail closed for output adoption.
+                fake.prompt_records[prompt_id]["status"] = None
+
+                async def read_malformed_history(_prompt_id):
+                    return malformed_history
+
+                fake.history = read_malformed_history
+        raise RuntimeError("queue response was lost")
+
+    fake.queue_prompt = ambiguous_acceptance
+
+    async def run():
+        runner.start(session_id, _full_auto_claim=execute_owner)
+        await runner._task
+
+    asyncio.run(run())
+    attempt = db.one(
+        "SELECT dispatch_state, completion_state, prompt_id, client_prompt_id, "
+        "output_evidence_json, filename "
+        "FROM full_auto_execution_attempt WHERE run_id = ?", run_id,
+    )
+    assert attempt["completion_state"] == "pending"
+    assert attempt["client_prompt_id"] is not None
+    assert fake.attempts == 1
+    shot = db.one(
+        "SELECT status, filename FROM shot WHERE session_id = ?", session_id,
+    )
+    assert shot["status"] == "running"
+    assert collect_calls == []
+    assert attempt["output_evidence_json"] is None
+    assert attempt["filename"] == ""
+    assert shot["filename"] == ""
+    if tamper == "malformed_history":
+        assert attempt["dispatch_state"] == "acknowledged"
+        assert attempt["prompt_id"] is not None
+        assert candidate_output_path is not None and candidate_output_path.is_file()
+    else:
+        assert attempt["dispatch_state"] == "outcome_unknown"
+        assert attempt["prompt_id"] is None
+
+
+def test_full_auto_output_metadata_recovers_when_remote_history_is_empty(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _revision, _targets, owner = _approved_run(
+        client, seeded, monkeypatch, photo_count=4,
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner()
+    original_queue = fake.queue_prompt
+    original_history = fake.history
+
+    async def accepted_then_lost(graph, client_id, **kwargs):
+        prompt_id = await original_queue(graph, client_id, **kwargs)
+        await original_history(prompt_id)
+        fake.queue_records.clear()
+        fake.prompt_records.clear()
+        raise RuntimeError("queue response was lost after output")
+
+    fake.queue_prompt = accepted_then_lost
+
+    async def run():
+        runner.start(session_id, _full_auto_claim=execute_owner)
+        await runner._task
+
+    asyncio.run(run())
+    attempt = db.one(
+        "SELECT dispatch_state, completion_state, prompt_id, output_evidence_json "
+        "FROM full_auto_execution_attempt WHERE run_id = ?", run_id,
+    )
+    assert attempt["dispatch_state"] == "outcome_unknown"
+    assert attempt["completion_state"] == "completed"
+    assert attempt["prompt_id"] is None
+    assert json.loads(attempt["output_evidence_json"])["correlation"]["source"] == "output_png"
+    shots = db.q(
+        "SELECT status, prompt_id FROM shot WHERE session_id = ? ORDER BY id", session_id,
+    )
+    assert len(shots) == 4
+    assert all(shot["status"] == "done" for shot in shots)
+    assert all(shot["prompt_id"].startswith("idevgen-recovered-output:") for shot in shots)
+    assert fake.attempts == 4
+
+
+@pytest.mark.parametrize("drift", ["identity", "filename_only", "malformed_png"])
+def test_full_auto_lost_ack_refuses_drift_or_filename_only_output(
+    client, seeded, monkeypatch, make_runner, drift,
+):
+    session_id, run_id, _revision, _targets, owner = _approved_run(
+        client, seeded, monkeypatch, photo_count=4,
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner(write_file=False)
+    original_queue = fake.queue_prompt
+
+    async def accepted_without_recoverable_receipt(graph, client_id, **kwargs):
+        prompt_id = await original_queue(graph, client_id, **kwargs)
+        if drift == "identity":
+            fake.server_stats["system"]["comfyui_version"] = "changed-test-fake"
+        elif drift in {"filename_only", "malformed_png"}:
+            prefix = graph["8"]["inputs"]["filename_prefix"]
+            subfolder, _, stem = prefix.rpartition("/")
+            folder = fake.output_dir / subfolder
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"{stem}_00001_.png"
+            if drift == "filename_only":
+                Image.new("RGB", (2, 2), (10, 20, 30)).save(path)
+            else:
+                png_info = PngInfo()
+                png_info.add_text("prompt", json.dumps(graph))
+                png_info.add_text("idevgen_attempt", "{malformed")
+                Image.new("RGB", (2, 2), (10, 20, 30)).save(path, pnginfo=png_info)
+            fake.queue_records.clear()
+            fake.prompt_records.clear()
+        raise RuntimeError("queue response was lost")
+
+    fake.queue_prompt = accepted_without_recoverable_receipt
 
     async def run():
         runner.start(session_id, _full_auto_claim=execute_owner)
@@ -493,18 +682,12 @@ def test_full_auto_lost_queue_response_keeps_unknown_attempt_and_blocks_redispat
         "FROM full_auto_execution_attempt WHERE run_id = ?", run_id,
     )
     assert attempt == {
-        "dispatch_state": "outcome_unknown",
-        "completion_state": "pending",
-        "prompt_id": None,
+        "dispatch_state": "outcome_unknown", "completion_state": "pending", "prompt_id": None,
     }
-    assert db.one("SELECT status FROM shot WHERE session_id = ?", session_id)["status"] == "running"
     assert fake.attempts == 1
-
-    second_runner, second_fake = make_runner()
-    with pytest.raises(resource_full_auto.FullAutoRunError) as refusal:
-        second_runner.start(session_id)
-    assert refusal.value.code == "full_auto_session_owned"
-    assert second_fake.attempts == 0
+    assert db.one(
+        "SELECT status FROM shot WHERE session_id = ?", session_id,
+    )["status"] == "running"
 
 
 @pytest.mark.parametrize("interleaving", ["feature_flag", "lease_expiry"])

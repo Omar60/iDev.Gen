@@ -1,5 +1,27 @@
 # Project Diary
 
+## Full Auto Task 5.3 Correlation Review
+
+Independent probes found four gaps after the implementation's focused suites
+passed: verified-UUID PNG-only recovery hit an acknowledgement mismatch guard,
+queue and history occurrences of one UUID were collapsed despite lack of remote
+deduplication, acknowledged history could adopt mismatched graph/marker/output
+evidence, and server identity drift after intent did not prevent physical POST.
+Require corroboration on the ordinary acknowledged path as well as lost-response
+recovery. A corroborated output is distinct from a verified queue acknowledgement;
+preserve that distinction in the journal. The repaired tree passed seven
+independent cases, including stale-owner output fencing and identity drift after
+acknowledgement. The literal unknown-version activation was also corrected.
+The final independent complete gate passed 3,433 tests with two skips and five
+warnings; the focused gate passed 63 cases, including eleven independent probes.
+Two later focused fixture failures required richer fake history and explicit
+acknowledgement-versus-output assertions, preserving serial calls and no replay.
+Only Task 5.3 is accepted; startup recovery and durable cancellation stay separate.
+
+An idle Executor needs an explicit follow-up dispatch to begin repair; a queued
+message alone does not reactivate its turn. Preserve independent failures while
+repair is pending and never count an interrupted diagnostic as a passing gate.
+
 ## Full Auto Task 5.2 Accepted Journal
 
 Persist attempt identity before queue submission and keep remote acceptance

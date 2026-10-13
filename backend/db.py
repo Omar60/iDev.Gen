@@ -1231,6 +1231,9 @@ CREATE TABLE IF NOT EXISTS full_auto_execution_attempt (
                                 dispatch_state IN ('intent', 'acknowledged', 'outcome_unknown', 'rejected')
                             ),
     prompt_id               TEXT,
+    client_prompt_id        TEXT,
+    client_id               TEXT NOT NULL DEFAULT '',
+    capability_evidence_json TEXT NOT NULL DEFAULT '{}',
     completion_state        TEXT NOT NULL DEFAULT 'pending' CHECK (
                                 completion_state IN ('pending', 'output_available', 'completed', 'failed')
                             ),
@@ -1786,6 +1789,41 @@ def _migrate(conn: sqlite3.Connection, db_dir: Path | None = None) -> None:
     """Apply additive schema and data migrations while preserving saved work."""
     def columns(table: str) -> set[str]:
         return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+    attempt_columns = columns("full_auto_execution_attempt")
+    for name, declaration in (
+        ("client_prompt_id", "TEXT"),
+        ("client_id", "TEXT NOT NULL DEFAULT ''"),
+        ("capability_evidence_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ):
+        if name not in attempt_columns:
+            conn.execute(
+                f"ALTER TABLE full_auto_execution_attempt ADD COLUMN {name} {declaration}"
+            )
+    # Existing databases keep their original trigger under IF NOT EXISTS. Replace
+    # it after the additive columns exist so the new attempt evidence is immutable.
+    conn.execute("DROP TRIGGER IF EXISTS full_auto_execution_attempt_identity_immutable")
+    conn.execute(
+        """CREATE TRIGGER full_auto_execution_attempt_identity_immutable
+           BEFORE UPDATE OF attempt_id, run_id, session_id, shot_id, attempt_number,
+                            run_epoch, run_fencing_token, runner_fencing_token, seed,
+                            filename_prefix, graph_digest, client_prompt_id, client_id,
+                            capability_evidence_json, created_at
+           ON full_auto_execution_attempt
+           WHEN NEW.attempt_id != OLD.attempt_id OR NEW.run_id != OLD.run_id
+             OR NEW.session_id != OLD.session_id OR NEW.shot_id != OLD.shot_id
+             OR NEW.attempt_number != OLD.attempt_number OR NEW.run_epoch != OLD.run_epoch
+             OR NEW.run_fencing_token != OLD.run_fencing_token
+             OR NEW.runner_fencing_token != OLD.runner_fencing_token OR NEW.seed != OLD.seed
+             OR NEW.filename_prefix != OLD.filename_prefix OR NEW.graph_digest != OLD.graph_digest
+             OR NEW.client_prompt_id IS NOT OLD.client_prompt_id
+             OR NEW.client_id != OLD.client_id
+             OR NEW.capability_evidence_json != OLD.capability_evidence_json
+             OR NEW.created_at != OLD.created_at
+           BEGIN
+               SELECT RAISE(ABORT, 'Full Auto execution attempt identity is immutable');
+           END"""
+    )
 
     # Keep a durable boundary for each active owner and cancellation intent.
     # Existing leases/intent rows predate these timestamps; their last persisted

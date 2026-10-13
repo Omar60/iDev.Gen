@@ -88,12 +88,24 @@ Verified baseline from the repository layout and application entry points.
   Startup cleanup preserves running rows for the persisted owner after lease
   expiry and marks unclaimed legacy running rows interrupted; it preserves
   uncertainty but does not reconcile or recover execution.
-  Full Auto execution attempts are journaled through local output settlement;
-  unknown outcomes remain unresolved and cannot be blindly resent.
-  Execution-attempt recovery, remote prompt correlation,
-  cancellation/reconciliation, external queue policy, and end-to-end startup
-  remain unfinished. The attempt journal is scoped to Full Auto; manual
-  reference/guide handling and locked-file move retries remain covered.
+  Each attempt freezes hashes of the configured endpoint and identifiable
+  ComfyUI server identity before intent; client prompt UUIDs require a strict
+  `/features` boolean plus an identifiable `/system_stats` version, with no
+  guessed version mapping or minimum. Identity is rechecked before POST and
+  output acceptance. A lost or ambiguous POST gets live, read-only queue/history
+  correlation using unique attempt metadata, graph digest, and prefix evidence;
+  if there is no match, one PNG in the configured output directory can be
+  adopted only when its embedded marker and graph match. Missing, mismatched,
+  duplicate, or filename-only evidence stays unresolved. PNG-only settlement
+  leaves the remote prompt ID unknown, and uncertain POSTs are never resent.
+  This does not integrate startup recovery: journaled attempts are not recovered
+  after process restart. No verified targeted-cancel path is available; the
+  current runner leaves an owned ComfyUI job to finish without a global
+  interrupt and reports `Cancellation pending: current generation must finish.`
+  Durable cancellation/reconciliation, startup recovery, retries, external
+  queue policy, and rollback remain unfinished. The attempt journal is scoped
+  to Full Auto; manual reference/guide handling and locked-file move retries
+  remain covered.
   Internal review and policy approval
   validate current snapshots, conflicts, placeholders, adaptations, drift, and
   duplicate acceptance while keeping neutral notices nonblocking. Approval and

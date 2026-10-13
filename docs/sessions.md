@@ -1888,11 +1888,18 @@ pending shots already exist at that point, unresolved work keeps Resume
 disabled under the current conservative gate. The blocker points to Setup and
 status inspection or Cancel; Cancel does not prove remote work stopped, and
 local HTTP termination does not establish that ComfyUI stopped a generation.
-A lost or ambiguous ComfyUI queue response leaves its shot `running` as
-unresolved evidence and blocks new local starts even after the runner lease
-expires. Only a confirmed queue refusal is marked `failed`, allowing the serial
-runner to continue. No remote reconciliation or retry remedy is available for
-this ambiguous outcome.
+Full Auto has no verified targeted-cancel path. A pending cancellation does not
+interrupt ComfyUI; the current runner leaves the owned job to finish and reports
+the backend message `Cancellation pending: current generation must finish.`
+Durable cancellation follow-through and reconciliation remain unfinished.
+
+An ambiguous queue POST is never resent. While the original runner is handling
+the response, it can recover one corroborated queue/history match or one local
+PNG whose embedded attempt marker and graph match. A filename match alone,
+missing or conflicting evidence, duplicate matches, or changed server identity
+leaves the attempt unresolved. PNG-only recovery can settle the local output
+while the remote prompt ID remains unknown; no retry remedy is available for
+unresolved attempts.
 Startup cleanup transactionally preserves running session/shot rows for the
 persisted global owner even after lease expiry; unclaimed legacy running rows
 are marked failed as interrupted. This keeps new local admissions blocked but
@@ -1906,7 +1913,17 @@ digest. Dispatch state is `intent`, `acknowledged`, `outcome_unknown`, or
 `rejected`; completion is `pending`, `output_available`, `completed`, or
 `failed`. The runner commits `intent` immediately before the physical POST and
 stores a known queue acknowledgement, including a late response tied to that
-attempt, before polling history. It records ComfyUI output evidence and the
+attempt, before polling history. Before `intent`, it freezes hashes of the
+configured endpoint and identifiable ComfyUI server identity. A caller-supplied
+prompt UUID is used only when `/features` reports the strict boolean
+`client_prompt_id: true` and `/system_stats` reports an identifiable version;
+unknown versions remain conservative, with no guessed version mapping or
+minimum. The same identity is rechecked immediately before the POST and before
+accepting output. A lost response triggers read-only queue/history scans for a
+unique attempt marker, graph digest, and prefix match. If those contain no
+match, at most one PNG in the configured ComfyUI output folder can be adopted,
+and only when its embedded attempt marker and prompt graph match. Filename
+alone never proves ownership. It records ComfyUI output evidence and the
 expected filename before moving the image, then settles the attempt and shot in
 one transaction. Pending or unknown attempts retain their evidence and cannot
 be blindly resent; settlement and output movement require live claims. Before
@@ -1921,10 +1938,11 @@ remain ten minutes. During preparation recovery, the replacement coordinator
 waits for any live child to settle. It resumes that same registered child under
 a new fence if expired or failed, preserving the verified prefix. A stale
 execution owner stops subsequent writes and dispatches, leaving admission
-unresolved. The journal preserves local evidence; it does not correlate or
-reconcile unknown remote jobs after restart. Execution-attempt recovery and
-explicit retry controls, remote cancellation, external queue policy, and
-rollback remain unfinished; full-run epoch finalization is also not delivered.
+unresolved. Ambiguous-response correlation and output-only recovery run during
+the live dispatch path; the journal does not recover unknown remote jobs after
+restart. Startup recovery of journaled attempts, explicit retry controls,
+durable cancellation and remote targeting, external queue policy, and rollback
+remain unfinished; full-run epoch finalization is also not delivered.
 The shared runner claim covers local admission only. Creation/startup still do
 not schedule the coordinator for an end-to-end run, and no Full Auto control UI
 exists. The journal is scoped to Full Auto; manual reference/guide handling and

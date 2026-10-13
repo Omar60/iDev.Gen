@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import threading
@@ -52,13 +53,24 @@ class _RemoteQueueGate:
         self.active = 0
         self.maximum_active = 0
         self.calls = 0
+        self.prompts = {}
 
-    async def queue_prompt(self, _graph, _client_id):
+    async def queue_prompt(self, graph, client_id, **kwargs):
         with self.lock:
             self.active += 1
             self.calls += 1
             self.maximum_active = max(self.maximum_active, self.active)
             prompt_id = f"controlled-{self.calls}"
+            extra_data = {"client_id": client_id}
+            attempt_metadata = kwargs.get("attempt_metadata")
+            if attempt_metadata is not None:
+                extra_data["idevgen_attempt"] = copy.deepcopy(attempt_metadata)
+                extra_data["extra_pnginfo"] = {
+                    "idevgen_attempt": copy.deepcopy(attempt_metadata),
+                }
+            self.prompts[prompt_id] = [
+                self.calls, prompt_id, copy.deepcopy(graph), extra_data, [],
+            ]
             self.entered.set()
         return prompt_id
 
@@ -68,7 +80,12 @@ class _RemoteQueueGate:
             raise TimeoutError("controlled fake queue was not released")
         with self.lock:
             self.active -= 1
-        return {"status": {"completed": True}, "outputs": {}}
+            prompt = copy.deepcopy(self.prompts[_prompt_id])
+        return {
+            "prompt": prompt,
+            "status": {"completed": True},
+            "outputs": {},
+        }
 
 
 def _gate_claimed_execution(runner, admitted: threading.Event) -> None:
@@ -647,7 +664,7 @@ def test_lost_queue_ack_keeps_running_marker_and_shared_claim(
     runner, fake = make_runner()
     attempted = []
 
-    async def lost_ack(_graph, _client_id):
+    async def lost_ack(_graph, _client_id, **_kwargs):
         fake.attempts += 1
         attempted.append("accepted remotely; response lost")
         raise httpx.ReadError("connection closed after request body was sent")
@@ -685,7 +702,7 @@ def test_full_auto_lost_queue_ack_keeps_claim_and_stops_later_dispatch(
     runner, fake = make_runner()
     attempted = []
 
-    async def lost_ack(_graph, _client_id):
+    async def lost_ack(_graph, _client_id, **_kwargs):
         fake.attempts += 1
         attempted.append(fake.attempts)
         raise httpx.ReadError("connection closed after request body was sent")
