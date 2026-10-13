@@ -1,60 +1,69 @@
 # Latest Session Work
 
-## Full Auto Task 5.3 Accepted Handoff
+## Full Auto Task 5.4 Accepted Handoff
 
-Deployment `full-auto-5-3-20261013` entered with a clean working tree and completes
-only Task 5.3 of `automate-resource-session-full-auto`. Heavy intake covered the
-complete project documentation framework and current change artifacts. Internal
-Executor owned implementation/repair; independent Tester owned acceptance probes
-and gates; Main reviewed the decisive contracts, actual diff and raw gate output.
-Only 5.3 is newly checked, bringing progress to 25 of 41 tasks.
+Deployment `full-auto-next-20261013` entered from clean `47ec3df` and completes
+only Task 5.4 of `automate-resource-session-full-auto`. Heavy intake covered
+project documentation and change artifacts. Internal Executor owned production
+and repair, independent Tester owned verification, and Main inspected decisive
+contracts, actual diffs and raw gate output before accepting. Only 5.4 is newly
+checked, bringing accepted progress to 26 of 41 tasks.
 
 ## Delivered Contracts
 
-Attempt capability evidence is additive and immutable. An explicit `/features`
-boolean and identifiable `/system_stats` version allow a canonical client prompt
-UUID; missing or `unknown` version remains conservative. Hashed endpoint/server
-identity is frozen before intent and rechecked before POST and output acceptance.
-After the new awaited identity read, current and captured authorized inputs,
-owner, lease, cancellation and feature flag are revalidated before dispatch.
+Creation schedules only after its atomic commit. Startup and eligible Resume
+drive persisted preparation, policy review/approval, ordered submission and the
+existing serial runner. Recovery preserves prepared prefixes, existing links,
+prompt bytes, seeds, unique prefixes and immutable attempt identity.
+Journaled/admitted running rows are protected before legacy interruption cleanup.
 
-Lost acknowledgements use read-only queue/history correlation with attempt
-metadata, graph digest and unique prefix. Duplicate occurrences are ambiguous
-even with the same UUID. One local PNG can recover output only with matching
-embedded marker and graph; filename alone cannot prove ownership. PNG-only
-completion retains unknown dispatch identity and marks the shot as generated.
-Acknowledged history validates marker, graph and output prefix before collection.
-Missing, malformed, mismatched or ambiguous evidence never authorizes POST replay.
-Manual reference/guide handling, serial admission, seed/prefix behavior and locked
-file retries remain covered. No remote call holds a database transaction.
+Expired execute ownership uses current recovery fences and the same epoch.
+Known jobs are reattached; moved outputs require matching PNG marker and graph.
+Missing, conflicting, duplicate or prior-epoch evidence blocks without another
+generation POST. Capability/queue/history outages reuse persisted read-only
+5/15/30-second probes across restart, ending in `comfy_unavailable`.
+Disablement or expiry allows safe existing-output settlement while blocking
+remaining new work. Eligible waiting runs continue without another restart or
+consent; global runner ownership, FIFO readiness and phase gates remain enforced.
+Shared `q`/`one` results are materialized under the existing reentrant
+transaction lock, preserving connection/schema and remote-I/O boundaries.
 
 ## Independent Evidence
 
-Final complete `.venv/Scripts/python.exe -m pytest -ra`: 3,433 passed, two skipped,
-five warnings, exit zero, 846.85 seconds. Canonical log:
-`fa53-full-pytest-final.log`, outside the repository. Skips: opt-in 500-take
-synthesis benchmark and unavailable filesystem symlinks.
+Final complete `.venv/Scripts/python.exe -m pytest -ra`: 3,476 passed, two
+skipped, five warnings, exit zero in 975.04 seconds. Canonical raw log outside
+the repository: `fa54-pytest-final4.log`. Skips: opt-in real 500-take synthesis
+benchmark and unavailable filesystem symlinks. Warnings: two Pydantic register
+warnings, Starlette/httpx TestClient, anyio portal alias and raw httpx upload.
 
-The five-module focused gate passed 63 cases in 172.32 seconds, including eleven
-independent probes. They cover UUID/PNG recovery, non-deduplicating same-ID
-ambiguity, foreign-output refusal, mismatched acknowledgement, server identity
-drift, unknown version, stale-owner output and post-intent flag/lease/settings
-interleavings with zero POSTs. Log: `fa53-focused-correlation-fencing-final2.log`.
-Strict OpenSpec, privacy/control checks (46 passed) and diff checks passed.
-Frontend is unchanged. Compact closure checks cover final documentation and the
-single checklist edit; no full-suite rerun is needed for those text-only changes.
+Independent real-lifespan startup module: 32 passed in 128.63 seconds
+(`fa54-startup-independent-final.log`). Exact post-commit creation with two
+concurrent HTTP readers passed eight separate trials
+(`fa54-creation-lockcheck-8.log`). Relevant ownership/coordinator and repaired
+regressions passed four cases (`fa54-live-child-regressions.log`).
+Strict OpenSpec passed; privacy/control passed 17 cases; diff checks passed.
+Frontend is unchanged, so npm tests/build were not required or run.
+Final text-only documentation and the one checklist edit receive compact
+closure checks before the acceptance commit.
 
-## Retained Failures and Stop Boundary
+## Retained Failures and Limits
 
-Initial independent probes found four production defects despite green focused
-implementation tests. Review then found explicit unknown-version activation.
-All were repaired and independently verified. A focused round found two fixture
-failures; corrected fakes retain serial calls and no-adoption/no-replay assertions.
-An interrupted provisional diagnostic is not a gate result.
+Independent review found stale acknowledgement evidence, generic workflow-drift
+diagnostics, missing durable outage probes and a prior-epoch reconciliation wait.
+A separate source review found wait states selected at startup but excluded by
+the coordinator. A reproduced shared-connection lookup reported a missing run
+while an independent disk reader saw it committed; the corrected boundary passed
+the repeated real flow. The exact SQLite cache mechanism remains unconfirmed.
 
-Task 5.4 remains unstarted. Correlation runs in the live dispatch path; no startup
-attempt recovery, durable cancellation/reconciliation, explicit retry, external
-queue, rollback or end-to-end scheduling is claimed. There is no verified atomic
-targeted cancel or guessed tested-version map. No real generation, archive or
-push was performed. The acceptance commit contains only Task 5.3 and closure docs;
-Archivist provides the final sealed read-only Git handoff and token report.
+The first complete gate failed five obsolete state expectations; the second
+failed a pre-renewal snapshot baseline and a transaction-only race barrier.
+Scoped fixture corrections retained all-row, dispatch, link and replay assertions.
+The third full run was interrupted for the wait-state correction and is not a
+gate result. Earlier harness errors and a withdrawn wrong-workflow finding do
+not count as production failures or passing acceptance.
+
+Task 5.5 remains unstarted. No complete cancellation/reconciliation or explicit
+retry, external queue,
+rollback, completed UI journey or real-generation acceptance is claimed.
+No real generation, archive or push occurred. The acceptance commit is limited
+to Task 5.4 and closure documentation; Archivist seals Git state and token usage.

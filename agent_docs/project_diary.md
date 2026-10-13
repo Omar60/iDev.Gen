@@ -1,5 +1,29 @@
 # Project Diary
 
+## Full Auto Task 5.4 Recovery Review
+
+Keep immutable attempt identity separate from current recovery write authority.
+Reattach must pass the persisted acknowledgement to history validation rather
+than a pre-acknowledgement dictionary. Preserve journaled and admitted sessions
+before legacy interruption cleanup, including admission before the first shot.
+Destination filenames alone cannot prove ownership after an output-move crash.
+Reuse durable read-only outage cursors across restart; missing or contradictory
+evidence is distinct from unavailable transport. Prior-epoch evidence must block
+instead of being adopted or leaving an indefinite active reconciliation wait.
+Workflow-drift fixtures must mutate the actually bound workflow and compare its
+canonical digest. An unrelated workflow edit produced a withdrawn false finding.
+An independent disk connection exposed a committed run while shared-connection
+reads falsely reported it missing. Serialize shared readers with the existing
+transaction lock and materialize results before releasing it; the precise
+SQLite statement-cache mechanism remains unconfirmed. Refusal baselines belong
+after intentional lease renewal. A concurrency probe must observe the actual
+read-lock boundary rather than assume it reaches a later transaction wrapper.
+Startup selection and coordinator phase guards must both handle eligible wait
+states. Verify runner continuation after its unrelated owner releases the slot,
+without another restart, new consent, priority theft or premature dispatch.
+These repairs passed final independent acceptance for Task 5.4. Retain failed
+and interrupted gates separately from the final completed passing run.
+
 ## Full Auto Task 5.3 Correlation Review
 
 Independent probes found four gaps after the implementation's focused suites

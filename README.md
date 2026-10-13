@@ -92,8 +92,11 @@ Auto preflight plus atomic initial run authorization. The API also exposes
 persisted-run status, Cancel, Resume, and read-only Resume scope comparison;
 the request, CAS, replay, and quote contract is documented in
 [Full Auto status and controls](docs/sessions.md#full-auto-status-and-controls).
-These controls do not dispatch preparation or generation: the internal
-coordinator stops at validation, and creation and startup do not dispatch it.
+Guided Full Auto creation schedules the coordinator after authorization commits;
+eligible Resume and backend startup also schedule persisted work. The
+coordinator prepares, reviews and approves, submits, then starts the existing
+serial runner. Startup recovery continues persisted work only after it passes
+the applicable recovery checks.
 Shared service guards block manual
 preparation, suggestions, plan/adaptation edits, resource refreshes that would
 advance the plan, approval, submission, and runner run/retry/cancel while a Full
@@ -101,8 +104,10 @@ Auto run is nonterminal. Read-only drift inspection and safe no-work replays may
 remain available. An internal pause can fence child work and authorize one
 plan CAS while retaining session ownership. Resume can compare changed scope
 and, after explicit acceptance, append a linked immutable authorization grant.
-Pending or unknown cancellation retains session ownership; the public controls
-do not contact ComfyUI, issue a global interrupt, or reconcile remote work. No
+Pending or unknown cancellation retains session ownership. Status reads backend
+state and Cancel persists backend intent; neither contacts ComfyUI, interrupts a
+remote job, or reconciles its outcome. Eligible Resume schedules the coordinator,
+which revalidates authorization and recovery evidence before continuing. No
 verified targeted-cancel path is available; the current runner leaves an owned
 ComfyUI job to finish and reports its pending state:
 `Cancellation pending: current generation must finish.` Durable cancellation
@@ -115,12 +120,12 @@ Approval records separate Full Auto policy provenance. The review projection
 is included in `GET /api/sessions/{sid}/plan/review`; current duplicate
 acceptance is available through
 `POST /api/sessions/{sid}/plan/review/duplicates/accept`, bound to the current
-plan revision and review digest. The preparation coordinator still stops at
-validation. Separate internal helpers persist ordered submission receipts that
-bind prepared snapshots to their shot links and digests, reuse those links, and
-preserve each stored final prompt. Before scheduling, a private authenticated
-claim checks current authority and evidence plus complete ordered receipts,
-acquires the shared local runner, and persists one admission. A Full Auto run
+plan revision and review digest. The coordinator applies this gate, records
+ordered receipts binding prepared snapshots to shot links and digests, reuses
+committed links and stored final prompts, then starts the runner after every
+target is linked. Before execution, a private authenticated claim rechecks
+current authority and evidence, acquires the shared local runner, and persists
+one admission. A Full Auto run
 waiting for the runner stores `runner_ready_at` and its run ID in
 `waiting_runner` without an admission receipt. The SQLite runner claim is signed
 and fenced, has a 60-second lease renewed by 15-second heartbeats, and is shared
@@ -131,11 +136,12 @@ priority, or earlier runner work remains unresolved. Eligible waiters follow
 readiness-time order; blocked, cancelled, expired, or authority-ineligible runs
 are skipped, and Resume enters with fresh priority. If scheduling is uncertain
 after admission, another start is refused while the outcome remains unresolved.
-Public Full Auto preparation, submission, and execution routes and a control UI
-are absent, so this is not an end-to-end generation flow. Full Auto `RunClaim`s
+Full Auto has no dedicated control UI or direct per-phase preparation,
+submission, or execution routes; guided authorization, eligible Resume, and
+startup recovery drive these backend phases. Full Auto `RunClaim`s
 for preparation and execution have 60-second leases, renewed by asynchronous
 15-second heartbeats through assistant and ComfyUI I/O; child-operation leases
-remain ten minutes. The internal preparation coordinator uses one durable FIFO
+remain ten minutes. The coordinator's preparation phase uses one durable FIFO
 assistant slot across Full Auto runs and reserves each physical POST, including
 compatibility fallbacks, before dispatch. Each authorization allows at most two
 assistant calls per take and twice the target count overall. Full Auto requests
@@ -171,21 +177,23 @@ its embedded attempt metadata and graph match. Filename alone is insufficient.
 Missing, conflicting, or duplicate evidence leaves the outcome unresolved.
 PNG-only recovery can settle the image while the remote prompt ID remains
 unknown. No tested-version mapping or minimum version is assumed.
-On restart, startup cleanup preserves the persisted owner's running session
-and shot rows even after lease expiry, while marking unclaimed legacy rows as
-interrupted failures. This retains uncertainty; it does not reconcile,
-redispatch, or recover Full Auto execution.
-During recovery, the replacement coordinator
-waits for any live child to settle. It resumes that same registered child under
-a new fence if expired or failed, preserving the verified prefix. A stale
-execution owner stops subsequent writes and dispatches, leaving admission
-unresolved. The shared claim completes local runner admission; Full Auto
-execution attempts are journaled through local output settlement, and
-ambiguous live responses use verified correlation evidence. Startup recovery
-of journaled attempts, durable cancellation/reconciliation, explicit retry
-controls, external queue policy, and the end-to-end creation/startup flow remain
-unfinished. The profile editor and
-selection/consent UI also remain unfinished. The existing
+At backend startup, journaled and admitted rows are protected before legacy
+interrupted-row cleanup; unclaimed legacy `running` rows still fail as
+interrupted. Startup then schedules eligible runs in `active`,
+`waiting_authoring`, or `waiting_runner` states. Preparation recovery
+waits for a live child and resumes it under a new fence while preserving its
+verified prefix. Execution recovery can settle a uniquely validated moved PNG
+only when its attempt metadata and graph match, or correlate a lost
+acknowledgement using frozen server identity and persisted read-only capability,
+queue, and history probes.
+It never replays a generation POST. For an attempt requiring reconciliation,
+missing, malformed, mismatched, duplicate, or prior-epoch evidence leaves the
+run blocked; exhausted remote-read probes report `comfy_unavailable`. If
+resource planning is disabled or authorization has expired, settled outputs are
+retained and remaining new work stays blocked.
+A stale owner stops subsequent writes and dispatches. Durable cancellation and
+remote cancellation reconciliation, explicit retry, external queue policy, the
+profile editor, and selection/consent UI remain unfinished. The existing
 manual workflow remains available for sessions without a nonterminal Full Auto
 owner.
 While a run is nonterminal or its work is unresolved, supported DELETE routes

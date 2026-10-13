@@ -2237,12 +2237,18 @@ def conn() -> sqlite3.Connection:
 
 
 def q(sql: str, *args) -> list[dict]:
-    return [dict(r) for r in conn().execute(sql, args).fetchall()]
+    # The application shares one SQLite connection across request and worker
+    # threads. Transactions hold this re-entrant lock for their full lifetime;
+    # readers must use it too and materialize rows before releasing it so a
+    # concurrent read cannot enter another thread's connection transaction.
+    with _tx_lock:
+        return [dict(r) for r in conn().execute(sql, args).fetchall()]
 
 
 def one(sql: str, *args) -> dict | None:
-    row = conn().execute(sql, args).fetchone()
-    return dict(row) if row else None
+    with _tx_lock:
+        row = conn().execute(sql, args).fetchone()
+        return dict(row) if row else None
 
 
 def run(sql: str, *args) -> int:

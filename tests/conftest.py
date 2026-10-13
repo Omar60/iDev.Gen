@@ -188,10 +188,14 @@ class FakeComfy:
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     """TestClient with the real lifespan (creates the database) and empty tables."""
     from fastapi.testclient import TestClient
 
+    # Coordinator behavior is exercised explicitly by its acceptance tests;
+    # helper tests retain control over their documented manual stage calls.
+    monkeypatch.setattr(main, "_schedule_full_auto_run", lambda _run_id: None)
+    monkeypatch.setattr(main, "_schedule_startup_full_auto_runs", lambda: None)
     with TestClient(main.app) as c:
         yield c
     # Full Auto guards intentionally reject deleting a live owner. Test cleanup

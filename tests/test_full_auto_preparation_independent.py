@@ -1031,19 +1031,23 @@ def test_owned_worker_rejects_assistant_response_after_inflight_binding_drift(
     ))
 
     operation = db.one(
-        "SELECT state, completed_json, remaining_json, result_json FROM authoring_operation "
+        "SELECT state, failed_item, completed_json, remaining_json, result_json FROM authoring_operation "
         "WHERE operation_id = ?",
         child["operation_id"],
     )
     progress = resource_full_auto._read_prepare_progress(run_id)
+    run = db.one("SELECT state, blocker_code FROM full_auto_run WHERE run_id = ?", run_id)
     assert injected["done"] is True
     assert [call["take_id"] for call in assistant.calls] == [target_ids[0]]
     assert assistant.calls[0]["transaction_open"] is False
-    assert operation["state"] == "active"
+    assert operation["state"] == "failed"
+    assert operation["failed_item"] == target_ids[0]
     assert json.loads(operation["completed_json"]) == []
-    assert json.loads(operation["remaining_json"]) == target_ids
+    assert json.loads(operation["remaining_json"]) == target_ids[1:]
     assert operation["result_json"] in (None, "[]", "{\"items\":[]}")
     assert progress["completed_take_ids"] == []
+    assert progress["remaining_take_ids"] == target_ids
+    assert run == {"state": "blocked", "blocker_code": "workflow_changed"}
     assert _prepared_rows(session_id) == []
     _assert_no_submission(session_id)
 

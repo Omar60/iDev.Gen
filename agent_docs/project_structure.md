@@ -20,6 +20,7 @@ Verified baseline from the repository layout and application entry points.
 - `backend/main.py` defines the FastAPI application, request models, HTTP API,
   configuration handling, and static frontend serving.
 - `backend/db.py` owns SQLite schema, migrations, transactions, and queries.
+  Its `q`/`one` reads share the existing re-entrant lock with transaction scopes.
 - `backend/comfy.py` wraps the ComfyUI HTTP API and detects/applies workflow
   node mappings. `backend/runner.py` queues and serializes session shots and
   moves completed images into session folders.
@@ -34,10 +35,16 @@ Verified baseline from the repository layout and application entry points.
   CAS; exact historical requests replay their stored response. Changed-scope
   Resume requires a fresh digest/timestamp quote and explicit acceptance, then
   appends a linked immutable authorization. Pending or unknown cancellation
-  retains session ownership; these routes do not contact ComfyUI, interrupt a
-  remote job, or reconcile external state, and no Full Auto control UI exists.
-  Creation/startup still do not dispatch the internal coordinator, which
-  prepares ordered owned batches of up to twenty and stops at validation.
+  retains session ownership. Status reads backend state and Cancel persists
+  backend intent; neither contacts ComfyUI, interrupts a remote job, or
+  reconciles its outcome. Eligible Resume schedules the coordinator, which
+  revalidates authorization and recovery evidence before continuing. No Full
+  Auto control UI exists.
+  Guided Full Auto creation schedules the coordinator after commit; eligible
+  Resume does likewise. After cleanup, startup recovery schedules eligible runs
+  in `active`, `waiting_authoring`, and `waiting_runner` states. The coordinator
+  prepares ordered owned batches of up to twenty, reviews and approves, submits
+  in order, then starts the existing serial runner.
   Full Auto `RunClaim`s for preparation and execution have 60-second leases,
   renewed by asynchronous 15-second heartbeats through assistant and ComfyUI
   I/O. Child operation leases remain ten minutes. Preparation uses one durable
@@ -85,9 +92,9 @@ Verified baseline from the repository layout and application entry points.
   timestamp then run ID. Resume re-enters with fresh priority; blocked,
   cancelled, expired, or
   authority-ineligible runs are skipped. This implements local admission only.
-  Startup cleanup preserves running rows for the persisted owner after lease
-  expiry and marks unclaimed legacy running rows interrupted; it preserves
-  uncertainty but does not reconcile or recover execution.
+  Startup recovery protects journaled/admitted rows before failing unclaimed
+  legacy running rows. Resumed work uses fresh fences and reconciles attempts
+  before continuing remaining work.
   Each attempt freezes hashes of the configured endpoint and identifiable
   ComfyUI server identity before intent; client prompt UUIDs require a strict
   `/features` boolean plus an identifiable `/system_stats` version, with no
@@ -98,23 +105,26 @@ Verified baseline from the repository layout and application entry points.
   adopted only when its embedded marker and graph match. Missing, mismatched,
   duplicate, or filename-only evidence stays unresolved. PNG-only settlement
   leaves the remote prompt ID unknown, and uncertain POSTs are never resent.
-  This does not integrate startup recovery: journaled attempts are not recovered
-  after process restart. No verified targeted-cancel path is available; the
-  current runner leaves an owned ComfyUI job to finish without a global
-  interrupt and reports `Cancellation pending: current generation must finish.`
-  Durable cancellation/reconciliation, startup recovery, retries, external
-  queue policy, and rollback remain unfinished. The attempt journal is scoped
-  to Full Auto; manual reference/guide handling and locked-file move retries
-  remain covered.
+  Startup execution recovery validates frozen server identity and uses persisted
+  read-only capability/queue/history probes. A unique matching attempt or
+  uniquely validated PNG may be settled; recovery never resends a generation
+  POST. For an attempt requiring reconciliation, missing, conflicting,
+  duplicate, or prior-epoch evidence blocks; exhausted probes report
+  `comfy_unavailable`. Disabled planning or expired authorization preserves
+  settled outputs and blocks remaining work. No verified targeted cancellation
+  exists; an owned ComfyUI job is left to finish. Durable cancellation and remote
+  reconciliation, explicit retries, external queue
+  policy, and rollback remain unfinished. The journal is scoped to Full Auto;
+  manual reference/guide handling and locked-file move retries remain covered.
   Internal review and policy approval
   validate current snapshots, conflicts, placeholders, adaptations, drift, and
   duplicate acceptance while keeping neutral notices nonblocking. Approval and
   new Full Auto submissions enforce that gate; exact linked-shot replays remain
   no-write. Policy provenance is separate from human review approval. The review
-  projection and digest-bound duplicate-acceptance endpoint are available, but
-  the preparation coordinator does not invoke them. Separate internal submission
-  logic persists ordered receipts binding prepared snapshots to shot links and
-  digests, reuses links, and preserves final prompt bytes. A private
+  projection and digest-bound duplicate-acceptance endpoint are available, and
+  the coordinator invokes the review/approval gate. It persists ordered
+  submission receipts binding prepared snapshots to shot links and digests,
+  reuses links, and preserves final prompt bytes. A private
   authenticated runner claim checks current authority/evidence and ordered
   receipts, then records admission before scheduling. An uncertain scheduling
   outcome after admission refuses replay pending reconciliation. The legacy

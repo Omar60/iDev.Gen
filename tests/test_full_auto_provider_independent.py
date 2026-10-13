@@ -832,7 +832,9 @@ def test_successful_connectivity_does_not_settle_an_unknown_owned_dispatch(
     assert shot["prompt_id"]
     assert not shot["filename"]
     assert db.one("SELECT status FROM session WHERE id = ?", session_id)["status"] == "running"
-    assert db.one("SELECT state FROM full_auto_run WHERE run_id = ?", run_id)["state"] == "active"
+    assert db.one(
+        "SELECT state, blocker_code FROM full_auto_run WHERE run_id = ?", run_id,
+    ) == {"state": "blocked", "blocker_code": "execution_outcome_unknown"}
 
 
 def test_probe_reservation_checks_authority_time_after_transaction_lock(

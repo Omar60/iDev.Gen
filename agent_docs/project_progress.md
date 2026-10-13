@@ -1,39 +1,32 @@
 # Project Progress
 
-## Goal and Accepted Position
+## Accepted Position
 
-Deployment `full-auto-5-3-20261013` completes only Task 5.3 of
-`automate-resource-session-full-auto`, from a clean entry working tree.
-Main accepted the actual diff and independent verification. Only 5.3 is newly
-marked complete: 25 of 41 tasks. Task 5.4 remains unstarted.
+Deployment `full-auto-next-20261013` completes only Task 5.4 of
+`automate-resource-session-full-auto`, from clean entry commit `47ec3df`.
+Main accepted the actual source/diff and independent verification. Only 5.4 is
+newly checked: 26 of 41 tasks. Task 5.5 remains unstarted.
 
-Full Auto freezes configured-server capability evidence before intent. Client
-prompt UUIDs require an explicit boolean advertisement and identifiable version;
-unknown versions remain conservative. Live lost-response recovery correlates
-queue/history using attempt metadata, graph digest and unique prefix, or adopts
-one corroborated local PNG. Missing, conflicting or duplicate evidence stays
-unresolved, and uncertain POSTs are never resent. Ordinary acknowledged history
-also validates correlation and output identity before collection. The runner
-rechecks server identity and fenced authorization at the new dispatch boundary.
-PNG-only settlement preserves the unknown remote prompt ID.
+Committed creation, eligible Resume and startup now schedule the existing
+preparation, review, submission and serial runner services. Recovery reuses
+snapshots, links and attempt identities, observes dispatched work without blind
+POST replay and preserves legacy interruption behavior. Eligible wait states
+continue under existing authority and admission gates. Shared SQLite readers
+use the transaction lock after a reproduced inconsistent committed-run lookup.
 
-## Independent Verification
+## Verification and Closure
 
-The complete Python gate passed: 3,433 passed, two skipped, five warnings,
-exit zero in 846.85 seconds. The five-module focused gate passed 63 cases,
-including eleven independent correlation/fencing probes. Strict OpenSpec,
-privacy/control checks (46 passed) and diff checks passed. Frontend is unchanged.
-Final documentation and the single checklist edit receive compact closure checks.
-
-Initial review exposed four correlation/identity defects, then the literal
-unknown-version case; scoped repairs passed the independent probes. Two focused
-fixture failures were corrected while preserving concurrency, no-output-adoption
-and no-replay assertions. Passing evidence does not erase those earlier failures.
+Final independent startup acceptance passed 32 cases; the exact concurrent
+creation case passed eight separate trials. The complete Python suite passed,
+with the two explicit skips retained. Canonical commands, counts, warnings,
+logs and repaired failures are recorded in `latest_session_work.md`.
+Strict OpenSpec, privacy/control and diff checks passed; frontend is unchanged.
+Public documentation describes implemented continuation and remaining limits.
 
 ## Stop Boundary
 
-No real generation, next task, archive or push is authorized. Startup recovery,
-durable cancellation/reconciliation, explicit retries, external queue policy,
-rollback, UI and the end-to-end Full Auto journey remain unfinished. No verified
-atomic targeted-cancel capability or tested-version mapping is claimed.
-Archivist supplies the sealed documentation/Git handoff and token report.
+Only Task 5.4 and its closure documentation belong to the acceptance commit.
+No real generation, next task, archive or push was performed. Durable
+cancellation/reconciliation, explicit retries, external queue policy, rollback
+and the remaining UI/integration/live acceptance tasks remain unfinished.
+Archivist supplies the sealed read-only Git handoff and Deployment Token Report.

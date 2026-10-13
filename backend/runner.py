@@ -19,6 +19,7 @@ import uuid
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
 
+import httpx
 import db
 from comfy import (
     REFERENCE_SLOTS,
@@ -64,7 +65,9 @@ class Runner:
     def busy(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def start(self, session_id: int, *, _full_auto_claim=None) -> bool:
+    def start(
+        self, session_id: int, *, _full_auto_claim=None, _full_auto_recovery: bool = False,
+    ) -> bool:
         from backend import resource_full_auto
 
         runner_claim = None
@@ -76,6 +79,7 @@ class Runner:
             try:
                 runner_claim = resource_full_auto.acquire_runner_claim(
                     session_id, run_claim=_full_auto_claim,
+                    recovery=_full_auto_recovery,
                 )
             except resource_full_auto.FullAutoRunError as exc:
                 if _full_auto_claim is None and exc.code == "runner_busy":
@@ -102,7 +106,10 @@ class Runner:
                 )
                 if run is not None and run["state"] == "waiting_runner":
                     resource_full_auto.advance_run(_full_auto_claim, "active")
-                resource_full_auto.admit_runner_start(session_id, _full_auto_claim)
+                if _full_auto_recovery:
+                    resource_full_auto.validate_runner_recovery(session_id, _full_auto_claim)
+                else:
+                    resource_full_auto.admit_runner_start(session_id, _full_auto_claim)
             db.run("UPDATE session SET status='running' WHERE id=?", session_id)
         self._cancel.discard(session_id)
         self._task = asyncio.create_task(
@@ -182,6 +189,18 @@ class Runner:
         try:
             while True:
                 self._require_runner_owner(session_id, heartbeat)
+                running = db.one(
+                    "SELECT * FROM shot WHERE session_id=? AND status='running' ORDER BY id LIMIT 1",
+                    session_id,
+                )
+                if running is not None:
+                    if not self._has_full_auto_runner_owner(heartbeat):
+                        raise resource_full_auto.FullAutoRunError(
+                            409, "runner_work_unresolved",
+                            "A running shot must be reconciled before the session can continue.",
+                        )
+                    await self._recover_running_shot(session_id, running, heartbeat)
+                    continue
                 shot = db.one(
                     "SELECT * FROM shot WHERE session_id=? AND status='pending' ORDER BY id LIMIT 1",
                     session_id,
@@ -201,7 +220,7 @@ class Runner:
                 raise
             self._cancel.discard(session_id)
             if self._has_full_auto_owner(heartbeat) and exc.code in {
-                "comfy_unavailable",
+                "comfy_unavailable", "execution_outcome_unknown",
             }:
                 try:
                     resource_full_auto.advance_run(
@@ -240,6 +259,218 @@ class Runner:
             "UPDATE session SET status=? WHERE id=?",
             self._final_status(session_id, cancelled), session_id,
         )
+        if not cancelled and self._has_full_auto_owner(heartbeat):
+            self._settle_full_auto_run(session_id, heartbeat)
+
+    async def _recover_running_shot(self, session_id: int, shot: dict, heartbeat) -> None:
+        """Resume one saved attempt by observation only; this path never POSTs a prompt."""
+        from backend import resource_full_auto
+
+        claim = heartbeat.check()
+        runner_claim = heartbeat.claim
+        attempt = db.one(
+            "SELECT * FROM full_auto_execution_attempt WHERE shot_id = ? "
+            "ORDER BY attempt_number DESC LIMIT 1", shot["id"],
+        )
+        if attempt is None:
+            # The runner writes running before the durable intent and cannot POST
+            # until that intent transaction commits. With no journaled attempt,
+            # resuming this authorized shot is the only safe continuation.
+            self._owned_update(
+                session_id, heartbeat,
+                "UPDATE shot SET status='pending', error='', finished_at='' "
+                "WHERE id=? AND session_id=? AND status='running'",
+                shot["id"], session_id,
+            )
+            return
+        if attempt["run_id"] != claim.run_id or int(attempt["session_id"]) != session_id:
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown", "The saved attempt belongs to another Full Auto run.",
+            )
+        if attempt["completion_state"] == "completed":
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown", "The shot and its saved completion record disagree.",
+            )
+        if attempt["completion_state"] == "failed" or attempt["dispatch_state"] == "rejected":
+            resource_full_auto.finish_execution_attempt(
+                attempt["attempt_id"], claim, runner_claim,
+                outcome="failed",
+                error=attempt["error"] or "ComfyUI refused the saved generation attempt.",
+                recovery=True,
+            )
+            return
+
+        existing_file = self._recover_moved_attempt_file(attempt)
+        if existing_file is not None:
+            if attempt["completion_state"] != "output_available":
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "A moved output has no durable output receipt for its attempt.",
+                )
+            resource_full_auto.finish_execution_attempt(
+                attempt["attempt_id"], claim, runner_claim,
+                outcome="completed", filename=attempt["expected_filename"], recovery=True,
+            )
+            self._adopt_anchor(
+                db.jload(db.one("SELECT * FROM session WHERE id=?", session_id), "settings"),
+                shot, heartbeat,
+            )
+            return
+
+        try:
+            recovered = await self._recover_execution_attempt(attempt, heartbeat)
+        except resource_full_auto.FullAutoRunError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - uncertain remote state must stay blocked
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown", "The saved generation attempt could not be reconciled.",
+            ) from exc
+        if recovered is None:
+            if attempt["dispatch_state"] == "intent":
+                resource_full_auto.record_execution_dispatch(
+                    attempt["attempt_id"], heartbeat.check(), heartbeat.claim,
+                    state="outcome_unknown",
+                    error="ComfyUI did not provide unique corroborating evidence for this attempt.",
+                    recovery=True,
+                )
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The saved generation attempt has no unique queue, history or output match.",
+            )
+        if recovered.get("image") is not None:
+            image = recovered["image"]
+            correlation = recovered.get("correlation_evidence")
+            await self._finish_recovered_attempt_output(
+                session_id, shot, attempt, heartbeat, image, correlation,
+            )
+            return
+
+        prompt_id = recovered.get("prompt_id")
+        if not isinstance(prompt_id, str) or not prompt_id:
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown", "The saved generation attempt has no verified prompt ID.",
+            )
+        attempt = resource_full_auto.record_execution_dispatch(
+            attempt["attempt_id"], heartbeat.check(), heartbeat.claim,
+            state="acknowledged", prompt_id=prompt_id, recovery=True,
+        )
+        try:
+            history = await self._await_history(prompt_id, session_id, heartbeat)
+        except TimeoutError as exc:
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The saved ComfyUI execution did not settle before its timeout.",
+            ) from exc
+        if history is None:
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown", "The saved ComfyUI execution remains unsettled.",
+            )
+        await self._verify_attempt_server_identity(attempt, heartbeat)
+        try:
+            images = self._verified_attempt_images(attempt, history)
+        except Exception as exc:  # noqa: BLE001 - uncorroborated output is never adopted
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown", "ComfyUI history did not corroborate the saved attempt.",
+            ) from exc
+        if not images:
+            resource_full_auto.finish_execution_attempt(
+                attempt["attempt_id"], heartbeat.check(), heartbeat.claim,
+                outcome="failed", error=_history_error(history) or "ComfyUI returned no image.",
+                recovery=True,
+            )
+            return
+        await self._finish_recovered_attempt_output(
+            session_id, shot, attempt, heartbeat, images[0], None,
+        )
+
+    async def _finish_recovered_attempt_output(
+        self, session_id: int, shot: dict, attempt: dict, heartbeat,
+        image: dict, correlation_evidence: dict | None,
+    ) -> None:
+        from backend import resource_full_auto
+
+        resource_full_auto.record_execution_output(
+            attempt["attempt_id"], heartbeat.check(), heartbeat.claim,
+            image=image,
+            expected_filename=attempt.get("expected_filename") or _output_filename(shot, image),
+            correlation_evidence=correlation_evidence,
+            recovery=True,
+        )
+        expected_filename = attempt.get("expected_filename") or _output_filename(shot, image)
+        if (
+            not isinstance(expected_filename, str)
+            or not expected_filename
+            or expected_filename != Path(expected_filename).name
+            or "/" in expected_filename
+            or "\\" in expected_filename
+        ):
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown", "The saved output filename is invalid.",
+            )
+        destination = (self.sessions_dir / str(session_id) / expected_filename).resolve()
+        sessions_root = self.sessions_dir.resolve()
+        if sessions_root not in destination.parents:
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown", "The saved output path escaped the session folder.",
+            )
+        if destination.exists():
+            corroborated = self._recover_moved_attempt_file({
+                **attempt, "expected_filename": expected_filename,
+            })
+            if corroborated is None:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "The session output destination exists but does not match the saved attempt metadata.",
+                )
+            filename = expected_filename
+        else:
+            try:
+                filename = await self._collect(session_id, shot, image, heartbeat)
+            except OSError as exc:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "The recovered image could not be moved or verified; its attempt remains unresolved.",
+                ) from exc
+        resource_full_auto.finish_execution_attempt(
+            attempt["attempt_id"], heartbeat.check(), heartbeat.claim,
+            outcome="completed", filename=filename, recovery=True,
+        )
+        self._adopt_anchor(
+            db.jload(db.one("SELECT * FROM session WHERE id=?", session_id), "settings"),
+            shot, heartbeat,
+        )
+
+    def _recover_moved_attempt_file(self, attempt: dict) -> Path | None:
+        """Accept a moved output only when its PNG marker and graph match the journal."""
+        filename = attempt.get("expected_filename")
+        if (
+            not isinstance(filename, str) or not filename or filename != Path(filename).name
+            or "/" in filename or "\\" in filename
+        ):
+            return None
+        session_dir = (self.sessions_dir / str(attempt["session_id"])).resolve()
+        sessions_root = self.sessions_dir.resolve()
+        if sessions_root not in session_dir.parents:
+            return None
+        path = (session_dir / filename).resolve()
+        if path.parent != session_dir:
+            return None
+        if not path.is_file():
+            return None
+        try:
+            marker, graph = png_attempt_metadata(path)
+            from backend import resource_store
+
+            expected = build_attempt_metadata(attempt["client_id"], attempt)
+            if (
+                marker != expected or graph is None
+                or resource_store.canonical_digest(graph) != attempt["graph_digest"]
+                or not graph_has_prefix(graph, attempt["filename_prefix"])
+            ):
+                return None
+        except Exception:  # noqa: BLE001 - destination metadata is recovery evidence
+            return None
+        return path
 
     @staticmethod
     def _owned_update(session_id: int, heartbeat, sql: str, *params) -> int:
@@ -249,9 +480,14 @@ class Runner:
 
         with db.transaction():
             claim = heartbeat.check()
-            resource_full_auto.require_session_mutation_allowed(
-                session_id, claim=claim, allowed_phases=("execute",),
-            )
+            if claim is None:
+                pass
+            elif claim.requires_reconciliation:
+                resource_full_auto.require_execution_recovery_claim(session_id, claim)
+            else:
+                resource_full_auto.require_session_mutation_allowed(
+                    session_id, claim=claim, allowed_phases=("execute",),
+                )
             return db.run(sql, *params)
 
     @staticmethod
@@ -273,9 +509,103 @@ class Runner:
             return
         from backend import resource_full_auto
 
-        resource_full_auto.require_session_mutation_allowed(
-            session_id, claim=heartbeat.check(), allowed_phases=("execute",),
+        claim = heartbeat.check()
+        if claim is None:
+            return
+        if claim.requires_reconciliation:
+            resource_full_auto.require_execution_recovery_claim(session_id, claim)
+        else:
+            resource_full_auto.require_session_mutation_allowed(
+                session_id, claim=claim, allowed_phases=("execute",),
+            )
+
+    async def reconcile_full_auto_attempts(
+        self, session_id: int, claim,
+    ) -> tuple[bool | None, object, str | None]:
+        """Settle saved attempts under recovery authority without dispatching pending shots."""
+        from backend import resource_full_auto
+
+        # A recovery lease may have advanced the run epoch after this attempt
+        # was journaled. Its immutable intent cannot be adopted by a newer
+        # epoch, and this check must happen before waiting for the global runner
+        # slot so an irrecoverable attempt becomes an actionable blocker.
+        for running in db.q(
+            "SELECT id FROM shot WHERE session_id=? AND status='running' ORDER BY id",
+            session_id,
+        ):
+            attempt = db.one(
+                "SELECT run_id, session_id, run_epoch FROM full_auto_execution_attempt "
+                "WHERE shot_id=? ORDER BY attempt_number DESC LIMIT 1",
+                running["id"],
+            )
+            if attempt is not None and (
+                attempt["run_id"] != claim.run_id
+                or int(attempt["session_id"]) != session_id
+                or int(attempt["run_epoch"]) != claim.epoch
+            ):
+                return False, claim, "execution_outcome_unknown"
+
+        runner_claim = resource_full_auto.acquire_runner_claim(
+            session_id, run_claim=claim, recovery=True,
         )
+        if runner_claim is None:
+            return None, claim, None
+        heartbeat = resource_full_auto.RunnerClaimHeartbeat(runner_claim, claim)
+        outcome_claim = claim
+        blocker = None
+        safe = False
+        try:
+            async with heartbeat:
+                while True:
+                    self._require_runner_owner(session_id, heartbeat)
+                    running = db.one(
+                        "SELECT * FROM shot WHERE session_id=? AND status='running' ORDER BY id LIMIT 1",
+                        session_id,
+                    )
+                    if running is None:
+                        break
+                    await self._recover_running_shot(session_id, running, heartbeat)
+
+                outstanding = db.one(
+                    "SELECT 1 FROM full_auto_execution_attempt attempt "
+                    "JOIN shot ON shot.id = attempt.shot_id "
+                    "WHERE attempt.run_id = ? AND shot.status != 'running' "
+                    "AND attempt.completion_state IN ('pending', 'output_available') LIMIT 1",
+                    claim.run_id,
+                )
+                if outstanding is not None:
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "execution_outcome_unknown",
+                        "A saved Full Auto attempt is not attached to a recoverable running shot.",
+                    )
+                unresolved = db.one(
+                    "SELECT 1 FROM shot WHERE status='running' LIMIT 1",
+                )
+                if unresolved is not None:
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "execution_outcome_unknown",
+                        "Another shot remains in flight during Full Auto recovery.",
+                    )
+                safe = True
+                outcome_claim = heartbeat.check()
+        except resource_full_auto.FullAutoRunError as exc:
+            blocker = exc.code
+            if heartbeat.run_claim is not None:
+                outcome_claim = heartbeat.run_claim
+        except Exception:  # noqa: BLE001 - any unclassified evidence remains unresolved
+            blocker = "execution_outcome_unknown"
+            if heartbeat.run_claim is not None:
+                outcome_claim = heartbeat.run_claim
+            log.exception("Full Auto attempt recovery stopped for session %s", session_id)
+        finally:
+            try:
+                released = resource_full_auto.release_runner_claim(heartbeat.claim)
+                if not released:
+                    safe = False
+                    blocker = blocker or "execution_outcome_unknown"
+            except resource_full_auto.FullAutoRunError:
+                log.warning("Full Auto recovery runner claim could not be released for session %s", session_id)
+        return safe, outcome_claim, blocker
 
     @staticmethod
     def _renew_runner_owner(session_id: int, heartbeat) -> None:
@@ -299,6 +629,37 @@ class Runner:
                       COALESCE(SUM(status='failed'), 0) AS failed
                FROM shot WHERE session_id=?""", session_id)
         return "failed" if counts["failed"] and not counts["done"] else "done"
+
+    @staticmethod
+    def _settle_full_auto_run(session_id: int, heartbeat) -> None:
+        from backend import resource_full_auto
+
+        claim = heartbeat.check()
+        counts = db.one(
+            "SELECT COUNT(*) AS total, COALESCE(SUM(status='done'), 0) AS done, "
+            "COALESCE(SUM(status='failed'), 0) AS failed, "
+            "COALESCE(SUM(status='cancelled'), 0) AS cancelled, "
+            "COALESCE(SUM(status IN ('pending', 'running')), 0) AS unfinished "
+            "FROM shot WHERE session_id = ?", session_id,
+        )
+        if counts["total"] == 0 or counts["unfinished"] or counts["cancelled"]:
+            return
+        if counts["done"] == counts["total"]:
+            outcome = "all_succeeded"
+        elif counts["failed"] == counts["total"]:
+            outcome = "all_shots_failed"
+        elif counts["done"] and counts["failed"]:
+            outcome = "mixed"
+        else:
+            resource_full_auto.advance_run(
+                claim, "blocked", blocker_code="run_work_unsettled",
+            )
+            return
+        unresolved = resource_full_auto.unresolved_work_count(session_id, claim.run_id)
+        resource_full_auto.complete_run(
+            claim,
+            resource_full_auto.CompletionEvidence(outcome, unresolved),
+        )
 
     async def _run_shot(self, session_id: int, shot: dict, heartbeat=None) -> None:
         from backend import resource_full_auto
@@ -816,7 +1177,9 @@ class Runner:
         else:
             resource_full_auto.clear_comfy_probe_state(heartbeat.check(), scope)
 
-    async def _verify_attempt_server_identity(self, attempt: dict, heartbeat) -> dict:
+    async def _verify_attempt_server_identity(
+        self, attempt: dict, heartbeat, *, recover_transport: bool = False,
+    ) -> dict:
         """Require the same configured ComfyUI identity before accepting attempt evidence."""
         from backend import resource_full_auto
 
@@ -824,12 +1187,23 @@ class Runner:
         self._require_runner_owner(session_id, heartbeat)
         try:
             frozen = json.loads(attempt["capability_evidence_json"])
-            current = await self.comfy.execution_capabilities()
-        except Exception as exc:  # noqa: BLE001 - identity outage cannot validate output
+        except Exception as exc:  # noqa: BLE001 - malformed saved identity is not retryable
             raise resource_full_auto.FullAutoRunError(
                 409, "execution_outcome_unknown",
-                "ComfyUI identity could not be revalidated; the attempt remains unresolved.",
+                "The saved ComfyUI identity evidence is invalid; the attempt remains unresolved.",
             ) from exc
+        if recover_transport:
+            current = await self._read_attempt_comfy(
+                attempt, heartbeat, "capabilities", self.comfy.execution_capabilities,
+            )
+        else:
+            try:
+                current = await self.comfy.execution_capabilities()
+            except Exception as exc:  # noqa: BLE001 - identity outage cannot validate output
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "ComfyUI identity could not be revalidated; the attempt remains unresolved.",
+                ) from exc
         self._require_runner_owner(session_id, heartbeat)
         if current != frozen:
             raise resource_full_auto.FullAutoRunError(
@@ -837,6 +1211,68 @@ class Runner:
                 "ComfyUI identity changed; the attempt remains unresolved.",
             )
         return current
+
+    @staticmethod
+    def _attempt_comfy_probe_scope(attempt: dict, boundary: str) -> str:
+        digest = hashlib.sha256(
+            f"{attempt['attempt_id']}:{boundary}".encode("utf-8"),
+        ).hexdigest()[:32]
+        return f"dispatch:{digest}"
+
+    @staticmethod
+    def _retryable_comfy_read_error(error: Exception) -> bool:
+        return (
+            isinstance(error, (OSError, httpx.TransportError))
+            or (
+                isinstance(error, httpx.HTTPStatusError)
+                and error.response.status_code >= 500
+            )
+        )
+
+    async def _read_attempt_comfy(self, attempt: dict, heartbeat, boundary: str, read):
+        """Read recovery evidence with a durable cursor for transport failures only."""
+        from backend import resource_full_auto
+
+        session_id = int(attempt["session_id"])
+        scope = self._attempt_comfy_probe_scope(attempt, boundary)
+        state = resource_full_auto.comfy_probe_state(heartbeat.check(), scope)
+
+        async def guarded_read():
+            try:
+                return await read()
+            except resource_full_auto.FullAutoRunError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - classify the remote read boundary
+                if self._retryable_comfy_read_error(exc):
+                    raise
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "ComfyUI returned unusable attempt evidence; the attempt remains unresolved.",
+                ) from exc
+
+        if state["pending"]:
+            result, _waited = await self._recover_comfy_read(
+                session_id, heartbeat, scope, guarded_read, state=state,
+            )
+            return result
+
+        try:
+            result = await guarded_read()
+        except resource_full_auto.FullAutoRunError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - only transport failures get bounded retries
+            if not self._retryable_comfy_read_error(exc):
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "ComfyUI attempt evidence could not be read; the attempt remains unresolved.",
+                ) from exc
+            state = resource_full_auto.schedule_comfy_probe(heartbeat.check(), scope)
+            result, _waited = await self._recover_comfy_read(
+                session_id, heartbeat, scope, guarded_read, state=state,
+            )
+            return result
+        resource_full_auto.clear_comfy_probe_state(heartbeat.check(), scope)
+        return result
 
     def _verified_attempt_images(self, attempt: dict, history: dict) -> list[dict]:
         """Validate a completed history record and its SaveImage filename before collection."""
@@ -924,10 +1360,16 @@ class Runner:
 
         self._require_runner_owner(int(attempt["session_id"]), heartbeat)
         try:
-            await self._verify_attempt_server_identity(attempt, heartbeat)
+            await self._verify_attempt_server_identity(
+                attempt, heartbeat, recover_transport=True,
+            )
 
-            queue = await self.comfy.queue_state()
-            history = await self.comfy.history_entries()
+            queue = await self._read_attempt_comfy(
+                attempt, heartbeat, "queue", self.comfy.queue_state,
+            )
+            history = await self._read_attempt_comfy(
+                attempt, heartbeat, "history", self.comfy.history_entries,
+            )
             if (
                 not isinstance(queue, dict)
                 or not isinstance(queue.get("queue_running"), list)
@@ -982,12 +1424,16 @@ class Runner:
             if len(queue_matches) + len(history_matches) > 1:
                 return None
             if queue_matches or history_matches:
-                await self._verify_attempt_server_identity(attempt, heartbeat)
+                await self._verify_attempt_server_identity(
+                    attempt, heartbeat, recover_transport=True,
+                )
                 return {"prompt_id": (queue_matches or history_matches)[0]}
 
             output = self._recover_output_from_png(attempt, expected, resource_store)
             if output is not None:
-                await self._verify_attempt_server_identity(attempt, heartbeat)
+                await self._verify_attempt_server_identity(
+                    attempt, heartbeat, recover_transport=True,
+                )
             return output
         except resource_full_auto.FullAutoRunError:
             raise

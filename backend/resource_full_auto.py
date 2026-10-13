@@ -236,7 +236,10 @@ class RunnerClaimHeartbeat:
             raise self.error
         _require_runner_claim(self.claim, now_text=db.now())
         if self.run_claim is not None:
-            _require_claim(self.run_claim, now_text=db.now(), reconciliation=False)
+            _require_claim(
+                self.run_claim, now_text=db.now(),
+                reconciliation=self.run_claim.requires_reconciliation,
+            )
         return self.run_claim
 
     def renew_now(self) -> RunClaim | None:
@@ -593,8 +596,16 @@ def _current_authority_issue(row: dict, now_text: str) -> str | None:
     return None
 
 
+def _new_work_authority_issue(row: dict, now_text: str) -> str | None:
+    """Include the live feature gate when deciding whether more work may start."""
+    if not resource_planning.is_enabled():
+        return "resource_planning_disabled"
+    return _current_authority_issue(row, now_text)
+
+
 def _authority_error(code: str) -> FullAutoRunError:
     messages = {
+        "resource_planning_disabled": "Resource planning is disabled by configuration.",
         "plan_revision_stale": "The current plan changed; refresh consent before continuing.",
         "authorization_expired": "The Full Auto authorization has expired.",
         "authorization_invalid": "The persisted Full Auto authorization is invalid.",
@@ -1273,16 +1284,34 @@ def unresolved_work_count(session_id: int, run_id: str) -> int:
         session_id, run_id,
     )
     count += sum(item["state"] not in {"succeeded", "failed", "cancelled", "expired"} for item in operations)
-    shots = db.q("SELECT status FROM shot WHERE session_id = ?", session_id)
+    shots = db.q(
+        "SELECT shot.id, shot.status, "
+        "(SELECT attempt.run_id FROM full_auto_execution_attempt attempt "
+        "WHERE attempt.shot_id = shot.id ORDER BY attempt.attempt_number DESC LIMIT 1) AS attempt_run_id, "
+        "(SELECT attempt.completion_state FROM full_auto_execution_attempt attempt "
+        "WHERE attempt.shot_id = shot.id ORDER BY attempt.attempt_number DESC LIMIT 1) AS attempt_state "
+        "FROM shot WHERE shot.session_id = ?", session_id,
+    )
     admission = db.one("SELECT run_id FROM full_auto_runner_admission WHERE run_id = ?", run_id)
-    # Failed status alone cannot prove a remote attempt settled until the later
-    # attempt journal records that observation. Keep failed shots unresolved.
-    count += sum(item["status"] not in {"done", "cancelled"} for item in shots)
+    # A failed status alone is ambiguous. Its own durable failed attempt is a
+    # settlement receipt; every other failed shot remains conservative.
+    count += sum(
+        item["status"] not in {"done", "cancelled"}
+        and not (
+            item["status"] == "failed" and item["attempt_run_id"] == run_id
+            and item["attempt_state"] == "failed"
+        )
+        for item in shots
+    )
     if admission is not None:
         try:
             expected = int(current_authorization(run_id)["authorization"]["summary"]["photo_count"])
             linked = db.q(
-                """SELECT sh.id, sh.session_id, sh.status
+                """SELECT sh.id, sh.session_id, sh.status,
+                          (SELECT attempt.completion_state FROM full_auto_execution_attempt attempt
+                           WHERE attempt.shot_id = sh.id ORDER BY attempt.attempt_number DESC LIMIT 1) AS attempt_state,
+                          (SELECT attempt.run_id FROM full_auto_execution_attempt attempt
+                           WHERE attempt.shot_id = sh.id ORDER BY attempt.attempt_number DESC LIMIT 1) AS attempt_run_id
                    FROM full_auto_submission_receipt receipt
                    LEFT JOIN shot sh ON sh.id = receipt.shot_id
                    WHERE receipt.run_id = ?""",
@@ -1292,7 +1321,14 @@ def unresolved_work_count(session_id: int, run_id: str) -> int:
                 count += 1
             count += sum(
                 shot["id"] is None or shot["session_id"] != session_id
-                or shot["status"] not in {"done", "cancelled"}
+                or (
+                    shot["status"] not in {"done", "cancelled"}
+                    and not (
+                        shot["status"] == "failed"
+                        and shot["attempt_run_id"] == run_id
+                        and shot["attempt_state"] == "failed"
+                    )
+                )
                 for shot in linked
             )
         except (FullAutoRunError, TypeError, KeyError, ValueError):
@@ -2073,7 +2109,7 @@ def claim_run(run_id: str, *, now_text: str | None = None) -> RunClaim:
             )
 
         if not requires_reconciliation:
-            authority_issue = _current_authority_issue(row, timestamp)
+            authority_issue = _new_work_authority_issue(row, timestamp)
         if authority_issue is not None:
             # Preserve the run identity while making stale authority explicit.
             # Commit this blocker before returning the refusal to the caller.
@@ -2209,6 +2245,7 @@ def acquire_runner_claim(
     session_id: int,
     *,
     run_claim: RunClaim | None = None,
+    recovery: bool = False,
     now_text: str | None = None,
 ) -> RunnerClaim | None:
     """Reserve the single local runner or return None for an eligible Full Auto wait."""
@@ -2216,24 +2253,56 @@ def acquire_runner_claim(
         def validate(timestamp: str) -> tuple[dict | None, dict, bool]:
             run = None
             if run_claim is not None:
-                run = require_session_mutation_allowed(
-                    session_id, claim=run_claim, allowed_phases=("execute",),
-                )
-                if run is None or run["phase"] != "execute":
+                if recovery:
+                    run = _require_claim(
+                        run_claim, now_text=timestamp,
+                        reconciliation=run_claim.requires_reconciliation,
+                    )
+                    recovering_expired_execute = (
+                        run_claim.requires_reconciliation
+                        and run["phase"] == "reconcile"
+                        and run["resume_phase"] == "execute"
+                    )
+                    recovering_admitted_execute = (
+                        not run_claim.requires_reconciliation and run["phase"] == "execute"
+                    )
+                    if (
+                        int(run["session_id"]) != session_id
+                        or run["state"] != "active"
+                        or run["cancel_intent"]
+                        or not (recovering_expired_execute or recovering_admitted_execute)
+                        or db.one(
+                            "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?",
+                            run_claim.run_id,
+                        ) is None
+                    ):
+                        raise FullAutoRunError(
+                            409, "run_owner_stale", "The Full Auto recovery owner is stale.",
+                        )
+                else:
+                    run = require_session_mutation_allowed(
+                        session_id, claim=run_claim, allowed_phases=("execute",),
+                    )
+                if run is None or (not recovery and run["phase"] != "execute"):
                     raise FullAutoRunError(
                         409, "run_owner_stale", "The Full Auto execution owner is stale.",
                     )
-                run = _require_claim(run_claim, now_text=timestamp, reconciliation=False)
-                if db.one(
+                run = _require_claim(
+                    run_claim, now_text=timestamp,
+                    reconciliation=run_claim.requires_reconciliation,
+                )
+                has_admission = db.one(
                     "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", run_claim.run_id,
-                ) is not None:
+                ) is not None
+                if (recovery and not has_admission) or (not recovery and has_admission):
                     raise FullAutoRunError(
                         409, "full_auto_runner_already_admitted",
-                        "The Full Auto runner was already admitted; its execution outcome requires reconciliation.",
+                        "The Full Auto runner admission does not match this start.",
                     )
-                authority_issue = _current_authority_issue(run, timestamp)
-                if authority_issue is not None:
-                    raise _authority_error(authority_issue)
+                if not recovery:
+                    authority_issue = _new_work_authority_issue(run, timestamp)
+                    if authority_issue is not None:
+                        raise _authority_error(authority_issue)
             else:
                 require_session_mutation_allowed(session_id)
                 waiter = next(iter(_eligible_runner_waiters(timestamp)), None)
@@ -2262,12 +2331,18 @@ def acquire_runner_claim(
             unresolved = db.one(
                 "SELECT id FROM shot WHERE status = 'running' LIMIT 1",
             )
-            if unresolved is not None:
+            recover_owned_running = False
+            if recovery and run_claim is not None and unresolved is not None:
+                running = db.q("SELECT id, session_id FROM shot WHERE status = 'running'")
+                recover_owned_running = bool(running) and all(
+                    int(item["session_id"]) == session_id for item in running
+                )
+            if unresolved is not None and not recover_owned_running:
                 return run, slot, False
 
             if run_claim is not None:
                 waiters = _eligible_runner_waiters(timestamp, exclude_run_id=run_claim.run_id)
-                if run["state"] != "waiting_runner" and waiters:
+                if run["state"] != "waiting_runner" and waiters and not recover_owned_running:
                     return run, slot, False
                 if run["state"] == "waiting_runner":
                     current_key = (run["runner_ready_at"] or "", run["run_id"])
@@ -3641,6 +3716,97 @@ def admit_runner_start(session_id: int, claim: RunClaim) -> dict:
         return row
 
 
+def validate_runner_recovery(session_id: int, claim: RunClaim) -> dict:
+    """Validate the existing admission before resuming its journaled attempts."""
+    from backend import session_plan
+
+    with db.transaction():
+        row = require_session_mutation_allowed(
+            session_id, claim=claim, allowed_phases=("execute",),
+        )
+        admission = db.one(
+            "SELECT * FROM full_auto_runner_admission WHERE run_id = ?",
+            claim.run_id,
+        )
+        if row is None or row["run_id"] != claim.run_id or admission is None:
+            raise FullAutoRunError(
+                409, "full_auto_execution_state_stale",
+                "The Full Auto runner admission is unavailable for recovery.",
+            )
+        session_plan._require_resource_planning_enabled()
+        _validate_execution_dependencies(row)
+        plan_revision = int(row["plan_revision"])
+        current_revision, plan = session_plan._load_current_resource_plan(session_id)
+        if current_revision != plan_revision or int(admission["plan_revision"]) != plan_revision:
+            raise FullAutoRunError(
+                409, "plan_revision_stale", "The Full Auto plan changed before execution recovery.",
+            )
+        progress = _read_prepare_progress(claim.run_id)
+        if progress["completed_take_ids"] != progress["target_ids"]:
+            raise FullAutoRunError(
+                409, "prepare_progress_stale", "Full Auto preparation is incomplete.",
+            )
+        review = session_plan._full_auto_duplicate_review_evidence(
+            session_id, current_revision, plan, claim.run_id,
+        )
+        session_plan._require_full_auto_review_ready(review)
+        session_plan._require_current_full_auto_policy_approval(
+            claim.run_id, session_id, review,
+        )
+        receipts = _read_submission_receipts(
+            claim.run_id, session_id, plan_revision, progress["target_ids"],
+        )
+        if len(receipts) != len(progress["target_ids"]):
+            raise FullAutoRunError(
+                409, "full_auto_submission_incomplete",
+                "Every Full Auto target must be linked before execution recovery.",
+            )
+        submission_digest = _digest({
+            "run_id": claim.run_id,
+            "plan_revision": plan_revision,
+            "receipts": [
+                {key: item[key] for key in (
+                    "target_index", "take_id", "prepared_take_id", "shot_id", "snapshot_digest",
+                )}
+                for item in receipts
+            ],
+        })
+        shots = db.q("SELECT id, status FROM shot WHERE session_id = ? ORDER BY id", session_id)
+        if (
+            admission["session_id"] != session_id
+            or admission["target_digest"] != review["target_digest"]
+            or admission["submission_digest"] != submission_digest
+            or [item["id"] for item in shots] != [item["shot_id"] for item in receipts]
+            or any(item["status"] not in {"pending", "running", "done", "failed"} for item in shots)
+            or sum(item["status"] == "running" for item in shots) > 1
+        ):
+            raise FullAutoRunError(
+                409, "full_auto_execution_state_stale",
+                "The Full Auto runner state no longer matches its persisted admission.",
+            )
+        for shot in shots:
+            attempt = db.one(
+                "SELECT * FROM full_auto_execution_attempt WHERE shot_id = ? "
+                "ORDER BY attempt_number DESC LIMIT 1", shot["id"],
+            )
+            if attempt is None:
+                if shot["status"] in {"done", "failed"}:
+                    continue
+                continue
+            if (
+                attempt["run_id"] != claim.run_id
+                or int(attempt["session_id"]) != session_id
+                or (shot["status"] == "done" and attempt["completion_state"] != "completed")
+                or (shot["status"] == "failed" and attempt["completion_state"] != "failed")
+                or (shot["status"] == "running" and attempt["completion_state"] == "completed")
+            ):
+                raise FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "A saved execution attempt does not match its shot state.",
+                )
+        return row
+
+
 def _validate_execution_dependencies(run: dict) -> None:
     """Compare live dispatch inputs with the exact grant that admitted this run."""
     from backend import resource_store, workflow_binding
@@ -4033,6 +4199,82 @@ def _attempt_matches_claim(attempt: dict, claim: RunClaim, runner_claim: RunnerC
     )
 
 
+def _attempt_matches_recovery_claim(
+    attempt: dict, claim: RunClaim, runner_claim: RunnerClaim,
+) -> bool:
+    if not _authentic_claim(claim) or not isinstance(runner_claim, RunnerClaim):
+        return False
+    expected_runner_signature = hmac.new(
+        _RUNNER_CLAIM_KEY, _runner_claim_payload(runner_claim), hashlib.sha256,
+    ).hexdigest()
+    return (
+        hmac.compare_digest(expected_runner_signature, runner_claim._signature)
+        and attempt["run_id"] == claim.run_id == runner_claim.run_id
+        and int(attempt["session_id"]) == claim.session_id == runner_claim.session_id
+        and int(attempt["run_epoch"]) == claim.epoch
+        and int(attempt["run_fencing_token"]) <= claim.fencing_token
+        and int(attempt["runner_fencing_token"]) <= runner_claim.fencing_token
+        and runner_claim.owner_kind == "full_auto"
+    )
+
+
+def _require_execution_recovery_owner(
+    attempt: dict, claim: RunClaim, runner_claim: RunnerClaim, *, now_text: str,
+) -> dict:
+    runner_row = _require_runner_claim(runner_claim, now_text=now_text)
+    run = _require_claim(
+        claim, now_text=now_text, reconciliation=claim.requires_reconciliation,
+    )
+    phase_is_current_execute = (
+        not claim.requires_reconciliation and run["phase"] == "execute"
+    )
+    phase_is_recovery_execute = (
+        claim.requires_reconciliation and run["phase"] == "reconcile"
+        and run["resume_phase"] == "execute"
+    )
+    if (
+        run is None or run["run_id"] != claim.run_id
+        or run["state"] != "active"
+        or not (phase_is_current_execute or phase_is_recovery_execute)
+        or runner_claim.owner_kind != "full_auto"
+        or runner_claim.session_id != claim.session_id
+        or runner_claim.run_id != claim.run_id
+        or runner_row["run_id"] != claim.run_id
+        or not _attempt_matches_recovery_claim(attempt, claim, runner_claim)
+    ):
+        raise FullAutoRunError(409, "run_owner_stale", "The execution recovery owner is stale.")
+    shot = db.one(
+        "SELECT session_id, status FROM shot WHERE id = ?", attempt["shot_id"],
+    )
+    if (
+        shot is None or int(shot["session_id"]) != claim.session_id
+        or shot["status"] != "running"
+    ):
+        raise FullAutoRunError(409, "run_owner_stale", "The execution recovery shot is stale.")
+    return run
+
+
+def require_execution_recovery_claim(
+    session_id: int, claim: RunClaim, *, now_text: str | None = None,
+) -> dict:
+    """Validate a live execute or execute-reconciliation owner without new authority checks."""
+    timestamp = _now_text(now_text)
+    run = _require_claim(
+        claim, now_text=timestamp, reconciliation=claim.requires_reconciliation,
+    )
+    phase_is_current = not claim.requires_reconciliation and run["phase"] == "execute"
+    phase_is_recovery = (
+        claim.requires_reconciliation and run["phase"] == "reconcile"
+        and run["resume_phase"] == "execute"
+    )
+    if (
+        int(run["session_id"]) != session_id or run["state"] != "active"
+        or run["cancel_intent"] or not (phase_is_current or phase_is_recovery)
+    ):
+        raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+    return run
+
+
 def record_execution_dispatch(
     attempt_id: str,
     claim: RunClaim,
@@ -4041,6 +4283,7 @@ def record_execution_dispatch(
     state: Literal["acknowledged", "outcome_unknown", "rejected"],
     prompt_id: str | None = None,
     error: str = "",
+    recovery: bool = False,
 ) -> dict:
     """Persist a dispatch receipt against its immutable attempt fences.
 
@@ -4058,7 +4301,13 @@ def record_execution_dispatch(
         attempt = db.one(
             "SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id,
         )
-        if attempt is None or not _attempt_matches_claim(attempt, claim, runner_claim):
+        if attempt is None:
+            raise FullAutoRunError(409, "run_owner_stale", "The execution attempt receipt is stale.")
+        if recovery:
+            _require_execution_recovery_owner(
+                attempt, claim, runner_claim, now_text=_now_text(None),
+            )
+        elif not _attempt_matches_claim(attempt, claim, runner_claim):
             raise FullAutoRunError(409, "run_owner_stale", "The execution attempt receipt is stale.")
         if (
             state == "acknowledged"
@@ -4119,6 +4368,7 @@ def record_execution_output(
     image: dict,
     expected_filename: str,
     correlation_evidence: dict | None = None,
+    recovery: bool = False,
 ) -> dict:
     """Save remote output evidence before the normal output-file move begins."""
     evidence = {
@@ -4130,23 +4380,30 @@ def record_execution_output(
         evidence["correlation"] = correlation_evidence
     with db.transaction():
         timestamp = _now_text(None)
-        runner_row = _require_runner_claim(runner_claim, now_text=timestamp)
-        if (
-            runner_claim.owner_kind != "full_auto"
-            or runner_claim.session_id != claim.session_id
-            or runner_claim.run_id != claim.run_id
-            or runner_row["run_id"] != claim.run_id
-        ):
-            raise FullAutoRunError(409, "runner_owner_stale", "The Full Auto runner owner is stale.")
-        run = require_session_mutation_allowed(
-            claim.session_id, claim=claim, allowed_phases=("execute",),
-        )
-        if run is None or run["run_id"] != claim.run_id:
-            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
         attempt = db.one(
             "SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id,
         )
-        if attempt is None or not _attempt_matches_claim(attempt, claim, runner_claim):
+        if attempt is None:
+            raise FullAutoRunError(409, "run_owner_stale", "The execution output receipt is stale.")
+        if recovery:
+            _require_execution_recovery_owner(
+                attempt, claim, runner_claim, now_text=timestamp,
+            )
+        else:
+            runner_row = _require_runner_claim(runner_claim, now_text=timestamp)
+            if (
+                runner_claim.owner_kind != "full_auto"
+                or runner_claim.session_id != claim.session_id
+                or runner_claim.run_id != claim.run_id
+                or runner_row["run_id"] != claim.run_id
+            ):
+                raise FullAutoRunError(409, "runner_owner_stale", "The Full Auto runner owner is stale.")
+            run = require_session_mutation_allowed(
+                claim.session_id, claim=claim, allowed_phases=("execute",),
+            )
+            if run is None or run["run_id"] != claim.run_id:
+                raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        if not recovery and not _attempt_matches_claim(attempt, claim, runner_claim):
             raise FullAutoRunError(409, "run_owner_stale", "The execution output receipt is stale.")
         encoded = _canonical_json(evidence)
         if attempt["completion_state"] == "output_available":
@@ -4195,21 +4452,31 @@ def finish_execution_attempt(
     outcome: Literal["completed", "failed"],
     filename: str = "",
     error: str = "",
+    recovery: bool = False,
 ) -> dict:
     """Commit attempt settlement and the existing shot result in one transaction."""
     with db.transaction():
         timestamp = _now_text(None)
-        _require_runner_claim(runner_claim, now_text=timestamp)
-        row = require_session_mutation_allowed(
-            claim.session_id, claim=claim, allowed_phases=("execute",),
-        )
         attempt = db.one(
             "SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id,
         )
-        if (
-            row is None or attempt is None or not _attempt_matches_claim(attempt, claim, runner_claim)
-            or attempt["completion_state"] not in {"pending", "output_available", "failed"}
-        ):
+        if attempt is None:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution result is stale.")
+        if recovery:
+            _require_execution_recovery_owner(
+                attempt, claim, runner_claim, now_text=timestamp,
+            )
+        else:
+            _require_runner_claim(runner_claim, now_text=timestamp)
+            row = require_session_mutation_allowed(
+                claim.session_id, claim=claim, allowed_phases=("execute",),
+            )
+            if (
+                row is None or row["run_id"] != claim.run_id
+                or not _attempt_matches_claim(attempt, claim, runner_claim)
+            ):
+                raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution result is stale.")
+        if attempt["completion_state"] not in {"pending", "output_available", "failed"}:
             raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution result is stale.")
         shot = db.one(
             "SELECT status FROM shot WHERE id = ? AND session_id = ?",
@@ -5363,7 +5630,7 @@ def reconcile_expired_lease(
         if row["resume_phase"] not in _MAIN_PHASES:
             raise FullAutoRunError(409, "run_reconciliation_required", "The saved Full Auto phase is unavailable.")
         if evidence.outcome == "safe_to_continue" and evidence.unresolved_work == 0:
-            authority_issue = _current_authority_issue(row, timestamp)
+            authority_issue = _new_work_authority_issue(row, timestamp)
             if authority_issue is None:
                 phase, state, blocker = row["resume_phase"], row["state"], None
                 lease = row["lease_expires_at"]

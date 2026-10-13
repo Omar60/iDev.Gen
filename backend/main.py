@@ -109,23 +109,44 @@ def _recover_interrupted_runner_work() -> None:
         owned_session_id = (
             slot["session_id"] if slot is not None and slot["owner_kind"] is not None else None
         )
-        if owned_session_id is None:
-            db.run("UPDATE session SET status='failed' WHERE status='running'")
+        journaled_sessions = {
+            int(row["session_id"]) for row in db.q(
+                "SELECT DISTINCT shot.session_id FROM shot WHERE shot.status='running' AND ("
+                "EXISTS (SELECT 1 FROM full_auto_execution_attempt attempt WHERE attempt.shot_id=shot.id) "
+                "OR EXISTS (SELECT 1 FROM full_auto_runner_admission admission "
+                "JOIN full_auto_submission_receipt receipt ON receipt.run_id=admission.run_id "
+                "WHERE admission.session_id=shot.session_id AND receipt.shot_id=shot.id))",
+            )
+        }
+        # Runner.start commits admission and session.status='running' together,
+        # before the runner task marks its first shot running. Preserve that
+        # pre-shot crash cut from the run/shot journal instead of classifying
+        # the session as legacy work.
+        journaled_sessions.update(
+            int(row["session_id"]) for row in db.q(
+                "SELECT DISTINCT session.id AS session_id FROM session "
+                "JOIN full_auto_runner_admission admission "
+                "ON admission.session_id=session.id "
+                "JOIN full_auto_submission_receipt receipt "
+                "ON receipt.run_id=admission.run_id "
+                "WHERE session.status='running'",
+            )
+        )
+        # Snapshot protected journal identities before touching any legacy rows.
+        running_sessions = db.q("SELECT id FROM session WHERE status='running'")
+        running_shots = db.q("SELECT id, session_id FROM shot WHERE status='running'")
+        for item in running_sessions:
+            session_id = int(item["id"])
+            if session_id == owned_session_id or session_id in journaled_sessions:
+                continue
+            db.run("UPDATE session SET status='failed' WHERE id=? AND status='running'", session_id)
+        for item in running_shots:
+            session_id = int(item["session_id"])
+            if session_id == owned_session_id or session_id in journaled_sessions:
+                continue
             db.run(
                 "UPDATE shot SET status='failed', error='interrupted when the app closed' "
-                "WHERE status='running'",
-            )
-        else:
-            # An expired lease cannot prove that ComfyUI stopped accepting work.
-            # Keep this owner's running evidence so new admissions fail closed.
-            db.run(
-                "UPDATE session SET status='failed' WHERE status='running' AND id<>?",
-                owned_session_id,
-            )
-            db.run(
-                "UPDATE shot SET status='failed', error='interrupted when the app closed' "
-                "WHERE status='running' AND session_id<>?",
-                owned_session_id,
+                "WHERE id=? AND status='running'", item["id"],
             )
 
 
@@ -133,10 +154,11 @@ def _recover_interrupted_runner_work() -> None:
 async def lifespan(app: FastAPI):
     db.connect(DATA_DIR / "idevgen.db")
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    _recover_interrupted_runner_work()
     resource_selection.startup_recovery()
     authoring_operations.startup_recovery(planning_enabled=is_resource_planning_enabled())
     photo_staging.startup_recovery()
+    _recover_interrupted_runner_work()
+    _schedule_startup_full_auto_runs()
     yield
 
 
@@ -4012,6 +4034,11 @@ async def create_guided_session(request: Request):
         )
     except guided_sessions.GuidedSessionError as exc:
         return _stable_error(exc.status_code, exc.code, exc.message, current=exc.current)
+    created = json.loads(response_json)
+    run_id = created.get("full_auto_run_id")
+    if isinstance(run_id, str) and run_id:
+        # create_or_replay has committed the session, plan, authorization and run.
+        _schedule_full_auto_run(run_id)
     return Response(
         content=response_json,
         status_code=201 if was_new else 200,
@@ -4338,7 +4365,7 @@ def cancel_scoped_full_auto_run(
 
 
 @app.post("/api/sessions/{sid}/full-auto/{run_id}/resume")
-def resume_scoped_full_auto_run(
+async def resume_scoped_full_auto_run(
     p: FullAutoResumeIn,
     sid: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
     run_id: str = PathParam(min_length=1, max_length=200),
@@ -4356,6 +4383,8 @@ def resume_scoped_full_auto_run(
             defer_claim=True,
             expected_session_id=sid,
         )
+        if result.view.get("state") in {"active", "waiting_authoring", "waiting_runner"}:
+            _schedule_full_auto_run(run_id)
         return JSONResponse(
             content=result.view,
             status_code=200 if result.replayed else 202,
@@ -4821,6 +4850,11 @@ async def _run_prepare_takes_operation(
             except Exception:  # noqa: BLE001 - the run transition below also fences stale slots
                 pass
         blocker_code = getattr(failure, "code", None)
+        if (
+            isinstance(failure, authoring_operations.AuthoringOperationError)
+            and isinstance(failure.__cause__, workflow_binding.WorkflowChanged)
+        ):
+            blocker_code = "workflow_changed"
         if full_auto_claim is not None and isinstance(
             failure, resource_preparation.WriterOutputInvalid,
         ):
@@ -4832,6 +4866,7 @@ async def _run_prepare_takes_operation(
             "policy_changed", "resource_planning_disabled", "budget_exhausted",
             "assistant_unavailable", "assistant_transport_error", "assistant_rate_limited",
             "assistant_refused", "writer_output_invalid", "provider_changed",
+            "workflow_changed", "dependency_changed",
         }:
             try:
                 full_auto_claim = resource_full_auto.renew_run_claim(full_auto_claim)
@@ -4973,11 +5008,16 @@ async def _recover_expired_full_auto_prepare_owner(
 
 async def _run_full_auto_preparation(
     claim: resource_full_auto.RunClaim,
-) -> dict:
+    *,
+    _return_claim: bool = False,
+) -> dict | tuple[dict, resource_full_auto.RunClaim | None]:
     """Prepare every authorized target in owned <=20-take children, then stop at validation."""
+    def result(view: dict, owner: resource_full_auto.RunClaim | None):
+        return (view, owner) if _return_claim else view
+
     recovered = await _recover_expired_full_auto_prepare_owner(claim)
     if isinstance(recovered, dict):
-        return recovered
+        return result(recovered, None)
     owner = recovered
     try:
         run_row = resource_full_auto.require_prepare_claim(owner)
@@ -5070,9 +5110,10 @@ async def _run_full_auto_preparation(
                         "assistant_unavailable", "assistant_transport_error",
                         "assistant_rate_limited", "assistant_refused",
                         "writer_output_invalid", "provider_changed",
+                        "workflow_changed", "dependency_changed",
                     }
                 ):
-                    return resource_full_auto.public_run_status(session_id, owner.run_id)
+                    return result(resource_full_auto.public_run_status(session_id, owner.run_id), None)
                 child = authoring_operations.get_operation(
                     session_id,
                     child["operation_id"],
@@ -5091,36 +5132,40 @@ async def _run_full_auto_preparation(
                     "assistant_unavailable", "assistant_transport_error",
                     "assistant_rate_limited", "assistant_refused",
                     "writer_output_invalid", "provider_changed",
+                    "workflow_changed", "dependency_changed",
                 }
             ):
-                return resource_full_auto.public_run_status(session_id, owner.run_id)
+                return result(resource_full_auto.public_run_status(session_id, owner.run_id), None)
             owner = resource_full_auto.renew_run_claim(owner)
             progress = resource_full_auto.checkpoint_prepare_child(
                 owner,
                 child["operation_id"],
             )
             if child["state"] != "succeeded":
-                return resource_full_auto.advance_run(
+                return result(resource_full_auto.advance_run(
                     owner, "blocked", blocker_code="preparation_failed",
-                )
+                ), None)
         if progress["completed_take_ids"] != progress["target_ids"]:
             raise resource_full_auto.FullAutoRunError(
                 409, "prepare_progress_stale", "Full Auto preparation did not complete every target.",
             )
         owner = resource_full_auto.renew_run_claim(owner)
-        return resource_full_auto.advance_run(owner, "active", phase="validate")
+        return result(resource_full_auto.advance_run(owner, "active", phase="validate"), owner)
     except authoring_operations.AuthoringOperationError as exc:
         # A normal child failure is represented by its persisted operation state
         # and handled above. Any boundary error blocks only while this claim is
         # still live; loss of ownership remains a hard refusal.
         owner = resource_full_auto.renew_run_claim(owner)
-        blocker_code = exc.code if exc.code in {
+        blocker_code = "workflow_changed" if isinstance(
+            exc.__cause__, workflow_binding.WorkflowChanged,
+        ) else exc.code if exc.code in {
             "assistant_unavailable", "assistant_transport_error", "assistant_rate_limited",
             "assistant_refused", "writer_output_invalid", "provider_changed",
+            "workflow_changed", "dependency_changed",
         } else "preparation_failed"
-        return resource_full_auto.advance_run(
+        return result(resource_full_auto.advance_run(
             owner, "blocked", blocker_code=blocker_code,
-        )
+        ), None)
 
 
 def _run_full_auto_review_and_approve(
@@ -5276,6 +5321,220 @@ def _run_full_auto_submission(
         )
     owner = resource_full_auto.renew_run_claim(owner)
     return resource_full_auto.advance_run(owner, "active", phase="execute"), owner
+
+
+_FULL_AUTO_RUN_TASKS: dict[str, asyncio.Task] = {}
+_FULL_AUTO_COORDINATOR_RETRY_SECONDS = 2.0
+
+
+def _schedule_full_auto_run(run_id: str) -> None:
+    """Schedule one post-commit coordinator task for a persisted Full Auto run."""
+    if not isinstance(run_id, str) or not run_id:
+        return
+    previous = _FULL_AUTO_RUN_TASKS.get(run_id)
+    if previous is not None and not previous.done():
+        return
+    task = asyncio.create_task(_coordinate_full_auto_run(run_id))
+    _FULL_AUTO_RUN_TASKS[run_id] = task
+
+    def discard(completed: asyncio.Task) -> None:
+        if _FULL_AUTO_RUN_TASKS.get(run_id) is completed:
+            _FULL_AUTO_RUN_TASKS.pop(run_id, None)
+        try:
+            completed.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Full Auto coordinator stopped unexpectedly for run %s.", run_id,
+            )
+
+    task.add_done_callback(discard)
+
+
+def _schedule_startup_full_auto_runs() -> None:
+    """Discover resumable coordinator work after all startup cleanup has run."""
+    rows = db.q(
+        "SELECT run_id FROM full_auto_run "
+        "WHERE state IN ('active', 'waiting_authoring', 'waiting_runner') "
+        "AND cancel_intent = 0 ORDER BY created_at, run_id",
+    )
+    for row in rows:
+        _schedule_full_auto_run(row["run_id"])
+
+
+def _local_full_auto_reconciliation_safe(run_id: str, session_id: int) -> bool:
+    """Prove an expired non-execute phase has no dispatched work to adopt."""
+    if db.one(
+        "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", run_id,
+    ) is not None:
+        return False
+    if db.one(
+        "SELECT 1 FROM full_auto_execution_attempt WHERE run_id = ? LIMIT 1", run_id,
+    ) is not None:
+        return False
+    if db.one(
+        "SELECT 1 FROM shot WHERE session_id = ? AND status = 'running' LIMIT 1", session_id,
+    ) is not None:
+        return False
+    return db.one(
+        "SELECT 1 FROM authoring_operation WHERE session_id = ? AND full_auto_run_id = ? "
+        "AND state NOT IN ('succeeded', 'failed', 'cancelled', 'expired') LIMIT 1",
+        session_id, run_id,
+    ) is None
+
+
+def _block_expired_full_auto_recovery(
+    claim: resource_full_auto.RunClaim, blocker_code: str,
+) -> None:
+    try:
+        resource_full_auto.reconcile_expired_lease(
+            claim,
+            resource_full_auto.LeaseReconciliationEvidence(
+                "unknown", 1, blocker_code,
+            ),
+        )
+    except resource_full_auto.FullAutoRunError:
+        pass
+
+
+async def _coordinate_full_auto_run(run_id: str) -> None:
+    """Drive durable stages, recovering only from saved checkpoints and evidence."""
+    logger = logging.getLogger(__name__)
+    while True:
+        row = db.one("SELECT * FROM full_auto_run WHERE run_id = ?", run_id)
+        if row is None or row["state"] in {
+            "blocked", "cancel_requested", "cancelled", "failed", "succeeded",
+            "completed_with_errors",
+        } or row["cancel_intent"]:
+            return
+        lease_deadline = row["lease_expires_at"]
+        if lease_deadline is not None and lease_deadline > db.now():
+            await asyncio.sleep(_FULL_AUTO_COORDINATOR_RETRY_SECONDS)
+            continue
+        try:
+            claim = resource_full_auto.claim_run(run_id)
+        except resource_full_auto.FullAutoRunError as exc:
+            if exc.code in {"run_already_claimed", "run_lease_expired"}:
+                await asyncio.sleep(_FULL_AUTO_COORDINATOR_RETRY_SECONDS)
+                continue
+            logger.info("Full Auto run %s was not automatically claimable: %s", run_id, exc.code)
+            return
+
+        if claim.requires_reconciliation:
+            saved = db.one(
+                "SELECT phase, resume_phase, session_id FROM full_auto_run WHERE run_id = ?",
+                run_id,
+            )
+            phase = saved["resume_phase"] if saved is not None else None
+            if phase == "prepare":
+                recovered = await _run_full_auto_preparation(claim, _return_claim=True)
+                if isinstance(recovered, tuple):
+                    _view, claim = recovered
+                else:
+                    return
+            elif phase == "execute":
+                admission = db.one(
+                    "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", run_id,
+                )
+                if admission is not None:
+                    while True:
+                        safe, claim, blocker = await runner.reconcile_full_auto_attempts(
+                            int(saved["session_id"]), claim,
+                        )
+                        if safe is not None:
+                            break
+                        await asyncio.sleep(_FULL_AUTO_COORDINATOR_RETRY_SECONDS)
+                        claim = resource_full_auto.renew_run_claim(claim)
+                    if not safe:
+                        _block_expired_full_auto_recovery(
+                            claim, blocker or "execution_outcome_unknown",
+                        )
+                        return
+                else:
+                    safe = _local_full_auto_reconciliation_safe(run_id, int(saved["session_id"]))
+                    if not safe:
+                        _block_expired_full_auto_recovery(claim, "execution_outcome_unknown")
+                        return
+                _view, resumed = resource_full_auto.reconcile_expired_lease(
+                    claim,
+                    resource_full_auto.LeaseReconciliationEvidence("safe_to_continue", 0),
+                )
+                if resumed is None:
+                    return
+                claim = resumed
+            elif phase in {"validate", "approve", "submit"}:
+                if not _local_full_auto_reconciliation_safe(run_id, int(saved["session_id"])):
+                    _block_expired_full_auto_recovery(claim, "execution_outcome_unknown")
+                    return
+                _view, resumed = resource_full_auto.reconcile_expired_lease(
+                    claim,
+                    resource_full_auto.LeaseReconciliationEvidence("safe_to_continue", 0),
+                )
+                if resumed is None:
+                    return
+                claim = resumed
+            else:
+                _block_expired_full_auto_recovery(claim, "run_reconciliation_required")
+                return
+
+        while True:
+            current = db.one(
+                "SELECT session_id, state, phase, cancel_intent FROM full_auto_run WHERE run_id = ?",
+                run_id,
+            )
+            if (
+                current is None
+                or current["state"] not in {"active", "waiting_authoring", "waiting_runner"}
+                or current["cancel_intent"]
+            ):
+                return
+            phase = current["phase"]
+            if current["state"] == "waiting_authoring":
+                if phase not in {"prepare", "validate", "approve"}:
+                    return
+                resource_full_auto.advance_run(claim, "active")
+            elif current["state"] == "waiting_runner" and phase == "submit":
+                resource_full_auto.advance_run(claim, "active")
+            if phase == "prepare":
+                result = await _run_full_auto_preparation(claim, _return_claim=True)
+                if not isinstance(result, tuple) or result[1] is None:
+                    return
+                _view, claim = result
+                continue
+            if phase in {"validate", "approve"}:
+                _view, next_claim = _run_full_auto_review_and_approve(claim)
+                if next_claim is None:
+                    return
+                claim = next_claim
+                continue
+            if phase == "submit":
+                _view, claim = _run_full_auto_submission(claim)
+                continue
+            if phase == "execute":
+                admission = db.one(
+                    "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", run_id,
+                )
+                try:
+                    started = runner.start(
+                        int(current["session_id"]),
+                        _full_auto_claim=claim,
+                        _full_auto_recovery=admission is not None,
+                    )
+                except resource_full_auto.FullAutoRunError as exc:
+                    if exc.code in {"runner_busy", "run_already_claimed"}:
+                        await asyncio.sleep(_FULL_AUTO_COORDINATOR_RETRY_SECONDS)
+                        break
+                    raise
+                if not started:
+                    await asyncio.sleep(_FULL_AUTO_COORDINATOR_RETRY_SECONDS)
+                    break
+                task = runner._task
+                if task is not None:
+                    await task
+                return
+            logger.error("Full Auto run %s has unsupported saved phase %s", run_id, phase)
+            return
 
 
 def _schedule_shared_suggestion_operation(view: dict) -> None:

@@ -416,7 +416,7 @@ def test_full_auto_preserves_frozen_workflow_when_model_default_changes(
     asyncio.run(run())
     run_row = db.one("SELECT state, phase, blocker_code FROM full_auto_run WHERE run_id = ?", run_id)
     assert fake.attempts == 4
-    assert run_row == {"state": "active", "phase": "execute", "blocker_code": None}
+    assert run_row == {"state": "succeeded", "phase": "execute", "blocker_code": None}
     assert db.one("SELECT status FROM session WHERE id = ?", session_id)["status"] == "done"
     assert db.one(
         "SELECT COUNT(*) AS n FROM full_auto_execution_attempt WHERE run_id = ? "
@@ -460,7 +460,7 @@ def test_full_auto_keeps_explicit_canvas_when_model_dimension_defaults_change(
     asyncio.run(run())
     run_row = db.one("SELECT state, blocker_code FROM full_auto_run WHERE run_id = ?", run_id)
     assert fake.attempts == 4
-    assert run_row["state"] == "active"
+    assert run_row["state"] == "succeeded"
     assert run_row["blocker_code"] is None
     assert all(
         graph["5"]["inputs"]["width"] == 768

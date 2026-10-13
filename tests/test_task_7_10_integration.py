@@ -534,7 +534,7 @@ def test_task_710_canonical_translation_apply_serializes_with_selected_submit(
     before = _session_rows(session_id)
 
     transaction_attempted = threading.Event()
-    translation_attempted = threading.Event()
+    translation_read_attempted = threading.Event()
     translation_written = threading.Event()
     release_translation = threading.Event()
     validation_complete = threading.Event()
@@ -543,13 +543,23 @@ def test_task_710_canonical_translation_apply_serializes_with_selected_submit(
     translation_thread_id = []
     submit_thread_id = []
     original_transaction = db.transaction
+    original_one = db.one
     original_update = resource_store.update_translation
     original_validate = main.session_plan.validate_authoring_prepared_evidence
 
+    def observe_one(sql, *args):
+        if (
+            translation_thread_id
+            and threading.get_ident() == translation_thread_id[0]
+            and not translation_read_attempted.is_set()
+        ):
+            # Signal immediately before the guarded shared-connection read;
+            # it may block on the submit transaction's existing RLock.
+            translation_read_attempted.set()
+        return original_one(sql, *args)
+
     def observe_transaction():
         current = threading.get_ident()
-        if translation_thread_id and current == translation_thread_id[0]:
-            translation_attempted.set()
         if submit_thread_id and current == submit_thread_id[0]:
             transaction_attempted.set()
         return original_transaction()
@@ -574,6 +584,7 @@ def test_task_710_canonical_translation_apply_serializes_with_selected_submit(
             assert release_submit.wait(timeout=5)
         return result
 
+    monkeypatch.setattr(db, "one", observe_one)
     monkeypatch.setattr(db, "transaction", observe_transaction)
     monkeypatch.setattr(resource_store, "update_translation", hold_translation_write)
     monkeypatch.setattr(
@@ -621,7 +632,7 @@ def test_task_710_canonical_translation_apply_serializes_with_selected_submit(
             submit_future = pool.submit(submit_selected)
             assert validation_complete.wait(timeout=5)
             translation_future = pool.submit(apply_translation)
-            assert translation_attempted.wait(timeout=5)
+            assert translation_read_attempted.wait(timeout=5)
             assert not translation_done.is_set()
             release_submit.set()
             result = submit_future.result(timeout=5)

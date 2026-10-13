@@ -255,7 +255,7 @@ def test_owned_history_recovery_retries_only_the_read_without_prompt_resend(
     assert {row["status"] for row in db.q(
         "SELECT status FROM shot WHERE session_id = ?", session_id,
     )} == {"done"}
-    assert db.one("SELECT state FROM full_auto_run WHERE run_id = ?", run_id)["state"] == "active"
+    assert db.one("SELECT state FROM full_auto_run WHERE run_id = ?", run_id)["state"] == "succeeded"
 
 
 def test_owned_dispatch_exhaustion_blocks_without_queue_submission(

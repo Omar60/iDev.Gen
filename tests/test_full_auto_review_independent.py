@@ -265,10 +265,10 @@ def test_full_auto_submission_rechecks_real_workflow_drift_after_policy_approval
     )
     assert changed.status_code == 200, changed.text
 
-    # The dependency mutation is intentional. From this point, refusal must
-    # leave every persisted table row exactly where it is.
-    before = _database_snapshot()
+    # Renewing the run claim intentionally advances its lease fields. Take the
+    # all-row baseline after that control write so it measures only submission.
     live_owner = resource_full_auto.renew_run_claim(submit_owner)
+    before = _database_snapshot()
     with pytest.raises(resource_full_auto.FullAutoRunError) as stale:
         session_plan.submit_prepared_take(
             session_id, revision, targets[0], _full_auto_claim=live_owner,
