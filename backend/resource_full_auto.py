@@ -3641,6 +3641,427 @@ def admit_runner_start(session_id: int, claim: RunClaim) -> dict:
         return row
 
 
+def _validate_execution_dependencies(run: dict) -> None:
+    """Compare live dispatch inputs with the exact grant that admitted this run."""
+    from backend import resource_store, workflow_binding
+
+    grant = current_authorization(run["run_id"], session_id=int(run["session_id"]))
+    summary, _limits = _validate_status_authorization(grant["authorization"])
+    session = db.one(
+        "SELECT model_id, workflow_id, settings FROM session WHERE id = ?",
+        int(run["session_id"]),
+    )
+    if session is None:
+        raise _authority_error("dependency_missing")
+    model = db.one("SELECT * FROM model WHERE id = ?", session["model_id"])
+    if model is None:
+        raise _authority_error("dependency_missing")
+    try:
+        settings = json.loads(session["settings"] or "{}")
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise _authority_error("dependency_changed") from exc
+    if not isinstance(settings, dict):
+        raise _authority_error("dependency_changed")
+    settings.pop("composition_mode", None)
+    live_model = {
+        "model_id": int(model["id"]),
+        "trigger_digest": resource_store.canonical_digest(model["trigger"]),
+        "base_positive_digest": resource_store.canonical_digest(model["base_positive"]),
+        "base_negative_digest": resource_store.canonical_digest(model["base_negative"]),
+        "lora_selection_digest": resource_store.canonical_digest({
+            "name": model["lora_name"], "strength": model["lora_strength"],
+        }),
+        "effective_settings_digest": resource_store.canonical_digest(settings),
+    }
+    if live_model != {
+        key: summary["model_binding"][key]
+        for key in (
+            "model_id", "trigger_digest", "base_positive_digest",
+            "base_negative_digest", "lora_selection_digest", "effective_settings_digest",
+        )
+    }:
+        raise _authority_error("dependency_changed")
+    try:
+        current_model_settings = workflow_binding.effective_session_settings(model)
+    except workflow_binding.WorkflowCompatibilityError as exc:
+        raise _authority_error("dependency_changed") from exc
+    # The authorization binds effective canvas dimensions. Guided Full Auto
+    # stores these on the session whether they were inherited or explicitly
+    # selected, so preserve them while checking the model's remaining live
+    # defaults for drift.
+    current_model_settings["width"] = summary["canvas"]["width"]
+    current_model_settings["height"] = summary["canvas"]["height"]
+    current_model_settings.pop("composition_mode", None)
+    if resource_store.canonical_digest(current_model_settings) != summary["model_binding"][
+        "effective_settings_digest"
+    ]:
+        raise _authority_error("dependency_changed")
+
+    workflow_id = session["workflow_id"]
+    try:
+        if workflow_id is None or workflow_binding.validate_workflow_binding_against_session(
+            int(run["session_id"]),
+        ) is None:
+            raise workflow_binding.WorkflowChanged("session has no frozen workflow binding")
+        live_workflow = workflow_binding.build_workflow_binding(int(workflow_id))
+    except (workflow_binding.WorkflowChanged, workflow_binding.WorkflowCompatibilityError,
+            workflow_binding.StoredPlanUnreadable) as exc:
+        raise FullAutoRunError(
+            409, "workflow_changed",
+            "The authorized workflow binding changed before generation; review the current scope.",
+        ) from exc
+    if live_workflow != summary["workflow"]:
+        raise FullAutoRunError(
+            409, "workflow_changed",
+            "The authorized workflow changed before generation; review the current scope.",
+        )
+
+
+def begin_execution_attempt(
+    claim: RunClaim,
+    runner_claim: RunnerClaim,
+    *,
+    attempt_id: str,
+    shot_id: int,
+    seed: int,
+    filename_prefix: str,
+    graph_digest: str,
+    source_workflow_binding: dict,
+    source_effective_inputs: dict,
+    now_text: str | None = None,
+) -> dict:
+    """Fence current inputs and commit dispatch intent immediately before POST."""
+    if (
+        not isinstance(attempt_id, str) or not re.fullmatch(r"[0-9a-f]{32}", attempt_id)
+        or type(shot_id) is not int or shot_id <= 0
+        or type(seed) is not int or seed <= 0
+        or not isinstance(filename_prefix, str) or not filename_prefix
+        or not isinstance(graph_digest, str) or not _SHA256.fullmatch(graph_digest)
+    ):
+        raise FullAutoRunError(422, "execution_attempt_invalid", "The execution attempt is invalid.")
+
+    with db.transaction():
+        timestamp = _now_text(now_text)
+        runner_row = _require_runner_claim(runner_claim, now_text=timestamp)
+        if (
+            runner_claim.owner_kind != "full_auto"
+            or runner_claim.session_id != claim.session_id
+            or runner_claim.run_id != claim.run_id
+            or runner_row["run_id"] != claim.run_id
+        ):
+            raise FullAutoRunError(409, "runner_owner_stale", "The Full Auto runner owner is stale.")
+        run = require_session_mutation_allowed(
+            claim.session_id, claim=claim, allowed_phases=("execute",),
+        )
+        if run is None or run["run_id"] != claim.run_id:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        if not resource_planning.is_enabled():
+            raise FullAutoRunError(
+                503, "resource_planning_disabled", "Resource planning is disabled by configuration.",
+            )
+        _validate_execution_dependencies(run)
+        _validate_captured_workflow_source(claim.session_id, source_workflow_binding)
+        _validate_captured_effective_inputs(run, source_effective_inputs)
+        shot = db.one(
+            "SELECT session_id, status FROM shot WHERE id = ?", shot_id,
+        )
+        if shot is None or int(shot["session_id"]) != claim.session_id or shot["status"] != "running":
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto shot is no longer ready to dispatch.")
+        previous = db.one(
+            "SELECT dispatch_state, completion_state FROM full_auto_execution_attempt "
+            "WHERE shot_id = ? ORDER BY attempt_number DESC LIMIT 1",
+            shot_id,
+        )
+        if previous is not None and (
+            previous["dispatch_state"] in {"intent", "outcome_unknown"}
+            or previous["completion_state"] in {"pending", "output_available"}
+        ):
+            raise FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "An earlier generation attempt has not reached a verified outcome.",
+            )
+        attempt_number = int(db.one(
+            "SELECT COALESCE(MAX(attempt_number), 0) + 1 AS n "
+            "FROM full_auto_execution_attempt WHERE shot_id = ?", shot_id,
+        )["n"])
+        # Dependency reads above can be slow and the run or single-runner lease
+        # can expire while they are in progress. Fence again at the actual
+        # intent write boundary; the physical POST follows immediately after
+        # this short transaction commits.
+        timestamp = _now_text(None)
+        runner_row = _require_runner_claim(runner_claim, now_text=timestamp)
+        if (
+            runner_claim.owner_kind != "full_auto"
+            or runner_claim.session_id != claim.session_id
+            or runner_claim.run_id != claim.run_id
+            or runner_row["run_id"] != claim.run_id
+        ):
+            raise FullAutoRunError(409, "runner_owner_stale", "The Full Auto runner owner is stale.")
+        run = require_session_mutation_allowed(
+            claim.session_id, claim=claim, allowed_phases=("execute",),
+        )
+        if run is None or run["run_id"] != claim.run_id:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        if not resource_planning.is_enabled():
+            raise FullAutoRunError(
+                503, "resource_planning_disabled", "Resource planning is disabled by configuration.",
+            )
+        db.run(
+            """INSERT INTO full_auto_execution_attempt (
+                   attempt_id, run_id, session_id, shot_id, attempt_number,
+                   run_epoch, run_fencing_token, runner_fencing_token, seed,
+                   filename_prefix, graph_digest, dispatch_state, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'intent', ?, ?)""",
+            attempt_id, claim.run_id, claim.session_id, shot_id, attempt_number,
+            claim.epoch, claim.fencing_token, runner_claim.fencing_token, seed,
+            filename_prefix, graph_digest, timestamp, timestamp,
+        )
+        return db.one("SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id)
+
+
+def _validate_captured_workflow_source(session_id: int, captured: dict) -> None:
+    """Reject a graph/map snapshot that no longer matches the frozen live source."""
+    from backend import workflow_binding
+
+    session = db.one("SELECT workflow_id FROM session WHERE id = ?", session_id)
+    if session is None or session["workflow_id"] is None:
+        raise FullAutoRunError(
+            409, "workflow_changed",
+            "The authorized workflow binding changed before generation; review the current scope.",
+        )
+    try:
+        current = workflow_binding.build_workflow_binding(int(session["workflow_id"]))
+    except (workflow_binding.WorkflowChanged, workflow_binding.WorkflowCompatibilityError,
+            workflow_binding.StoredPlanUnreadable) as exc:
+        raise FullAutoRunError(
+            409, "workflow_changed",
+            "The authorized workflow binding changed before generation; review the current scope.",
+        ) from exc
+    if captured != current:
+        raise FullAutoRunError(
+            409, "workflow_changed",
+            "The workflow source read for this shot no longer matches its authorized binding.",
+        )
+
+
+def _validate_captured_effective_inputs(run: dict, captured: dict) -> None:
+    """Reject effective session/model inputs read before dispatch waits if they drifted."""
+    grant = current_authorization(
+        run["run_id"], session_id=int(run["session_id"]),
+    )
+    summary, _limits = _validate_status_authorization(grant["authorization"])
+    model = summary["model_binding"]
+    expected = {
+        "model_id": model["model_id"],
+        "lora_selection_digest": model["lora_selection_digest"],
+        "effective_settings_digest": model["effective_settings_digest"],
+    }
+    if not isinstance(captured, dict) or captured != expected:
+        raise _authority_error("dependency_changed")
+
+
+def _attempt_matches_claim(attempt: dict, claim: RunClaim, runner_claim: RunnerClaim) -> bool:
+    if not _authentic_claim(claim) or not isinstance(runner_claim, RunnerClaim):
+        return False
+    expected_runner_signature = hmac.new(
+        _RUNNER_CLAIM_KEY, _runner_claim_payload(runner_claim), hashlib.sha256,
+    ).hexdigest()
+    return (
+        hmac.compare_digest(expected_runner_signature, runner_claim._signature)
+        and attempt["run_id"] == claim.run_id == runner_claim.run_id
+        and int(attempt["session_id"]) == claim.session_id == runner_claim.session_id
+        and int(attempt["run_epoch"]) == claim.epoch
+        and int(attempt["run_fencing_token"]) == claim.fencing_token
+        and int(attempt["runner_fencing_token"]) == runner_claim.fencing_token
+        and runner_claim.owner_kind == "full_auto"
+    )
+
+
+def record_execution_dispatch(
+    attempt_id: str,
+    claim: RunClaim,
+    runner_claim: RunnerClaim,
+    *,
+    state: Literal["acknowledged", "outcome_unknown", "rejected"],
+    prompt_id: str | None = None,
+    error: str = "",
+) -> dict:
+    """Persist a dispatch receipt against its immutable attempt fences.
+
+    A queue response is evidence even if the lease expires while the response is
+    returning, so this receipt deliberately does not require a live owner row.
+    """
+    if state not in {"acknowledged", "outcome_unknown", "rejected"}:
+        raise ValueError("Unsupported execution dispatch state")
+    if state == "acknowledged" and (not isinstance(prompt_id, str) or not prompt_id):
+        raise FullAutoRunError(422, "execution_attempt_invalid", "The queue acknowledgement is invalid.")
+    if state != "acknowledged" and prompt_id is not None:
+        raise FullAutoRunError(422, "execution_attempt_invalid", "The queue receipt is invalid.")
+
+    with db.transaction():
+        attempt = db.one(
+            "SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id,
+        )
+        if attempt is None or not _attempt_matches_claim(attempt, claim, runner_claim):
+            raise FullAutoRunError(409, "run_owner_stale", "The execution attempt receipt is stale.")
+        current = attempt["dispatch_state"]
+        if state == "acknowledged":
+            if current == "acknowledged":
+                if attempt["prompt_id"] != prompt_id:
+                    raise FullAutoRunError(409, "run_state_invalid", "The queue acknowledgement conflicts with saved evidence.")
+                return attempt
+            if current not in {"intent", "outcome_unknown"}:
+                raise FullAutoRunError(409, "run_state_invalid", "The queue acknowledgement cannot advance this attempt.")
+            db.run(
+                "UPDATE full_auto_execution_attempt SET dispatch_state='acknowledged', "
+                "prompt_id=?, updated_at=? WHERE attempt_id=?",
+                prompt_id, _now_text(None), attempt_id,
+            )
+            db.run(
+                "UPDATE shot SET prompt_id=? WHERE id=? AND session_id=?",
+                prompt_id, attempt["shot_id"], attempt["session_id"],
+            )
+        elif state == "outcome_unknown":
+            if current == "acknowledged":
+                return attempt
+            if current == "outcome_unknown":
+                return attempt
+            if current != "intent":
+                raise FullAutoRunError(409, "run_state_invalid", "The uncertain queue response cannot advance this attempt.")
+            db.run(
+                "UPDATE full_auto_execution_attempt SET dispatch_state='outcome_unknown', "
+                "error=?, updated_at=? WHERE attempt_id=?",
+                error[:500], _now_text(None), attempt_id,
+            )
+        else:
+            if current == "rejected":
+                return attempt
+            if current != "intent":
+                raise FullAutoRunError(409, "run_state_invalid", "The queue refusal cannot advance this attempt.")
+            db.run(
+                "UPDATE full_auto_execution_attempt SET dispatch_state='rejected', "
+                "completion_state='failed', error=?, updated_at=? WHERE attempt_id=?",
+                error[:500], _now_text(None), attempt_id,
+            )
+        return db.one("SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id)
+
+
+def record_execution_output(
+    attempt_id: str,
+    claim: RunClaim,
+    runner_claim: RunnerClaim,
+    *,
+    image: dict,
+    expected_filename: str,
+) -> dict:
+    """Save remote output evidence before the normal output-file move begins."""
+    evidence = {
+        "filename": image.get("filename"),
+        "subfolder": image.get("subfolder") or "",
+        "type": image.get("type"),
+    }
+    with db.transaction():
+        timestamp = _now_text(None)
+        runner_row = _require_runner_claim(runner_claim, now_text=timestamp)
+        if (
+            runner_claim.owner_kind != "full_auto"
+            or runner_claim.session_id != claim.session_id
+            or runner_claim.run_id != claim.run_id
+            or runner_row["run_id"] != claim.run_id
+        ):
+            raise FullAutoRunError(409, "runner_owner_stale", "The Full Auto runner owner is stale.")
+        run = require_session_mutation_allowed(
+            claim.session_id, claim=claim, allowed_phases=("execute",),
+        )
+        if run is None or run["run_id"] != claim.run_id:
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        attempt = db.one(
+            "SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id,
+        )
+        if attempt is None or not _attempt_matches_claim(attempt, claim, runner_claim):
+            raise FullAutoRunError(409, "run_owner_stale", "The execution output receipt is stale.")
+        encoded = _canonical_json(evidence)
+        if attempt["completion_state"] == "output_available":
+            if attempt["output_evidence_json"] != encoded or attempt["expected_filename"] != expected_filename:
+                raise FullAutoRunError(409, "run_state_invalid", "The output evidence conflicts with the saved attempt.")
+            return attempt
+        if attempt["dispatch_state"] != "acknowledged" or attempt["completion_state"] != "pending":
+            raise FullAutoRunError(409, "run_state_invalid", "The output cannot advance this attempt.")
+        db.run(
+            """UPDATE full_auto_execution_attempt
+               SET completion_state='output_available', output_evidence_json=?,
+                   expected_filename=?, updated_at=? WHERE attempt_id=?""",
+            encoded, expected_filename, timestamp, attempt_id,
+        )
+        return db.one("SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id)
+
+
+def finish_execution_attempt(
+    attempt_id: str,
+    claim: RunClaim,
+    runner_claim: RunnerClaim,
+    *,
+    outcome: Literal["completed", "failed"],
+    filename: str = "",
+    error: str = "",
+) -> dict:
+    """Commit attempt settlement and the existing shot result in one transaction."""
+    with db.transaction():
+        timestamp = _now_text(None)
+        _require_runner_claim(runner_claim, now_text=timestamp)
+        row = require_session_mutation_allowed(
+            claim.session_id, claim=claim, allowed_phases=("execute",),
+        )
+        attempt = db.one(
+            "SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id,
+        )
+        if (
+            row is None or attempt is None or not _attempt_matches_claim(attempt, claim, runner_claim)
+            or attempt["completion_state"] not in {"pending", "output_available", "failed"}
+        ):
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution result is stale.")
+        shot = db.one(
+            "SELECT status FROM shot WHERE id = ? AND session_id = ?",
+            attempt["shot_id"], attempt["session_id"],
+        )
+        if shot is None or shot["status"] != "running":
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto shot result is stale.")
+        if outcome == "completed":
+            if (
+                attempt["completion_state"] != "output_available"
+                or filename != attempt["expected_filename"]
+            ):
+                raise FullAutoRunError(409, "run_state_invalid", "The saved output does not match its attempt.")
+            db.run(
+                "UPDATE full_auto_execution_attempt SET completion_state='completed', "
+                "filename=?, updated_at=? WHERE attempt_id=?",
+                filename, timestamp, attempt_id,
+            )
+            db.run(
+                "UPDATE shot SET status='done', filename=?, error='', finished_at=? "
+                "WHERE id=? AND session_id=?",
+                filename, timestamp, attempt["shot_id"], attempt["session_id"],
+            )
+        elif outcome == "failed":
+            if attempt["completion_state"] == "failed" and attempt["error"]:
+                error = attempt["error"]
+            if not error:
+                raise FullAutoRunError(422, "execution_attempt_invalid", "A failed attempt needs an error message.")
+            db.run(
+                "UPDATE full_auto_execution_attempt SET completion_state='failed', "
+                "error=?, updated_at=? WHERE attempt_id=?",
+                error[:500], timestamp, attempt_id,
+            )
+            db.run(
+                "UPDATE shot SET status='failed', error=?, finished_at=? "
+                "WHERE id=? AND session_id=?",
+                error[:500], timestamp, attempt["shot_id"], attempt["session_id"],
+            )
+        else:
+            raise ValueError("Unsupported execution outcome")
+        return db.one("SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?", attempt_id)
+
+
 def initialize_prepare_progress(claim: RunClaim) -> dict:
     """Freeze the exact ordered plan targets before creating any child operation."""
     from backend import session_plan

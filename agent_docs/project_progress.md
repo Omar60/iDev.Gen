@@ -2,37 +2,35 @@
 
 ## Goal and Accepted Position
 
-Heavy continuation `full-auto-5-1-repair-20261012` completes only Task 5.1 of
-`automate-resource-session-full-auto`, including the explicitly authorized
-assistant exclusion prerequisite. Intake began at clean HEAD `7acc968`.
-Main accepted the actual diff and independent verification. Only 5.1 is marked
-complete: 23 of 41 tasks. Task 5.2 remains unstarted.
+Deployment `full-auto-5-2-20261012` completes only Task 5.2 of
+`automate-resource-session-full-auto`, from clean HEAD `da56256`.
+Main accepted the actual diff and independent verification. Only 5.2 is newly
+marked complete: 24 of 41 tasks. Task 5.3 remains unstarted.
 
-Shared durable runner admission protects manual and Full Auto starts with FIFO
-readiness, immediate manual busy refusal, signed nonce/fence claims, 60-second
-leases and 15-second heartbeats. Uncertain queue responses and owner-bound
-startup evidence prevent new dispatch. A local assistant completion fence now
-survives quarantine expiry until actual HTTP transport cancellation cleanup ends.
+Full Auto attempts now persist identity, seed, unique prefix, graph digest and
+owner fences before queue submission, acknowledgement before polling and output
+evidence before file movement. Attempt and shot completion commit atomically.
+Unknown outcomes retain evidence without blind resend. Dispatch compares both
+captured and current effective model/settings/LoRA/workflow inputs with consent.
+Manual reference/guide handling and locked-file retries remain unchanged.
 
-## Independent Verification
+## Verification and Remaining Limits
 
-The final complete Python gate passed: 3,393 passed, two skipped, five warnings,
-exit zero in 621.58 seconds. Five focused assistant/runner modules passed,
-including independent live-request and cancellation-unwind probes. Privacy/control,
-strict OpenSpec validation and diff checks passed. Frontend is unchanged.
-Final compact documentation checks precede the authorized acceptance commit.
+Final independent complete Python gate: 3,409 passed, two skipped, five warnings,
+exit zero in 841.55 seconds. Nine independent journal cases passed. Strict
+OpenSpec validation, privacy/control checks and diff checks passed; compact
+closure checks cover the final documentation and checklist. Frontend is unchanged.
 
-Earlier complete gates failed before heartbeat fixture repairs and the authorized
-assistant correction. Independent probes reproduced the assistant overlap in
-current code and pristine HEAD; the final regression retains actual timeout,
-reservation, waiter and no-overlap assertions. The precise historical full-gate
-failure cause and earlier multiloop harness anomalies remain unconfirmed.
+Earlier gates exposed a repaired probe-cursor regression and two preexisting
+failures reproduced on clean HEAD: a resource lookup in the CAS race and a
+clock-dependent budget-Resume error code. Their causes are not claimed repaired.
+The final passing gate does not erase that evidence. The skipped 500-take
+benchmark is opt-in; the other skipped case requires unavailable symlinks.
 
 ## Stop Boundary
 
-Create the acceptance commit for this task and its closure documentation only,
-then seal the Archivist token report. Do not advance, archive, push or run real
-generation. End-to-end Full Auto scheduling, attempt journaling, remote recovery
-and external-queue policy remain later tasks. The assistant completion fence is
-process-local; restart retains the existing durable quarantine deadline and does
-not establish that provider computation stopped.
+The acceptance commit is limited to Task 5.2 and its closure documentation.
+Archivist supplies the sealed documentation/Git handoff and token report.
+Do not begin another task, archive, push or run real generation. Remote prompt
+correlation, attempt recovery at startup, durable cancellation/retry controls,
+external-queue policy and the end-to-end Full Auto journey remain unfinished.

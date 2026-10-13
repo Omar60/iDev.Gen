@@ -1,5 +1,39 @@
 # Project Diary
 
+## Full Auto Task 5.2 Accepted Journal
+
+Persist attempt identity before queue submission and keep remote acceptance
+distinct from local file completion. A missing acknowledgement or expired owner
+does not prove nonexecution. Journal construction must not imply that later
+correlation, startup recovery or cancellation tasks are implemented.
+Existence checks alone do not bind the authorized generation inputs. Independent
+probes reproduced live model-settings drift, lease expiry during validation,
+stale output-evidence writes and graph inputs captured before an availability
+wait. A restored database value does not make an earlier captured graph valid:
+compare both current and captured model/settings/workflow evidence at dispatch.
+Keep a known queue acknowledgement as attempt evidence after owner loss, while
+requiring live authority for output progression and final shot settlement.
+The first stale-mapping probe assumed an overlapping positive/negative slot's
+result incorrectly; its corrected check observed the actual queued positive.
+
+The first complete gate exposed a new catch-handler regression that cleared
+the existing ComfyUI probe cursor on disablement during backoff. Keep journal
+preflight blocking local to its boundary rather than broadening shared recovery.
+The next complete gate failed the existing session-plan CAS race before CAS
+because its resource library was unavailable. Five isolated trials reproduced
+that same failure twice on the current tree and three times on clean `da56256`.
+This proves preexistence, not its root cause; preserve the assertions and require
+a final complete passing gate rather than substitute isolated or baseline checks.
+The third gate instead failed an existing assistant-renewal error-code assertion.
+A temporary test-only clock injection before the second Resume reproduced
+`authorization_scope_changed` instead of `budget_exhausted` on both current and
+clean HEAD, with deadline/allowance changes. Keep this temporal baseline defect
+separate from the attempt-journal work; no assertion or unrelated code was changed.
+The final unmodified complete gate passed: 3,409 passed, two skipped and five
+warnings in 841.55 seconds. Independent journal acceptance covered nine cases,
+including actual moved-file evidence and rollback of atomic completion writes.
+Only Task 5.2 is accepted; remote correlation and restart recovery remain separate.
+
 ## Full Auto Task 5.1 Runner and Assistant Admission
 
 Keep shared runner admission separate from immutable per-run admission receipts.

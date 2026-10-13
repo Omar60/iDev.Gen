@@ -169,11 +169,13 @@ During recovery, the replacement coordinator
 waits for any live child to settle. It resumes that same registered child under
 a new fence if expired or failed, preserving the verified prefix. A stale
 execution owner stops subsequent writes and dispatches, leaving admission
-unresolved. The shared claim completes local runner admission only; Full Auto
-attempt journaling and recovery, remote prompt correlation and
+unresolved. The shared claim completes local runner admission; Full Auto
+execution attempts are now journaled through local output settlement, while
+unknown outcomes remain unresolved and cannot be blindly resent.
+Execution-attempt recovery, remote prompt correlation and
 cancellation/reconciliation, external queue policy, and the end-to-end
-creation/startup flow remain unfinished. The profile editor and selection/
-consent UI also remain unfinished. The existing
+creation/startup flow remain unfinished. The profile editor and
+selection/consent UI also remain unfinished. The existing
 manual workflow remains available for sessions without a nonterminal Full Auto
 owner.
 While a run is nonterminal or its work is unresolved, supported DELETE routes

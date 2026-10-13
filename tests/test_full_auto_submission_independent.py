@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
 import db
 import main
-from backend import resource_full_auto, session_plan
+from backend import resource_full_auto, resource_store, session_plan
+import runner as runner_mod
 from runner import Runner
 import test_full_auto_preparation_coordinator as preparation
 
@@ -44,10 +47,32 @@ def _recover_owner(run_id: str, phase: str) -> resource_full_auto.RunClaim:
     return owner
 
 
-def _approved_run(client, seeded, monkeypatch, *, photo_count: int = 4):
-    session_id, run_id, revision, targets = preparation._create_run(
-        client, seeded, photo_count=photo_count,
-    )
+def _approved_run(
+    client, seeded, monkeypatch, *, photo_count: int = 4,
+    canvas: tuple[int, int] | None = None,
+):
+    if canvas is None:
+        session_id, run_id, revision, targets = preparation._create_run(
+            client, seeded, photo_count=photo_count,
+        )
+    else:
+        preparation._install_t2i_workflow(client, seeded)
+        _saved, _published, base = preparation._full_auto_fixture(
+            seeded, photo_count=photo_count,
+        )
+        base["width"], base["height"] = canvas
+        consent = preparation._preflight(client, base)
+        created, _payload = preparation._create_from_preflight(client, base, consent)
+        assert created.status_code == 201, created.text
+        result = created.json()
+        session_id, run_id = result["session_id"], result["full_auto_run_id"]
+        row = db.one(
+            "SELECT plan_revision, plan_json FROM session_plan WHERE session_id = ?",
+            session_id,
+        )
+        revision = int(row["plan_revision"])
+        targets = [take["take_id"] for take in json.loads(row["plan_json"])["takes"]]
+        assert len(targets) == photo_count
     preparation._install_provider(monkeypatch, session_id, revision, targets)
     prepared = asyncio.run(
         main._run_full_auto_preparation(resource_full_auto.claim_run(run_id)),
@@ -187,10 +212,299 @@ def test_full_auto_runner_owner_loss_preserves_unknown_admission_without_redispa
     asyncio.run(lose_owner_during_comfy_io())
     shots = db.q("SELECT status, prompt_id FROM shot WHERE session_id = ? ORDER BY id", session_id)
     assert fake.attempts == 1
-    assert shots[0] == {"status": "running", "prompt_id": ""}
+    assert shots[0] == {"status": "running", "prompt_id": "pid-1"}
     assert all(row == {"status": "pending", "prompt_id": ""} for row in shots[1:])
+    attempt = db.one(
+        "SELECT dispatch_state, prompt_id FROM full_auto_execution_attempt WHERE run_id = ?",
+        run_id,
+    )
+    assert attempt == {"dispatch_state": "acknowledged", "prompt_id": "pid-1"}
     assert db.one("SELECT status FROM session WHERE id = ?", session_id)["status"] == "running"
     assert db.one("SELECT run_id FROM full_auto_runner_admission WHERE run_id = ?", run_id)
+
+
+def test_full_auto_attempt_journal_orders_queue_ack_output_and_locked_move(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _revision, _targets, owner = _approved_run(
+        client, seeded, monkeypatch, photo_count=4,
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner()
+    events = []
+    original_queue = fake.queue_prompt
+    original_history = fake.history
+    real_move = runner_mod.shutil.move
+    move_calls = 0
+
+    async def observe_queue(graph, client_id):
+        shot = db.one(
+            "SELECT id, status, seed, prompt_id FROM shot WHERE session_id = ? "
+            "AND status = 'running'", session_id,
+        )
+        attempt = db.one(
+            "SELECT * FROM full_auto_execution_attempt WHERE shot_id = ?", shot["id"],
+        )
+        runner_claim = db.one("SELECT * FROM global_runner_claim WHERE singleton = 1")
+        assert shot is not None and attempt is not None
+        assert (shot["status"], shot["prompt_id"]) == ("running", "")
+        assert attempt["dispatch_state"] == "intent"
+        assert attempt["completion_state"] == "pending"
+        assert attempt["seed"] == shot["seed"] > 0
+        assert attempt["run_id"] == run_id
+        assert attempt["run_epoch"] == execute_owner.epoch
+        assert attempt["run_fencing_token"] == execute_owner.fencing_token
+        assert attempt["runner_fencing_token"] == runner_claim["fencing_token"]
+        assert attempt["filename_prefix"] == graph["8"]["inputs"]["filename_prefix"]
+        assert attempt["filename_prefix"].endswith(attempt["attempt_id"])
+        assert attempt["graph_digest"] == resource_store.canonical_digest(graph)
+        events.append("intent")
+        return await original_queue(graph, client_id)
+
+    async def observe_history(prompt_id):
+        attempt = db.one(
+            "SELECT dispatch_state, prompt_id FROM full_auto_execution_attempt "
+            "WHERE prompt_id = ?", prompt_id,
+        )
+        assert attempt == {"dispatch_state": "acknowledged", "prompt_id": prompt_id}
+        events.append("acknowledged")
+        return await original_history(prompt_id)
+
+    def lock_then_move(src, dest):
+        nonlocal move_calls
+        move_calls += 1
+        attempt = db.one(
+            "SELECT completion_state, output_evidence_json, expected_filename "
+            "FROM full_auto_execution_attempt WHERE completion_state = 'output_available' "
+            "ORDER BY attempt_number LIMIT 1",
+        )
+        assert attempt is not None
+        assert json.loads(attempt["output_evidence_json"])["filename"]
+        assert Path(dest).name == attempt["expected_filename"]
+        events.append("output_available")
+        if move_calls == 1:
+            raise PermissionError(32, "The process cannot access the file")
+        return real_move(src, dest)
+
+    fake.queue_prompt = observe_queue
+    fake.history = observe_history
+    monkeypatch.setattr(runner_mod.shutil, "move", lock_then_move)
+
+    async def run():
+        runner.start(session_id, _full_auto_claim=execute_owner)
+        await runner._task
+
+    asyncio.run(run())
+    attempts = db.q(
+        "SELECT * FROM full_auto_execution_attempt WHERE run_id = ? ORDER BY shot_id",
+        run_id,
+    )
+    shots = db.q("SELECT * FROM shot WHERE session_id = ? ORDER BY id", session_id)
+    assert len(attempts) == len(shots) == 4
+    assert len({attempt["filename_prefix"] for attempt in attempts}) == 4
+    assert all(attempt["dispatch_state"] == "acknowledged" for attempt in attempts)
+    assert all(attempt["completion_state"] == "completed" for attempt in attempts)
+    assert all(attempt["prompt_id"] == shot["prompt_id"] for attempt, shot in zip(attempts, shots))
+    assert all(attempt["filename"] == shot["filename"] for attempt, shot in zip(attempts, shots))
+    assert attempts[0]["expected_filename"] == attempts[0]["filename"]
+    assert "intent" in events and "acknowledged" in events and "output_available" in events
+    assert events.index("intent") < events.index("acknowledged") < events.index("output_available")
+    assert move_calls == 5  # the first output hit the lock and succeeded on retry
+    with pytest.raises(sqlite3.IntegrityError, match="transition is invalid"):
+        db.run(
+            "UPDATE full_auto_execution_attempt SET dispatch_state='intent' WHERE attempt_id = ?",
+            attempts[0]["attempt_id"],
+        )
+
+
+@pytest.mark.parametrize("changed", ["settings", "workflow", "base_prompt"])
+def test_full_auto_refuses_frozen_input_drift_after_comfy_availability(
+    client, seeded, monkeypatch, make_runner, changed,
+):
+    session_id, run_id, _revision, _targets, owner = _approved_run(
+        client, seeded, monkeypatch, photo_count=4,
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner()
+    changed_once = False
+
+    async def drift_during_availability():
+        nonlocal changed_once
+        if not changed_once:
+            changed_once = True
+            if changed == "settings":
+                session = db.one("SELECT settings FROM session WHERE id = ?", session_id)
+                settings = json.loads(session["settings"])
+                settings["steps"] += 1
+                db.run(
+                    "UPDATE session SET settings = ? WHERE id = ?",
+                    json.dumps(settings), session_id,
+                )
+            elif changed == "workflow":
+                workflow_id = db.one(
+                    "SELECT workflow_id FROM session WHERE id = ?", session_id,
+                )["workflow_id"]
+                workflow = json.loads(db.one(
+                    "SELECT graph FROM workflow WHERE id = ?", workflow_id,
+                )["graph"])
+                workflow["99"] = {"class_type": "UnusedNode", "inputs": {}}
+                db.run(
+                    "UPDATE workflow SET graph = ? WHERE id = ?",
+                    json.dumps(workflow), workflow_id,
+                )
+            else:
+                model_id = db.one(
+                    "SELECT model_id FROM session WHERE id = ?", session_id,
+                )["model_id"]
+                db.run(
+                    "UPDATE model SET base_positive = ? WHERE id = ?",
+                    "Changed effective base prompt", model_id,
+                )
+        return {}
+
+    fake.stats = drift_during_availability
+
+    async def run():
+        runner.start(session_id, _full_auto_claim=execute_owner)
+        await runner._task
+
+    asyncio.run(run())
+    run_row = db.one("SELECT state, blocker_code FROM full_auto_run WHERE run_id = ?", run_id)
+    shot = db.one("SELECT status FROM shot WHERE session_id = ?", session_id)
+    assert fake.attempts == 0
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM full_auto_execution_attempt WHERE run_id = ?", run_id,
+    )["n"] == 0
+    assert shot["status"] == "failed"
+    assert run_row["state"] == "blocked"
+    assert run_row["blocker_code"] == (
+        "workflow_changed" if changed == "workflow" else "dependency_changed"
+    )
+
+
+def test_full_auto_preserves_frozen_workflow_when_model_default_changes(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _revision, _targets, owner = _approved_run(
+        client, seeded, monkeypatch, photo_count=4,
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner()
+    changed_once = False
+
+    async def change_irrelevant_model_defaults_during_availability():
+        nonlocal changed_once
+        if not changed_once:
+            changed_once = True
+            model_id = db.one(
+                "SELECT model_id FROM session WHERE id = ?", session_id,
+            )["model_id"]
+            db.run(
+                "UPDATE model SET workflow_id = NULL, name = ? WHERE id = ?",
+                "Renamed model", model_id,
+            )
+        return {}
+
+    fake.stats = change_irrelevant_model_defaults_during_availability
+
+    async def run():
+        runner.start(session_id, _full_auto_claim=execute_owner)
+        await runner._task
+
+    asyncio.run(run())
+    run_row = db.one("SELECT state, phase, blocker_code FROM full_auto_run WHERE run_id = ?", run_id)
+    assert fake.attempts == 4
+    assert run_row == {"state": "active", "phase": "execute", "blocker_code": None}
+    assert db.one("SELECT status FROM session WHERE id = ?", session_id)["status"] == "done"
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM full_auto_execution_attempt WHERE run_id = ? "
+        "AND completion_state = 'completed'", run_id,
+    )["n"] == 4
+
+
+def test_full_auto_keeps_explicit_canvas_when_model_dimension_defaults_change(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _revision, _targets, owner = _approved_run(
+        client, seeded, monkeypatch, photo_count=4, canvas=(768, 1360),
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner()
+    changed_once = False
+
+    async def change_model_dimensions_during_availability():
+        nonlocal changed_once
+        if not changed_once:
+            changed_once = True
+            model_id = db.one(
+                "SELECT model_id FROM session WHERE id = ?", session_id,
+            )["model_id"]
+            model_settings = json.loads(db.one(
+                "SELECT settings FROM model WHERE id = ?", model_id,
+            )["settings"])
+            model_settings.update(width=1024, height=1024)
+            db.run(
+                "UPDATE model SET settings = ? WHERE id = ?",
+                json.dumps(model_settings), model_id,
+            )
+        return {}
+
+    fake.stats = change_model_dimensions_during_availability
+
+    async def run():
+        runner.start(session_id, _full_auto_claim=execute_owner)
+        await runner._task
+
+    asyncio.run(run())
+    run_row = db.one("SELECT state, blocker_code FROM full_auto_run WHERE run_id = ?", run_id)
+    assert fake.attempts == 4
+    assert run_row["state"] == "active"
+    assert run_row["blocker_code"] is None
+    assert all(
+        graph["5"]["inputs"]["width"] == 768
+        and graph["5"]["inputs"]["height"] == 1360
+        for graph in fake.graphs
+    )
+
+
+def test_full_auto_lost_queue_response_keeps_unknown_attempt_and_blocks_redispatch(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _revision, _targets, owner = _approved_run(
+        client, seeded, monkeypatch, photo_count=4,
+    )
+    _view, execute_owner = main._run_full_auto_submission(owner)
+    runner, fake = make_runner()
+    original_queue = fake.queue_prompt
+
+    async def accepted_without_response(graph, client_id):
+        await original_queue(graph, client_id)
+        raise RuntimeError("queue response was lost")
+
+    fake.queue_prompt = accepted_without_response
+
+    async def run():
+        runner.start(session_id, _full_auto_claim=execute_owner)
+        await runner._task
+
+    asyncio.run(run())
+    attempt = db.one(
+        "SELECT dispatch_state, completion_state, prompt_id "
+        "FROM full_auto_execution_attempt WHERE run_id = ?", run_id,
+    )
+    assert attempt == {
+        "dispatch_state": "outcome_unknown",
+        "completion_state": "pending",
+        "prompt_id": None,
+    }
+    assert db.one("SELECT status FROM shot WHERE session_id = ?", session_id)["status"] == "running"
+    assert fake.attempts == 1
+
+    second_runner, second_fake = make_runner()
+    with pytest.raises(resource_full_auto.FullAutoRunError) as refusal:
+        second_runner.start(session_id)
+    assert refusal.value.code == "full_auto_session_owned"
+    assert second_fake.attempts == 0
 
 
 @pytest.mark.parametrize("interleaving", ["feature_flag", "lease_expiry"])

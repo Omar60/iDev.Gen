@@ -88,9 +88,12 @@ Verified baseline from the repository layout and application entry points.
   Startup cleanup preserves running rows for the persisted owner after lease
   expiry and marks unclaimed legacy running rows interrupted; it preserves
   uncertainty but does not reconcile or recover execution.
-  Runner attempt journaling/recovery, remote prompt correlation,
+  Full Auto execution attempts are journaled through local output settlement;
+  unknown outcomes remain unresolved and cannot be blindly resent.
+  Execution-attempt recovery, remote prompt correlation,
   cancellation/reconciliation, external queue policy, and end-to-end startup
-  remain unfinished.
+  remain unfinished. The attempt journal is scoped to Full Auto; manual
+  reference/guide handling and locked-file move retries remain covered.
   Internal review and policy approval
   validate current snapshots, conflicts, placeholders, adaptations, drift, and
   duplicate acceptance while keeping neutral notices nonblocking. Approval and

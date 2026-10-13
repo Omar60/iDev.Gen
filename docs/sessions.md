@@ -1899,20 +1899,39 @@ are marked failed as interrupted. This keeps new local admissions blocked but
 does not reconcile the remote outcome, redispatch the shot, or recover Full
 Auto execution.
 
+Each Full Auto ComfyUI dispatch has a SQLite `full_auto_execution_attempt`
+record bound to its run, session, shot, attempt number, run epoch, and run and
+runner fences. It records the seed, unique filename prefix, and patched-graph
+digest. Dispatch state is `intent`, `acknowledged`, `outcome_unknown`, or
+`rejected`; completion is `pending`, `output_available`, `completed`, or
+`failed`. The runner commits `intent` immediately before the physical POST and
+stores a known queue acknowledgement, including a late response tied to that
+attempt, before polling history. It records ComfyUI output evidence and the
+expected filename before moving the image, then settles the attempt and shot in
+one transaction. Pending or unknown attempts retain their evidence and cannot
+be blindly resent; settlement and output movement require live claims. Before
+dispatch, captured effective model, LoRA selection, and settings are checked
+against current authorization, and the frozen workflow graph and node map are
+checked again. Model-name or default-workflow edits do not select a substitute;
+an explicit session canvas remains in effect.
+
 Parent and execution `RunClaim`s have 60-second leases renewed by asynchronous
 15-second heartbeats through assistant and ComfyUI I/O; child-operation leases
 remain ten minutes. During preparation recovery, the replacement coordinator
 waits for any live child to settle. It resumes that same registered child under
 a new fence if expired or failed, preserving the verified prefix. A stale
 execution owner stops subsequent writes and dispatches, leaving admission
-unresolved. No attempt journal, remote prompt correlation, remote cancellation
-or reconciliation, or external queue policy is delivered, and execution-attempt
-recovery remains unfinished. The shared runner claim covers local admission
-only. Creation/startup still do not invoke the coordinator for an end-to-end
-run, and the profile editor and selection/consent UI remain unfinished.
-The existing manual workflow remains available for sessions without a
-nonterminal Full Auto owner. This review validates persisted evidence and
-policy; it does not certify semantic correctness or rendered pixels.
+unresolved. The journal preserves local evidence; it does not correlate or
+reconcile unknown remote jobs after restart. Execution-attempt recovery and
+explicit retry controls, remote cancellation, external queue policy, and
+rollback remain unfinished; full-run epoch finalization is also not delivered.
+The shared runner claim covers local admission only. Creation/startup still do
+not schedule the coordinator for an end-to-end run, and no Full Auto control UI
+exists. The journal is scoped to Full Auto; manual reference/guide handling and
+locked-file move retries remain covered. The existing manual workflow remains
+available for sessions without a nonterminal Full Auto owner. This review
+validates persisted evidence and policy; it does not certify semantic
+correctness or rendered pixels.
 
 For a request ID already committed, an identical normalized request returns the
 exact stored response with HTTP 200 before quote-age or current-dependency

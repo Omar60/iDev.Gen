@@ -1212,6 +1212,107 @@ CREATE TABLE IF NOT EXISTS global_runner_claim (
 );
 INSERT OR IGNORE INTO global_runner_claim (singleton, fencing_token) VALUES (1, 0);
 
+-- A Full Auto queue attempt is durable before its physical ComfyUI POST.
+-- The row keeps dispatch evidence separate from local file completion so a
+-- crash after the move still leaves enough evidence for later reconciliation.
+CREATE TABLE IF NOT EXISTS full_auto_execution_attempt (
+    attempt_id              TEXT PRIMARY KEY NOT NULL CHECK (length(attempt_id) = 32),
+    run_id                  TEXT NOT NULL REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    session_id              INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    shot_id                 INTEGER NOT NULL REFERENCES shot(id) ON DELETE CASCADE,
+    attempt_number          INTEGER NOT NULL CHECK (attempt_number > 0),
+    run_epoch               INTEGER NOT NULL CHECK (run_epoch > 0),
+    run_fencing_token       INTEGER NOT NULL CHECK (run_fencing_token > 0),
+    runner_fencing_token    INTEGER NOT NULL CHECK (runner_fencing_token > 0),
+    seed                    INTEGER NOT NULL CHECK (seed > 0),
+    filename_prefix         TEXT NOT NULL UNIQUE CHECK (filename_prefix <> ''),
+    graph_digest            TEXT NOT NULL CHECK (length(graph_digest) = 64),
+    dispatch_state          TEXT NOT NULL CHECK (
+                                dispatch_state IN ('intent', 'acknowledged', 'outcome_unknown', 'rejected')
+                            ),
+    prompt_id               TEXT,
+    completion_state        TEXT NOT NULL DEFAULT 'pending' CHECK (
+                                completion_state IN ('pending', 'output_available', 'completed', 'failed')
+                            ),
+    output_evidence_json    TEXT,
+    expected_filename       TEXT NOT NULL DEFAULT '',
+    filename                TEXT NOT NULL DEFAULT '',
+    error                   TEXT NOT NULL DEFAULT '',
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL,
+    UNIQUE (shot_id, attempt_number),
+    CHECK (dispatch_state != 'acknowledged' OR (prompt_id IS NOT NULL AND prompt_id <> '')),
+    CHECK (dispatch_state != 'outcome_unknown' OR prompt_id IS NULL),
+    CHECK (dispatch_state != 'rejected' OR completion_state = 'failed'),
+    CHECK (completion_state NOT IN ('output_available', 'completed') OR (
+        output_evidence_json IS NOT NULL AND expected_filename <> ''
+    )),
+    CHECK (completion_state != 'completed' OR filename <> '')
+);
+CREATE INDEX IF NOT EXISTS ix_full_auto_execution_attempt_shot
+    ON full_auto_execution_attempt(shot_id, attempt_number);
+CREATE TRIGGER IF NOT EXISTS full_auto_execution_attempt_matches_owner
+BEFORE INSERT ON full_auto_execution_attempt
+WHEN NOT EXISTS (
+        SELECT 1 FROM full_auto_run r
+        WHERE r.run_id = NEW.run_id AND r.session_id = NEW.session_id
+          AND r.epoch = NEW.run_epoch AND r.fencing_token = NEW.run_fencing_token
+          AND r.phase = 'execute'
+    )
+    OR NOT EXISTS (
+        SELECT 1 FROM global_runner_claim c
+        WHERE c.singleton = 1 AND c.owner_kind = 'full_auto'
+          AND c.session_id = NEW.session_id AND c.run_id = NEW.run_id
+          AND c.fencing_token = NEW.runner_fencing_token
+    )
+    OR NOT EXISTS (
+        SELECT 1 FROM shot s
+        WHERE s.id = NEW.shot_id AND s.session_id = NEW.session_id AND s.status = 'running'
+    )
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto execution attempt does not match its live runner');
+END;
+CREATE TRIGGER IF NOT EXISTS full_auto_execution_attempt_identity_immutable
+BEFORE UPDATE OF attempt_id, run_id, session_id, shot_id, attempt_number,
+                 run_epoch, run_fencing_token, runner_fencing_token, seed,
+                 filename_prefix, graph_digest, created_at
+ON full_auto_execution_attempt
+WHEN NEW.attempt_id != OLD.attempt_id OR NEW.run_id != OLD.run_id
+  OR NEW.session_id != OLD.session_id OR NEW.shot_id != OLD.shot_id
+  OR NEW.attempt_number != OLD.attempt_number OR NEW.run_epoch != OLD.run_epoch
+  OR NEW.run_fencing_token != OLD.run_fencing_token
+  OR NEW.runner_fencing_token != OLD.runner_fencing_token OR NEW.seed != OLD.seed
+  OR NEW.filename_prefix != OLD.filename_prefix OR NEW.graph_digest != OLD.graph_digest
+  OR NEW.created_at != OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto execution attempt identity is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS full_auto_execution_attempt_transitions
+BEFORE UPDATE ON full_auto_execution_attempt
+WHEN NOT (
+        NEW.dispatch_state = OLD.dispatch_state
+        OR (OLD.dispatch_state = 'intent' AND NEW.dispatch_state IN (
+            'acknowledged', 'outcome_unknown', 'rejected'
+        ))
+        OR (OLD.dispatch_state = 'outcome_unknown' AND NEW.dispatch_state = 'acknowledged')
+    )
+    OR NOT (
+        NEW.completion_state = OLD.completion_state
+        OR (OLD.completion_state = 'pending' AND NEW.completion_state IN (
+            'output_available', 'failed'
+        ))
+        OR (OLD.completion_state = 'output_available' AND NEW.completion_state IN (
+            'completed', 'failed'
+        ))
+    )
+    OR (OLD.prompt_id IS NOT NULL AND NEW.prompt_id IS NOT OLD.prompt_id)
+    OR (OLD.output_evidence_json IS NOT NULL AND NEW.output_evidence_json IS NOT OLD.output_evidence_json)
+    OR (OLD.expected_filename != '' AND NEW.expected_filename != OLD.expected_filename)
+    OR (OLD.filename != '' AND NEW.filename != OLD.filename)
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto execution attempt transition is invalid');
+END;
+
 -- Reviewed adaptations of resource-v1 take descriptive inputs
 -- (task 4.2 of ``adopt-resource-session-planning``). One row
 -- per accepted (session, plan_revision, take_id, resource

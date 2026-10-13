@@ -189,10 +189,12 @@ class Runner:
             if heartbeat is None:
                 raise
             self._cancel.discard(session_id)
-            if self._has_full_auto_owner(heartbeat) and exc.code == "comfy_unavailable":
+            if self._has_full_auto_owner(heartbeat) and exc.code in {
+                "comfy_unavailable",
+            }:
                 try:
                     resource_full_auto.advance_run(
-                        heartbeat.check(), "blocked", blocker_code="comfy_unavailable",
+                        heartbeat.check(), "blocked", blocker_code=exc.code,
                     )
                 except resource_full_auto.FullAutoRunError:
                     pass
@@ -246,6 +248,15 @@ class Runner:
         return heartbeat is not None and getattr(heartbeat, "run_claim", None) is not None
 
     @staticmethod
+    def _has_full_auto_runner_owner(heartbeat) -> bool:
+        from backend import resource_full_auto
+
+        return (
+            Runner._has_full_auto_owner(heartbeat)
+            and isinstance(getattr(heartbeat, "claim", None), resource_full_auto.RunnerClaim)
+        )
+
+    @staticmethod
     def _require_runner_owner(session_id: int, heartbeat) -> None:
         if heartbeat is None:
             return
@@ -292,13 +303,28 @@ class Runner:
             raise RuntimeError("The session has no workflow assigned")
 
         s = session["settings"]
+        source_effective_inputs = None
+        if self._has_full_auto_runner_owner(heartbeat):
+            from backend import resource_store
+
+            authorized_settings = dict(s)
+            authorized_settings.pop("composition_mode", None)
+            source_effective_inputs = {
+                "model_id": int(model["id"]),
+                "lora_selection_digest": resource_store.canonical_digest({
+                    "name": model["lora_name"], "strength": model["lora_strength"],
+                }),
+                "effective_settings_digest": resource_store.canonical_digest(authorized_settings),
+            }
         seed = shot["seed"] or random.randint(1, 2**31 - 1)
         # The random suffix is what stops ComfyUI from serving a cached SaveImage:
         # an identical graph returns `execution_cached` with the previous run's
         # filename and writes NO file. Reachable for real after wiping data/ (shot
         # ids restart at 1) while ComfyUI still holds its cache. Only the SaveImage
         # node is invalidated; the sampler above it still reuses its cache.
-        prefix = f"idevgen/{session_id}/{shot['id']}_{uuid.uuid4().hex[:6]}"
+        attempt_id = uuid.uuid4().hex if self._has_full_auto_runner_owner(heartbeat) else None
+        prefix_suffix = attempt_id or uuid.uuid4().hex[:6]
+        prefix = f"idevgen/{session_id}/{shot['id']}_{prefix_suffix}"
         values = {
             "positive": shot["prompt"],
             "negative": shot["negative"],
@@ -354,6 +380,9 @@ class Runner:
             session_id, heartbeat,
             "UPDATE shot SET status='running', seed=? WHERE id=?", seed, shot["id"],
         )
+        attempt = None
+        attempt_claim = None
+        attempt_runner_claim = None
         try:
             # Inside the try, and after the row says `running`: a missing anchor
             # fails this shot with a readable line instead of taking the run down.
@@ -362,6 +391,36 @@ class Runner:
             self._require_runner_owner(session_id, heartbeat)
             graph = apply_map(wf["graph"], wf["node_map"], values)
             self._renew_runner_owner(session_id, heartbeat)
+            if attempt_id is not None:
+                from backend import resource_store
+
+                attempt_claim = heartbeat.check()
+                attempt_runner_claim = heartbeat.claim
+                source_workflow_binding = {
+                    "workflow_id": int(wf["id"]),
+                    "kind": wf["kind"],
+                    "graph_digest": resource_store.canonical_digest(wf["graph"]),
+                    "node_map_digest": resource_store.canonical_digest(wf["node_map"]),
+                }
+                try:
+                    attempt = resource_full_auto.begin_execution_attempt(
+                        attempt_claim, attempt_runner_claim,
+                        attempt_id=attempt_id,
+                        shot_id=int(shot["id"]),
+                        seed=seed,
+                        filename_prefix=prefix,
+                        graph_digest=resource_store.canonical_digest(graph),
+                        source_workflow_binding=source_workflow_binding,
+                        source_effective_inputs=source_effective_inputs,
+                    )
+                except resource_full_auto.FullAutoRunError as exc:
+                    if exc.code in {"dependency_changed", "workflow_changed", "resource_planning_disabled"}:
+                        self._owned_update(
+                            session_id, heartbeat,
+                            "UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
+                            exc.message[:500], db.now(), shot["id"],
+                        )
+                    raise
             try:
                 prompt_id = await self.comfy.queue_prompt(graph, CLIENT_ID)
             except ComfyError as exc:
@@ -370,18 +429,49 @@ class Runner:
                 # a 4xx (or a test double's status-less definitive refusal) is
                 # safe to record as a failed shot.
                 if exc.status_code is None or 400 <= exc.status_code < 500:
+                    if attempt is not None:
+                        resource_full_auto.record_execution_dispatch(
+                            attempt_id, attempt_claim, attempt_runner_claim,
+                            state="rejected", error=str(exc),
+                        )
                     raise
+                if attempt is not None:
+                    resource_full_auto.record_execution_dispatch(
+                        attempt_id, attempt_claim, attempt_runner_claim,
+                        state="outcome_unknown", error="ComfyUI returned an ambiguous queue response.",
+                    )
                 raise resource_full_auto.FullAutoRunError(
                     409, "execution_outcome_unknown",
                     "ComfyUI returned an ambiguous response while queueing the shot.",
                 ) from exc
             except Exception as exc:  # noqa: BLE001 - dispatch may have succeeded remotely
+                if attempt is not None:
+                    resource_full_auto.record_execution_dispatch(
+                        attempt_id, attempt_claim, attempt_runner_claim,
+                        state="outcome_unknown", error="The ComfyUI queue response was not received.",
+                    )
                 raise resource_full_auto.FullAutoRunError(
                     409, "execution_outcome_unknown",
                     "The ComfyUI queue response was not received; the shot may still be running.",
                 ) from exc
+            if attempt is not None:
+                # This receipt is fenced to the intent identity, so a known
+                # response survives a lease loss while it was returning.
+                resource_full_auto.record_execution_dispatch(
+                    attempt_id, attempt_claim, attempt_runner_claim,
+                    state="acknowledged", prompt_id=prompt_id,
+                )
             self._require_runner_owner(session_id, heartbeat)
-        except resource_full_auto.FullAutoRunError:
+        except resource_full_auto.FullAutoRunError as exc:
+            if attempt is None and self._has_full_auto_owner(heartbeat) and exc.code in {
+                "dependency_changed", "workflow_changed", "resource_planning_disabled",
+            }:
+                try:
+                    resource_full_auto.advance_run(
+                        heartbeat.check(), "blocked", blocker_code=exc.code,
+                    )
+                except resource_full_auto.FullAutoRunError:
+                    pass
             raise
         except Exception as exc:  # noqa: BLE001 - a rejected graph fails one shot, not the run
             self._owned_update(
@@ -390,10 +480,11 @@ class Runner:
                 str(exc)[:500], db.now(), shot["id"],
             )
             return
-        self._owned_update(
-            session_id, heartbeat,
-            "UPDATE shot SET prompt_id=? WHERE id=?", prompt_id, shot["id"],
-        )
+        if attempt is None:
+            self._owned_update(
+                session_id, heartbeat,
+                "UPDATE shot SET prompt_id=? WHERE id=?", prompt_id, shot["id"],
+            )
 
         try:
             history = await self._await_history(prompt_id, session_id, heartbeat)
@@ -428,28 +519,51 @@ class Runner:
         images = output_images(history)
         if not images:
             msg = _history_error(history) or "ComfyUI returned no image"
-            self._owned_update(
-                session_id, heartbeat,
-                "UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
-                msg[:500], db.now(), shot["id"],
-            )
+            if attempt is not None:
+                resource_full_auto.finish_execution_attempt(
+                    attempt_id, heartbeat.check(), heartbeat.claim,
+                    outcome="failed", error=msg,
+                )
+            else:
+                self._owned_update(
+                    session_id, heartbeat,
+                    "UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
+                    msg[:500], db.now(), shot["id"],
+                )
             return
 
         try:
             self._require_runner_owner(session_id, heartbeat)
+            if attempt is not None:
+                resource_full_auto.record_execution_output(
+                    attempt_id, heartbeat.check(), heartbeat.claim,
+                    image=images[0], expected_filename=_output_filename(shot, images[0]),
+                )
             filename = await self._collect(session_id, shot, images[0], heartbeat)
         except OSError as exc:  # disk full, misconfigured path, file already moved
+            if attempt is not None:
+                resource_full_auto.finish_execution_attempt(
+                    attempt_id, heartbeat.check(), heartbeat.claim,
+                    outcome="failed", error=str(exc),
+                )
+            else:
+                self._owned_update(
+                    session_id, heartbeat,
+                    "UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
+                    str(exc)[:500], db.now(), shot["id"],
+                )
+            return
+        if attempt is not None:
+            resource_full_auto.finish_execution_attempt(
+                attempt_id, heartbeat.check(), heartbeat.claim,
+                outcome="completed", filename=filename,
+            )
+        else:
             self._owned_update(
                 session_id, heartbeat,
-                "UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
-                str(exc)[:500], db.now(), shot["id"],
+                "UPDATE shot SET status='done', filename=?, finished_at=? WHERE id=?",
+                filename, db.now(), shot["id"],
             )
-            return
-        self._owned_update(
-            session_id, heartbeat,
-            "UPDATE shot SET status='done', filename=?, finished_at=? WHERE id=?",
-            filename, db.now(), shot["id"],
-        )
         self._adopt_anchor(session, shot, heartbeat)
 
     def _adopt_anchor(self, session: dict, shot: dict, heartbeat=None) -> None:
@@ -655,7 +769,7 @@ class Runner:
         """
         src = self.comfy_output_dir / (image.get("subfolder") or "") / image["filename"]
         dest_dir = self.sessions_dir / str(session_id)
-        name = f"{shot['id']:05d}_{slug(shot['shot_label'])}{Path(image['filename']).suffix}"
+        name = _output_filename(shot, image)
         dest = dest_dir / name
 
         for attempt in range(1, MOVE_ATTEMPTS + 1):
@@ -736,3 +850,7 @@ def slug(text: str) -> str:
     brought in from outside is named exactly like one the runner produced."""
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", (text or "shot").strip()).strip("-").lower()
     return (slug or "shot")[:40]
+
+
+def _output_filename(shot: dict, image: dict) -> str:
+    return f"{shot['id']:05d}_{slug(shot['shot_label'])}{Path(image['filename']).suffix}"
