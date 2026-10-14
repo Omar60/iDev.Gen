@@ -1,5 +1,22 @@
 # Project Diary
 
+## Full Auto Task 5.8 Rollback Boundaries
+
+Reuse the online SQLite backup and restore exact pre-upgrade bytes separately;
+an old runtime does not obey future schema markers. Record source provenance
+and require a stopped process operationally rather than claiming a filesystem
+preflight proves those facts. Run the new command from upgraded source while
+resolving old launch paths against the recorded old runtime root.
+
+SQLite mode=ro can create transient WAL/SHM source files. Inspect private copies
+and observe original paths while connections are open, not only after closing.
+Directory aliases can hide upgraded hardlinks outside the visible tree; reject
+aliases and compare file identity for data and config. Terminal session/run
+labels do not settle orphan running shots or incomplete admission receipts.
+Preserve known terminal failures without treating risk acceptance as settlement.
+Independent probes exposed five gaps; repaired source passed the complete gate
+and actual historical synthetic startup. Only Task 5.8 is newly accepted.
+
 ## Full Auto Task 5.7 External Queue Boundaries
 
 Observe external work before new dispatch without reserving an idle singleton.

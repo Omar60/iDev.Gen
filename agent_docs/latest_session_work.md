@@ -1,76 +1,78 @@
 # Latest Session Work
 
-## Full Auto Task 5.7 Accepted Handoff
+## Full Auto Task 5.8 Accepted Handoff
 
-Deployment `full-auto-57-20261014` entered from clean `8e5152b` and completes
-only Task 5.7 of `automate-resource-session-full-auto`. Heavy intake covered the
-project framework, proposal, design, tasks, delta specs and decisive code/tests.
-Main retained architecture, scope, integration and acceptance; internal Executor
-implemented and repaired; Tester independently reviewed actual code/diff and
-executed the gates. Main accepted the final source and raw evidence.
-Only 5.7 is newly checked: 29 of 41 tasks. Do not advance another task.
+Deployment `full-auto-first-task-20261014` entered from clean `f3f8f10` and
+completes only Task 5.8 of `automate-resource-session-full-auto`. Heavy intake
+covered the complete project framework, proposal, design, tasks, delta specs
+and decisive backup/startup/attempt contracts. Main retained architecture,
+scope, integration and acceptance. Internal Executor implemented and repaired;
+Tester independently reviewed actual code/diff and executed the gates;
+Archivist documented the isolated rollback procedure and owns closure reporting.
+Only 5.8 is newly checked: 30 of 41 tasks. Do not advance another task.
 
 ## Delivered Contracts
 
-The coordinator checks remote running and pending work before new dispatch,
-without reserving the idle global runner. External work persists a safe
-`external_queue_busy` reason and a next poll deadline at least fifteen seconds
-later. Deferred scheduling and startup honor that deadline. Between-shot waits
-release the singleton while retaining the existing admission, stable shot links
-and FIFO ordering. Task-registry cleanup cannot erase a newer continuation.
-Status adds closed `waiting_reason` values `external_queue_busy`, `runner_busy`
-or null, with old action receipts normalized to null and no raw queue data.
+The existing SQLite online backup captures committed WAL without schema
+migration and excludes external photographs. The new read-only
+`python -m backend.full_auto_rollback --check` accepts explicit backup,
+upgraded/restored data, old config and runtime-root inputs. It verifies
+integrity, pre-Full-Auto table footprint, byte-identical restore, effective
+config/environment paths, disjoint file identities and upgraded settlement.
+All database inspection uses private temporary copies; the upgraded copy
+includes WAL with before/copied/after digest checks. No supplied SQLite file
+is opened by SQLite, avoiding transient source sidecars.
 
-A racing external client can enqueue after observation. The app sends one
-normal-priority attempt and never clears, reorders or interrupts unrelated work.
-Queued time does not consume the 900-second executing-shot timeout. Corroborated
-owned running evidence starts that timer; completed history without a prior
-running observation remains a valid completion. A timeout retains unknown
-outcome evidence without replay. Manual behavior and existing journal,
-cancellation, admission and frozen-input guards remain covered.
+Nonterminal runs, uncertain or pending attempts, assistant work, runner owners,
+running sessions/shots and uncertain admissions refuse rollback. Risk acceptance
+does not settle old unknown evidence. Known failed submitted work requires a
+terminal known attempt. Directory aliases and shared upgraded identities,
+including config hardlinks, are refused. The command returns sanitized nonzero
+refusals and never launches an executable. README and session guidance link the
+runbook, which distinguishes upgraded command root from old runtime root.
 
 ## Independent Evidence
 
-Final `.venv/Scripts/python.exe -m pytest -vv -ra`: 3,526 passed, two skipped,
-five warnings, exit zero in 1,431.21 seconds. External raw log:
-`fa57-verification/full-pytest-verbose-final2.log`. Skips: opt-in real 500-take
-synthesis benchmark and unavailable filesystem symlinks. Warnings: two Pydantic
-register warnings, Starlette/httpx TestClient, AnyIO portal alias and raw httpx
-bytes upload.
+Final `.venv/Scripts/python.exe -m pytest`: 3,554 passed, two skipped, five
+warnings, exit zero in 1,151.22 seconds. External raw log:
+`fa58-full-pytest.log` in the temporary evidence directory. Skips: opt-in
+500-take synthesis benchmark and unavailable Windows filesystem symlinks.
+Warnings: two Pydantic register warnings, Starlette/httpx TestClient,
+AnyIO portal alias and raw httpx bytes upload.
 
-The independent external-queue file passed all 19 cases in 46.82 seconds:
-`fa57-verification/independent-file-final.log`. Privacy/assets passed 37 checks
-in 2.38 seconds: `fa57-verification/privacy-postgate.log`. Strict OpenSpec and
-diff checks passed: `openspec-strict-final.log` and `git-diff-check-final.log` in
-the same external evidence directory. Frontend was unchanged; npm tests/build
-were not required or run. Documentation receives final compact closure checks.
+Independent CLI/sidecar probes passed all thirteen cases:
+`fa58-independent-final.log`. Explicit `tests/historical_rollback.py` passed
+three cases: `fa58-historical-final.log`. The new case extracts recorded
+pre-Full-Auto revision `fd38b6173ad25bd8ba44dbfd6c97d5523a61b78e` and executes
+its real app lifespan/API against restored synthetic data, preserving upgraded
+database/image bytes. Existing historical cases also ran; their tar extraction
+and compatibility warnings remain visible. Privacy passed ten checks:
+`fa58-privacy-final.log`. Strict OpenSpec and diff checks passed:
+`fa58-openspec-strict.log` and `fa58-diff-check-final.log`. Frontend was unchanged;
+npm tests/build were not required or run. Final documentation/task-state changes
+receive compact closure checks before commit.
 
-Independent probes reproduced malformed persisted wait reasons causing raw
-TypeError, expiry during the wait write boundary, and one poll interval charged
-before observed owned execution. All were repaired and rechecked. Deferred
-reentry was added and tested through the real task registry. A final-authority
-probe initially injected at an unreachable call; corrected injection passed.
-Earlier restart harness failures cancelled a completed coordinator instead of
-its deferred timer or used an insufficient completion wait; corrected tests
-retain the durable deadline and complete-output assertions.
-
-An initial full gate was interrupted during slow-test diagnosis and supplies
-no passing claim. A subsequent complete gate ended with 3,525 passed, two skipped
-and one stale runner-stub signature failure in 1,013.51 seconds. The stub now
-accepts and asserts `attempt=None`; the exact case independently passed. The
-provider fixture also expects three exact same-prompt history reads under the
-corrected timeout, preserving one attempt, zero interrupts and unknown outcome.
-The final complete passing gate above includes these changes. No assertions
-about remote settlement were weakened.
+Independent red probes found orphan running shots, incomplete admissions,
+hidden junction/hardlink identity, config hardlink identity and transient WAL
+sidecar writes. Executor repaired all five; unchanged acceptance requirements
+passed afterwards. The sidecar observer was corrected to inspect source paths
+during every open inspection connection without requiring source-file opening.
+Red evidence is retained in `fa58-independent-rollback-probes.log` and
+`fa58-wal-sidecar-probe.log`; focused repair evidence is
+`fa58-rollback-repair1-focused.log`. Earlier failures are not passing gates.
 
 ## Closure and Continuation
 
-The acceptance commit includes only Task 5.7 backend work, scoped fixture and
-independent tests, its task marking and required public/project documentation.
-Archivist supplies final documentation review, read-only Git handoff and exact
-Deployment Token Report for `full-auto-57-20261014` after the repository is sealed.
-No external agent, external handoff, real generation, push or archive occurred.
-Task 5.8 and all other unfinished tasks remain pending. External clients may
-race inspection; local admission cannot promise remote fairness, exclusivity,
-exactly-once execution or billing. UI, rollback and live visual acceptance remain
-outside this task.
+The acceptance commit includes only Task 5.8 code, scoped and independent tests,
+its marking and required public/project documentation. Archivist supplies final
+read-only Git handoff and exact Deployment Token Report after repository seal.
+Task 6.1 and all other unfinished tasks remain pending. No external agent,
+external handoff, real generation, next task, push or archive occurred.
+
+The preflight verifies schema/identity, not historical provenance or creation
+time. Operators must retain the recorded source/backup provenance, stop/fence
+all processes, preserve matching photos and start the old release with the
+validated environment. It cannot retroactively prevent direct old-code writes
+to upgraded data; `PRAGMA user_version` alone offers no such protection.
+Historical synthetic startup does not establish real ComfyUI generation,
+photo completeness, visual fidelity or arbitrary older-release compatibility.

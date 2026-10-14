@@ -2,31 +2,30 @@
 
 ## Accepted Position
 
-Deployment `full-auto-57-20261014` completes only Task 5.7 of
-`automate-resource-session-full-auto`, from clean entry commit `8e5152b`.
-Main accepted the actual diff and raw independent verification evidence.
-Only 5.7 is newly checked: 29 of 41 tasks. Internal Executor implemented and
-repaired; independent Tester verified; Archivist owns closure reporting.
+Deployment `full-auto-first-task-20261014` completes only Task 5.8 of
+`automate-resource-session-full-auto`, from clean entry commit `f3f8f10`.
+Main accepted the actual code/diff and independent verification evidence.
+Only 5.8 is newly checked: 30 of 41 tasks. Internal Executor implemented and
+repaired; Tester independently verified; Archivist owns closure reporting.
 
 ## Delivered Behavior
 
-Full Auto observes the remote queue before new dispatch and waits without an
-idle global runner claim. Persisted 15-second busy-poll deadlines and deferred
-scheduling preserve FIFO, existing admission and shot links across yielding and
-restart. Status exposes only a closed `waiting_reason` enum or null. Racing
-external work can queue ahead of one normal-priority attempt. Its queued time
-is excluded from the 900-second executing timeout, which starts at observed
-owned running evidence; completed history need not include that observation.
+The read-only `backend.full_auto_rollback --check` validates a consistent
+pre-Full-Auto backup, byte-identical isolated restore, effective old-runtime
+config/data paths and settled upgraded work. Private inspection copies include
+committed WAL without creating sidecars in supplied directories. Running shots,
+uncertain admission, unknown attempts and shared file identities block rollback.
+The runbook preserves upgraded data/images and uses the existing backup utility.
 
 ## Verification and Stop Boundary
 
-The final independent complete Python gate passed: 3,526 passed, two skipped,
-five warnings. All 19 independent external-queue cases, 37 privacy/assets
-checks, strict OpenSpec and diff checks passed. Evidence and limits are
-canonical in `latest_session_work.md`. Frontend was unchanged.
+The final independent complete Python gate passed: 3,554 passed, two skipped,
+five warnings. Thirteen independent probes, three explicit historical tests,
+privacy, strict OpenSpec and diff gates passed. Evidence and operational limits
+are canonical in `latest_session_work.md`. Frontend was unchanged.
 
-The acceptance commit includes only Task 5.7 implementation, tests, its task
-marking and required closure documentation. No real generation, external agent,
-external handoff, next task, archive or push occurred. Rollback tooling, UI and
-live acceptance remain pending. Local FIFO does not guarantee remote fairness
-or exclusive control of ComfyUI.
+Only Task 5.8 implementation, tests, marking and closure documentation belong to
+the acceptance commit. Task 6.1 and all other unfinished tasks remain pending.
+No real generation, external agent, external handoff, archive or push occurred.
+Backup provenance, stopped processes and complete matching photos remain
+operator responsibilities; the preflight does not launch an old executable.

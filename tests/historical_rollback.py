@@ -28,6 +28,7 @@ from test_authoring_operation_api import _create_guided_session
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ROLLBACK_COMPATIBLE_SOURCE_REVISION = "45f3005188d59d0c508df55479d19156834627b4"
 PRE_FLAG_SOURCE_REVISION = "89ef945c380a76ec85045a49f90671b8d7763366"
+PRE_FULL_AUTO_SOURCE_REVISION = "fd38b6173ad25bd8ba44dbfd6c97d5523a61b78e"
 
 
 def _extract_git_revision(revision: str, destination: Path) -> Path:
@@ -302,3 +303,122 @@ def test_local_pre_flag_source_starts_from_verified_pre_upgrade_backup(tmp_path:
     ).fetchone()[0] == "Pre-upgrade session"
     assert reopened.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     reopened.close()
+
+
+def test_pre_full_auto_source_starts_only_from_isolated_pre_upgrade_restore(tmp_path: Path):
+    """The recorded pre-Full-Auto source starts on a verified restored copy only."""
+    source_root = _extract_git_revision(
+        PRE_FULL_AUTO_SOURCE_REVISION,
+        tmp_path / "pre-full-auto-source",
+    )
+    source_data = tmp_path / "synthetic-pre-upgrade-data"
+    source_data.mkdir()
+    source_config = tmp_path / "synthetic-pre-upgrade-config.json"
+    source_config.write_text(json.dumps({
+        "comfy_url": "http://localhost:8188",
+        "data_dir": str(source_data),
+    }), encoding="utf-8")
+    create_legacy = textwrap.dedent("""
+        from fastapi.testclient import TestClient
+        from backend import main
+
+        with TestClient(main.app) as client:
+            model_id = main.db.run(
+                "INSERT INTO model (name, trigger, created_at) VALUES (?, ?, ?)",
+                "Synthetic rollback model", "invented trigger", "now",
+            )
+            main.db.run(
+                "INSERT INTO session (model_id, name, created_at) VALUES (?, ?, ?)",
+                model_id, "Synthetic pre-upgrade session", "now",
+            )
+            assert client.get("/api/sessions").status_code == 200
+    """)
+    created = _run_source_app(source_root, source_data, source_config, create_legacy)
+    assert created.returncode == 0, created.stdout + created.stderr
+
+    backup = tmp_path / "synthetic-pre-upgrade-backup.db"
+    backup_database(source_data / "idevgen.db", backup)
+    restored_data = tmp_path / "restored-synthetic-data"
+    restored_data.mkdir()
+    shutil.copyfile(backup, restored_data / "idevgen.db")
+    restored_config = tmp_path / "restored-synthetic-config.json"
+    restored_config.write_text(json.dumps({
+        "comfy_url": "http://localhost:8188",
+        "data_dir": str(restored_data),
+    }), encoding="utf-8")
+
+    upgraded_data = tmp_path / "synthetic-upgraded-data"
+    (upgraded_data / "sessions").mkdir(parents=True)
+    image_path = upgraded_data / "sessions" / "retained.png"
+    image_path.write_bytes(b"synthetic upgraded image")
+    current_schema = textwrap.dedent("""
+        import sys
+        from pathlib import Path
+        from backend import db
+
+        db.connect(Path(sys.argv[1]))
+    """)
+    initialized = subprocess.run(
+        [sys.executable, "-c", current_schema, str(upgraded_data / "idevgen.db")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert initialized.returncode == 0, initialized.stdout + initialized.stderr
+    upgraded_before = {
+        path.relative_to(upgraded_data): path.read_bytes()
+        for path in upgraded_data.rglob("*")
+        if path.is_file()
+    }
+
+    env = os.environ.copy()
+    env["IDEVGEN_CONFIG"] = str(restored_config)
+    env["IDEVGEN_DATA_DIR"] = str(restored_data)
+    env["PYTHONPATH"] = os.pathsep.join((str(REPO_ROOT / "backend"), str(REPO_ROOT)))
+    preflight = subprocess.run(
+        [
+            sys.executable, "-m", "backend.full_auto_rollback", "--check",
+            "--backup", str(backup),
+            "--upgraded-data", str(upgraded_data),
+            "--restored-data", str(restored_data),
+            "--config", str(restored_config),
+            "--runtime-root", str(source_root),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert preflight.returncode == 0, preflight.stdout + preflight.stderr
+    assert {
+        path.relative_to(upgraded_data): path.read_bytes()
+        for path in upgraded_data.rglob("*")
+        if path.is_file()
+    } == upgraded_before
+    historical_read = textwrap.dedent("""
+        from fastapi.testclient import TestClient
+        from backend import main
+
+        with TestClient(main.app) as client:
+            response = client.get("/api/sessions")
+            assert response.status_code == 200, response.text
+            session = main.db.one(
+                "SELECT name FROM session WHERE name = ?",
+                "Synthetic pre-upgrade session",
+            )
+            assert session["name"] == "Synthetic pre-upgrade session"
+    """)
+    opened = _run_source_app(
+        source_root,
+        restored_data,
+        restored_config,
+        historical_read,
+    )
+    assert opened.returncode == 0, opened.stdout + opened.stderr
+    assert {
+        path.relative_to(upgraded_data): path.read_bytes()
+        for path in upgraded_data.rglob("*")
+        if path.is_file()
+    } == upgraded_before

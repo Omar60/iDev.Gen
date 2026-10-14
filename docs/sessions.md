@@ -1797,8 +1797,9 @@ remote work stopped, determine provider billing, or validate generated images.
 These controls apply to journaled Full Auto execution. Legacy unjournaled
 behavior is unchanged, and the legacy `/api/sessions/{sid}/retry` route refuses
 Full Auto-linked shots. The retry API has no dedicated UI. The Full Auto profile
-editor, selection/consent/progress UI, rollback tooling, and separately authorized
-real-generation validation remain unfinished.
+editor and selection/consent/progress UI remain unfinished. See the
+[isolated Full Auto rollback runbook](rollback.md); real-generation validation
+remains separately authorized.
 
 #### Full Auto deletion guards and recovery
 
@@ -2035,9 +2036,10 @@ planning is disabled or authorization has expired, recovery settles existing
 outputs but leaves remaining new work blocked. This supports safe backend-restart
 continuation; it does not establish that an
 unmatched remote job stopped. External queue observation does not reserve or
-control remote queue order; rollback tooling remains unfinished. The journal is
-scoped to Full Auto; manual reference/guide handling and locked-file move retries
-remain covered. Manual sessions remain available
+control remote queue order. See the
+[isolated Full Auto rollback runbook](rollback.md). The journal is scoped to Full
+Auto; manual reference/guide handling and locked-file move retries remain
+covered. Manual sessions remain available
 when no nonterminal Full Auto run owns the session. Review validates persisted
 evidence and policy; it does not certify semantic correctness or rendered
 pixels.
@@ -2478,6 +2480,10 @@ Exactly-once remote billing after response loss is not guaranteed. Manual and
 pre-authoring expert preparation retain their existing flows.
 
 ### Operational rollback and disabling resource mode
+
+These steps disable resource-v1 writes while preserving that schema. Rollback to
+a release that predates Full Auto uses the separate
+[isolated restore runbook](rollback.md).
 
 With `resource_planning_enabled=false`, resource-planning writes return HTTP 503 while existing resource, session, plan, review, operation, look, and photo-preview reads remain available. Operation status and cancellation remain available, and already-ready, authoritatively approved snapshots may still be submitted and run. Disabling during an assistant call fences the response, discards late output, and prevents another call. The existing path-backed resource import API and CLI, plus legacy garment/outfit import, keep their prior behavior. No destructive downgrade or automatic table drop runs.
 

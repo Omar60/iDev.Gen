@@ -131,8 +131,8 @@ Verified baseline from the repository layout and application entry points.
   `comfy_unavailable`. Disabled planning or expired authorization preserves
   settled outputs and blocks remaining work. Explicit journaled-attempt retries
   use quote-bound Full Auto Resume controls documented in `docs/sessions.md`;
-  rollback tooling remains unfinished. The journal is
-  scoped to Full Auto;
+  the read-only rollback preflight is `backend/full_auto_rollback.py`, with its
+  operator runbook in `docs/rollback.md`. The journal is scoped to Full Auto;
   manual reference/guide handling and locked-file move retries remain covered.
   Internal review and policy approval
   validate current snapshots, conflicts, placeholders, adaptations, drift, and

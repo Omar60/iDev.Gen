@@ -208,9 +208,10 @@ busy external queue records `waiting_runner` with `waiting_reason` set to
 queue time does not consume the 900-second executing-shot timeout. If another
 client queues work after an empty observation, Full Auto may still send one
 normal-priority POST for that attempt. This local policy provides no remote queue
-fairness or exclusivity guarantee. Rollback tooling, the profile editor, Full Auto
-selection/consent/progress UI, and separately authorized real-generation
-validation remain unfinished.
+fairness or exclusivity guarantee. The isolated Full Auto rollback preflight
+and runbook are documented in [Operational rollback](docs/rollback.md). The
+profile editor, Full Auto selection/consent/progress UI, and separately
+authorized real-generation validation remain unfinished.
 The existing manual workflow remains available for sessions without a
 nonterminal Full Auto owner.
 While a run is nonterminal or its work is unresolved, supported DELETE routes
@@ -578,6 +579,13 @@ python scripts/backup_db.py --json
 ```
 
 The report must contain `"status": "ok"`; record the reported target. The utility uses SQLite's online backup API, checks `PRAGMA integrity_check`, and publishes the backup atomically. It copies database records only; rendered images under `<data folder>/sessions/` are outside the database.
+
+Full Auto rollback requires a separate pre-upgrade restore, matching config and
+photos, settled upgraded work, and disjoint restored data. Keep the upgraded
+database and images intact, then run the read-only preflight from the recorded
+upgraded checkout, passing the recorded older source revision as `--runtime-root`.
+See the [Full Auto rollback runbook](docs/rollback.md); the check refuses unsafe
+inputs and never starts the older release.
 
 With the flag off, resource-planning writes return HTTP 503. Existing reads, operation status/cancel, and submission or execution of already approved snapshots remain available. The existing path-backed import and legacy garment/outfit import keep their prior behavior. See [session rollback procedure](docs/sessions.md#operational-rollback-and-disabling-resource-mode) for the required order and compatibility boundary.
 
