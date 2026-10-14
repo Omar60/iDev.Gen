@@ -209,9 +209,13 @@ class RunClaimHeartbeat:
 class RunnerClaimHeartbeat:
     """Renew the global runner lease and optional Full Auto owner during I/O."""
 
-    def __init__(self, claim: RunnerClaim, run_claim: RunClaim | None = None):
+    def __init__(
+        self, claim: RunnerClaim, run_claim: RunClaim | None = None,
+        *, cancellation_recovery: bool = False,
+    ):
         self.claim = claim
         self.run_claim = run_claim
+        self.cancellation_recovery = cancellation_recovery
         self.error: FullAutoRunError | None = None
         self._task: asyncio.Task | None = None
 
@@ -236,10 +240,15 @@ class RunnerClaimHeartbeat:
             raise self.error
         _require_runner_claim(self.claim, now_text=db.now())
         if self.run_claim is not None:
-            _require_claim(
-                self.run_claim, now_text=db.now(),
-                reconciliation=self.run_claim.requires_reconciliation,
-            )
+            if self.cancellation_recovery:
+                require_cancellation_runner_claim(
+                    self.run_claim.session_id, self.run_claim, self.claim,
+                )
+            else:
+                _require_claim(
+                    self.run_claim, now_text=db.now(),
+                    reconciliation=self.run_claim.requires_reconciliation,
+                )
         return self.run_claim
 
     def renew_now(self) -> RunClaim | None:
@@ -288,6 +297,7 @@ class RunActionResult:
     view: dict
     claim: RunClaim | None = field(default=None, repr=False, compare=False)
     replayed: bool = False
+    schedule_cancellation_reconciliation: bool = False
 
 
 @dataclass(frozen=True)
@@ -1068,19 +1078,27 @@ def _require_comfy_probe_owner(claim: RunClaim, timestamp: str) -> dict:
     row = _require_claim(
         claim, now_text=timestamp, reconciliation=claim.requires_reconciliation,
     )
+    cancellation_recovery = (
+        claim.requires_reconciliation and bool(row["cancel_intent"])
+        and row["state"] in {"blocked", "cancel_requested"}
+        and row["phase"] == "reconcile" and row["resume_phase"] == "execute"
+    )
     if (
-        row["phase"] not in {"execute", "reconcile"}
-        or row["phase"] == "reconcile" and row["resume_phase"] != "execute"
-        or bool(row["cancel_intent"])
+        not cancellation_recovery and (
+            row["phase"] not in {"execute", "reconcile"}
+            or row["phase"] == "reconcile" and row["resume_phase"] != "execute"
+            or bool(row["cancel_intent"])
+        )
     ):
         raise FullAutoRunError(409, "run_owner_stale", "The Full Auto ComfyUI probe owner is stale.")
-    authority_issue = _current_authority_issue(row, timestamp)
-    if authority_issue is not None:
-        raise _authority_error(authority_issue)
-    if not resource_planning.is_enabled():
-        raise FullAutoRunError(
-            503, "resource_planning_disabled", "Full Auto is disabled by configuration.",
-        )
+    if not cancellation_recovery:
+        authority_issue = _current_authority_issue(row, timestamp)
+        if authority_issue is not None:
+            raise _authority_error(authority_issue)
+        if not resource_planning.is_enabled():
+            raise FullAutoRunError(
+                503, "resource_planning_disabled", "Full Auto is disabled by configuration.",
+            )
     return row
 
 
@@ -1108,20 +1126,28 @@ def _recheck_comfy_probe_owner_before_write(
     _require_comfy_probe_owner(claim, timestamp)
     timestamp = _now_text(now_text)
     row = _require_claim(claim, now_text=timestamp, reconciliation=claim.requires_reconciliation)
+    cancellation_recovery = (
+        claim.requires_reconciliation and bool(row["cancel_intent"])
+        and row["state"] in {"blocked", "cancel_requested"}
+        and row["phase"] == "reconcile" and row["resume_phase"] == "execute"
+    )
     if (
-        row["phase"] not in {"execute", "reconcile"}
-        or row["phase"] == "reconcile" and row["resume_phase"] != "execute"
-        or bool(row["cancel_intent"])
+        not cancellation_recovery and (
+            row["phase"] not in {"execute", "reconcile"}
+            or row["phase"] == "reconcile" and row["resume_phase"] != "execute"
+            or bool(row["cancel_intent"])
+        )
     ):
         raise FullAutoRunError(409, "run_owner_stale", "The Full Auto ComfyUI probe owner is stale.")
-    if not resource_planning.is_enabled():
-        raise FullAutoRunError(
-            503, "resource_planning_disabled", "Full Auto is disabled by configuration.",
-        )
-    # Authority validation can finish just as its grant expires. The fresh
-    # timestamp above protects the deadline independently from the earlier
-    # authority check, while this live claim check still protects the fence.
-    _require_comfy_probe_authorization_deadline(row, timestamp)
+    if not cancellation_recovery:
+        if not resource_planning.is_enabled():
+            raise FullAutoRunError(
+                503, "resource_planning_disabled", "Full Auto is disabled by configuration.",
+            )
+        # Authority validation can finish just as its grant expires. The fresh
+        # timestamp above protects the deadline independently from the earlier
+        # authority check, while this live claim check still protects the fence.
+        _require_comfy_probe_authorization_deadline(row, timestamp)
     return row, timestamp
 
 
@@ -1271,6 +1297,88 @@ def clear_comfy_probe_state(
         )
 
 
+def _cancel_unstarted_full_auto_shots(run: dict, timestamp: str) -> list[int]:
+    """Cancel linked targets that have no dispatch journal, inside the cancel transaction."""
+    progress = db.one(
+        "SELECT target_ids_json FROM full_auto_prepare_progress WHERE run_id = ?",
+        run["run_id"],
+    )
+    if progress is None:
+        return []
+    target_ids = _prepare_json_list(progress["target_ids_json"], field_name="targets")
+    if not target_ids:
+        return []
+    placeholders = ",".join("?" for _ in target_ids)
+    rows = db.q(
+        f"""SELECT DISTINCT shot.id, shot.status
+            FROM shot
+            WHERE shot.session_id = ? AND shot.status IN ('pending', 'running')
+              AND shot.id IN (
+                  SELECT prepared.linked_shot_id
+                  FROM prepared_take prepared
+                  WHERE prepared.session_id = ? AND prepared.plan_revision = ?
+                    AND prepared.take_id IN ({placeholders})
+                  UNION
+                  SELECT receipt.shot_id
+                  FROM full_auto_submission_receipt receipt
+                  WHERE receipt.run_id = ?
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM full_auto_execution_attempt attempt
+                  WHERE attempt.shot_id = shot.id
+              )""",
+        int(run["session_id"]), int(run["session_id"]), int(run["plan_revision"]),
+        *target_ids, run["run_id"],
+    )
+    shot_ids = [int(row["id"]) for row in rows]
+    if shot_ids:
+        shot_placeholders = ",".join("?" for _ in shot_ids)
+        db.run(
+            f"""UPDATE shot SET status = 'cancelled', finished_at = ?
+                WHERE id IN ({shot_placeholders}) AND status IN ('pending', 'running')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM full_auto_execution_attempt attempt
+                      WHERE attempt.shot_id = shot.id
+                  )""",
+            timestamp, *shot_ids,
+        )
+    return shot_ids
+
+
+def _restore_unstarted_full_auto_shots(run: dict, timestamp: str) -> int:
+    """Continue only cancelled linked targets that never acquired an attempt journal."""
+    progress = db.one(
+        "SELECT target_ids_json FROM full_auto_prepare_progress WHERE run_id = ?",
+        run["run_id"],
+    )
+    if progress is None:
+        return 0
+    target_ids = _prepare_json_list(progress["target_ids_json"], field_name="targets")
+    if not target_ids:
+        return 0
+    placeholders = ",".join("?" for _ in target_ids)
+    return db.run(
+        f"""UPDATE shot SET status = 'pending', error = '', finished_at = ''
+            WHERE session_id = ? AND status = 'cancelled'
+              AND id IN (
+                  SELECT prepared.linked_shot_id
+                  FROM prepared_take prepared
+                  WHERE prepared.session_id = ? AND prepared.plan_revision = ?
+                    AND prepared.take_id IN ({placeholders})
+                  UNION
+                  SELECT receipt.shot_id
+                  FROM full_auto_submission_receipt receipt
+                  WHERE receipt.run_id = ?
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM full_auto_execution_attempt attempt
+                  WHERE attempt.shot_id = shot.id
+              )""",
+        int(run["session_id"]), int(run["session_id"]), int(run["plan_revision"]),
+        *target_ids, run["run_id"],
+    )
+
+
 def unresolved_work_count(session_id: int, run_id: str) -> int:
     """Count local owned work conservatively; a linked shot may have dispatched."""
     count = 0
@@ -1284,6 +1392,17 @@ def unresolved_work_count(session_id: int, run_id: str) -> int:
         session_id, run_id,
     )
     count += sum(item["state"] not in {"succeeded", "failed", "cancelled", "expired"} for item in operations)
+    pending_assistant = db.q(
+        "SELECT reservation_id FROM full_auto_assistant_reservation "
+        "WHERE run_id = ?",
+        run_id,
+    )
+    # A durable reservation can remain quarantined after a lost response;
+    # count only local transport/cancellation cleanup still physically running.
+    count += sum(
+        _local_assistant_dispatch_live(int(item["reservation_id"]))
+        for item in pending_assistant
+    )
     shots = db.q(
         "SELECT shot.id, shot.status, "
         "(SELECT attempt.run_id FROM full_auto_execution_attempt attempt "
@@ -2246,6 +2365,7 @@ def acquire_runner_claim(
     *,
     run_claim: RunClaim | None = None,
     recovery: bool = False,
+    cancellation_recovery: bool = False,
     now_text: str | None = None,
 ) -> RunnerClaim | None:
     """Reserve the single local runner or return None for an eligible Full Auto wait."""
@@ -2258,19 +2378,34 @@ def acquire_runner_claim(
                         run_claim, now_text=timestamp,
                         reconciliation=run_claim.requires_reconciliation,
                     )
+                    recovering_cancel_execute = (
+                        cancellation_recovery and run_claim.requires_reconciliation
+                        and bool(run["cancel_intent"])
+                        and run["state"] in {"blocked", "cancel_requested"}
+                        and run["phase"] == "reconcile"
+                        and run["resume_phase"] == "execute"
+                    )
                     recovering_expired_execute = (
                         run_claim.requires_reconciliation
                         and run["phase"] == "reconcile"
                         and run["resume_phase"] == "execute"
                     )
                     recovering_admitted_execute = (
-                        not run_claim.requires_reconciliation and run["phase"] == "execute"
+                        not run_claim.requires_reconciliation
+                        and run["phase"] == "execute"
+                        and run["state"] in {"active", "waiting_runner"}
+                        and not bool(run["cancel_intent"])
                     )
                     if (
                         int(run["session_id"]) != session_id
-                        or run["state"] != "active"
-                        or run["cancel_intent"]
-                        or not (recovering_expired_execute or recovering_admitted_execute)
+                        or not (
+                            recovering_cancel_execute
+                            or (
+                                run["state"] == "active" and not run["cancel_intent"]
+                                and recovering_expired_execute
+                            )
+                            or recovering_admitted_execute
+                        )
                         or db.one(
                             "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?",
                             run_claim.run_id,
@@ -2342,9 +2477,12 @@ def acquire_runner_claim(
 
             if run_claim is not None:
                 waiters = _eligible_runner_waiters(timestamp, exclude_run_id=run_claim.run_id)
-                if run["state"] != "waiting_runner" and waiters and not recover_owned_running:
+                if (
+                    not cancellation_recovery and run["state"] != "waiting_runner"
+                    and waiters and not recover_owned_running
+                ):
                     return run, slot, False
-                if run["state"] == "waiting_runner":
+                if not cancellation_recovery and run["state"] == "waiting_runner":
                     current_key = (run["runner_ready_at"] or "", run["run_id"])
                     if any((item["runner_ready_at"], item["run_id"]) < current_key for item in waiters):
                         return run, slot, False
@@ -2425,8 +2563,13 @@ def renew_runner_claim(
         return _make_runner_claim(db.one("SELECT * FROM global_runner_claim WHERE singleton = 1"))
 
 
-def release_runner_claim(claim: RunnerClaim, *, now_text: str | None = None) -> bool:
+def release_runner_claim(
+    claim: RunnerClaim, *, allow_cancelled_work: bool = False,
+    now_text: str | None = None,
+) -> bool:
     """Release only a live owner whose session has no unresolved dispatched shot."""
+    if type(allow_cancelled_work) is not bool:
+        raise FullAutoRunError(422, "runner_claim_invalid", "The runner release request is invalid.")
     with db.transaction():
         timestamp = _now_text(now_text)
         _require_runner_claim(claim, now_text=timestamp)
@@ -2436,10 +2579,35 @@ def release_runner_claim(claim: RunnerClaim, *, now_text: str | None = None) -> 
         # be mistaken for proof that the remote queue settled.
         timestamp = _now_text(now_text)
         _require_runner_claim(claim, now_text=timestamp)
-        if unresolved is not None or db.one(
-            "SELECT id FROM shot WHERE status = 'running' LIMIT 1",
-        ) is not None:
-            return False
+        if unresolved is not None or db.one("SELECT id FROM shot WHERE status = 'running' LIMIT 1") is not None:
+            if not allow_cancelled_work or claim.owner_kind != "full_auto" or claim.run_id is None:
+                return False
+            run = db.one(
+                "SELECT state, cancel_intent FROM full_auto_run WHERE run_id = ? AND session_id = ?",
+                claim.run_id, claim.session_id,
+            )
+            running = db.q(
+                """SELECT shot.id, attempt.run_id, attempt.session_id, attempt.completion_state
+                   FROM shot LEFT JOIN full_auto_execution_attempt attempt
+                     ON attempt.shot_id = shot.id
+                    AND attempt.attempt_number = (
+                        SELECT MAX(latest.attempt_number) FROM full_auto_execution_attempt latest
+                        WHERE latest.shot_id = shot.id
+                    )
+                   WHERE shot.status = 'running'""",
+            )
+            if (
+                run is None or run["state"] not in {"blocked", "cancel_requested"}
+                or not bool(run["cancel_intent"])
+                or not running
+                or any(
+                    item["run_id"] != claim.run_id
+                    or int(item["session_id"] or 0) != claim.session_id
+                    or item["completion_state"] not in {"pending", "output_available"}
+                    for item in running
+                )
+            ):
+                return False
         changed = db.conn().execute(
             """UPDATE global_runner_claim
                SET owner_kind = NULL, session_id = NULL, run_id = NULL, owner_nonce = NULL,
@@ -2634,10 +2802,14 @@ def _assistant_slot_row(claim: AssistantSlotClaim) -> dict | None:
 
 
 def _assistant_database_identity() -> tuple[str | int, ...]:
-    main = next(
-        (row for row in db.conn().execute("PRAGMA database_list") if row[1] == "main"),
-        None,
-    )
+    # Some isolated callers install a raw sqlite connection without the app's
+    # Row factory. Read under the shared-connection lock and use PRAGMA's
+    # stable column order so both connection forms remain supported.
+    with db._tx_lock:
+        main = next(
+            (row for row in db.conn().execute("PRAGMA database_list") if row[1] == "main"),
+            None,
+        )
     if main is None:
         raise RuntimeError("The Full Auto database identity is unavailable.")
     filename = main[2]
@@ -3251,6 +3423,27 @@ def quarantine_run_assistant_slots(run_id: str, *, now_text: str) -> None:
         )
         for row in rows:
             _release_or_quarantine_slot(row, now_text=now_text)
+
+
+def has_live_cancelled_assistant_dispatch(claim: RunClaim) -> bool:
+    """Return whether cancellation still owns a local physical assistant POST."""
+    timestamp = _now_text(None)
+    with db.transaction():
+        run = _require_claim(claim, now_text=timestamp, reconciliation=True)
+        if not bool(run["cancel_intent"]) or run["state"] not in {"blocked", "cancel_requested"}:
+            raise FullAutoRunError(
+                409, "cancel_reconciliation_required",
+                "The run has no pending cancellation to reconcile.",
+            )
+        reservations = db.q(
+            "SELECT reservation_id FROM full_auto_assistant_reservation "
+            "WHERE run_id = ?",
+            claim.run_id,
+        )
+    return any(
+        _local_assistant_dispatch_live(int(item["reservation_id"]))
+        for item in reservations
+    )
 
 
 def _prepare_json_list(raw: str, *, field_name: str) -> list[str]:
@@ -4275,6 +4468,79 @@ def require_execution_recovery_claim(
     return run
 
 
+def require_cancellation_reconciliation_claim(
+    session_id: int, claim: RunClaim, *, now_text: str | None = None,
+) -> dict:
+    """Validate a fresh explicit reconciliation owner while cancellation remains pending."""
+    timestamp = _now_text(now_text)
+    run = _require_claim(claim, now_text=timestamp, reconciliation=True)
+    if (
+        int(run["session_id"]) != session_id or not bool(run["cancel_intent"])
+        or run["state"] not in {"blocked", "cancel_requested"}
+        or run["phase"] != "reconcile"
+    ):
+        raise FullAutoRunError(
+            409, "cancel_reconciliation_required",
+            "The Full Auto cancellation reconciliation owner is stale.",
+        )
+    return run
+
+
+def require_cancellation_runner_claim(
+    session_id: int,
+    claim: RunClaim,
+    runner_claim: RunnerClaim,
+    *,
+    now_text: str | None = None,
+) -> dict:
+    run = require_cancellation_reconciliation_claim(
+        session_id, claim, now_text=now_text,
+    )
+    runner_row = _require_runner_claim(
+        runner_claim, now_text=_now_text(now_text),
+    )
+    if (
+        run["resume_phase"] != "execute"
+        or runner_claim.owner_kind != "full_auto"
+        or runner_claim.session_id != session_id
+        or runner_claim.run_id != claim.run_id
+        or runner_row["run_id"] != claim.run_id
+    ):
+        raise FullAutoRunError(
+            409, "run_owner_stale",
+            "The Full Auto cancellation runner owner is stale.",
+        )
+    return run
+
+
+def require_cancellation_attempt_owner(
+    attempt: dict,
+    claim: RunClaim,
+    runner_claim: RunnerClaim,
+    *,
+    now_text: str | None = None,
+) -> dict:
+    require_cancellation_runner_claim(
+        claim.session_id, claim, runner_claim, now_text=now_text,
+    )
+    if not _attempt_matches_recovery_claim(attempt, claim, runner_claim):
+        raise FullAutoRunError(
+            409, "run_owner_stale",
+            "The Full Auto cancellation attempt owner is stale.",
+        )
+    shot = db.one(
+        "SELECT session_id, status FROM shot WHERE id = ?", attempt["shot_id"],
+    )
+    if (
+        shot is None or int(shot["session_id"]) != claim.session_id
+        or shot["status"] != "running"
+    ):
+        raise FullAutoRunError(
+            409, "run_owner_stale", "The Full Auto cancellation shot is stale.",
+        )
+    return attempt
+
+
 def record_execution_dispatch(
     attempt_id: str,
     claim: RunClaim,
@@ -4284,6 +4550,7 @@ def record_execution_dispatch(
     prompt_id: str | None = None,
     error: str = "",
     recovery: bool = False,
+    cancellation_recovery: bool = False,
 ) -> dict:
     """Persist a dispatch receipt against its immutable attempt fences.
 
@@ -4303,7 +4570,13 @@ def record_execution_dispatch(
         )
         if attempt is None:
             raise FullAutoRunError(409, "run_owner_stale", "The execution attempt receipt is stale.")
-        if recovery:
+        if recovery and cancellation_recovery:
+            raise FullAutoRunError(422, "execution_attempt_invalid", "The recovery authority is invalid.")
+        if cancellation_recovery:
+            require_cancellation_attempt_owner(
+                attempt, claim, runner_claim, now_text=_now_text(None),
+            )
+        elif recovery:
             _require_execution_recovery_owner(
                 attempt, claim, runner_claim, now_text=_now_text(None),
             )
@@ -4369,6 +4642,7 @@ def record_execution_output(
     expected_filename: str,
     correlation_evidence: dict | None = None,
     recovery: bool = False,
+    cancellation_recovery: bool = False,
 ) -> dict:
     """Save remote output evidence before the normal output-file move begins."""
     evidence = {
@@ -4385,7 +4659,13 @@ def record_execution_output(
         )
         if attempt is None:
             raise FullAutoRunError(409, "run_owner_stale", "The execution output receipt is stale.")
-        if recovery:
+        if recovery and cancellation_recovery:
+            raise FullAutoRunError(422, "execution_attempt_invalid", "The recovery authority is invalid.")
+        if cancellation_recovery:
+            require_cancellation_attempt_owner(
+                attempt, claim, runner_claim, now_text=timestamp,
+            )
+        elif recovery:
             _require_execution_recovery_owner(
                 attempt, claim, runner_claim, now_text=timestamp,
             )
@@ -4403,7 +4683,9 @@ def record_execution_output(
             )
             if run is None or run["run_id"] != claim.run_id:
                 raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
-        if not recovery and not _attempt_matches_claim(attempt, claim, runner_claim):
+        if not recovery and not cancellation_recovery and not _attempt_matches_claim(
+            attempt, claim, runner_claim,
+        ):
             raise FullAutoRunError(409, "run_owner_stale", "The execution output receipt is stale.")
         encoded = _canonical_json(evidence)
         if attempt["completion_state"] == "output_available":
@@ -4453,6 +4735,7 @@ def finish_execution_attempt(
     filename: str = "",
     error: str = "",
     recovery: bool = False,
+    cancellation_recovery: bool = False,
 ) -> dict:
     """Commit attempt settlement and the existing shot result in one transaction."""
     with db.transaction():
@@ -4462,7 +4745,13 @@ def finish_execution_attempt(
         )
         if attempt is None:
             raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution result is stale.")
-        if recovery:
+        if recovery and cancellation_recovery:
+            raise FullAutoRunError(422, "execution_attempt_invalid", "The recovery authority is invalid.")
+        if cancellation_recovery:
+            require_cancellation_attempt_owner(
+                attempt, claim, runner_claim, now_text=timestamp,
+            )
+        elif recovery:
             _require_execution_recovery_owner(
                 attempt, claim, runner_claim, now_text=timestamp,
             )
@@ -5130,14 +5419,29 @@ def cancel_run(
         replay = _replay_action(run_id, request_id, request_digest, "cancel")
         if replay is not None:
             return replay
+        schedule_cancellation_reconciliation = False
         row = _require_run(run_id)
         _check_control_cas(row, body["expected_run_revision"], body["expected_plan_revision"])
-        if derive_work_pending:
-            work_pending = unresolved_work_count(int(row["session_id"]), run_id) > 0
         if row["state"] in {"cancel_requested", "blocked"} and bool(row["cancel_intent"]):
             # Repeated Cancel records its response but never polls or dispatches.
             pass
         elif row["state"] in {"active", "waiting_authoring", "waiting_runner", "blocked"}:
+            _cancel_unstarted_full_auto_shots(row, timestamp)
+            from backend import authoring_operations
+
+            authoring_operations.cancel_full_auto_operations(
+                int(row["session_id"]), run_id, now_text=timestamp,
+            )
+            quarantine_run_assistant_slots(run_id, now_text=timestamp)
+            db.run(
+                """UPDATE session SET status = 'cancelled' WHERE id = ? AND status = 'running'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM shot WHERE session_id = ? AND status = 'running'
+                   )""",
+                int(row["session_id"]), int(row["session_id"]),
+            )
+            if derive_work_pending:
+                work_pending = unresolved_work_count(int(row["session_id"]), run_id) > 0
             if type(work_pending) is not bool:
                 raise FullAutoRunError(
                     409, "cancel_evidence_required", "Backend work-settlement evidence is required.",
@@ -5146,6 +5450,7 @@ def cancel_run(
             if work_pending:
                 state, phase, resume_phase = "cancel_requested", "reconcile", old_phase
                 blocker = None
+                schedule_cancellation_reconciliation = True
             else:
                 state = "cancelled"
                 phase = row["phase"]
@@ -5163,12 +5468,20 @@ def cancel_run(
                 _canonical_json({"kind": "cancel", "work_pending": work_pending}), timestamp,
                 run_id, row["revision"], row["fencing_token"],
             )
+            if state == "cancelled":
+                db.run(
+                    "UPDATE session SET status = 'cancelled' WHERE id = ?",
+                    int(row["session_id"]),
+                )
             row = _require_run(run_id)
         else:
             raise FullAutoRunError(409, "run_not_cancellable", "This Full Auto run cannot be cancelled in its current state.")
         view = _action_view(row, "cancel", request_id)
         _store_action(run_id, request_id, "cancel", request_digest, row, view, timestamp)
-        return RunActionResult(view=view)
+        return RunActionResult(
+            view=view,
+            schedule_cancellation_reconciliation=schedule_cancellation_reconciliation,
+        )
 
 
 def _resume_eligibility(
@@ -5252,7 +5565,17 @@ def _current_resume_eligibility(
     has_admission = db.one(
         "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", row["run_id"],
     ) is not None
-    image_remaining = max(0, image_total) if not has_submission and not has_admission else 0
+    if (
+        row["state"] == "cancelled" and bool(row["cancel_intent"])
+        and (row["resume_phase"] or row["phase"]) == "execute"
+    ):
+        used_attempts = db.one(
+            "SELECT COUNT(*) AS n FROM full_auto_execution_attempt WHERE run_id = ?",
+            row["run_id"],
+        )
+        image_remaining = max(0, image_total - int(used_attempts["n"]))
+    else:
+        image_remaining = max(0, image_total) if not has_submission and not has_admission else 0
     other_operations = db.one(
         """SELECT 1 FROM authoring_operation
            WHERE session_id = ? AND (full_auto_run_id IS NULL OR full_auto_run_id != ?)
@@ -5512,6 +5835,11 @@ def resume_run(
                 row["lease_expires_at"], field_name="run lease",
             ) > _timestamp(timestamp, field_name="current time"):
                 raise FullAutoRunError(409, "run_already_claimed", "The Full Auto run already has an owner.")
+            if (
+                row["state"] == "cancelled" and bool(row["cancel_intent"])
+                and phase == "execute"
+            ):
+                _restore_unstarted_full_auto_shots(row, timestamp)
             deadline = None if defer_claim else run_lease_deadline(timestamp)
             db.run(
                 """UPDATE full_auto_run
@@ -5585,6 +5913,23 @@ def reconcile_cancellation(
         ):
             raise FullAutoRunError(409, "reconciliation_evidence_stale", "Cancellation evidence predates the current cancellation or reconciliation claim.")
         if evidence.outcome == "settled":
+            db.run(
+                """UPDATE session SET status = 'cancelled' WHERE id = ? AND status = 'running'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM shot WHERE session_id = ? AND status = 'running'
+                   )""",
+                int(row["session_id"]), int(row["session_id"]),
+            )
+            if unresolved_work_count(int(row["session_id"]), claim.run_id) != 0 or db.one(
+                """SELECT 1 FROM full_auto_execution_attempt
+                   WHERE run_id = ? AND completion_state IN ('pending', 'output_available')
+                   LIMIT 1""",
+                claim.run_id,
+            ) is not None:
+                raise FullAutoRunError(
+                    409, "run_work_unsettled",
+                    "Cancellation cannot settle while owned work remains unresolved.",
+                )
             state, lease, fence_delta, reason = "cancelled", None, 1, None
         elif evidence.outcome == "running":
             state, lease, fence_delta, reason = "cancel_requested", row["lease_expires_at"], 0, None

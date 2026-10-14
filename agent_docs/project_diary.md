@@ -1,5 +1,21 @@
 # Project Diary
 
+## Full Auto Task 5.5 Cancellation Boundaries
+
+Keep immutable attempt identity separate from a fresh cancellation-settlement
+claim: stopping an owner does not prove remote work stopped. Cancel provably
+unsent links in place, retain journaled uncertainty and collect corroborated
+completed output without authorizing dispatch. Preserve the physical assistant
+fence through response checks and cleanup, rather than just the HTTP return.
+Exhausted automatic probes must not make explicit read-only reconciliation
+unusable; preserve the cursor while allowing that user-triggered observation.
+Startup may continue pending draining, but must not poll blocked cancel intent.
+Validate authority after acquiring mutation locks, with fresh time.
+Exercise the real HTTP scheduler boundary: synchronous handlers cannot create
+asyncio tasks from their threadpool. Capture real functions before fixtures
+replace them, restore completed fake history and use thread-safe event wakeups.
+Keep these harness errors separate from reproduced production defects.
+
 ## Full Auto Task 5.4 Recovery Review
 
 Keep immutable attempt identity separate from current recovery write authority.

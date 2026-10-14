@@ -34,12 +34,21 @@ Verified baseline from the repository layout and application entry points.
   scope comparison. Actions use UUID request IDs and run/current-plan revision
   CAS; exact historical requests replay their stored response. Changed-scope
   Resume requires a fresh digest/timestamp quote and explicit acceptance, then
-  appends a linked immutable authorization. Pending or unknown cancellation
-  retains session ownership. Status reads backend state and Cancel persists
-  backend intent; neither contacts ComfyUI, interrupts a remote job, or
-  reconciles its outcome. Eligible Resume schedules the coordinator, which
-  revalidates authorization and recovery evidence before continuing. No Full
-  Auto control UI exists.
+  appends a linked immutable authorization. Cancel persists intent, fences child
+  work, cancels linked targets with no execution attempt in place, and retains
+  completed outputs. Owned ComfyUI attempts drain through read-only evidence;
+  no atomic targeted-cancel capability is verified, so Full Auto never uses a
+  global interrupt or queue clear. Repeated Cancel does not poll. Three
+  additional persisted read-only ComfyUI probes after 5, 15, and 30 seconds are
+  allowed. Exhaustion or unknown outcome leaves blocked cancellation intent.
+  Startup resumes draining
+  only from `cancel_requested`; blocked intent requires explicit Resume, which
+  performs read-only reconciliation even after authorization expiry or feature
+  disablement and never activates or dispatches work. Verified running work stays
+  `cancel_requested`; verified settlement becomes `cancelled`. Eligible
+  continuation restores only linked targets with no attempt journal under their
+  existing shot IDs; completed outputs remain. Assistant transport cleanup must
+  finish before its process-local fence clears. No Full Auto control UI exists.
   Guided Full Auto creation schedules the coordinator after commit; eligible
   Resume does likewise. After cleanup, startup recovery schedules eligible runs
   in `active`, `waiting_authoring`, and `waiting_runner` states. The coordinator
@@ -111,9 +120,7 @@ Verified baseline from the repository layout and application entry points.
   POST. For an attempt requiring reconciliation, missing, conflicting,
   duplicate, or prior-epoch evidence blocks; exhausted probes report
   `comfy_unavailable`. Disabled planning or expired authorization preserves
-  settled outputs and blocks remaining work. No verified targeted cancellation
-  exists; an owned ComfyUI job is left to finish. Durable cancellation and remote
-  reconciliation, explicit retries, external queue
+  settled outputs and blocks remaining work. Explicit retries, external queue
   policy, and rollback remain unfinished. The journal is scoped to Full Auto;
   manual reference/guide handling and locked-file move retries remain covered.
   Internal review and policy approval

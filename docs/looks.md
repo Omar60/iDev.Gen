@@ -182,8 +182,9 @@ These profile routes remain backend capabilities; there is no profile editor.
 Guided creation can apply an exact saved-look snapshot through
 `POST /api/sessions/guided`, without applying a profile or starting progression.
 The guided-creation API also provides Full Auto preflight and atomic initial
-authorization. A runtime coordinator, unattended execution, status and
-Cancel/Resume controls, and Full Auto selection/consent UI are not implemented.
+authorization. The backend coordinator and status/Cancel/Resume API are
+implemented; session progress/results and Cancel/Resume UI, plus Full Auto
+selection/consent UI, are not implemented.
 The manual saved-look workflow remains available, including progression
 preview, review, submission, and Run controls. See the
 [guided creation API](sessions.md#saved-look-and-full-auto-creation-api).

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import collections
+from datetime import datetime
 from email.message import EmailMessage
 import hashlib
 import heapq
@@ -4344,7 +4345,7 @@ def get_full_auto_resume_preflight(
 
 
 @app.post("/api/sessions/{sid}/full-auto/{run_id}/cancel")
-def cancel_scoped_full_auto_run(
+async def cancel_scoped_full_auto_run(
     p: FullAutoCancelIn,
     sid: int = PathParam(ge=1, le=saved_looks._SQLITE_INTEGER_MAX),
     run_id: str = PathParam(min_length=1, max_length=200),
@@ -4358,6 +4359,16 @@ def cancel_scoped_full_auto_run(
             derive_work_pending=True,
             expected_session_id=sid,
         )
+        if result.schedule_cancellation_reconciliation and not result.replayed:
+            try:
+                cancellation_claim = resource_full_auto.claim_run(run_id)
+            except resource_full_auto.FullAutoRunError as exc:
+                # A concurrent explicit reconciliation may already own this
+                # cancellation; the persisted intent still remains authoritative.
+                if exc.code != "run_already_claimed":
+                    raise
+            else:
+                _schedule_full_auto_cancellation(run_id, sid, cancellation_claim)
         status = 200 if result.replayed or result.view["state"] == "cancelled" else 202
         return JSONResponse(content=result.view, status_code=status)
     except resource_full_auto.FullAutoRunError as exc:
@@ -4373,6 +4384,14 @@ async def resume_scoped_full_auto_run(
     if db.one("SELECT id FROM session WHERE id = ?", sid) is None:
         return _stable_error(404, "session_not_found", "Session was not found.")
     try:
+        saved = db.one(
+            "SELECT state, cancel_intent FROM full_auto_run WHERE run_id = ? AND session_id = ?",
+            run_id, sid,
+        )
+        cancellation_reconciliation = (
+            saved is not None and bool(saved["cancel_intent"])
+            and saved["state"] in {"blocked", "cancel_requested"}
+        )
         result = resource_full_auto.resume_run(
             run_id, p.request_id, p.expected_run_revision,
             p.expected_plan_revision, eligibility=None,
@@ -4380,10 +4399,13 @@ async def resume_scoped_full_auto_run(
             comparison_issued_at=p.comparison_issued_at,
             accept_changed_scope=p.accept_changed_scope,
             config=lambda: CONFIG,
-            defer_claim=True,
+            defer_claim=not cancellation_reconciliation,
             expected_session_id=sid,
         )
-        if result.view.get("state") in {"active", "waiting_authoring", "waiting_runner"}:
+        if cancellation_reconciliation:
+            if result.claim is not None:
+                _schedule_full_auto_cancellation(run_id, sid, result.claim)
+        elif result.view.get("state") in {"active", "waiting_authoring", "waiting_runner"}:
             _schedule_full_auto_run(run_id)
         return JSONResponse(
             content=result.view,
@@ -5324,6 +5346,8 @@ def _run_full_auto_submission(
 
 
 _FULL_AUTO_RUN_TASKS: dict[str, asyncio.Task] = {}
+_FULL_AUTO_CANCELLATION_TASKS: dict[str, asyncio.Task] = {}
+_FULL_AUTO_STARTUP_CANCELLATION_TASKS: dict[str, asyncio.Task] = {}
 _FULL_AUTO_COORDINATOR_RETRY_SECONDS = 2.0
 
 
@@ -5352,8 +5376,174 @@ def _schedule_full_auto_run(run_id: str) -> None:
     task.add_done_callback(discard)
 
 
+def _schedule_full_auto_cancellation(
+    run_id: str, session_id: int, claim: resource_full_auto.RunClaim,
+) -> None:
+    """Schedule owned cancellation draining or an explicit read-only reconciliation."""
+    if not isinstance(run_id, str) or not run_id:
+        return
+    startup_task = _FULL_AUTO_STARTUP_CANCELLATION_TASKS.pop(run_id, None)
+    if startup_task is not None and not startup_task.done():
+        startup_task.cancel()
+    previous = _FULL_AUTO_CANCELLATION_TASKS.get(run_id)
+    if previous is not None and not previous.done():
+        return
+    task = asyncio.create_task(
+        _reconcile_full_auto_cancellation(run_id, session_id, claim),
+    )
+    _FULL_AUTO_CANCELLATION_TASKS[run_id] = task
+
+    def discard(completed: asyncio.Task) -> None:
+        if _FULL_AUTO_CANCELLATION_TASKS.get(run_id) is completed:
+            _FULL_AUTO_CANCELLATION_TASKS.pop(run_id, None)
+        try:
+            completed.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Full Auto cancellation reconciliation stopped for run %s.", run_id,
+            )
+
+    task.add_done_callback(discard)
+
+
+def _schedule_full_auto_cancellation_after_delay(
+    run_id: str, session_id: int, claim: resource_full_auto.RunClaim,
+) -> None:
+    """Recheck a verified running cancellation no more often than every 15 seconds."""
+    async def defer_and_reschedule() -> None:
+        current = asyncio.current_task()
+        await asyncio.sleep(resource_full_auto.RUNNER_HEARTBEAT_INTERVAL.total_seconds())
+        if _FULL_AUTO_CANCELLATION_TASKS.get(run_id) is current:
+            _FULL_AUTO_CANCELLATION_TASKS.pop(run_id, None)
+        _schedule_full_auto_cancellation(run_id, session_id, claim)
+
+    task = asyncio.create_task(defer_and_reschedule())
+    _FULL_AUTO_CANCELLATION_TASKS[run_id] = task
+
+    def discard(completed: asyncio.Task) -> None:
+        if _FULL_AUTO_CANCELLATION_TASKS.get(run_id) is completed:
+            _FULL_AUTO_CANCELLATION_TASKS.pop(run_id, None)
+        try:
+            completed.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Delayed Full Auto cancellation reconciliation stopped for run %s.", run_id,
+            )
+
+    task.add_done_callback(discard)
+
+
+async def _reconcile_full_auto_cancellation(
+    run_id: str, session_id: int, claim: resource_full_auto.RunClaim,
+) -> None:
+    """Observe and drain existing work without reactivating, dispatching, or interrupting it."""
+    logger = logging.getLogger(__name__)
+    attempt_ids: tuple[str, ...] = ()
+    shot_ids: tuple[str, ...] = ()
+    try:
+        while True:
+            run = resource_full_auto.require_cancellation_reconciliation_claim(
+                session_id, claim,
+            )
+            if resource_full_auto.has_live_cancelled_assistant_dispatch(claim):
+                # The child is terminal, but its physical assistant POST still
+                # holds a process-local fence until transport cleanup finishes.
+                outcome, blocker = "running", None
+                attempt_ids, shot_ids = (), ()
+            elif run["resume_phase"] == "execute":
+                outcome, claim, blocker, attempt_ids, shot_ids = (
+                    await runner.reconcile_full_auto_cancellation(session_id, claim)
+                )
+            else:
+                pending_attempts = db.q(
+                    "SELECT attempt_id, shot_id FROM full_auto_execution_attempt "
+                    "WHERE run_id = ? AND completion_state IN ('pending', 'output_available')",
+                    run_id,
+                )
+                running_shots = db.q(
+                    "SELECT id FROM shot WHERE session_id = ? AND status = 'running'",
+                    session_id,
+                )
+                attempt_ids = tuple(str(item["attempt_id"]) for item in pending_attempts)
+                shot_ids = tuple(str(item["shot_id"]) for item in pending_attempts)
+                if pending_attempts or running_shots:
+                    outcome, blocker = "unknown", "execution_outcome_unknown"
+                    if not shot_ids:
+                        shot_ids = tuple(str(item["id"]) for item in running_shots)
+                elif resource_full_auto.unresolved_work_count(session_id, run_id) == 0:
+                    outcome, blocker = "settled", None
+                else:
+                    outcome, blocker = "unknown", "run_work_unsettled"
+            unresolved = resource_full_auto.unresolved_work_count(session_id, run_id)
+            if outcome == "settled" and unresolved != 0:
+                outcome, blocker = "unknown", "run_work_unsettled"
+            if outcome == "unknown":
+                evidence = resource_full_auto.CancellationEvidence(
+                    "unknown", db.now(), max(1, unresolved),
+                    blocker_code=blocker or "execution_outcome_unknown",
+                    attempt_ids=attempt_ids, shot_ids=shot_ids,
+                )
+            elif outcome == "running":
+                evidence = resource_full_auto.CancellationEvidence(
+                    "running", db.now(), max(1, unresolved),
+                    attempt_ids=attempt_ids, shot_ids=shot_ids,
+                )
+            else:
+                evidence = resource_full_auto.CancellationEvidence(
+                    "settled", db.now(), 0,
+                    attempt_ids=attempt_ids, shot_ids=shot_ids,
+                )
+            resource_full_auto.reconcile_cancellation(claim, evidence)
+            if outcome == "running":
+                # Return with cancel_requested visible; the delayed worker
+                # continues read-only draining without holding this task open.
+                claim = resource_full_auto.renew_run_claim(claim)
+                _schedule_full_auto_cancellation_after_delay(run_id, session_id, claim)
+            return
+    except resource_full_auto.FullAutoRunError as exc:
+        if exc.code in {"run_owner_stale", "run_lease_expired", "run_terminal"}:
+            logger.info(
+                "Full Auto cancellation owner for run %s became stale: %s",
+                run_id, exc.code,
+            )
+            return
+        logger.info("Full Auto cancellation reconciliation for run %s is unknown: %s", run_id, exc.code)
+        try:
+            unresolved = resource_full_auto.unresolved_work_count(session_id, run_id)
+            resource_full_auto.reconcile_cancellation(
+                claim,
+                resource_full_auto.CancellationEvidence(
+                    "unknown", db.now(), max(1, unresolved),
+                    blocker_code=exc.code,
+                    attempt_ids=attempt_ids,
+                    shot_ids=shot_ids,
+                ),
+            )
+        except resource_full_auto.FullAutoRunError:
+            return
+    except Exception:  # noqa: BLE001 - unclassified observations stay blocked
+        logger.exception("Full Auto cancellation reconciliation failed for run %s", run_id)
+        try:
+            unresolved = resource_full_auto.unresolved_work_count(session_id, run_id)
+            resource_full_auto.reconcile_cancellation(
+                claim,
+                resource_full_auto.CancellationEvidence(
+                    "unknown", db.now(), max(1, unresolved),
+                    blocker_code="execution_outcome_unknown",
+                    attempt_ids=attempt_ids,
+                    shot_ids=shot_ids,
+                ),
+            )
+        except resource_full_auto.FullAutoRunError:
+            return
+
+
 def _schedule_startup_full_auto_runs() -> None:
-    """Discover resumable coordinator work after all startup cleanup has run."""
+    """Discover resumable work and restart only in-progress cancellation draining."""
     rows = db.q(
         "SELECT run_id FROM full_auto_run "
         "WHERE state IN ('active', 'waiting_authoring', 'waiting_runner') "
@@ -5361,6 +5551,74 @@ def _schedule_startup_full_auto_runs() -> None:
     )
     for row in rows:
         _schedule_full_auto_run(row["run_id"])
+    cancellation_rows = db.q(
+        "SELECT run_id, session_id FROM full_auto_run "
+        "WHERE state = 'cancel_requested' AND cancel_intent = 1 "
+        "ORDER BY created_at, run_id",
+    )
+    for row in cancellation_rows:
+        _schedule_startup_full_auto_cancellation(row["run_id"], int(row["session_id"]))
+
+
+def _schedule_startup_full_auto_cancellation(run_id: str, session_id: int) -> None:
+    """Wait for a prior owner lease, then resume read-only draining after restart."""
+    previous = _FULL_AUTO_STARTUP_CANCELLATION_TASKS.get(run_id)
+    if previous is not None and not previous.done():
+        return
+
+    async def recover() -> None:
+        current_task = asyncio.current_task()
+        try:
+            while True:
+                row = db.one(
+                    "SELECT state, cancel_intent, lease_expires_at, session_id "
+                    "FROM full_auto_run WHERE run_id = ?",
+                    run_id,
+                )
+                if (
+                    row is None or int(row["session_id"]) != session_id
+                    or row["state"] != "cancel_requested" or not row["cancel_intent"]
+                ):
+                    return
+                if row["lease_expires_at"] is not None:
+                    try:
+                        remaining = (
+                            datetime.fromisoformat(row["lease_expires_at"])
+                            - datetime.fromisoformat(db.now())
+                        ).total_seconds()
+                    except (TypeError, ValueError):
+                        return
+                    if remaining > 0:
+                        await asyncio.sleep(min(
+                            remaining,
+                            resource_full_auto.RUN_HEARTBEAT_INTERVAL.total_seconds(),
+                        ))
+                        continue
+                try:
+                    claim = resource_full_auto.claim_run(run_id)
+                except resource_full_auto.FullAutoRunError as exc:
+                    if exc.code == "run_already_claimed":
+                        await asyncio.sleep(resource_full_auto.RUN_HEARTBEAT_INTERVAL.total_seconds())
+                        continue
+                    return
+                if not claim.requires_reconciliation:
+                    return
+                if _FULL_AUTO_STARTUP_CANCELLATION_TASKS.get(run_id) is current_task:
+                    _FULL_AUTO_STARTUP_CANCELLATION_TASKS.pop(run_id, None)
+                _schedule_full_auto_cancellation(run_id, session_id, claim)
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Startup cancellation recovery stopped for run %s.", run_id,
+            )
+        finally:
+            if _FULL_AUTO_STARTUP_CANCELLATION_TASKS.get(run_id) is current_task:
+                _FULL_AUTO_STARTUP_CANCELLATION_TASKS.pop(run_id, None)
+
+    task = asyncio.create_task(recover())
+    _FULL_AUTO_STARTUP_CANCELLATION_TASKS[run_id] = task
 
 
 def _local_full_auto_reconciliation_safe(run_id: str, session_id: int) -> bool:

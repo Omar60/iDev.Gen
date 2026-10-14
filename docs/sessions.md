@@ -1728,12 +1728,28 @@ An identical historical action with the same `request_id` replays its exact
 stored response before current-state checks; reusing that UUID with different
 content returns `409 idempotency_conflict`. New Cancel returns `202` while owned
 work remains unsettled and `200` once cancellation is settled; new Resume
-returns `202`. Exact replays return `200`. Pending or unknown work keeps the
-run's shared-write guard. Status reads backend state and Cancel persists
-cancellation intent; neither contacts ComfyUI, interrupts a remote job, or
-reconciles its outcome. An eligible Resume schedules the coordinator, which
-revalidates authorization and recovery evidence before continuing. No Full Auto
-control UI is present.
+returns `202`. Exact replays return `200`. Cancel persists intent, fences the
+run, and cancels linked shots with no execution attempt in place, preserving
+their IDs and any completed images. Pending or unknown work keeps the run's
+shared-write guard. Full Auto drains an owned attempt using read-only evidence;
+no atomic targeted-cancel capability is verified, so it never uses global
+interrupt or queue clearing. An owned generation is allowed to finish. Repeated
+Cancel is idempotent and does not poll or reset the persisted probe budget.
+
+Cancellation allows at most three additional persisted read-only ComfyUI probes
+after 5, 15, and 30 seconds. Probe progress survives backend restarts.
+Exhaustion or unknown outcome blocks the run with cancel intent retained.
+Startup resumes draining only for `cancel_requested`;
+blocked cancellation intent is never auto-resumed. Explicit Resume of a blocked
+cancellation uses read-only remote checks and local settlement, even when
+resource planning is disabled or authorization has expired. Outage/unknown stays
+blocked; verified running work returns to `cancel_requested` and is observed
+again every 15 seconds; verified settlement becomes `cancelled`. The run never
+enters `active` or dispatches work. After settled cancellation, an otherwise
+eligible continuation Resume restores only linked targets that never had an
+execution attempt, under their existing shot IDs;
+completed outputs remain. Retry of attempted shots is separate work. No Full
+Auto control UI is present.
 
 #### Full Auto deletion guards and recovery
 
@@ -1892,12 +1908,10 @@ GET, so a lost response or database reopen cannot reset or replay that probe.
 Exhaustion blocks `comfy_unavailable`. Because runner admission and linked
 pending shots already exist at that point, unresolved work keeps Resume
 disabled under the current conservative gate. The blocker points to Setup and
-status inspection or Cancel; Cancel does not prove remote work stopped, and
+status inspection or Cancel. Cancellation does not prove remote work stopped;
 local HTTP termination does not establish that ComfyUI stopped a generation.
-Full Auto has no verified targeted-cancel path. A pending cancellation does not
-interrupt ComfyUI; the current runner leaves the owned job to finish and reports
-the backend message `Cancellation pending: current generation must finish.`
-Durable cancellation follow-through and reconciliation remain unfinished.
+Cancellation follow-through uses read-only reconciliation described in
+[Full Auto status and controls](#full-auto-status-and-controls).
 
 An ambiguous queue POST is never resent. While the original runner is handling
 the response, it can recover one corroborated queue/history match or one local
@@ -1954,9 +1968,8 @@ duplicate, or prior-epoch evidence blocks the run; exhausted probes report
 planning is disabled or authorization has expired, recovery settles existing
 outputs but leaves remaining new work blocked. This supports safe backend-restart
 continuation; it does not establish that an
-unmatched remote job stopped. Durable cancellation and remote cancellation
-reconciliation, explicit retry, external queue policy, and rollback remain
-unfinished. The journal is scoped to Full Auto; manual reference/guide handling
+unmatched remote job stopped. Explicit retry, external queue policy, and rollback
+remain unfinished. The journal is scoped to Full Auto; manual reference/guide handling
 and locked-file move retries remain covered. Manual sessions remain available
 when no nonterminal Full Auto run owns the session. Review validates persisted
 evidence and policy; it does not certify semantic correctness or rendered

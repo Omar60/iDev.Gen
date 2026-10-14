@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
+import uuid
 
 import pytest
 
@@ -114,6 +115,145 @@ def test_attempt_intent_is_committed_before_post_and_ack_before_history(
         assert attempt["completion_state"] == "completed"
         assert attempt["filename"] == shot["filename"]
         assert (runner.sessions_dir / str(session_id) / shot["filename"]).is_file()
+
+
+def test_cancelled_inflight_attempt_drains_and_retains_its_late_output(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, revision, targets, owner, runner, fake = _execution(
+        client, seeded, monkeypatch, make_runner, photo_count=4,
+    )
+    entered_history = asyncio.Event()
+    release_history = asyncio.Event()
+    original_history = fake.history
+
+    async def hold_history(prompt_id):
+        entered_history.set()
+        await release_history.wait()
+        return await original_history(prompt_id)
+
+    fake.history = hold_history
+    monkeypatch.setattr(runner_mod, "CANCELLATION_QUEUE_POLL_SECONDS", 0.01)
+
+    async def cancel_observe_and_drain():
+        assert runner.start(session_id, _full_auto_claim=owner)
+        await asyncio.wait_for(entered_history.wait(), timeout=5)
+        current = resource_full_auto.get_run(run_id)
+        cancelled = resource_full_auto.cancel_run(
+            run_id, str(uuid.uuid4()), current["revision"], current["plan_revision"],
+            work_pending=None, derive_work_pending=True,
+            expected_session_id=session_id,
+        )
+        assert cancelled.view["state"] == "cancel_requested"
+        cancellation_claim = resource_full_auto.claim_run(run_id)
+        with pytest.raises(resource_full_auto.FullAutoRunError) as transfer:
+            resource_full_auto.require_session_mutation_allowed(session_id)
+        assert transfer.value.code == "full_auto_session_owned"
+
+        attempt = db.one(
+            "SELECT * FROM full_auto_execution_attempt WHERE run_id = ?", run_id,
+        )
+        shot = db.one("SELECT * FROM shot WHERE id = ?", attempt["shot_id"])
+        pending_shot = db.one(
+            "SELECT * FROM shot WHERE session_id = ? AND status = 'cancelled' ORDER BY id LIMIT 1",
+            session_id,
+        )
+        assert attempt["dispatch_state"] == "acknowledged"
+        assert attempt["completion_state"] == "pending"
+        assert shot["status"] == "running"
+        assert pending_shot is not None
+        assert db.one(
+            "SELECT linked_shot_id FROM prepared_take WHERE session_id = ? AND take_id = ?",
+            session_id, targets[1],
+        )["linked_shot_id"] == pending_shot["id"]
+
+        # Model an owner lost while its exact prompt is still on ComfyUI's
+        # running queue. Reconciliation must report running promptly.
+        db.run(
+            "UPDATE global_runner_claim SET lease_expires_at = ? WHERE singleton = 1",
+            "2000-01-01T00:00:00+00:00",
+        )
+        outcome, running_claim, blocker, attempt_ids, shot_ids = (
+            await runner.reconcile_full_auto_cancellation(session_id, cancellation_claim)
+        )
+        assert (outcome, blocker) == ("running", None)
+        assert attempt_ids == (attempt["attempt_id"],)
+        assert shot_ids == (str(shot["id"]),)
+        run_view = resource_full_auto.reconcile_cancellation(
+            running_claim,
+            resource_full_auto.CancellationEvidence(
+                "running", db.now(), resource_full_auto.unresolved_work_count(session_id, run_id),
+                attempt_ids=attempt_ids, shot_ids=shot_ids,
+            ),
+        )
+        assert run_view["state"] == "cancel_requested"
+        assert run_view["cancel_intent"] is True
+        assert fake.interrupted == 0
+
+        # The prior owner cannot persist its response. The independent
+        # cancellation owner later adopts the matching completed output.
+        release_history.set()
+        await runner._task
+        outcome, settled_claim, blocker, attempt_ids, shot_ids = (
+            await runner.reconcile_full_auto_cancellation(session_id, running_claim)
+        )
+        assert (outcome, blocker) == ("settled", None)
+        assert attempt_ids == (attempt["attempt_id"],)
+        assert shot_ids == (str(shot["id"]),)
+        settled = resource_full_auto.reconcile_cancellation(
+            settled_claim,
+            resource_full_auto.CancellationEvidence(
+                "settled", db.now(), 0,
+                attempt_ids=attempt_ids, shot_ids=shot_ids,
+            ),
+        )
+        return attempt, shot, pending_shot, settled
+
+    attempt, shot, pending_shot, settled = asyncio.run(cancel_observe_and_drain())
+    assert fake.attempts == 1
+    assert fake.interrupted == 0
+    final_attempt = db.one(
+        "SELECT completion_state, filename FROM full_auto_execution_attempt WHERE attempt_id = ?",
+        attempt["attempt_id"],
+    )
+    final_shot = db.one("SELECT status, filename FROM shot WHERE id = ?", shot["id"])
+    assert settled["state"] == "cancelled"
+    assert final_attempt["completion_state"] == "completed"
+    assert final_shot["status"] == "done"
+    assert final_shot["filename"] == final_attempt["filename"]
+    assert (runner.sessions_dir / str(session_id) / final_shot["filename"]).is_file()
+    assert fake.attempts == 1
+    assert fake.interrupted == 0
+    assert resource_full_auto.require_session_mutation_allowed(session_id) is None
+
+    links_before_resume = db.q(
+        "SELECT take_id, shot_id FROM full_auto_submission_receipt WHERE run_id = ? "
+        "ORDER BY target_index", run_id,
+    )
+    current = resource_full_auto.get_run(run_id)
+    resumed = resource_full_auto.resume_run(
+        run_id, str(uuid.uuid4()), current["revision"], revision,
+        eligibility=None, config=lambda: main.CONFIG,
+        expected_session_id=session_id,
+    )
+    assert resumed.view["state"] == "waiting_runner"
+    assert db.q(
+        "SELECT take_id, shot_id FROM full_auto_submission_receipt WHERE run_id = ? "
+        "ORDER BY target_index", run_id,
+    ) == links_before_resume
+    restored = db.one("SELECT status FROM shot WHERE id = ?", pending_shot["id"])
+    assert restored["status"] == "pending"
+
+    async def continue_same_targets():
+        assert runner.start(
+            session_id, _full_auto_claim=resumed.claim, _full_auto_recovery=True,
+        )
+        await runner._task
+
+    asyncio.run(continue_same_targets())
+    assert fake.attempts == 4
+    assert db.one("SELECT status FROM shot WHERE id = ?", pending_shot["id"])["status"] == "done"
+    assert db.one("SELECT state FROM full_auto_run WHERE run_id = ?", run_id)["state"] == "succeeded"
 
 
 @pytest.mark.parametrize("drift", ["model_settings", "lora"])

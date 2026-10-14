@@ -104,15 +104,19 @@ Auto run is nonterminal. Read-only drift inspection and safe no-work replays may
 remain available. An internal pause can fence child work and authorize one
 plan CAS while retaining session ownership. Resume can compare changed scope
 and, after explicit acceptance, append a linked immutable authorization grant.
-Pending or unknown cancellation retains session ownership. Status reads backend
-state and Cancel persists backend intent; neither contacts ComfyUI, interrupts a
-remote job, or reconciles its outcome. Eligible Resume schedules the coordinator,
-which revalidates authorization and recovery evidence before continuing. No
-verified targeted-cancel path is available; the current runner leaves an owned
-ComfyUI job to finish and reports its pending state:
-`Cancellation pending: current generation must finish.` Durable cancellation
-and reconciliation remain unfinished. A
-backend-only all-target review gate checks current prepared evidence
+Pending or unknown cancellation retains session ownership. Cancel persists and
+fences intent, cancels linked shots with no execution attempt in place, and
+retains completed outputs. The persisted capability set includes only
+`client_prompt_id`; it does not provide atomic targeted cancellation, so Full
+Auto drains without global interrupt or queue clearing. After three additional
+persisted read-only probes at 5, 15, and 30 seconds, outage or unknown evidence
+leaves blocked intent; repeated Cancel does not poll. Explicit Resume uses
+read-only remote reconciliation and local settlement, even after authorization
+expiry or feature disablement; it never activates or dispatches work. Eligible
+continuation reuses shot IDs and restores only linked targets without an
+execution attempt. Retry of attempted shots remains unfinished; see
+[Full Auto status and controls](docs/sessions.md#full-auto-status-and-controls).
+The backend-only all-target review gate checks current prepared evidence
 for Full Auto approval and new submissions: unresolved review conflicts,
 placeholders, stale adaptations, drift, and unaccepted exact duplicate tuples
 block them; neutral descriptive notices remain visible without blocking.
@@ -157,8 +161,8 @@ shot dispatch, the runner checks ComfyUI with a read-only stats request; failed
 stats or history reads get at most three persisted probes after 5, 15, and 30
 seconds, and history recovery never resends the prompt. Exhaustion blocks
 `comfy_unavailable`; after admission and shot linking, unresolved work keeps
-Resume disabled. The status directs operators to Setup, inspection, or Cancel,
-but local HTTP termination does not establish that remote ComfyUI work stopped.
+Resume disabled. Cancellation uses bounded read-only ComfyUI evidence checks;
+local HTTP termination does not establish that remote ComfyUI work stopped.
 The assistant slot also fences a live Full Auto POST in this process, bound to
 its reservation and local SQLite database identity. An expired quarantine is
 not released while that POST is still unwinding; cancellation cleanup must end
@@ -180,7 +184,9 @@ unknown. No tested-version mapping or minimum version is assumed.
 At backend startup, journaled and admitted rows are protected before legacy
 interrupted-row cleanup; unclaimed legacy `running` rows still fail as
 interrupted. Startup then schedules eligible runs in `active`,
-`waiting_authoring`, or `waiting_runner` states. Preparation recovery
+`waiting_authoring`, or `waiting_runner` states and resumes cancellation draining
+only from `cancel_requested`; blocked cancellation intent requires explicit
+Resume. Preparation recovery
 waits for a live child and resumes it under a new fence while preserving its
 verified prefix. Execution recovery can settle a uniquely validated moved PNG
 only when its attempt metadata and graph match, or correlate a lost
@@ -191,11 +197,10 @@ missing, malformed, mismatched, duplicate, or prior-epoch evidence leaves the
 run blocked; exhausted remote-read probes report `comfy_unavailable`. If
 resource planning is disabled or authorization has expired, settled outputs are
 retained and remaining new work stays blocked.
-A stale owner stops subsequent writes and dispatches. Durable cancellation and
-remote cancellation reconciliation, explicit retry, external queue policy, the
-profile editor, and selection/consent UI remain unfinished. The existing
-manual workflow remains available for sessions without a nonterminal Full Auto
-owner.
+A stale owner stops subsequent writes and dispatches. Explicit retry of attempted
+shots, external queue policy, the profile editor, and selection/consent UI remain
+unfinished. The existing manual workflow remains available for sessions without
+a nonterminal Full Auto owner.
 While a run is nonterminal or its work is unresolved, supported DELETE routes
 for its session, linked shots, model, or workflow return `409 full_auto_in_use`
 with affected session IDs; Cancel the run and wait for settlement before

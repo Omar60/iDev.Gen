@@ -1143,6 +1143,23 @@ def cancel_for_plan_change(session_id: int, new_revision: int) -> int:
         return int(updated.rowcount)
 
 
+def cancel_full_auto_operations(session_id: int, run_id: str, *, now_text: str | None = None) -> int:
+    """Fence live child operations so late assistant responses cannot survive Cancel."""
+    timestamp = now_text or db.now()
+    with db.transaction():
+        rows = db.q(
+            "SELECT * FROM authoring_operation WHERE session_id = ? AND full_auto_run_id = ? "
+            "AND state IN ('active', 'cancel_requested') ORDER BY created_at, operation_id",
+            session_id, run_id,
+        )
+        for row in rows:
+            _transition_terminal(
+                row, state="cancelled", diagnostic_code="cancel_requested",
+                now_text=timestamp,
+            )
+        return len(rows)
+
+
 def _operation_view(
     row: dict,
     *,

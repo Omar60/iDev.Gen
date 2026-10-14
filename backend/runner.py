@@ -38,6 +38,7 @@ log = logging.getLogger("idevgen.runner")
 
 CLIENT_ID = f"idevgen-{uuid.uuid4().hex[:8]}"
 POLL_SECONDS = 1.5
+CANCELLATION_QUEUE_POLL_SECONDS = 15.0
 SHOT_TIMEOUT = 900  # 15 min per image; a hung job must not wedge the session
 # Retries for a locked output file. Delays escalate (0.4, 0.8, 1.2 …), so six
 # attempts wait ~8s in total before the shot is called failed.
@@ -162,7 +163,12 @@ class Runner:
                 log.warning("runner stopped for session %s: %s", session_id, exc.code)
         finally:
             try:
-                if not resource_full_auto.release_runner_claim(heartbeat.claim):
+                # An unresolved cancelled Full Auto shot remains a durable
+                # dispatch fence; release the singleton so its read-only
+                # reconciler can inspect the owned attempt.
+                if not resource_full_auto.release_runner_claim(
+                    heartbeat.claim, allow_cancelled_work=full_auto_claim is not None,
+                ):
                     log.warning("runner claim retained for session %s with unresolved work", session_id)
             except resource_full_auto.FullAutoRunError as exc:
                 log.warning("runner claim release refused for session %s: %s", session_id, exc.code)
@@ -386,6 +392,7 @@ class Runner:
     async def _finish_recovered_attempt_output(
         self, session_id: int, shot: dict, attempt: dict, heartbeat,
         image: dict, correlation_evidence: dict | None,
+        *, cancellation_recovery: bool = False,
     ) -> None:
         from backend import resource_full_auto
 
@@ -394,7 +401,8 @@ class Runner:
             image=image,
             expected_filename=attempt.get("expected_filename") or _output_filename(shot, image),
             correlation_evidence=correlation_evidence,
-            recovery=True,
+            recovery=not cancellation_recovery,
+            cancellation_recovery=cancellation_recovery,
         )
         expected_filename = attempt.get("expected_filename") or _output_filename(shot, image)
         if (
@@ -433,12 +441,15 @@ class Runner:
                 ) from exc
         resource_full_auto.finish_execution_attempt(
             attempt["attempt_id"], heartbeat.check(), heartbeat.claim,
-            outcome="completed", filename=filename, recovery=True,
+            outcome="completed", filename=filename,
+            recovery=not cancellation_recovery,
+            cancellation_recovery=cancellation_recovery,
         )
-        self._adopt_anchor(
-            db.jload(db.one("SELECT * FROM session WHERE id=?", session_id), "settings"),
-            shot, heartbeat,
-        )
+        if not cancellation_recovery:
+            self._adopt_anchor(
+                db.jload(db.one("SELECT * FROM session WHERE id=?", session_id), "settings"),
+                shot, heartbeat,
+            )
 
     def _recover_moved_attempt_file(self, attempt: dict) -> Path | None:
         """Accept a moved output only when its PNG marker and graph match the journal."""
@@ -482,6 +493,10 @@ class Runner:
             claim = heartbeat.check()
             if claim is None:
                 pass
+            elif getattr(heartbeat, "cancellation_recovery", False):
+                resource_full_auto.require_cancellation_runner_claim(
+                    session_id, claim, heartbeat.claim,
+                )
             elif claim.requires_reconciliation:
                 resource_full_auto.require_execution_recovery_claim(session_id, claim)
             else:
@@ -512,12 +527,332 @@ class Runner:
         claim = heartbeat.check()
         if claim is None:
             return
-        if claim.requires_reconciliation:
+        if getattr(heartbeat, "cancellation_recovery", False):
+            resource_full_auto.require_cancellation_runner_claim(
+                session_id, claim, heartbeat.claim,
+            )
+        elif claim.requires_reconciliation:
             resource_full_auto.require_execution_recovery_claim(session_id, claim)
         else:
             resource_full_auto.require_session_mutation_allowed(
                 session_id, claim=claim, allowed_phases=("execute",),
             )
+
+    async def reconcile_full_auto_cancellation(
+        self, session_id: int, claim,
+    ) -> tuple[str, object, str | None, tuple[str, ...], tuple[str, ...]]:
+        """Observe and drain only journaled Full Auto work; this path never queues or interrupts."""
+        from backend import resource_full_auto
+
+        run = resource_full_auto.require_cancellation_reconciliation_claim(
+            session_id, claim,
+        )
+        with db.transaction():
+            # The claim can expire while waiting to enter the transaction.
+            # Revalidate with transaction-time authority immediately before
+            # applying cancellation mutations.
+            timestamp = db.now()
+            run = resource_full_auto.require_cancellation_reconciliation_claim(
+                session_id, claim, now_text=timestamp,
+            )
+            resource_full_auto._cancel_unstarted_full_auto_shots(run, timestamp)
+            db.run(
+                """UPDATE session SET status = 'cancelled' WHERE id = ? AND status = 'running'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM shot WHERE session_id = ? AND status = 'running'
+                   )""",
+                session_id, session_id,
+            )
+            attempts = db.q(
+                """SELECT attempt.* FROM full_auto_execution_attempt attempt
+                   JOIN shot ON shot.id = attempt.shot_id
+                   WHERE attempt.run_id = ? AND attempt.session_id = ?
+                     AND (attempt.completion_state IN ('pending', 'output_available')
+                          OR shot.status = 'running')
+                   ORDER BY attempt.created_at, attempt.attempt_number""",
+                claim.run_id, session_id,
+            )
+        attempt_ids = tuple(str(item["attempt_id"]) for item in attempts)
+        shot_ids = tuple(str(item["shot_id"]) for item in attempts)
+        unresolved_shots = db.q(
+            "SELECT id, status FROM shot WHERE session_id = ? AND status = 'running' ORDER BY id",
+            session_id,
+        )
+        if any(
+            not any(int(item["shot_id"]) == int(shot["id"]) for item in attempts)
+            for shot in unresolved_shots
+        ):
+            return "unknown", claim, "execution_outcome_unknown", attempt_ids, tuple(
+                str(item["id"]) for item in unresolved_shots
+            )
+        outstanding = db.one(
+            """SELECT 1 FROM full_auto_execution_attempt
+               WHERE run_id = ? AND completion_state IN ('pending', 'output_available')
+                 AND shot_id NOT IN (
+                     SELECT id FROM shot WHERE session_id = ? AND status = 'running'
+                 ) LIMIT 1""",
+            claim.run_id, session_id,
+        )
+        if outstanding is not None:
+            return "unknown", claim, "execution_outcome_unknown", attempt_ids, shot_ids
+        if not attempts:
+            if resource_full_auto.unresolved_work_count(session_id, claim.run_id) == 0:
+                return "settled", claim, None, (), ()
+            return "unknown", claim, "run_work_unsettled", (), ()
+        if run["resume_phase"] != "execute" or db.one(
+            "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", claim.run_id,
+        ) is None:
+            return "unknown", claim, "execution_outcome_unknown", attempt_ids, shot_ids
+
+        runner_claim = resource_full_auto.acquire_runner_claim(
+            session_id, run_claim=claim, recovery=True, cancellation_recovery=True,
+        )
+        if runner_claim is None:
+            return "running", claim, None, attempt_ids, shot_ids
+        heartbeat = resource_full_auto.RunnerClaimHeartbeat(
+            runner_claim, claim, cancellation_recovery=True,
+        )
+        outcome = "settled"
+        blocker = None
+        outcome_claim = claim
+        try:
+            async with heartbeat:
+                self._require_runner_owner(session_id, heartbeat)
+                for attempt in attempts:
+                    shot = db.one(
+                        "SELECT * FROM shot WHERE id = ? AND session_id = ?",
+                        attempt["shot_id"], session_id,
+                    )
+                    if shot is None or shot["status"] != "running":
+                        raise resource_full_auto.FullAutoRunError(
+                            409, "execution_outcome_unknown",
+                            "A cancellation attempt is not attached to its running shot.",
+                        )
+                    attempt_state = await self._reconcile_cancellation_attempt(
+                        session_id, shot, attempt, heartbeat,
+                    )
+                    if attempt_state == "running":
+                        outcome = "running"
+                        break
+                self._require_runner_owner(session_id, heartbeat)
+                if outcome != "running":
+                    self._owned_update(
+                        session_id, heartbeat,
+                        """UPDATE session SET status = 'cancelled' WHERE id = ? AND status = 'running'
+                           AND NOT EXISTS (
+                               SELECT 1 FROM shot WHERE session_id = ? AND status = 'running'
+                           )""",
+                        session_id, session_id,
+                    )
+                    pending = db.one(
+                        """SELECT 1 FROM full_auto_execution_attempt
+                           WHERE run_id = ? AND completion_state IN ('pending', 'output_available')
+                           LIMIT 1""",
+                        claim.run_id,
+                    )
+                    running = db.one(
+                        "SELECT 1 FROM shot WHERE session_id = ? AND status = 'running' LIMIT 1",
+                        session_id,
+                    )
+                    if pending is not None or running is not None:
+                        raise resource_full_auto.FullAutoRunError(
+                            409, "execution_outcome_unknown",
+                            "Full Auto work remains unresolved after cancellation reconciliation.",
+                        )
+                outcome_claim = heartbeat.check()
+        except resource_full_auto.FullAutoRunError as exc:
+            outcome = "unknown"
+            blocker = exc.code
+            if heartbeat.run_claim is not None:
+                outcome_claim = heartbeat.run_claim
+        except Exception:  # noqa: BLE001 - uncertain remote state must remain blocked
+            outcome = "unknown"
+            blocker = "execution_outcome_unknown"
+            if heartbeat.run_claim is not None:
+                outcome_claim = heartbeat.run_claim
+            log.exception("Full Auto cancellation reconciliation stopped for session %s", session_id)
+        finally:
+            try:
+                # This path only reconciles a pending cancellation. The
+                # unresolved shot journal blocks new admissions after release.
+                released = resource_full_auto.release_runner_claim(
+                    heartbeat.claim, allow_cancelled_work=True,
+                )
+                if not released:
+                    outcome = "unknown"
+                    blocker = blocker or "execution_outcome_unknown"
+            except resource_full_auto.FullAutoRunError:
+                outcome = "unknown"
+                blocker = blocker or "execution_outcome_unknown"
+                log.warning(
+                    "Full Auto cancellation runner claim could not be released for session %s",
+                    session_id,
+                )
+        return outcome, outcome_claim, blocker, attempt_ids, shot_ids
+
+    async def _reconcile_cancellation_attempt(
+        self, session_id: int, shot: dict, attempt: dict, heartbeat,
+    ) -> str | None:
+        """Settle completed work or report a corroborated active queue match."""
+        from backend import resource_full_auto
+
+        if (
+            attempt["run_id"] != heartbeat.run_claim.run_id
+            or int(attempt["session_id"]) != session_id
+            or int(attempt["run_epoch"]) != heartbeat.run_claim.epoch
+        ):
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The saved attempt belongs to a different Full Auto execution epoch.",
+            )
+        if attempt["completion_state"] == "completed":
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The shot and its saved completion record disagree.",
+            )
+        if attempt["completion_state"] == "failed" or attempt["dispatch_state"] == "rejected":
+            resource_full_auto.finish_execution_attempt(
+                attempt["attempt_id"], heartbeat.check(), heartbeat.claim,
+                outcome="failed",
+                error=attempt["error"] or "ComfyUI refused the saved generation attempt.",
+                cancellation_recovery=True,
+            )
+            return
+
+        moved_file = self._recover_moved_attempt_file(attempt)
+        if moved_file is not None and attempt["completion_state"] == "output_available":
+            resource_full_auto.finish_execution_attempt(
+                attempt["attempt_id"], heartbeat.check(), heartbeat.claim,
+                outcome="completed", filename=attempt["expected_filename"],
+                cancellation_recovery=True,
+            )
+            return
+
+        try:
+            recovered = await self._recover_execution_attempt(attempt, heartbeat)
+        except resource_full_auto.FullAutoRunError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - remote evidence must stay attributable
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The saved generation attempt could not be reconciled.",
+            ) from exc
+        if recovered is None:
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The saved generation attempt has no unique queue, history or output match.",
+            )
+        if recovered.get("image") is not None:
+            await self._finish_recovered_attempt_output(
+                session_id, shot, attempt, heartbeat, recovered["image"],
+                recovered.get("correlation_evidence"), cancellation_recovery=True,
+            )
+            return
+
+        prompt_id = recovered.get("prompt_id")
+        if not isinstance(prompt_id, str) or not prompt_id:
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The saved generation attempt has no verified prompt ID.",
+            )
+        attempt = resource_full_auto.record_execution_dispatch(
+            attempt["attempt_id"], heartbeat.check(), heartbeat.claim,
+            state="acknowledged", prompt_id=prompt_id, cancellation_recovery=True,
+        )
+        queue_active = recovered.get("queue_state") in {"running", "pending"}
+        if queue_active:
+            return "running"
+        try:
+            history = await self._await_history(prompt_id, session_id, heartbeat)
+        except TimeoutError as exc:
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The saved ComfyUI execution did not settle before its timeout.",
+            ) from exc
+        if history is None:
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "The saved ComfyUI execution remains unsettled.",
+            )
+        if not queue_active:
+            await self._await_cancellation_queue_exit(attempt, prompt_id, heartbeat)
+        await self._verify_attempt_server_identity(attempt, heartbeat)
+        try:
+            images = self._verified_attempt_images(attempt, history)
+        except Exception as exc:  # noqa: BLE001 - uncorroborated output is never adopted
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "ComfyUI history did not corroborate the saved attempt.",
+            ) from exc
+        if not images:
+            resource_full_auto.finish_execution_attempt(
+                attempt["attempt_id"], heartbeat.check(), heartbeat.claim,
+                outcome="failed",
+                error=_history_error(history) or "ComfyUI returned no image.",
+                cancellation_recovery=True,
+            )
+            return
+        await self._finish_recovered_attempt_output(
+            session_id, shot, attempt, heartbeat, images[0], None,
+            cancellation_recovery=True,
+        )
+
+    async def _await_cancellation_queue_exit(
+        self, attempt: dict, prompt_id: str, heartbeat,
+    ) -> None:
+        """Wait for a verified attempt to leave both ComfyUI queues without interrupting it."""
+        from backend import resource_full_auto, resource_store
+
+        expected = build_attempt_metadata(attempt["client_id"], attempt)
+        deadline = asyncio.get_running_loop().time() + SHOT_TIMEOUT
+        while True:
+            self._require_runner_owner(int(attempt["session_id"]), heartbeat)
+            queue = await self._read_attempt_comfy(
+                attempt, heartbeat, "queue", self.comfy.queue_state,
+            )
+            if (
+                not isinstance(queue, dict)
+                or not isinstance(queue.get("queue_running"), list)
+                or not isinstance(queue.get("queue_pending"), list)
+            ):
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "ComfyUI returned unusable queue evidence for the saved attempt.",
+                )
+            matches = 0
+            for state in ("queue_running", "queue_pending"):
+                for entry in queue[state]:
+                    candidate_id, graph, extra_data = prompt_entry_fields(entry)
+                    if candidate_id != prompt_id:
+                        continue
+                    marker = attempt_marker(extra_data)
+                    png_info = extra_data.get("extra_pnginfo")
+                    if (
+                        marker != expected
+                        or not isinstance(png_info, dict)
+                        or attempt_marker(png_info) != expected
+                        or extra_data.get("client_id") != attempt["client_id"]
+                        or resource_store.canonical_digest(graph) != attempt["graph_digest"]
+                        or not graph_has_prefix(graph, attempt["filename_prefix"])
+                    ):
+                        raise resource_full_auto.FullAutoRunError(
+                            409, "execution_outcome_unknown",
+                            "ComfyUI queue evidence conflicts with the saved attempt.",
+                        )
+                    matches += 1
+            if matches == 0:
+                return
+            if matches != 1:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "ComfyUI returned duplicate queue evidence for the saved attempt.",
+                )
+            if asyncio.get_running_loop().time() >= deadline:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "The saved ComfyUI execution did not leave its queue before the timeout.",
+                )
+            await asyncio.sleep(max(POLL_SECONDS, CANCELLATION_QUEUE_POLL_SECONDS))
 
     async def reconcile_full_auto_attempts(
         self, session_id: int, claim,
@@ -1250,6 +1585,30 @@ class Runner:
                     "ComfyUI returned unusable attempt evidence; the attempt remains unresolved.",
                 ) from exc
 
+        if (
+            state["pending"]
+            and getattr(heartbeat, "cancellation_recovery", False)
+            and state["count"] >= len(resource_full_auto.COMFY_PROBE_DELAYS)
+            and state["due_at"] is None
+        ):
+            # A user-triggered cancellation reconciliation authorizes a fresh
+            # read-only observation after the durable automatic probe budget is
+            # exhausted. It does not reset or consume that history, and an
+            # unavailable server stays blocked without starting another retry
+            # cycle.
+            self._require_runner_owner(session_id, heartbeat)
+            try:
+                result = await guarded_read()
+            except resource_full_auto.FullAutoRunError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one explicit read, no retries
+                raise resource_full_auto.FullAutoRunError(
+                    503, "comfy_unavailable",
+                    "ComfyUI remains unavailable during explicit cancellation reconciliation.",
+                ) from exc
+            self._require_runner_owner(session_id, heartbeat)
+            return result
+
         if state["pending"]:
             result, _waited = await self._recover_comfy_read(
                 session_id, heartbeat, scope, guarded_read, state=state,
@@ -1401,12 +1760,12 @@ class Runner:
                     raise ValueError("Comfy prompt ID conflicts with the verified client ID")
                 return True
 
-            queue_matches: list[str] = []
+            queue_matches: list[tuple[str, str]] = []
             for state in ("queue_running", "queue_pending"):
                 for entry in queue[state]:
                     prompt_id, graph, extra_data = prompt_entry_fields(entry)
                     if matches(prompt_id, graph, extra_data):
-                        queue_matches.append(prompt_id)
+                        queue_matches.append((prompt_id, "running" if state == "queue_running" else "pending"))
 
             history_matches: list[str] = []
             for key, record in history.items():
@@ -1423,11 +1782,16 @@ class Runner:
             # a server that does not deduplicate caller-supplied IDs.
             if len(queue_matches) + len(history_matches) > 1:
                 return None
-            if queue_matches or history_matches:
+            if queue_matches:
                 await self._verify_attempt_server_identity(
                     attempt, heartbeat, recover_transport=True,
                 )
-                return {"prompt_id": (queue_matches or history_matches)[0]}
+                return {"prompt_id": queue_matches[0][0], "queue_state": queue_matches[0][1]}
+            if history_matches:
+                await self._verify_attempt_server_identity(
+                    attempt, heartbeat, recover_transport=True,
+                )
+                return {"prompt_id": history_matches[0], "queue_state": "history"}
 
             output = self._recover_output_from_png(attempt, expected, resource_store)
             if output is not None:

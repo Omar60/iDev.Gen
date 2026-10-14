@@ -393,6 +393,7 @@ def test_manual_transfer_keeps_mutation_fence_until_cancellation_is_verified_set
         run_id, "manual-transfer-reconcile", blocked["revision"], 1,
         eligibility=None, now_text="2026-10-01T12:00:03+00:00",
     )
+    db.run("UPDATE shot SET status = 'cancelled' WHERE id = ?", shot_id)
     settled = resource_full_auto.reconcile_cancellation(
         retry.claim,
         resource_full_auto.CancellationEvidence(
@@ -404,7 +405,7 @@ def test_manual_transfer_keeps_mutation_fence_until_cancellation_is_verified_set
     assert settled["state"] == "cancelled"
     assert settled["cancel_intent"] is True
     assert resource_full_auto.require_session_mutation_allowed(session_id) is None
-    assert db.one("SELECT status FROM shot WHERE id = ?", shot_id)["status"] == "pending"
+    assert db.one("SELECT status FROM shot WHERE id = ?", shot_id)["status"] == "cancelled"
 
 
 def test_execution_transitions_require_ordered_phases_and_settled_outcomes(tmp_path):

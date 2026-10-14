@@ -2,16 +2,23 @@
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import db
+import main
 from backend import resource_full_auto
 from test_guided_session_creation import (
     _forbid_full_auto_side_effects,
     _full_auto_payload,
     _room_anchor,
 )
+
+
+_REAL_CANCELLATION_SCHEDULER = main._schedule_full_auto_cancellation
 
 
 def _create_full_auto(client, seeded, monkeypatch) -> tuple[int, str]:
@@ -178,6 +185,12 @@ def test_failed_shot_stays_unresolved_and_reconciliation_never_fakes_settlement(
     assert cancel.json()["state"] == "cancel_requested"
     assert cancel.json()["cancel_intent"] is True
 
+    # The test fixture suppresses the background cancellation worker. Model its
+    # lease expiring before explicit Resume takes a fresh read-only claim.
+    db.run(
+        "UPDATE full_auto_run SET lease_expires_at = ? WHERE run_id = ?",
+        "2000-01-01T00:00:00+00:00", run_id,
+    )
     reconcile_body = _control_body(run_id, _plan_revision(session_id))
     reconcile = client.post(
         f"/api/sessions/{session_id}/full-auto/{run_id}/resume",
@@ -188,8 +201,111 @@ def test_failed_shot_stays_unresolved_and_reconciliation_never_fakes_settlement(
     assert reconcile.json()["cancel_intent"] is True
     row = db.one("SELECT * FROM full_auto_run WHERE run_id = ?", run_id)
     assert row["state"] == "cancel_requested"
-    assert row["lease_expires_at"] is None
+    assert row["lease_expires_at"] is not None
+    assert row["lease_started_at"] is not None
     assert json.loads(row["evidence_json"])["kind"] == "cancel"
+
+
+def test_initial_cancel_schedules_owned_read_only_draining(
+    client, seeded, monkeypatch,
+):
+    session_id, run_id = _create_full_auto(client, seeded, monkeypatch)
+    db.run(
+        "INSERT INTO shot (session_id, shot_index, prompt, status, created_at) "
+        "VALUES (?, 0, ?, 'running', ?)",
+        session_id, "Synthetic admitted work awaiting cancellation reconciliation.", db.now(),
+    )
+    scheduled = []
+    monkeypatch.setattr(
+        main, "_schedule_full_auto_cancellation",
+        lambda *args: scheduled.append(args),
+    )
+    monkeypatch.setattr(
+        main, "_schedule_full_auto_run",
+        lambda *_args: pytest.fail("Cancel must never schedule the active coordinator"),
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
+        json=_control_body(run_id, _plan_revision(session_id)),
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["state"] == "cancel_requested"
+    assert len(scheduled) == 1
+    scheduled_run_id, scheduled_session_id, claim = scheduled[0]
+    assert (scheduled_run_id, scheduled_session_id) == (run_id, session_id)
+    assert claim.requires_reconciliation is True
+    assert claim.run_id == run_id
+
+
+def test_cancel_http_schedules_reconciliation_on_the_asgi_loop(
+    client, seeded, monkeypatch,
+):
+    session_id, run_id = _create_full_auto(client, seeded, monkeypatch)
+    db.run(
+        "INSERT INTO shot (session_id, shot_index, prompt, status, created_at) "
+        "VALUES (?, 0, ?, 'running', ?)",
+        session_id, "Synthetic admitted work awaiting cancellation reconciliation.", db.now(),
+    )
+    scheduled = threading.Event()
+    calls = []
+
+    async def observe_cancellation(run_id, session_id, claim):
+        calls.append((run_id, session_id, claim))
+        scheduled.set()
+
+    monkeypatch.setattr(main, "_schedule_full_auto_cancellation", _REAL_CANCELLATION_SCHEDULER)
+    monkeypatch.setattr(main, "_reconcile_full_auto_cancellation", observe_cancellation)
+    response = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/cancel",
+        json=_control_body(run_id, _plan_revision(session_id)),
+    )
+
+    assert response.status_code == 202, response.text
+    assert scheduled.wait(timeout=2), "the cancellation worker was not started on the ASGI loop"
+    assert len(calls) == 1
+    assert calls[0][0:2] == (run_id, session_id)
+    assert calls[0][2].requires_reconciliation is True
+
+
+def test_resume_claims_and_schedules_only_read_only_cancel_reconciliation(
+    client, seeded, monkeypatch,
+):
+    session_id, run_id = _create_full_auto(client, seeded, monkeypatch)
+    current = resource_full_auto.get_run(run_id)
+    pending = resource_full_auto.cancel_run(
+        run_id, str(uuid.uuid4()), current["revision"], current["plan_revision"],
+        work_pending=True, expected_session_id=session_id,
+    )
+    assert pending.view["state"] == "cancel_requested"
+    scheduled = []
+    monkeypatch.setattr(
+        main, "_schedule_full_auto_cancellation",
+        lambda *args: scheduled.append(args),
+    )
+    monkeypatch.setattr(
+        main, "_schedule_full_auto_run",
+        lambda *_args: pytest.fail("cancellation Resume must not schedule the active coordinator"),
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume",
+        json=_control_body(run_id, _plan_revision(session_id)),
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["state"] == "cancel_requested"
+    assert response.json()["cancel_intent"] is True
+    assert len(scheduled) == 1
+    scheduled_run, scheduled_session, claim = scheduled[0]
+    assert (scheduled_run, scheduled_session) == (run_id, session_id)
+    assert claim.requires_reconciliation is True
+    row = db.one("SELECT state, phase, cancel_intent, lease_started_at FROM full_auto_run WHERE run_id = ?", run_id)
+    assert row == {
+        "state": "cancel_requested", "phase": "reconcile",
+        "cancel_intent": 1, "lease_started_at": claim.lease_started_at,
+    }
 
 
 def test_resume_preflight_recomputes_scope_and_renewal_is_atomic_and_linked(

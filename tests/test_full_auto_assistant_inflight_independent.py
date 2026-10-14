@@ -36,6 +36,51 @@ def _install_transport(monkeypatch, responder):
     monkeypatch.setattr(enhance.httpx, "AsyncClient", MockAsyncClient)
 
 
+def test_cancel_waits_for_assistant_reservation_to_unwind_before_settlement(
+    client, seeded, monkeypatch,
+):
+    _configure_assistant(monkeypatch)
+    session_id, run_id, revision, targets = _create_run(client, seeded, photo_count=4)
+    owner, operation_id = _start_child(session_id, run_id, revision, targets)
+    child = authoring_operations.load_worker_claim(
+        session_id, operation_id, planning_enabled=True,
+        _full_auto_claim=owner,
+    )
+    provider_identity = guided_sessions._provider_identity(main.CONFIG)[0]
+    slot = resource_full_auto.try_acquire_assistant_slot(
+        owner, child, targets[0], provider_identity,
+    )
+    assert slot is not None
+    dispatch = resource_full_auto.reserve_assistant_dispatch(
+        slot, owner, child, provider_identity,
+    )
+
+    current = resource_full_auto.get_run(run_id)
+    cancelled = resource_full_auto.cancel_run(
+        run_id, "assistant-cancel-inflight", current["revision"], current["plan_revision"],
+        work_pending=None, derive_work_pending=True,
+    )
+
+    assert cancelled.view["state"] == "cancel_requested"
+    cancellation_claim = resource_full_auto.claim_run(run_id)
+    assert resource_full_auto.unresolved_work_count(session_id, run_id) > 0
+    row = db.one(
+        "SELECT settled_at FROM full_auto_assistant_reservation WHERE run_id = ?",
+        run_id,
+    )
+    assert row["settled_at"] is None
+
+    resource_full_auto.settle_assistant_dispatch(slot, dispatch, {"status": None})
+    resource_full_auto.finish_local_assistant_dispatch(dispatch)
+    assert resource_full_auto.unresolved_work_count(session_id, run_id) == 0
+
+    settled = resource_full_auto.reconcile_cancellation(
+        cancellation_claim,
+        resource_full_auto.CancellationEvidence("settled", db.now(), 0),
+    )
+    assert settled["state"] == "cancelled"
+
+
 def test_live_post_fence_survives_owner_loss_quarantine_expiry_and_loop_delay(
     client, seeded, monkeypatch,
 ):
@@ -364,7 +409,7 @@ def test_transport_exception_finishes_the_local_dispatch_fence(
             full_auto_finish_dispatch=finish,
         ))
     assert error.value.code == "assistant_transport_error"
-    assert order == ["reserve", "post", "finish", "settle", "check"]
+    assert order == ["reserve", "post", "settle", "check", "finish"]
     reservation = db.one(
         "SELECT settled_at, response_metadata_json FROM full_auto_assistant_reservation "
         "WHERE run_id = ?", run_id,

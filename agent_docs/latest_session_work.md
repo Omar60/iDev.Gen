@@ -1,69 +1,73 @@
 # Latest Session Work
 
-## Full Auto Task 5.4 Accepted Handoff
+## Full Auto Task 5.5 Accepted Handoff
 
-Deployment `full-auto-next-20261013` entered from clean `47ec3df` and completes
-only Task 5.4 of `automate-resource-session-full-auto`. Heavy intake covered
-project documentation and change artifacts. Internal Executor owned production
-and repair, independent Tester owned verification, and Main inspected decisive
-contracts, actual diffs and raw gate output before accepting. Only 5.4 is newly
-checked, bringing accepted progress to 26 of 41 tasks.
+Deployment `full-auto-55-20261013` entered from clean `5257d95` and completes
+only Task 5.5 of `automate-resource-session-full-auto`. Heavy intake covered the
+complete project framework and change artifacts. Internal Executor owned
+implementation and repair; Tester independently reviewed actual code/diff and
+executed acceptance. Main inspected decisive contracts, diffs and raw gate
+output before accepting. Only 5.5 is newly checked: 27 of 41 tasks.
 
 ## Delivered Contracts
 
-Creation schedules only after its atomic commit. Startup and eligible Resume
-drive persisted preparation, policy review/approval, ordered submission and the
-existing serial runner. Recovery preserves prepared prefixes, existing links,
-prompt bytes, seeds, unique prefixes and immutable attempt identity.
-Journaled/admitted running rows are protected before legacy interruption cleanup.
+Cancel atomically fences child operations, stops further scheduling and cancels
+provably unsent linked shots without changing their IDs. The local physical
+assistant fence remains through response validation and cleanup; late output
+cannot create a preparation. Completed snapshots, links and images survive.
 
-Expired execute ownership uses current recovery fences and the same epoch.
-Known jobs are reattached; moved outputs require matching PNG marker and graph.
-Missing, conflicting, duplicate or prior-epoch evidence blocks without another
-generation POST. Capability/queue/history outages reuse persisted read-only
-5/15/30-second probes across restart, ending in `comfy_unavailable`.
-Disablement or expiry allows safe existing-output settlement while blocking
-remaining new work. Eligible waiting runs continue without another restart or
-consent; global runner ownership, FIFO readiness and phase gates remain enforced.
-Shared `q`/`one` results are materialized under the existing reentrant
-transaction lock, preserving connection/schema and remote-I/O boundaries.
+Owned GPU attempts drain without global interrupt or queue clearing. Fresh
+cancellation claims may settle corroborated output, but cannot activate or
+dispatch. Running observations retain `cancel_requested` with delayed read-only
+checks; unknown evidence blocks with intent and guards retained. Three additional
+5/15/30-second outage probes survive database reopen. Repeated Cancel neither
+polls nor resets them. After exhaustion, explicit reconciliation permits a fresh
+read without resetting the cursor or starting another automatic retry cycle,
+including after feature disablement or authorization expiry.
+
+Startup resumes only in-progress `cancel_requested` draining, after prior leases
+expire; blocked cancel intent remains user-triggered. Eligible continuation
+restores only never-attempted linked targets with their original shot IDs.
+Stale owners are revalidated inside mutation transactions and output handling.
+Shared database-identity reads now materialize under the existing transaction
+lock while retaining raw isolated SQLite connection compatibility.
 
 ## Independent Evidence
 
-Final complete `.venv/Scripts/python.exe -m pytest -ra`: 3,476 passed, two
-skipped, five warnings, exit zero in 975.04 seconds. Canonical raw log outside
-the repository: `fa54-pytest-final4.log`. Skips: opt-in real 500-take synthesis
-benchmark and unavailable filesystem symlinks. Warnings: two Pydantic register
-warnings, Starlette/httpx TestClient, anyio portal alias and raw httpx upload.
+Final `.venv/Scripts/python.exe -m pytest -ra`: 3,491 passed, two skipped,
+five warnings, exit zero in 947.95 seconds. Raw log outside the repository:
+`fa55-full-pytest-final.log`. Skips: opt-in real 500-take synthesis benchmark
+and unavailable filesystem symlinks. Warnings: two Pydantic register warnings,
+Starlette/httpx TestClient, AnyIO portal alias and raw httpx upload.
 
-Independent real-lifespan startup module: 32 passed in 128.63 seconds
-(`fa54-startup-independent-final.log`). Exact post-commit creation with two
-concurrent HTTP readers passed eight separate trials
-(`fa54-creation-lockcheck-8.log`). Relevant ownership/coordinator and repaired
-regressions passed four cases (`fa54-live-child-regressions.log`).
-Strict OpenSpec passed; privacy/control passed 17 cases; diff checks passed.
-Frontend is unchanged, so npm tests/build were not required or run.
-Final text-only documentation and the one checklist edit receive compact
-closure checks before the acceptance commit.
+Eight independent cancellation tests passed, including real HTTP/scheduler
+boundaries with fake providers, delayed PNG settlement, unrelated-job protection,
+assistant late responses, stable-ID continuation, exhausted probes across SQLite
+reopen, disabled/expired reconciliation, stale I/O and check-to-lock races.
+Privacy plus those independent cases passed 18 tests in 18.22 seconds
+(`fa55-final-privacy-independent.log`). Strict OpenSpec and diff checks passed.
+Frontend is unchanged; npm tests/build were not required or run. Text-only
+closure documents and the one checklist change receive compact final checks
+before the acceptance commit; Archivist seals Git state and token usage.
 
-## Retained Failures and Limits
+## Retained Findings and Limits
 
-Independent review found stale acknowledgement evidence, generic workflow-drift
-diagnostics, missing durable outage probes and a prior-epoch reconciliation wait.
-A separate source review found wait states selected at startup but excluded by
-the coordinator. A reproduced shared-connection lookup reported a missing run
-while an independent disk reader saw it committed; the corrected boundary passed
-the repeated real flow. The exact SQLite cache mechanism remains unconfirmed.
+Independent review exposed running settlement being converted to unknown on
+runner release, a synchronous HTTP endpoint scheduling asyncio work without an
+event loop, a missing claim-validation timestamp, and exhausted probes preventing
+explicit recovery. Repairs passed final acceptance. Main required fresh claim
+validation inside the initial cancellation transaction. A scoped self-check
+also exposed an unlocked database-identity lookup during concurrent polling.
 
-The first complete gate failed five obsolete state expectations; the second
-failed a pre-renewal snapshot baseline and a transaction-only race barrier.
-Scoped fixture corrections retained all-row, dispatch, link and replay assertions.
-The third full run was interrupted for the wait-state correction and is not a
-gate result. Earlier harness errors and a withdrawn wrong-workflow finding do
-not count as production failures or passing acceptance.
+Scheduler diagnostics initially captured a fixture no-op and retained a fake
+running-history method after completion; those were harness failures, not
+production scheduler defects. A cross-thread Event wakeup and an obsolete-owner
+interleaving also required fixture correction without weakening acceptance.
+The Executor's first turn stopped at a usage limit; user-directed continuation
+retained the same deployment and task, with no premature acceptance.
 
-Task 5.5 remains unstarted. No complete cancellation/reconciliation or explicit
-retry, external queue,
-rollback, completed UI journey or real-generation acceptance is claimed.
-No real generation, archive or push occurred. The acceptance commit is limited
-to Task 5.4 and closure documentation; Archivist seals Git state and token usage.
+Only client prompt IDs have verified capability evidence. No atomic targeted
+cancellation is verified or claimed; Decision 11 permits the proven conservative
+draining path. Attempted-shot retry remains Task 5.6. No UI journey, real
+generation, visual fidelity, external-queue policy or rollback acceptance is
+claimed. No next task, archive or push occurred.

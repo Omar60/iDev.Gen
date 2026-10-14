@@ -323,44 +323,41 @@ async def _request_completion(
 
         reservation = full_auto_before_dispatch()
         try:
-            async with asyncio.timeout(TIMEOUT):
-                try:
+            try:
+                async with asyncio.timeout(TIMEOUT):
                     response = await client.post(url, json=request_body, headers=headers)
-                finally:
-                    if reservation is not None and full_auto_finish_dispatch is not None:
-                        full_auto_finish_dispatch(reservation)
-        except asyncio.CancelledError:
-            # Owner loss can cancel this coroutine while the request is still
-            # unwinding. Keep the durable reservation inflight so its slot is
-            # quarantined until the request actually ends or times out.
-            raise
-        except TimeoutError as exc:
-            if reservation is not None and full_auto_settle_dispatch is not None:
-                metadata = safe_metadata(None)
-                full_auto_settle_dispatch(reservation, metadata)
-                if full_auto_check_response is not None:
-                    full_auto_check_response(reservation, metadata)
-            raise httpx.ReadTimeout(
-                "The Full Auto assistant request exceeded its total timeout.",
-                request=httpx.Request("POST", url),
-            ) from exc
-        except Exception:
-            # The transport call has returned by raising, so the physical
-            # request has ended even when the failure was not an HTTPX error.
-            if reservation is not None and full_auto_settle_dispatch is not None:
-                metadata = safe_metadata(None)
-                full_auto_settle_dispatch(reservation, metadata)
-                if full_auto_check_response is not None:
-                    full_auto_check_response(reservation, metadata)
-            raise
+            except TimeoutError as exc:
+                if reservation is not None and full_auto_settle_dispatch is not None:
+                    metadata = safe_metadata(None)
+                    full_auto_settle_dispatch(reservation, metadata)
+                    if full_auto_check_response is not None:
+                        full_auto_check_response(reservation, metadata)
+                raise httpx.ReadTimeout(
+                    "The Full Auto assistant request exceeded its total timeout.",
+                    request=httpx.Request("POST", url),
+                ) from exc
+            except Exception:
+                # The transport call has returned by raising, so the physical
+                # request has ended even when the failure was not an HTTPX error.
+                if reservation is not None and full_auto_settle_dispatch is not None:
+                    metadata = safe_metadata(None)
+                    full_auto_settle_dispatch(reservation, metadata)
+                    if full_auto_check_response is not None:
+                        full_auto_check_response(reservation, metadata)
+                raise
 
-        if reservation is not None:
-            metadata = safe_metadata(response)
-            if full_auto_settle_dispatch is not None:
-                full_auto_settle_dispatch(reservation, metadata)
-            if full_auto_check_response is not None:
-                full_auto_check_response(reservation, metadata)
-        return response
+            if reservation is not None:
+                metadata = safe_metadata(response)
+                if full_auto_settle_dispatch is not None:
+                    full_auto_settle_dispatch(reservation, metadata)
+                if full_auto_check_response is not None:
+                    full_auto_check_response(reservation, metadata)
+            return response
+        finally:
+            # Retain the local physical-request fence through response checks
+            # and cancellation cleanup, not only until client.post returns.
+            if reservation is not None and full_auto_finish_dispatch is not None:
+                full_auto_finish_dispatch(reservation)
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as c:

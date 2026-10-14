@@ -195,6 +195,7 @@ def client(monkeypatch):
     # Coordinator behavior is exercised explicitly by its acceptance tests;
     # helper tests retain control over their documented manual stage calls.
     monkeypatch.setattr(main, "_schedule_full_auto_run", lambda _run_id: None)
+    monkeypatch.setattr(main, "_schedule_full_auto_cancellation", lambda *_args: None)
     monkeypatch.setattr(main, "_schedule_startup_full_auto_runs", lambda: None)
     with TestClient(main.app) as c:
         yield c
