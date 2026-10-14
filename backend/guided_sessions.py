@@ -1476,6 +1476,11 @@ def compare_full_auto_resume_scope(
             "new_executable_remaining": new_executable_remaining,
             "new_pending_take_remaining": new_pending_take_remaining,
         }
+        retry_candidates = resource_full_auto._retry_candidates(session_id, run_id)
+        image_retry_allowance = resource_full_auto._image_retry_allowance(
+            run_id, int(_saved_limits["image_attempts_total"]),
+            candidates=retry_candidates,
+        )
         comparison_payload = {
             "run_id": run_id,
             "run_revision": int(run["revision"]),
@@ -1491,6 +1496,7 @@ def compare_full_auto_resume_scope(
             "renewal_lifetime_seconds": int(_FULL_AUTO_AUTHORIZATION_LIFETIME.total_seconds()),
             "comparison_issued_at": comparison_issued,
             "assistant_allowance": assistant_allowance,
+            "image_retry_allowance": image_retry_allowance,
             "reservation_counts_digest": old_allowance["reservation_counts_digest"],
         }
         comparison_digest = resource_store.canonical_digest(comparison_payload)
@@ -1508,6 +1514,7 @@ def compare_full_auto_resume_scope(
             "comparison_issued_at": comparison_issued,
             "changed_fields": changed_fields,
             "assistant_allowance": assistant_allowance,
+            "image_retry_allowance": image_retry_allowance,
             "old_scope": {
                 "summary": old_summary,
                 "scope_digest": grant["scope_digest"],

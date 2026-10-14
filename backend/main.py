@@ -4098,6 +4098,8 @@ class FullAutoResumeIn(_FullAutoControlBaseIn):
         default=None, strict=True, min_length=20, max_length=40,
     )
     accept_changed_scope: bool = Field(default=False, strict=True)
+    retry_failed_shots: bool = Field(default=False, strict=True)
+    accept_unknown_outcome_risk: bool = Field(default=False, strict=True)
 
 
 def _full_auto_public_comparison(
@@ -4109,6 +4111,7 @@ def _full_auto_public_comparison(
     public_fields = {
         "run_id", "run_revision", "plan_revision", "changed", "scope_digest",
         "comparison_issued_at", "changed_fields", "assistant_allowance",
+        "image_retry_allowance",
         "old_scope", "new_scope",
     }
     internal_fields = {
@@ -4157,6 +4160,16 @@ def _full_auto_public_comparison(
             "additional_calls_total", "additional_calls_per_take",
             "new_executable_remaining", "new_pending_take_remaining",
         }
+        or type(comparison.get("image_retry_allowance")) is not dict
+        or set(comparison["image_retry_allowance"]) != {
+            "initial_image_attempts_total", "previous_retry_grants",
+            "image_attempts_consumed", "authorized_image_attempts_total",
+            "authorized_image_attempts_remaining", "retry_failed_shot_ids",
+            "unknown_outcome_shot_ids", "unknown_attempt_ids",
+            "additional_if_retry_failed", "additional_if_accept_unknown_outcome_risk",
+            "authorized_total_after_retry_failed", "authorized_total_after_unknown_risk",
+            "authorized_total_after_both",
+        }
         or type(comparison.get("old_scope")) is not dict
         or set(comparison["old_scope"]) != {
             "summary", "scope_digest", "authorization_expires_at",
@@ -4200,6 +4213,59 @@ def _full_auto_public_comparison(
         or allowance["additional_calls_per_take"] != 0
         or allowance["new_executable_remaining"] != allowance["old_executable_remaining"]
         or allowance["new_pending_take_remaining"] != allowance["old_pending_take_remaining"]
+    ):
+        raise invalid()
+
+    image_retry_allowance = comparison["image_retry_allowance"]
+    nonnegative_fields = (
+        "initial_image_attempts_total", "previous_retry_grants",
+        "image_attempts_consumed", "authorized_image_attempts_total",
+        "authorized_image_attempts_remaining", "additional_if_retry_failed",
+        "additional_if_accept_unknown_outcome_risk", "authorized_total_after_retry_failed",
+        "authorized_total_after_unknown_risk", "authorized_total_after_both",
+    )
+    if any(
+        type(image_retry_allowance[key]) is not int
+        or not 0 <= image_retry_allowance[key] <= 9_007_199_254_740_991
+        for key in nonnegative_fields
+    ):
+        raise invalid()
+    failed_ids = image_retry_allowance["retry_failed_shot_ids"]
+    unknown_shot_ids = image_retry_allowance["unknown_outcome_shot_ids"]
+    unknown_attempt_ids = image_retry_allowance["unknown_attempt_ids"]
+    if (
+        type(failed_ids) is not list
+        or any(type(value) is not int or value <= 0 for value in failed_ids)
+        or len(failed_ids) != len(set(failed_ids))
+        or type(unknown_shot_ids) is not list
+        or any(type(value) is not int or value <= 0 for value in unknown_shot_ids)
+        or len(unknown_shot_ids) != len(set(unknown_shot_ids))
+        or type(unknown_attempt_ids) is not list
+        or any(type(value) is not str or not re.fullmatch(r"[0-9a-f]{32}", value) for value in unknown_attempt_ids)
+        or len(unknown_attempt_ids) != len(set(unknown_attempt_ids))
+        or len(unknown_shot_ids) != len(unknown_attempt_ids)
+        or set(failed_ids).intersection(unknown_shot_ids)
+        or image_retry_allowance["authorized_image_attempts_total"] != (
+            image_retry_allowance["initial_image_attempts_total"]
+            + image_retry_allowance["previous_retry_grants"]
+        )
+        or image_retry_allowance["authorized_image_attempts_remaining"] != max(
+            0,
+            image_retry_allowance["authorized_image_attempts_total"]
+            - image_retry_allowance["image_attempts_consumed"],
+        )
+        or image_retry_allowance["additional_if_retry_failed"] != len(failed_ids)
+        or image_retry_allowance["additional_if_accept_unknown_outcome_risk"] != len(unknown_attempt_ids)
+        or image_retry_allowance["authorized_total_after_retry_failed"] != (
+            image_retry_allowance["authorized_image_attempts_total"] + len(failed_ids)
+        )
+        or image_retry_allowance["authorized_total_after_unknown_risk"] != (
+            image_retry_allowance["authorized_image_attempts_total"] + len(unknown_attempt_ids)
+        )
+        or image_retry_allowance["authorized_total_after_both"] != (
+            image_retry_allowance["authorized_image_attempts_total"]
+            + len(failed_ids) + len(unknown_attempt_ids)
+        )
     ):
         raise invalid()
 
@@ -4282,6 +4348,7 @@ def _full_auto_public_comparison(
         "renewal_lifetime_seconds": lifetime,
         "comparison_issued_at": issued,
         "assistant_allowance": allowance,
+        "image_retry_allowance": image_retry_allowance,
         "reservation_counts_digest": comparison["_reservation_counts_digest"],
     })
     if expected_comparison_digest != comparison["scope_digest"]:
@@ -4296,6 +4363,7 @@ def _full_auto_public_comparison(
         "comparison_issued_at": issued,
         "changed_fields": list(comparison["changed_fields"]),
         "assistant_allowance": allowance,
+        "image_retry_allowance": image_retry_allowance,
         "old_scope": scopes["old_scope"],
         "new_scope": scopes["new_scope"],
     }
@@ -4388,16 +4456,51 @@ async def resume_scoped_full_auto_run(
             "SELECT state, cancel_intent FROM full_auto_run WHERE run_id = ? AND session_id = ?",
             run_id, sid,
         )
+        replay = resource_full_auto.retry_action_replay(
+            run_id, p.request_id, p.expected_run_revision, p.expected_plan_revision,
+            expected_session_id=sid,
+            scope_digest=p.scope_digest,
+            comparison_issued_at=p.comparison_issued_at,
+            accept_changed_scope=p.accept_changed_scope,
+            retry_failed_shots=p.retry_failed_shots,
+            accept_unknown_outcome_risk=p.accept_unknown_outcome_risk,
+        )
+        if replay is not None:
+            if replay.view.get("state") in {"active", "waiting_authoring", "waiting_runner"}:
+                _schedule_full_auto_run(run_id)
+            return JSONResponse(content=replay.view, status_code=200)
         cancellation_reconciliation = (
             saved is not None and bool(saved["cancel_intent"])
             and saved["state"] in {"blocked", "cancel_requested"}
         )
+        if cancellation_reconciliation and (
+            p.retry_failed_shots or p.accept_unknown_outcome_risk
+        ):
+            raise resource_full_auto.FullAutoRunError(
+                409, "cancel_reconciliation_required",
+                "Pending cancellation must settle before a Full Auto retry can start.",
+            )
+        unknown_retry_evidence = None
+        if p.accept_unknown_outcome_risk:
+            status = resource_full_auto.public_run_status(sid, run_id)
+            attempt_ids = status["retry_control"]["unknown_attempt_ids"]
+            unknown_retry_evidence = await runner.check_unknown_retry_queue(
+                sid, run_id, attempt_ids,
+                request_id=p.request_id,
+                expected_run_revision=p.expected_run_revision,
+                expected_plan_revision=p.expected_plan_revision,
+                scope_digest=p.scope_digest,
+                comparison_issued_at=p.comparison_issued_at,
+            )
         result = resource_full_auto.resume_run(
             run_id, p.request_id, p.expected_run_revision,
             p.expected_plan_revision, eligibility=None,
             scope_digest=p.scope_digest,
             comparison_issued_at=p.comparison_issued_at,
             accept_changed_scope=p.accept_changed_scope,
+            retry_failed_shots=p.retry_failed_shots,
+            accept_unknown_outcome_risk=p.accept_unknown_outcome_risk,
+            unknown_retry_evidence=unknown_retry_evidence,
             config=lambda: CONFIG,
             defer_claim=not cancellation_reconciliation,
             expected_session_id=sid,
@@ -9717,8 +9820,13 @@ def _require_usable_reference(session: dict) -> None:
 
 @app.post("/api/sessions/{sid}/retry")
 def retry_failed(sid: int):
-    count = runner.retry(sid)
-    return {"pending": count}
+    try:
+        count = runner.retry(sid)
+        return {"pending": count}
+    except resource_full_auto.FullAutoRunError as exc:
+        return _stable_error(
+            exc.status_code, exc.code, exc.message, current=exc.current_run,
+        )
 
 
 @app.post("/api/sessions/{sid}/cancel")

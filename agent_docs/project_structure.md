@@ -120,8 +120,10 @@ Verified baseline from the repository layout and application entry points.
   POST. For an attempt requiring reconciliation, missing, conflicting,
   duplicate, or prior-epoch evidence blocks; exhausted probes report
   `comfy_unavailable`. Disabled planning or expired authorization preserves
-  settled outputs and blocks remaining work. Explicit retries, external queue
-  policy, and rollback remain unfinished. The journal is scoped to Full Auto;
+  settled outputs and blocks remaining work. Explicit journaled-attempt retries
+  use quote-bound Full Auto Resume controls documented in `docs/sessions.md`;
+  external queue policy and rollback tooling remain unfinished. The journal is
+  scoped to Full Auto;
   manual reference/guide handling and locked-file move retries remain covered.
   Internal review and policy approval
   validate current snapshots, conflicts, placeholders, adaptations, drift, and

@@ -114,7 +114,11 @@ leaves blocked intent; repeated Cancel does not poll. Explicit Resume uses
 read-only remote reconciliation and local settlement, even after authorization
 expiry or feature disablement; it never activates or dispatches work. Eligible
 continuation reuses shot IDs and restores only linked targets without an
-execution attempt. Retry of attempted shots remains unfinished; see
+execution attempt. Journaled attempt retries are explicit Resume controls: they
+reuse linked shot IDs, require a fresh scope quote, and require separate
+duplicate-work risk acceptance plus a current queue check for unknown outcomes.
+The legacy session retry route refuses Full Auto-linked shots. These controls
+are backend-only; no Full Auto control UI is available. See
 [Full Auto status and controls](docs/sessions.md#full-auto-status-and-controls).
 The backend-only all-target review gate checks current prepared evidence
 for Full Auto approval and new submissions: unresolved review conflicts,
@@ -197,10 +201,10 @@ missing, malformed, mismatched, duplicate, or prior-epoch evidence leaves the
 run blocked; exhausted remote-read probes report `comfy_unavailable`. If
 resource planning is disabled or authorization has expired, settled outputs are
 retained and remaining new work stays blocked.
-A stale owner stops subsequent writes and dispatches. Explicit retry of attempted
-shots, external queue policy, the profile editor, and selection/consent UI remain
-unfinished. The existing manual workflow remains available for sessions without
-a nonterminal Full Auto owner.
+A stale owner stops subsequent writes and dispatches. External queue policy,
+rollback tooling, the profile editor, and selection/consent UI remain unfinished.
+The existing manual workflow remains available for sessions without a
+nonterminal Full Auto owner.
 While a run is nonterminal or its work is unresolved, supported DELETE routes
 for its session, linked shots, model, or workflow return `409 full_auto_in_use`
 with affected session IDs; Cancel the run and wait for settlement before

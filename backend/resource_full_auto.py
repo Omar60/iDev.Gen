@@ -40,6 +40,7 @@ _RUN_CLAIM_KEY = secrets.token_bytes(32)
 _RUNNER_CLAIM_KEY = secrets.token_bytes(32)
 _MANUAL_EDIT_CLAIM_KEY = secrets.token_bytes(32)
 _ASSISTANT_SLOT_CLAIM_KEY = secrets.token_bytes(32)
+_UNKNOWN_RETRY_EVIDENCE_KEY = secrets.token_bytes(32)
 _LOCAL_ASSISTANT_DISPATCHES: set["AssistantDispatchFence"] = set()
 _LOCAL_ASSISTANT_DISPATCHES_LOCK = threading.Lock()
 _SUPPORTED_AUTHORIZATION_VERSION = 1
@@ -301,6 +302,27 @@ class RunActionResult:
 
 
 @dataclass(frozen=True)
+class UnknownRetryEvidence:
+    """Server-observed current queue evidence for one explicitly risked attempt."""
+
+    attempt_id: str
+    queue_snapshot_digest: str
+    capability_evidence_digest: str
+    observed_at: str
+    run_id: str = ""
+    session_id: int = 0
+    shot_id: int = 0
+    request_id: str = ""
+    expected_run_revision: int = 0
+    expected_plan_revision: int = 0
+    acceptance_epoch: int = 0
+    scope_digest: str = ""
+    comparison_issued_at: str = ""
+    attempt_identity_digest: str = ""
+    _signature: str = field(default="", repr=False, compare=False)
+
+
+@dataclass(frozen=True)
 class ResumeEligibility:
     """Backend-computed facts required before a run can continue."""
 
@@ -399,6 +421,73 @@ def run_lease_deadline(started_at: str | None = None) -> str:
 
 def _digest(value: dict) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _unknown_retry_attempt_identity(attempt: dict) -> str:
+    fields = (
+        "attempt_id", "run_id", "session_id", "shot_id", "attempt_number",
+        "run_epoch", "run_fencing_token", "runner_fencing_token", "seed",
+        "filename_prefix", "graph_digest", "client_prompt_id", "client_id",
+        "capability_evidence_json", "dispatch_state", "completion_state",
+    )
+    return _digest({name: attempt.get(name) for name in fields})
+
+
+def _unknown_retry_evidence_payload(evidence: UnknownRetryEvidence) -> bytes:
+    return _canonical_json({
+        "purpose": "full-auto-unknown-retry-queue-proof-v1",
+        "attempt_id": evidence.attempt_id,
+        "queue_snapshot_digest": evidence.queue_snapshot_digest,
+        "capability_evidence_digest": evidence.capability_evidence_digest,
+        "observed_at": evidence.observed_at,
+        "run_id": evidence.run_id,
+        "session_id": evidence.session_id,
+        "shot_id": evidence.shot_id,
+        "request_id": evidence.request_id,
+        "expected_run_revision": evidence.expected_run_revision,
+        "expected_plan_revision": evidence.expected_plan_revision,
+        "acceptance_epoch": evidence.acceptance_epoch,
+        "scope_digest": evidence.scope_digest,
+        "comparison_issued_at": evidence.comparison_issued_at,
+        "attempt_identity_digest": evidence.attempt_identity_digest,
+    }).encode("utf-8")
+
+
+def _make_unknown_retry_evidence(
+    attempt: dict,
+    *,
+    queue_snapshot_digest: str,
+    capability_evidence_digest: str,
+    observed_at: str,
+    request_id: str,
+    expected_run_revision: int,
+    expected_plan_revision: int,
+    scope_digest: str,
+    comparison_issued_at: str,
+) -> UnknownRetryEvidence:
+    """Seal one queue observation to its backend-loaded run and retry identities."""
+    unsigned = UnknownRetryEvidence(
+        attempt_id=attempt["attempt_id"],
+        queue_snapshot_digest=queue_snapshot_digest,
+        capability_evidence_digest=capability_evidence_digest,
+        observed_at=observed_at,
+        run_id=attempt["run_id"],
+        session_id=int(attempt["session_id"]),
+        shot_id=int(attempt["shot_id"]),
+        request_id=request_id,
+        expected_run_revision=expected_run_revision,
+        expected_plan_revision=expected_plan_revision,
+        acceptance_epoch=int(attempt["acceptance_epoch"]),
+        scope_digest=scope_digest,
+        comparison_issued_at=comparison_issued_at,
+        attempt_identity_digest=_unknown_retry_attempt_identity(attempt),
+    )
+    signature = hmac.new(
+        _UNKNOWN_RETRY_EVIDENCE_KEY,
+        _unknown_retry_evidence_payload(unsigned),
+        hashlib.sha256,
+    ).hexdigest()
+    return UnknownRetryEvidence(**{**unsigned.__dict__, "_signature": signature})
 
 
 def _positive_int(value: object, field_name: str) -> int:
@@ -1379,13 +1468,24 @@ def _restore_unstarted_full_auto_shots(run: dict, timestamp: str) -> int:
     )
 
 
-def unresolved_work_count(session_id: int, run_id: str) -> int:
+def unresolved_work_count(
+    session_id: int,
+    run_id: str,
+    *,
+    ignored_shot_ids: set[int] | frozenset[int] = frozenset(),
+    allow_running_session: bool = False,
+) -> int:
     """Count local owned work conservatively; a linked shot may have dispatched."""
+    if type(allow_running_session) is not bool or any(
+        type(shot_id) is not int or shot_id <= 0 for shot_id in ignored_shot_ids
+    ):
+        raise ValueError("Invalid unresolved-work filter")
+    ignored = set(ignored_shot_ids)
     count = 0
     session = db.one("SELECT status FROM session WHERE id = ?", session_id)
     if session is None:
         return 1
-    if session["status"] == "running":
+    if session["status"] == "running" and not allow_running_session:
         count += 1
     operations = db.q(
         "SELECT state FROM authoring_operation WHERE session_id = ? AND full_auto_run_id = ?",
@@ -1415,7 +1515,8 @@ def unresolved_work_count(session_id: int, run_id: str) -> int:
     # A failed status alone is ambiguous. Its own durable failed attempt is a
     # settlement receipt; every other failed shot remains conservative.
     count += sum(
-        item["status"] not in {"done", "cancelled"}
+        int(item["id"]) not in ignored
+        and item["status"] not in {"done", "cancelled"}
         and not (
             item["status"] == "failed" and item["attempt_run_id"] == run_id
             and item["attempt_state"] == "failed"
@@ -1441,7 +1542,8 @@ def unresolved_work_count(session_id: int, run_id: str) -> int:
             count += sum(
                 shot["id"] is None or shot["session_id"] != session_id
                 or (
-                    shot["status"] not in {"done", "cancelled"}
+                    int(shot["id"]) not in ignored
+                    and shot["status"] not in {"done", "cancelled"}
                     and not (
                         shot["status"] == "failed"
                         and shot["attempt_run_id"] == run_id
@@ -1455,10 +1557,189 @@ def unresolved_work_count(session_id: int, run_id: str) -> int:
     return count
 
 
+_UNKNOWN_OUTCOME_RETRY_WARNING = (
+    "The prior request may have been accepted even though it is absent from the current queue. "
+    "Retrying can create duplicate work. The server rechecks the reachable queue before accepting."
+)
+
+
+def _retry_candidates(session_id: int, run_id: str) -> dict:
+    """Return only current linked-shot retry candidates and their latest attempt IDs."""
+    rows = db.q(
+        """SELECT sh.id AS shot_id, sh.status AS shot_status,
+                  attempt.attempt_id, attempt.run_id AS attempt_run_id,
+                  attempt.dispatch_state, attempt.completion_state
+           FROM full_auto_submission_receipt receipt
+           JOIN shot sh ON sh.id = receipt.shot_id
+           LEFT JOIN full_auto_execution_attempt attempt
+             ON attempt.attempt_id = (
+                 SELECT latest.attempt_id FROM full_auto_execution_attempt latest
+                 WHERE latest.shot_id = sh.id
+                 ORDER BY latest.attempt_number DESC LIMIT 1
+             )
+           WHERE receipt.run_id = ? AND sh.session_id = ?
+           ORDER BY receipt.target_index""",
+        run_id, session_id,
+    )
+    known: list[int] = []
+    unknown: list[dict] = []
+    for item in rows:
+        if (
+            item["shot_status"] in {"failed", "cancelled"}
+            and item["attempt_id"] is not None
+            and item["attempt_run_id"] == run_id
+            and item["completion_state"] == "failed"
+            and db.one(
+                "SELECT 1 FROM full_auto_attempt_retry_authorization WHERE attempt_id = ?",
+                item["attempt_id"],
+            ) is None
+        ):
+            known.append(int(item["shot_id"]))
+        elif (
+            item["shot_status"] != "done"
+            and item["attempt_id"] is not None
+            and item["attempt_run_id"] == run_id
+            and item["completion_state"] == "pending"
+            and item["dispatch_state"] in {"intent", "outcome_unknown"}
+            and db.one(
+                "SELECT 1 FROM full_auto_attempt_risk_acceptance WHERE attempt_id = ?",
+                item["attempt_id"],
+            ) is None
+        ):
+            unknown.append({
+                "shot_id": int(item["shot_id"]),
+                "attempt_id": item["attempt_id"],
+            })
+    return {"failed_shot_ids": known, "unknown_attempts": unknown}
+
+
+def _image_retry_allowance(
+    run_id: str,
+    initial_total: int,
+    *,
+    candidates: dict | None = None,
+) -> dict:
+    """Project cumulative image capacity and the exact currently retryable targets."""
+    granted = db.one(
+        """SELECT COUNT(*) AS n FROM (
+               SELECT attempt_id FROM full_auto_attempt_retry_authorization WHERE run_id = ?
+               UNION
+               SELECT attempt_id FROM full_auto_attempt_risk_acceptance WHERE run_id = ?
+           )""",
+        run_id, run_id,
+    )
+    consumed = db.one(
+        "SELECT COUNT(*) AS n FROM full_auto_execution_attempt WHERE run_id = ?",
+        run_id,
+    )
+    if candidates is None:
+        run = _require_run(run_id)
+        candidates = _retry_candidates(int(run["session_id"]), run_id)
+    failed_ids = candidates["failed_shot_ids"]
+    unknown_attempts = candidates["unknown_attempts"]
+    unknown_shot_ids = [item["shot_id"] for item in unknown_attempts]
+    unknown_attempt_ids = [item["attempt_id"] for item in unknown_attempts]
+    previous_grants = int(granted["n"])
+    attempts_consumed = int(consumed["n"])
+    authorized_total = initial_total + previous_grants
+    failed_increment = len(failed_ids)
+    unknown_increment = len(unknown_attempts)
+    return {
+        "initial_image_attempts_total": initial_total,
+        "previous_retry_grants": previous_grants,
+        "image_attempts_consumed": attempts_consumed,
+        "authorized_image_attempts_total": authorized_total,
+        "authorized_image_attempts_remaining": max(0, authorized_total - attempts_consumed),
+        "retry_failed_shot_ids": failed_ids,
+        "unknown_outcome_shot_ids": unknown_shot_ids,
+        "unknown_attempt_ids": unknown_attempt_ids,
+        "additional_if_retry_failed": failed_increment,
+        "additional_if_accept_unknown_outcome_risk": unknown_increment,
+        "authorized_total_after_retry_failed": authorized_total + failed_increment,
+        "authorized_total_after_unknown_risk": authorized_total + unknown_increment,
+        "authorized_total_after_both": authorized_total + failed_increment + unknown_increment,
+    }
+
+
+def unknown_attempts_for_retry(
+    session_id: int,
+    run_id: str,
+    attempt_ids: list[str],
+) -> list[dict]:
+    """Load current unknown attempts for a queue probe, rejecting stale or cancelled work."""
+    if (
+        not isinstance(attempt_ids, list)
+        or not attempt_ids
+        or any(type(value) is not str or not re.fullmatch(r"[0-9a-f]{32}", value) for value in attempt_ids)
+        or len(attempt_ids) != len(set(attempt_ids))
+    ):
+        raise FullAutoRunError(409, "retry_targets_changed", "The unknown retry targets changed; reload status.")
+    run = _run_row(run_id)
+    if run is None or int(run["session_id"]) != session_id:
+        raise FullAutoRunError(404, "full_auto_run_not_found", "Full Auto run not found.")
+    if (
+        bool(run["cancel_intent"]) and run["state"] in {"blocked", "cancel_requested"}
+    ):
+        raise FullAutoRunError(
+            409, "cancel_reconciliation_required",
+            "Pending cancellation must settle before an unknown outcome can be retried.",
+        )
+    if run["state"] not in {"blocked", "cancelled", "failed", "completed_with_errors"}:
+        raise FullAutoRunError(409, "run_not_resumable", "The Full Auto run cannot be retried in its current state.")
+    candidates = _retry_candidates(session_id, run_id)["unknown_attempts"]
+    if {item["attempt_id"] for item in candidates} != set(attempt_ids):
+        raise FullAutoRunError(409, "retry_targets_changed", "The unknown retry targets changed; reload status.")
+    placeholders = ",".join("?" for _ in attempt_ids)
+    rows = db.q(
+        f"SELECT * FROM full_auto_execution_attempt WHERE attempt_id IN ({placeholders}) ORDER BY shot_id",
+        *attempt_ids,
+    )
+    if len(rows) != len(attempt_ids) or any(
+        item["run_id"] != run_id or int(item["session_id"]) != session_id
+        or item["completion_state"] != "pending"
+        or item["dispatch_state"] not in {"intent", "outcome_unknown"}
+        for item in rows
+    ):
+        raise FullAutoRunError(409, "retry_targets_changed", "The unknown retry targets changed; reload status.")
+    acceptance_epoch = int(run["epoch"]) + (1 if run["state"] in _TERMINAL else 0)
+    return [{**item, "acceptance_epoch": acceptance_epoch} for item in rows]
+
+
+def retry_action_replay(
+    run_id: str,
+    request_id: str,
+    expected_run_revision: int,
+    expected_plan_revision: int,
+    *,
+    expected_session_id: int,
+    scope_digest: str | None = None,
+    comparison_issued_at: str | None = None,
+    accept_changed_scope: bool = False,
+    retry_failed_shots: bool = False,
+    accept_unknown_outcome_risk: bool = False,
+) -> RunActionResult | None:
+    """Return a persisted Resume replay before any queue probe or other I/O."""
+    _body, request_digest = _action_fields(
+        "resume", run_id, request_id, expected_run_revision, expected_plan_revision,
+        scope_digest=scope_digest, comparison_issued_at=comparison_issued_at,
+        accept_changed_scope=accept_changed_scope,
+        retry_failed_shots=retry_failed_shots,
+        accept_unknown_outcome_risk=accept_unknown_outcome_risk,
+    )
+    with db.transaction():
+        _check_run_session_identity(run_id, expected_session_id)
+        return _replay_action(run_id, request_id, request_digest, "resume")
+
+
 def _run_deletion_protected(row: dict) -> bool:
-    return row["state"] not in _TERMINAL or unresolved_work_count(
-        int(row["session_id"]), row["run_id"],
-    ) > 0
+    return (
+        row["state"] not in _TERMINAL
+        or unresolved_work_count(int(row["session_id"]), row["run_id"]) > 0
+        or db.one(
+            "SELECT 1 FROM full_auto_attempt_risk_acceptance WHERE run_id = ? LIMIT 1",
+            row["run_id"],
+        ) is not None
+    )
 
 
 def _deletion_grants(run_id: str) -> list[dict] | None:
@@ -1737,11 +2018,12 @@ def public_run_status(session_id: int, run_id: str) -> dict:
     cancelled = [shot_id for shot_id in submitted_ids if shot_status[shot_id] == "cancelled"]
     assistant_total = limits["assistant_calls_total"]
     assistant_per_take = limits["assistant_calls_per_take"]
-    image_total = limits["image_attempts_total"]
-    image_per_take = limits["image_attempts_per_take"]
-    admission = db.one(
-        "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", run_id,
+    retry_candidates = _retry_candidates(session_id, run_id)
+    image_allowance = _image_retry_allowance(
+        run_id, limits["image_attempts_total"], candidates=retry_candidates,
     )
+    image_total = image_allowance["authorized_image_attempts_total"]
+    image_per_take = limits["image_attempts_per_take"]
     pending_assistant_take = next(
         (take_id for take_id in authorized_targets if take_id not in started_targets),
         None,
@@ -1756,7 +2038,7 @@ def public_run_status(session_id: int, run_id: str) -> dict:
     assistant_budget_blocked = (
         pending_assistant_take is not None and assistant_executable_remaining == 0
     )
-    image_remaining = max(0, image_total) if not submitted_ids and admission is None else 0
+    image_remaining = image_allowance["authorized_image_attempts_remaining"]
     blocker_code = row["blocker_code"]
     authority_issue = _current_authority_issue(row, db.now())
     unresolved = unresolved_work_count(session_id, run_id)
@@ -1777,6 +2059,25 @@ def public_run_status(session_id: int, run_id: str) -> dict:
     cancelable = state in _NONTERMINAL
     reconcile_only = bool(row["cancel_intent"]) and state in {"blocked", "cancel_requested"}
     resumable_state = state in {"blocked", "cancelled", "failed", "completed_with_errors"}
+    retry_state_available = (
+        resumable_state and state != "succeeded"
+        and not (bool(row["cancel_intent"]) and state in {"blocked", "cancel_requested"})
+    )
+    live_run_lease = row["lease_expires_at"] is not None and _timestamp(
+        row["lease_expires_at"], field_name="run lease",
+    ) > _timestamp(db.now(), field_name="current time")
+    runner_owner = db.one(
+        "SELECT owner_kind, session_id, run_id, lease_expires_at "
+        "FROM global_runner_claim WHERE singleton = 1",
+    )
+    live_runner_lease = (
+        runner_owner is not None and runner_owner["owner_kind"] is not None
+        and int(runner_owner["session_id"] or 0) == session_id
+        and runner_owner["run_id"] in {None, run_id}
+        and runner_owner["lease_expires_at"] is not None
+        and _timestamp(runner_owner["lease_expires_at"], field_name="runner lease")
+        > _timestamp(db.now(), field_name="current time")
+    )
     policy_is_supported = summary.get("policy_version") == _SUPPORTED_POLICY_VERSION
     authority_repairable = authority_issue not in {
         "authorization_invalid", "policy_changed", "dependency_missing",
@@ -1825,6 +2126,9 @@ def public_run_status(session_id: int, run_id: str) -> dict:
             "assistant_calls_total": assistant_total,
             "assistant_calls_per_take": assistant_per_take,
             "assistant_calls_remaining_lower_bound": assistant_remaining,
+            "image_attempts_initial_total": image_allowance["initial_image_attempts_total"],
+            "image_retry_grants": image_allowance["previous_retry_grants"],
+            "image_attempts_consumed": image_allowance["image_attempts_consumed"],
             "image_attempts_total": image_total,
             "image_attempts_per_take": image_per_take,
             "image_attempts_remaining_lower_bound": image_remaining,
@@ -1835,6 +2139,30 @@ def public_run_status(session_id: int, run_id: str) -> dict:
         "can_cancel": cancelable,
         "can_resume": can_resume,
         "resume_action": "reconcile_cancellation" if reconcile_only else "resume",
+        "retry_control": {
+            "failed_shot_ids": retry_candidates["failed_shot_ids"],
+            "unknown_outcome_shot_ids": [
+                item["shot_id"] for item in retry_candidates["unknown_attempts"]
+            ],
+            "unknown_attempt_ids": [
+                item["attempt_id"] for item in retry_candidates["unknown_attempts"]
+            ],
+            "can_retry_failed_shots": bool(
+                retry_candidates["failed_shot_ids"] and retry_state_available
+                and not live_run_lease and not live_runner_lease
+                and authority_repairable and policy_is_supported and enabled
+            ),
+            "can_accept_unknown_outcome_risk": bool(
+                retry_candidates["unknown_attempts"] and retry_state_available
+                and not live_run_lease and not live_runner_lease
+                and authority_repairable and policy_is_supported and enabled
+            ),
+            "unknown_outcome_warning": (
+                _UNKNOWN_OUTCOME_RETRY_WARNING
+                if retry_candidates["unknown_attempts"] else None
+            ),
+            "image_retry_allowance": image_allowance,
+        },
     })
     return view
 
@@ -4165,19 +4493,55 @@ def begin_execution_attempt(
         )
         if shot is None or int(shot["session_id"]) != claim.session_id or shot["status"] != "running":
             raise FullAutoRunError(409, "run_owner_stale", "The Full Auto shot is no longer ready to dispatch.")
+        grant = current_authorization(claim.run_id, session_id=claim.session_id)
+        _summary, limits = _validate_status_authorization(grant["authorization"])
+        image_allowance = _image_retry_allowance(
+            claim.run_id, limits["image_attempts_total"],
+        )
+        if image_allowance["image_attempts_consumed"] >= image_allowance["authorized_image_attempts_total"]:
+            raise FullAutoRunError(
+                409, "budget_exhausted",
+                "The authorized cumulative image-attempt allowance is exhausted.",
+            )
         previous = db.one(
-            "SELECT dispatch_state, completion_state FROM full_auto_execution_attempt "
+            "SELECT attempt_id, run_id, dispatch_state, completion_state FROM full_auto_execution_attempt "
             "WHERE shot_id = ? ORDER BY attempt_number DESC LIMIT 1",
             shot_id,
         )
-        if previous is not None and (
-            previous["dispatch_state"] in {"intent", "outcome_unknown"}
-            or previous["completion_state"] in {"pending", "output_available"}
-        ):
-            raise FullAutoRunError(
-                409, "execution_outcome_unknown",
-                "An earlier generation attempt has not reached a verified outcome.",
+        if previous is not None:
+            if previous["completion_state"] == "completed":
+                raise FullAutoRunError(
+                    409, "successful_shot_not_retryable",
+                    "A successful Full Auto shot cannot be queued again.",
+                )
+            prior_unsettled = (
+                previous["dispatch_state"] in {"intent", "outcome_unknown"}
+                or previous["completion_state"] in {"pending", "output_available"}
             )
+            risk_accepted = db.one(
+                "SELECT 1 FROM full_auto_attempt_risk_acceptance WHERE attempt_id = ?",
+                previous["attempt_id"],
+            ) is not None
+            if prior_unsettled and not risk_accepted:
+                raise FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "An earlier generation attempt has not reached a verified outcome.",
+                )
+            if (
+                not prior_unsettled
+                and previous["completion_state"] == "failed"
+                and not risk_accepted
+            ):
+                authorized_retry = db.one(
+                    """SELECT 1 FROM full_auto_attempt_retry_authorization
+                       WHERE attempt_id = ? AND run_id = ? AND run_epoch = ?""",
+                    previous["attempt_id"], claim.run_id, claim.epoch,
+                )
+                if authorized_retry is None:
+                    raise FullAutoRunError(
+                        409, "execution_retry_not_authorized",
+                        "A failed Full Auto attempt requires explicit retry consent.",
+                    )
         attempt_number = int(db.one(
             "SELECT COALESCE(MAX(attempt_number), 0) + 1 AS n "
             "FROM full_auto_execution_attempt WHERE shot_id = ?", shot_id,
@@ -5272,6 +5636,8 @@ def _action_fields(
     scope_digest: str | None = None,
     comparison_issued_at: str | None = None,
     accept_changed_scope: bool = False,
+    retry_failed_shots: bool = False,
+    accept_unknown_outcome_risk: bool = False,
 ) -> tuple[dict, str]:
     if not isinstance(run_id, str) or not run_id:
         raise FullAutoRunError(422, "invalid_control_request", "run_id is required.")
@@ -5285,6 +5651,15 @@ def _action_fields(
     }
     if type(accept_changed_scope) is not bool:
         raise FullAutoRunError(422, "invalid_control_request", "accept_changed_scope must be a boolean.")
+    if type(retry_failed_shots) is not bool or type(accept_unknown_outcome_risk) is not bool:
+        raise FullAutoRunError(422, "invalid_control_request", "Retry consent fields must be booleans.")
+    if (retry_failed_shots or accept_unknown_outcome_risk) and (
+        scope_digest is None or comparison_issued_at is None
+    ):
+        raise FullAutoRunError(
+            422, "retry_comparison_required",
+            "Refresh the Full Auto comparison and include its scope_digest and comparison_issued_at before retrying.",
+        )
     if scope_digest is not None:
         if action != "resume" or not isinstance(scope_digest, str) or not _SHA256.fullmatch(scope_digest):
             raise FullAutoRunError(422, "invalid_control_request", "scope_digest is invalid.")
@@ -5310,7 +5685,14 @@ def _action_fields(
         body["comparison_issued_at"] = comparison_issued_at
     if action == "resume":
         body["accept_changed_scope"] = accept_changed_scope
-    elif scope_digest is not None or comparison_issued_at is not None or accept_changed_scope:
+        if retry_failed_shots:
+            body["retry_failed_shots"] = True
+        if accept_unknown_outcome_risk:
+            body["accept_unknown_outcome_risk"] = True
+    elif (
+        scope_digest is not None or comparison_issued_at is not None
+        or accept_changed_scope or retry_failed_shots or accept_unknown_outcome_risk
+    ):
         raise FullAutoRunError(422, "invalid_control_request", "Scope acceptance is only valid for Resume.")
     return body, _digest(body)
 
@@ -5557,25 +5939,8 @@ def _current_resume_eligibility(
         assistant_remaining = assistant_executable_allowance(
             row["run_id"], pending_assistant_take,
         )["executable_remaining"]
-    image_total = limits["image_attempts_total"]
-    has_submission = bool(db.one(
-        "SELECT 1 FROM full_auto_submission_receipt WHERE run_id = ? LIMIT 1",
-        row["run_id"],
-    ))
-    has_admission = db.one(
-        "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", row["run_id"],
-    ) is not None
-    if (
-        row["state"] == "cancelled" and bool(row["cancel_intent"])
-        and (row["resume_phase"] or row["phase"]) == "execute"
-    ):
-        used_attempts = db.one(
-            "SELECT COUNT(*) AS n FROM full_auto_execution_attempt WHERE run_id = ?",
-            row["run_id"],
-        )
-        image_remaining = max(0, image_total - int(used_attempts["n"]))
-    else:
-        image_remaining = max(0, image_total) if not has_submission and not has_admission else 0
+    image_allowance = _image_retry_allowance(row["run_id"], limits["image_attempts_total"])
+    image_remaining = image_allowance["authorized_image_attempts_remaining"]
     other_operations = db.one(
         """SELECT 1 FROM authoring_operation
            WHERE session_id = ? AND (full_auto_run_id IS NULL OR full_auto_run_id != ?)
@@ -5615,6 +5980,183 @@ def _current_resume_eligibility(
     )
 
 
+def _validate_unknown_retry_evidence(
+    evidence: list[UnknownRetryEvidence] | None,
+    candidates: list[dict],
+    *,
+    run_id: str,
+    session_id: int,
+    request_id: str,
+    run_epoch: int,
+    expected_run_revision: int,
+    expected_plan_revision: int,
+    scope_digest: str,
+    comparison_issued_at: str,
+    timestamp: str,
+) -> list[tuple[UnknownRetryEvidence, str]]:
+    if not isinstance(evidence, list) or not evidence or any(
+        type(item) is not UnknownRetryEvidence for item in evidence
+    ):
+        raise FullAutoRunError(
+            409, "unknown_outcome_evidence_required",
+            "A current backend queue check is required before retrying an unknown outcome.",
+        )
+    attempt_ids = [item["attempt_id"] for item in candidates]
+    supplied_ids = [item.attempt_id for item in evidence]
+    if len(supplied_ids) != len(set(supplied_ids)) or set(supplied_ids) != set(attempt_ids):
+        raise FullAutoRunError(
+            409, "retry_targets_changed", "The unknown retry targets changed; reload status.",
+        )
+    candidate_by_id = {item["attempt_id"]: item for item in candidates}
+    now = _timestamp(timestamp, field_name="current time")
+    values: list[tuple[UnknownRetryEvidence, str]] = []
+    snapshot_digests = set()
+    capability_digests = set()
+    for item in evidence:
+        if (
+            not isinstance(item.attempt_id, str)
+            or not re.fullmatch(r"[0-9a-f]{32}", item.attempt_id)
+            or not isinstance(item.queue_snapshot_digest, str)
+            or not _SHA256.fullmatch(item.queue_snapshot_digest)
+            or not isinstance(item.capability_evidence_digest, str)
+            or not _SHA256.fullmatch(item.capability_evidence_digest)
+        ):
+            raise FullAutoRunError(409, "unknown_outcome_evidence_invalid", "The queue evidence is invalid.")
+        expected_signature = hmac.new(
+            _UNKNOWN_RETRY_EVIDENCE_KEY,
+            _unknown_retry_evidence_payload(item),
+            hashlib.sha256,
+        ).hexdigest()
+        if not isinstance(item._signature, str) or not hmac.compare_digest(
+            expected_signature, item._signature,
+        ):
+            raise FullAutoRunError(
+                409, "unknown_outcome_evidence_untrusted",
+                "The queue evidence was not sealed by the backend queue observer.",
+            )
+        candidate = candidate_by_id.get(item.attempt_id)
+        attempt = db.one(
+            "SELECT * FROM full_auto_execution_attempt WHERE attempt_id = ?",
+            item.attempt_id,
+        )
+        if (
+            candidate is None or attempt is None
+            or attempt["run_id"] != run_id
+            or int(attempt["session_id"]) != session_id
+            or int(attempt["shot_id"]) != int(candidate["shot_id"])
+            or item.run_id != run_id
+            or item.session_id != session_id
+            or item.shot_id != int(candidate["shot_id"])
+            or item.request_id != request_id
+            or item.expected_run_revision != expected_run_revision
+            or item.expected_plan_revision != expected_plan_revision
+            or item.acceptance_epoch != run_epoch
+            or item.scope_digest != scope_digest
+            or item.comparison_issued_at != comparison_issued_at
+            or item.attempt_identity_digest != _unknown_retry_attempt_identity(dict(attempt))
+        ):
+            raise FullAutoRunError(
+                409, "unknown_outcome_evidence_invalid",
+                "The queue evidence does not match the current run, quote, request and attempt identities.",
+            )
+        observed = _timestamp(item.observed_at, field_name="queue observation")
+        if observed > now or now - observed > RUN_LEASE:
+            raise FullAutoRunError(
+                409, "unknown_outcome_evidence_stale",
+                "The queue evidence is stale; check the current queue again.",
+            )
+        snapshot_digests.add(item.queue_snapshot_digest)
+        capability_digests.add(item.capability_evidence_digest)
+        values.append((item, observed.isoformat(timespec="seconds")))
+    if len(snapshot_digests) != 1 or len(capability_digests) != 1:
+        raise FullAutoRunError(409, "unknown_outcome_evidence_invalid", "The queue evidence is inconsistent.")
+    return values
+
+
+def _retry_unsettled_work_count(
+    session_id: int,
+    run_id: str,
+    unknown_shot_ids: set[int],
+) -> int:
+    unstarted_linked_shots = {
+        int(item["shot_id"])
+        for item in db.q(
+            """SELECT receipt.shot_id FROM full_auto_submission_receipt receipt
+               JOIN shot ON shot.id = receipt.shot_id
+               WHERE receipt.run_id = ? AND shot.session_id = ? AND shot.status = 'pending'
+                 AND (
+                     NOT EXISTS (
+                         SELECT 1 FROM full_auto_execution_attempt attempt
+                         WHERE attempt.shot_id = shot.id
+                     )
+                     OR EXISTS (
+                         SELECT 1 FROM full_auto_execution_attempt attempt
+                         JOIN full_auto_attempt_retry_authorization grant_row
+                           ON grant_row.attempt_id = attempt.attempt_id
+                          AND grant_row.run_id = receipt.run_id
+                         WHERE attempt.shot_id = shot.id
+                           AND attempt.run_id = receipt.run_id
+                           AND attempt.attempt_number = (
+                               SELECT MAX(latest.attempt_number)
+                               FROM full_auto_execution_attempt latest
+                               WHERE latest.shot_id = shot.id
+                           )
+                           AND attempt.completion_state = 'failed'
+                     )
+                     OR EXISTS (
+                         SELECT 1 FROM full_auto_execution_attempt attempt
+                         JOIN full_auto_attempt_risk_acceptance risk
+                           ON risk.attempt_id = attempt.attempt_id
+                          AND risk.run_id = receipt.run_id
+                         WHERE attempt.shot_id = shot.id
+                           AND attempt.run_id = receipt.run_id
+                           AND attempt.attempt_number = (
+                               SELECT MAX(latest.attempt_number)
+                               FROM full_auto_execution_attempt latest
+                               WHERE latest.shot_id = shot.id
+                           )
+                     )
+                 )""",
+            run_id, session_id,
+        )
+    }
+    ignored_shot_ids = unknown_shot_ids | unstarted_linked_shots
+    if unknown_shot_ids:
+        running = {
+            int(item["id"])
+            for item in db.q(
+                "SELECT id FROM shot WHERE session_id = ? AND status = 'running'",
+                session_id,
+            )
+        }
+        session = db.one("SELECT status FROM session WHERE id = ?", session_id)
+        if (
+            not running.issubset(unknown_shot_ids)
+            or session is None
+            or session["status"] == "running" and not running
+        ):
+            return unresolved_work_count(session_id, run_id)
+        runner_owner = db.one(
+            "SELECT owner_kind, session_id, run_id, lease_expires_at "
+            "FROM global_runner_claim WHERE singleton = 1",
+        )
+        if (
+            runner_owner is not None
+            and runner_owner["owner_kind"] is not None
+            and int(runner_owner["session_id"] or 0) == session_id
+            and runner_owner["run_id"] in {None, run_id}
+            and runner_owner["lease_expires_at"] is not None
+            and _timestamp(runner_owner["lease_expires_at"], field_name="runner lease")
+            > _timestamp(db.now(), field_name="current time")
+        ):
+            raise FullAutoRunError(409, "run_already_claimed", "The Full Auto runner still owns this session.")
+    return unresolved_work_count(
+        session_id, run_id,
+        ignored_shot_ids=ignored_shot_ids,
+        allow_running_session=bool(unknown_shot_ids),
+    )
+
+
 def resume_run(
     run_id: str,
     request_id: str,
@@ -5625,6 +6167,9 @@ def resume_run(
     scope_digest: str | None = None,
     comparison_issued_at: str | None = None,
     accept_changed_scope: bool = False,
+    retry_failed_shots: bool = False,
+    accept_unknown_outcome_risk: bool = False,
+    unknown_retry_evidence: list[UnknownRetryEvidence] | None = None,
     config: object = None,
     defer_claim: bool = False,
     expected_session_id: int | None = None,
@@ -5635,7 +6180,14 @@ def resume_run(
         "resume", run_id, request_id, expected_run_revision, expected_plan_revision,
         scope_digest=scope_digest, comparison_issued_at=comparison_issued_at,
         accept_changed_scope=accept_changed_scope,
+        retry_failed_shots=retry_failed_shots,
+        accept_unknown_outcome_risk=accept_unknown_outcome_risk,
     )
+    if unknown_retry_evidence is not None and not accept_unknown_outcome_risk:
+        raise FullAutoRunError(
+            422, "invalid_control_request",
+            "Unknown-outcome evidence is valid only with explicit risk acceptance.",
+        )
     if type(defer_claim) is not bool:
         raise FullAutoRunError(422, "invalid_control_request", "defer_claim must be a boolean.")
     timestamp = _now_text(now_text)
@@ -5655,8 +6207,27 @@ def resume_run(
                 raise FullAutoRunError(409, "plan_revision_stale", "The Full Auto run plan changed; reload its current state.")
         else:
             _check_control_cas(row, body["expected_run_revision"], body["expected_plan_revision"])
+        explicit_retry = retry_failed_shots or accept_unknown_outcome_risk
+        if explicit_retry:
+            # The control transaction can wait behind another SQLite writer.
+            # Use a clock read taken after the write lock and CAS are acquired.
+            timestamp = _now_text(None)
+        retry_control_identity = (
+            row["run_id"], int(row["session_id"]), int(row["revision"]),
+            int(row["epoch"]), int(row["fencing_token"]), row["state"],
+            bool(row["cancel_intent"]),
+        )
+        retry_failed_ids: list[int] = []
+        retry_unknown_attempts: list[dict] = []
+        retry_unknown_shot_ids: set[int] = set()
+        validated_unknown_retry_evidence: list[tuple[UnknownRetryEvidence, str]] = []
 
         if row["state"] in {"blocked", "cancel_requested"} and bool(row["cancel_intent"]):
+            if retry_failed_shots or accept_unknown_outcome_risk:
+                raise FullAutoRunError(
+                    409, "cancel_reconciliation_required",
+                    "Pending cancellation must settle before a Full Auto retry can start.",
+                )
             if scope_digest is not None or comparison_issued_at is not None or accept_changed_scope:
                 raise FullAutoRunError(
                     409, "cancel_reconciliation_required",
@@ -5714,7 +6285,7 @@ def resume_run(
             comparison = None
             scope_accepted = False
             next_state = None
-            if scope_digest is not None or eligibility is None:
+            if scope_digest is not None or eligibility is None or explicit_retry:
                 from backend import guided_sessions
 
                 comparison = guided_sessions.compare_full_auto_resume_scope(
@@ -5767,11 +6338,133 @@ def resume_run(
                 eligibility = _current_resume_eligibility(
                     row, comparison, now_text=timestamp,
                 )
-                next_state = _resume_eligibility(
-                    row, eligibility,
-                    current_plan_revision=int(comparison["plan_revision"]),
-                    scope_accepted=scope_accepted,
-                )
+                if explicit_retry:
+                    phase = row["resume_phase"] or row["phase"]
+                    if phase != "execute":
+                        raise FullAutoRunError(
+                            409, "retry_phase_invalid",
+                            "Only an admitted Full Auto execution can retry existing shots.",
+                        )
+                    candidates = _retry_candidates(int(row["session_id"]), run_id)
+                    quoted_retry_allowance = comparison.get("image_retry_allowance")
+                    if not isinstance(quoted_retry_allowance, dict):
+                        raise FullAutoRunError(
+                            409, "resume_comparison_invalid",
+                            "The image retry allowance could not be verified.",
+                        )
+                    if retry_failed_shots:
+                        retry_failed_ids = candidates["failed_shot_ids"]
+                        if (
+                            not retry_failed_ids
+                            or retry_failed_ids != quoted_retry_allowance.get("retry_failed_shot_ids")
+                        ):
+                            raise FullAutoRunError(
+                                409, "retry_targets_changed",
+                                "The failed retry targets changed; refresh the comparison.",
+                            )
+                    if accept_unknown_outcome_risk:
+                        retry_unknown_attempts = candidates["unknown_attempts"]
+                        unknown_ids = [item["attempt_id"] for item in retry_unknown_attempts]
+                        unknown_shots = [item["shot_id"] for item in retry_unknown_attempts]
+                        if (
+                            not retry_unknown_attempts
+                            or unknown_ids != quoted_retry_allowance.get("unknown_attempt_ids")
+                            or unknown_shots != quoted_retry_allowance.get("unknown_outcome_shot_ids")
+                        ):
+                            raise FullAutoRunError(
+                                409, "retry_targets_changed",
+                                "The unknown retry targets changed; refresh the comparison.",
+                            )
+                        _validate_unknown_retry_evidence(
+                            unknown_retry_evidence, retry_unknown_attempts,
+                            run_id=run_id, session_id=int(row["session_id"]),
+                            request_id=request_id,
+                            run_epoch=int(row["epoch"]) + (1 if row["state"] in _TERMINAL else 0),
+                            expected_run_revision=body["expected_run_revision"],
+                            expected_plan_revision=body["expected_plan_revision"],
+                            scope_digest=scope_digest,
+                            comparison_issued_at=comparison_issued_at,
+                            timestamp=timestamp,
+                        )
+                        retry_unknown_shot_ids = {
+                            int(item["shot_id"]) for item in retry_unknown_attempts
+                        }
+                    elif unknown_retry_evidence is not None:
+                        raise FullAutoRunError(
+                            422, "invalid_control_request",
+                            "Unknown-outcome evidence is valid only with explicit risk acceptance.",
+                        )
+                    if _retry_unsettled_work_count(
+                        int(row["session_id"]), run_id, retry_unknown_shot_ids,
+                    ) != 0:
+                        raise FullAutoRunError(
+                            409, "run_work_unsettled",
+                            "Other Full Auto work must settle before these shots can be retried.",
+                        )
+                    retry_increment = (
+                        (len(retry_failed_ids) if retry_failed_shots else 0)
+                        + (len(retry_unknown_attempts) if accept_unknown_outcome_risk else 0)
+                    )
+                    if retry_increment <= 0:
+                        raise FullAutoRunError(
+                            409, "retry_targets_changed",
+                            "No currently eligible retry targets match the displayed comparison.",
+                        )
+                    quote_increment = (
+                        (quoted_retry_allowance["additional_if_retry_failed"] if retry_failed_shots else 0)
+                        + (
+                            quoted_retry_allowance["additional_if_accept_unknown_outcome_risk"]
+                            if accept_unknown_outcome_risk else 0
+                        )
+                    )
+                    if quote_increment != retry_increment:
+                        raise FullAutoRunError(
+                            409, "retry_targets_changed",
+                            "The requested image-attempt increment changed; refresh the comparison.",
+                        )
+                    assistant_quote = comparison.get("assistant_allowance", {})
+                    assistant_budget_available = (
+                        assistant_quote.get("pending_take_id") is None
+                        or assistant_quote.get("new_executable_remaining", 0) > 0
+                    )
+                    image_budget_after_retry = (
+                        quoted_retry_allowance["authorized_image_attempts_remaining"]
+                        + retry_increment
+                    )
+                    retry_eligibility = ResumeEligibility(
+                        current_plan_revision=eligibility.current_plan_revision,
+                        unresolved_work=0,
+                        authorization_valid=eligibility.authorization_valid,
+                        policy_supported=eligibility.policy_supported,
+                        budget_available=(assistant_budget_available and image_budget_after_retry > 0),
+                        session_exclusive=eligibility.session_exclusive,
+                        scope_matches=eligibility.scope_matches,
+                        planning_enabled=eligibility.planning_enabled,
+                        next_state=eligibility.next_state,
+                    )
+                    next_state = _resume_eligibility(
+                        row, retry_eligibility,
+                        current_plan_revision=int(comparison["plan_revision"]),
+                        scope_accepted=scope_accepted,
+                    )
+                    if retry_unknown_attempts:
+                        validated_unknown_retry_evidence = _validate_unknown_retry_evidence(
+                            unknown_retry_evidence, retry_unknown_attempts,
+                            run_id=run_id, session_id=int(row["session_id"]),
+                            request_id=request_id,
+                            run_epoch=int(row["epoch"]) + (1 if row["state"] in _TERMINAL else 0),
+                            expected_run_revision=body["expected_run_revision"],
+                            expected_plan_revision=body["expected_plan_revision"],
+                            scope_digest=scope_digest,
+                            comparison_issued_at=comparison_issued_at,
+                            timestamp=_now_text(None),
+                        )
+                else:
+                    next_state = _resume_eligibility(
+                        row, eligibility,
+                        current_plan_revision=int(comparison["plan_revision"]),
+                        scope_accepted=scope_accepted,
+                    )
                 if scope_accepted:
                     if not resource_planning.is_enabled():
                         raise FullAutoRunError(
@@ -5835,6 +6528,132 @@ def resume_run(
                 row["lease_expires_at"], field_name="run lease",
             ) > _timestamp(timestamp, field_name="current time"):
                 raise FullAutoRunError(409, "run_already_claimed", "The Full Auto run already has an owner.")
+            if explicit_retry:
+                # Revalidate the proof and every mutable authorization/fence at
+                # the last boundary before retry state and receipts are written.
+                timestamp = _now_text(None)
+                current_row = _require_run(run_id)
+                current_identity = (
+                    current_row["run_id"], int(current_row["session_id"]),
+                    int(current_row["revision"]), int(current_row["epoch"]),
+                    int(current_row["fencing_token"]), current_row["state"],
+                    bool(current_row["cancel_intent"]),
+                )
+                if current_identity != retry_control_identity:
+                    raise FullAutoRunError(
+                        409, "run_revision_stale",
+                        "The Full Auto run changed before retry authorization; refresh its current state.",
+                    )
+                if (
+                    current_row["state"] in {"blocked", "cancel_requested"}
+                    and bool(current_row["cancel_intent"])
+                ):
+                    raise FullAutoRunError(
+                        409, "cancel_reconciliation_required",
+                        "Pending cancellation must settle before a Full Auto retry can start.",
+                    )
+                if not resource_planning.is_enabled():
+                    raise FullAutoRunError(
+                        503, "resource_planning_disabled",
+                        "Full Auto retries are disabled by configuration.",
+                    )
+                authority_issue = _current_authority_issue(current_row, timestamp)
+                if authority_issue is not None:
+                    raise _authority_error(authority_issue)
+                issued_at = _timestamp(
+                    comparison_issued_at, field_name="Resume comparison timestamp",
+                )
+                quote_age = _timestamp(timestamp, field_name="current time") - issued_at
+                from backend import guided_sessions
+
+                if quote_age < timedelta(0) or quote_age > guided_sessions._FULL_AUTO_SCOPE_MAX_AGE:
+                    raise FullAutoRunError(
+                        409, "resume_comparison_stale",
+                        "The Full Auto comparison expired; refresh it before retrying.",
+                    )
+                current_plan = db.one(
+                    "SELECT plan_revision FROM session_plan WHERE session_id = ?",
+                    int(current_row["session_id"]),
+                )
+                if (
+                    current_plan is None
+                    or int(current_plan["plan_revision"]) != int(comparison["plan_revision"])
+                    or int(current_row["plan_revision"]) != int(comparison["plan_revision"])
+                ):
+                    raise FullAutoRunError(
+                        409, "resume_comparison_stale",
+                        "The session plan changed before retry authorization; refresh the comparison.",
+                    )
+                if current_row["lease_expires_at"] is not None and _timestamp(
+                    current_row["lease_expires_at"], field_name="run lease",
+                ) > _timestamp(timestamp, field_name="current time"):
+                    raise FullAutoRunError(
+                        409, "run_already_claimed",
+                        "The Full Auto run already has an owner.",
+                    )
+                current_candidates = _retry_candidates(int(current_row["session_id"]), run_id)
+                if retry_failed_shots and current_candidates["failed_shot_ids"] != retry_failed_ids:
+                    raise FullAutoRunError(
+                        409, "retry_targets_changed",
+                        "The failed retry targets changed; refresh the comparison.",
+                    )
+                current_unknown = current_candidates["unknown_attempts"]
+                if accept_unknown_outcome_risk and (
+                    [item["attempt_id"] for item in current_unknown]
+                    != [item["attempt_id"] for item in retry_unknown_attempts]
+                    or [item["shot_id"] for item in current_unknown]
+                    != [item["shot_id"] for item in retry_unknown_attempts]
+                ):
+                    raise FullAutoRunError(
+                        409, "retry_targets_changed",
+                        "The unknown retry targets changed; refresh the comparison.",
+                    )
+                if accept_unknown_outcome_risk:
+                    validated_unknown_retry_evidence = _validate_unknown_retry_evidence(
+                        unknown_retry_evidence, current_unknown,
+                        run_id=run_id, session_id=int(current_row["session_id"]),
+                        request_id=request_id,
+                        run_epoch=int(current_row["epoch"]) + (
+                            1 if current_row["state"] in _TERMINAL else 0
+                        ),
+                        expected_run_revision=body["expected_run_revision"],
+                        expected_plan_revision=body["expected_plan_revision"],
+                        scope_digest=scope_digest,
+                        comparison_issued_at=comparison_issued_at,
+                        timestamp=timestamp,
+                    )
+                if _retry_unsettled_work_count(
+                    int(current_row["session_id"]), run_id,
+                    {int(item["shot_id"]) for item in current_unknown}
+                    if accept_unknown_outcome_risk else set(),
+                ) != 0:
+                    raise FullAutoRunError(
+                        409, "run_work_unsettled",
+                        "Other Full Auto work must settle before these shots can be retried.",
+                    )
+                fresh_eligibility = _current_resume_eligibility(
+                    current_row, comparison, now_text=timestamp,
+                )
+                if explicit_retry:
+                    fresh_eligibility = ResumeEligibility(
+                        current_plan_revision=fresh_eligibility.current_plan_revision,
+                        unresolved_work=0,
+                        authorization_valid=fresh_eligibility.authorization_valid,
+                        policy_supported=fresh_eligibility.policy_supported,
+                        budget_available=(
+                            assistant_budget_available and image_budget_after_retry > 0
+                        ),
+                        session_exclusive=fresh_eligibility.session_exclusive,
+                        scope_matches=fresh_eligibility.scope_matches,
+                        planning_enabled=fresh_eligibility.planning_enabled,
+                        next_state=fresh_eligibility.next_state,
+                    )
+                next_state = _resume_eligibility(
+                    current_row, fresh_eligibility,
+                    current_plan_revision=int(comparison["plan_revision"]),
+                    scope_accepted=scope_accepted,
+                )
+                row = current_row
             if (
                 row["state"] == "cancelled" and bool(row["cancel_intent"])
                 and phase == "execute"
@@ -5863,6 +6682,163 @@ def resume_run(
 
         view = _action_view(row, "resume", request_id)
         _store_action(run_id, request_id, "resume", request_digest, row, view, timestamp)
+        if explicit_retry:
+            # Revalidate every retry at the last write boundary, after the
+            # action receipt has been serialized. Any refusal rolls the whole
+            # control transaction back, including shot and receipt changes.
+            timestamp = _now_text(None)
+            current_row = _require_run(run_id)
+            if (
+                int(current_row["session_id"]) != int(row["session_id"])
+                or int(current_row["revision"]) != int(row["revision"])
+                or int(current_row["epoch"]) != int(row["epoch"])
+                or int(current_row["fencing_token"]) != int(row["fencing_token"])
+                or current_row["state"] != row["state"]
+                or current_row["phase"] != "execute"
+                or bool(current_row["cancel_intent"])
+            ):
+                raise FullAutoRunError(
+                    409, "run_revision_stale",
+                    "The Full Auto run changed before retry authorization; refresh its current state.",
+                )
+            if not resource_planning.is_enabled():
+                raise FullAutoRunError(
+                    503, "resource_planning_disabled",
+                    "Full Auto retries are disabled by configuration.",
+                )
+            authority_issue = _current_authority_issue(current_row, timestamp)
+            if authority_issue is not None:
+                raise _authority_error(authority_issue)
+            from backend import guided_sessions
+
+            quote_age = _timestamp(
+                timestamp, field_name="current time",
+            ) - _timestamp(comparison_issued_at, field_name="Resume comparison timestamp")
+            if (
+                quote_age < timedelta(0)
+                or quote_age > guided_sessions._FULL_AUTO_SCOPE_MAX_AGE
+            ):
+                raise FullAutoRunError(
+                    409, "resume_comparison_stale",
+                    "The Full Auto comparison expired; refresh it before retrying.",
+                )
+            current_plan = db.one(
+                "SELECT plan_revision FROM session_plan WHERE session_id = ?",
+                int(current_row["session_id"]),
+            )
+            if (
+                current_plan is None
+                or int(current_plan["plan_revision"]) != int(comparison["plan_revision"])
+                or int(current_row["plan_revision"]) != int(comparison["plan_revision"])
+            ):
+                raise FullAutoRunError(
+                    409, "resume_comparison_stale",
+                    "The session plan changed before retry authorization; refresh the comparison.",
+                )
+            current_candidates = _retry_candidates(int(current_row["session_id"]), run_id)
+            quoted_retry_allowance = comparison.get("image_retry_allowance")
+            if not isinstance(quoted_retry_allowance, dict):
+                raise FullAutoRunError(
+                    409, "resume_comparison_invalid",
+                    "The image retry allowance could not be verified.",
+                )
+            if retry_failed_shots and (
+                current_candidates["failed_shot_ids"] != retry_failed_ids
+                or current_candidates["failed_shot_ids"]
+                != quoted_retry_allowance.get("retry_failed_shot_ids")
+            ):
+                raise FullAutoRunError(
+                    409, "retry_targets_changed",
+                    "The failed retry targets changed; refresh the comparison.",
+                )
+            current_unknown = current_candidates["unknown_attempts"]
+            if accept_unknown_outcome_risk and (
+                [item["attempt_id"] for item in current_unknown]
+                != [item["attempt_id"] for item in retry_unknown_attempts]
+                or [item["shot_id"] for item in current_unknown]
+                != [item["shot_id"] for item in retry_unknown_attempts]
+                or [item["attempt_id"] for item in current_unknown]
+                != quoted_retry_allowance.get("unknown_attempt_ids")
+                or [item["shot_id"] for item in current_unknown]
+                != quoted_retry_allowance.get("unknown_outcome_shot_ids")
+            ):
+                raise FullAutoRunError(
+                    409, "retry_targets_changed",
+                    "The unknown retry targets changed; refresh the comparison.",
+                )
+            if accept_unknown_outcome_risk:
+                validated_unknown_retry_evidence = _validate_unknown_retry_evidence(
+                    unknown_retry_evidence, current_unknown,
+                    run_id=run_id, session_id=int(current_row["session_id"]),
+                    request_id=request_id, run_epoch=int(current_row["epoch"]),
+                    expected_run_revision=body["expected_run_revision"],
+                    expected_plan_revision=body["expected_plan_revision"],
+                    scope_digest=scope_digest,
+                    comparison_issued_at=comparison_issued_at,
+                    timestamp=timestamp,
+                )
+        if retry_failed_ids:
+            placeholders = ",".join("?" for _ in retry_failed_ids)
+            db.run(
+                f"""UPDATE shot SET status = 'pending', error = '', finished_at = ''
+                    WHERE session_id = ? AND id IN ({placeholders})
+                      AND status IN ('failed', 'cancelled')""",
+                int(row["session_id"]), *retry_failed_ids,
+            )
+        if retry_unknown_attempts:
+            placeholders = ",".join("?" for _ in retry_unknown_attempts)
+            db.run(
+                f"""UPDATE shot SET status = 'pending', error = '', finished_at = ''
+                    WHERE session_id = ? AND id IN ({placeholders})
+                      AND status IN ('running', 'failed', 'cancelled')""",
+                int(row["session_id"]),
+                *(int(item["shot_id"]) for item in retry_unknown_attempts),
+            )
+        if retry_failed_ids:
+            for shot_id in retry_failed_ids:
+                attempt = db.one(
+                    """SELECT attempt_id, run_id, session_id, shot_id
+                       FROM full_auto_execution_attempt
+                       WHERE shot_id = ? ORDER BY attempt_number DESC LIMIT 1""",
+                    shot_id,
+                )
+                if (
+                    attempt is None or attempt["run_id"] != run_id
+                    or int(attempt["session_id"]) != int(row["session_id"])
+                    or int(attempt["shot_id"]) != shot_id
+                ):
+                    raise FullAutoRunError(
+                        409, "retry_targets_changed",
+                        "The failed retry targets changed; reload status.",
+                    )
+                db.run(
+                    """INSERT INTO full_auto_attempt_retry_authorization (
+                           attempt_id, run_id, session_id, shot_id, request_id,
+                           run_epoch, authorized_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    attempt["attempt_id"], run_id, int(row["session_id"]), shot_id,
+                    request_id, int(row["epoch"]), timestamp,
+                )
+        if retry_unknown_attempts:
+            candidates_by_id = {
+                item["attempt_id"]: item for item in retry_unknown_attempts
+            }
+            evidence_by_id = {
+                item.attempt_id: (item, observed_at)
+                for item, observed_at in validated_unknown_retry_evidence
+            }
+            for attempt_id in sorted(candidates_by_id):
+                item, observed_at = evidence_by_id[attempt_id]
+                candidate = candidates_by_id[attempt_id]
+                db.run(
+                    """INSERT INTO full_auto_attempt_risk_acceptance (
+                           attempt_id, run_id, session_id, shot_id, request_id, run_epoch,
+                           queue_snapshot_digest, capability_evidence_digest, observed_at, accepted_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    attempt_id, run_id, int(row["session_id"]), int(candidate["shot_id"]),
+                    request_id, int(row["epoch"]), item.queue_snapshot_digest,
+                    item.capability_evidence_digest, observed_at, timestamp,
+                )
         return RunActionResult(view=view, claim=claim)
 
 

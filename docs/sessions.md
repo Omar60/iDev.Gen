@@ -1748,8 +1748,55 @@ again every 15 seconds; verified settlement becomes `cancelled`. The run never
 enters `active` or dispatches work. After settled cancellation, an otherwise
 eligible continuation Resume restores only linked targets that never had an
 execution attempt, under their existing shot IDs;
-completed outputs remain. Retry of attempted shots is separate work. No Full
-Auto control UI is present.
+completed outputs remain. Attempt retries are separate explicit Resume actions.
+No Full Auto control UI is present.
+
+##### Explicit retry of journaled Full Auto image attempts
+
+`GET /api/sessions/{sid}/full-auto/{run_id}` includes a `retry_control` view with
+the current failed and unknown-outcome shot IDs, eligibility flags, the
+unknown-outcome warning, and cumulative image allowance. The read-only
+`resume-preflight` comparison also includes `image_retry_allowance`, which binds
+the exact retry targets and proposed attempt counts to `scope_digest` and
+`comparison_issued_at`.
+
+The Resume body may set `retry_failed_shots` or
+`accept_unknown_outcome_risk`; both are strict JSON booleans defaulting to
+`false`. Either explicit retry requires the matching fresh comparison digest
+and canonical UTC timestamp, bound to the expected run and plan revisions. The
+existing quote age limit and changed-scope acceptance rules still apply. Retry
+is available only for an admitted execution phase after other Full Auto work
+has settled. It preserves each linked shot ID and excludes successful shots.
+Known retry targets are `failed` or `cancelled` shots whose latest journaled
+attempt for this run has `completion_state: "failed"`; the shot status alone
+is not settlement evidence.
+
+Image capacity is cumulative: the initial attempt allowance plus prior retry
+grants is the authorized total, and every journaled attempt remains consumed.
+Each retry grant is recorded once against the attempt being retried and adds
+one attempt for that eligible shot. A changed target set invalidates the quote.
+
+An `intent` or `outcome_unknown` attempt is a separate risk case. Before
+accepting `accept_unknown_outcome_risk`, the backend must reach ComfyUI, verify
+its current execution-capability evidence matches the saved attempt, and inspect
+the current running and pending queues. A matching or conflicting queue record,
+unavailable queue, or changed identity refuses the retry; only a verifiable
+queue with no matching active attempt can proceed. The warning remains because
+absence from the reachable queue cannot prove the old request was never
+accepted, so duplicate work remains possible. Risk acceptance records consent;
+it does not settle, fail, or complete the prior attempt.
+
+Pending cancellation in `blocked` or `cancel_requested` with cancel intent is
+reconciliation-only and refuses both retry controls until cancellation settles.
+The risk receipt is immutable and retained even if a later attempt succeeds;
+it continues to protect the Full Auto run and session from deletion, and no
+supported clearance operation exists. This conservative record does not prove
+remote work stopped, determine provider billing, or validate generated images.
+
+These controls apply to journaled Full Auto execution. Legacy unjournaled
+behavior is unchanged, and the legacy `/api/sessions/{sid}/retry` route refuses
+Full Auto-linked shots. The retry API has no dedicated UI. External queue policy
+and rollback tooling remain unfinished.
 
 #### Full Auto deletion guards and recovery
 
@@ -1968,8 +2015,8 @@ duplicate, or prior-epoch evidence blocks the run; exhausted probes report
 planning is disabled or authorization has expired, recovery settles existing
 outputs but leaves remaining new work blocked. This supports safe backend-restart
 continuation; it does not establish that an
-unmatched remote job stopped. Explicit retry, external queue policy, and rollback
-remain unfinished. The journal is scoped to Full Auto; manual reference/guide handling
+unmatched remote job stopped. External queue policy and rollback tooling remain
+unfinished. The journal is scoped to Full Auto; manual reference/guide handling
 and locked-file move retries remain covered. Manual sessions remain available
 when no nonterminal Full Auto run owns the session. Review validates persisted
 evidence and policy; it does not certify semantic correctness or rendered

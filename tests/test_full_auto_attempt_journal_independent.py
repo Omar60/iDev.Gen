@@ -36,14 +36,49 @@ def _disk_one(sql: str, *params) -> dict | None:
         return None if row is None else dict(row)
 
 
-def _execution(client, seeded, monkeypatch, make_runner, *, photo_count=4):
+def _execution(
+    client, seeded, monkeypatch, make_runner, *, photo_count=4,
+    provider_options: dict | None = None,
+):
     session_id, run_id, revision, targets, owner = submission._approved_run(
         client, seeded, monkeypatch, photo_count=photo_count,
     )
     _view, execute_owner = main._run_full_auto_submission(owner)
     assert execute_owner is not None
-    runner, fake = make_runner()
+    runner, fake = make_runner(**(provider_options or {}))
     return session_id, run_id, revision, targets, execute_owner, runner, fake
+
+
+def _resume_retry_body(session_id, run_id, quote, *, retry_failed=False, accept_unknown=False):
+    run = resource_full_auto.get_run(run_id)
+    plan = db.one(
+        "SELECT plan_revision FROM session_plan WHERE session_id = ?", session_id,
+    )
+    return {
+        "request_id": str(uuid.uuid4()),
+        "expected_run_revision": run["revision"],
+        "expected_plan_revision": plan["plan_revision"],
+        "scope_digest": quote["scope_digest"],
+        "comparison_issued_at": quote["comparison_issued_at"],
+        "retry_failed_shots": retry_failed,
+        "accept_unknown_outcome_risk": accept_unknown,
+    }
+
+
+def _resume_quote(client, session_id, run_id):
+    response = client.get(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume-preflight",
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _run_retry_attempt(runner, session_id, run_id):
+    claim = resource_full_auto.claim_run(run_id)
+    assert runner.start(
+        session_id, _full_auto_claim=claim, _full_auto_recovery=True,
+    )
+    await runner._task
 
 
 def test_attempt_intent_is_committed_before_post_and_ack_before_history(
@@ -708,3 +743,333 @@ def test_execution_capability_migration_is_additive_and_rebuilds_identity_trigge
         assert "capability_evidence_json" in trigger
     finally:
         connection.close()
+
+
+def test_known_failed_retry_grants_one_cumulative_attempt_and_preserves_mixed_results(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, revision, _targets, owner, runner, fake = _execution(
+        client, seeded, monkeypatch, make_runner,
+        provider_options={"fail_first": 1},
+    )
+
+    async def initial_run():
+        assert runner.start(session_id, _full_auto_claim=owner)
+        await runner._task
+
+    asyncio.run(initial_run())
+    assert db.one(
+        "SELECT state FROM full_auto_run WHERE run_id = ?", run_id,
+    )["state"] == "completed_with_errors"
+    attempts_before = db.q(
+        "SELECT * FROM full_auto_execution_attempt WHERE run_id = ? ORDER BY shot_id",
+        run_id,
+    )
+    failed = [item for item in attempts_before if item["completion_state"] == "failed"]
+    assert len(attempts_before) == 4
+    assert len(failed) == 1
+    failed_shot_id = failed[0]["shot_id"]
+
+    status = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").json()
+    assert status["retry_control"]["failed_shot_ids"] == [failed_shot_id]
+    legacy_retry = client.post(f"/api/sessions/{session_id}/retry")
+    assert legacy_retry.status_code == 409
+    assert legacy_retry.json()["detail"]["code"] == "full_auto_retry_requires_resume"
+    assert db.one("SELECT status FROM shot WHERE id = ?", failed_shot_id)["status"] == "failed"
+    quote = _resume_quote(client, session_id, run_id)
+    image_quote = quote["image_retry_allowance"]
+    assert image_quote["initial_image_attempts_total"] == 4
+    assert image_quote["previous_retry_grants"] == 0
+    assert image_quote["image_attempts_consumed"] == 4
+    assert image_quote["authorized_image_attempts_total"] == 4
+    assert image_quote["authorized_image_attempts_remaining"] == 0
+    assert image_quote["retry_failed_shot_ids"] == [failed_shot_id]
+    assert image_quote["additional_if_retry_failed"] == 1
+    assert image_quote["authorized_total_after_retry_failed"] == 5
+
+    missing_quote = _resume_retry_body(
+        session_id, run_id, {"scope_digest": None, "comparison_issued_at": None},
+        retry_failed=True,
+    )
+    missing_quote.pop("scope_digest")
+    missing_quote.pop("comparison_issued_at")
+    refused = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume", json=missing_quote,
+    )
+    assert refused.status_code == 422
+    assert refused.json()["detail"]["code"] == "retry_comparison_required"
+    assert db.q(
+        "SELECT * FROM full_auto_attempt_retry_authorization WHERE run_id = ?", run_id,
+    ) == []
+
+    body = _resume_retry_body(session_id, run_id, quote, retry_failed=True)
+    retry = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume", json=body,
+    )
+    assert retry.status_code == 202, retry.text
+    assert retry.json()["state"] == "waiting_runner"
+    grant = db.one(
+        "SELECT * FROM full_auto_attempt_retry_authorization WHERE run_id = ?", run_id,
+    )
+    assert grant["attempt_id"] == failed[0]["attempt_id"]
+    assert grant["request_id"] == body["request_id"]
+    assert grant["run_epoch"] == retry.json()["epoch"]
+    assert db.one(
+        "SELECT status FROM shot WHERE id = ?", failed_shot_id,
+    )["status"] == "pending"
+    after_grant = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").json()
+    assert after_grant["allowances"]["image_attempts_initial_total"] == 4
+    assert after_grant["allowances"]["image_retry_grants"] == 1
+    assert after_grant["allowances"]["image_attempts_consumed"] == 4
+    assert after_grant["allowances"]["image_attempts_total"] == 5
+    assert after_grant["allowances"]["image_attempts_remaining_lower_bound"] == 1
+
+    fake.fail_queue = True
+    replay = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume", json=body,
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == retry.json()
+    assert len(db.q(
+        "SELECT * FROM full_auto_attempt_retry_authorization WHERE run_id = ?", run_id,
+    )) == 1
+
+    asyncio.run(_run_retry_attempt(runner, session_id, run_id))
+    attempts_after = db.q(
+        "SELECT * FROM full_auto_execution_attempt WHERE run_id = ? ORDER BY shot_id, attempt_number",
+        run_id,
+    )
+    retry_attempts = [item for item in attempts_after if item["shot_id"] == failed_shot_id]
+    assert len(retry_attempts) == 2
+    assert retry_attempts[1]["attempt_number"] == retry_attempts[0]["attempt_number"] + 1
+    assert retry_attempts[1]["attempt_id"] != retry_attempts[0]["attempt_id"]
+    assert retry_attempts[1]["filename_prefix"] != retry_attempts[0]["filename_prefix"]
+    assert retry_attempts[1]["completion_state"] == "failed"
+    final = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").json()
+    assert final["state"] == "completed_with_errors"
+    assert final["progress"]["completed_count"] == 3
+    assert final["progress"]["failed_count"] == 1
+    assert final["allowances"]["image_attempts_consumed"] == 5
+    assert final["allowances"]["image_attempts_total"] == 5
+
+
+def test_failed_and_cancelled_shots_retry_only_with_one_grant_each(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _revision, _targets, owner, runner, fake = _execution(
+        client, seeded, monkeypatch, make_runner,
+        photo_count=4, provider_options={"fail_queue": True},
+    )
+
+    async def initial_run():
+        assert runner.start(session_id, _full_auto_claim=owner)
+        await runner._task
+
+    asyncio.run(initial_run())
+    assert db.one(
+        "SELECT state FROM full_auto_run WHERE run_id = ?", run_id,
+    )["state"] == "failed"
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM full_auto_execution_attempt "
+        "WHERE run_id = ? AND completion_state = 'failed'", run_id,
+    )["n"] == 4
+    cancelled_shot_id = db.one(
+        "SELECT shot_id FROM full_auto_execution_attempt WHERE run_id = ? ORDER BY shot_id LIMIT 1",
+        run_id,
+    )["shot_id"]
+    db.run("UPDATE shot SET status = 'cancelled' WHERE id = ?", cancelled_shot_id)
+
+    quote = _resume_quote(client, session_id, run_id)
+    image_quote = quote["image_retry_allowance"]
+    assert db.one("SELECT status FROM shot WHERE id = ?", cancelled_shot_id)["status"] == "cancelled"
+    assert image_quote["retry_failed_shot_ids"] == [
+        item["shot_id"] for item in db.q(
+            "SELECT shot_id FROM full_auto_execution_attempt WHERE run_id = ? ORDER BY shot_id",
+            run_id,
+        )
+    ]
+    assert image_quote["additional_if_retry_failed"] == 4
+    assert image_quote["authorized_total_after_retry_failed"] == 8
+    body = _resume_retry_body(session_id, run_id, quote, retry_failed=True)
+    response = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume", json=body,
+    )
+    assert response.status_code == 202, response.text
+    assert len(db.q(
+        "SELECT * FROM full_auto_attempt_retry_authorization WHERE run_id = ?", run_id,
+    )) == 4
+    assert client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").json()[
+        "allowances"]["image_attempts_total"] == 8
+
+    asyncio.run(_run_retry_attempt(runner, session_id, run_id))
+    final = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").json()
+    assert final["state"] == "failed"
+    assert final["progress"]["completed_count"] == 0
+    assert final["progress"]["failed_count"] == 4
+    assert final["allowances"]["image_attempts_consumed"] == 8
+    assert final["allowances"]["image_attempts_total"] == 8
+
+
+def test_unknown_outcome_retry_requires_current_queue_absence_and_keeps_risk_guard(
+    client, seeded, monkeypatch, make_runner,
+):
+    session_id, run_id, _revision, _targets, owner, runner, fake = _execution(
+        client, seeded, monkeypatch, make_runner,
+    )
+    monkeypatch.setattr(main, "runner", runner)
+    original_queue_prompt = fake.queue_prompt
+    original_capabilities = fake.execution_capabilities
+    accepted = {}
+
+    async def accepted_but_lost(graph, client_id, **kwargs):
+        prompt_id = await original_queue_prompt(graph, client_id, **kwargs)
+        accepted["entry"] = fake.queue_records[-1]
+        fake.queue_records.clear()
+        raise TimeoutError("simulated lost queue response")
+
+    fake.queue_prompt = accepted_but_lost
+
+    async def initial_run():
+        assert runner.start(session_id, _full_auto_claim=owner)
+        await runner._task
+
+    asyncio.run(initial_run())
+    fake.queue_prompt = original_queue_prompt
+    run = resource_full_auto.get_run(run_id)
+    assert (run["state"], run["blocker_code"]) == ("blocked", "execution_outcome_unknown")
+    old_attempt = db.one(
+        "SELECT * FROM full_auto_execution_attempt WHERE run_id = ? ORDER BY attempt_number LIMIT 1",
+        run_id,
+    )
+    assert old_attempt["dispatch_state"] == "outcome_unknown"
+    assert old_attempt["completion_state"] == "pending"
+    old_attempt_id = old_attempt["attempt_id"]
+    old_shot_id = old_attempt["shot_id"]
+
+    status = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").json()
+    assert status["retry_control"]["unknown_outcome_shot_ids"] == [old_shot_id]
+    assert status["retry_control"]["unknown_attempt_ids"] == [old_attempt_id]
+    assert "duplicate work" in status["retry_control"]["unknown_outcome_warning"].lower()
+    quote = _resume_quote(client, session_id, run_id)
+    allowance = quote["image_retry_allowance"]
+    assert allowance["unknown_outcome_shot_ids"] == [old_shot_id]
+    assert allowance["unknown_attempt_ids"] == [old_attempt_id]
+    assert allowance["additional_if_accept_unknown_outcome_risk"] == 1
+    assert allowance["authorized_total_after_unknown_risk"] == 5
+
+    body = _resume_retry_body(session_id, run_id, quote, accept_unknown=True)
+    original_queue_state = fake.queue_state
+    fake.queue_records.append(accepted["entry"])
+    still_active = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume", json=body,
+    )
+    assert still_active.status_code == 409, still_active.text
+    assert still_active.json()["detail"]["code"] == "unknown_outcome_still_active"
+    assert db.q(
+        "SELECT * FROM full_auto_attempt_risk_acceptance WHERE run_id = ?", run_id,
+    ) == []
+
+    db.run(
+        "UPDATE full_auto_run SET cancel_intent = 1, cancel_intent_at = ? WHERE run_id = ?",
+        db.now(), run_id,
+    )
+
+    async def forbidden_queue_check():
+        raise AssertionError("pending cancellation must not probe or retry remote work")
+
+    fake.queue_state = forbidden_queue_check
+    cancelled_retry = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume", json=body,
+    )
+    assert cancelled_retry.status_code == 409, cancelled_retry.text
+    assert cancelled_retry.json()["detail"]["code"] == "cancel_reconciliation_required"
+    assert db.q(
+        "SELECT * FROM full_auto_attempt_risk_acceptance WHERE run_id = ?", run_id,
+    ) == []
+    db.run(
+        "UPDATE full_auto_run SET cancel_intent = 0, cancel_intent_at = NULL WHERE run_id = ?",
+        run_id,
+    )
+    db.run(
+        "UPDATE global_runner_claim SET lease_expires_at = ? WHERE singleton = 1",
+        "2000-01-01T00:00:00+00:00",
+    )
+    fake.queue_state = original_queue_state
+    fake.queue_records.clear()
+
+    quote = _resume_quote(client, session_id, run_id)
+    body = _resume_retry_body(session_id, run_id, quote, accept_unknown=True)
+    accepted_retry = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume", json=body,
+    )
+    assert accepted_retry.status_code == 202, accepted_retry.text
+    receipt = db.one(
+        "SELECT * FROM full_auto_attempt_risk_acceptance WHERE attempt_id = ?",
+        old_attempt_id,
+    )
+    assert receipt is not None
+    assert receipt["request_id"] == body["request_id"]
+    assert receipt["queue_snapshot_digest"] == resource_store.canonical_digest({
+        "queue_running": [], "queue_pending": [],
+    })
+    assert db.one(
+        "SELECT dispatch_state, completion_state FROM full_auto_execution_attempt "
+        "WHERE attempt_id = ?", old_attempt_id,
+    ) == {"dispatch_state": "outcome_unknown", "completion_state": "pending"}
+    assert db.one("SELECT status FROM shot WHERE id = ?", old_shot_id)["status"] == "pending"
+    before_replay_grants = db.one(
+        "SELECT COUNT(*) AS n FROM full_auto_attempt_risk_acceptance WHERE run_id = ?",
+        run_id,
+    )["n"]
+    after_grant = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").json()
+    assert after_grant["allowances"]["image_attempts_initial_total"] == 4
+    assert after_grant["allowances"]["image_retry_grants"] == 1
+    assert after_grant["allowances"]["image_attempts_consumed"] == 1
+    assert after_grant["allowances"]["image_attempts_total"] == 5
+
+    async def no_replay_probe():
+        raise AssertionError("historical retry replay must not probe ComfyUI")
+
+    fake.execution_capabilities = no_replay_probe
+    replay = client.post(
+        f"/api/sessions/{session_id}/full-auto/{run_id}/resume", json=body,
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == accepted_retry.json()
+    assert db.one(
+        "SELECT COUNT(*) AS n FROM full_auto_attempt_risk_acceptance WHERE run_id = ?",
+        run_id,
+    )["n"] == before_replay_grants == 1
+    fake.execution_capabilities = original_capabilities
+
+    asyncio.run(_run_retry_attempt(runner, session_id, run_id))
+    attempts = db.q(
+        "SELECT * FROM full_auto_execution_attempt WHERE run_id = ? AND shot_id = ? "
+        "ORDER BY attempt_number",
+        run_id, old_shot_id,
+    )
+    assert len(attempts) == 2
+    assert attempts[0]["attempt_id"] == old_attempt_id
+    assert attempts[1]["attempt_id"] != old_attempt_id
+    assert attempts[1]["filename_prefix"] != attempts[0]["filename_prefix"]
+    assert attempts[0]["completion_state"] == "pending"
+    final = client.get(f"/api/sessions/{session_id}/full-auto/{run_id}").json()
+    assert final["state"] == "succeeded", final
+    assert final["progress"]["completed_count"] == 4
+    assert resource_full_auto._run_deletion_protected(
+        resource_full_auto._run_row(run_id),
+    ) is True
+    with pytest.raises(sqlite3.IntegrityError, match="full_auto_in_use"):
+        db.run("DELETE FROM full_auto_run WHERE run_id = ?", run_id)
+    with pytest.raises(sqlite3.IntegrityError, match="full_auto_in_use"):
+        db.run("DELETE FROM session WHERE id = ?", session_id)
+
+    # Test-only cleanup removes the synthetic receipt after checking its guard.
+    delete_guard = db.one(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+        "AND name = 'full_auto_attempt_risk_acceptance_no_delete'",
+    )
+    db.run("DROP TRIGGER full_auto_attempt_risk_acceptance_no_delete")
+    db.run("DELETE FROM full_auto_attempt_risk_acceptance WHERE run_id = ?", run_id)
+    if delete_guard is not None:
+        db.run(delete_guard["sql"])

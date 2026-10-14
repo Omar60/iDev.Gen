@@ -1,5 +1,19 @@
 # Project Diary
 
+## Full Auto Task 5.6 Retry Boundaries
+
+Risk consent authorizes another attempt; it does not settle the old unknown
+attempt or release deletion protection. Keep cumulative attempt consumption and
+immutable predecessor grants separate from the initial image allowance.
+A matching client prompt ID with incomplete or conflicting queue identity is
+unsafe evidence, not proof of absence. Authenticate backend observations and
+bind them to the exact request, quote and attempt. Enforce receipt identity and
+immutability at the database boundary as well as in the control handler.
+Refresh time and authority after action serialization and before every grant,
+including known failures: an earlier check can expire inside the transaction.
+Independent tests must exercise forged evidence, direct SQL mutations and
+clock transitions at the final write boundary.
+
 ## Full Auto Task 5.5 Cancellation Boundaries
 
 Keep immutable attempt identity separate from a fresh cancellation-settlement

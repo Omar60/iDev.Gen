@@ -130,6 +130,17 @@ class Runner:
             from backend import resource_full_auto
 
             resource_full_auto.require_session_mutation_allowed(session_id)
+            journaled_full_auto = db.one(
+                """SELECT 1 FROM full_auto_submission_receipt receipt
+                   JOIN full_auto_run run ON run.run_id = receipt.run_id
+                   WHERE run.session_id = ? LIMIT 1""",
+                session_id,
+            )
+            if journaled_full_auto is not None:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "full_auto_retry_requires_resume",
+                    "Journaled Full Auto shots must be retried through the run's Resume control.",
+                )
             db.run(
                 "UPDATE shot SET status='pending', error='' "
                 "WHERE session_id=? AND status IN ('failed','cancelled')",
@@ -297,7 +308,40 @@ class Runner:
             raise resource_full_auto.FullAutoRunError(
                 409, "execution_outcome_unknown", "The shot and its saved completion record disagree.",
             )
+        risk_accepted_unknown = (
+            attempt["completion_state"] == "pending"
+            and attempt["dispatch_state"] in {"intent", "outcome_unknown"}
+            and db.one(
+                "SELECT 1 FROM full_auto_attempt_risk_acceptance WHERE attempt_id = ?",
+                attempt["attempt_id"],
+            ) is not None
+        )
+        if risk_accepted_unknown:
+            self._owned_update(
+                session_id, heartbeat,
+                "UPDATE shot SET status='pending', error='', finished_at='' "
+                "WHERE id=? AND session_id=? AND status='running'",
+                shot["id"], session_id,
+            )
+            return
         if attempt["completion_state"] == "failed" or attempt["dispatch_state"] == "rejected":
+            retry_authorized = db.one(
+                """SELECT 1 FROM full_auto_attempt_retry_authorization
+                   WHERE attempt_id = ? AND run_id = ? AND run_epoch = ?""",
+                attempt["attempt_id"], claim.run_id, claim.epoch,
+            ) is not None
+            risk_accepted = db.one(
+                "SELECT 1 FROM full_auto_attempt_risk_acceptance WHERE attempt_id = ?",
+                attempt["attempt_id"],
+            ) is not None
+            if retry_authorized or risk_accepted:
+                self._owned_update(
+                    session_id, heartbeat,
+                    "UPDATE shot SET status='pending', error='', finished_at='' "
+                    "WHERE id=? AND session_id=? AND status='running'",
+                    shot["id"], session_id,
+                )
+                return
             resource_full_auto.finish_execution_attempt(
                 attempt["attempt_id"], claim, runner_claim,
                 outcome="failed",
@@ -569,6 +613,10 @@ class Runner:
                    WHERE attempt.run_id = ? AND attempt.session_id = ?
                      AND (attempt.completion_state IN ('pending', 'output_available')
                           OR shot.status = 'running')
+                     AND attempt.attempt_number = (
+                         SELECT MAX(latest.attempt_number) FROM full_auto_execution_attempt latest
+                         WHERE latest.shot_id = attempt.shot_id
+                     )
                    ORDER BY attempt.created_at, attempt.attempt_number""",
                 claim.run_id, session_id,
             )
@@ -869,14 +917,26 @@ class Runner:
             session_id,
         ):
             attempt = db.one(
-                "SELECT run_id, session_id, run_epoch FROM full_auto_execution_attempt "
+                "SELECT attempt_id, run_id, session_id, run_epoch, dispatch_state, completion_state "
+                "FROM full_auto_execution_attempt "
                 "WHERE shot_id=? ORDER BY attempt_number DESC LIMIT 1",
                 running["id"],
+            )
+            retry_was_authorized = attempt is not None and (
+                db.one(
+                    "SELECT 1 FROM full_auto_attempt_risk_acceptance WHERE attempt_id = ?",
+                    attempt["attempt_id"],
+                ) is not None
+                or db.one(
+                    """SELECT 1 FROM full_auto_attempt_retry_authorization
+                       WHERE attempt_id = ? AND run_id = ? AND run_epoch = ?""",
+                    attempt["attempt_id"], claim.run_id, claim.epoch,
+                ) is not None
             )
             if attempt is not None and (
                 attempt["run_id"] != claim.run_id
                 or int(attempt["session_id"]) != session_id
-                or int(attempt["run_epoch"]) != claim.epoch
+                or int(attempt["run_epoch"]) != claim.epoch and not retry_was_authorized
             ):
                 return False, claim, "execution_outcome_unknown"
 
@@ -905,7 +965,9 @@ class Runner:
                     "SELECT 1 FROM full_auto_execution_attempt attempt "
                     "JOIN shot ON shot.id = attempt.shot_id "
                     "WHERE attempt.run_id = ? AND shot.status != 'running' "
-                    "AND attempt.completion_state IN ('pending', 'output_available') LIMIT 1",
+                    "AND attempt.completion_state IN ('pending', 'output_available') "
+                    "AND NOT EXISTS (SELECT 1 FROM full_auto_attempt_risk_acceptance risk "
+                    "WHERE risk.attempt_id = attempt.attempt_id) LIMIT 1",
                     claim.run_id,
                 )
                 if outstanding is not None:
@@ -1265,6 +1327,22 @@ class Runner:
                     pass
             raise
         except Exception as exc:  # noqa: BLE001 - a rejected graph fails one shot, not the run
+            if attempt is not None:
+                persisted = db.one(
+                    "SELECT dispatch_state, completion_state FROM full_auto_execution_attempt "
+                    "WHERE attempt_id = ?",
+                    attempt_id,
+                )
+                if persisted is not None and persisted["dispatch_state"] == "rejected":
+                    resource_full_auto.finish_execution_attempt(
+                        attempt_id, heartbeat.check(), heartbeat.claim,
+                        outcome="failed", error=str(exc) or "ComfyUI rejected the generation request.",
+                    )
+                    return
+                raise resource_full_auto.FullAutoRunError(
+                    409, "execution_outcome_unknown",
+                    "The saved attempt did not reach a verified completion; it remains unresolved.",
+                ) from exc
             self._owned_update(
                 session_id, heartbeat,
                 "UPDATE shot SET status='failed', error=?, finished_at=? WHERE id=?",
@@ -1804,6 +1882,137 @@ class Runner:
         except Exception:  # noqa: BLE001 - malformed or unavailable evidence remains unknown
             log.info("Full Auto attempt reconciliation had no usable evidence")
             return None
+
+    async def check_unknown_retry_queue(
+        self,
+        session_id: int,
+        run_id: str,
+        attempt_ids: list[str],
+        *,
+        request_id: str,
+        expected_run_revision: int,
+        expected_plan_revision: int,
+        scope_digest: str,
+        comparison_issued_at: str,
+    ):
+        """Bind explicit unknown-outcome consent to one reachable, non-matching queue snapshot."""
+        from backend import resource_full_auto, resource_store
+
+        attempts = resource_full_auto.unknown_attempts_for_retry(
+            session_id, run_id, attempt_ids,
+        )
+        try:
+            capabilities = await self.comfy.execution_capabilities()
+            queue = await self.comfy.queue_state()
+        except Exception as exc:  # noqa: BLE001 - unavailable evidence must fail closed
+            raise resource_full_auto.FullAutoRunError(
+                503, "unknown_outcome_queue_unavailable",
+                "The current ComfyUI queue could not be checked; no retry was started.",
+            ) from exc
+        if (
+            not isinstance(capabilities, dict)
+            or not isinstance(queue, dict)
+            or not isinstance(queue.get("queue_running"), list)
+            or not isinstance(queue.get("queue_pending"), list)
+        ):
+            raise resource_full_auto.FullAutoRunError(
+                503, "unknown_outcome_queue_unavailable",
+                "The current ComfyUI queue could not be verified; no retry was started.",
+            )
+
+        queue_entries = [
+            (entry, state)
+            for state in ("queue_running", "queue_pending")
+            for entry in queue[state]
+        ]
+        for attempt in attempts:
+            try:
+                frozen_capabilities = json.loads(attempt["capability_evidence_json"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "unknown_outcome_evidence_invalid",
+                    "The saved ComfyUI identity evidence is invalid; the attempt remains unresolved.",
+                ) from exc
+            if frozen_capabilities != capabilities:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "unknown_outcome_evidence_stale",
+                    "ComfyUI identity changed; review the unknown outcome before retrying.",
+                )
+            expected = build_attempt_metadata(attempt["client_id"], attempt)
+            matches = 0
+            try:
+                for entry, _state in queue_entries:
+                    prompt_id, graph, extra_data = prompt_entry_fields(entry)
+                    marker = attempt_marker(extra_data)
+                    graph_match = (
+                        resource_store.canonical_digest(graph) == attempt["graph_digest"]
+                        and graph_has_prefix(graph, attempt["filename_prefix"])
+                    )
+                    if (
+                        attempt["client_prompt_id"] is not None
+                        and prompt_id == attempt["client_prompt_id"]
+                    ):
+                        png_info = extra_data.get("extra_pnginfo")
+                        if (
+                            marker != expected
+                            or not isinstance(png_info, dict)
+                            or attempt_marker(png_info) != expected
+                            or extra_data.get("client_id") != attempt["client_id"]
+                            or not graph_match
+                        ):
+                            raise ValueError(
+                                "Queue prompt identity matches the attempt but its other identity evidence conflicts"
+                            )
+                        matches += 1
+                        continue
+                    if marker is None:
+                        if graph_match:
+                            raise ValueError("Queue graph matches the attempt but lost its marker")
+                        continue
+                    if marker.get("attempt_id") != attempt["attempt_id"]:
+                        if graph_match:
+                            raise ValueError("Queue graph matches the attempt with a conflicting marker")
+                        continue
+                    png_info = extra_data.get("extra_pnginfo")
+                    if (
+                        marker != expected
+                        or not isinstance(png_info, dict)
+                        or attempt_marker(png_info) != expected
+                        or extra_data.get("client_id") != attempt["client_id"]
+                        or not graph_match
+                        or (attempt["client_prompt_id"] is not None
+                            and prompt_id != attempt["client_prompt_id"])
+                    ):
+                        raise ValueError("Queue evidence conflicts with the saved attempt")
+                    matches += 1
+            except Exception as exc:  # noqa: BLE001 - malformed queue data is not absence evidence
+                raise resource_full_auto.FullAutoRunError(
+                    409, "unknown_outcome_evidence_invalid",
+                    "The current queue contains evidence that cannot be safely verified.",
+                ) from exc
+            if matches:
+                raise resource_full_auto.FullAutoRunError(
+                    409, "unknown_outcome_still_active",
+                    "The current ComfyUI queue still contains this attempt; wait for it to settle before retrying.",
+                )
+
+        observed_at = db.now()
+        queue_digest = resource_store.canonical_digest(queue)
+        capability_digest = resource_store.canonical_digest(capabilities)
+        return [
+            resource_full_auto._make_unknown_retry_evidence(
+                item,
+                queue_snapshot_digest=queue_digest,
+                capability_evidence_digest=capability_digest,
+                observed_at=observed_at,
+                request_id=request_id,
+                expected_run_revision=expected_run_revision,
+                expected_plan_revision=expected_plan_revision,
+                scope_digest=scope_digest,
+                comparison_issued_at=comparison_issued_at,
+            )
+            for item in attempts
+        ]
 
     def _recover_output_from_png(self, attempt: dict, expected: dict, resource_store) -> dict | None:
         """Adopt one output only when its PNG metadata proves marker and graph identity."""

@@ -1316,6 +1316,135 @@ BEGIN
     SELECT RAISE(ABORT, 'Full Auto execution attempt transition is invalid');
 END;
 
+-- Explicit consent to continue after an ambiguous ComfyUI outcome is a
+-- separate immutable receipt. It never rewrites dispatch/completion evidence:
+-- the old attempt may still represent remote work, so deletion guards retain
+-- this row even after a later attempt for the same shot completes.
+CREATE TABLE IF NOT EXISTS full_auto_attempt_risk_acceptance (
+    attempt_id               TEXT PRIMARY KEY NOT NULL
+                             REFERENCES full_auto_execution_attempt(attempt_id) ON DELETE CASCADE,
+    run_id                   TEXT NOT NULL REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    session_id               INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    shot_id                  INTEGER NOT NULL REFERENCES shot(id) ON DELETE CASCADE,
+    request_id               TEXT NOT NULL CHECK (length(request_id) > 0),
+    run_epoch                INTEGER NOT NULL CHECK (run_epoch > 0),
+    queue_snapshot_digest    TEXT NOT NULL CHECK (length(queue_snapshot_digest) = 64),
+    capability_evidence_digest TEXT NOT NULL CHECK (length(capability_evidence_digest) = 64),
+    observed_at              TEXT NOT NULL,
+    accepted_at              TEXT NOT NULL,
+    UNIQUE (run_id, request_id, attempt_id)
+);
+CREATE INDEX IF NOT EXISTS ix_full_auto_attempt_risk_run
+    ON full_auto_attempt_risk_acceptance(run_id, shot_id);
+CREATE TRIGGER IF NOT EXISTS full_auto_attempt_risk_acceptance_immutable
+BEFORE UPDATE ON full_auto_attempt_risk_acceptance
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto attempt risk acceptance is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS full_auto_attempt_risk_acceptance_no_delete
+BEFORE DELETE ON full_auto_attempt_risk_acceptance
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto attempt risk acceptance is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS full_auto_attempt_risk_acceptance_matches_receipt
+BEFORE INSERT ON full_auto_attempt_risk_acceptance
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM full_auto_execution_attempt attempt
+    JOIN full_auto_run run ON run.run_id = attempt.run_id
+    JOIN shot ON shot.id = attempt.shot_id
+    JOIN full_auto_run_action_receipt action
+      ON action.run_id = run.run_id
+     AND action.request_id = NEW.request_id
+     AND action.action = 'resume'
+     AND action.epoch = NEW.run_epoch
+    WHERE attempt.attempt_id = NEW.attempt_id
+      AND attempt.run_id = NEW.run_id
+      AND attempt.session_id = NEW.session_id
+      AND attempt.shot_id = NEW.shot_id
+      AND shot.session_id = NEW.session_id
+      AND shot.status = 'pending'
+      AND attempt.attempt_number = (
+          SELECT MAX(latest.attempt_number)
+          FROM full_auto_execution_attempt latest
+          WHERE latest.shot_id = attempt.shot_id
+      )
+      AND attempt.dispatch_state IN ('intent', 'outcome_unknown')
+      AND attempt.completion_state = 'pending'
+      AND run.session_id = NEW.session_id
+      AND run.epoch = NEW.run_epoch
+      AND run.phase = 'execute'
+      AND run.state IN ('active', 'waiting_runner')
+      AND run.cancel_intent = 0
+      AND json_extract(action.response_json, '$.run_id') = NEW.run_id
+      AND json_extract(action.response_json, '$.session_id') = NEW.session_id
+      AND json_extract(action.response_json, '$.epoch') = NEW.run_epoch
+      AND json_extract(action.response_json, '$.revision') = run.revision
+      AND json_extract(action.response_json, '$.request_id') = NEW.request_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto risk acceptance must match its current Resume receipt and attempt');
+END;
+
+-- A known failed attempt is retried only after an explicit Resume action.
+-- Persist the exact failed attempt authorized by that action so a crash after
+-- resetting the shot but before writing its next intent can safely continue.
+CREATE TABLE IF NOT EXISTS full_auto_attempt_retry_authorization (
+    attempt_id       TEXT PRIMARY KEY NOT NULL
+                     REFERENCES full_auto_execution_attempt(attempt_id) ON DELETE CASCADE,
+    run_id           TEXT NOT NULL REFERENCES full_auto_run(run_id) ON DELETE CASCADE,
+    session_id       INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    shot_id          INTEGER NOT NULL REFERENCES shot(id) ON DELETE CASCADE,
+    request_id       TEXT NOT NULL CHECK (length(request_id) > 0),
+    run_epoch        INTEGER NOT NULL CHECK (run_epoch > 0),
+    authorized_at    TEXT NOT NULL,
+    UNIQUE (run_id, request_id, attempt_id)
+);
+CREATE TRIGGER IF NOT EXISTS full_auto_attempt_retry_authorization_immutable
+BEFORE UPDATE ON full_auto_attempt_retry_authorization
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto attempt retry authorization is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS full_auto_attempt_retry_authorization_matches_receipt
+BEFORE INSERT ON full_auto_attempt_retry_authorization
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM full_auto_execution_attempt attempt
+    JOIN full_auto_run run ON run.run_id = attempt.run_id
+    JOIN shot ON shot.id = attempt.shot_id
+    JOIN full_auto_run_action_receipt action
+      ON action.run_id = run.run_id
+     AND action.request_id = NEW.request_id
+     AND action.action = 'resume'
+     AND action.epoch = NEW.run_epoch
+    WHERE attempt.attempt_id = NEW.attempt_id
+      AND attempt.run_id = NEW.run_id
+      AND attempt.session_id = NEW.session_id
+      AND attempt.shot_id = NEW.shot_id
+      AND shot.session_id = NEW.session_id
+      AND shot.status = 'pending'
+      AND attempt.attempt_number = (
+          SELECT MAX(latest.attempt_number)
+          FROM full_auto_execution_attempt latest
+          WHERE latest.shot_id = attempt.shot_id
+      )
+      AND attempt.dispatch_state IN ('acknowledged', 'rejected')
+      AND attempt.completion_state = 'failed'
+      AND run.session_id = NEW.session_id
+      AND run.epoch = NEW.run_epoch
+      AND run.phase = 'execute'
+      AND run.state IN ('active', 'waiting_runner')
+      AND run.cancel_intent = 0
+      AND json_extract(action.response_json, '$.run_id') = NEW.run_id
+      AND json_extract(action.response_json, '$.session_id') = NEW.session_id
+      AND json_extract(action.response_json, '$.epoch') = NEW.run_epoch
+      AND json_extract(action.response_json, '$.revision') = run.revision
+      AND json_extract(action.response_json, '$.request_id') = NEW.request_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Full Auto retry authorization must match its current Resume receipt and attempt');
+END;
+
 -- Reviewed adaptations of resource-v1 take descriptive inputs
 -- (task 4.2 of ``adopt-resource-session-planning``). One row
 -- per accepted (session, plan_revision, take_id, resource
@@ -1518,10 +1647,15 @@ WHERE COALESCE((
               OR sh.status NOT IN ('done', 'cancelled'))
    );
 
-CREATE VIEW IF NOT EXISTS full_auto_deletion_protected_run AS
+DROP VIEW IF EXISTS full_auto_deletion_protected_run;
+CREATE VIEW full_auto_deletion_protected_run AS
 SELECT r.run_id, r.session_id
 FROM full_auto_run r
 WHERE r.state NOT IN ('cancelled', 'failed', 'succeeded', 'completed_with_errors')
+   OR EXISTS (
+       SELECT 1 FROM full_auto_attempt_risk_acceptance risk
+       WHERE risk.run_id = r.run_id
+   )
    OR EXISTS (
        SELECT 1 FROM session s WHERE s.id = r.session_id AND s.status = 'running'
    )
@@ -1559,6 +1693,16 @@ WHERE r.state NOT IN ('cancelled', 'failed', 'succeeded', 'completed_with_errors
            )
        )
    );
+
+CREATE TRIGGER IF NOT EXISTS full_auto_protect_risk_accepted_run_delete
+BEFORE DELETE ON full_auto_run
+WHEN EXISTS (
+    SELECT 1 FROM full_auto_attempt_risk_acceptance risk
+    WHERE risk.run_id = OLD.run_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'full_auto_in_use');
+END;
 
 CREATE VIEW IF NOT EXISTS full_auto_deletion_grant AS
 SELECT r.run_id, r.session_id, receipt.authorization_json
