@@ -101,6 +101,15 @@ Verified baseline from the repository layout and application entry points.
   timestamp then run ID. Resume re-enters with fresh priority; blocked,
   cancelled, expired, or
   authority-ineligible runs are skipped. This implements local admission only.
+  Before Full Auto dispatch, the runner observes ComfyUI's running and pending
+  queues without reserving an idle local runner. A busy queue persists
+  `waiting_reason: external_queue_busy`, polls after 15 seconds including after
+  restart, and preserves local FIFO readiness between shots. An empty observation
+  can race another client's job; Full Auto may send one normal-priority POST for
+  that attempt and provides no remote fairness or exclusivity guarantee. Its
+  900-second shot timeout starts after owned running evidence, though history can prove
+  completion when no running snapshot was observed. Manual runner behavior is
+  unchanged.
   Startup recovery protects journaled/admitted rows before failing unclaimed
   legacy running rows. Resumed work uses fresh fences and reconciles attempts
   before continuing remaining work.
@@ -122,7 +131,7 @@ Verified baseline from the repository layout and application entry points.
   `comfy_unavailable`. Disabled planning or expired authorization preserves
   settled outputs and blocks remaining work. Explicit journaled-attempt retries
   use quote-bound Full Auto Resume controls documented in `docs/sessions.md`;
-  external queue policy and rollback tooling remain unfinished. The journal is
+  rollback tooling remains unfinished. The journal is
   scoped to Full Auto;
   manual reference/guide handling and locked-file move retries remain covered.
   Internal review and policy approval

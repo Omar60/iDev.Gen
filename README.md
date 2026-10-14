@@ -201,8 +201,16 @@ missing, malformed, mismatched, duplicate, or prior-epoch evidence leaves the
 run blocked; exhausted remote-read probes report `comfy_unavailable`. If
 resource planning is disabled or authorization has expired, settled outputs are
 retained and remaining new work stays blocked.
-A stale owner stops subsequent writes and dispatches. External queue policy,
-rollback tooling, the profile editor, and selection/consent UI remain unfinished.
+A stale owner stops subsequent writes and dispatches. Before each Full Auto shot,
+the runner observes ComfyUI's queue without reserving an idle local runner. A
+busy external queue records `waiting_runner` with `waiting_reason` set to
+`external_queue_busy` and a durable 15-second poll deadline that survives restart;
+queue time does not consume the 900-second executing-shot timeout. If another
+client queues work after an empty observation, Full Auto may still send one
+normal-priority POST for that attempt. This local policy provides no remote queue
+fairness or exclusivity guarantee. Rollback tooling, the profile editor, Full Auto
+selection/consent/progress UI, and separately authorized real-generation
+validation remain unfinished.
 The existing manual workflow remains available for sessions without a
 nonterminal Full Auto owner.
 While a run is nonterminal or its work is unresolved, supported DELETE routes

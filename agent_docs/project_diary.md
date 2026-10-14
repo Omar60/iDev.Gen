@@ -1,5 +1,25 @@
 # Project Diary
 
+## Full Auto Task 5.7 External Queue Boundaries
+
+Observe external work before new dispatch without reserving an idle singleton.
+Persist the busy poll deadline and preserve FIFO position and admission across
+between-shot yielding and restart. A durable deadline needs a deferred scheduler
+continuation; protect task-registry cleanup by task identity. Queue inspection
+cannot exclude a racing external client or promise remote fairness.
+
+Start the execution timeout at corroborated owned running evidence, without
+charging the preceding poll interval. Completed history can arrive without a
+running observation. Preserve uncertainty and never replay or globally interrupt.
+Validate persisted enum types before set membership and recheck lease time after
+the final authority walk before writing. Independent probes caught both gaps.
+
+Keep fixture signature and exact-call-count changes tied to the new boundary,
+retaining no-replay and unresolved-outcome assertions. One final-authority probe
+initially targeted an unreachable callback; its corrected injection passed.
+The final complete gate passed after scoped repairs; interrupted and failing
+earlier runs are not acceptance evidence. Only Task 5.7 is newly accepted.
+
 ## Full Auto Task 5.6 Retry Boundaries
 
 Risk consent authorizes another attempt; it does not settle the old unknown

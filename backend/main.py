@@ -5479,6 +5479,50 @@ def _schedule_full_auto_run(run_id: str) -> None:
     task.add_done_callback(discard)
 
 
+def _schedule_full_auto_run_after_delay(run_id: str, delay: float) -> None:
+    """Resume one eligible durable run after its next scheduler delay."""
+    current = asyncio.current_task()
+    previous = _FULL_AUTO_RUN_TASKS.get(run_id)
+    if previous is not None and not previous.done() and previous is not current:
+        return
+
+    async def defer_and_reschedule() -> None:
+        task = asyncio.current_task()
+        try:
+            await asyncio.sleep(max(0.0, delay))
+        finally:
+            if _FULL_AUTO_RUN_TASKS.get(run_id) is task:
+                _FULL_AUTO_RUN_TASKS.pop(run_id, None)
+        if not is_resource_planning_enabled():
+            return
+        row = db.one(
+            "SELECT state, cancel_intent FROM full_auto_run WHERE run_id = ?", run_id,
+        )
+        if (
+            row is not None
+            and row["state"] in {"active", "waiting_runner"}
+            and not row["cancel_intent"]
+        ):
+            _schedule_full_auto_run(run_id)
+
+    task = asyncio.create_task(defer_and_reschedule())
+    _FULL_AUTO_RUN_TASKS[run_id] = task
+
+    def discard(completed: asyncio.Task) -> None:
+        if _FULL_AUTO_RUN_TASKS.get(run_id) is completed:
+            _FULL_AUTO_RUN_TASKS.pop(run_id, None)
+        try:
+            completed.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Delayed Full Auto coordinator stopped unexpectedly for run %s.", run_id,
+            )
+
+    task.add_done_callback(discard)
+
+
 def _schedule_full_auto_cancellation(
     run_id: str, session_id: int, claim: resource_full_auto.RunClaim,
 ) -> None:
@@ -5876,11 +5920,76 @@ async def _coordinate_full_auto_run(run_id: str) -> None:
                 admission = db.one(
                     "SELECT 1 FROM full_auto_runner_admission WHERE run_id = ?", run_id,
                 )
+                session_id = int(current["session_id"])
+                running_shot = db.one(
+                    "SELECT id FROM shot WHERE session_id = ? AND status = 'running' ORDER BY id LIMIT 1",
+                    session_id,
+                )
+                pending_shot = db.one(
+                    "SELECT id FROM shot WHERE session_id = ? AND status = 'pending' ORDER BY id LIMIT 1",
+                    session_id,
+                )
+                queue_observed = False
+                if pending_shot is not None and running_shot is None:
+                    heartbeat = None
+                    try:
+                        due_at = resource_full_auto.runner_queue_poll_due_at(claim)
+                        if due_at is not None:
+                            due = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
+                            now = datetime.fromisoformat(db.now().replace("Z", "+00:00"))
+                            delay = max(0.0, (due - now).total_seconds())
+                            if delay > 0:
+                                if current["state"] == "waiting_runner":
+                                    resource_full_auto.release_waiting_runner_claim(claim)
+                                else:
+                                    resource_full_auto.advance_run(
+                                        claim, "waiting_runner", waiting_reason="runner_busy",
+                                    )
+                                _schedule_full_auto_run_after_delay(run_id, delay)
+                                return
+                        if not resource_full_auto.runner_queue_observation_allowed(claim):
+                            if current["state"] == "waiting_runner":
+                                resource_full_auto.release_waiting_runner_claim(claim)
+                            else:
+                                resource_full_auto.advance_run(
+                                    claim, "waiting_runner", waiting_reason="runner_busy",
+                                )
+                            await asyncio.sleep(_FULL_AUTO_COORDINATOR_RETRY_SECONDS)
+                            break
+                        async with resource_full_auto.RunClaimHeartbeat(claim) as heartbeat:
+                            queue_busy = await runner.observe_external_queue(
+                                session_id, int(pending_shot["id"]), heartbeat,
+                            )
+                        claim = heartbeat.claim
+                        if queue_busy:
+                            resource_full_auto.wait_for_external_runner_queue(claim)
+                            _schedule_full_auto_run_after_delay(run_id, 15.0)
+                            return
+                        queue_observed = True
+                    except resource_full_auto.FullAutoRunError as exc:
+                        if heartbeat is not None:
+                            claim = heartbeat.claim
+                        if exc.code in {
+                            "authorization_expired", "authorization_scope_changed",
+                            "plan_revision_stale", "resource_planning_disabled",
+                            "dependency_changed", "workflow_changed", "comfy_unavailable",
+                        }:
+                            try:
+                                resource_full_auto.advance_run(
+                                    claim, "blocked", blocker_code=exc.code,
+                                )
+                            except resource_full_auto.FullAutoRunError:
+                                pass
+                            return
+                        if exc.code in {"run_owner_stale", "run_lease_expired", "run_control_required"}:
+                            return
+                        raise
                 try:
                     started = runner.start(
-                        int(current["session_id"]),
+                        session_id,
                         _full_auto_claim=claim,
                         _full_auto_recovery=admission is not None,
+                        _external_queue_observed=queue_observed,
                     )
                 except resource_full_auto.FullAutoRunError as exc:
                     if exc.code in {"runner_busy", "run_already_claimed"}:
@@ -5893,6 +6002,17 @@ async def _coordinate_full_auto_run(run_id: str) -> None:
                 task = runner._task
                 if task is not None:
                     await task
+                after_runner = db.one(
+                    "SELECT state FROM full_auto_run WHERE run_id = ?", run_id,
+                )
+                if after_runner is not None and after_runner["state"] == "waiting_runner":
+                    after_view = resource_full_auto.get_run(run_id)
+                    delay = (
+                        15.0 if after_view["waiting_reason"] == "external_queue_busy"
+                        else _FULL_AUTO_COORDINATOR_RETRY_SECONDS
+                    )
+                    _schedule_full_auto_run_after_delay(run_id, delay)
+                    return
                 return
             logger.error("Full Auto run %s has unsupported saved phase %s", run_id, phase)
             return

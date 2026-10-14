@@ -74,8 +74,9 @@ _PUBLIC_BLOCKER_CODES = frozenset({
 })
 _PUBLIC_RUN_VIEW_FIELDS = (
     "run_id", "session_id", "revision", "epoch", "plan_revision", "state", "phase",
-    "cancel_intent", "blocker_code", "created_at", "updated_at",
+    "cancel_intent", "blocker_code", "waiting_reason", "created_at", "updated_at",
 )
+_RUNNER_WAIT_REASONS = frozenset({"external_queue_busy", "runner_busy"})
 _PUBLIC_POLICY_VERSION = re.compile(r"^resource-full-auto-v[1-9][0-9]{0,2}$")
 
 
@@ -744,6 +745,11 @@ def _validate_public_run_view(view: dict) -> dict:
         or type(view["state"]) is not str or view["state"] not in _NONTERMINAL | _TERMINAL
         or type(view["phase"]) is not str or view["phase"] not in _PHASES
         or type(view["cancel_intent"]) is not bool
+        or (view["waiting_reason"] is not None and (
+            type(view["waiting_reason"]) is not str
+            or view["waiting_reason"] not in _RUNNER_WAIT_REASONS
+        ))
+        or (view["state"] != "waiting_runner" and view["waiting_reason"] is not None)
         or (blocker is not None and (type(blocker) is not str or blocker not in _PUBLIC_BLOCKER_CODES))
         or (view["state"] == "blocked") != (blocker is not None)
     ):
@@ -1059,6 +1065,25 @@ def _view(row: dict) -> dict:
         or row.get("cancel_intent") not in (0, 1)
     ):
         raise _invalid_saved_status()
+    waiting_reason = None
+    if row.get("state") == "waiting_runner":
+        try:
+            evidence = json.loads(row.get("evidence_json") or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise _invalid_saved_status() from exc
+        if not isinstance(evidence, dict):
+            raise _invalid_saved_status()
+        if evidence.get("kind") == "runner_wait":
+            if row.get("phase") != "execute":
+                raise _invalid_saved_status()
+            waiting_reason = evidence.get("reason")
+            if type(waiting_reason) is not str or waiting_reason not in _RUNNER_WAIT_REASONS:
+                raise _invalid_saved_status()
+            if waiting_reason == "external_queue_busy":
+                try:
+                    _timestamp(evidence.get("next_poll_at"), field_name="runner queue poll deadline")
+                except FullAutoRunError as exc:
+                    raise _invalid_saved_status() from exc
     return _validate_public_run_view({
         "run_id": row.get("run_id"),
         "session_id": row["session_id"],
@@ -1069,6 +1094,7 @@ def _view(row: dict) -> dict:
         "phase": row.get("phase"),
         "cancel_intent": bool(row["cancel_intent"]),
         "blocker_code": row.get("blocker_code"),
+        "waiting_reason": waiting_reason,
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     })
@@ -2677,9 +2703,6 @@ def _eligible_runner_waiters(now_text: str, *, exclude_run_id: str | None = None
         """SELECT * FROM full_auto_run
            WHERE state = 'waiting_runner' AND phase = 'execute'
              AND cancel_intent = 0 AND runner_ready_at IS NOT NULL
-             AND NOT EXISTS (
-                 SELECT 1 FROM full_auto_runner_admission a WHERE a.run_id = full_auto_run.run_id
-             )
            ORDER BY runner_ready_at, run_id"""
     )
     return [
@@ -2805,14 +2828,19 @@ def acquire_runner_claim(
 
             if run_claim is not None:
                 waiters = _eligible_runner_waiters(timestamp, exclude_run_id=run_claim.run_id)
-                if (
-                    not cancellation_recovery and run["state"] != "waiting_runner"
-                    and waiters and not recover_owned_running
-                ):
-                    return run, slot, False
-                if not cancellation_recovery and run["state"] == "waiting_runner":
-                    current_key = (run["runner_ready_at"] or "", run["run_id"])
-                    if any((item["runner_ready_at"], item["run_id"]) < current_key for item in waiters):
+                if not cancellation_recovery and waiters and not recover_owned_running:
+                    admission = db.one(
+                        "SELECT admitted_at FROM full_auto_runner_admission WHERE run_id = ?",
+                        run_claim.run_id,
+                    )
+                    ready_at = run["runner_ready_at"] or (
+                        admission["admitted_at"] if admission is not None else None
+                    )
+                    current_key = (ready_at, run["run_id"]) if ready_at is not None else None
+                    if current_key is None or any(
+                        (item["runner_ready_at"], item["run_id"]) < current_key
+                        for item in waiters
+                    ):
                         return run, slot, False
             return run, slot, True
 
@@ -5486,6 +5514,7 @@ def advance_run(
     *,
     phase: str | None = None,
     blocker_code: str | None = None,
+    waiting_reason: str | None = None,
     assistant_retry_after: str | None = None,
     now_text: str | None = None,
 ) -> dict:
@@ -5496,6 +5525,17 @@ def advance_run(
         raise FullAutoRunError(409, "run_phase_invalid", "The requested Full Auto phase is invalid.")
     if blocker_code is not None and not _SAFE_CODE.fullmatch(blocker_code):
         raise FullAutoRunError(422, "invalid_blocker_code", "The Full Auto blocker code is invalid.")
+    if waiting_reason is not None and (
+        type(waiting_reason) is not str
+        or to_state != "waiting_runner"
+        or waiting_reason not in _RUNNER_WAIT_REASONS
+    ):
+        raise FullAutoRunError(422, "invalid_waiting_reason", "The Full Auto runner wait reason is invalid.")
+    if waiting_reason == "external_queue_busy":
+        raise FullAutoRunError(
+            422, "invalid_waiting_reason",
+            "External queue waits require a durable poll deadline.",
+        )
     with db.transaction():
         timestamp = _now_text(now_text)
         retry_after_at = (
@@ -5532,12 +5572,30 @@ def advance_run(
         fence_delta = 1 if release else 0
         lease = None if release else row["lease_expires_at"]
         lease_started = None if release else row["lease_started_at"]
+        runner_ready_at = None
+        if to_state == "waiting_runner":
+            admission = db.one(
+                "SELECT admitted_at FROM full_auto_runner_admission WHERE run_id = ?",
+                claim.run_id,
+            )
+            runner_ready_at = (
+                row["runner_ready_at"]
+                or (admission["admitted_at"] if admission is not None else None)
+                or timestamp
+            )
+        if waiting_reason is not None and next_phase != "execute":
+            raise FullAutoRunError(422, "invalid_waiting_reason", "The Full Auto runner wait reason is invalid.")
+        evidence = (
+            {"kind": "runner_wait", "reason": waiting_reason or "runner_busy"}
+            if to_state == "waiting_runner" and next_phase == "execute" else
+            {"kind": "state_transition", "from": source, "to": to_state}
+        )
         db.run(
             """UPDATE full_auto_run
                SET state = ?, phase = ?, revision = revision + 1,
                    fencing_token = fencing_token + ?, lease_expires_at = ?,
                    lease_started_at = ?,
-                   runner_ready_at = CASE WHEN ? = 'waiting_runner' THEN ? ELSE NULL END,
+                   runner_ready_at = ?,
                    blocker_code = ?, assistant_retry_after_at = ?,
                    comfy_probe_scope = CASE WHEN ? = 'comfy_unavailable' THEN comfy_probe_scope ELSE NULL END,
                    comfy_probe_count = CASE WHEN ? = 'comfy_unavailable' THEN comfy_probe_count ELSE 0 END,
@@ -5545,10 +5603,172 @@ def advance_run(
                    evidence_json = ?, updated_at = ?
                WHERE run_id = ? AND epoch = ? AND fencing_token = ?""",
             to_state, next_phase, fence_delta, lease, lease_started,
-            to_state, timestamp, blocker_code,
+            runner_ready_at, blocker_code,
             retry_after_at, blocker_code, blocker_code, blocker_code,
-            _canonical_json({"kind": "state_transition", "from": source, "to": to_state}),
+            _canonical_json(evidence),
             timestamp, claim.run_id, claim.epoch, claim.fencing_token,
+        )
+        return _view(_require_run(claim.run_id))
+
+
+def runner_queue_poll_due_at(claim: RunClaim, *, now_text: str | None = None) -> str | None:
+    """Return the durable external-queue poll deadline for a claimed run, if any."""
+    with db.transaction():
+        timestamp = _now_text(now_text)
+        row = _require_claim(claim, now_text=timestamp)
+        if row["state"] != "waiting_runner" or row["phase"] != "execute":
+            return None
+        view = _view(row)
+        if view["waiting_reason"] != "external_queue_busy":
+            return None
+        evidence = json.loads(row["evidence_json"])
+        return evidence["next_poll_at"]
+
+
+def runner_queue_observation_allowed(
+    claim: RunClaim, *, now_text: str | None = None,
+) -> bool:
+    """Check local FIFO/ownership without reserving the global runner claim."""
+    with db.transaction():
+        timestamp = _now_text(now_text)
+        row = _require_claim(claim, now_text=timestamp)
+        if (
+            claim.requires_reconciliation
+            or row["phase"] != "execute"
+            or row["state"] not in {"active", "waiting_runner"}
+            or bool(row["cancel_intent"])
+        ):
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        authority_issue = _current_authority_issue(row, timestamp)
+        if authority_issue is not None:
+            raise _authority_error(authority_issue)
+        slot = db.one("SELECT owner_kind, lease_expires_at FROM global_runner_claim WHERE singleton = 1")
+        if slot is None:
+            raise FullAutoRunError(500, "runner_claim_missing", "The shared runner claim is unavailable.")
+        if slot["owner_kind"] is not None and _timestamp(
+            slot["lease_expires_at"], field_name="runner lease",
+        ) > _timestamp(timestamp, field_name="current time"):
+            return False
+        if db.one("SELECT 1 FROM shot WHERE status = 'running' LIMIT 1") is not None:
+            return False
+        waiters = _eligible_runner_waiters(timestamp, exclude_run_id=claim.run_id)
+        admission = db.one(
+            "SELECT admitted_at FROM full_auto_runner_admission WHERE run_id = ?",
+            claim.run_id,
+        )
+        ready_at = row["runner_ready_at"] or (admission["admitted_at"] if admission is not None else None)
+        if row["state"] == "waiting_runner" and ready_at is None:
+            return False
+        if ready_at is None:
+            allowed = not waiters
+        else:
+            current_key = (ready_at, claim.run_id)
+            allowed = not any(
+                (item["runner_ready_at"], item["run_id"]) < current_key
+                for item in waiters
+            )
+        if not allowed:
+            return False
+        final_timestamp = _now_text(now_text)
+        final_row = _require_claim(claim, now_text=final_timestamp)
+        if (
+            claim.requires_reconciliation
+            or final_row["phase"] != "execute"
+            or final_row["state"] not in {"active", "waiting_runner"}
+            or bool(final_row["cancel_intent"])
+        ):
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        authority_issue = _current_authority_issue(final_row, final_timestamp)
+        if authority_issue is not None:
+            raise _authority_error(authority_issue)
+        return True
+
+
+def wait_for_external_runner_queue(
+    claim: RunClaim,
+    *,
+    runner_claim: RunnerClaim | None = None,
+    now_text: str | None = None,
+) -> dict:
+    """Persist an external-busy wait and release this coordinator's run lease."""
+    with db.transaction():
+        timestamp = _now_text(now_text)
+        row = _require_claim(claim, now_text=timestamp)
+        if (
+            claim.requires_reconciliation
+            or int(row["session_id"]) != claim.session_id
+            or row["phase"] != "execute"
+            or row["state"] not in {"active", "waiting_runner"}
+            or bool(row["cancel_intent"])
+        ):
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        authority_issue = _current_authority_issue(row, timestamp)
+        if authority_issue is not None:
+            raise _authority_error(authority_issue)
+        if runner_claim is not None:
+            owner = _require_runner_claim(runner_claim, now_text=timestamp)
+            if (
+                int(owner["session_id"]) != claim.session_id
+                or owner["run_id"] != claim.run_id
+                or owner["owner_kind"] != "full_auto"
+            ):
+                raise FullAutoRunError(409, "runner_owner_stale", "The runner owner is stale.")
+        admission = db.one(
+            "SELECT admitted_at FROM full_auto_runner_admission WHERE run_id = ?",
+            claim.run_id,
+        )
+        # Reads above can take time (including the authorization/dependency walk).
+        # Revalidate both owners at the mutation boundary so an expired lease can
+        # never persist a wait after its authority has ended.
+        final_timestamp = _now_text(now_text)
+        final_row = _require_claim(claim, now_text=final_timestamp)
+        if (
+            claim.requires_reconciliation
+            or int(final_row["session_id"]) != claim.session_id
+            or final_row["phase"] != "execute"
+            or final_row["state"] not in {"active", "waiting_runner"}
+            or bool(final_row["cancel_intent"])
+        ):
+            raise FullAutoRunError(409, "run_owner_stale", "The Full Auto execution owner is stale.")
+        authority_issue = _current_authority_issue(final_row, final_timestamp)
+        if authority_issue is not None:
+            raise _authority_error(authority_issue)
+        # The authority walk may be slow. Sample time again and perform only
+        # the cheap fencing/lease checks after it, immediately before writing.
+        write_timestamp = _now_text(now_text)
+        final_row = _require_claim(claim, now_text=write_timestamp)
+        if runner_claim is not None:
+            owner = _require_runner_claim(runner_claim, now_text=write_timestamp)
+            if (
+                int(owner["session_id"]) != claim.session_id
+                or owner["run_id"] != claim.run_id
+                or owner["owner_kind"] != "full_auto"
+            ):
+                raise FullAutoRunError(409, "runner_owner_stale", "The runner owner is stale.")
+        ready_at = (
+            final_row["runner_ready_at"]
+            or (admission["admitted_at"] if admission is not None else None)
+            or write_timestamp
+        )
+        next_poll_at = (
+            _timestamp(write_timestamp, field_name="current time") + timedelta(seconds=15)
+        ).isoformat(timespec="seconds")
+        evidence = {
+            "kind": "runner_wait",
+            "reason": "external_queue_busy",
+            "next_poll_at": next_poll_at,
+        }
+        db.run(
+            """UPDATE full_auto_run
+               SET state = 'waiting_runner', revision = revision + 1,
+                   fencing_token = fencing_token + 1,
+                   lease_expires_at = NULL, lease_started_at = NULL,
+                   runner_ready_at = ?, blocker_code = NULL,
+                   comfy_probe_scope = NULL, comfy_probe_count = 0,
+                   comfy_probe_due_at = NULL, evidence_json = ?, updated_at = ?
+               WHERE run_id = ? AND epoch = ? AND fencing_token = ?""",
+            ready_at, _canonical_json(evidence), write_timestamp,
+            claim.run_id, claim.epoch, claim.fencing_token,
         )
         return _view(_require_run(claim.run_id))
 
@@ -5719,8 +5939,14 @@ def _replay_action(
     except (TypeError, json.JSONDecodeError) as exc:
         raise FullAutoRunError(500, "run_receipt_invalid", "The saved Full Auto control receipt is invalid.") from exc
     authority = db.one("SELECT session_id FROM full_auto_run WHERE run_id = ?", run_id)
-    if type(view) is not dict or set(view) != set(_PUBLIC_RUN_VIEW_FIELDS) | {"action", "request_id"}:
+    legacy_public_fields = set(_PUBLIC_RUN_VIEW_FIELDS) - {"waiting_reason"}
+    if type(view) is not dict or (
+        set(view) != set(_PUBLIC_RUN_VIEW_FIELDS) | {"action", "request_id"}
+        and set(view) != legacy_public_fields | {"action", "request_id"}
+    ):
         raise FullAutoRunError(500, "run_receipt_invalid", "The saved Full Auto control receipt is invalid.")
+    if "waiting_reason" not in view:
+        view = {**view, "waiting_reason": None}
     if (
         row["action"] != expected_action
         or view.get("action") != expected_action

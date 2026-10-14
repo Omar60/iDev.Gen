@@ -824,8 +824,11 @@ def test_successful_connectivity_does_not_settle_an_unknown_owned_dispatch(
         session_id,
     )
     assert stats_calls == ["GET /system_stats"]
-    assert len(history_calls) == 2
-    assert history_calls[0] == history_calls[1]
+    # The first call fails and its probe retry recovers connectivity. Once the
+    # owned prompt is observed running, history is checked for one full polling
+    # interval before the execution timeout is settled.
+    assert len(history_calls) == 3
+    assert history_calls == [history_calls[0]] * 3
     assert fake.attempts == 1
     assert fake.interrupted == 0
     assert shot["status"] == "running"

@@ -358,7 +358,9 @@ def test_explicit_resume_observing_a_verified_running_prompt_stays_cancel_reques
     assert repeated.status_code == 202, repeated.text
     assert repeated.json()["state"] == "cancel_requested"
     assert len(scheduled) == 1
-    assert remote_reads == {"queue": 0, "history": 0}
+    # Full Auto observes the queue once before dispatch; cancellation itself
+    # must not trigger another queue or history read.
+    assert remote_reads == {"queue": 1, "history": 0}
     with pytest.raises(resource_full_auto.FullAutoRunError) as manual_edit:
         resource_full_auto.require_session_mutation_allowed(session_id)
     assert manual_edit.value.code == "full_auto_session_owned"

@@ -68,6 +68,7 @@ class Runner:
 
     def start(
         self, session_id: int, *, _full_auto_claim=None, _full_auto_recovery: bool = False,
+        _external_queue_observed: bool = False,
     ) -> bool:
         from backend import resource_full_auto
 
@@ -98,7 +99,9 @@ class Runner:
                 if row["state"] == "waiting_runner":
                     resource_full_auto.release_waiting_runner_claim(_full_auto_claim)
                 else:
-                    resource_full_auto.advance_run(_full_auto_claim, "waiting_runner")
+                    resource_full_auto.advance_run(
+                        _full_auto_claim, "waiting_runner", waiting_reason="runner_busy",
+                    )
                 return False
             if _full_auto_claim is not None:
                 run = db.one(
@@ -113,9 +116,17 @@ class Runner:
                     resource_full_auto.admit_runner_start(session_id, _full_auto_claim)
             db.run("UPDATE session SET status='running' WHERE id=?", session_id)
         self._cancel.discard(session_id)
-        self._task = asyncio.create_task(
-            self._run_claimed_session(session_id, runner_claim, _full_auto_claim),
-        )
+        if _external_queue_observed:
+            self._task = asyncio.create_task(
+                self._run_claimed_session(
+                    session_id, runner_claim, _full_auto_claim,
+                    external_queue_observed=True,
+                ),
+            )
+        else:
+            self._task = asyncio.create_task(
+                self._run_claimed_session(session_id, runner_claim, _full_auto_claim),
+            )
         return True
 
     def cancel(self, session_id: int) -> None:
@@ -158,16 +169,28 @@ class Runner:
 
     # -- loop -------------------------------------------------------------
 
-    async def _run_claimed_session(self, session_id: int, runner_claim, full_auto_claim) -> None:
+    async def _run_claimed_session(
+        self, session_id: int, runner_claim, full_auto_claim, *, external_queue_observed: bool = False,
+    ) -> None:
         from backend import resource_full_auto
 
         heartbeat = resource_full_auto.RunnerClaimHeartbeat(runner_claim, full_auto_claim)
         try:
             try:
                 async with heartbeat:
-                    await self._run_session(
-                        session_id, _full_auto_claim=full_auto_claim,
-                        _runner_claim=heartbeat,
+                    if external_queue_observed:
+                        external_queue_busy = await self._run_session(
+                            session_id, _full_auto_claim=full_auto_claim,
+                            _runner_claim=heartbeat, _external_queue_observed=True,
+                        )
+                    else:
+                        external_queue_busy = await self._run_session(
+                            session_id, _full_auto_claim=full_auto_claim,
+                            _runner_claim=heartbeat,
+                        )
+                if external_queue_busy:
+                    resource_full_auto.wait_for_external_runner_queue(
+                        heartbeat.run_claim, runner_claim=heartbeat.claim,
                     )
             except resource_full_auto.FullAutoRunError as exc:
                 self._cancel.discard(session_id)
@@ -184,23 +207,37 @@ class Runner:
             except resource_full_auto.FullAutoRunError as exc:
                 log.warning("runner claim release refused for session %s: %s", session_id, exc.code)
 
-    async def _run_session(self, session_id: int, _full_auto_claim=None, _runner_claim=None) -> None:
+    async def _run_session(
+        self, session_id: int, _full_auto_claim=None, _runner_claim=None,
+        _external_queue_observed: bool = False,
+    ) -> bool:
         if _runner_claim is not None:
-            await self._run_session_owned(session_id, _runner_claim)
-            return
+            return await self._run_session_owned(
+                session_id, _runner_claim,
+                external_queue_observed=_external_queue_observed,
+            )
         if _full_auto_claim is None:
             await self._run_session_owned(session_id)
-            return
+            return False
         from backend import resource_full_auto
 
         try:
             async with resource_full_auto.RunClaimHeartbeat(_full_auto_claim) as heartbeat:
-                await self._run_session_owned(session_id, heartbeat)
+                external_queue_busy = await self._run_session_owned(
+                    session_id, heartbeat,
+                    external_queue_observed=_external_queue_observed,
+                )
+            if external_queue_busy:
+                resource_full_auto.wait_for_external_runner_queue(heartbeat.claim)
+            return external_queue_busy
         except resource_full_auto.FullAutoRunError as exc:
             self._cancel.discard(session_id)
             log.warning("Full Auto runner stopped for session %s: %s", session_id, exc.code)
+            return False
 
-    async def _run_session_owned(self, session_id: int, heartbeat=None) -> None:
+    async def _run_session_owned(
+        self, session_id: int, heartbeat=None, *, external_queue_observed: bool = False,
+    ) -> bool:
         from backend import resource_full_auto
 
         try:
@@ -231,6 +268,12 @@ class Runner:
                         session_id,
                     )
                     break
+                if self._has_full_auto_runner_owner(heartbeat):
+                    if not external_queue_observed and await self.observe_external_queue(
+                        session_id, int(shot["id"]), heartbeat,
+                    ):
+                        return True
+                    external_queue_observed = False
                 await self._run_shot(session_id, shot, heartbeat)
         except resource_full_auto.FullAutoRunError as exc:
             if heartbeat is None:
@@ -245,7 +288,7 @@ class Runner:
                     )
                 except resource_full_auto.FullAutoRunError:
                     pass
-            return
+            return False
         except Exception as exc:  # noqa: BLE001 - the loop must never die silently
             log.exception("session %s crashed", session_id)
             if heartbeat is not None:
@@ -258,7 +301,7 @@ class Runner:
                     session_id,
                 )
                 if getattr(heartbeat, "run_claim", None) is not None or unresolved is not None:
-                    return
+                    return False
             try:
                 self._owned_update(session_id, heartbeat, "UPDATE session SET status='failed' WHERE id=?", session_id)
                 self._owned_update(
@@ -267,8 +310,8 @@ class Runner:
                     str(exc)[:500], session_id,
                 )
             except resource_full_auto.FullAutoRunError:
-                return
-            return
+                return False
+            return False
         cancelled = session_id in self._cancel
         self._cancel.discard(session_id)
         self._owned_update(
@@ -278,6 +321,7 @@ class Runner:
         )
         if not cancelled and self._has_full_auto_owner(heartbeat):
             self._settle_full_auto_run(session_id, heartbeat)
+        return False
 
     async def _recover_running_shot(self, session_id: int, shot: dict, heartbeat) -> None:
         """Resume one saved attempt by observation only; this path never POSTs a prompt."""
@@ -405,7 +449,7 @@ class Runner:
             state="acknowledged", prompt_id=prompt_id, recovery=True,
         )
         try:
-            history = await self._await_history(prompt_id, session_id, heartbeat)
+            history = await self._await_history(prompt_id, session_id, heartbeat, attempt=attempt)
         except TimeoutError as exc:
             raise resource_full_auto.FullAutoRunError(
                 409, "execution_outcome_unknown",
@@ -811,7 +855,7 @@ class Runner:
         if queue_active:
             return "running"
         try:
-            history = await self._await_history(prompt_id, session_id, heartbeat)
+            history = await self._await_history(prompt_id, session_id, heartbeat, attempt=attempt)
         except TimeoutError as exc:
             raise resource_full_auto.FullAutoRunError(
                 409, "execution_outcome_unknown",
@@ -1357,7 +1401,7 @@ class Runner:
 
         if recovered_output is None:
             try:
-                history = await self._await_history(prompt_id, session_id, heartbeat)
+                history = await self._await_history(prompt_id, session_id, heartbeat, attempt=attempt)
             except TimeoutError as exc:
                 if not self._has_full_auto_owner(heartbeat):
                     raise
@@ -1589,6 +1633,41 @@ class Runner:
             )
         else:
             resource_full_auto.clear_comfy_probe_state(heartbeat.check(), scope)
+
+    async def observe_external_queue(self, session_id: int, shot_id: int, heartbeat) -> bool:
+        """Return whether any remote work is queued, without reserving a runner claim."""
+        from backend import resource_full_auto
+
+        scope = f"dispatch:{shot_id}"
+        probe = resource_full_auto.comfy_probe_state(heartbeat.check(), scope)
+        if probe["pending"]:
+            queue, _waited = await self._recover_comfy_read(
+                session_id, heartbeat, scope, self.comfy.queue_state, state=probe,
+            )
+        else:
+            try:
+                queue = await self.comfy.queue_state()
+            except resource_full_auto.FullAutoRunError:
+                raise
+            except Exception:  # noqa: BLE001 - a queue read failure cannot authorize a dispatch
+                probe = resource_full_auto.schedule_comfy_probe(heartbeat.check(), scope)
+                queue, _waited = await self._recover_comfy_read(
+                    session_id, heartbeat, scope, self.comfy.queue_state, state=probe,
+                )
+            else:
+                self._require_runner_owner(session_id, heartbeat)
+                resource_full_auto.clear_comfy_probe_state(heartbeat.check(), scope)
+        self._require_runner_owner(session_id, heartbeat)
+        if (
+            not isinstance(queue, dict)
+            or not isinstance(queue.get("queue_running"), list)
+            or not isinstance(queue.get("queue_pending"), list)
+        ):
+            raise resource_full_auto.FullAutoRunError(
+                503, "comfy_unavailable",
+                "ComfyUI's queue could not be safely verified; no generation request was sent.",
+            )
+        return bool(queue["queue_running"] or queue["queue_pending"])
 
     async def _verify_attempt_server_identity(
         self, attempt: dict, heartbeat, *, recover_transport: bool = False,
@@ -2070,9 +2149,150 @@ class Runner:
             },
         }
 
-    async def _await_history(self, prompt_id: str, session_id: int, heartbeat=None) -> dict | None:
+    def _owned_attempt_queue_state(self, attempt: dict, queue: object) -> str | None:
+        """Return running/pending only for one queue record matching the saved attempt."""
+        from backend import resource_full_auto, resource_store
+
+        if (
+            not isinstance(queue, dict)
+            or not isinstance(queue.get("queue_running"), list)
+            or not isinstance(queue.get("queue_pending"), list)
+        ):
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "ComfyUI returned unusable queue evidence for the saved attempt.",
+            )
+        expected = build_attempt_metadata(attempt["client_id"], attempt)
+        matches: list[str] = []
+        for key, state in (("queue_running", "running"), ("queue_pending", "pending")):
+            for entry in queue[key]:
+                try:
+                    prompt_id, graph, extra_data = prompt_entry_fields(entry)
+                    marker = attempt_marker(extra_data)
+                except Exception as exc:  # noqa: BLE001 - malformed evidence cannot prove absence
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "execution_outcome_unknown",
+                        "ComfyUI queue evidence could not be safely checked for the saved attempt.",
+                    ) from exc
+                graph_matches = (
+                    resource_store.canonical_digest(graph) == attempt["graph_digest"]
+                    and graph_has_prefix(graph, attempt["filename_prefix"])
+                )
+                if prompt_id != attempt.get("prompt_id") and (
+                    marker is None or marker.get("attempt_id") != attempt["attempt_id"]
+                ):
+                    if graph_matches:
+                        raise resource_full_auto.FullAutoRunError(
+                            409, "execution_outcome_unknown",
+                            "ComfyUI queue evidence conflicts with the saved attempt.",
+                        )
+                    continue
+                png_info = extra_data.get("extra_pnginfo")
+                try:
+                    nested_marker = attempt_marker(png_info) if isinstance(png_info, dict) else None
+                except Exception as exc:  # noqa: BLE001 - malformed nested marker is conflicting evidence
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "execution_outcome_unknown",
+                        "ComfyUI queue evidence conflicts with the saved attempt.",
+                    ) from exc
+                if (
+                    prompt_id != attempt.get("prompt_id")
+                    or marker != expected
+                    or nested_marker != expected
+                    or extra_data.get("client_id") != attempt["client_id"]
+                    or not graph_matches
+                ):
+                    raise resource_full_auto.FullAutoRunError(
+                        409, "execution_outcome_unknown",
+                        "ComfyUI queue evidence conflicts with the saved attempt.",
+                    )
+                matches.append(state)
+        if len(matches) > 1:
+            raise resource_full_auto.FullAutoRunError(
+                409, "execution_outcome_unknown",
+                "ComfyUI returned duplicate queue evidence for the saved attempt.",
+            )
+        return matches[0] if matches else None
+
+    async def _await_full_auto_history(
+        self, prompt_id: str, session_id: int, heartbeat, attempt: dict,
+    ) -> dict | None:
+        """Exclude queue-pending time; start the 900s bound at owned running evidence."""
+        from backend import resource_full_auto
+
+        history_scope = "history:" + hashlib.sha256(prompt_id.encode("utf-8")).hexdigest()
+        scope_state = resource_full_auto.comfy_probe_state(heartbeat.check(), history_scope)
+        if scope_state["pending"]:
+            history, _waited = await self._recover_comfy_read(
+                session_id, heartbeat, history_scope,
+                lambda: self.comfy.history(prompt_id), state=scope_state,
+            )
+            if history and history.get("status", {}).get("completed") is not None:
+                return history
+            if history and history.get("outputs"):
+                return history
+
+        loop = asyncio.get_running_loop()
+        executing_started_at = None
+        executing_elapsed = 0.0
+        next_queue_poll = loop.time()
+        while True:
+            self._require_runner_owner(session_id, heartbeat)
+            if session_id in self._cancel:
+                return None
+            await asyncio.sleep(POLL_SECONDS)
+            self._require_runner_owner(session_id, heartbeat)
+            try:
+                history = await self.comfy.history(prompt_id)
+            except resource_full_auto.FullAutoRunError:
+                raise
+            except Exception:  # ComfyUI restarting / transient history read failure
+                self._require_runner_owner(session_id, heartbeat)
+                history_state = resource_full_auto.schedule_comfy_probe(
+                    heartbeat.check(), history_scope,
+                )
+                history, _waited = await self._recover_comfy_read(
+                    session_id, heartbeat, history_scope,
+                    lambda: self.comfy.history(prompt_id), state=history_state,
+                )
+            self._require_runner_owner(session_id, heartbeat)
+            if history and history.get("status", {}).get("completed") is not None:
+                return history
+            if history and history.get("outputs"):
+                return history
+
+            now = loop.time()
+            started_executing_this_poll = False
+            if now >= next_queue_poll:
+                queue = await self._read_attempt_comfy(
+                    attempt, heartbeat, "queue", self.comfy.queue_state,
+                )
+                self._require_runner_owner(session_id, heartbeat)
+                queue_state = self._owned_attempt_queue_state(attempt, queue)
+                now = loop.time()
+                if queue_state == "running" and executing_started_at is None:
+                    executing_started_at = now
+                    executing_elapsed = 0.0
+                    started_executing_this_poll = True
+                next_queue_poll = now + CANCELLATION_QUEUE_POLL_SECONDS
+            if executing_started_at is not None and not started_executing_this_poll:
+                executing_elapsed = max(
+                    executing_elapsed + POLL_SECONDS,
+                    loop.time() - executing_started_at,
+                )
+                if executing_elapsed >= SHOT_TIMEOUT:
+                    raise TimeoutError(f"The shot ran past {SHOT_TIMEOUT}s without finishing")
+
+    async def _await_history(
+        self, prompt_id: str, session_id: int, heartbeat=None, *, attempt: dict | None = None,
+    ) -> dict | None:
         """Poll until the job leaves ComfyUI's queue. None = cancelled/timeout."""
         from backend import resource_full_auto
+
+        if attempt is not None:
+            return await self._await_full_auto_history(
+                prompt_id, session_id, heartbeat, attempt,
+            )
 
         waited = 0.0
         scope = "history:" + hashlib.sha256(prompt_id.encode("utf-8")).hexdigest()

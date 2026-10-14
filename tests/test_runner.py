@@ -586,7 +586,8 @@ def test_full_auto_missing_history_does_not_interrupt_global_comfy_queue(
         r, "_owned_update", lambda _sid, _heartbeat, sql, *params: db.run(sql, *params),
     )
 
-    async def missing_history(_prompt_id, _session_id, _heartbeat):
+    async def missing_history(_prompt_id, _session_id, _heartbeat, *, attempt=None):
+        assert attempt is None
         return None
 
     monkeypatch.setattr(r, "_await_history", missing_history)

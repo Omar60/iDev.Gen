@@ -1681,7 +1681,8 @@ eligible terminal Resume opens a new epoch.
 run, or its latest terminal run, as `current_run`; it returns `null` when none
 exists. `GET /api/sessions/{sid}/full-auto/{run_id}` returns a run only when it
 belongs to that session. The closed status view includes safe progress, current
-plan revision, authorization deadline, blocker/remedies, action flags, the
+plan revision, authorization deadline, blocker/remedies, `waiting_reason`
+(`null`, `runner_busy`, or `external_queue_busy`), action flags, the
 cumulative authorized assistant-call total, and the current grant's remaining
 assistant allowance. It does not expose
 prompts, paths, private authorization, fencing tokens, or leases.
@@ -1795,8 +1796,9 @@ remote work stopped, determine provider billing, or validate generated images.
 
 These controls apply to journaled Full Auto execution. Legacy unjournaled
 behavior is unchanged, and the legacy `/api/sessions/{sid}/retry` route refuses
-Full Auto-linked shots. The retry API has no dedicated UI. External queue policy
-and rollback tooling remain unfinished.
+Full Auto-linked shots. The retry API has no dedicated UI. The Full Auto profile
+editor, selection/consent/progress UI, rollback tooling, and separately authorized
+real-generation validation remain unfinished.
 
 #### Full Auto deletion guards and recovery
 
@@ -1946,6 +1948,23 @@ persisted coordinator through preparation, review, ordered submission, and the
 existing runner. There is no dedicated Full Auto control UI or direct per-phase
 preparation, submission, or execution endpoint.
 
+Before a Full Auto dispatch, the runner reads ComfyUI's `queue_running` and
+`queue_pending` lists. If either is nonempty, it records `waiting_runner` with
+`waiting_reason: "external_queue_busy"` and persists a poll deadline 15 seconds
+later. Startup preserves that deadline, and the wait keeps the run's existing
+local FIFO readiness position, including when the queue becomes busy between
+shots. The wait does not reserve an idle local runner; when detected between
+shots, it releases the current runner claim. If another client queues work after
+an empty observation, Full Auto may still send one normal-priority POST for that
+attempt; it sets no remote priority and promises no remote queue fairness or
+exclusivity. A malformed queue response fails safe without dispatch. Manual
+runner behavior is unchanged.
+
+The 900-second Full Auto shot timeout starts only after the runner observes its
+owned prompt in ComfyUI's running queue, so time spent pending does not count. A
+history result can settle a prompt that completed between queue observations,
+even if no running snapshot was seen.
+
 Before each owned runner dispatch, the runner makes a read-only ComfyUI stats
 GET. If that fails, the initial request is followed by at most three more GETs
 after 5, 15, and 30 seconds. A failed history GET uses the same bounded schedule
@@ -2015,9 +2034,10 @@ duplicate, or prior-epoch evidence blocks the run; exhausted probes report
 planning is disabled or authorization has expired, recovery settles existing
 outputs but leaves remaining new work blocked. This supports safe backend-restart
 continuation; it does not establish that an
-unmatched remote job stopped. External queue policy and rollback tooling remain
-unfinished. The journal is scoped to Full Auto; manual reference/guide handling
-and locked-file move retries remain covered. Manual sessions remain available
+unmatched remote job stopped. External queue observation does not reserve or
+control remote queue order; rollback tooling remains unfinished. The journal is
+scoped to Full Auto; manual reference/guide handling and locked-file move retries
+remain covered. Manual sessions remain available
 when no nonterminal Full Auto run owns the session. Review validates persisted
 evidence and policy; it does not certify semantic correctness or rendered
 pixels.
