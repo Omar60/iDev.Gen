@@ -77,6 +77,12 @@ permanent appearance projection when the current-plan API checks and accepted
 appearance ownership validate the exact profile. It supplies no derived
 coverage; existing manual coverage remains user-authored.
 
+The exact-revision selector in Resources is read-only: it shows readiness
+diagnostics but does not open the profile editor. To correct a profile, open
+**Looks** from the main navigation, edit and publish a new immutable revision
+for the exact saved-look version, then return to Resources and select that
+revision explicitly.
+
 For each appearance phrase, select the saved text and assign it to permanent
 appearance or a progressive garment. The source text stays unchanged; the view
 shows the joined permanent projection used by profile-aware application. The
@@ -149,7 +155,11 @@ For looks with an outfit, baseline coverage that says any supported region is
 fully or partially covered conflicts with the garment-free end of the
 progression. An appearance-only look has no such progression conflict, but it
 still needs explicit accepted baseline and inventory facts. Readiness is limited
-to chest, hips, legs, and feet; `partial` does not identify a subregion.
+to chest, hips, legs, and feet. For structured coverage, `partial` means some
+but not all of the named region; it does not identify a side or subregion, and
+two partial layers do not combine into full coverage. V1 does not structure
+arms, hands, back, or finer subregions; use manual authoring when those details
+matter.
 
 Reviewed reuse requires an explicit selection. A garment state copies only
 when its key, canonical wording, and selected `worn` or `aside` wording are
@@ -245,10 +255,9 @@ The Looks view edits reusable profiles, and Shared Choices can explicitly
 apply an exact revision to a manual authoring-v1 plan. Guided creation can
 apply an exact saved-look snapshot through
 `POST /api/sessions/guided`, without applying a profile or starting progression.
-The guided-creation API also provides Full Auto preflight and atomic initial
-authorization. The backend coordinator and status/Cancel/Resume API are
-implemented; Full Auto selection/consent/progress UI and Cancel/Resume UI are
-not implemented.
+Full Auto preflight and selection/consent are available in Resources; its
+persisted progress and Cancel/Resume controls are available on the Session
+page.
 The manual saved-look workflow remains available, including progression
 preview, review, submission, and Run controls. See the
 [guided creation API](sessions.md#saved-look-and-full-auto-creation-api).

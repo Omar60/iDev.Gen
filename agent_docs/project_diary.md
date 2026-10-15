@@ -1,5 +1,20 @@
 # Project Diary
 
+## Full Auto Task 6.5 Documentation Acceptance
+
+Keep README concise and link canonical session, profile and rollback guides.
+Documentation must distinguish working navigation from dependency restoration:
+Open Resources does not restore an exact missing identity. Profile correction
+uses Looks and explicit revision selection. Duplicate-set acceptance neither
+grants human plan approval nor resumes generation. Partial layers do not certify
+full coverage, subregions or rendered fidelity.
+
+Internal workers initially hit the usage limit before producing work; the
+user restored capacity and authorized retry. Executor then changed only public
+documentation, and independent Tester accepted the real diff with complete
+Python, strict OpenSpec, privacy/control and link checks. No runtime behavior
+changed, and section 7 acceptance remains separate.
+
 ## Full Auto Task 6.4 Transfer Contract
 
 Persisted Cancel intent and verified settlement already define the transfer

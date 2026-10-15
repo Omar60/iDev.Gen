@@ -89,187 +89,41 @@ exact saved-look version, so ownership and coverage facts are recorded once
 rather than per take. Its workflow and manual application are documented in
 [Saved looks](docs/looks.md#reusable-automation-profiles); exact profile
 read/write APIs are in [the API reference](docs/looks.md#automation-profile-api).
-Resources offers opt-in Full Auto creation with an exact saved-look version and
-ready automation profile. Its read-only preflight summarizes every stage and
-coverage, take count and interval, effective canvas and framing, workflow and
-provider identity, budgets, policy/compiler versions, and quote expiry before
-consent. Confirming **Generate without pauses** authorizes one atomic creation
-request for automatic preparation, review and approval, submission, and initial
-execution; manual saved-look creation remains available without automation. A
-run can continue after browser closure or a backend restart, but blockers,
-exhausted allowances, expiry, or Cancel can stop it. The allowance is at most
-two assistant calls per take, including a
-compatibility fallback, and is not a monetary cap. Framing and coverage describe
-instructions, not guaranteed image content. The backend also exposes persisted
-status, Cancel, Resume, and read-only Resume scope comparison; their request,
-CAS, replay, and quote contract is documented in
-[Full Auto status and controls](docs/sessions.md#full-auto-status-and-controls).
-Guided Full Auto creation schedules the coordinator after authorization commits;
-eligible Resume and backend startup also schedule persisted work. The
-coordinator prepares, reviews and approves, submits, then starts the existing
-serial runner. Startup recovery continues persisted work only after it passes
-the applicable recovery checks.
-Shared service guards block manual
-preparation, suggestions, plan/adaptation edits, resource refreshes that would
-advance the plan, approval, submission, and runner run/retry/cancel while a Full
-Auto run is nonterminal. Read-only drift inspection and safe no-work replays may
-remain available. An internal pause can fence child work and authorize one
-plan CAS while retaining session ownership. Resume can compare changed scope
-and, after explicit acceptance, append a linked immutable authorization grant.
-Pending or unknown cancellation retains session ownership. Cancel persists and
-fences intent, cancels linked shots with no execution attempt in place, and
-retains completed outputs. The persisted capability set includes only
-`client_prompt_id`; it does not provide atomic targeted cancellation, so Full
-Auto drains without global interrupt or queue clearing. After three additional
-persisted read-only probes at 5, 15, and 30 seconds, outage or unknown evidence
-leaves blocked intent; repeated Cancel does not poll. Explicit Resume uses
-read-only remote reconciliation and local settlement, even after authorization
-expiry or feature disablement; it never activates or dispatches work. Eligible
-continuation reuses shot IDs and restores only linked targets without an
-execution attempt. Journaled attempt retries are explicit Resume controls: they
-reuse linked shot IDs, require a fresh scope quote, and require separate
-duplicate-work risk acceptance plus a current queue check for unknown outcomes.
-The legacy session retry route refuses Full Auto-linked shots. The session
-page discovers persisted state from the server, shows progress and per-shot
-outcomes, and offers Cancel, scope-aware Resume, and explicit retries. Cancel
-drains owned work and preserves completed outputs; blocked cancellation exposes
-read-only **Reconcile cancellation** and stays blocked on unknown or unavailable
-results. Unknown-outcome retry requires separate duplicate-work acceptance and
-reachable queue evidence. Expired or budget-blocked runs can compare a renewal
-quote showing remaining, added, and post-acceptance allowances; accepting a
-changed scope is explicit. See
-[Full Auto status and controls](docs/sessions.md#full-auto-status-and-controls).
-The backend-only all-target review gate checks current prepared evidence
-for Full Auto approval and new submissions: unresolved review conflicts,
-placeholders, stale adaptations, drift, and unaccepted exact duplicate tuples
-block them; neutral descriptive notices remain visible without blocking.
-Approval records separate Full Auto policy provenance. The review projection
-is included in `GET /api/sessions/{sid}/plan/review`; current duplicate
-acceptance is available through
-`POST /api/sessions/{sid}/plan/review/duplicates/accept`, bound to the current
-plan revision and review digest. The coordinator applies this gate, records
-ordered receipts binding prepared snapshots to shot links and digests, reuses
-committed links and stored final prompts, then starts the runner after every
-target is linked. Before execution, a private authenticated claim rechecks
-current authority and evidence, acquires the shared local runner, and persists
-one admission. A Full Auto run
-waiting for the runner stores `runner_ready_at` and its run ID in
-`waiting_runner` without an admission receipt. The SQLite runner claim is signed
-and fenced, has a 60-second lease renewed by 15-second heartbeats, and is shared
-by manual and Full Auto starts. Manual starts are never queued: they return
-`409 runner_busy`
-when another session owns the runner, an eligible Full Auto waiter has
-priority, or earlier runner work remains unresolved. Eligible waiters follow
-readiness-time order; blocked, cancelled, expired, or authority-ineligible runs
-are skipped, and Resume enters with fresh priority. If scheduling is uncertain
-after admission, another start is refused while the outcome remains unresolved.
-Direct per-phase preparation, submission, and execution routes are not
-exposed; guided authorization, eligible Resume, and startup recovery drive
-these backend phases. Full Auto `RunClaim`s
-for preparation and execution have 60-second leases, renewed by asynchronous
-15-second heartbeats through assistant and ComfyUI I/O; child-operation leases
-remain ten minutes. The coordinator's preparation phase uses one durable FIFO
-assistant slot across Full Auto runs and reserves each physical POST, including
-compatibility fallbacks, before dispatch. Each authorization allows at most two
-assistant calls per take and twice the target count overall. Full Auto requests
-have a 300-second total timeout, while manual assistant requests keep their
-existing transport behavior. Provider failures have separate Full Auto blockers
-for unavailable configuration, transport errors, rate limits, structured
-refusals, unusable output, and provider drift. Only structured refusal or
-content-filter metadata counts as a refusal. A valid `Retry-After` value in
-seconds or HTTP-date is persisted, and Resume waits until its UTC deadline. The
-qualifying HTTP 400 reasoning-parameter fallback consumes its own reservation;
-other provider failures do not trigger a hidden prompt retry. Before an owned
-shot dispatch, the runner checks ComfyUI with a read-only stats request; failed
-stats or history reads get at most three persisted probes after 5, 15, and 30
-seconds, and history recovery never resends the prompt. Exhaustion blocks
-`comfy_unavailable`; after admission and shot linking, unresolved work keeps
-Resume disabled. Cancellation uses bounded read-only ComfyUI evidence checks;
-local HTTP termination does not establish that remote ComfyUI work stopped.
-The assistant slot also fences a live Full Auto POST in this process, bound to
-its reservation and local SQLite database identity. An expired quarantine is
-not released while that POST is still unwinding; cancellation cleanup must end
-before the local fence clears. After restart, recovery uses the persisted
-quarantine deadline as its only local guard and may release the slot once that
-deadline expires. This does not coordinate other processes or throttle
-provider-side work; manual assistant requests remain outside the slot.
-Full Auto enables caller-supplied prompt UUIDs only when `/features` advertises
-`client_prompt_id` as the boolean `true` and `/system_stats` reports an
-identifiable ComfyUI version. It stores hashes of the configured endpoint and
-server identity, then rechecks that identity before the POST and before
-accepting output. An ambiguous POST is never resent. Its live, read-only
-queue/history scan can recover one attempt only when metadata, graph digest,
-prefix, and identity agree; otherwise one local PNG can be adopted only when
-its embedded attempt metadata and graph match. Filename alone is insufficient.
-Missing, conflicting, or duplicate evidence leaves the outcome unresolved.
-PNG-only recovery can settle the image while the remote prompt ID remains
-unknown. No tested-version mapping or minimum version is assumed.
-At backend startup, journaled and admitted rows are protected before legacy
-interrupted-row cleanup; unclaimed legacy `running` rows still fail as
-interrupted. Startup then schedules eligible runs in `active`,
-`waiting_authoring`, or `waiting_runner` states and resumes cancellation draining
-only from `cancel_requested`; blocked cancellation intent requires explicit
-Resume. Preparation recovery
-waits for a live child and resumes it under a new fence while preserving its
-verified prefix. Execution recovery can settle a uniquely validated moved PNG
-only when its attempt metadata and graph match, or correlate a lost
-acknowledgement using frozen server identity and persisted read-only capability,
-queue, and history probes.
-It never replays a generation POST. For an attempt requiring reconciliation,
-missing, malformed, mismatched, duplicate, or prior-epoch evidence leaves the
-run blocked; exhausted remote-read probes report `comfy_unavailable`. If
-resource planning is disabled or authorization has expired, settled outputs are
-retained and remaining new work stays blocked.
-A stale owner stops subsequent writes and dispatches. Before each Full Auto shot,
-the runner observes ComfyUI's queue without reserving an idle local runner. A
-busy external queue records `waiting_runner` with `waiting_reason` set to
-`external_queue_busy` and a durable 15-second poll deadline that survives restart;
-queue time does not consume the 900-second executing-shot timeout. If another
-client queues work after an empty observation, Full Auto may still send one
-normal-priority POST for that attempt. This local policy provides no remote queue
-fairness or exclusivity guarantee. The isolated Full Auto rollback preflight
-and runbook are documented in [Operational rollback](docs/rollback.md). Full
-Auto selection, consent, and creation are available in Resources; SessionView
-now shows Full Auto progress and run controls. Real-generation validation still
-requires separate authorization.
-The existing manual workflow remains available. In a Full Auto-owned session,
-**Switch to manual** requests cancellation; pending, unknown, or unreachable work
-keeps ownership and manual controls locked. **Reconcile cancellation** performs
-read-only checks. After verified settlement, manual controls unlock and the
-cancelled run does not restart: prepare takes, review and approve the current
-revision, submit selected takes, then press **Run** separately. Navigating to the
-session does not approve or start generation.
-While a run is nonterminal or its work is unresolved, supported DELETE routes
-for its session, linked shots, model, or workflow return `409 full_auto_in_use`
-with affected session IDs; Cancel the run and wait for settlement before
-retrying. Direct SQLite deletes of bound saved-look versions or profile
-revisions also hit `full_auto_in_use` triggers while protected. No look/profile
-DELETE API exists. A profile-evidence foreign key can still prevent direct
-profile removal after settlement. A run claim or lease reconciliation
-that finds a missing dependency sets the nonterminal run to `blocked` with
-`dependency_missing` and advances its fence.
-For `cancelled`, `failed`, or `completed_with_errors` runs, status projects
-`dependency_missing` and Resume refuses without changing the terminal state.
-Restore the exact dependency; later revisions are not substituted.
-Automatic review validates persisted evidence; it does not certify semantic
-correctness or rendered pixels. Portable-v1 JSON excludes profiles.
-See the
-[guided creation API](docs/sessions.md#saved-look-and-full-auto-creation-api).
+### Full Auto
 
-Full Auto currently accepts only text-to-image workflows with no mapped
-reference slots or `LoadImage` references found by automatic detection. That
-detection does not certify every custom node as reference-free. Preflight binds
-the selected character, workflow, settings, exact saved-look/profile revisions,
-effective canvas and framing. Reference and guided-paint workflows remain
-available through the manual path. Its read-only scope resolution is serialized
-with source and configuration updates. Creation accepts a quote through the
-inclusive 300-second boundary and preserves the authorization deadline at seven
-days after the original quote. Creation atomically writes the initial run state
-with its immutable authorization receipt; existing authorization receipts are
-backfilled into run records. An identical retry replays its stored receipt
-before rechecking current dependencies or quote age; changed content under the
-same request ID is refused. The shared-write guards also apply to direct service
-and HTTP callers while the run remains nonterminal.
+Full Auto is an opt-in flow in Resources for an exact room revision in Ready
+state, a resolved character/model, a compatible `t2i` workflow, an exact
+saved-look version, and an exact ready automation-profile revision bound to
+that look. The read-only preflight binds model and workflow, stage coverage,
+canvas and framing, provider, limits, and expiry. **Generate without pauses**
+authorizes preparation, policy review
+and approval, submission, and one initial image attempt per take; manual
+creation remains available.
+
+The automatic review checks persisted evidence; it is not a human review and
+cannot certify semantic or image quality. Exact duplicate takes intentionally
+stop the run in Review until you inspect and accept that exact set. Acceptance
+does not approve the plan or resume generation; choose Resume separately. A
+persisted run can continue after browser closure and eligible unchanged work
+resumes after a backend restart.
+
+V1 supports compatible text-to-image workflows without mapped reference
+inputs or automatically detected `LoadImage` references. Detection is best
+effort, so reference and guided-paint workflows remain on the manual path.
+Canvas, framing, and coverage guide generation but cannot guarantee visible
+feet, anatomy, or garment fidelity. Full Auto allows at most two physical
+assistant calls per take, including a compatibility fallback; a lost response
+still consumes its call, and this count is not a monetary cap. Failed images
+are not automatically rerolled.
+
+Recovery uses persisted status and read-only ComfyUI evidence. Ambiguous
+generation requests are not replayed; when targeted cancellation is
+unavailable, cancellation drains without global interrupt or queue clearing.
+External queue observation can delay dispatch, but does not reserve remote
+capacity or guarantee order or exclusivity. See [session setup, eligibility,
+and recovery](docs/sessions.md#opting-into-full-auto), [automation-profile
+setup](docs/looks.md#reusable-automation-profiles), and the [isolated rollback
+runbook](docs/rollback.md).
 
 ## Composing from the catalogue
 

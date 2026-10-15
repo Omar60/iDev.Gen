@@ -1598,9 +1598,10 @@ ordered wardrobe stage, including
 aside and final wording, coverage, take count and interval, effective workflow
 and provider identity, inherited or overridden canvas, `vary` or `full_body`
 framing, budgets, policy/compiler versions, and the UTC authorization deadline
-seven days from the quote. Framing and coverage are intended instructions;
-generated images are not guaranteed to show every requested region or match
-exact anatomy or garment geometry.
+seven days from the quote. `full_body` inserts a prompt requesting both feet
+in frame. Framing and coverage are instructions only; images are not guaranteed
+to show every requested region, reproduce exact anatomy, or match garment
+geometry.
 
 The explicit creation click sends one atomic request authorizing preparation,
 policy review and approval, submission, and the initial execution attempt. If
@@ -1730,7 +1731,11 @@ cards offer mapped Setup/Resources, brief/take editing, review, scope, or run
 actions. In Review, each saved take labels coverage from its frozen evidence:
 **Derived** shows the saved-look version, profile revision, and stage; bound
 manual coverage shows its look/profile identity; unavailable provenance is
-called out.
+called out. **Open Resources** only navigates to that view; it does not restore
+or replace a missing dependency. Recovery requires the exact bound identity,
+not a newer revision. If that identity cannot be restored, create a new session
+with current inputs and fresh consent. Profile readiness diagnostics in
+Resources are read-only; edit and publish profile facts from **Looks**.
 
 For an owned run, **Switch to manual** requests cancellation through the existing
 replay-safe Cancel action. Pending cancellation, an unknown remote outcome, or
@@ -1884,10 +1889,10 @@ If a bound dependency is removed out of band, a run claim or lease
 reconciliation persists a nonterminal run as `blocked` with
 `dependency_missing` and an advanced fence. For
 `cancelled`, `failed`, or `completed_with_errors` runs, status projects that
-blocker and Resume refuses without changing the terminal state. The blocker
-offers a restore remedy. Restore the exact bound item; for a missing room, the
-authorized revision must return, since a later revision is not a substitute. A
-changed room translation reports `dependency_changed`.
+blocker and Resume refuses without changing the terminal state. The **Open
+Resources** remedy only navigates there; restore the exact bound item. For a
+missing room, the authorized revision must return, since a later revision is
+not a substitute. A changed room translation reports `dependency_changed`.
 
 Session deletion serializes row removal and attempted folder cleanup in one
 write transaction; if cleanup fails, the route reports it and the folder may
@@ -1987,6 +1992,13 @@ invalid values return `422` without writes. The acceptance is bound to the
 current plan, target set, and prepared snapshots; a changed plan or snapshot
 requires a refreshed review. Acceptance returns `409` when review is stale or
 no longer required.
+
+`duplicate_review_required` is an expected stop: the coordinator remains
+blocked until the exact current pairs are inspected in Review and accepted.
+That explicit duplicate-set decision does not grant human plan approval, does
+not dispatch generation, and does not resume the run. After acceptance, choose
+Resume separately; the coordinator then applies its automated policy review
+and approval. Other review blockers must still be resolved.
 
 After preparation, the coordinator runs this review and approval gate, records
 ordered submission receipts, reuses committed links after interruption, and
