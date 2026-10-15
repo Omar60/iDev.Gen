@@ -71,7 +71,9 @@ export function parseVersionJson(source) {
         if (source[index++] !== ':') throw new SyntaxError('Invalid JSON object.')
         output.push(':')
         value([
-          'version', 'revision', 'expected_version', 'profile_revision',
+          'version', 'revision', 'run_revision', 'plan_revision',
+          'current_plan_revision', 'expected_run_revision', 'expected_plan_revision',
+          'expected_version', 'profile_revision',
           'expected_profile_revision', 'latest_profile_revision',
           'accepted_revision', 'source_profile_revision',
         ].includes(key))

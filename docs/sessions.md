@@ -1613,9 +1613,11 @@ expiry, or Cancel can stop continuation. Each authorization
 allows at most two assistant calls per take, including compatibility fallback;
 this is a call limit, not a monetary cap.
 
-Creation navigates through the existing session route. The session page does
-not yet provide Full Auto progress, Cancel, Resume, or attempt-retry controls;
-those operations remain available through the documented backend API.
+Creation navigates through the existing session route. `SessionView` discovers
+the persisted run from the server on entry and polls while open; discovery does
+not depend on browser storage. It shows progress, results, blocker remedies, and
+eligible run controls. The endpoint contracts below remain canonical for
+request, replay, and revision behavior.
 
 ### Saved-look and Full Auto creation API
 
@@ -1722,6 +1724,17 @@ prompts, paths, private authorization, fencing tokens, or leases.
 read-only old/new scope comparison, changed fields, a comparison digest and
 timestamp, and the proposed authorization deadline.
 
+The Session page displays phase, progress counts, current assistant and
+image-attempt allowances, authorization expiry, and per-shot outcomes. Blocker
+cards offer mapped Setup/Resources, brief/take editing, review, scope, or run
+actions. When Full Auto owns the session, an editor opens only after the run
+settles. Browser storage is only an optional replay hint for an uncertain
+control response, not a source for run status.
+An expired or budget-blocked run offers **Compare renewal scope**. Its comparison
+shows remaining calls, added total and per-take assistant allowance, the amount
+after acceptance, image-retry allowance, and proposed expiry. Acceptance is
+explicit; if no new allowance is available, the run stays blocked.
+
 Cancel and Resume use the session-scoped routes below. Both bodies are closed
 and require a UUID `request_id` plus positive integer revisions; unknown fields,
 coercions, or stale run/plan revisions are refused. The server checks the run
@@ -1780,11 +1793,13 @@ blocked; verified running work returns to `cancel_requested` and is observed
 again every 15 seconds; verified settlement becomes `cancelled`. The run never
 enters `active` or dispatches work. After settled cancellation, an otherwise
 eligible continuation Resume restores only linked targets that never had an
-execution attempt, under their existing shot IDs;
-completed outputs remain. Attempt retries are separate explicit Resume actions.
-Resources provides the selection, consent, and creation entry, while session
-progress and Cancel/Resume controls remain API-only; there is no runtime control
-UI yet.
+execution attempt, under their existing shot IDs; completed outputs remain.
+Attempt retries are separate explicit Resume actions. In the Session page,
+blocked cancellation appears as **Reconcile cancellation** and offers no
+generation action until settlement. Resume compares old and current scope and
+requires explicit acceptance of a changed scope; the quote and authorization
+expiry limits are described above. The UI exposes only eligible retries and
+requires the displayed duplicate-work warning to retry an unknown outcome.
 
 ##### Explicit retry of journaled Full Auto image attempts
 
@@ -1830,9 +1845,9 @@ remote work stopped, determine provider billing, or validate generated images.
 
 These controls apply to journaled Full Auto execution. Legacy unjournaled
 behavior is unchanged, and the legacy `/api/sessions/{sid}/retry` route refuses
-Full Auto-linked shots. Looks provides the profile editor, and Resources
-provides selection, consent, and creation. Session progress, Cancel/Resume, and
-attempt-retry UI remain unfinished. See the
+Full Auto-linked shots. Looks provides the profile editor, Resources provides
+selection, consent, and creation, and the Session page exposes eligible retry
+controls with the required unknown-outcome risk acknowledgement. See the
 [isolated Full Auto rollback runbook](rollback.md); real-generation validation
 remains separately authorized.
 
@@ -1981,8 +1996,8 @@ return HTTP `409` with `detail.code: "runner_busy"` when another session owns
 the runner, an eligible Full Auto waiter has priority, or earlier runner work is
 unresolved. Guided creation, eligible Resume, and startup recovery schedule the
 persisted coordinator through preparation, review, ordered submission, and the
-existing runner. There is no dedicated Full Auto control UI or direct per-phase
-preparation, submission, or execution endpoint.
+existing runner. SessionView exposes run status and controls through the
+session-scoped endpoints above; there are no direct per-phase endpoints.
 
 Before a Full Auto dispatch, the runner reads ComfyUI's `queue_running` and
 `queue_pending` lists. If either is nonempty, it records `waiting_runner` with

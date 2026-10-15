@@ -340,6 +340,9 @@ beforeEach(() => {
   root = createRoot(container)
   window.location.hash = ''
   vi.restoreAllMocks()
+  vi.spyOn(api, 'getVersioned').mockImplementation(async (path) => (
+    path.endsWith('/full-auto') ? { current_run: null } : api.get(path, { losslessVersions: true })
+  ))
 })
 
 afterEach(() => {

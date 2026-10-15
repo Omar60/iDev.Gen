@@ -191,6 +191,9 @@ let container = null
 let root = null
 
 beforeEach(() => {
+  vi.spyOn(api, 'getVersioned').mockImplementation(async (path) => (
+    path.endsWith('/full-auto') ? { current_run: null } : api.get(path, { losslessVersions: true })
+  ))
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)

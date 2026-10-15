@@ -129,9 +129,15 @@ continuation reuses shot IDs and restores only linked targets without an
 execution attempt. Journaled attempt retries are explicit Resume controls: they
 reuse linked shot IDs, require a fresh scope quote, and require separate
 duplicate-work risk acceptance plus a current queue check for unknown outcomes.
-The legacy session retry route refuses Full Auto-linked shots. Resources now
-provides selection, consent, and creation; status, Cancel, Resume, and attempt
-retry remain API-only while the session control UI is pending. See
+The legacy session retry route refuses Full Auto-linked shots. The session
+page discovers persisted state from the server, shows progress and per-shot
+outcomes, and offers Cancel, scope-aware Resume, and explicit retries. Cancel
+drains owned work and preserves completed outputs; blocked cancellation exposes
+read-only **Reconcile cancellation** and stays blocked on unknown or unavailable
+results. Unknown-outcome retry requires separate duplicate-work acceptance and
+reachable queue evidence. Expired or budget-blocked runs can compare a renewal
+quote showing remaining, added, and post-acceptance allowances; accepting a
+changed scope is explicit. See
 [Full Auto status and controls](docs/sessions.md#full-auto-status-and-controls).
 The backend-only all-target review gate checks current prepared evidence
 for Full Auto approval and new submissions: unresolved review conflicts,
@@ -157,9 +163,9 @@ priority, or earlier runner work remains unresolved. Eligible waiters follow
 readiness-time order; blocked, cancelled, expired, or authority-ineligible runs
 are skipped, and Resume enters with fresh priority. If scheduling is uncertain
 after admission, another start is refused while the outcome remains unresolved.
-Full Auto has no dedicated control UI or direct per-phase preparation,
-submission, or execution routes; guided authorization, eligible Resume, and
-startup recovery drive these backend phases. Full Auto `RunClaim`s
+Direct per-phase preparation, submission, and execution routes are not
+exposed; guided authorization, eligible Resume, and startup recovery drive
+these backend phases. Full Auto `RunClaim`s
 for preparation and execution have 60-second leases, renewed by asynchronous
 15-second heartbeats through assistant and ComfyUI I/O; child-operation leases
 remain ten minutes. The coordinator's preparation phase uses one durable FIFO
@@ -224,8 +230,8 @@ normal-priority POST for that attempt. This local policy provides no remote queu
 fairness or exclusivity guarantee. The isolated Full Auto rollback preflight
 and runbook are documented in [Operational rollback](docs/rollback.md). Full
 Auto selection, consent, and creation are available in Resources; SessionView
-progress and runtime controls remain unfinished. Real-generation validation
-still requires separate authorization.
+now shows Full Auto progress and run controls. Real-generation validation still
+requires separate authorization.
 The existing manual workflow remains available for sessions without a
 nonterminal Full Auto owner.
 While a run is nonterminal or its work is unresolved, supported DELETE routes

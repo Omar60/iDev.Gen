@@ -184,6 +184,9 @@ let container = null
 let root = null
 
 beforeEach(() => {
+  vi.spyOn(api, 'getVersioned').mockImplementation(async (path) => (
+    path.endsWith('/full-auto') ? { current_run: null } : api.get(path, { losslessVersions: true })
+  ))
   const values = new Map()
   Object.defineProperty(window, 'localStorage', {
     configurable: true,

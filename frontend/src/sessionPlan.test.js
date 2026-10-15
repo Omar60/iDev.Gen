@@ -1754,7 +1754,7 @@ describe('SessionView React component rendering integration (renderToStaticMarku
     expect(html).toContain('Session plan reviewed.')
   })
 
-  it('renders Run button when at Generation step with reviewed revision and real pending shots', () => {
+  it('keeps resource generation dispatch locked until Full Auto ownership is checked', () => {
     const html = renderToStaticMarkup(
       React.createElement(SessionView, {
         id: 501,
@@ -1766,7 +1766,9 @@ describe('SessionView React component rendering integration (renderToStaticMarku
       })
     )
 
-    expect(html).toContain('Run (1)')
+    expect(html).not.toContain('Run (1)')
+    expect(html).toContain('Full Auto')
+    expect(html).toContain('Checking the server for an existing Full Auto run')
   })
 
   it('renders legacy Run button when legacy session has real pending shots', () => {

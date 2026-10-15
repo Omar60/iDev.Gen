@@ -48,7 +48,12 @@ Verified baseline from the repository layout and application entry points.
   `cancel_requested`; verified settlement becomes `cancelled`. Eligible
   continuation restores only linked targets with no attempt journal under their
   existing shot IDs; completed outputs remain. Assistant transport cleanup must
-  finish before its process-local fence clears. No Full Auto control UI exists.
+  finish before its process-local fence clears. `frontend/src/views/SessionView.jsx`
+  discovers persisted run state from the server independently of browser storage
+  and exposes progress, per-shot results, blocker remedies, Cancel/Resume, scope
+  comparison, renewal allowances for expired/budget-blocked runs, and eligible
+  retries. Blocked cancellation exposes reconciliation only, which cannot
+  restart or dispatch work; user-facing limits are in `docs/sessions.md`.
   Guided Full Auto creation schedules the coordinator after commit; eligible
   Resume does likewise. After cleanup, startup recovery schedules eligible runs
   in `active`, `waiting_authoring`, and `waiting_runner` states. The coordinator

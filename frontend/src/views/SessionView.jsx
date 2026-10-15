@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { api, shotImage } from '../api'
+import { api, shotImage, versionText } from '../api'
 import { go } from '../App.jsx'
 import ShotsEditor, { blankShot } from './ShotsEditor.jsx'
 import AnglePicker from './AnglePicker.jsx'
@@ -45,6 +45,190 @@ import {
 } from '../sessionPlan.js'
 
 const MAX_AUTOMATIC_TAKE_BATCH = 20
+const FULL_AUTO_ACTIVE_STATES = new Set([
+  'active', 'waiting_authoring', 'waiting_runner', 'blocked', 'cancel_requested',
+])
+const FULL_AUTO_TERMINAL_STATES = new Set([
+  'cancelled', 'failed', 'succeeded', 'completed_with_errors',
+])
+const FULL_AUTO_PHASES = new Set(['prepare', 'validate', 'approve', 'submit', 'execute', 'reconcile'])
+const FULL_AUTO_CONTROL_PREFIX = 'idevgen:full-auto-control:'
+const FULL_AUTO_RECEIPT_FIELDS = [
+  'run_id', 'session_id', 'revision', 'epoch', 'plan_revision', 'state', 'phase',
+  'cancel_intent', 'blocker_code', 'waiting_reason', 'created_at', 'updated_at',
+  'action', 'request_id',
+]
+const FULL_AUTO_RECEIPT_LEGACY_FIELDS = FULL_AUTO_RECEIPT_FIELDS.filter((field) => field !== 'waiting_reason')
+const FULL_AUTO_WAIT_REASONS = new Set(['external_queue_busy', 'runner_busy'])
+
+const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+const compareVersions = (left, right) => {
+  const a = versionText(left)
+  const b = versionText(right)
+  if (a === null || b === null) return null
+  if (a.length !== b.length) return a.length < b.length ? -1 : 1
+  return a === b ? 0 : a < b ? -1 : 1
+}
+
+const isFullAutoStatus = (view, sessionId) => {
+  if (!isRecord(view)
+      || String(view.session_id) !== String(sessionId)
+      || typeof view.run_id !== 'string' || !view.run_id
+      || versionText(view.revision) === null
+      || versionText(view.epoch) === null
+      || versionText(view.plan_revision) === null
+      || versionText(view.current_plan_revision) === null
+      || !FULL_AUTO_ACTIVE_STATES.has(view.state) && !FULL_AUTO_TERMINAL_STATES.has(view.state)
+      || !FULL_AUTO_PHASES.has(view.phase)
+      || typeof view.cancel_intent !== 'boolean'
+      || !(view.waiting_reason === null || FULL_AUTO_WAIT_REASONS.has(view.waiting_reason))
+      || view.state !== 'waiting_runner' && view.waiting_reason !== null
+      || typeof view.can_cancel !== 'boolean' || typeof view.can_resume !== 'boolean'
+      || !isRecord(view.progress) || !isRecord(view.allowances)
+      || !isRecord(view.retry_control)
+      || !['resume', 'reconcile_cancellation'].includes(view.resume_action)
+      || !(view.blocker === null || (
+        isRecord(view.blocker)
+        && typeof view.blocker.code === 'string'
+        && typeof view.blocker.message === 'string'
+        && Array.isArray(view.blocker.remedies)
+        && view.blocker.remedies.every((item) => typeof item === 'string')
+      ))) return false
+  const idLists = [
+    'target_take_ids', 'prepared_take_ids', 'submitted_shot_ids',
+    'completed_shot_ids', 'failed_shot_ids', 'cancelled_shot_ids',
+  ]
+  if (idLists.some((key) => !Array.isArray(view.progress[key]))) return false
+  if (['target_take_ids', 'prepared_take_ids'].some((key) => (
+    view.progress[key].some((value) => typeof value !== 'string' || !value)
+  )) || ['submitted_shot_ids', 'completed_shot_ids', 'failed_shot_ids', 'cancelled_shot_ids'].some((key) => (
+    view.progress[key].some((value) => !Number.isSafeInteger(value) || value < 0)
+  ))) return false
+  if ([
+    'target_count', 'prepared_count', 'submitted_count', 'completed_count',
+    'failed_count', 'cancelled_count', 'unresolved_work_count',
+  ].some((key) => !Number.isSafeInteger(view.progress[key]) || view.progress[key] < 0)) return false
+  if (typeof view.retry_control.can_retry_failed_shots !== 'boolean'
+      || typeof view.retry_control.can_accept_unknown_outcome_risk !== 'boolean'
+      || !Array.isArray(view.retry_control.failed_shot_ids)
+      || !Array.isArray(view.retry_control.unknown_outcome_shot_ids)
+      || !Array.isArray(view.retry_control.unknown_attempt_ids)
+      || !isRecord(view.retry_control.image_retry_allowance)
+      || !(view.retry_control.unknown_outcome_warning === null
+        || typeof view.retry_control.unknown_outcome_warning === 'string')) return false
+  if ([
+    'assistant_calls_total', 'assistant_calls_per_take', 'assistant_calls_remaining_lower_bound',
+    'image_attempts_initial_total', 'image_retry_grants', 'image_attempts_consumed',
+    'image_attempts_total', 'image_attempts_per_take', 'image_attempts_remaining_lower_bound',
+  ].some((key) => !Number.isSafeInteger(view.allowances[key]) || view.allowances[key] < 0)) return false
+  return true
+}
+
+const isFullAutoComparison = (view, runId) => (
+  isRecord(view)
+  && view.run_id === runId
+  && versionText(view.run_revision) !== null
+  && versionText(view.plan_revision) !== null
+  && typeof view.changed === 'boolean'
+  && typeof view.scope_digest === 'string' && /^[0-9a-f]{64}$/.test(view.scope_digest)
+  && typeof view.comparison_issued_at === 'string'
+  && Number.isFinite(Date.parse(view.comparison_issued_at))
+  && Array.isArray(view.changed_fields) && view.changed_fields.every((field) => typeof field === 'string')
+  && isRecord(view.old_scope) && isRecord(view.old_scope.summary)
+  && typeof view.old_scope.scope_digest === 'string' && /^[0-9a-f]{64}$/.test(view.old_scope.scope_digest)
+  && typeof view.old_scope.authorization_expires_at === 'string'
+  && Number.isFinite(Date.parse(view.old_scope.authorization_expires_at))
+  && isRecord(view.new_scope) && isRecord(view.new_scope.summary)
+  && typeof view.new_scope.scope_digest === 'string' && /^[0-9a-f]{64}$/.test(view.new_scope.scope_digest)
+  && typeof view.new_scope.authorization_expires_at === 'string'
+  && Number.isFinite(Date.parse(view.new_scope.authorization_expires_at))
+  && Number.isSafeInteger(view.new_scope.renewal_lifetime_seconds)
+  && view.new_scope.renewal_lifetime_seconds > 0
+  && isRecord(view.assistant_allowance)
+  && (view.assistant_allowance.pending_take_id === null
+    || typeof view.assistant_allowance.pending_take_id === 'string')
+  && [
+    'old_executable_remaining', 'additional_calls_total', 'additional_calls_per_take',
+    'new_executable_remaining',
+  ].every((key) => Number.isSafeInteger(view.assistant_allowance[key]) && view.assistant_allowance[key] >= 0)
+  && ['old_pending_take_remaining', 'new_pending_take_remaining'].every((key) => (
+    view.assistant_allowance[key] === null
+    || Number.isSafeInteger(view.assistant_allowance[key]) && view.assistant_allowance[key] >= 0
+  ))
+  && isRecord(view.image_retry_allowance)
+  && [
+    'initial_image_attempts_total', 'previous_retry_grants', 'image_attempts_consumed',
+    'authorized_image_attempts_total', 'authorized_image_attempts_remaining',
+    'additional_if_retry_failed', 'additional_if_accept_unknown_outcome_risk',
+    'authorized_total_after_retry_failed', 'authorized_total_after_unknown_risk',
+    'authorized_total_after_both',
+  ].every((key) => Number.isSafeInteger(view.image_retry_allowance[key]) && view.image_retry_allowance[key] >= 0)
+  && ['retry_failed_shot_ids', 'unknown_outcome_shot_ids'].every((key) => (
+    Array.isArray(view.image_retry_allowance[key])
+    && view.image_retry_allowance[key].every((value) => Number.isSafeInteger(value) && value >= 0)
+  ))
+  && Array.isArray(view.image_retry_allowance.unknown_attempt_ids)
+  && view.image_retry_allowance.unknown_attempt_ids.every((value) => typeof value === 'string' && value)
+)
+
+const isFullAutoActionReceipt = (response, request) => {
+  const receipt = response?.data
+  if (!isRecord(receipt)) return false
+  const keys = Object.keys(receipt).sort()
+  const expectedFields = FULL_AUTO_RECEIPT_FIELDS.slice().sort()
+  const legacyFields = FULL_AUTO_RECEIPT_LEGACY_FIELDS.slice().sort()
+  if (keys.length !== expectedFields.length
+      || !keys.every((key, index) => key === expectedFields[index])
+        && !(keys.length === legacyFields.length
+          && keys.every((key, index) => key === legacyFields[index]))) return false
+  const stateIsValid = FULL_AUTO_ACTIVE_STATES.has(receipt.state) || FULL_AUTO_TERMINAL_STATES.has(receipt.state)
+  const waitingReason = hasOwn(receipt, 'waiting_reason') ? receipt.waiting_reason : null
+  const revisionOrder = compareVersions(receipt.revision, request.body.expected_run_revision)
+  return Number.isInteger(response.status) && response.status >= 200 && response.status < 300
+    && receipt.action === request.action
+    && receipt.request_id === request.body.request_id
+    && receipt.run_id === request.run_id
+    && String(receipt.session_id) === String(request.session_id)
+    && versionText(receipt.revision) !== null && revisionOrder !== null && revisionOrder >= 0
+    && versionText(receipt.epoch) !== null
+    && compareVersions(receipt.plan_revision, request.body.expected_plan_revision) === 0
+    && stateIsValid && FULL_AUTO_PHASES.has(receipt.phase)
+    && typeof receipt.cancel_intent === 'boolean'
+    && (receipt.blocker_code === null || typeof receipt.blocker_code === 'string' && receipt.blocker_code)
+    && (receipt.state === 'blocked') === (receipt.blocker_code !== null)
+    && (waitingReason === null || FULL_AUTO_WAIT_REASONS.has(waitingReason))
+    && (receipt.state === 'waiting_runner' || waitingReason === null)
+    && typeof receipt.created_at === 'string' && Number.isFinite(Date.parse(receipt.created_at))
+    && typeof receipt.updated_at === 'string' && Number.isFinite(Date.parse(receipt.updated_at))
+}
+
+const fullAutoControlStorageKey = (sessionId, runId) => (
+  `${FULL_AUTO_CONTROL_PREFIX}${sessionId}:${runId}`
+)
+
+const isFullAutoControlRequest = (saved, sessionId, runId) => (
+  isRecord(saved)
+  && String(saved.session_id) === String(sessionId)
+  && saved.run_id === runId
+  && ['cancel', 'resume'].includes(saved.action)
+  && isRecord(saved.body)
+  && typeof saved.body.request_id === 'string'
+  && /^[0-9a-f-]{36}$/i.test(saved.body.request_id)
+  && versionText(saved.body.expected_run_revision) !== null
+  && versionText(saved.body.expected_plan_revision) !== null
+)
+
+const readFullAutoControlRequest = (sessionId, runId) => {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(fullAutoControlStorageKey(sessionId, runId)) || 'null')
+    return isFullAutoControlRequest(saved, sessionId, runId) ? saved : null
+  } catch { return null }
+}
+
+const compareSummary = (summary) => Object.entries(summary || {}).map(([key, value]) => (
+  <div key={key} style={{ marginBottom: 3 }}><b>{key.replaceAll('_', ' ')}:</b> {Array.isArray(value) ? value.join(', ') : isRecord(value) ? JSON.stringify(value) : String(value ?? '—')}</div>
+))
+
 const AUTHORING_OPERATION_STATES = new Set([
   'active', 'cancel_requested', 'succeeded', 'failed', 'cancelled', 'expired',
 ])
@@ -234,6 +418,20 @@ export default function SessionView({
 }) {
   const [s, setS] = useState(initialSession)
   const [error, setError] = useState(initialError)
+  const [fullAutoRun, setFullAutoRun] = useState(null)
+  const [fullAutoSessionId, setFullAutoSessionId] = useState('')
+  const [fullAutoStatusResolved, setFullAutoStatusResolved] = useState(false)
+  const [fullAutoStatusError, setFullAutoStatusError] = useState('')
+  const [fullAutoActionBusy, setFullAutoActionBusy] = useState(false)
+  const [fullAutoActionError, setFullAutoActionError] = useState('')
+  const [fullAutoComparison, setFullAutoComparison] = useState(null)
+  const [fullAutoComparisonBusy, setFullAutoComparisonBusy] = useState(false)
+  const [fullAutoResumeIntent, setFullAutoResumeIntent] = useState(null)
+  const [fullAutoUnknownRiskAccepted, setFullAutoUnknownRiskAccepted] = useState(false)
+  const [fullAutoControlRequest, setFullAutoControlRequest] = useState(null)
+  const [fullAutoDeferredRemedy, setFullAutoDeferredRemedy] = useState(null)
+  const [fullAutoDuplicateReview, setFullAutoDuplicateReview] = useState(null)
+  const fullAutoDuplicateReviewRef = useRef(null)
   const [filter, setFilter] = useState('all')
   const [zoom, setZoom] = useState(null)
   const [split, setSplit] = useState(50)
@@ -387,6 +585,17 @@ export default function SessionView({
   const sessionViewEpochRef = useRef(0)
   const sessionViewIdRef = useRef(id)
   sessionViewIdRef.current = id
+  const fullAutoReadSequenceRef = useRef(0)
+  const fullAutoReadQueueRef = useRef(Promise.resolve())
+  const fullAutoComparisonSequenceRef = useRef(0)
+  const fullAutoComparisonBusyRef = useRef(false)
+  const fullAutoComparisonReadSequenceRef = useRef(0)
+  const fullAutoActionTokenRef = useRef(null)
+  const fullAutoRunRef = useRef(null)
+  const fullAutoControlRequestRef = useRef(null)
+  const fullAutoActionBusyRef = useRef(false)
+  const fullAutoControlInFlightRef = useRef(false)
+  const fullAutoDeferredRemedyRef = useRef(null)
   const [sessionRequestEpoch, setSessionRequestEpoch] = useState(0)
   const [planNotice, setPlanNotice] = useState('')
   const [planSaveImpact, setPlanSaveImpact] = useState(null)
@@ -425,14 +634,84 @@ export default function SessionView({
   }
 
   const isResource = isResourceSession(s)
+  const fullAutoRunForSession = String(fullAutoSessionId) === String(id) ? fullAutoRun : null
+  const fullAutoControlPending = Boolean(fullAutoControlRequest
+    && String(fullAutoControlRequest.session_id) === String(id)
+    && fullAutoControlRequest.run_id === fullAutoRunForSession?.run_id)
+  const fullAutoStatusUnknown = isResource && (
+    String(fullAutoSessionId) !== String(id) || !fullAutoStatusResolved || Boolean(fullAutoStatusError)
+  )
+  const fullAutoOwnsSession = isResource && Boolean(
+    fullAutoRunForSession && FULL_AUTO_ACTIVE_STATES.has(fullAutoRunForSession.state),
+  )
+  const fullAutoMutationLocked = fullAutoStatusUnknown || fullAutoOwnsSession || fullAutoControlPending
+  const fullAutoManualDispatchLocked = fullAutoStatusUnknown || Boolean(fullAutoRunForSession) || fullAutoControlPending
+  const hasPendingFullAutoControl = () => {
+    const request = fullAutoControlRequestRef.current
+    return Boolean(request && String(request.session_id) === String(id)
+      && request.run_id === fullAutoRunRef.current?.run_id)
+  }
   const planSessionCurrent = planSessionId === String(id)
   const sharedAcceptancePending = sharedAcceptBusy || sharedAcceptUnknown
-  const planEditLocked = manualDecisionBusy || sharedAcceptancePending || lookProgressionBusy || !planSessionCurrent
+  const planEditLocked = manualDecisionBusy || sharedAcceptancePending || lookProgressionBusy
+    || !planSessionCurrent || fullAutoMutationLocked
   const isCurrentSessionRequest = (sessionId, requestEpoch) => (
     sessionViewMountedRef.current
     && sessionViewEpochRef.current === requestEpoch
     && String(sessionViewIdRef.current) === String(sessionId)
   )
+  const readFullAutoStatus = async (sessionId = id, stillCurrent = () => true) => {
+    const requestEpoch = sessionViewEpochRef.current
+    if (fullAutoComparisonReadSequenceRef.current > 0) {
+      fullAutoComparisonReadSequenceRef.current = 0
+      setFullAutoComparison(null)
+      setFullAutoResumeIntent(null)
+    }
+    const sequence = ++fullAutoReadSequenceRef.current
+    const queued = fullAutoReadQueueRef.current.catch(() => {}).then(async () => {
+      if (sequence !== fullAutoReadSequenceRef.current) return null
+      try {
+        const payload = await api.getVersioned(`/api/sessions/${sessionId}/full-auto`)
+        if (
+          !stillCurrent() || sequence !== fullAutoReadSequenceRef.current
+          || !isCurrentSessionRequest(sessionId, requestEpoch)
+        ) return null
+        if (!isRecord(payload) || Object.keys(payload).length !== 1 || !hasOwn(payload, 'current_run')) {
+          throw new Error('The Full Auto discovery response could not be verified.')
+        }
+        const view = payload.current_run
+        if (view !== null && !isFullAutoStatus(view, sessionId)) {
+          throw new Error('The Full Auto status response could not be verified.')
+        }
+        const previous = fullAutoRunRef.current
+        if (view && previous?.run_id === view.run_id
+            && compareVersions(view.revision, previous.revision) < 0) {
+          setFullAutoSessionId(String(sessionId))
+          setFullAutoStatusResolved(true)
+          setFullAutoStatusError('')
+          return previous
+        }
+        fullAutoRunRef.current = view
+        setFullAutoSessionId(String(sessionId))
+        setFullAutoRun(view)
+        setFullAutoStatusResolved(true)
+        setFullAutoStatusError('')
+        return view
+      } catch (failure) {
+        if (
+          stillCurrent() && sequence === fullAutoReadSequenceRef.current
+          && isCurrentSessionRequest(sessionId, requestEpoch)
+        ) {
+          setFullAutoSessionId(String(sessionId))
+          setFullAutoStatusResolved(false)
+          setFullAutoStatusError(failure?.message || 'Full Auto status could not be read.')
+        }
+        return null
+      }
+    })
+    fullAutoReadQueueRef.current = queued.catch(() => null)
+    return queued
+  }
   const reviewBlocksFinalization = hasKnownStaleAdaptations
     || planReviewStatus === 'error'
     || (isResource && activeStep === 'review' && planReviewStatus !== 'ready')
@@ -801,6 +1080,7 @@ export default function SessionView({
   }
 
   const startSharedSuggestions = async () => {
+    if (fullAutoManualDispatchLocked || hasPendingFullAutoControl()) return
     const current = sharedStartRequestRef.current
     const retryUnknown = Boolean(sharedStartUnknown && current?.kind === 'shared_suggestions')
     const pendingPreparationRequest = preparationStartUnknown
@@ -979,6 +1259,7 @@ export default function SessionView({
   const incompleteAuthoringTakeIds = () => incompletePlanTakeIds()
 
   const startPreparationOperation = async () => {
+    if (fullAutoManualDispatchLocked || hasPendingFullAutoControl()) return
     const sessionId = id
     const requestEpoch = sessionViewEpochRef.current
     const current = preparationStartRequestRef.current
@@ -1202,6 +1483,30 @@ export default function SessionView({
     sessionViewEpochRef.current += 1
     setSessionRequestEpoch(sessionViewEpochRef.current)
     sessionViewMountedRef.current = true
+    fullAutoReadSequenceRef.current += 1
+    fullAutoComparisonSequenceRef.current += 1
+    fullAutoComparisonBusyRef.current = false
+    fullAutoComparisonReadSequenceRef.current = 0
+    fullAutoActionTokenRef.current = null
+    fullAutoRunRef.current = null
+    fullAutoControlRequestRef.current = null
+    fullAutoActionBusyRef.current = false
+    fullAutoControlInFlightRef.current = false
+    fullAutoDeferredRemedyRef.current = null
+    setFullAutoRun(null)
+    setFullAutoSessionId('')
+    setFullAutoStatusResolved(false)
+    setFullAutoStatusError('')
+    setFullAutoActionBusy(false)
+    setFullAutoActionError('')
+    setFullAutoComparison(null)
+    setFullAutoComparisonBusy(false)
+    setFullAutoResumeIntent(null)
+    setFullAutoUnknownRiskAccepted(false)
+    setFullAutoControlRequest(null)
+    setFullAutoDeferredRemedy(null)
+    setFullAutoDuplicateReview(null)
+    fullAutoDuplicateReviewRef.current = null
     setPlanSaveImpact(null)
     setPlanReviewFailure(null)
     setResourceRefreshBusy(false)
@@ -1225,6 +1530,77 @@ export default function SessionView({
       sharedOperationEpochRef.current += 1
     }
   }, [id])
+
+  useEffect(() => {
+    let current = true
+    let timer = null
+    if (!isResource) {
+      setFullAutoSessionId(String(id))
+      setFullAutoStatusResolved(true)
+      setFullAutoStatusError('')
+      fullAutoRunRef.current = null
+      setFullAutoRun(null)
+      return undefined
+    }
+
+    const schedule = (delay) => {
+      if (current) timer = window.setTimeout(poll, delay)
+    }
+    const poll = async () => {
+      if (!current) return
+      if (fullAutoActionBusyRef.current || fullAutoComparisonBusyRef.current
+          || fullAutoComparisonReadSequenceRef.current > 0) {
+        schedule(500)
+        return
+      }
+      const view = await readFullAutoStatus(id, () => current)
+      schedule(view && FULL_AUTO_ACTIVE_STATES.has(view.state) ? 1200 : 2500)
+    }
+    void poll()
+    const onStorage = (event) => {
+      if (event.key?.startsWith(`${FULL_AUTO_CONTROL_PREFIX}${id}:`)) {
+        const run = fullAutoRunRef.current
+        if (run) {
+          const saved = readFullAutoControlRequest(id, run.run_id)
+          if (saved) {
+            fullAutoControlRequestRef.current = saved
+            setFullAutoControlRequest(saved)
+          } else if (fullAutoControlRequestRef.current?.run_id === run.run_id) {
+            fullAutoControlRequestRef.current = null
+            setFullAutoControlRequest(null)
+          }
+        }
+        void readFullAutoStatus(id, () => current)
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => {
+      current = false
+      fullAutoReadSequenceRef.current += 1
+      if (timer !== null) window.clearTimeout(timer)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [id, isResource, fullAutoActionBusy])
+
+  useEffect(() => {
+    if (!fullAutoRunForSession || fullAutoControlRequestRef.current?.run_id === fullAutoRunForSession.run_id) return
+    const saved = readFullAutoControlRequest(id, fullAutoRunForSession.run_id)
+    if (saved) {
+      fullAutoControlRequestRef.current = saved
+      setFullAutoControlRequest(saved)
+    }
+  }, [id, fullAutoSessionId, fullAutoRunForSession?.run_id])
+
+  useEffect(() => {
+    if (!fullAutoRunForSession || !FULL_AUTO_TERMINAL_STATES.has(fullAutoRunForSession.state)
+        || !fullAutoDeferredRemedy || fullAutoStatusUnknown
+        || fullAutoControlPending || fullAutoControlRequestRef.current) return
+    setActiveStep(fullAutoDeferredRemedy)
+    setFullAutoDeferredRemedy(null)
+    fullAutoDeferredRemedyRef.current = null
+    setFullAutoActionError('Cancellation is verified complete. The existing editor is open; save the correction, then compare scope and explicitly Resume.')
+  }, [fullAutoRunForSession?.run_id, fullAutoRunForSession?.state, fullAutoDeferredRemedy,
+    fullAutoStatusUnknown, fullAutoControlPending])
 
   useEffect(() => {
     if (!Number.isInteger(planRevision) || planRevision < 0) return undefined
@@ -1379,7 +1755,7 @@ export default function SessionView({
   }
 
   const handlePrepareTake = async (takeId) => {
-    if (planRevision === null || planDirty || planEditLocked || reviewBlocksFinalization) return
+    if (fullAutoManualDispatchLocked || hasPendingFullAutoControl() || planRevision === null || planDirty || planEditLocked || reviewBlocksFinalization) return
     setPreparingTakeId(takeId)
     setError('')
     try {
@@ -1400,7 +1776,7 @@ export default function SessionView({
   }
 
   const handlePrepareAllIncomplete = async () => {
-    if (planRevision === null || planDirty || planEditLocked || reviewBlocksFinalization) return
+    if (fullAutoManualDispatchLocked || hasPendingFullAutoControl() || planRevision === null || planDirty || planEditLocked || reviewBlocksFinalization) return
     const takeIds = incompletePlanTakeIds()
     if (!takeIds.length) return
     setPreparingAll(true)
@@ -1472,7 +1848,7 @@ export default function SessionView({
   }
 
   const handleSubmitSelectedTakes = async () => {
-    if (submittingTakes || planEditLocked) return
+    if (submittingTakes || planEditLocked || fullAutoManualDispatchLocked || hasPendingFullAutoControl()) return
     if (planDirty) {
       setError('Cannot submit: plan has unsaved changes')
       return
@@ -1554,6 +1930,424 @@ export default function SessionView({
     setError('')
     return true
   }
+
+  const saveFullAutoControlRequest = (request) => {
+    fullAutoControlRequestRef.current = request
+    setFullAutoControlRequest(request)
+    try {
+      window.localStorage.setItem(
+        fullAutoControlStorageKey(request.session_id, request.run_id),
+        JSON.stringify(request),
+      )
+    } catch { /* Status discovery is server-owned; storage only preserves an uncertain control replay. */ }
+  }
+
+  const clearFullAutoControlRequest = (request) => {
+    if (fullAutoControlRequestRef.current?.body?.request_id !== request.body.request_id) return
+    fullAutoControlRequestRef.current = null
+    setFullAutoControlRequest(null)
+    try {
+      window.localStorage.removeItem(fullAutoControlStorageKey(request.session_id, request.run_id))
+    } catch { /* Optional replay hint. */ }
+  }
+
+  const dispatchFullAutoControl = async (request) => {
+    if (fullAutoControlInFlightRef.current || fullAutoActionBusyRef.current) return
+    const sessionId = String(request.session_id)
+    const requestEpoch = sessionViewEpochRef.current
+    const currentRun = fullAutoRunRef.current
+    if (!currentRun || sessionId !== String(id)
+        || request.run_id !== currentRun.run_id
+        || !isCurrentSessionRequest(sessionId, requestEpoch)) return
+    const runId = currentRun.run_id
+    const actionToken = {}
+    const isCurrentAction = () => (
+      isCurrentSessionRequest(sessionId, requestEpoch)
+      && fullAutoRunRef.current?.run_id === runId
+      && fullAutoActionTokenRef.current === actionToken
+    )
+    fullAutoActionTokenRef.current = actionToken
+    fullAutoControlInFlightRef.current = true
+    fullAutoActionBusyRef.current = true
+    fullAutoReadSequenceRef.current += 1
+    setFullAutoActionBusy(true)
+    setFullAutoActionError('')
+    fullAutoComparisonReadSequenceRef.current = 0
+    setFullAutoComparison(null)
+    setFullAutoResumeIntent(null)
+    try {
+      const suffix = request.action === 'cancel' ? 'cancel' : 'resume'
+      const response = await api.postWithStatus(
+        `/api/sessions/${sessionId}/full-auto/${encodeURIComponent(runId)}/${suffix}`,
+        request.body,
+        ['expected_run_revision', 'expected_plan_revision'],
+      )
+      if (!isCurrentAction()) return
+      if (!isFullAutoActionReceipt(response, request)) {
+        throw new Error('The successful response did not contain a verifiable Full Auto action receipt.')
+      }
+      clearFullAutoControlRequest(request)
+      setFullAutoUnknownRiskAccepted(false)
+      setFullAutoActionError('')
+      await readFullAutoStatus(sessionId, isCurrentAction)
+    } catch (failure) {
+      if (!isCurrentAction()) return
+      const knownRejection = hasStableAuthoringError(failure)
+      if (knownRejection) clearFullAutoControlRequest(request)
+      const description = failure?.message || 'The Full Auto control failed.'
+      setFullAutoActionError(knownRejection
+        ? `${description} The server rejected this request; refresh status before choosing another action.`
+        : `The control outcome is unknown. Retry the exact same ${request.action} request to recover its result. ${description}`)
+      if (knownRejection && ['resume_comparison_stale', 'authorization_scope_changed'].includes(failure?.detail?.code)) {
+        setFullAutoResumeIntent(request.mode || 'resume')
+      }
+      await readFullAutoStatus(sessionId, isCurrentAction)
+    } finally {
+      if (fullAutoActionTokenRef.current === actionToken
+          && isCurrentSessionRequest(sessionId, requestEpoch)) {
+        fullAutoActionTokenRef.current = null
+        fullAutoControlInFlightRef.current = false
+        fullAutoActionBusyRef.current = false
+        setFullAutoActionBusy(false)
+      }
+    }
+  }
+
+  const newFullAutoRequestId = () => (
+    globalThis.crypto?.randomUUID?.()
+    || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+      const value = Math.floor(Math.random() * 16)
+      return (char === 'x' ? value : (value & 3) | 8).toString(16)
+    })
+  )
+
+  const makeFullAutoControl = (action, mode, body) => {
+    const currentRun = fullAutoRunForSession
+    const reconcilingKnownIntent = mode === 'reconcile_cancellation'
+      && currentRun?.resume_action === 'reconcile_cancellation'
+      && String(fullAutoSessionId) === String(id)
+    if (!currentRun || fullAutoStatusUnknown && !reconcilingKnownIntent
+        || fullAutoActionBusyRef.current) return
+    const request = {
+      session_id: String(id), run_id: currentRun.run_id, action, mode, body,
+    }
+    saveFullAutoControlRequest(request)
+    void dispatchFullAutoControl(request)
+  }
+
+  const createFullAutoCancellation = () => {
+    const currentRun = fullAutoRunForSession
+    if (!currentRun || fullAutoStatusUnknown || !currentRun.can_cancel
+        || currentRun.resume_action === 'reconcile_cancellation'
+        || fullAutoControlRequestRef.current || fullAutoActionBusyRef.current) return
+    const expectedRun = versionText(currentRun.revision)
+    const expectedPlan = versionText(currentRun.current_plan_revision)
+    if (expectedRun === null || expectedPlan === null) {
+      setFullAutoActionError('The current Full Auto revisions could not be verified. Refresh status before cancelling.')
+      return
+    }
+    makeFullAutoControl('cancel', 'cancel', {
+      request_id: newFullAutoRequestId(),
+      expected_run_revision: expectedRun,
+      expected_plan_revision: expectedPlan,
+    })
+  }
+
+  const createFullAutoReconciliation = () => {
+    const currentRun = fullAutoRunForSession
+    const cachedCancellationIntent = Boolean(currentRun?.resume_action === 'reconcile_cancellation'
+      && String(fullAutoSessionId) === String(id))
+    if (!currentRun || fullAutoStatusUnknown && !cachedCancellationIntent || !currentRun.can_resume
+        || currentRun.resume_action !== 'reconcile_cancellation'
+        || fullAutoControlRequestRef.current || fullAutoActionBusyRef.current) return
+    const expectedRun = versionText(currentRun.revision)
+    // Reconciliation is deliberately bound to the run's original plan revision;
+    // it does not authorize generation against a later edited plan.
+    const expectedPlan = versionText(currentRun.plan_revision)
+    if (expectedRun === null || expectedPlan === null) {
+      setFullAutoActionError('The cancellation revision could not be verified. Refresh status before reconciling.')
+      return
+    }
+    makeFullAutoControl('resume', 'reconcile_cancellation', {
+      request_id: newFullAutoRequestId(),
+      expected_run_revision: expectedRun,
+      expected_plan_revision: expectedPlan,
+    })
+  }
+
+  const fetchFullAutoComparison = async () => {
+    const currentRun = fullAutoRunForSession
+    if (!currentRun || fullAutoStatusUnknown || fullAutoActionBusyRef.current
+        || fullAutoComparisonBusyRef.current) return null
+    const sessionId = String(id)
+    const requestEpoch = sessionViewEpochRef.current
+    const runId = currentRun.run_id
+    const requestSequence = ++fullAutoComparisonSequenceRef.current
+    fullAutoReadSequenceRef.current += 1
+    const readSequence = fullAutoReadSequenceRef.current
+    fullAutoComparisonReadSequenceRef.current = 0
+    const isCurrentComparison = () => (
+      requestSequence === fullAutoComparisonSequenceRef.current
+      && isCurrentSessionRequest(sessionId, requestEpoch)
+      && fullAutoRunRef.current?.run_id === runId
+    )
+    const isFreshComparison = () => (
+      isCurrentComparison() && fullAutoReadSequenceRef.current === readSequence
+    )
+    fullAutoComparisonBusyRef.current = true
+    fullAutoComparisonReadSequenceRef.current = 0
+    setFullAutoComparison(null)
+    setFullAutoComparisonBusy(true)
+    setFullAutoActionError('')
+    try {
+      const comparison = await api.getVersioned(
+        `/api/sessions/${sessionId}/full-auto/${encodeURIComponent(runId)}/resume-preflight`,
+      )
+      if (!isFullAutoComparison(comparison, currentRun.run_id)) {
+        throw new Error('The Resume scope comparison could not be verified.')
+      }
+      if (!isFreshComparison()) return null
+      const latestRun = fullAutoRunRef.current
+      if (compareVersions(latestRun.revision, comparison.run_revision) !== 0
+          || compareVersions(planRevisionRef.current, comparison.plan_revision) !== 0) {
+        setFullAutoActionError('Full Auto changed while the comparison was loading. Refresh status and compare scope again.')
+        return null
+      }
+      setFullAutoComparison(comparison)
+      fullAutoComparisonReadSequenceRef.current = readSequence
+      setFullAutoActionError('')
+      return comparison
+    } catch (failure) {
+      if (isFreshComparison()) {
+        setFullAutoComparison(null)
+        fullAutoComparisonReadSequenceRef.current = 0
+        setFullAutoActionError(failure?.message || 'Could not compare the current Full Auto scope.')
+      }
+      return null
+    } finally {
+      if (requestSequence === fullAutoComparisonSequenceRef.current
+          && isCurrentSessionRequest(sessionId, requestEpoch)) {
+        fullAutoComparisonBusyRef.current = false
+        setFullAutoComparisonBusy(false)
+      }
+    }
+  }
+
+  const submitFullAutoResume = (comparison, mode, acceptChangedScope) => {
+    const sessionId = String(id)
+    const currentRun = fullAutoRunRef.current
+    if (!currentRun || String(fullAutoSessionId) !== sessionId
+        || !isCurrentSessionRequest(sessionId, sessionViewEpochRef.current)
+        || fullAutoStatusUnknown
+        || currentRun.resume_action === 'reconcile_cancellation'
+        || fullAutoControlRequestRef.current || fullAutoActionBusyRef.current) return
+    if (!isFullAutoComparison(comparison, currentRun.run_id)
+        || compareVersions(currentRun.revision, comparison.run_revision) !== 0
+        || compareVersions(planRevisionRef.current, comparison.plan_revision) !== 0
+        || fullAutoReadSequenceRef.current !== fullAutoComparisonReadSequenceRef.current) {
+      setFullAutoComparison(null)
+      fullAutoComparisonReadSequenceRef.current = 0
+      setFullAutoActionError('The Full Auto scope changed after this comparison. Compare scope again before continuing.')
+      return
+    }
+    const expectedRun = versionText(comparison?.run_revision)
+    const expectedPlan = versionText(comparison?.plan_revision)
+    if (expectedRun === null || expectedPlan === null) {
+      setFullAutoActionError('The comparison revisions could not be verified. Compare scope again before resuming.')
+      return
+    }
+    const body = {
+      request_id: newFullAutoRequestId(),
+      expected_run_revision: expectedRun,
+      expected_plan_revision: expectedPlan,
+      scope_digest: comparison.scope_digest,
+      comparison_issued_at: comparison.comparison_issued_at,
+      accept_changed_scope: Boolean(acceptChangedScope),
+    }
+    if (mode === 'retry_failed') body.retry_failed_shots = true
+    if (mode === 'retry_unknown') body.accept_unknown_outcome_risk = true
+    setFullAutoResumeIntent(mode)
+    makeFullAutoControl('resume', mode, body)
+  }
+
+  const startFullAutoResume = async (mode = 'resume') => {
+    const currentRun = fullAutoRunForSession
+    if (!currentRun || fullAutoStatusUnknown || fullAutoControlRequestRef.current
+        || fullAutoActionBusyRef.current || fullAutoComparisonBusyRef.current) return
+    const sessionId = String(id)
+    const requestEpoch = sessionViewEpochRef.current
+    const runId = currentRun.run_id
+    const isCurrentResume = () => (
+      isCurrentSessionRequest(sessionId, requestEpoch)
+      && fullAutoRunRef.current?.run_id === runId
+    )
+    if (currentRun.resume_action === 'reconcile_cancellation') {
+      createFullAutoReconciliation()
+      return
+    }
+    if (mode === 'retry_unknown' && !fullAutoUnknownRiskAccepted) {
+      setFullAutoActionError('Explicitly accept the unknown-outcome risk before retrying those shots.')
+      return
+    }
+    setFullAutoResumeIntent(mode)
+    const comparison = await fetchFullAutoComparison()
+    if (!isCurrentResume()) return
+    if (!comparison) return
+    if (fullAutoControlRequestRef.current
+        || fullAutoRunRef.current?.resume_action === 'reconcile_cancellation') return
+    if (comparison.changed) return
+    submitFullAutoResume(comparison, mode, false)
+  }
+
+  const acceptFullAutoScopeAndResume = () => {
+    if (!fullAutoComparison?.changed || !fullAutoResumeIntent) return
+    const sessionId = String(id)
+    const currentRun = fullAutoRunRef.current
+    if (!currentRun || currentRun.run_id !== fullAutoComparison.run_id
+        || !isCurrentSessionRequest(sessionId, sessionViewEpochRef.current)) return
+    submitFullAutoResume(fullAutoComparison, fullAutoResumeIntent, true)
+  }
+
+  const openFullAutoEditorAfterSettlement = (step) => {
+    if (fullAutoControlRequestRef.current) {
+      setFullAutoActionError(`Resolve the pending ${fullAutoControlRequestRef.current.action} request by retrying that exact request before opening the editor.`)
+      return
+    }
+    if (fullAutoActionBusyRef.current) {
+      setFullAutoActionError('Wait for the current Full Auto control or review action to finish before opening the editor.')
+      return
+    }
+    setFullAutoDeferredRemedy(step)
+    fullAutoDeferredRemedyRef.current = step
+    if (fullAutoRunForSession?.resume_action === 'reconcile_cancellation') {
+      createFullAutoReconciliation()
+    } else {
+      createFullAutoCancellation()
+    }
+    setFullAutoActionError('The run still owns this session. The correction editor will open only after cancellation is verified complete.')
+  }
+
+  const handleFullAutoRemedy = (remedy) => {
+    switch (remedy) {
+      case 'configure_assistant':
+      case 'check_provider':
+      case 'enable_resource_planning':
+        go('/setup')
+        break
+      case 'restore_dependency':
+        go('/resources')
+        break
+      case 'revise_brief':
+        if (fullAutoOwnsSession) openFullAutoEditorAfterSettlement('constants')
+        else navigateStep('constants')
+        break
+      case 'manual_authoring':
+        if (fullAutoOwnsSession) openFullAutoEditorAfterSettlement('takes')
+        else navigateStep('takes')
+        break
+      case 'duplicate_review_required':
+      case 'duplicate_review_unavailable':
+        navigateStep('review')
+        break
+      case 'compare_scope':
+      case 'resume_with_changed_scope':
+        setFullAutoResumeIntent('resume')
+        void fetchFullAutoComparison()
+        break
+      case 'review_changes':
+        navigateStep('review')
+        setFullAutoResumeIntent('resume')
+        void fetchFullAutoComparison()
+        break
+      case 'resume':
+        void startFullAutoResume('resume')
+        break
+      case 'reconcile_cancellation':
+        createFullAutoReconciliation()
+        break
+      case 'cancel':
+        createFullAutoCancellation()
+        break
+      case 'wait':
+      case 'review_status':
+      default:
+        void readFullAutoStatus(id)
+        break
+    }
+  }
+
+  const acceptFullAutoDuplicateReview = async () => {
+    const review = fullAutoDuplicateReview
+    const currentRun = fullAutoRunForSession
+    if (!review || !currentRun || fullAutoStatusUnknown
+        || currentRun.resume_action === 'reconcile_cancellation'
+        || fullAutoActionBusyRef.current || fullAutoComparisonBusyRef.current
+        || fullAutoComparisonReadSequenceRef.current > 0 || review.duplicate_acceptance_current
+        || review.duplicate_acceptance_required !== true) return
+    const planVersion = versionText(review.plan_revision)
+    if (planVersion === null || typeof review.review_digest !== 'string'
+        || !/^[0-9a-f]{64}$/.test(review.review_digest)) {
+      setFullAutoActionError('The duplicate review evidence could not be verified. Reload Review before accepting it.')
+      return
+    }
+    const sessionId = String(id)
+    const requestEpoch = sessionViewEpochRef.current
+    const runId = currentRun.run_id
+    const runRevision = versionText(currentRun.revision)
+    const reviewDigest = review.review_digest
+    const actionToken = {}
+    const requestReadSequence = fullAutoReadSequenceRef.current + 1
+    const isCurrentAcceptance = () => (
+      isCurrentSessionRequest(sessionId, requestEpoch)
+      && fullAutoRunRef.current?.run_id === runId
+      && fullAutoActionTokenRef.current === actionToken
+    )
+    fullAutoActionTokenRef.current = actionToken
+    fullAutoActionBusyRef.current = true
+    setFullAutoActionBusy(true)
+    setFullAutoActionError('')
+    fullAutoReadSequenceRef.current = requestReadSequence
+    try {
+      const response = await api.postWithStatus(
+        `/api/sessions/${sessionId}/plan/review/duplicates/accept`,
+        { plan_revision: planVersion, review_digest: reviewDigest },
+        ['plan_revision'],
+      )
+      if (!isCurrentAcceptance()) return
+      if (!response.data?.accepted || response.data.review_digest !== reviewDigest) {
+        throw new Error('The duplicate review acceptance could not be verified.')
+      }
+      const sameReview = fullAutoDuplicateReviewRef.current?.review_digest === reviewDigest
+        && versionText(fullAutoDuplicateReviewRef.current?.plan_revision) === planVersion
+        && versionText(planRevisionRef.current) === planVersion
+        && versionText(fullAutoRunRef.current?.revision) === runRevision
+        && fullAutoReadSequenceRef.current === requestReadSequence
+      if (sameReview) {
+        const accepted = { ...fullAutoDuplicateReviewRef.current, duplicate_acceptance_current: true, state: 'ready' }
+        fullAutoDuplicateReviewRef.current = accepted
+        setFullAutoDuplicateReview(accepted)
+        setPlanNotice('The exact Full Auto duplicate set was accepted. Resume remains a separate action.')
+      } else {
+        setFullAutoActionError('Duplicate acceptance completed, but newer review or run status arrived. Reload Review before continuing.')
+      }
+      setReviewRefreshCounter((count) => count + 1)
+      await readFullAutoStatus(sessionId, () => isCurrentSessionRequest(sessionId, requestEpoch)
+        && fullAutoRunRef.current?.run_id === runId)
+    } catch (failure) {
+      if (!isCurrentAcceptance()) return
+      setFullAutoActionError(failure?.message || 'The duplicate set could not be accepted. Refresh Review and retry the same set.')
+      await readFullAutoStatus(sessionId, () => isCurrentSessionRequest(sessionId, requestEpoch)
+        && fullAutoRunRef.current?.run_id === runId)
+    } finally {
+      if (fullAutoActionTokenRef.current === actionToken
+          && isCurrentSessionRequest(sessionId, requestEpoch)) {
+        fullAutoActionTokenRef.current = null
+        fullAutoActionBusyRef.current = false
+        setFullAutoActionBusy(false)
+      }
+    }
+  }
+
   useEffect(() => {
     reload()
     api.get('/api/workflows').then(setWorkflows).catch(() => {})
@@ -1589,6 +2383,9 @@ export default function SessionView({
           .map((review) => [review.take_id, review]),
       )
       setTakeReviewData(reviewsByTake)
+      const duplicateReview = result.full_auto_duplicate_review || null
+      fullAutoDuplicateReviewRef.current = duplicateReview
+      setFullAutoDuplicateReview(duplicateReview)
       setPlanReviewStatus('ready')
     }).catch(() => {
       if (current) {
@@ -1648,7 +2445,20 @@ export default function SessionView({
       : filter === 'keep' ? !x.rejected
         : true))
 
-  const call = async (fn) => { try { await fn(); reload() } catch (e) { setError(e.message) } }
+  const call = async (fn) => {
+    if (fullAutoMutationLocked || hasPendingFullAutoControl()) {
+      setFullAutoActionError('Full Auto still owns this session. Wait for verified settlement before changing its inputs.')
+      return
+    }
+    try { await fn(); reload() } catch (e) { setError(e.message) }
+  }
+  const manualDispatch = async (fn) => {
+    if (fullAutoManualDispatchLocked || hasPendingFullAutoControl()) {
+      setFullAutoActionError('This session has a Full Auto run. Continue or settle it through Full Auto controls before using manual generation.')
+      return
+    }
+    return call(fn)
+  }
 
   // Which rooms this run would be refused in, before anything is queued. The
   // route recomputes nothing: every reason comes from `room_refusal`, the
@@ -1675,7 +2485,7 @@ export default function SessionView({
   // measured by ten photographs that differ in nothing but the seed, and a
   // clause that changes on every row is the noise the measurement is trying to
   // see through. A run is a shoot, and a shoot carries them.
-  const composeRun = (n, mode) => call(async () => {
+  const composeRun = (n, mode) => manualDispatch(async () => {
     const candidates = candidatePool(s.manner)
     const dealt = spread(wardrobeArc(s), n)
     await api.post(`/api/sessions/${id}/compose-run`, {
@@ -1721,7 +2531,7 @@ export default function SessionView({
   // count already kept for one cell.
   const fillCells = fillCellCamera.length * fillCellAct.length * fillCellFraming.length
 
-  const fillCell = (camKeys, actKeys, framingKeys, n, mode) => call(async () => {
+  const fillCell = (camKeys, actKeys, framingKeys, n, mode) => manualDispatch(async () => {
     const pool = candidatePool(s.manner)
     await api.post(`/api/sessions/${id}/compose`, {
       camera: camKeys.map((k) => pick(pool.camera, k)),
@@ -1808,6 +2618,7 @@ export default function SessionView({
   const refTakes = s.shots.filter((x) => x.use_reference && x.status === 'pending').length
   const willShoot = s.shots.some((x) => !x.use_reference && x.status === 'pending')
   const running = s.status === 'running' || s.running
+  const sessionSettingsLocked = running || fullAutoMutationLocked
   // As many anchors as the reference workflow actually reads. Keeping three
   // regardless made 📎 on a keeper *add* a second reference to a graph with one
   // slot, and the run is then refused for a count mismatch — a guaranteed
@@ -2130,12 +2941,12 @@ export default function SessionView({
             activeStep,
             reviewedRevision,
             pending,
-          }) && (
-            <button className="primary" onClick={() => call(() => api.post(`/api/sessions/${id}/run`))}>
+          }) && !fullAutoManualDispatchLocked && (
+            <button className="primary" onClick={() => manualDispatch(() => api.post(`/api/sessions/${id}/run`))}>
               Run ({pending})
             </button>
           )}
-          {isLegacyControlVisible(s, 'compose') && (
+          {isLegacyControlVisible(s, 'compose') && !fullAutoManualDispatchLocked && (
             <>
               {/* The compose control: a count, a mode, and a button, on the session
                   that's already open. The candidate pool is the whole catalogue slice
@@ -2298,9 +3109,9 @@ export default function SessionView({
               </span>
             </>
           )}
-          {s.status === 'running' &&
+          {!fullAutoManualDispatchLocked && s.status === 'running' &&
             <button onClick={() => call(() => api.post(`/api/sessions/${id}/cancel`))}>Cancel</button>}
-          {failed > 0 && s.status !== 'running' &&
+          {!fullAutoManualDispatchLocked && failed > 0 && s.status !== 'running' &&
             <button onClick={() => call(() => api.post(`/api/sessions/${id}/retry`))}>Retry {failed}</button>}
           <button onClick={() => setSettingsOpen(!settingsOpen)}
                   title="The workflows and the base model this session shoots with">⚙ Settings</button>
@@ -2315,7 +3126,7 @@ export default function SessionView({
           })} title="Shoot this whole session again on other base models — same takes, same seeds">
             ⧉ Clone
           </button>
-          {isLegacyControlVisible(s, 'add_shots') && (
+          {isLegacyControlVisible(s, 'add_shots') && !fullAutoManualDispatchLocked && (
             <button onClick={() => setAdding(adding ? null : [blankShot(kind)])}>+ Shots</button>
           )}
           {/* The native file input renders its label in the browser's locale, so
@@ -2338,6 +3149,266 @@ export default function SessionView({
           }}>Delete</button>
         </div>
       </div>
+
+      {isResource && (
+        <section className="panel" aria-label="Full Auto run" style={{ marginBottom: 14 }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <div>
+              <h3 style={{ margin: 0 }}>Full Auto</h3>
+              {fullAutoRunForSession && (
+                <p className="muted" style={{ margin: '3px 0 0', fontSize: 12 }}>
+                  Run <code>{fullAutoRunForSession.run_id}</code> · {fullAutoRunForSession.state.replaceAll('_', ' ')} · {fullAutoRunForSession.phase}
+                  {' '}· revision {versionText(fullAutoRunForSession.revision)}
+                  {fullAutoRunForSession.waiting_reason && ` · waiting for ${fullAutoRunForSession.waiting_reason.replaceAll('_', ' ')}`}
+                </p>
+              )}
+            </div>
+            <button type="button" onClick={() => void readFullAutoStatus(id)} disabled={fullAutoActionBusy || fullAutoComparisonBusy}>
+              Refresh status
+            </button>
+          </div>
+          {fullAutoStatusUnknown && (
+            <p role="status" className="muted" style={{ marginBottom: 0 }}>
+              {fullAutoStatusError
+                ? `Full Auto status could not be refreshed: ${fullAutoStatusError} The last verified status remains visible; only Refresh status or cancellation reconciliation is available.`
+                : 'Checking the server for an existing Full Auto run. Generation and plan changes stay locked until ownership is verified.'}
+            </p>
+          )}
+          {!fullAutoStatusUnknown && !fullAutoRunForSession && (
+            <p className="muted" style={{ marginBottom: 0 }}>No Full Auto run is recorded for this session.</p>
+          )}
+          {fullAutoRunForSession && (() => {
+            const run = fullAutoRunForSession
+            const progress = run.progress
+            const allowances = run.allowances
+            const cancellationPending = run.resume_action === 'reconcile_cancellation'
+            const renewalAvailable = !cancellationPending && run.state === 'blocked' && !run.can_resume
+              && ['budget_exhausted', 'authorization_expired'].includes(run.blocker?.code)
+            const matchingRequest = fullAutoControlRequest
+              && String(fullAutoControlRequest.session_id) === String(id)
+              && fullAutoControlRequest.run_id === run.run_id
+              ? fullAutoControlRequest : null
+            const submitted = Array.isArray(progress.submitted_shot_ids) ? progress.submitted_shot_ids : []
+            const resultRows = submitted.map((shotId) => {
+              const shot = (s.shots || []).find((item) => String(item.id) === String(shotId))
+              const state = progress.completed_shot_ids.includes(shotId) ? 'completed'
+                : progress.failed_shot_ids.includes(shotId) ? 'failed'
+                  : progress.cancelled_shot_ids.includes(shotId) ? 'cancelled'
+                    : shot?.status || 'pending'
+              return { shotId, state, shot }
+            })
+            const retry = run.retry_control
+            const remedies = cancellationPending
+              ? ['reconcile_cancellation', 'review_status']
+              : [...new Set([
+                ...(run.blocker?.remedies || []),
+                ...(renewalAvailable ? ['compare_scope'] : []),
+              ])]
+            return (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(125px, 1fr))', gap: 8, marginTop: 10 }}>
+                  <span><b>Targets</b><br />{progress.target_count}</span>
+                  <span><b>Prepared</b><br />{progress.prepared_count}</span>
+                  <span><b>Submitted</b><br />{progress.submitted_count}</span>
+                  <span><b>Completed</b><br />{progress.completed_count}</span>
+                  <span><b>Failed</b><br />{progress.failed_count}</span>
+                  <span><b>Cancelled</b><br />{progress.cancelled_count}</span>
+                  <span><b>Unsettled work</b><br />{progress.unresolved_work_count}</span>
+                </div>
+                <div className="muted" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 5, marginTop: 8, fontSize: 12 }}>
+                  <span>Assistant calls remaining: {allowances.assistant_calls_remaining_lower_bound} / {allowances.assistant_calls_total} (per take {allowances.assistant_calls_per_take})</span>
+                  <span>Image attempts remaining: {allowances.image_attempts_remaining_lower_bound} / {allowances.image_attempts_total} (per take {allowances.image_attempts_per_take})</span>
+                  <span>Authorization: {run.authorization_version || 'unknown'} · {run.policy_version || 'unknown'}</span>
+                  <span>Authorization expires: {run.authorization_expires_at || 'unknown'}</span>
+                </div>
+                {run.blocker && (
+                  <div role="alert" style={{ marginTop: 10, padding: 9, border: '1px solid var(--line)', borderRadius: 7 }}>
+                    <b>{run.blocker.code.replaceAll('_', ' ')}</b>
+                    <p className="muted" style={{ margin: '4px 0 8px' }}>{run.blocker.message}</p>
+                    <div className="row" style={{ gap: 6 }}>
+                      {remedies.map((remedy) => (
+                        <button key={remedy} type="button" onClick={() => handleFullAutoRemedy(remedy)}
+                                disabled={fullAutoActionBusy || Boolean(matchingRequest)
+                                  || remedy === 'reconcile_cancellation' && (!run.can_resume || fullAutoStatusUnknown)}>
+                          {remedy === 'configure_assistant' ? 'Configure assistant'
+                            : remedy === 'check_provider' ? 'Check provider'
+                              : remedy === 'enable_resource_planning' ? 'Open Setup'
+                                : remedy === 'restore_dependency' ? 'Open Resources'
+                                  : remedy === 'revise_brief' ? 'Revise brief'
+                                    : remedy === 'manual_authoring' ? 'Edit takes'
+                                      : remedy === 'duplicate_review_required' || remedy === 'duplicate_review_unavailable' ? 'Review duplicate set'
+                                          : remedy === 'compare_scope' ? (renewalAvailable ? 'Compare renewal scope' : 'Compare scope')
+                                            : remedy === 'resume_with_changed_scope' ? 'Compare scope'
+                                          : remedy === 'review_changes' ? 'Review changes'
+                                            : remedy === 'reconcile_cancellation' ? 'Reconcile cancellation'
+                                              : remedy === 'resume' ? 'Resume'
+                                                : remedy === 'cancel' ? 'Cancel Full Auto'
+                                                  : remedy === 'wait' ? 'Check again'
+                                                    : 'Review status'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {cancellationPending && (
+                  <p role="status" className="muted" style={{ margin: '9px 0 0' }}>
+                    Cancellation intent is pending. Owned work must finish or be verified settled; Full Auto will not continue preparation, retry shots, resume generation, or dispatch new work while this intent remains.
+                  </p>
+                )}
+                {fullAutoDuplicateReview && (
+                  <section aria-label="Full Auto all-target duplicate review" style={{ marginTop: 10, padding: 9, border: '1px solid var(--line)', borderRadius: 7 }}>
+                    <b>All-target duplicate review · plan revision {versionText(fullAutoDuplicateReview.plan_revision) || 'unknown'}</b>
+                    {Array.isArray(fullAutoDuplicateReview.blockers) && fullAutoDuplicateReview.blockers.length > 0 && (
+                      <ul style={{ margin: '5px 0', paddingLeft: 20 }}>
+                        {fullAutoDuplicateReview.blockers.map((blocker, index) => (
+                          <li key={`${blocker?.code || 'blocker'}:${blocker?.take_id || index}`}>
+                            {blocker?.code || 'Review evidence unavailable'}{blocker?.take_id ? ` · take ${blocker.take_id}` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {Array.isArray(fullAutoDuplicateReview.duplicates) && fullAutoDuplicateReview.duplicates.length > 0 ? (
+                      <ul style={{ margin: '5px 0', paddingLeft: 20 }}>
+                        {fullAutoDuplicateReview.duplicates.map((duplicate, index) => (
+                          <li key={`${duplicate?.take_id || 'take'}:${duplicate?.duplicate_take_id || index}`}>
+                            {duplicate?.take_id || 'Unknown take'} matches {duplicate?.duplicate_take_id || 'unknown take'}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="muted" style={{ margin: '5px 0' }}>The current target set has no duplicate pairs to accept.</p>
+                    )}
+                    {fullAutoDuplicateReview.duplicate_acceptance_required === true && (
+                      <>
+                        <p className="muted" style={{ margin: '5px 0', fontSize: 12 }}>
+                          Acceptance applies only to this exact current target set. It does not resume or start generation.
+                        </p>
+                        <button type="button" onClick={() => void acceptFullAutoDuplicateReview()}
+                                disabled={fullAutoStatusUnknown || cancellationPending || fullAutoActionBusy
+                                  || fullAutoDuplicateReview.duplicate_acceptance_current === true
+                                  || !Array.isArray(fullAutoDuplicateReview.blockers)
+                                  || fullAutoDuplicateReview.blockers.length > 0
+                                  || versionText(fullAutoDuplicateReview.plan_revision) !== versionText(run.current_plan_revision)}>
+                          {fullAutoDuplicateReview.duplicate_acceptance_current
+                            ? 'Exact duplicate set accepted'
+                            : 'Accept this exact duplicate set'}
+                        </button>
+                      </>
+                    )}
+                  </section>
+                )}
+                <div className="row" style={{ gap: 7, marginTop: 10 }}>
+                  {matchingRequest ? (
+                    <button type="button" className="primary" onClick={() => void dispatchFullAutoControl(matchingRequest)}
+                            disabled={fullAutoActionBusy}>
+                      {fullAutoActionBusy ? 'Checking control…' : `Retry same ${matchingRequest.action} request`}
+                    </button>
+                  ) : cancellationPending ? (
+                    run.can_resume && (
+                      <button type="button" className="primary" onClick={createFullAutoReconciliation} disabled={fullAutoActionBusy}>
+                        {fullAutoActionBusy ? 'Reconciling…' : 'Reconcile cancellation'}
+                      </button>
+                    )
+                  ) : (
+                    <>
+                      {run.can_cancel && (
+                        <button type="button" onClick={createFullAutoCancellation} disabled={fullAutoStatusUnknown || fullAutoActionBusy}>
+                          {fullAutoActionBusy ? 'Cancelling…' : 'Cancel Full Auto'}
+                        </button>
+                      )}
+                      {run.can_resume && (
+                        <button type="button" className="primary" onClick={() => void startFullAutoResume('resume')}
+                                disabled={fullAutoStatusUnknown || fullAutoActionBusy || fullAutoComparisonBusy}>
+                          {fullAutoComparisonBusy ? 'Comparing scope…' : 'Resume'}
+                        </button>
+                      )}
+                      {retry.can_retry_failed_shots && (
+                        <button type="button" onClick={() => void startFullAutoResume('retry_failed')}
+                                disabled={fullAutoStatusUnknown || fullAutoActionBusy || fullAutoComparisonBusy}>
+                          Retry failed shots ({retry.failed_shot_ids.length})
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+                {!cancellationPending && retry.can_accept_unknown_outcome_risk && !matchingRequest && (
+                  <div style={{ marginTop: 8 }}>
+                    <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 12 }}>
+                      <input type="checkbox" checked={fullAutoUnknownRiskAccepted}
+                             onChange={(event) => setFullAutoUnknownRiskAccepted(event.target.checked)} />
+                      {retry.unknown_outcome_warning || 'I understand the remote outcome is unknown and explicitly accept the risk of another image attempt.'}
+                    </label>
+                    <button type="button" style={{ marginTop: 5 }}
+                            onClick={() => void startFullAutoResume('retry_unknown')}
+                            disabled={!fullAutoUnknownRiskAccepted || fullAutoActionBusy || fullAutoComparisonBusy}>
+                      Retry unknown outcomes ({retry.unknown_outcome_shot_ids.length})
+                    </button>
+                  </div>
+                )}
+                {fullAutoActionError && (
+                  <p role="alert" className="error" style={{ margin: '8px 0 0' }}>{fullAutoActionError}</p>
+                )}
+                {!cancellationPending && fullAutoComparison && (
+                  <section aria-label="Full Auto scope comparison" style={{ marginTop: 10, padding: 9, border: '1px solid var(--line)', borderRadius: 7 }}>
+                    <h4 style={{ margin: '0 0 5px' }}>Resume scope comparison</h4>
+                    <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
+                      {fullAutoComparison.changed
+                        ? `The authorized scope changed: ${fullAutoComparison.changed_fields.join(', ') || 'review the old and new scope below'}. Explicit acceptance is required.`
+                        : 'The current scope matches the saved authorization. No changed-scope consent is needed.'}
+                    </p>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
+                      <div><b>Previously authorized</b><div className="muted" style={{ fontSize: 11 }}>{compareSummary(fullAutoComparison.old_scope.summary)}</div><div className="muted">Expires {fullAutoComparison.old_scope.authorization_expires_at}</div></div>
+                      <div><b>Current scope</b><div className="muted" style={{ fontSize: 11 }}>{compareSummary(fullAutoComparison.new_scope.summary)}</div><div className="muted">Expires {fullAutoComparison.new_scope.authorization_expires_at}</div></div>
+                    </div>
+                    <div aria-label="Full Auto allowance comparison" style={{ marginTop: 8, fontSize: 12 }}>
+                      <b>Assistant call allowance</b>
+                      <div>Before: {fullAutoComparison.assistant_allowance.old_executable_remaining} executable calls remain
+                        {fullAutoComparison.assistant_allowance.pending_take_id
+                          ? ` for ${fullAutoComparison.assistant_allowance.pending_take_id}` : ''}.</div>
+                      <div>Additional authorization: {fullAutoComparison.assistant_allowance.additional_calls_total} calls total · {fullAutoComparison.assistant_allowance.additional_calls_per_take} per take.</div>
+                      <div>After acceptance: {fullAutoComparison.assistant_allowance.new_executable_remaining} executable calls
+                        {fullAutoComparison.assistant_allowance.pending_take_id
+                          ? ` for ${fullAutoComparison.assistant_allowance.pending_take_id}` : ''}.</div>
+                      {fullAutoComparison.assistant_allowance.pending_take_id && (
+                        <div>Pending-take allowance: before {fullAutoComparison.assistant_allowance.old_pending_take_remaining ?? 0} calls · after {fullAutoComparison.assistant_allowance.new_pending_take_remaining ?? 0} calls.</div>
+                      )}
+                      <div>Image retry quote: {fullAutoComparison.image_retry_allowance.authorized_image_attempts_remaining} attempts remain · +{fullAutoComparison.image_retry_allowance.additional_if_retry_failed} for failed shots · +{fullAutoComparison.image_retry_allowance.additional_if_accept_unknown_outcome_risk} for accepted unknown outcomes.</div>
+                    </div>
+                    <div className="row" style={{ gap: 6, marginTop: 8 }}>
+                      {fullAutoComparison.changed ? (
+                        <button type="button" className="primary" onClick={acceptFullAutoScopeAndResume}
+                                disabled={!fullAutoResumeIntent || fullAutoActionBusy || Boolean(matchingRequest)}>
+                          Accept changes and {fullAutoResumeIntent?.startsWith('retry_') ? 'retry' : 'Resume'}
+                        </button>
+                      ) : renewalAvailable ? (
+                        <p role="status" className="muted">The server found no new allowance to accept. Full Auto remains blocked.</p>
+                      ) : (
+                        <button type="button" className="primary"
+                                onClick={() => submitFullAutoResume(fullAutoComparison, fullAutoResumeIntent || 'resume', false)}
+                                disabled={!fullAutoResumeIntent || fullAutoActionBusy || Boolean(matchingRequest)}>
+                          {fullAutoResumeIntent?.startsWith('retry_') ? 'Retry with this scope' : 'Resume with this scope'}
+                        </button>
+                      )}
+                      <button type="button" onClick={() => { fullAutoComparisonReadSequenceRef.current = 0; setFullAutoComparison(null); setFullAutoResumeIntent(null) }}
+                              disabled={fullAutoActionBusy}>Dismiss comparison</button>
+                    </div>
+                  </section>
+                )}
+                <details style={{ marginTop: 9 }}>
+                  <summary>Full Auto targets and results ({progress.target_take_ids.length} takes · {resultRows.length} submitted shots)</summary>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10, marginTop: 7 }}>
+                    <div><b>All target takes</b><ul style={{ margin: '4px 0', paddingLeft: 20 }}>{progress.target_take_ids.map((takeId) => <li key={takeId}><code>{takeId}</code></li>)}</ul></div>
+                    <div><b>Submitted shot outcomes</b>{resultRows.length
+                      ? <ul style={{ margin: '4px 0', paddingLeft: 20 }}>{resultRows.map(({ shotId, state, shot }) => <li key={shotId}>Shot #{shotId}: {state}{shot?.error ? ` · ${shot.error}` : ''}</li>)}</ul>
+                      : <p className="muted" style={{ margin: '4px 0' }}>No shots have been submitted.</p>}</div>
+                    <div><b>Prepared takes</b><ul style={{ margin: '4px 0', paddingLeft: 20 }}>{progress.prepared_take_ids.map((takeId) => <li key={takeId}><code>{takeId}</code></li>)}</ul></div>
+                  </div>
+                </details>
+              </>
+            )
+          })()}
+        </section>
+      )}
 
       {isResource && (
         <div className="panel" style={{ marginBottom: 14 }}>
@@ -3478,7 +4549,7 @@ export default function SessionView({
                           type="button"
                           onClick={startPreparationOperation}
                           disabled={
-                            manualDecisionBusy || preparationActionBusy
+                            fullAutoManualDispatchLocked || manualDecisionBusy || preparationActionBusy
                             || (!preparationRetryUnknown && (
                               planDirty || reviewBlocksFinalization || authoringOperationActive
                               || sharedOperation?.can_resume || sharedStartBusy || sharedStartUnknown
@@ -3522,7 +4593,7 @@ export default function SessionView({
                     ) : (
                       <button
                         onClick={handlePrepareAllIncomplete}
-                        disabled={planDirty || manualDecisionBusy || preparingAll || incompleteCount === 0 || reviewBlocksFinalization}
+                        disabled={fullAutoManualDispatchLocked || planDirty || manualDecisionBusy || preparingAll || incompleteCount === 0 || reviewBlocksFinalization}
                         title={
                           planDirty
                             ? 'Save draft before preparing'
@@ -3543,7 +4614,7 @@ export default function SessionView({
                     <button
                       className="primary"
                       onClick={handleSubmitSelectedTakes}
-                      disabled={selectedTakeIds.size === 0 || submittingTakes || planDirty || planEditLocked || reviewedRevision !== planRevision}
+                      disabled={fullAutoManualDispatchLocked || selectedTakeIds.size === 0 || submittingTakes || planDirty || planEditLocked || reviewedRevision !== planRevision}
                       title={
                         planDirty
                           ? 'Save draft before submitting test selection'
@@ -3714,7 +4785,7 @@ export default function SessionView({
                                       <button
                                         style={{ fontSize: 11, padding: '2px 8px' }}
                                         onClick={() => handlePrepareTake(t.take_id)}
-                                        disabled={planDirty || prepState === 'ready' || prepState === 'generated' || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
+                                        disabled={fullAutoManualDispatchLocked || planDirty || prepState === 'ready' || prepState === 'generated' || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
                                         title={
                                           planDirty
                                             ? 'Save draft before preparing'
@@ -3753,7 +4824,7 @@ export default function SessionView({
                                           {plan?.authoring?.mode !== 'automatic' && (
                                             <button
                                               onClick={() => handlePrepareTake(t.take_id)}
-                                            disabled={planDirty || prepState === 'generated' || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
+                                            disabled={fullAutoManualDispatchLocked || planDirty || prepState === 'generated' || preparingTakeId === t.take_id || preparingAll || reviewBlocksFinalization}
                                               title={
                                                 planDirty
                                                   ? 'Save draft before preparing'
@@ -4154,13 +5225,13 @@ export default function SessionView({
               x.status === 'done' && x.rating < minRating && !anchors.includes(x.id)
             ).length
             return (
-              <button disabled={reshootCount === 0}
+              <button disabled={reshootCount === 0 || fullAutoManualDispatchLocked}
                       title={reshootCount > 0
                         ? `Delete ${reshootCount} photo${reshootCount === 1 ? '' : 's'} and put ${reshootCount === 1 ? 'it' : 'them'} back in the queue on a new seed`
                         : 'No finished shots are below the current threshold'}
                       onClick={() => {
                         if (confirm(`Reshoot ${reshootCount} shot${reshootCount === 1 ? '' : 's'} below ${minRating}★? Their photos will be deleted and the takes go back in the queue.`)) {
-                          call(() => api.post(`/api/sessions/${id}/reshoot-below?min_rating=${minRating}`))
+                          manualDispatch(() => api.post(`/api/sessions/${id}/reshoot-below?min_rating=${minRating}`))
                         }
                       }}>
                 Reshoot below {minRating}★ ({reshootCount})
@@ -4194,7 +5265,7 @@ export default function SessionView({
             <label style={{ width: 'auto', margin: 0 }}>Kind</label>
             {Object.entries(KINDS).map(([k, spec]) => (
               <button key={k} className={'chip' + (kind === k ? ' on' : '')} title={spec.blurb}
-                      disabled={running}
+                      disabled={sessionSettingsLocked}
                       onClick={() => call(() => api.patch(`/api/sessions/${id}`, { settings: { kind: k } }))}>
                 {spec.label}
               </button>
@@ -4205,7 +5276,7 @@ export default function SessionView({
               <label title="The graph for takes with ref unticked — the ones painted from noise. An editing or camera-angle graph does not go here.">
                 Workflow (new photos)
               </label>
-              <select value={s.workflow_id ?? ''} disabled={running}
+              <select value={s.workflow_id ?? ''} disabled={sessionSettingsLocked}
                       onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                         { workflow_id: Number(e.target.value) || 0 }))}>
                 <option value="">— the model's —</option>
@@ -4216,7 +5287,7 @@ export default function SessionView({
               <label title="The graph for takes marked ref — the ones that edit the reference photo.">
                 Reference workflow (edits)
               </label>
-              <select value={s.reference_workflow_id ?? ''} disabled={running}
+              <select value={s.reference_workflow_id ?? ''} disabled={sessionSettingsLocked}
                       onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                         { reference_workflow_id: Number(e.target.value) || 0 }))}>
                 <option value="">— none, text to image only —</option>
@@ -4235,7 +5306,7 @@ export default function SessionView({
                   would keep shooting it at the last model's settings. What makes
                   it safe is that it is not silent — the line below says what
                   arrived, and every value stays editable. */}
-              <BaseModelSelect value={s.settings.checkpoint} models={baseModels} disabled={running}
+              <BaseModelSelect value={s.settings.checkpoint} models={baseModels} disabled={sessionSettingsLocked}
                                onChange={(v) => call(() => api.patch(`/api/sessions/${id}`,
                                  { settings: { checkpoint: v, ...(checkpointProfile(config, v) || {}) } }))} />
               {profile && (
@@ -4252,41 +5323,41 @@ export default function SessionView({
               <label title="How far an img2img edit may travel from the reference. Low keeps the frame and repaints detail — 0.2 to 0.35 is an identity pass. High repaints the outfit and moves the pose.">
                 Denoise
               </label>
-              <input type="number" step="0.05" min="0" max="1" disabled={running}
+              <input type="number" step="0.05" min="0" max="1" disabled={sessionSettingsLocked}
                      value={s.settings.denoise ?? ''} placeholder="workflow's own"
                      onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                        { settings: { denoise: e.target.value === '' ? null : parseFloat(e.target.value) } }))} />
             </div>
             <div>
               <label title="Only applied if the workflow maps it.">LoRA strength</label>
-              <input type="number" step="0.05" min="0" disabled={running}
+              <input type="number" step="0.05" min="0" disabled={sessionSettingsLocked}
                      value={s.settings.lora_strength ?? ''} placeholder="workflow's own"
                      onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                        { settings: { lora_strength: e.target.value === '' ? null : parseFloat(e.target.value) } }))} />
             </div>
             <div>
               <label title="Steps">Steps</label>
-              <input type="number" min="1" disabled={running}
+              <input type="number" min="1" disabled={sessionSettingsLocked}
                      value={s.settings.steps ?? ''} placeholder="8"
                      onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                        { settings: { steps: e.target.value === '' ? null : parseInt(e.target.value, 10) } }))} />
             </div>
             <div>
               <label title="CFG Scale">CFG</label>
-              <input type="number" step="0.1" min="0" disabled={running}
+              <input type="number" step="0.1" min="0" disabled={sessionSettingsLocked}
                      value={s.settings.cfg ?? ''} placeholder="1.0"
                      onChange={(e) => call(() => api.patch(`/api/sessions/${id}`,
                        { settings: { cfg: e.target.value === '' ? null : parseFloat(e.target.value) } }))} />
             </div>
             <div>
               <label title="Sampler">Sampler</label>
-              <SamplerSelect value={s.settings.sampler} options={baseModels.samplers} disabled={running}
+              <SamplerSelect value={s.settings.sampler} options={baseModels.samplers} disabled={sessionSettingsLocked}
                              onChange={(v) => call(() => api.patch(`/api/sessions/${id}`,
                                { settings: { sampler: v } }))} />
             </div>
             <div>
               <label title="Scheduler">Scheduler</label>
-              <SamplerSelect value={s.settings.scheduler} options={baseModels.schedulers} disabled={running}
+              <SamplerSelect value={s.settings.scheduler} options={baseModels.schedulers} disabled={sessionSettingsLocked}
                              onChange={(v) => call(() => api.patch(`/api/sessions/${id}`,
                                { settings: { scheduler: v } }))} />
             </div>
@@ -4298,7 +5369,7 @@ export default function SessionView({
             <p className="rule">
               <b>{tunedWf.name}</b> is written for this base model — it loads it itself, with
               the sampler, steps and cfg that model wants.{' '}
-              <button disabled={running}
+              <button disabled={sessionSettingsLocked}
                       onClick={() => call(() => api.patch(`/api/sessions/${id}`,
                         { workflow_id: tunedWf.id }))}>Shoot with it</button>
             </p>
@@ -4335,7 +5406,7 @@ export default function SessionView({
                 <label title="An outfit from the wardrobe catalogue. Its garments come off in the order the outfit lists them, one per state, and the last state is bare.">
                   Outfit
                 </label>
-                <select value={s.settings?.outfit || ''} disabled={running}
+                <select value={s.settings?.outfit || ''} disabled={sessionSettingsLocked}
                         onChange={(e) => call(() => api.patch(`/api/sessions/${id}`, {
                           settings: { outfit: e.target.value },
                           wardrobe: statesFor(e.target.value)[0] || s.wardrobe,
@@ -4351,7 +5422,7 @@ export default function SessionView({
                   Wardrobe states ({wardrobeStates(s).length || "the session's"}
                   {!s.settings?.wardrobe_states?.length && s.settings?.outfit ? ', from the outfit' : ''})
                 </label>
-                <textarea rows={4} disabled={running} defaultValue={wardrobeStates(s).join('\n')}
+                <textarea rows={4} disabled={sessionSettingsLocked} defaultValue={wardrobeStates(s).join('\n')}
                           key={wardrobeStates(s).join('\n')}
                           placeholder="She wears a black wool coat, and a grey jumper.&#10;She wears a grey jumper.&#10;She wears nothing at all."
                           onBlur={(e) => call(() => api.patch(`/api/sessions/${id}`, {
@@ -4591,7 +5662,7 @@ export default function SessionView({
             </div>
           )}
           <div className="row" style={{ marginTop: 10 }}>
-            <button className="primary" onClick={() => call(async () => {
+            <button className="primary" disabled={fullAutoManualDispatchLocked} onClick={() => manualDispatch(async () => {
               // The session's wardrobe first: `add_shots` reads it from the row,
               // and a take that left its own box empty is asking for this one.
               if (worn !== s.wardrobe) await api.patch(`/api/sessions/${id}`, { wardrobe: worn })
@@ -4617,7 +5688,7 @@ export default function SessionView({
                           : shot.status === 'pending' ? '· queued'
                             : `⚠ ${shot.error || shot.status}`}
                         {shot.status === 'pending' && !!shot.use_reference && (
-                          <select className="guide" disabled={running}
+                          <select className="guide" disabled={sessionSettingsLocked}
                                   value={(shot.reference_shot_ids || [])[0] || ''}
                                   title="The photograph that guides this take. Follows the session's 📎 pick unless you name one here."
                                   onChange={(e) => guideWith(shot, e.target.value)}>
@@ -4646,7 +5717,7 @@ export default function SessionView({
                         {/* A native menu on purpose: a popover would need its own
                             dismiss, focus and z-index for six items the browser
                             already knows how to show. */}
-                        <select className="continue" value="" disabled={running}
+                        <select className="continue" value="" disabled={sessionSettingsLocked}
                                 title="Continue with this photo — as the reference of this session, or of a new one"
                                 onChange={(e) => continueWith(shot, e.target.value)}>
                           <option value="">→</option>
@@ -4675,7 +5746,7 @@ export default function SessionView({
                               title="Reshoot — this photo is deleted and the take goes back in the queue with a new seed"
                               onClick={() => {
                                 if (confirm(`Delete this photo and shoot "${shot.shot_label}" again?`)) {
-                                  call(() => api.post(`/api/shots/${shot.id}/reshoot`))
+                                  manualDispatch(() => api.post(`/api/shots/${shot.id}/reshoot`))
                                 }
                               }}>↺</button>
                     )}

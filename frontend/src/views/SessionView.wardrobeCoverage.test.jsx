@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -35,9 +35,18 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
+beforeEach(() => {
+  vi.spyOn(api, 'getVersioned').mockResolvedValue({ current_run: null })
+})
+
 it.each(['manual', 'automatic'])('edits and saves explicit coverage through CAS in %s mode', async (mode) => {
   let plan = { ...basePlan, authoring: { mode } }
   let revision = 3
+  vi.mocked(api.getVersioned).mockImplementation(async (path) => {
+    if (path === `/api/sessions/${session.id}/full-auto`) return { current_run: null }
+    if (path === `/api/sessions/${session.id}/plan`) return { plan_revision: revision, plan }
+    return {}
+  })
   vi.spyOn(api, 'get').mockImplementation(async (path) => {
     if (path === `/api/sessions/${session.id}`) return session
     if (path === `/api/sessions/${session.id}/plan`) return { plan_revision: revision, plan }

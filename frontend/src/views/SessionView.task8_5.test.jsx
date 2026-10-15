@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -17,6 +17,10 @@ afterEach(async () => {
   container?.remove()
   container = null
   vi.restoreAllMocks()
+})
+
+beforeEach(() => {
+  vi.spyOn(api, 'getVersioned').mockResolvedValue({ current_run: null })
 })
 
 const session = {
@@ -70,6 +74,11 @@ describe('Task 8.5 resource review presentation', () => {
         { ...plan.takes[0], take_id: 'take-002', label: 'Second take' },
       ],
     }
+    vi.mocked(api.getVersioned).mockImplementation(async (path) => {
+      if (path === `/api/sessions/${session.id}/full-auto`) return { current_run: null }
+      if (path === `/api/sessions/${session.id}/plan`) return { plan_revision: 3, plan: modePlan }
+      return {}
+    })
     vi.spyOn(api, 'get').mockImplementation(async (path) => {
       if (path === `/api/sessions/${session.id}`) return session
       if (path === `/api/sessions/${session.id}/plan`) return { plan_revision: 3, plan: modePlan }
@@ -240,6 +249,11 @@ describe('Task 8.5 resource review presentation', () => {
 
   it('shows affected work before saving and sends the CAS only after confirmation', async () => {
     let revision = 3
+    vi.mocked(api.getVersioned).mockImplementation(async (path) => {
+      if (path === `/api/sessions/${session.id}/full-auto`) return { current_run: null }
+      if (path === `/api/sessions/${session.id}/plan`) return { plan_revision: revision, plan }
+      return {}
+    })
     vi.spyOn(api, 'get').mockImplementation(async (path) => {
       if (path === `/api/sessions/${session.id}`) return session
       if (path === `/api/sessions/${session.id}/plan`) {
@@ -291,6 +305,11 @@ describe('Task 8.5 resource review presentation', () => {
   })
 
   it('checks dependencies only for confirmed invalid authoring evidence and keeps review gates closed', async () => {
+    vi.mocked(api.getVersioned).mockImplementation(async (path) => {
+      if (path === `/api/sessions/${session.id}/full-auto`) return { current_run: null }
+      if (path === `/api/sessions/${session.id}/plan`) return { plan_revision: 3, plan }
+      return {}
+    })
     vi.spyOn(api, 'get').mockImplementation(async (path) => {
       if (path === `/api/sessions/${session.id}`) return session
       if (path === `/api/sessions/${session.id}/plan`) return { plan_revision: 3, plan }
@@ -345,6 +364,11 @@ describe('Task 8.5 resource review presentation', () => {
   })
 
   it('does not label a generic review failure as drift or offer a drift refresh', async () => {
+    vi.mocked(api.getVersioned).mockImplementation(async (path) => {
+      if (path === `/api/sessions/${session.id}/full-auto`) return { current_run: null }
+      if (path === `/api/sessions/${session.id}/plan`) return { plan_revision: 3, plan }
+      return {}
+    })
     vi.spyOn(api, 'get').mockImplementation(async (path) => {
       if (path === `/api/sessions/${session.id}`) return session
       if (path === `/api/sessions/${session.id}/plan`) return { plan_revision: 3, plan }

@@ -1,5 +1,23 @@
 # Project Diary
 
+## Full Auto Task 6.3 Control Integration
+
+Main accepted Task 6.3 after independent review of the repaired diff: 659
+frontend tests, build, strict OpenSpec, 46 privacy/control checks and the complete
+3,558-test Python gate passed. Review caught missing renewal access, insufficient
+receipt validation, hidden renewed budgets and shallow UI coverage; Executor
+repaired these and Tester rechecked. Keep uncertain UUID requests frozen and
+show exact added authority before renewed consent. Manual dispatch transfer
+remains a separate Task 6.4 boundary; no live generation was authorized.
+
+An explicit pause interrupted intake before implementation; resume keeps the
+same one-task acceptance scope and internal role separation. Full Auto action
+receipts are partial historical responses, so UI controls must refresh current
+server discovery and fence stale responses rather than treating replay as new
+progress. A private paused-edit service is not an available HTTP remedy;
+verified cancellation settlement permits normal edits and same-run renewed
+scope consent without adding a separate editing protocol.
+
 ## Full Auto Task 6.2 Consent Boundaries
 
 Keep read-only preflight separate from the single creation authorization. Bind

@@ -114,6 +114,9 @@ beforeEach(() => {
   }
   Object.defineProperty(window, 'localStorage', { configurable: true, value: storage })
   window.localStorage.clear()
+  vi.spyOn(api, 'getVersioned').mockImplementation(async (path) => (
+    path.endsWith('/full-auto') ? { current_run: null } : api.get(path, { losslessVersions: true })
+  ))
 })
 
 afterEach(async () => {
